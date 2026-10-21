@@ -96,6 +96,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_attention",
     "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
@@ -810,7 +811,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // subjects and one live session per subject (ASMA-8452). v134 adds PR
     // review subjects and the receipt kinds that open and close a review
     // (ASMA-8453).
-    assert_eq!(SCHEMA_VERSION, 134);
+    assert_eq!(SCHEMA_VERSION, 135);
 }
 
 #[test]
@@ -3163,8 +3164,10 @@ fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() 
     connection
         .execute(
             "INSERT INTO execution_hold_conditions
-                 (project_id, authorization_id, condition, recorded_at)
+                 (project_id, authorization_id, condition, reason_code,
+                  review_by, recorded_at)
              VALUES ('0193f000-0000-7000-8000-000000000001', ?1, 'kickoff_ready',
+                     'waiting_on_dependency', '2026-10-01T09:00:00Z',
                      '2026-09-17T09:00:00Z')",
             [hold],
         )
@@ -3193,9 +3196,11 @@ fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() 
         connection
             .execute(
                 "INSERT INTO execution_hold_conditions
-                     (project_id, authorization_id, condition, recorded_at)
+                     (project_id, authorization_id, condition, reason_code,
+                      review_by, recorded_at)
                  VALUES ('0193f000-0000-7000-8000-000000000001',
                          '0193f000-0000-7000-8000-000000000098', 'whenever',
+                         'waiting_on_dependency', '2026-10-01T09:00:00Z',
                          '2026-09-17T09:00:00Z')",
                 [],
             )
@@ -3211,6 +3216,216 @@ fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() 
         )
         .expect("the original condition is still readable");
     assert_eq!(stored, "kickoff_ready");
+}
+
+/// v135 backfills every existing hold and gives overdue review its own evidence.
+///
+/// The migration runs as part of the KR-14 deploy, so a hold that already stood
+/// gets its first review fourteen days from that boundary. The two shapes are
+/// both covered: a v101 condition row (`kickoff_ready`) keeps its condition and
+/// gains a review date, and a pre-v101 revocation with no row at all becomes an
+/// explicit `manual` hold instead of staying invisible to the sweep.
+#[test]
+fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
+    use kontor_core::id::{SignedDuration, Timestamp};
+
+    let directory = temp();
+    let path = directory.path().join("kontor.db");
+    let connection = Connection::open(&path).expect("a raw connection opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let migrations = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut through_v134: Vec<std::path::PathBuf> = std::fs::read_dir(&migrations)
+        .expect("the migration directory reads")
+        .map(|entry| entry.expect("a migration entry").path())
+        .filter(|path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("sql")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name < "0135_")
+        })
+        .collect();
+    through_v134.sort();
+    assert_eq!(through_v134.len(), 134);
+
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("the migration transaction opens");
+    for migration in through_v134 {
+        let sql = std::fs::read_to_string(&migration).expect("a migration reads");
+        connection
+            .execute_batch(&sql)
+            .unwrap_or_else(|error| panic!("{} failed: {error}", migration.display()));
+    }
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the version is readable");
+    assert_eq!(version, 134);
+
+    // Two revocations: one recorded by v101 with a condition row, and one that
+    // predates the table entirely.
+    let project = "0193f000-0000-7000-8000-000000000001";
+    let account = "0193f000-0000-7000-8000-000000000002";
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO execution_authorization_revocations
+                 (project_id, authorization_id, revoked_at, revoked_by,
+                  revocation_receipt_id, reason)
+             VALUES
+                 ('{project}', '0193f000-0000-7000-8000-0000000000a1',
+                  '2026-10-01T00:00:00Z', '{account}',
+                  '0193f000-0000-7000-8000-0000000000c1', 'legacy manual'),
+                 ('{project}', '0193f000-0000-7000-8000-0000000000a2',
+                  '2026-10-02T00:00:00Z', '{account}',
+                  '0193f000-0000-7000-8000-0000000000c2', 'legacy kickoff');
+             INSERT INTO execution_hold_conditions
+                 (project_id, authorization_id, condition, recorded_at)
+             VALUES ('{project}', '0193f000-0000-7000-8000-0000000000a2',
+                     'kickoff_ready', '2026-10-02T00:00:00Z');"
+        ))
+        .expect("the legacy holds are seeded");
+    connection
+        .execute_batch("COMMIT")
+        .expect("the migration transaction commits");
+
+    let migration = std::fs::read_to_string(migrations.join("0135_hold_terms_and_attention.sql"))
+        .expect("v135 reads");
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("the v135 transaction opens");
+    connection
+        .execute_batch(&migration)
+        .expect("v135 applies over the legacy holds");
+    connection
+        .execute_batch("COMMIT")
+        .expect("the v135 transaction commits");
+
+    let mut statement = connection
+        .prepare(
+            "SELECT authorization_id, condition, reason_code, review_by,
+                    dependency_task_id
+             FROM execution_hold_conditions
+             ORDER BY authorization_id",
+        )
+        .expect("the migrated conditions read");
+    type MigratedHold = (String, String, Option<String>, String, Option<String>);
+    let rows: Vec<MigratedHold> = statement
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .expect("the migrated conditions query")
+        .collect::<Result<_, _>>()
+        .expect("the migrated condition rows");
+    assert_eq!(rows.len(), 2, "both revocations are now explicit holds");
+    assert_eq!(rows[0].1, "manual");
+    assert_eq!(rows[1].1, "kickoff_ready");
+    for row in &rows {
+        assert!(
+            row.2.is_none(),
+            "the migration does not invent a reason code: {row:?}"
+        );
+        assert!(row.4.is_none(), "no legacy hold names a dependency");
+        let review_by = row.3.parse::<Timestamp>().expect("a canonical review date");
+        let now = Timestamp::now();
+        assert!(
+            review_by
+                > now
+                    .checked_add(SignedDuration::from_secs(13 * 24 * 60 * 60))
+                    .unwrap()
+                && review_by
+                    < now
+                        .checked_add(SignedDuration::from_secs(15 * 24 * 60 * 60))
+                        .unwrap(),
+            "a legacy hold is reviewed fourteen days after the deploy: {row:?}"
+        );
+    }
+
+    // The new condition vocabulary is closed, and a dependency condition cannot
+    // be recorded without the task it evaluates.
+    let refused = |sql: &str| connection.execute(sql, []).is_err();
+    let other_project = "0193f000-0000-7000-8000-000000000003";
+    let hold = "0193f000-0000-7000-8000-0000000000b1";
+    assert!(refused(&format!(
+        "INSERT INTO execution_hold_conditions
+             (project_id, authorization_id, condition, reason_code, review_by, recorded_at)
+         VALUES ('{other_project}', '{hold}', 'dependency_done',
+                 'waiting_on_dependency', '2026-10-20T00:00:00Z',
+                 '2026-10-06T00:00:00Z')"
+    )));
+    assert!(refused(&format!(
+        "INSERT INTO execution_hold_conditions
+             (project_id, authorization_id, condition, reason_code, review_by,
+              dependency_task_id, recorded_at)
+         VALUES ('{other_project}', '{hold}', 'manual',
+                 'waiting_on_dependency', '2026-10-20T00:00:00Z',
+                 '0193f000-0000-7000-8000-0000000000d1',
+                 '2026-10-06T00:00:00Z')"
+    )));
+    assert!(refused(&format!(
+        "INSERT INTO execution_hold_conditions
+             (project_id, authorization_id, condition, reason_code, review_by, recorded_at)
+         VALUES ('{other_project}', '{hold}', 'whenever',
+                 'waiting_on_dependency', '2026-10-20T00:00:00Z',
+                 '2026-10-06T00:00:00Z')"
+    )));
+    assert!(refused(
+        "UPDATE execution_hold_conditions SET condition = 'manual'
+         WHERE authorization_id = '0193f000-0000-7000-8000-0000000000a2'"
+    ));
+    assert!(refused(
+        "DELETE FROM execution_hold_conditions
+         WHERE authorization_id = '0193f000-0000-7000-8000-0000000000a2'"
+    ));
+
+    // Attention is append-only too, and one hold gets exactly one record of one
+    // typed attention.
+    connection
+        .execute(
+            "INSERT INTO execution_hold_attention
+                 (project_id, authorization_id, attention_code, owner,
+                  reason_code, review_by, raised_at)
+             VALUES (?1, ?2, 'hold_review_overdue', ?3, NULL,
+                     '2026-10-01T00:00:00Z', '2026-10-20T00:00:00Z')",
+            rusqlite::params![project, "0193f000-0000-7000-8000-0000000000a1", account],
+        )
+        .expect("one attention is recorded");
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO execution_hold_attention
+                     (project_id, authorization_id, attention_code, owner,
+                      reason_code, review_by, raised_at)
+                 VALUES (?1, ?2, 'hold_review_overdue', ?3, NULL,
+                         '2026-10-01T00:00:00Z', '2026-10-21T00:00:00Z')",
+                rusqlite::params![project, "0193f000-0000-7000-8000-0000000000a1", account],
+            )
+            .is_err(),
+        "a second record of the same attention is refused"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE execution_hold_attention SET raised_at = '2026-10-22T00:00:00Z'",
+                [],
+            )
+            .is_err(),
+        "an attention record is evidence, not a draft"
+    );
+    assert!(
+        connection
+            .execute("DELETE FROM execution_hold_attention", [])
+            .is_err(),
+        "an attention record is not withdrawn"
+    );
 }
 
 #[test]
@@ -6849,7 +7064,7 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.
-    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TABLE execution_hold_attention; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();
     drop(connection);
     let store = SqliteStore::open(&database).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
