@@ -98,6 +98,6 @@ failed independently of this change: two report
 (`a_configured_governed_summarizer_produces_the_persisted_handoff_summary`,
 `startup_composes_the_configured_runtime_summarizer`) and one exceeded its
 resident-controller wait
-(`resident_failed_epic_apply_emits_no_immediate_replay_wake`). None touches the
-paths changed here; they are recorded as inherited/environmental failures, not
-as WP-12 evidence.
+(`resident_failed_epic_apply_emits_no_immediate_replay_wake`). All three fail
+identically at base commit `3bcbfe95` in a detached worktree, so they are
+inherited baseline failures, not WP-12 regressions.
