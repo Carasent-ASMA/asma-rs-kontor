@@ -135,7 +135,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const row = review?.rows.find((entry) => entry.id === agentId);
     if (!review || !row) throw new Error("Exact session ID is not in this review.");
     if (row.outcome !== "pending") return row;
-    if (!row.eligible) return { ...row, outcome: "blocked", message: row.reason };
+    if (!row.eligible) { const blocked = { ...row, outcome: "blocked" as const, message: row.reason }; await saveRow(reviewId, blocked); return blocked; }
     // A per-session lock covers competing reviews/actions and survives worker reload/crash.
     const lockPath = join(root, `intent-${hash(agentId)}.json`);
     let lock;

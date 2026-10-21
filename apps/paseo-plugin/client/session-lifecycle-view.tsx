@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Pressable, Text, View } from "react-native";
 import { ScrollView, Icon } from "@getpaseo/plugin/client/react-native";
-import { Action, COARSE_POINTER, type Colors } from "./page-controls";
+import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { RESUME_PROMPT, TAKEOVER_LIMIT } from "../shared/session-lifecycle";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
@@ -24,25 +24,33 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
   const [scope, setScope] = useState<"filtered" | "host">("filtered");
   const closeButton = useRef<View | null>(null);
   const { review, running, busy, target, capabilities, selected } = lifecycle;
+  const archive = (review?.action ?? lifecycle.action) === "archive";
+  const eligibleSelected = review?.rows.filter((row) => row.eligible && row.outcome === "pending" && selected.includes(row.id)).length ?? 0;
   useEffect(() => { const timer = setTimeout(() => (closeButton.current as View & { focus?: () => void } | null)?.focus?.(), 0); return () => clearTimeout(timer); }, [review?.id]);
   const providers = capabilities?.providers ?? [];
   const models = providers.find((provider) => provider.id === target.provider)?.models ?? [];
   const efforts = models.find((model) => model.id === target.model)?.efforts ?? [];
   const text = (value: string, muted = false) => <Text style={{ color: muted ? colors.foregroundMuted : colors.foreground, fontSize: 12, lineHeight: 18 }}>{value}</Text>;
   const close = () => { lifecycle.stop(); onClose(); };
-  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={review?.action === "archive" ? "Archive session review" : "Recover sessions"} dialog testID="session-lifecycle-dialog"
-    header={<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 16 }}>{review?.action === "archive" ? "Archive session" : "Recover sessions"}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>}>
+  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={archive ? "Archive session review" : "Recover sessions"} dialog testID="session-lifecycle-dialog"
+    header={<View style={{ gap: 6 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 16 }}>{archive ? "Archive session" : "Recover sessions"}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>
+      {review ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}><Action colors={colors} label={running ? "Executing one session at a time…" : archive ? "Archive selected session" : `Resume ${eligibleSelected} eligible · ${selected.length} selected`} disabled={running || eligibleSelected === 0} onPress={() => { void lifecycle.run(); }} />
+        {running ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}</View> : null}
+    </View>}>
     <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 10, padding: 12 }}>
       {text(TAKEOVER_LIMIT, true)}
-      {!review ? <>
+      {!review && busy ? text("Reading the exact session scope and child impact…") : !review ? <>
         {text("Choose scope, then review exact sessions and reasons. Nothing runs during review.")}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}><Action colors={colors} label={`Filtered scope (${scopeIds.length})`} selected={scope === "filtered"} onPress={() => setScope("filtered")} /><Action colors={colors} label="Whole selected host" selected={scope === "host"} onPress={() => setScope("host")} /></View>
         {text("Resume keeps each session's current provider, model, effort and permissions. A different target is listed as requiring takeover. Codex account routing belongs to the host's ZeroSub Accounts settings.", true)}
-        <Action colors={colors} label="Discover provider options" onPress={() => { void lifecycle.loadCapabilities(); }} />
         {text(`Target: ${target.provider} / ${target.model} / ${target.effort}`)}
+        <Disclosure colors={colors} label="Target configuration">
+        <Action colors={colors} label="Discover provider options" onPress={() => { void lifecycle.loadCapabilities(); }} />
+        <ScrollView style={{ maxHeight: 180 }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{providers.map((provider) => <Action key={provider.id} colors={colors} label={`${provider.id} · ${provider.status}`} selected={target.provider === provider.id} disabled={provider.status !== "ready"} onPress={() => lifecycle.setTarget({ ...target, provider: provider.id })} />)}</View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{models.map((model) => <Action key={model.id} colors={colors} label={model.id} selected={target.model === model.id} onPress={() => lifecycle.setTarget({ ...target, model: model.id })} />)}</View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{efforts.map((effort) => <Action key={effort} colors={colors} label={effort} selected={target.effort === effort} onPress={() => lifecycle.setTarget({ ...target, effort })} />)}</View>
+        </ScrollView></Disclosure>
         <Action colors={colors} label={busy ? "Reading native sessions…" : "Review sessions"} disabled={busy} onPress={() => { void lifecycle.prepare("resume", scope, scope === "filtered" ? scopeIds : []); }} />
         <Action colors={colors} label="Read last action receipt" disabled={busy} onPress={() => { void lifecycle.restore(); }} />
       </> : <>
@@ -65,8 +73,6 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
           {row.children.map((child) => text(`Protected child: ${child.title} · ${child.id} · ${child.status} · ${child.workspaceId ?? "no workspace"}`, true))}
           {row.outcome !== "pending" ? text(`${row.outcome}: ${row.message ?? "Read receipt before retry."}`) : null}
         </View>)}
-        <Action colors={colors} label={running ? "Executing one session at a time…" : review.action === "archive" ? "Archive selected session" : `Resume ${selected.length} selected session(s)`} disabled={running || !selected.some((id) => review.rows.some((row) => row.id === id && row.eligible && row.outcome === "pending"))} onPress={() => { void lifecycle.run(); }} />
-        {running ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}
         {text("Unselected and blocked sessions remain unchanged. Preflight blocks can be reviewed again; an uncertain dispatch is held for native reconciliation. Close/cancel does not undo a request already sent.", true)}
       </>}
       {lifecycle.error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{lifecycle.error}</Text> : null}

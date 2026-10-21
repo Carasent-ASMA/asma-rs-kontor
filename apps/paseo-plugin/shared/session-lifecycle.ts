@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export const TAKEOVER_LIMIT = "Bulk takeover remains open. This screen can resume an existing session, but cannot yet prepare and verify the full seat-takeover handoff, child reporting and checkout ownership. No replacement is created.";
+export const TAKEOVER_LIMIT = "Bulk takeover is not available yet. You can retry eligible sessions in place. Sessions that need a different provider or a new owner stay listed with a reason; no replacement is created.";
 export const RESUME_PROMPT = "The operator requests a retry of this interrupted task in this same session. Read the existing conversation and current workspace before continuing the existing authorized work. Preserve the task scope, checkout, children, supervisor, open findings and permission boundaries. If context, authority or a dependency is missing, report the limitation and wait. Do not create a replacement session.";
 const id = z.string().min(1).max(200);
 export const recoveryTargetSchema = z.object({ provider: id, model: id, effort: id }).strict();

@@ -6,6 +6,7 @@ import { DEFAULT_RECOVERY_TARGET, executeLifecycleItem, lifecycleCapabilities, p
 export function useSessionLifecycle(hostId: string, onChanged: () => void) {
   const preview = useRpc(previewLifecycle), execute = useRpc(executeLifecycleItem), read = useRpc(readLifecycleReview), discover = useRpc(lifecycleCapabilities);
   const [review, setReview] = useState<LifecycleReview | null>(null);
+  const [action, setAction] = useState<LifecycleReview["action"]>("resume");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState(false);
@@ -21,7 +22,7 @@ export function useSessionLifecycle(hostId: string, onChanged: () => void) {
   const fail = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure));
   const prepare = async (action: LifecycleReview["action"], scope: LifecycleReview["scope"], ids: string[]) => {
     if (active.current) return;
-    active.current = true; setBusy(true); setError(null);
+    active.current = true; setBusy(true); setError(null); setAction(action);
     const host = hostId;
     try {
       const result = await preview({ action, scope, agentIds: ids, target });
@@ -33,7 +34,7 @@ export function useSessionLifecycle(hostId: string, onChanged: () => void) {
   const restore = async () => {
     if (active.current) return;
     active.current = true; setError(null); setBusy(true); const host = hostId;
-    try { const result = await read({}); if (owner.current === host) { setReview(result); setSelected([]); } }
+    try { const result = await read({}); if (owner.current === host) { setReview(result); setSelected([]); setAction(result?.action ?? "resume"); } }
     catch (failure) { if (owner.current === host) fail(failure); } finally { active.current = false; setBusy(false); }
   };
   const loadCapabilities = async () => { const host = hostId; try { const result = await discover({}); if (owner.current === host) setCapabilities(result); } catch (failure) { if (owner.current === host) fail(failure); } };
@@ -45,7 +46,7 @@ export function useSessionLifecycle(hostId: string, onChanged: () => void) {
       for (const id of selected) {
         if (cancel.current || owner.current !== host) break;
         const row = batch.rows.find((entry) => entry.id === id);
-        if (!row?.eligible || row.outcome !== "pending") continue;
+        if (!row || row.outcome !== "pending") continue;
         // A transport failure has an unknown outcome: stop, then read the durable receipt.
         const result = await execute({ reviewId: batch.id, agentId: id });
         if (owner.current !== host) break;
@@ -56,6 +57,6 @@ export function useSessionLifecycle(hostId: string, onChanged: () => void) {
     finally { active.current = false; setRunning(false); }
   };
   const stop = useCallback(() => { cancel.current = true; }, []);
-  return { review, error, busy, running, target, setTarget, capabilities, loadCapabilities, selected, setSelected, prepare, restore, run, stop,
-    clear: () => { cancel.current = true; setReview(null); setSelected([]); } };
+  return { review, action, error, busy, running, target, setTarget, capabilities, loadCapabilities, selected, setSelected, prepare, restore, run, stop,
+    clear: () => { cancel.current = true; setReview(null); setSelected([]); setAction("resume"); } };
 }
