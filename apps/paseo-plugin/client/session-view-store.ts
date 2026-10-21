@@ -15,6 +15,8 @@ export type SessionViewState = SessionFilters & {
   readonly arranging?: boolean;
   /** Compact toolbar disclosure; local view state only, never saved to settings. */
   readonly toolbarOpen?: boolean;
+  /** Legend disclosure for this local view; never saved to organization settings. */
+  readonly legendOpen?: boolean;
   /** Sessions whose task labels equal a Board task's keys exactly; set from Board, cleared like a filter. */
   readonly task?: SessionTaskFilter | null;
   /** Tree offset kept while results show, restored when the last result filter clears. */
