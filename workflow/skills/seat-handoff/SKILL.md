@@ -135,8 +135,11 @@ When completion review rejects the epic candidate:
 ## Brain-change handoff (new work)
 
 Healing reuses the existing lifecycle skills: recovery uses
-[seat-takeover](../seat-takeover/SKILL.md), [seat-handoff](SKILL.md) and the configured supervision policy
-(`{{ project.supervision }}`). No special recovery rules are added.
+[seat-takeover](../seat-takeover/SKILL.md), [seat-handoff](SKILL.md) and the
+configured Paseo watchdog/recovery policy (`<state-root>/supervision.yml`,
+sampled by [`config/examples/paseo-supervision.yml`](../../../config/examples/paseo-supervision.yml)).
+`{{ project.supervision }}` is the TPM cadence profile, not this file. No
+special recovery rules are added.
 
 A planned brain change follows this rule:
 

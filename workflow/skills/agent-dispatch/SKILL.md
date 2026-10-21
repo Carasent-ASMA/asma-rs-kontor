@@ -110,8 +110,9 @@ Start an advisor child when any fixed trigger holds:
 - security, tenant data or money is involved;
 - Adam is not sure.
 
-The `hard-decision` chain in `{{ project.fleet }}` is for these rare questions
-only. Choose it on purpose; never make it a default route.
+A fleet-declared hard-decision chain in `{{ project.fleet }}`, when the
+selected fleet defines one, is for these rare questions only. Choose it on
+purpose; never make it a default route.
 
 Existing epics keep their names, seats and placement.
 
@@ -151,8 +152,8 @@ Existing epics keep their names, seats and placement.
 
 <!-- example: project-specific -->
 ```text
-Receiving checkout: $HOME/worktrees/<epic-slug>/<repository>
-Workspace cwd:      $HOME/worktrees/<epic-slug>/<repository>
+Receiving checkout: $HOME/<project-root>/.worktrees/<key-slug>/<module>
+Workspace cwd:      $HOME/<project-root>/.worktrees/<key-slug>/<module>
 ```
 <!-- /example: project-specific -->
 

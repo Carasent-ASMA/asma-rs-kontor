@@ -8,9 +8,12 @@ identity, permission, model eligibility or deployment authority.
 ## Plan binding
 
 Every epic plan has an **Autonomous TPM operation** section. Bind the absolute
-receiving-checkout path to the selected supervision policy
+receiving-checkout path to the selected TPM cadence profile
 (`{{ project.supervision }}` in the selected config folder) and its content
-hash; record approved overrides instead of copying policy into prompts. Keep
+hash; record approved overrides instead of copying policy into prompts. That key
+names only the autonomous-TPM profile. The Paseo watchdog/recovery policy is the
+separate `<state-root>/supervision.yml`, sampled by
+`config/examples/paseo-supervision.yml`; do not use one key for both files. Keep
 this workflow profile separate from the activated fleet bundle. It neither
 changes selected models nor modifies existing pins.
 

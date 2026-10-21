@@ -23,10 +23,9 @@ work) creates or reuses every workspace. The rest of this file says
 
 ## Handoff first line
 
-The first line of every handoff, takeover brief or prompt is that session's
-exact name, alone on the line (an unregistered session uses its exact Paseo
-session title in capitals). The full rule lives in
-[agent-dispatch](../../agent-dispatch/SKILL.md#first-line-is-the-exact-seat-name).
+Apply the
+[first-line rule](../../agent-dispatch/SKILL.md#first-line-is-the-exact-seat-name)
+to every handoff, takeover brief or prompt. For the naming source:
 
 - Kontor-governed epic: the exact registered role code or Team Definition slot label.
 - Paseo-direct work: the [provisional seat title](#provisional-seat-naming).
@@ -180,7 +179,10 @@ LSA • EXM-8001 • Release readiness
 - Keep the same placement owner and native ancestry; a heartbeat is not a new seat.
 - During an approved root-led execution exception, root holds integration and
   admission authority; frozen supervisors do not resume delivery on their own.
-- Read the selected supervision policy (`{{ project.supervision }}`) before dispatch.
+- Read the Paseo watchdog/recovery policy at `<state-root>/supervision.yml`
+  (the sample is [`config/examples/paseo-supervision.yml`](../../../../config/examples/paseo-supervision.yml))
+  before dispatch. `{{ project.supervision }}` is the TPM cadence profile, not
+  this file.
 - Rely on seat finished (Paseo's background notification), then end the
   placement owner's turn and leave its session idle. Never keep it alive with
   `sleep` or status polling.
@@ -194,10 +196,13 @@ LSA • EXM-8001 • Release readiness
 ## Capacity
 
 - One Paseo mini-project has a hard ceiling of
-  `{{ project.capacity.max_delivery_seats }}` concurrent team runs. Count active
+  `{{ project.capacity.max_parallel_tasks }}` concurrent team runs. Count active
   team-run envelopes, not persistent idle role tabs.
-- Start admission at `{{ project.capacity.max_parallel_tasks }}`. Raise it one
+- Start admission at `{{ project.capacity.start_admission }}`. Raise it one
   slot at a time after clean capacity checks, never above the hard ceiling.
+- `{{ project.capacity.max_delivery_seats }}` is a separate owner-set project
+  value scoped per team run. It is not the team-run admission ceiling and is
+  not supplied by this placement rule.
 - Reduce admission without cancelling running work when runtime/provider, host,
   test/merge, reconciliation, permission or module pressure appears.
 

@@ -23,22 +23,13 @@ On this surface the `kontord` epic graph is the baton.
 
 ## Resident tracker convergence
 
-Resident task-and-epic tracker convergence supplies the normal path. Normal
-orchestration reads its receipts, conflicts and current binding state; it does
-not run manual preview/apply on every turn.
-
-- Enablement needs the project connector and matching immutable task/epic
-  workflow specifications installed for the selected work and completion
-  profiles.
-- A missing matching workflow blocks convergence. Install the right supported
-  revision; never change a frozen task profile to evade the mismatch.
-- Manual `ticket-reconcile-plan` and apply stay useful for diagnosis, explicit
-  recovery and initial materialization.
-- An instruction below to reconcile means: verify the resident result first.
-  Run manual mutations only for those explicit cases.
-
-The project's pinned connector specification (`{{ project.tracker.spec }}` in
-the selected config folder) is the field/workflow authority.
+[Tracker convergence](../../tracker-linked-creation/SKILL.md#tracker-convergence)
+owns the resident reconciliation contract, its enablement conditions and the
+rule that manual reconciliation is for diagnosis, explicit recovery and initial
+materialization only. On this surface, read the resident result first and run
+manual mutations only for those explicit cases. The project's pinned connector
+specification (`{{ project.tracker.spec }}` in the selected config folder) is
+the field/workflow authority.
 
 ## Entry gate additions
 
@@ -61,9 +52,11 @@ Only a supported Kontor command and receipt advances orchestration state.
 
 ## Native identity migration
 
-- New native definitions use `EPIC_TRACKER_KEY`, `TASK_TRACKER_KEY` and
-  `SCOPE_TRACKER_KEY`, with scope taken from the subject. Seat labels stay local
-  role/slot labels.
+- New native definitions use `EPIC_JIRA_KEY`, `TASK_JIRA_KEY` and
+  `SCOPE_JIRA_KEY`, with scope taken from the subject. These Jira-named tokens
+  are the supported public contract spellings and name the tracker-key position
+  even when the configured tracker is not Jira; do not add kernel support for a
+  second spelling in this pack. Seat labels stay local role/slot labels.
 - Preserve old token meanings, immutable pins, archived names and evidence.
   Deploy support and use Kontor upgrade preview/apply before changing existing
   pins. Read back exact native identities and desired names.

@@ -55,7 +55,7 @@ the TPM seat on existing work):
 `kontord` unavailability never blocks this surface. The observing seat logs a
 `kontord` defect as the transition rule says and does not contain or repair it.
 
-<a id="authority-rules"></a><a id="dispatch-loop"></a><a id="1-plan-from-current-state"></a><a id="2-enforce-collision-and-checkout-safety"></a><a id="3-materialize-and-reuse-topology-through-kontor"></a><a id="4-start-or-resume-the-exact-plan"></a><a id="5-apply-gates-and-lifecycle"></a><a id="6-verify-resident-jira-convergence"></a><a id="capacity-and-recovery"></a><a id="jira-convergence--merged-implementation-2026-09-05"></a>
+<a id="authority-rules"></a><a id="dispatch-loop"></a><a id="1-plan-from-current-state"></a><a id="2-enforce-collision-and-checkout-safety"></a><a id="3-materialize-and-reuse-topology-through-kontor"></a><a id="4-start-or-resume-the-exact-plan"></a><a id="5-apply-gates-and-lifecycle"></a><a id="6-verify-resident-jira-convergence"></a><a id="capacity-and-recovery"></a>
 **Kontor-governed epic: load [references/kontor-governed.md](references/kontor-governed.md).**
 
 ## Shared configuration and lifecycle (both surfaces)
@@ -169,10 +169,11 @@ worktree from the primary workspace and launch into that path:
 ```
 
 It materializes the module when needed and creates a checkout under
-`{{ project.worktree_layout }}`. Do not launch a module-scoped task into a
-superproject worktree and sync the child modules there if that creates a second
-child forest; a task limited to superproject-tracked files may use a
-superproject worktree.
+`{{ project.worktree_layout }}`. If the project CLI has no worktree verb, use
+`git worktree add` at the same configured path and record the exact command. Do
+not launch a module-scoped task into a superproject worktree and sync the child
+modules there if that creates a second child forest; a task limited to
+superproject-tracked files may use a superproject worktree.
 
 Worktrees never remove semantic conflicts; serialize tasks, integration or
 merges when needed. Never stash, clean, reset or overwrite another seat's changes.
@@ -195,9 +196,11 @@ This heading stays as a stable inbound anchor.
 
 Before dispatching work:
 
-1. Read the project entry file and the selected supervision policy
+1. Read the project entry file and the selected TPM cadence profile
    (`{{ project.supervision }}` in the selected config folder); for Paseo-direct
    placement, the [native placement reference](references/paseo-direct-native-placement.md).
+   The Paseo watchdog/recovery policy is the separate
+   `<state-root>/supervision.yml`, not `project.supervision`.
 2. For memory context, cite the existing frozen binding or use bounded eligible
    recall after verifying its reviewed registry and deployed capability. Keep
    its ids/hashes and actual retrieval mode; unavailable recall never permits a

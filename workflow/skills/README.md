@@ -15,11 +15,12 @@ project's private copy, so one rule has one truth.
   config folder's `orchestration/orchestration.yml`. The neutral example is
   [`config/examples/orchestration/orchestration.yml`](../../config/examples/orchestration/orchestration.yml).
 - A project-specific example of a value that is not a placeholder belongs in a
-  fenced example block marked with `<!-- example: project-specific -->`.
-  Nothing outside such a block may name a real project, person, account, host,
-  tracker key or private repository path.
-- An unfilled placeholder is an error. The renderer refuses it instead of
-  shipping `{{ ... }}` into an instruction file.
+  fenced block opened by `<!-- example: project-specific -->` and closed by
+  `<!-- /example: project-specific -->`. Nothing outside such a block may name
+  a real project, person, account, host, tracker key or private repository
+  path.
+- An unfilled placeholder is an error. A renderer must refuse it instead of
+  shipping `{{ ... }}` into an instruction file; WP-05 supplies that renderer.
 - A live read is not a parameter. Tracker issue types, status names, transition
   ids, catalog revisions and installed runtime capabilities are read from the
   owning system every time. The skill states where to read them.
@@ -38,7 +39,8 @@ restate its body. The ownership table is also checked by
 | Epic content contract | [`tracker-linked-creation/SKILL.md#epic-content-contract`](tracker-linked-creation/SKILL.md#epic-content-contract) | epic-orchestration, mini-project-kickoff, create-implementation-plan |
 | Task content contract | [`tracker-linked-creation/SKILL.md#task-content-contract`](tracker-linked-creation/SKILL.md#task-content-contract) | epic-orchestration, mini-project-kickoff, create-implementation-plan, long-task-commit-checkpoints |
 | Public identity and naming | [`tracker-linked-creation/SKILL.md#tracker-public-identity-and-naming`](tracker-linked-creation/SKILL.md#tracker-public-identity-and-naming) | epic-orchestration, mini-project-kickoff, create-implementation-plan |
-| First line is the exact seat name | [`agent-dispatch/SKILL.md#first-line-is-the-exact-seat-name`](agent-dispatch/SKILL.md#first-line-is-the-exact-seat-name) | seat-takeover |
+| First line is the exact seat name | [`agent-dispatch/SKILL.md#first-line-is-the-exact-seat-name`](agent-dispatch/SKILL.md#first-line-is-the-exact-seat-name) | seat-takeover, epic-orchestration/references/paseo-direct-native-placement.md |
+| Tracker convergence | [`tracker-linked-creation/SKILL.md#tracker-convergence`](tracker-linked-creation/SKILL.md#tracker-convergence) | epic-orchestration/references/kontor-governed.md |
 | Common evidence envelope | [`seat-handoff/references/evidence-envelope.md`](seat-handoff/references/evidence-envelope.md) | seat-handoff, seat-takeover |
 | Checkout ownership and collision safety | [`epic-orchestration/SKILL.md#checkout-ownership-and-reuse`](epic-orchestration/SKILL.md#checkout-ownership-and-reuse) | ticket-triage-tiers, long-task-commit-checkpoints |
 | Capacity | [`epic-orchestration/references/paseo-direct-native-placement.md#capacity`](epic-orchestration/references/paseo-direct-native-placement.md#capacity) | epic-orchestration, mini-project-kickoff |
@@ -81,11 +83,11 @@ check that every placeholder below resolves from the selected config folder.
 | `project.forge.kind`, `project.forge.organization`, `project.forge.repositories`, `project.forge.base_branch` | Repository, organization and default branch. |
 | `project.runtime.matrix` | Allowed provider/harness pairs. |
 | `project.cli.command`, `project.cli.verbs` | The project CLI used for checkout, commits, publication and task commands. |
-| `project.team_pack`, `project.fleet`, `project.supervision` | Team overlay, fleet policy and supervision policy. |
+| `project.team_pack`, `project.fleet`, `project.supervision` | Team overlay, fleet policy and the autonomous TPM cadence profile. |
 | `project.merge_authority.role`, `project.merge_authority.policy` | Who may merge and under which policy. |
 | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.attention_channel` | Documentation and gap routing. |
 | `project.worktree_layout`, `project.check_runs` | Checkout isolation and required checks. |
-| `project.capacity.max_delivery_seats`, `project.capacity.max_parallel_tasks` | Admission ceilings. |
+| `project.capacity.max_parallel_tasks`, `project.capacity.start_admission`, `project.capacity.max_delivery_seats` | Team-run placement ceiling, initial admission, and the separate owner-set per-team-run value. |
 | `project.time_zone`, `project.holiday_countries`, `project.currency` | Calendar and reporting facts. |
 | `project.resource_roots.project` | Project resource path root. |
 
@@ -96,12 +98,12 @@ copy named below, not carried as a stale fact.
 
 | Row | Source skill | Disposition |
 | --- | --- | --- |
-| WP03-INV-01 | `epic-orchestration`, `orchestration-surface-transition` | Named decision authorities and personal escalation are replaced by `{{ project.decision_authorities.platform }}` and `{{ project.decision_authorities.architecture }}`; the retirement authority is the platform authority, not a person. |
-| WP03-INV-02 | `epic-orchestration`, `paseo-direct-native-placement`, `seat-handoff` | The supervision file is read from the selected config folder as `{{ project.supervision }}`; the skill is not a mirror of an owner-local state file. |
+| WP03-INV-01 | `epic-orchestration`, `orchestration-surface-transition` | Project-specific named authorities and personal escalation wording are replaced by `{{ project.decision_authorities.platform }}` and `{{ project.decision_authorities.architecture }}`; the parameter values name the authority, and the skill names no person. |
+| WP03-INV-02 | `epic-orchestration`, `paseo-direct-native-placement`, `seat-handoff` | The TPM cadence profile is `{{ project.supervision }}`; the Paseo watchdog/recovery policy is `<state-root>/supervision.yml`, sampled by `config/examples/paseo-supervision.yml`. One key does not stand for both files, and neither is a mirror of an owner-local state file. |
 | WP03-INV-03 | `agent-dispatch` | Host asset paths, account/keychain items and the real worktree example are removed; host values belong in `host.yml`, and examples use synthetic paths. |
 | WP03-INV-04 | `mini-project-kickoff`, `tracker-linked-creation` | Tracker scope is `{{ project.tracker.project_key }}`; issue types, status names and transition ids are read live from the pinned tracker catalog, never copied into the skill. |
-| WP03-INV-05 | `paseo-direct-native-placement` | Capacity 7/4 is replaced by `{{ project.capacity.max_delivery_seats }}` and `{{ project.capacity.max_parallel_tasks }}`. |
-| WP03-INV-06 | `long-task-commit-checkpoints`, `create-implementation-plan` | Every `master` reference is `{{ project.forge.base_branch }}`; the branch grammar is `{{ project.branch.pattern }}` and the commit grammar is `{{ project.branch.commit_pattern }}`. |
+| WP03-INV-05 | `paseo-direct-native-placement` | Capacity 7/4 becomes `{{ project.capacity.max_parallel_tasks }}` (ceiling) and `{{ project.capacity.start_admission }}` (initial admission). `{{ project.capacity.max_delivery_seats }}` is a separate owner-set per-team-run value, not team-run admission. |
+| WP03-INV-06 | `long-task-commit-checkpoints`, `create-implementation-plan` | Base-branch references that named `master` now resolve from `{{ project.forge.base_branch }}`; branch and commit grammar resolve from `{{ project.branch.pattern }}` and `{{ project.branch.commit_pattern }}`. |
 | WP03-INV-07 | `seat-takeover` recovery reference | Installed-runtime version claims are removed; the operator rechecks the resolved runtime's supported operations at use time. |
 | WP03-INV-08 | `epic-orchestration` | Stale status, count and clock facts are removed or linked to their live owner; the skill carries no dated project state. |
 

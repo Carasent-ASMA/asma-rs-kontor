@@ -35,7 +35,9 @@ joins. No authored wave, readiness, progress or runtime status field is accepted
 External fences do not create sibling edges or confer scheduler readiness.
 Unknown owner/lift conditions must be resolved before the graph can validate.
 
-Use the [plan template](../../../templates/plan.md) as the complete example.
+Use the [plan template](../../../templates/plan.md) as the complete example;
+it supplies the `plan-graph` fence, the derived-view markers and the
+`external_fences` array.
 Tracker keys must be confirmed keys that match
 `{{ project.tracker.key_pattern }}`; the validator checks shape/uniqueness, not
 remote existence. Draft `null` bindings are honest and accepted for structural

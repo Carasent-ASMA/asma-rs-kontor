@@ -2,7 +2,9 @@
 
 Load when you need the exact commands for a step of
 [long-task-commit-checkpoints](../SKILL.md) or a full example. The rules,
-including when to commit and what to stage, stay in the skill.
+including when to commit and what to stage, stay in the skill. The examples use
+the neutral `{{ project.branch.commit_pattern }}`; substitute the project's
+actual pattern, and let the CLI validate the subject.
 
 ## Command reference
 
@@ -21,7 +23,7 @@ kontor ticket-reconcile-plan --project-id <project-id> --task-id <task-id>
 # 3. per-phase checkpoint (stage the coherent subset first)
 git add -p                                        # or: git add <paths>
 {{ project.cli.command }} git commit --auto       # generated, validated, no push
-{{ project.cli.command }} git commit -m "feat(users-overview): Add CSV export"   # hand-written (still validated)
+{{ project.cli.command }} git commit -m "EXM-4501 Add CSV export"   # hand-written (still validated)
 
 # 4. On the planned release branch only: push + open PR when none exists
 {{ project.cli.command }} git commit --auto --push --create-pr
@@ -37,7 +39,9 @@ git add -p                                        # or: git add <paths>
 
 If the project CLI does not expose the verb shown, use its declared verbs
 (`{{ project.cli.verbs }}`) or the equivalent supported operation and record
-the exact command in the PR.
+the exact command in the PR. For a missing module verb, use the project's
+documented checkout/materialization procedure; for a missing worktree verb, use
+`git worktree add` under `{{ project.worktree_layout }}`.
 
 ---
 
@@ -54,30 +58,30 @@ agreed, no Kontor task or tracker binding exists yet.
 # phase 1 — separable prep (stage only the hook extraction)
 git add src/widgets/users-overview/hooks/useUserListSelectors.ts src/widgets/users-overview/...
 {{ project.cli.command }} git commit --auto
-#   -> refactor(users-overview): Extract user list selectors into hook
+#   -> EXM-4501 Extract user list selectors into hook
 
 # phase 2 — dependency (isolated)
 git add package.json pnpm-lock.yaml
 {{ project.cli.command }} git commit --auto
-#   -> chore(deps): Add papaparse for CSV serialization
+#   -> EXM-4501 Add papaparse for CSV serialization
 
 # phase 3 — feature slice, push + open PR (first pushed checkpoint)
 git add src/widgets/users-overview/...
 {{ project.cli.command }} git commit --auto --push --create-pr
-#   -> feat(users-overview): Add CSV export for user list
+#   -> EXM-4501 Add CSV export for user list
 #        - Serialize visible rows with the shared filter applied
 #        - Wire export action into the table toolbar
 
 # phase 4 — tests (PR already exists: push only)
 git add src/widgets/users-overview/__tests__/...
 {{ project.cli.command }} git commit --auto --push
-#   -> test(users-overview): Cover CSV export empty and filtered cases
+#   -> EXM-4501 Cover CSV export empty and filtered cases
 
 # phase 5 — docs, and move the tracker issue
 git add docs/...
 {{ project.cli.command }} git commit --auto --push
 # move the exact tracker task through the selected orchestration surface in Step 1
-#   -> docs(users-overview): Document CSV export usage
+#   -> EXM-4501 Document CSV export usage
 ```
 
 Why this is right: scope is `users-overview` (the widget) not the repository

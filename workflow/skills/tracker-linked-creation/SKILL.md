@@ -39,14 +39,18 @@ binding, but delivery and native materialization require confirmation. Legacy
 codes are read-only lookups through recorded mappings, never write identifiers
 or inferred tracker keys. New-policy work requires no code allocation.
 
-New native definitions use `EPIC_TRACKER_KEY`, `TASK_TRACKER_KEY` and
-`SCOPE_TRACKER_KEY`, with scope taken from the subject. Seat labels remain local
-role/slot labels. Preserve old token meanings, immutable pins, archived names
+New native definitions use `EPIC_JIRA_KEY`, `TASK_JIRA_KEY` and
+`SCOPE_JIRA_KEY`, with scope taken from the subject. These Jira-named tokens
+are the supported public contract spellings: they name the tracker-key position
+even when the configured tracker is not Jira. Do not add or request kernel
+support for a second spelling in this pack. Seat labels remain local role/slot
+labels. Preserve old token meanings, immutable pins, archived names
 and evidence; deploy support and use Kontor upgrade preview/apply before
 changing existing pins. Read back exact native identities and desired names.
 A skill change does not install runtime enforcement. Record an unsupported
 surface or blocked migration through the existing operational-gap procedure.
 
+<a id="tracker-convergence"></a>
 ## Tracker convergence
 
 Resident task-and-epic tracker convergence supplies the normal path. Normal

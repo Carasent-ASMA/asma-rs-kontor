@@ -32,7 +32,8 @@ failure handling and verification.
    ([task sizing](../create-implementation-plan/SKILL.md#task-sizing-and-grouping)).
 3. Get one user approval of the plan. It covers the whole tracker batch.
 4. Create the tracker epic through the project CLI's epic operation, using the
-   plan's `workstream:` key. Keep the
+   plan's `workstream:` key and applying the project's workstream label
+   (`ws:<workstream-key>` by default). Keep the
    [epic content contract](../tracker-linked-creation/SKILL.md#epic-content-contract) intact.
 5. Create one child issue per meaningful outcome through the project CLI's task
    operation, parented to the epic. Classify each with the
