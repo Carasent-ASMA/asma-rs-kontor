@@ -87,6 +87,30 @@ class YamlReaderTests(unittest.TestCase):
         self.assertEqual(data["owner"], "It's fine")
 
 
+    def test_pyyaml_is_preferred_when_available(self) -> None:
+        fake = mock.Mock()
+        fake.safe_load.return_value = {"from": "pyyaml"}
+        fake.YAMLError = ValueError
+        with mock.patch.object(pack, "_pyyaml", fake):
+            data = pack.load_yaml_text("owner: fallback\n")
+        self.assertEqual(data, {"from": "pyyaml"})
+        fake.safe_load.assert_called_once_with("owner: fallback\n")
+
+    def test_duplicate_mapping_keys_are_refused_in_the_fallback(self) -> None:
+        with mock.patch.object(pack, "_pyyaml", None):
+            with self.assertRaises(pack.YamlError):
+                pack.load_yaml_text("owner: one\nowner: two\n")
+
+    def test_yaml_1_1_booleans_are_read_in_the_fallback(self) -> None:
+        with mock.patch.object(pack, "_pyyaml", None):
+            data = pack.load_yaml_text(
+                "a: yes\nb: no\nc: on\nd: off\n"
+            )
+        self.assertEqual(
+            data, {"a": True, "b": False, "c": True, "d": False}
+        )
+
+
 class PackCase(unittest.TestCase):
     """Shared disposable config and project helpers."""
 
@@ -636,6 +660,40 @@ class CheckTests(PackCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("undeclared resource root", result.stderr)
 
+    def test_a_resource_root_must_be_listed_in_forge_repositories(self) -> None:
+        config = self.config()
+        orchestration = config / "orchestration" / "orchestration.yml"
+        text = orchestration.read_text(encoding="utf-8")
+        orchestration.write_text(
+            text.replace(
+                "    project: example-org/example-project\n",
+                "    project: example-org/unlisted\n",
+            ),
+            encoding="utf-8",
+        )
+        project = self.project(config)
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "does not name a project.forge.repositories entry",
+            result.stderr,
+        )
+
+    def test_a_missing_documentation_root_is_refused(self) -> None:
+        config = self.config()
+        project = self.tmp / "project"
+        project.mkdir()
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "documentation_roots path does not exist: project/docs",
+            result.stderr,
+        )
+
     def test_yaml_boolean_always_apply_is_enforced(self) -> None:
         config = self.config()
         project = self.project(config)
@@ -711,6 +769,28 @@ class CheckTests(PackCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("home_path", result.stderr)
+
+    def test_a_synthetic_evidence_receipt_is_refused(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(
+            project,
+            "docs/evidence/EXM-1/receipts/run.md",
+            "# Run receipt\n\nresult: synthetic\n",
+        )
+        self.router(
+            project,
+            [("Evidence receipt", "evidence/EXM-1/receipts/run.md")],
+        )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("run_receipt", result.stderr)
+        self.assertIn(
+            "project/docs/evidence/EXM-1/receipts/run.md",
+            result.stderr,
+        )
 
     def test_explicit_resource_roots_keep_repositories_separate(self) -> None:
         config = self.config()
@@ -802,6 +882,88 @@ class CheckTests(PackCase):
             "--no-public-lint",
         )
         self.assertEqual(sibling_plan.returncode, 0, sibling_plan.stderr)
+
+        strict_plan = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(candidate),
+            "--resource-root",
+            f"one={one}",
+            "--resource-root",
+            f"two={two}",
+            "--plan-graphs",
+            "all",
+            "--no-links",
+            "--no-routed-once",
+            "--no-public-lint",
+        )
+        self.assertEqual(strict_plan.returncode, 1)
+        self.assertIn(
+            "one/docs/plans/plan-one.md: current plan requires",
+            strict_plan.stderr,
+        )
+        self.assertNotIn(str(one), strict_plan.stderr)
+
+        held = one / "docs" / "plans" / "plan-held.md"
+        held.write_text(
+            "---\n"
+            "status: On Hold\n"
+            "orchestration: paseo\n"
+            "hold:\n"
+            "  reason: waiting_on_dependency\n"
+            "  owner: Platform Owner\n"
+            "  lifts_when: the dependency closes\n"
+            "  review_by: 2020-01-01\n"
+            "---\n\n"
+            "# Held plan\n",
+            encoding="utf-8",
+        )
+        held_result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(candidate),
+            "--resource-root",
+            f"one={one}",
+            "--resource-root",
+            f"two={two}",
+            "--plan-graphs",
+            "marker",
+            "--no-links",
+            "--no-routed-once",
+            "--no-public-lint",
+        )
+        self.assertEqual(held_result.returncode, 1)
+        self.assertIn(
+            "one/docs/plans/plan-held.md: expired hold",
+            held_result.stderr,
+        )
+        self.assertNotIn(str(one), held_result.stderr)
+
+        (two / "docs" / "README.md").write_text(
+            "# Second documentation index\n", encoding="utf-8"
+        )
+        ambiguous_routers = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(candidate),
+            "--resource-root",
+            f"one={one}",
+            "--resource-root",
+            f"two={two}",
+            "--plan-graphs",
+            "marker",
+            "--no-links",
+            "--no-public-lint",
+        )
+        self.assertEqual(ambiguous_routers.returncode, 1)
+        self.assertIn(
+            "more than one documentation router in two/docs",
+            ambiguous_routers.stderr,
+        )
+        self.assertNotIn(str(two), ambiguous_routers.stderr)
 
     def test_an_undeclared_resource_override_is_refused(self) -> None:
         config = self.config()
@@ -984,6 +1146,68 @@ class CheckTests(PackCase):
         )
         self.assertEqual(marker.returncode, 0, marker.stderr)
 
+    def test_plan_graphs_changed_skips_unchanged_graph_less_plans(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        unchanged = self.tmp / "project" / "docs" / "plans" / "plan-stable.md"
+        changed = self.tmp / "project" / "docs" / "plans" / "plan-moved.md"
+        graph_less = (
+            "---\nstatus: Draft\norchestration: paseo\n---\n\n"
+            "# Plan\n"
+        )
+        for path in (unchanged, changed):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(graph_less, encoding="utf-8")
+        self.router(
+            project,
+            [
+                ("Stable plan", "plans/plan-stable.md"),
+                ("Moved plan", "plans/plan-moved.md"),
+            ],
+        )
+        subprocess.run(["git", "init"], cwd=project, check=True,
+                       capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "add", "-A"], cwd=project, check=True,
+                       capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "base"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        changed.write_text(
+            "---\nstatus: Completed\norchestration: paseo\n---\n\n"
+            "# Plan\n",
+            encoding="utf-8",
+        )
+        result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--plan-graphs",
+            "changed",
+            "--base",
+            "HEAD",
+            "--no-links",
+            "--no-routed-once",
+            "--no-public-lint",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("plan-stable.md", result.stderr)
+
     def test_plan_graphs_changed_requires_a_base(self) -> None:
         config = self.config()
         project = self.project(config)
@@ -1108,6 +1332,33 @@ class CheckTests(PackCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_hold_fields_and_review_window_are_checked(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        review = (date.today() + timedelta(days=60)).isoformat()
+        hold = (
+            "hold:\n"
+            "  reason: not_a_reason\n"
+            "  owner: ''\n"
+            "  lifts_when: ''\n"
+            f"  review_by: '{review}'"
+        )
+        self.add_plan(
+            project,
+            config,
+            plan=self.plan_text(status="On Hold", hold=hold),
+            relative="docs/plans/plan-held.md",
+        )
+        self.router(project, [("Held plan", "plans/plan-held.md")])
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("hold reason", result.stderr)
+        self.assertIn("hold field owner", result.stderr)
+        self.assertIn("hold field lifts_when", result.stderr)
+        self.assertIn("more than 30 days ahead", result.stderr)
+
     def test_mirror_and_metadata_are_checked(self) -> None:
         config = self.config()
         project = self.project(config)
@@ -1192,6 +1443,56 @@ class CheckTests(PackCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("key_pattern", result.stderr)
 
+    def test_the_plan_graph_uses_a_custom_key_pattern(self) -> None:
+        config = self.config()
+        orchestration = config / "orchestration" / "orchestration.yml"
+        text = orchestration.read_text(encoding="utf-8")
+        text = text.replace("  key: EXM\n", "  key: ktr\n")
+        text = text.replace(
+            "    key_pattern: '^[A-Z][A-Z0-9]{1,9}-[0-9]+$'",
+            "    key_pattern: '^[a-z]+-[0-9]+$'",
+        )
+        orchestration.write_text(text, encoding="utf-8")
+        project = self.project(config)
+        self.add_plan(
+            project,
+            config,
+            plan=self.plan_text(tracker="ktr-1", epic="ktr-100"),
+            relative="docs/plans/plan-lowercase.md",
+        )
+        self.router(project, [("Lowercase key", "plans/plan-lowercase.md")])
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_external_validator_is_invoked(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.add_plan(
+            project,
+            config,
+            plan=self.plan_text(),
+            relative="docs/plans/plan-example.md",
+        )
+        self.router(project, [("Example plan", "plans/plan-example.md")])
+        marker = self.tmp / "validator-ran.txt"
+        validator = self.tmp / "validator.py"
+        validator.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            env=clean_env(KONTOR_PLAN_GRAPH_VALIDATOR=str(validator)),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.is_file())
+
     def test_an_external_validator_is_run_when_configured(self) -> None:
         config = self.config()
         project = self.project(config)
@@ -1210,6 +1511,33 @@ class CheckTests(PackCase):
             env=clean_env(ASMA_PLAN_GRAPH_VALIDATOR=str(PACK)),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_neutral_validator_name_is_supported(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.add_plan(
+            project,
+            config,
+            plan=self.plan_text(),
+            relative="docs/plans/plan-example.md",
+        )
+        self.router(project, [("Example plan", "plans/plan-example.md")])
+        marker = self.tmp / "neutral-validator-ran.txt"
+        validator = self.tmp / "neutral-validator.py"
+        validator.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            env=clean_env(KONTOR_PLAN_GRAPH_VALIDATOR=str(validator)),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.is_file())
 
     def test_the_plan_graph_is_mandatory_for_a_current_plan(self) -> None:
         config = self.config()

@@ -266,8 +266,8 @@ def _parse_scalar(value: str) -> object:
     lowered = value.lower()
     if lowered in ("null", "~"):
         return None
-    if lowered in ("true", "false"):
-        return lowered == "true"
+    if lowered in ("true", "false", "yes", "no", "on", "off"):
+        return lowered in ("true", "yes", "on")
     if re.fullmatch(r"-?[0-9]+", value):
         return int(value)
     if re.fullmatch(r"-?[0-9]+\.[0-9]+", value):
@@ -1383,10 +1383,30 @@ def _link_prefixes(
     return prefixes
 
 
+def _owning_label(
+    path: Path, project_root: Path, resource_roots: dict[str, Path]
+) -> str:
+    matches: list[tuple[int, str, Path]] = []
+    for key, root in resource_roots.items():
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        matches.append((len(root.parts), key, relative))
+    if matches:
+        _, key, relative = max(matches)
+        return f"{key}/{relative.as_posix()}" if relative.parts else key
+    try:
+        return path.relative_to(project_root).as_posix()
+    except ValueError:
+        return path.name
+
+
 def _link_errors(
     files: list[Path],
     project_root: Path,
     prefixes: dict[str, Path],
+    resource_roots: dict[str, Path],
 ) -> list[str]:
     errors: list[str] = []
     cache: dict[Path, set[str]] = {}
@@ -1423,10 +1443,7 @@ def _link_errors(
                         ).resolve()
                     else:
                         resolved = (path.parent / raw_path).resolve()
-                try:
-                    relative = path.relative_to(project_root)
-                except ValueError:
-                    relative = path
+                relative = _owning_label(path, project_root, resource_roots)
                 under_skill_tree = skill_tree in path.parents
                 if under_skill_tree and (
                     resolved != skill_tree
@@ -1489,7 +1506,9 @@ def _router_links(router: Path) -> dict[Path, int]:
 
 
 def _routed_once_errors(
-    project_root: Path, roots: list[tuple[str, Path]]
+    project_root: Path,
+    roots: list[tuple[str, Path]],
+    resource_roots: dict[str, Path],
 ) -> list[str]:
     errors: list[str] = []
     for key, root in roots:
@@ -1515,7 +1534,7 @@ def _routed_once_errors(
             if router.parent in by_directory:
                 errors.append(
                     "more than one documentation router in "
-                    f"{router.parent.relative_to(project_root)}: "
+                    f"{_owning_label(router.parent, project_root, resource_roots)}: "
                     f"{by_directory[router.parent].name}, {router.name}"
                 )
                 ambiguous = True
@@ -1546,16 +1565,17 @@ def _routed_once_errors(
             if not candidates:
                 errors.append(
                     "document has no owning index: "
-                    f"{key}/{document.relative_to(root).as_posix()}"
+                    f"{_owning_label(document, project_root, resource_roots)}"
                 )
                 continue
             owner = max(candidates, key=lambda router: len(router.parent.parts))
             count = links[owner].get(document, 0)
-            relative = f"{key}/{document.relative_to(root).as_posix()}"
+            relative = _owning_label(document, project_root, resource_roots)
             if count == 0:
                 errors.append(
                     f"unrouted document: {relative} "
-                    f"(owning index {key}/{owner.relative_to(root).as_posix()})"
+                    f"(owning index "
+                    f"{_owning_label(owner, project_root, resource_roots)})"
                 )
             elif count > 1:
                 errors.append(f"routed more than once: {relative} ({count})")
@@ -1584,12 +1604,13 @@ def _parse_hold(text: str) -> dict[str, object] | None:
 
 
 def _hold_errors(
-    project_root: Path, path: Path, text: str, today: date
+    project_root: Path,
+    path: Path,
+    text: str,
+    today: date,
+    resource_roots: dict[str, Path],
 ) -> list[str]:
-    try:
-        relative: Path | str = path.relative_to(project_root)
-    except ValueError:
-        relative = path
+    relative = _owning_label(path, project_root, resource_roots)
     try:
         metadata = _frontmatter(text)
     except PackError as exc:
@@ -2036,14 +2057,17 @@ def _plan_files(
 
 
 def _validator_path() -> Path | None:
-    configured = os.environ.get("ASMA_PLAN_GRAPH_VALIDATOR")
+    configured = os.environ.get("KONTOR_PLAN_GRAPH_VALIDATOR") or os.environ.get(
+        "ASMA_PLAN_GRAPH_VALIDATOR"
+    )
     if not configured:
         return None
     path = Path(configured).expanduser()
     if not path.is_file():
         raise PackError(
-            "ASMA_PLAN_GRAPH_VALIDATOR is set but does not name a file: "
-            f"{path}; refusing to skip plan-graph validation"
+            "KONTOR_PLAN_GRAPH_VALIDATOR/ASMA_PLAN_GRAPH_VALIDATOR is set "
+            f"but does not name a file: {path}; refusing to skip "
+            "plan-graph validation"
         )
     return path
 
@@ -2076,24 +2100,11 @@ def _changed_plan_paths(project_root: Path, base: str | None) -> set[Path]:
     }
 
 
-def _plan_label(
-    path: Path, project_root: Path, roots: list[tuple[str, Path]]
-) -> str:
-    try:
-        return path.relative_to(project_root).as_posix()
-    except ValueError:
-        for key, root in roots:
-            try:
-                return f"{key}/{path.relative_to(root).as_posix()}"
-            except ValueError:
-                continue
-        return path.as_posix()
-
-
 def _plan_graph_errors(
     project_root: Path,
     config: Config,
     roots: list[tuple[str, Path]],
+    resource_roots: dict[str, Path],
     mode: str = "all",
     base: str | None = None,
 ) -> list[str]:
@@ -2104,7 +2115,7 @@ def _plan_graph_errors(
         text = path.read_text(encoding="utf-8", errors="replace")
         if not _is_plan(path, text):
             continue
-        relative = _plan_label(path, project_root, roots)
+        relative = _owning_label(path, project_root, resource_roots)
         marker = _has_graph_marker(text)
         required = mode == "all" or (mode == "changed" and path.resolve() in changed)
         if not marker:
@@ -2137,19 +2148,28 @@ def _plan_graph_errors(
     return errors
 
 
-def _public_example_errors(files: list[Path], project_root: Path) -> list[str]:
+def _public_example_errors(
+    files: list[Path],
+    project_root: Path,
+    resource_roots: dict[str, Path],
+) -> list[str]:
     errors: list[str] = []
     for path in files:
-        try:
-            relative = path.relative_to(project_root).as_posix()
-        except ValueError:
-            relative = path.as_posix()
+        label = _owning_label(path, project_root, resource_roots)
+        key, separator, repository_path = label.partition("/")
+        policy_path = (
+            repository_path
+            if separator and key in resource_roots
+            else label
+        )
         try:
             content = path.read_bytes()
         except OSError:
             continue
-        for refusal in file_refusals(relative, content):
-            errors.append(refusal.render())
+        for refusal in file_refusals(policy_path, content):
+            errors.append(
+                f"{label}:{refusal.line}: {refusal.code}: {refusal.detail}"
+            )
     return errors
 
 
@@ -2213,25 +2233,41 @@ def check(
     if links:
         errors.extend(
             _link_errors(
-                files, project_root, _link_prefixes(declared, effective)
+                files,
+                project_root,
+                _link_prefixes(declared, effective),
+                effective,
             )
         )
     if routed_once:
-        errors.extend(_routed_once_errors(project_root, roots))
+        errors.extend(_routed_once_errors(project_root, roots, effective))
     plan_files = _plan_files(project_root, roots)
     for path in plan_files:
         text = path.read_text(encoding="utf-8", errors="replace")
         if _is_plan(path, text):
-            errors.extend(_hold_errors(project_root, path, text, today))
+            errors.extend(
+                _hold_errors(
+                    project_root, path, text, today, effective
+                )
+            )
     errors.extend(
-        _plan_graph_errors(project_root, config, roots, plan_graphs, plan_base)
+        _plan_graph_errors(
+            project_root,
+            config,
+            roots,
+            effective,
+            plan_graphs,
+            plan_base,
+        )
     )
     lint_files = sorted({*files, *plan_files})
     for name, directory in _skills(project_root / ".github" / "skills").items():
         lint_files.extend(sorted(directory.rglob("*.md")))
     if public_lint:
         errors.extend(
-            _public_example_errors(sorted(set(lint_files)), project_root)
+            _public_example_errors(
+                sorted(set(lint_files)), project_root, effective
+            )
         )
     return errors
 
