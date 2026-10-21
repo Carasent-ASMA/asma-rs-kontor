@@ -148,7 +148,11 @@ impl AttentionSink {
 
 impl Destination {
     async fn deliver(&self, payload: &AttentionPayload) -> Result<u32, SinkError> {
-        let document = teams_document(payload, &self.mention.target);
+        // A new destination channel adds one arm here and one formatter; the
+        // payload and the trigger set stay unchanged (REQ-013).
+        let document = match self.policy.channel {
+            DestinationChannel::TeamsWorkflow => teams_document(payload, &self.mention.target),
+        };
         let mut last = SinkError::Exhausted;
         for attempt in 1..=self.policy.max_attempts {
             match self
