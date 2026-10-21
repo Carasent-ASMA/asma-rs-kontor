@@ -36,9 +36,19 @@ def read(path: Path) -> str:
 def canonical_plan_graph() -> Path | None:
     configured = os.environ.get("ASMA_PLAN_GRAPH_VALIDATOR")
     if not configured:
+        if os.environ.get("CI"):
+            raise AssertionError(
+                "ASMA_PLAN_GRAPH_VALIDATOR must be set in CI for the "
+                "conditional plan-graph check"
+            )
         return None
     candidate = Path(configured).expanduser()
-    return candidate if candidate.is_file() else None
+    if not candidate.is_file():
+        raise AssertionError(
+            "ASMA_PLAN_GRAPH_VALIDATOR is set but does not name a file: "
+            f"{candidate}; refusing to skip plan-graph validation"
+        )
+    return candidate
 
 
 def replace_once(text: str, old: str, new: str) -> str:

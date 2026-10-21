@@ -10,8 +10,8 @@ export const WORKSPACE_KINDS: Readonly<Record<string, string>> = {
   RSW: "Review workspace", TSW: "Task workspace", ASW: "Advisory workspace", CSW: "Committee workspace",
   ESW: "Epic workspace", ECP: "Legacy epic coordination", DESK: "Durable desk",
 };
-const KIND_ICONS: Partial<Record<OrganizationGroupKind, string>> = { workstream: "Route", epic: "Flag", workspace: "PanelsTopLeft", project: "Folder" };
-const KIND_NAMES: Readonly<Record<OrganizationGroupKind, string>> = {
+export const KIND_ICONS: Partial<Record<OrganizationGroupKind, string>> = { workstream: "Route", epic: "Flag", workspace: "PanelsTopLeft", project: "Folder" };
+export const KIND_NAMES: Readonly<Record<OrganizationGroupKind, string>> = {
   workstream: "Workstream", epic: "Epic", "workspace-kind": "Workspace kind", workspace: "Workspace", project: "Native project", role: "Role", flat: "Sessions",
 };
 

@@ -31,6 +31,7 @@ may sit anywhere on the machine and have any name.
     route-qualifications.yml   hash-bound route qualification records
     teams/core-team.yml        pinned Core Team roster
     tpm-supervision.yml        autonomous TPM cadence profile
+    pr-desk.yml                PR desk policy: start budget, active-PR policy, silence windows, round limits
   packs/team.yml               project team/profile overlay
   tracker/jira.yml             tracker connection and credential reference
   forge/github-app.example.yml committed GitHub App placeholder
@@ -50,13 +51,27 @@ copied to that state-root path. It is not a key in `project:`. The neutral TPM
 file carries the full consumer shape; the schema test requires every top-level
 and nested key so a new project cannot copy an incomplete profile.
 
+`project.pr_desk` also follows plan §1.1. `command` is the command line that
+invokes the project's desk; `settings` names the pinned
+`orchestration/pr-desk.yml` policy file; and `history_root` is relative to
+`host.paths.data_root`. The learning log has one resolved root, in precedence
+order: `PR_DESK_DIR` when set, then an absolute `host.paths.pr_desk`, then
+`<host.paths.data_root>/<history_root>`; the log is `<root>/learning.log`.
+`orchestration/pr-desk.yml` carries the required seven keys and may carry
+project-owned keys beside them.
+
 Paths are classified, not resolved uniformly:
 
 - **Config-file references** (`fleet`, `core_team`, `project.team_pack`,
-  `project.fleet`, `project.supervision`, `project.tracker.spec`) resolve from
-  the selected folder root. They are relative, must stay inside the folder, and
-  must exist. `project.supervision` names the TPM cadence profile only; the
-  Paseo watchdog policy is `<state-root>/supervision.yml`.
+  `project.fleet`, `project.supervision`, `project.tracker.spec`,
+  `project.pr_desk.settings`) resolve from the selected folder root. They are
+  relative, must stay inside the folder, and must exist. `project.supervision`
+  names the TPM cadence profile only; the Paseo watchdog policy is
+  `<state-root>/supervision.yml`.
+- **Desk history paths** (`project.pr_desk.history_root`) resolve under
+  `host.paths.data_root`, stay inside it, and are not config references. The
+  learning log is `<resolved root>/learning.log`, resolved by `PR_DESK_DIR`,
+  then `host.paths.pr_desk`, then `<data_root>/<history_root>`.
 - **Project resource paths** (`documentation_roots`, `gap_ledger`, `glossary`,
   `decision_records_root`) start with a `project.resource_roots` entry. Each
   root maps to a repository in `project.forge.repositories`; the rest resolves
@@ -99,6 +114,9 @@ holds references only.
   documentation roots, gap ledger, glossary, attention channel, worktree
   layout, check-run names, capacity, time zone, holiday countries and currency
   in the `project:` block;
+- the `project.pr_desk` command, settings reference and history root, and the
+  start budget, active-PR policy, silence windows and round limits in
+  `orchestration/pr-desk.yml`;
 - the example markers in `quota-signals.yml` with vendor wording captured from
   the deployment;
 - the GitHub App ids, project id, repository and PEM path in

@@ -167,6 +167,109 @@ fn route_pair_allowed(project: &Value, account: &Value) -> Result<(), &'static s
     }
 }
 
+fn validate_pr_desk(project: &Value, path: &str) -> Result<(), String> {
+    let desk = project
+        .get("pr_desk")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| format!("{path}.pr_desk is required"))?;
+    for key in ["command", "settings", "history_root"] {
+        let field = desk
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{path}.pr_desk.{key} is required"))?;
+        if field.is_empty() {
+            return Err(format!("{path}.pr_desk.{key} is non-empty"));
+        }
+    }
+    let settings = desk["settings"]
+        .as_str()
+        .expect("settings was checked as a string");
+    if !is_safe_relative_path(settings) {
+        return Err(format!(
+            "{path}.pr_desk.settings is a safe folder-relative reference"
+        ));
+    }
+    if settings != "orchestration/pr-desk.yml" {
+        return Err(format!(
+            "{path}.pr_desk.settings names orchestration/pr-desk.yml"
+        ));
+    }
+    let history_root = desk["history_root"]
+        .as_str()
+        .expect("history_root was checked as a string");
+    if !is_safe_relative_path(history_root) {
+        return Err(format!(
+            "{path}.pr_desk.history_root is a safe data-root-relative path"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pr_desk_policy(policy: &Value, path: &str) -> Result<(), String> {
+    let policy = policy
+        .as_mapping()
+        .ok_or_else(|| format!("{path} is a mapping"))?;
+    if policy.get("schema_version").and_then(Value::as_i64) != Some(1) {
+        return Err(format!("{path}.schema_version is 1"));
+    }
+    for key in [
+        "poll_start_budget",
+        "ready_silence_days",
+        "draft_silence_days",
+        "fix_round_limit",
+        "revise_round_limit",
+    ] {
+        if !policy
+            .get(key)
+            .and_then(Value::as_i64)
+            .is_some_and(|value| value > 0)
+        {
+            return Err(format!("{path}.{key} is a positive integer"));
+        }
+    }
+    match policy.get("active_pr_policy").and_then(Value::as_str) {
+        Some("unlimited") | Some("one_active") => Ok(()),
+        _ => Err(format!(
+            "{path}.active_pr_policy is unlimited or one_active"
+        )),
+    }
+}
+
+fn learning_log(host: &Value, project: &Value) -> Result<PathBuf, String> {
+    let paths = host
+        .get("paths")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| "host.paths is required".to_owned())?;
+    if let Some(overridden) = paths.get("pr_desk") {
+        let overridden = overridden
+            .as_str()
+            .ok_or_else(|| "host.paths.pr_desk is a string".to_owned())?;
+        let overridden = Path::new(overridden);
+        if !overridden.is_absolute() {
+            return Err("host.paths.pr_desk is absolute".to_owned());
+        }
+        return Ok(overridden.join("learning.log"));
+    }
+    let data_root = paths
+        .get("data_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "host.paths.data_root is required".to_owned())?;
+    let data_root = Path::new(data_root);
+    if !data_root.is_absolute() {
+        return Err("host.paths.data_root is absolute".to_owned());
+    }
+    let history_root = project
+        .get("pr_desk")
+        .and_then(Value::as_mapping)
+        .and_then(|desk| desk.get("history_root"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "project.pr_desk.history_root is required".to_owned())?;
+    if !is_safe_relative_path(history_root) {
+        return Err("project.pr_desk.history_root is a safe data-root-relative path".to_owned());
+    }
+    Ok(data_root.join(history_root).join("learning.log"))
+}
+
 fn validate_project(value: &Value, path: &str) -> Mapping {
     let project = map(value, path);
     for key in [
@@ -183,6 +286,7 @@ fn validate_project(value: &Value, path: &str) -> Mapping {
         "team_pack",
         "fleet",
         "supervision",
+        "pr_desk",
         "merge_authority",
         "documentation_roots",
         "gap_ledger",
@@ -207,6 +311,8 @@ fn validate_project(value: &Value, path: &str) -> Mapping {
             "{path}.{key} is non-empty"
         );
     }
+
+    validate_pr_desk(value, path).unwrap_or_else(|error| panic!("{error}"));
 
     let authorities = required_map(value, "decision_authorities", path);
     for key in ["platform", "architecture", "decision_records_root"] {
@@ -456,6 +562,12 @@ fn validate_orchestration(relative: &str) {
             .and_then(|tracker| tracker.get("spec"))
             .and_then(Value::as_str)
             .expect("tracker spec"),
+        project
+            .get("pr_desk")
+            .and_then(Value::as_mapping)
+            .and_then(|desk| desk.get("settings"))
+            .and_then(Value::as_str)
+            .expect("pr desk settings"),
     ] {
         assert!(
             is_safe_relative_path(reference),
@@ -501,6 +613,7 @@ fn the_schema_file_and_both_examples_agree() {
             "team_pack",
             "fleet",
             "supervision",
+            "pr_desk",
             "merge_authority",
             "documentation_roots",
             "gap_ledger",
@@ -525,6 +638,7 @@ fn the_schema_file_and_both_examples_agree() {
             "project.fleet",
             "project.supervision",
             "project.tracker.spec",
+            "project.pr_desk.settings",
         ]
     );
     assert_eq!(
@@ -535,6 +649,18 @@ fn the_schema_file_and_both_examples_agree() {
             "project.glossary",
             "project.decision_authorities.decision_records_root",
         ]
+    );
+    assert_eq!(
+        schema_keys(
+            &paths["host_data_relative_paths"]["keys"],
+            "host data paths"
+        ),
+        ["project.pr_desk.history_root"]
+    );
+    assert_eq!(
+        paths["host_data_relative_paths"]["base"].as_str(),
+        Some("host.paths.data_root"),
+        "the desk history root resolves under the host data root"
     );
     assert_eq!(
         schema["route_binding"]["join_key"].as_str(),
@@ -654,6 +780,7 @@ fn every_folder_reference_resolves_inside_the_example() {
         "orchestration/route-qualifications.yml",
         "orchestration/teams/core-team.yml",
         "orchestration/tpm-supervision.yml",
+        "orchestration/pr-desk.yml",
         "paseo-supervision.yml",
         "packs/team.yml",
         "tracker/jira.yml",
@@ -678,6 +805,9 @@ fn every_folder_reference_resolves_inside_the_example() {
         document["project"]["tracker"]["spec"]
             .as_str()
             .expect("tracker spec"),
+        document["project"]["pr_desk"]["settings"]
+            .as_str()
+            .expect("pr desk settings"),
     ] {
         assert!(
             !Path::new(reference).is_absolute(),
@@ -694,6 +824,286 @@ fn every_folder_reference_resolves_inside_the_example() {
             "config/examples/{reference} exists"
         );
     }
+}
+
+#[test]
+fn both_examples_define_the_pr_desk_contract_and_its_settings_file() {
+    for (relative, folder, command) in [
+        (
+            "config/examples/orchestration/orchestration.yml",
+            "config/examples",
+            "example-pr-desk",
+        ),
+        (
+            "tests/fixtures/config/asma-orchestration.yml",
+            "tests/fixtures/config",
+            "python3 _tools/ai-orchestration/pr_desk.py",
+        ),
+    ] {
+        let document = read(relative);
+        let project = &document["project"];
+        validate_pr_desk(project, &format!("{relative}: project"))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let desk = &project["pr_desk"];
+        assert_eq!(
+            desk["command"].as_str(),
+            Some(command),
+            "{relative}: project.pr_desk.command"
+        );
+        assert_eq!(
+            desk["settings"].as_str(),
+            Some("orchestration/pr-desk.yml"),
+            "{relative}: project.pr_desk.settings"
+        );
+        assert_eq!(
+            desk["history_root"].as_str(),
+            Some("pr-review"),
+            "{relative}: project.pr_desk.history_root"
+        );
+
+        let root = repo_root().join(folder);
+        let settings_reference = desk["settings"]
+            .as_str()
+            .expect("the settings reference is a string");
+        let settings = root.join(settings_reference);
+        assert!(
+            settings.is_file(),
+            "{relative}: the settings file exists in the config folder"
+        );
+        assert!(
+            settings
+                .canonicalize()
+                .expect("canonical settings path")
+                .starts_with(root.canonicalize().expect("canonical folder root")),
+            "{relative}: the settings file stays inside the config folder"
+        );
+    }
+}
+
+#[test]
+fn a_missing_pr_desk_key_or_an_escaping_path_is_refused() {
+    let document = read("config/examples/orchestration/orchestration.yml");
+    let project = &document["project"];
+    assert!(validate_pr_desk(project, "project").is_ok());
+
+    let mut without_desk = project.clone();
+    without_desk
+        .as_mapping_mut()
+        .expect("a project mapping")
+        .remove("pr_desk");
+    assert!(
+        validate_pr_desk(&without_desk, "project").is_err(),
+        "project.pr_desk is required"
+    );
+
+    for key in ["command", "settings", "history_root"] {
+        let mut candidate = project.clone();
+        candidate["pr_desk"]
+            .as_mapping_mut()
+            .expect("a pr_desk mapping")
+            .remove(key);
+        assert!(
+            validate_pr_desk(&candidate, "project").is_err(),
+            "project.pr_desk.{key} is required"
+        );
+    }
+
+    for escaped in ["../orchestration/pr-desk.yml", "/orchestration/pr-desk.yml"] {
+        let mut candidate = project.clone();
+        candidate["pr_desk"]
+            .as_mapping_mut()
+            .expect("a pr_desk mapping")
+            .insert(
+                Value::String("settings".to_owned()),
+                Value::String(escaped.to_owned()),
+            );
+        assert!(
+            validate_pr_desk(&candidate, "project").is_err(),
+            "an escaping settings path {escaped} is refused"
+        );
+    }
+
+    let mut wrong_settings = project.clone();
+    wrong_settings["pr_desk"]
+        .as_mapping_mut()
+        .expect("a pr_desk mapping")
+        .insert(
+            Value::String("settings".to_owned()),
+            Value::String("orchestration/other.yml".to_owned()),
+        );
+    assert!(
+        validate_pr_desk(&wrong_settings, "project").is_err(),
+        "the contained but wrong settings name is refused"
+    );
+
+    for escaped in ["../x", "/x"] {
+        let mut escaped_history = project.clone();
+        escaped_history["pr_desk"]
+            .as_mapping_mut()
+            .expect("a pr_desk mapping")
+            .insert(
+                Value::String("history_root".to_owned()),
+                Value::String(escaped.to_owned()),
+            );
+        assert!(
+            validate_pr_desk(&escaped_history, "project").is_err(),
+            "a history root that escapes the data root is refused: {escaped}"
+        );
+    }
+}
+
+#[test]
+fn the_pr_desk_learning_log_resolves_under_data_root_or_the_host_override() {
+    let document = read("config/examples/orchestration/orchestration.yml");
+    let project = &document["project"];
+
+    let host = read("config/examples/host.example.yml");
+    let overridden = learning_log(&host, project).expect("the host override resolves");
+    let override_root = Path::new(
+        host["paths"]["pr_desk"]
+            .as_str()
+            .expect("host.paths.pr_desk"),
+    );
+    assert!(override_root.is_absolute());
+    assert_eq!(overridden, override_root.join("learning.log"));
+    assert!(overridden.starts_with(override_root));
+
+    let alternate = read("tests/fixtures/config/host-alternate.yml");
+    assert!(
+        alternate["paths"].get("pr_desk").is_none(),
+        "the alternate host has no explicit desk root"
+    );
+    let resolved = learning_log(&alternate, project).expect("the data-root resolution");
+    let data_root = Path::new(
+        alternate["paths"]["data_root"]
+            .as_str()
+            .expect("host.paths.data_root"),
+    );
+    let expected = data_root.join("pr-review").join("learning.log");
+    assert_eq!(resolved, expected);
+    assert!(resolved.starts_with(data_root));
+
+    let mut relative_override = host.clone();
+    relative_override["paths"]
+        .as_mapping_mut()
+        .expect("host paths")
+        .insert(
+            Value::String("pr_desk".to_owned()),
+            Value::String("relative/desk".to_owned()),
+        );
+    assert!(
+        learning_log(&relative_override, project).is_err(),
+        "host.paths.pr_desk is absolute"
+    );
+}
+
+#[test]
+fn the_pr_desk_policy_files_carry_the_required_values() {
+    let neutral = read("config/examples/orchestration/pr-desk.yml");
+    validate_pr_desk_policy(&neutral, "config/examples/orchestration/pr-desk.yml")
+        .expect("the neutral policy is valid");
+    assert_eq!(neutral["schema_version"].as_i64(), Some(1));
+    assert_eq!(neutral["active_pr_policy"].as_str(), Some("one_active"));
+
+    let mut with_project_keys = neutral.clone();
+    let project_keys = with_project_keys
+        .as_mapping_mut()
+        .expect("the neutral policy mapping");
+    project_keys.insert(
+        Value::String("desk".to_owned()),
+        Value::String("project-owned".to_owned()),
+    );
+    project_keys.insert(
+        Value::String("skip_repositories".to_owned()),
+        Value::Sequence(Vec::new()),
+    );
+    validate_pr_desk_policy(
+        &with_project_keys,
+        "config/examples/orchestration/pr-desk.yml",
+    )
+    .expect("project-owned keys are allowed beside the required seven");
+
+    let asma = read("tests/fixtures/config/orchestration/pr-desk.yml");
+    validate_pr_desk_policy(&asma, "tests/fixtures/config/orchestration/pr-desk.yml")
+        .expect("ASMA's policy is valid");
+    assert_eq!(asma["schema_version"].as_i64(), Some(1));
+    assert_eq!(asma["poll_start_budget"].as_i64(), Some(3));
+    assert_eq!(asma["active_pr_policy"].as_str(), Some("unlimited"));
+    assert_eq!(asma["ready_silence_days"].as_i64(), Some(3));
+    assert_eq!(asma["draft_silence_days"].as_i64(), Some(15));
+    assert_eq!(asma["fix_round_limit"].as_i64(), Some(2));
+    assert_eq!(asma["revise_round_limit"].as_i64(), Some(2));
+
+    let schema = read("config/examples/orchestration/orchestration.schema.yml");
+    let contract = &schema["pr_desk_contract"];
+    assert_eq!(
+        schema_keys(
+            &schema["project"]["nested"]["pr_desk"]["required"],
+            "pr_desk required"
+        ),
+        ["command", "settings", "history_root"],
+        "the schema pins the pr_desk block's required key list"
+    );
+    assert_eq!(
+        contract["project.pr_desk"]["settings"]
+            .as_str()
+            .map(|text| text.contains("orchestration/pr-desk.yml")),
+        Some(true),
+        "the schema names the pinned settings file"
+    );
+    assert!(
+        contract["settings_file"]["extra_keys"]
+            .as_str()
+            .is_some_and(|text| text.contains("allowed")),
+        "the settings contract allows project-owned keys beside the required seven"
+    );
+    let precedence = schema_keys(
+        &contract["learning_log_root"]["precedence"],
+        "learning log precedence",
+    );
+    assert_eq!(
+        precedence.len(),
+        3,
+        "the learning log root has one precedence chain"
+    );
+    for (position, expected) in ["PR_DESK_DIR", "host.paths.pr_desk", "host.paths.data_root"]
+        .iter()
+        .enumerate()
+    {
+        assert!(
+            precedence[position].contains(expected),
+            "precedence {position} names {expected}"
+        );
+    }
+    assert!(
+        contract["learning_log_root"]["resolved_log"]
+            .as_str()
+            .is_some_and(|text| text.contains("no second candidate")),
+        "the schema states the single resolved learning log"
+    );
+    assert_eq!(
+        schema_keys(
+            &contract["settings_file"]["required"],
+            "pr desk settings required"
+        ),
+        [
+            "schema_version",
+            "poll_start_budget",
+            "active_pr_policy",
+            "ready_silence_days",
+            "draft_silence_days",
+            "fix_round_limit",
+            "revise_round_limit",
+        ]
+    );
+    assert_eq!(
+        schema_keys(
+            &contract["settings_file"]["active_pr_policy_values"],
+            "active PR policy values"
+        ),
+        ["unlimited", "one_active"]
+    );
 }
 
 #[test]
@@ -765,6 +1175,11 @@ fn the_host_example_declares_every_bootstrap_section_without_a_secret() {
             "paths.{key} is non-empty"
         );
     }
+    let desk_root = required_string(&document["paths"], "pr_desk", "paths");
+    assert!(
+        Path::new(&desk_root).is_absolute(),
+        "the optional paths.pr_desk override is an absolute history root"
+    );
     for key in ["paseo", "git", "gh", "python", "cargo"] {
         assert!(
             !required_string(&document["binaries"], key, "binaries").is_empty(),
@@ -919,6 +1334,7 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
         "config/examples/orchestration/teams/core-team.yml",
         "config/examples/orchestration/route-qualifications.yml",
         "config/examples/orchestration/tpm-supervision.yml",
+        "config/examples/orchestration/pr-desk.yml",
         "config/examples/forge/github-app.example.yml",
     ] {
         let value = read(relative);
@@ -2084,10 +2500,17 @@ fn the_asma_fixture_uses_the_declared_folder_layout() {
         "the ASMA tracker spec is folder-root relative, not config/tracker"
     );
     assert_eq!(project["team_pack"].as_str(), Some("packs/team.yml"));
+    assert_eq!(
+        project["pr_desk"]["settings"].as_str(),
+        Some("orchestration/pr-desk.yml")
+    );
     for reference in [
         project["fleet"].as_str().expect("fleet"),
         project["supervision"].as_str().expect("supervision"),
         project["tracker"]["spec"].as_str().expect("tracker spec"),
+        project["pr_desk"]["settings"]
+            .as_str()
+            .expect("pr desk settings"),
     ] {
         assert!(
             is_safe_relative_path(reference),
