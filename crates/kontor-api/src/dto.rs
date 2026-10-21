@@ -18,9 +18,9 @@
 
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, ContentHash, EventCursor,
-    ExternalId, ExternalName, GateKey, PhaseKey, ProjectId, RealmId, RoleKey, RuntimeBindingId,
-    RuntimeKindKey, SchemaVersion, SpecVersion, TaskId, TeamRunId, TeamTemplateId, Timestamp,
-    WorkProfileKey,
+    ExternalId, ExternalName, GateKey, MiniProjectId, PhaseKey, ProjectId, RealmId, RoleKey,
+    RuntimeBindingId, RuntimeKindKey, SchemaVersion, SpecVersion, TaskId, TeamRunId,
+    TeamTemplateId, Timestamp, WorkProfileKey,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt, CommandReceiptState};
 use kontor_core::repository::{
@@ -184,6 +184,68 @@ pub struct BindingDto {
     /// Whether this process still holds the frozen capability snapshot for it,
     /// and can therefore address the session at all.
     pub attached: bool,
+}
+
+/// The state one persisted native binding is in, as a census reader needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeBindingStateDto {
+    /// The run is open and this process holds the frozen session snapshot.
+    Attached,
+    /// The run is open but this process holds no snapshot, so the session
+    /// cannot be addressed from here until reconciliation re-establishes it.
+    Detached,
+    /// The run closed; the binding is historical evidence of where it ran.
+    Retired,
+}
+
+/// Every persisted native binding in one Realm, at one control-plane position.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BindingCensusDto {
+    /// The bindings, oldest first.
+    pub bindings: Vec<BindingCensusItemDto>,
+}
+
+/// One binding in the census, with the work it served and its current state.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BindingCensusItemDto {
+    /// The Kontor binding.
+    #[schema(value_type = String)]
+    pub binding_id: RuntimeBindingId,
+    /// The project the binding belongs to.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The agent run the binding serves.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// The task the run's team run serves.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The epic that task belongs to, when it belongs to one.
+    #[schema(value_type = Option<String>)]
+    pub epic_id: Option<MiniProjectId>,
+    /// The runtime family. Never an endpoint.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The host label the runtime reports for itself.
+    #[schema(value_type = String)]
+    pub host: ExternalName,
+    /// The runtime generation the session belongs to.
+    pub generation: u64,
+    /// The runtime's own session id. Correlation evidence.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// When it was bound.
+    #[schema(value_type = String, format = DateTime)]
+    pub bound_at: Timestamp,
+    /// The run's lifecycle.
+    #[schema(value_type = String)]
+    pub run_lifecycle: RunLifecycle,
+    /// When the run closed, for a retired binding.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub run_closed_at: Option<Timestamp>,
+    /// Whether the binding is attached, detached or retired.
+    pub state: NativeBindingStateDto,
 }
 
 /// The orthogonal state of one run, plus how old its newest confirmation is.
@@ -430,6 +492,12 @@ pub struct RunDto {
     /// The team run it serves.
     #[schema(value_type = String)]
     pub team_run_id: TeamRunId,
+    /// The task the team run serves.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The epic that task belongs to, when it belongs to one.
+    #[schema(value_type = Option<String>)]
+    pub epic_id: Option<MiniProjectId>,
     /// The run it succeeds, for recovery and resume.
     #[schema(value_type = Option<String>)]
     pub parent_agent_run_id: Option<AgentRunId>,
