@@ -30,53 +30,71 @@ A card's tool profile narrows this boundary; it never widens it.
 
 The four vocabularies have one mapping. A role code names the canonical role; a
 fleet slot names the routing binding in `{{ project.fleet }}`; a seed role names
-the role in the project's team pack; a seat label is the exact native label.
-Where a template declares a display-named slot with no role code, the canonical
-audit role is shown and the seat label carries the template's display name.
+the logical role in the project's team pack; a seat label is the exact native
+label. The `Placement` column names the governing definition that makes the row
+launchable. A row marked pending is evidence for planning only and must not be
+launched.
 
-| Role code | Fleet slot | Seed role | Seat label |
-| --- | --- | --- | --- |
-| `LSA` | `leadership/<core-team-revision>/lsa` | `LSA` | `LSA • <epic key>` |
-| `TPM` | `leadership/<core-team-revision>/tpm` | `TPM` | `TPM • <epic key>` |
-| `TPM` (Adam persona) | `team/<desk-team-id>/adam` | `TPM` | `ADAM` |
-| `SA` (architect) | `team/<team-definition-id>/architect` | `architect` | `SA • <task key>` |
-| `SWE` (builder) | `team/<team-definition-id>/builder` | `builder` | `SWE • <task key>` |
-| `QA` (tester) | `team/<team-definition-id>/tester` | `tester` | `QA • <task key>` |
-| `AUD` (inspector) | `team/<team-definition-id>/inspector` | `inspector` | `AUD • <task key>` |
-| `UAT` (verifier) | `team/<team-definition-id>/verifier` | `therapist-verifier` | `UAT • <task key>` |
-| `BA` (researcher-a) | `team/<research-team-id>/researcher-a` | `researcher` | `RESEARCHER A` |
-| `BA` (researcher-b) | `team/<research-team-id>/researcher-b` | `researcher` | `RESEARCHER B` |
-| `AUD` (research judge) | `team/<research-team-id>/judge` | `judge` | `JUDGE` |
-| `TW` (synthesizer) | `team/<research-team-id>/synthesizer` | `synthesizer` | `SYNTHESIZER` |
-| `AUD` (final reviewer) | `team/<research-team-id>/final-reviewer` | `reviewer` | `FINAL REVIEWER` |
-| `AUD` (committee reviewer A) | `committee/<committee-preset-id>/reviewer-a` | `reviewer` | `SEAT A` |
-| `AUD` (committee reviewer B) | `committee/<committee-preset-id>/reviewer-b` | `reviewer` | `SEAT B` |
-| `AUD` (committee judge) | `committee/<committee-preset-id>/judge` | `judge` | `JUDGE` |
-| `AUD` (PR desk reviewer A) | `team/<desk-team-id>/rev-a` | `reviewer` | `REV A` |
-| `AUD` (PR desk reviewer B) | `team/<desk-team-id>/rev-b` | `reviewer` | `REV B` |
-| `AUD` (PR desk judge) | `team/<desk-team-id>/judge` | `judge` | `JUDGE` |
-| `AUD` (security reviewer) | `team/<desk-team-id>/rev-sec` | `reviewer` | `REV SEC` |
-| `AUD` (database reviewer) | `team/<desk-team-id>/rev-db` | `reviewer` | `REV DB` |
-| `SWE` (fixer) | `team/<desk-team-id>/swe` | `builder` | `SWE` |
-| `SA` (advisor) | `advisor/<software-architect-advisor-id>` | `advisor` | `SA • <topic>` |
-| `AUD` (advisor) | `advisor/<auditor-advisor-id>` | `advisor` | `AUD • <topic>` |
+| Role code | Fleet slot | Seed role | Seat label | Placement |
+| --- | --- | --- | --- | --- |
+| `LSA` | `leadership/<core-team-revision>/lsa` | `LSA` | `LSA` | registered: ECP `ROLE_CODE` |
+| `TPM` | `leadership/<core-team-revision>/tpm` | `TPM` | `TPM` | registered: ECP `ROLE_CODE` |
+| `TPM` (Adam persona) | `team/<desk-team-id>/adam` | `TPM` | `ADAM` | desk persona |
+| `SA` (scope) | `team/<team-definition-id>/scope` | `architect` | `SA` | registered: TSW `scope`, `ROLE_CODE` |
+| `SWE` (implement) | `team/<team-definition-id>/implement` | `builder` | `SWE` | registered: TSW `implement`, `ROLE_CODE` |
+| `QA` (verify) | `team/<team-definition-id>/verify` | `tester` | `QA` | registered: TSW `verify`, `ROLE_CODE` |
+| `AUD` (audit) | `team/<team-definition-id>/audit` | `inspector` | `AUD` | registered: TSW `audit`, `ROLE_CODE` |
+| `SA` (architect) | `team/<alternative-template-id>/architect` | `architect` | `SA` | alternative template |
+| `SWE` (builder) | `team/<alternative-template-id>/builder` | `builder` | `SWE` | alternative template |
+| `QA` (tester) | `team/<alternative-template-id>/tester` | `tester` | `QA` | alternative template |
+| `AUD` (inspector) | `team/<alternative-template-id>/inspector` | `inspector` | `AUD` | alternative template |
+| `UAT` (verifier) | `team/<alternative-template-id>/verifier` | `therapist-verifier` | `UAT` | alternative template; not current TSW |
+| `BA` (researcher-a) | `team/<research-team-id>/researcher-a` | `researcher` | `—` | unregistered; pending `SLOT_DISPLAY_NAME` revision |
+| `BA` (researcher-b) | `team/<research-team-id>/researcher-b` | `researcher` | `—` | unregistered; pending `SLOT_DISPLAY_NAME` revision |
+| `AUD` (research judge) | `team/<research-team-id>/judge` | `judge` | `—` | unregistered; pending `SLOT_DISPLAY_NAME` revision |
+| `TW` (synthesizer) | `team/<research-team-id>/synthesizer` | `synthesizer` | `—` | unregistered; pending `SLOT_DISPLAY_NAME` revision |
+| `AUD` (final reviewer) | `team/<research-team-id>/final-reviewer` | `reviewer` | `—` | unregistered; pending `SLOT_DISPLAY_NAME` revision |
+| `AUD` (committee reviewer A) | `committee/<committee-preset-id>/reviewer-a` | `reviewer` | `SEAT A` | registered: CSW `SLOT_DISPLAY_NAME` |
+| `AUD` (committee reviewer B) | `committee/<committee-preset-id>/reviewer-b` | `reviewer` | `SEAT B` | registered: CSW `SLOT_DISPLAY_NAME` |
+| `AUD` (committee judge) | `committee/<committee-preset-id>/judge` | `judge` | `JUDGE` | registered: CSW `SLOT_DISPLAY_NAME` |
+| `AUD` (PR desk reviewer A) | `team/<desk-team-id>/rev-a` | `reviewer` | `REV A` | desk seat |
+| `AUD` (PR desk reviewer B) | `team/<desk-team-id>/rev-b` | `reviewer` | `REV B` | desk seat |
+| `AUD` (PR desk judge) | `team/<desk-team-id>/judge` | `judge` | `JUDGE` | desk seat |
+| `AUD` (security reviewer) | `team/<desk-team-id>/rev-sec` | `reviewer` | `REV SEC` | desk seat |
+| `AUD` (database reviewer) | `team/<desk-team-id>/rev-db` | `reviewer` | `REV DB` | desk seat |
+| `SWE` (fixer) | `team/<desk-team-id>/swe` | `builder` | `SWE` | desk seat |
+| `SA` (advisor) | `advisor/<software-architect-advisor-id>` | `advisor` | `SA` | registered: ASW `ROLE_CODE` |
+| `AUD` (advisor) | `advisor/<auditor-advisor-id>` | `advisor` | `AUD` | registered: ASW `ROLE_CODE` |
 
-The table is the projection of the team contract: `delivery.role_bindings` in
-the operational-domain seed maps each seed role to its role code, and the seed
-team pack supplies the slot ids. The advisor rows follow the ASW slots, not the
-generic binding, because the advisor slot can be an architect or an auditor.
+The table is a projection of the governing team contract, not an independent
+role list. The current Team Definition registers the TSW team slots `scope`,
+`implement`, `verify` and `audit` with the `ROLE_CODE` label template, and the
+neutral fleet binds those four slots. The seed team pack's `architect`,
+`builder`, `tester`, `inspector` and `verifier` slots are alternative-template
+slots; they do not replace the current TSW slots or their fleet bindings. The
+ECP and ASW slots also render `ROLE_CODE`; the CSW slots render
+`SLOT_DISPLAY_NAME`.
 
-A fleet slot that is absent from the selected fleet cannot be resolved. The
-seat is blocked; the role is not silently rerouted. A project that uses a
-different team definition keeps the role code and changes the slot id, not the
-card.
+The Research Spike slots `researcher-a`, `researcher-b`, `judge`,
+`synthesizer` and `final-reviewer` are deliberately unregistered in the current
+Team Definition. `researcher-a` and `researcher-b` would both render `BA`, and
+`judge` and `final-reviewer` would both render `AUD`. They need a future
+`SLOT_DISPLAY_NAME` Team Definition revision with distinct labels. Their rows
+and the BA/TW cards are pending, not launchable; do not write RESEARCHER A,
+RESEARCHER B, SYNTHESIZER or FINAL REVIEWER as native labels.
+
+The advisor rows follow the ASW slots, not the generic binding, because an
+advisor slot can be an architect or an auditor. A fleet slot absent from the
+selected fleet cannot be resolved; the seat is blocked and the role is not
+silently rerouted. The fleet's `fallback` and `open` bindings are route
+fallbacks, not seats, and have no card. A project that uses a different team
+definition keeps the role code and changes the slot id, not the card.
 
 ## LSA — Lead Software Architect
 
 - **Role code:** `LSA`
 - **Seed role:** `LSA`
-- **Seat labels:** `LSA • <epic key>` or the exact advisor label the project
-  declares.
+- **Seat labels:** `LSA`.
 - **Purpose:** Own architecture, scope coherence, cross-task decisions and
   remediation design for one scoped epic.
 - **Inputs:** the approved plan, the tracker graph and its bindings, the
@@ -97,7 +115,7 @@ card.
 
 - **Role code:** `TPM`
 - **Seed role:** `TPM`
-- **Seat labels:** `TPM • <epic key>`.
+- **Seat labels:** `TPM`.
 - **Purpose:** Route and admit work, keep dependencies and evidence current,
   own the plan revision and drive closeout.
 - **Inputs:** the plan, the tracker graph, readiness evidence, capacity and
@@ -116,8 +134,9 @@ card.
 
 - **Role code:** `TPM` (the persona fills the TPM slot).
 - **Seed role:** `TPM`
-- **Seat labels:** `ADAM` on the desk; the same persona uses the TPM card's
-  epic label.
+- **Seat labels:** `ADAM`.
+- **Placement:** the desk persona; `TPM` when the same persona fills the epic
+  TPM seat.
 - **Purpose:** Be the single human-facing coordinator for one epic or one pull
   request. On new work Adam holds delivery admission; on existing work the TPM
   seat performs the same coordination.
@@ -137,8 +156,9 @@ card.
 
 - **Role code:** `SA`
 - **Seed role:** `architect`
-- **Seat labels:** `SA • <task key>` on a team seat; use the Advisor card for
-  the advisor label.
+- **Seat labels:** `SA`.
+- **Placement:** the current TSW `scope` slot or an alternative-template
+  `architect` slot; the ASW advisor slot uses the Advisor card.
 - **Purpose:** Perform non-lead architecture work and design a bounded technical
   structure; an SA cannot satisfy the mandatory LSA slot.
 - **Inputs:** the assigned architecture question, the accepted decisions, the
@@ -157,7 +177,9 @@ card.
 
 - **Role code:** `SWE`
 - **Seed role:** `builder`
-- **Seat labels:** `SWE • <task key>` or `SWE` as the PR desk fixer.
+- **Seat labels:** `SWE`.
+- **Placement:** the current TSW `implement` slot, an alternative-template
+  `builder` slot or the PR desk fixer.
 - **Purpose:** Implement one scoped task in its own checkout and produce the
   task evidence; as a fixer, fix the confirmed findings of one review round.
 - **Inputs:** the task contract, the plan, the checkout and branch, the failing
@@ -178,7 +200,9 @@ card.
 
 - **Role code:** `QA`
 - **Seed role:** `tester`
-- **Seat labels:** `QA • <task key>`.
+- **Seat labels:** `QA`.
+- **Placement:** the current TSW `verify` slot or an alternative-template
+  `tester` slot.
 - **Purpose:** Independently verify that delivered behavior satisfies the task
   and its acceptance criteria.
 - **Inputs:** the task contract, the artifact revision, the claimed checks and
@@ -198,7 +222,9 @@ card.
 
 - **Role code:** `AUD`
 - **Seed role:** `inspector`
-- **Seat labels:** `AUD • <task key>`.
+- **Seat labels:** `AUD`.
+- **Placement:** the current TSW `audit` slot or an alternative-template
+  `inspector` slot.
 - **Purpose:** Independently audit a change or delivery evidence beyond
   ordinary tests and report whether it meets the declared requirement.
 - **Inputs:** the frozen evidence set, the requirement, the decision records and
@@ -216,7 +242,9 @@ card.
 
 - **Role code:** `UAT`
 - **Seed role:** `therapist-verifier`
-- **Seat labels:** `UAT • <task key>`.
+- **Seat labels:** `UAT`.
+- **Placement:** an alternative-template `verifier` slot only; the current TSW
+  registers no UAT slot.
 - **Purpose:** Validate behavior from the intended user's acceptance
   perspective, not from the implementer's description.
 - **Inputs:** the acceptance criteria, the deployed or runnable artifact, the
@@ -234,8 +262,11 @@ card.
 
 - **Role code:** `BA`
 - **Seed role:** `researcher`
-- **Seat labels:** `RESEARCHER A` and `RESEARCHER B` in the Research spike team;
-  `BA • <topic>` elsewhere.
+- **Seat labels:** `—`.
+- **Placement:** the Research Spike slots `researcher-a` and `researcher-b` are
+  deliberately unregistered in the current Team Definition; both would render
+  `BA`, so they need a future `SLOT_DISPLAY_NAME` revision. Do not launch them
+  or label them RESEARCHER A or RESEARCHER B.
 - **Purpose:** Clarify business processes, requirements and rules; in the
   Research spike team, answer one bounded research question with evidence.
 - **Inputs:** the research question, the accepted scope, the governing
@@ -253,8 +284,10 @@ card.
 
 - **Role code:** `TW`
 - **Seed role:** `synthesizer`
-- **Seat labels:** `SYNTHESIZER` in the Research spike team; `TW • <topic>`
-  elsewhere.
+- **Seat labels:** `—`.
+- **Placement:** the Research Spike `synthesizer` slot is deliberately
+  unregistered in the current Team Definition and needs a future
+  `SLOT_DISPLAY_NAME` revision. Do not launch it or label it SYNTHESIZER.
 - **Purpose:** Synthesize sealed findings into one clear, evidence-linked
   document, or produce technical documentation for a defined audience.
 - **Inputs:** the sealed findings, their evidence references, the audience and
@@ -273,8 +306,11 @@ card.
 
 - **Role code:** `AUD`
 - **Seed role:** `reviewer`
-- **Seat labels:** `SEAT A` and `SEAT B` in a committee; `REV A` and `REV B` on
-  the PR desk; `FINAL REVIEWER` as the research-spike final reviewer.
+- **Seat labels:** `SEAT A`, `SEAT B`, `REV A`, `REV B`.
+- **Placement:** `SEAT A` and `SEAT B` in a committee; `REV A` and `REV B` on
+  the PR desk. The Research Spike `final-reviewer` slot is deliberately
+  unregistered in the current Team Definition and needs a future
+  `SLOT_DISPLAY_NAME` revision; do not launch it or label it FINAL REVIEWER.
 - **Purpose:** Read the change at the exact revision and report independent
   findings. A reviewer never reviews its own work and never approves from
   familiarity.
@@ -295,6 +331,9 @@ card.
 - **Role code:** `AUD`
 - **Seed role:** `judge`
 - **Seat labels:** `JUDGE`.
+- **Placement:** a committee or the PR desk. The Research Spike `judge` slot is
+  deliberately unregistered in the current Team Definition and needs a future
+  `SLOT_DISPLAY_NAME` revision.
 - **Purpose:** Check each reviewer finding against the exact evidence, keep only
   what is proven, and record the declared aggregate outcome.
 - **Inputs:** both reviewers' durable findings, the exact revision and the
@@ -350,8 +389,9 @@ card.
 - **Role code:** `SA` for the software-architect advisor, `AUD` for the auditor
   advisor.
 - **Seed role:** `advisor`
-- **Seat labels:** the exact `SA • <topic>` or `AUD • <topic>` label the team
-  definition declares; `ADVISOR` is not a universal seat name.
+- **Seat labels:** `SA`, `AUD`.
+- **Placement:** `SA` for the software-architect advisor or `AUD` for the
+  auditor advisor, following the ASW `ROLE_CODE`; `ADVISOR` is not a seat name.
 - **Purpose:** Give independent findings on one bounded hard question. Advice
   is evidence only; it never grants a gate, acceptance or merge.
 - **Inputs:** the question, the frozen evidence and the exact scope. The advisor
@@ -368,14 +408,21 @@ card.
 ## Keeping the cards current
 
 The crosswalk is a projection, not an independent role list. It is checked
-against the operational-domain seed's `delivery.role_bindings`, the seed team
-pack's slots, the Core Team seats, the committee preset slots and the PR desk
-seats.
+against the current Team Definition's registered slots and `seat_name_template`
+(including its `ROLE_CODE` and `SLOT_DISPLAY_NAME` tokens), the operational
+seed's `delivery.role_bindings`, the seed team pack's alternative-template
+slots, the neutral fleet's slot bindings, the Core Team seats, the committee
+preset slots and the PR desk seats.
 
-- A new role or slot in a team contract needs a card and a crosswalk row in the
-  same change.
+- A new registered role or slot in the governing Team Definition needs a card
+  and a crosswalk row in the same change; a new alternative-template slot needs
+  the same evidence but is marked as an alternative.
 - A changed fleet slot or seat label updates the crosswalk, not the role's
-  authority.
+  authority. A label is derived from the governing `seat_name_template`, never
+  inferred from a role name or a suffix.
+- A Research Spike slot that is absent from the governing Team Definition has no
+  native label and no launchable placement. Mark it pending with the required
+  `SLOT_DISPLAY_NAME` revision; never present an invented display label.
 - A persona never becomes a role code. If a role changes, change the canonical
   catalog first and then this crosswalk.
 - A duplicate card is an error: two cards for one seat label would drift.

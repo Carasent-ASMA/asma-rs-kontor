@@ -163,7 +163,7 @@ Steps:
    ending with `<!-- pr-desk -->`, that the author can merge it as it is, edit
    the fix branch themselves, or close it.
 7. Learning log: for each posted finding, add one line to the desk's
-   `<host.paths.data_root>/pr-review/learning.log`, exactly like this:
+   resolved learning log, `<resolved root>/learning.log`, exactly like this:
    `<date> · <repository>#<number> · <seat> (round <n>) · <label> · <file>:<line> · posted`
    When the author answers, add the same line again ending in `accepted` or
    `rejected`; a short note in brackets may follow that word. The desk itself

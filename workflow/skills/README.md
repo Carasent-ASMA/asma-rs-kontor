@@ -106,6 +106,7 @@ must apply the same rule.
 | `project.runtime.matrix` | Allowed provider/harness pairs. |
 | `project.cli.command`, `project.cli.verbs` | The project CLI used for checkout, commits, publication and task commands. |
 | `project.team_pack`, `project.fleet`, `project.supervision` | Team overlay, fleet policy and the autonomous TPM cadence profile. |
+| `project.pr_desk.command`, `project.pr_desk.settings`, `project.pr_desk.history_root` | PR desk invocation, pinned policy file and data-root-relative history root. |
 | `project.merge_authority.role`, `project.merge_authority.policy` | Who may merge and under which policy. |
 | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.attention_channel` | Documentation and gap routing. |
 | `project.worktree_layout`, `project.check_runs` | Checkout isolation and required checks. |
@@ -135,16 +136,16 @@ unchanged.
 | WP-04 row | Source skill | Disposition |
 | --- | --- | --- |
 | WP04-INV-01 | `decision-records`, `epic-orchestration`, `orchestration-surface-transition`, `pr-review` | Named decision authorities, personal escalation wording and personal merge wording are replaced by `{{ project.decision_authorities.architecture }}`, `{{ project.merge_authority.role }}` and `{{ project.owner }}`. The pack names no person. |
-| WP04-INV-02 | `pr-review`, `seat-cards` | Partial: the absolute home path is removed and the learning log resolves to `<host.paths.data_root>/pr-review/learning.log`. The desk history root has no WP-02 project.pr_desk.history_root key yet; that is the named dependency. |
+| WP04-INV-02 | `pr-review`, `seat-cards` | Fixed: the learning log resolves through exactly one root (`PR_DESK_DIR`, then absolute `host.paths.pr_desk`, then `<host.paths.data_root>/<project.pr_desk.history_root>`) and is `<resolved root>/learning.log`. The absolute home path and second candidate are gone. |
 | WP04-INV-03 | `pr-review`, `tracker-linked-creation`, `mini-project-kickoff` | Tracker scope is `{{ project.tracker.project_key }}`; issue types, status names and transition ids are read live from the pinned tracker catalog. The PR review skill names no project key. |
-| WP04-INV-04 | `pr-review`, `epic-orchestration` | Partial: capacity stays owned by the placement rule (`{{ project.capacity.max_parallel_tasks }}`, `{{ project.capacity.start_admission }}`); the PR desk limits are no longer copied, but they have no WP-02 project.pr_desk.settings key yet. That is the named dependency. |
+| WP04-INV-04 | `pr-review`, `epic-orchestration` | Fixed: capacity stays owned by the placement rule (`{{ project.capacity.max_parallel_tasks }}`, `{{ project.capacity.start_admission }}`); the PR desk command, pinned policy and both round limits resolve from `project.pr_desk.command` and `project.pr_desk.settings` (`orchestration/pr-desk.yml`). The skill copies no limit. |
 | WP04-INV-05 | `pr-review`, `long-task-commit-checkpoints`, `create-implementation-plan` | Base-branch references resolve from `{{ project.forge.base_branch }}`; branch grammar resolves from `{{ project.branch.pattern }}`. The PR review skill names no default branch. |
 | WP04-INV-06 | `pr-review` | Organization scope is `{{ project.forge.organization }}`; the runtime port is a fact read from the runtime, not a copied project value. |
 | WP04-INV-07 | `experience-memory`, `pr-review` | The review checklist owns 11 checks including Done means; the judge card, the comment format and the memory skill refer to check (11) instead of keeping a second count or a dated time. |
 
-WP04-INV-02 and WP04-INV-04 are partial until WP-02 adds a project.pr_desk
-block for the desk command, settings and history root. The pack names that
-dependency and does not invent the key.
+WP04-INV-02 and WP04-INV-04 are fixed by the merged `project.pr_desk` block:
+the command, pinned settings and history root are read from the project, and
+the host keeps only the optional `host.paths.pr_desk` override.
 
 ## Neutrality
 

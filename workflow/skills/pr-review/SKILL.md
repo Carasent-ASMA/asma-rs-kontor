@@ -9,28 +9,24 @@ Every pull request in the repositories of `{{ project.forge.organization }}` get
 a human-judgment review.
 Tools check format and CI; the desk checks the change itself. One PR Adam
 coordinates one pull request, and a review room (RSW) holds its review seats.
-The project's PR desk settings own the per-poll start budget, the active-PR
-policy, the silence windows and the round limits; this skill does not copy
-those values.
 
-The desk is the project's watchdog implementation. Its commands, refusals,
-limits and internals are in the project's PR desk runbook under
-`{{ project.documentation_roots }}`; its flags are in its own help.
+The desk is invoked by `{{ project.pr_desk.command }}`. Its pinned policy is
+`{{ project.pr_desk.settings }}`, a folder-relative `orchestration/pr-desk.yml`
+with `schema_version`, `poll_start_budget`, `active_pr_policy`,
+`ready_silence_days`, `draft_silence_days`, `fix_round_limit` and
+`revise_round_limit`. The policy
+owns the per-poll start budget, the active-PR policy, both silence windows and
+both round limits; this skill does not copy those values.
 
-### Configuration dependency
+The desk history root is `{{ project.pr_desk.history_root }}`, relative to
+`host.paths.data_root`. Resolve the learning log from exactly one root, in this
+order: `PR_DESK_DIR`, then an absolute `host.paths.pr_desk`, then
+`<host.paths.data_root>/<project.pr_desk.history_root>`. The learning log is
+`<resolved root>/learning.log`; there is no second candidate.
 
-The learning log resolves to
-`<host.paths.data_root>/pr-review/learning.log`. The desk executable and the
-settings that own the per-poll start budget, active-PR policy, silence windows,
-churn threshold and round limits have no key in the WP-02 `project:` block or
-the committed host schema. Until WP-02 adds one, read them from the project's
-own desk configuration and its documented entry point.
-
-The proposed WP-02 key is a `project.pr_desk` block with `command`, `settings`
-and `history_root`; the host override would be `host.paths.pr_desk`. This pack
-does not invent or add that key. WP04-INV-02 and WP04-INV-04 are therefore
-partially fixed: the absolute home path and copied limits are gone, but the
-desk settings and limits remain a named dependency, not a closed parameter.
+The desk's runbook under `{{ project.documentation_roots }}` and its own help
+are secondary detail for commands and refusal text. The configuration contract
+above is the authoritative lookup.
 
 One desk only: the host owner's machine runs the desk. Never enable a second
 desk on another machine: two desks would post duplicate reviews and push
@@ -51,6 +47,7 @@ record. Each rule has one owner. Read the owner; do not copy it here:
 | Escalation | [epic-orchestration](../epic-orchestration/SKILL.md#autonomy-and-escalation) |
 | Merge authority and per-repository grants | `{{ project.merge_authority.role }}` and `{{ project.merge_authority.policy }}` |
 | Three homes for information | [document-organization](../document-organization/SKILL.md#three-homes-for-information) |
+| PR desk command and policy | `{{ project.pr_desk.command }}`, `{{ project.pr_desk.settings }}` |
 | Model chains and bindings | `{{ project.fleet }}`, the desk's seat bindings |
 | Base branch and branch grammar | `{{ project.forge.base_branch }}`, `{{ project.branch.pattern }}` |
 
@@ -395,8 +392,8 @@ seat cards say who runs which.
 
 ## Learning log
 
-The PR Adam writes one line per finding to
-`<host.paths.data_root>/pr-review/learning.log`:
+The PR Adam writes one line per finding to the resolved learning log
+(`<resolved root>/learning.log`):
 
 ```text
 <date> · <repository>#<number> · <seat> (round <n>) · <label> · <file>:<line> · posted | accepted | rejected | merged open
