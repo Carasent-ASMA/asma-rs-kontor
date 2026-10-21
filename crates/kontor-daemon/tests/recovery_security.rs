@@ -22,8 +22,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use kontor_api::state::{BarrierState, RuntimeRegistry};
-use kontor_core::id::Timestamp;
+use kontor_core::id::{CanonicalDocument, ExternalName, ProjectId, Timestamp};
+use kontor_core::repository::{NewProject, ProjectRepository};
 use kontor_daemon::{DATABASE_FILE, Daemon, DaemonConfig, credentials, logging, recovery};
+use kontor_store::SCHEMA_VERSION;
+use kontor_store::memory::MemoryProvenance;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -122,8 +125,20 @@ async fn rotation_refuses_every_previous_token_and_leaves_the_realm_alone() {
     );
 }
 
+fn name(text: &str) -> ExternalName {
+    ExternalName::parse(text).expect("a valid external name")
+}
+
+fn memory_document(text: &str) -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "text": text,
+    }))
+    .expect("a canonical memory document")
+}
+
 #[tokio::test]
-async fn a_restored_realm_starts_with_scheduling_shut_until_it_reconciles() {
+async fn a_stopped_realm_snapshots_restores_and_restarts_with_memory_search_intact() {
     let home = TempDir::new().expect("a temporary directory");
     let state_root = home.path().join("realm");
     let daemon = Daemon::start(
@@ -132,6 +147,53 @@ async fn a_restored_realm_starts_with_scheduling_shut_until_it_reconciles() {
     )
     .expect("the realm starts");
     let realm = daemon.realm_id();
+
+    // Memory search is the projection this cycle must preserve: a restore that
+    // published an unrebuilt index would come back with the revision rows but
+    // no way to find them.
+    let project = ProjectId::generate();
+    daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project,
+                name: name("Restore safety"),
+                root_path: name("/tmp/kontor-restore-safety"),
+                created_at: Timestamp::now(),
+            })
+            .expect("the project is created");
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project,
+                "restore-safety",
+                0,
+                &memory_document("restore needle"),
+                &MemoryProvenance {
+                    source: "fixture".to_owned(),
+                    source_id: None,
+                    legacy_last_write_wins: false,
+                    history_unavailable: false,
+                },
+                "fixture-author",
+            )
+            .expect("the revision is proposed");
+        store
+            .approve_memory_revision(
+                project,
+                "restore-safety",
+                &proposal.revision_id,
+                1,
+                "fixture-reviewer",
+            )
+            .expect("the revision is approved");
+    });
+    assert_eq!(
+        daemon
+            .state()
+            .with_store(|store| store.search_memory(project, "needle", 10))
+            .expect("the serving realm searches memory")
+            .len(),
+        1
+    );
 
     // A snapshot of a *serving* realm, which is the only kind an operator gets
     // to take without stopping work.
@@ -148,24 +210,31 @@ async fn a_restored_realm_starts_with_scheduling_shut_until_it_reconciles() {
 
     daemon.shutdown();
 
-    // Offline restore requires a fully stopped database, not just a released
-    // daemon lock. This in-process fixture can retain application-state handles;
-    // drain its committed WAL as closing the stopped process would. Restore
-    // itself must keep refusing an undrained WAL before replacing any files.
-    let database = rusqlite::Connection::open(state_root.join(DATABASE_FILE))
-        .expect("the stopped fixture database opens for checkpointing");
-    let (busy, _, _): (i64, i64, i64) = database
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .expect("the stopped fixture checkpoints its committed WAL");
-    assert_eq!(busy, 0, "no database writer remains in this fixture");
-    drop(database);
+    // The shutdown must release every handle, not merely the state-root lock. A
+    // retained connection keeps committed frames in the WAL, which restore then
+    // refuses — the cycle this test exists to kill leaves the operator with a
+    // database that is stopped but not restorable.
+    let wal = state_root.join(format!("{DATABASE_FILE}-wal"));
+    assert!(
+        !wal.exists() || std::fs::metadata(&wal).expect("the WAL is readable").len() == 0,
+        "a cleanly stopped realm leaves no WAL frames behind"
+    );
 
     let plan = recovery::restore(&state_root, &outcome.snapshot, Timestamp::now())
         .expect("the stopped realm is restored");
     assert_eq!(plan.realm_id, realm);
     assert!(plan.reconciliation_required);
+
+    let connection = rusqlite::Connection::open_with_flags(
+        recovery::database_in(&state_root),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("the restored database opens read-only");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the restored schema version reads");
+    assert_eq!(version, SCHEMA_VERSION, "restore preserves the schema");
+    drop(connection);
 
     let restarted = Daemon::start(
         DaemonConfig::at(&state_root).with_port(0),
@@ -176,6 +245,15 @@ async fn a_restored_realm_starts_with_scheduling_shut_until_it_reconciles() {
         restarted.realm_id(),
         realm,
         "a restore reinstates the same realm"
+    );
+    assert_eq!(
+        restarted
+            .state()
+            .with_store(|store| store.search_memory(project, "needle", 10))
+            .expect("the restored realm searches memory")
+            .len(),
+        1,
+        "restore rebuilt the full-text projection before publishing"
     );
     assert_eq!(
         restarted.state().barrier().state(),

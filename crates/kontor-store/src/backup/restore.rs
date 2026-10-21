@@ -7,7 +7,7 @@
 //! else — moving work between Realms is [`crate::backup::import_export`], which
 //! creates new destination receipts instead of reviving somebody else's.
 //!
-//! Two rules follow from that, and neither has an escape hatch:
+//! Three rules follow from that, and none has an escape hatch:
 //!
 //! * the snapshot is validated **completely** before the destination is
 //!   touched — manifest, length, digest, integrity check, schema version and
@@ -16,7 +16,11 @@
 //!   initialized Realm is refused with a typed error before anything at the
 //!   destination is touched, and there is no `--force` that changes it. A flag that lets an operator
 //!   overwrite realm B with realm A's database at 3am is not a recovery
-//!   feature.
+//!   feature;
+//! * the disposable memory-search projection is rebuilt on the copy **before**
+//!   it can take the destination's name. A rebuild that fails publishes
+//!   nothing, because a database whose memory cannot be searched is not a
+//!   usable restore.
 //!
 //! Restore is also offline. This module cannot prove that on its own — the
 //! exclusive claim on a state root is the daemon's lock — so the caller holds
@@ -28,9 +32,20 @@ use std::path::{Path, PathBuf};
 use kontor_core::id::{RealmId, Timestamp, format_utc_timestamp};
 use rusqlite::{Connection, OpenFlags};
 
+use crate::SqliteStore;
 use crate::backup::manifest::SnapshotManifest;
 use crate::backup::snapshot::{sync_file, verify_database_file};
 use crate::backup::{BackupError, io, link_exclusively, sync_directory};
+
+/// Why a snapshot carrying committed WAL frames is not a restore source.
+const SNAPSHOT_WAL_REFUSAL: &str = "the snapshot has a nonempty write-ahead log (`-wal`); take a fresh snapshot from the realm and never open a snapshot for writing";
+
+/// Why a destination carrying committed WAL frames is not restored over.
+///
+/// The shutdown cycle that used to retain the connection is fixed, so this is
+/// the crash and interrupted-release case: the operator needs to know which
+/// process to wait for and what to do next, not which check refused.
+const DESTINATION_WAL_REFUSAL: &str = "the destination has a nonempty write-ahead log (`-wal`), so its realm is not fully stopped; stop the daemon that owns this state root, wait for the process to exit, and retry restore — a clean stop leaves no WAL frames";
 
 /// What one successful restore did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,10 +72,12 @@ pub struct RestorePlan {
 /// Returns [`BackupError::Manifest`] or [`BackupError::Verification`] when the
 /// snapshot is not a whole, verified database of a single Realm;
 /// [`BackupError::DestinationInitialized`] when the destination already holds a
-/// *different* Realm; and [`BackupError::Io`] for filesystem failures. Public-key
-/// ledger continuity is unsupported: a nonempty source or destination ledger,
-/// malformed current ledger, or nonempty WAL is refused before replacement.
-/// Every one of these refusals leaves the destination exactly as it was.
+/// *different* Realm; [`BackupError::Verification`] when the copied database's
+/// memory-search projection cannot be rebuilt; and [`BackupError::Io`] for
+/// filesystem failures. Public-key ledger continuity is unsupported: a nonempty
+/// source or destination ledger, malformed current ledger, or nonempty WAL is
+/// refused before replacement. Every one of these refusals leaves the
+/// destination exactly as it was, and a rebuild refusal never publishes.
 pub fn restore_snapshot(
     snapshot: &Path,
     destination: &Path,
@@ -82,7 +99,7 @@ pub fn restore_snapshot(
             detail: "the manifest's schema version is not the snapshot's",
         });
     }
-    refuse_nonempty_attestation_ledger(snapshot)?;
+    refuse_nonempty_attestation_ledger(snapshot, SNAPSHOT_WAL_REFUSAL)?;
 
     // 2. The destination is classified read-only, so the cross-realm refusal
     //    happens before a single byte of it changes.
@@ -90,9 +107,9 @@ pub fn restore_snapshot(
     // WAL sidecars beside a refused destination. Offline restore must not ignore
     // committed state that still resides in a WAL.
     // WAL evidence must survive even if its main file is absent or empty.
-    refuse_nonempty_wal(destination)?;
+    refuse_nonempty_wal(destination, DESTINATION_WAL_REFUSAL)?;
     if std::fs::metadata(destination).is_ok_and(|found| found.len() > 0) {
-        refuse_nonempty_attestation_ledger(destination)?;
+        refuse_nonempty_attestation_ledger(destination, DESTINATION_WAL_REFUSAL)?;
     }
     let occupant = classify_destination(destination)?;
     if let Some(found) = occupant
@@ -115,12 +132,20 @@ pub fn restore_snapshot(
         return Err(BackupError::AlreadyExists { path: temporary });
     }
     std::fs::copy(snapshot, &temporary).map_err(io("written"))?;
+    // The search projection is part of what makes a restored database usable,
+    // so it is rebuilt on the copy *before* the copy can take the destination's
+    // name. Rebuilding after publishing would turn a failed rebuild into a
+    // published database whose memory cannot be searched — exactly the state a
+    // restore must never leave behind.
+    if let Err(error) = rebuild_memory_fts(&temporary) {
+        remove_database_files(&temporary);
+        return Err(error);
+    }
     let published = publish(&temporary, destination, occupant.is_some(), now);
     if published.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        remove_database_files(&temporary);
     }
     let superseded = published?;
-    rebuild_memory_fts(destination)?;
 
     Ok(RestorePlan {
         realm_id: identity.realm_id,
@@ -131,10 +156,8 @@ pub fn restore_snapshot(
     })
 }
 
-fn refuse_nonempty_wal(database: &Path) -> Result<(), BackupError> {
-    let refusal = || BackupError::Verification {
-        detail: "public key authority ledger could not be inspected without changing files",
-    };
+fn refuse_nonempty_wal(database: &Path, detail: &'static str) -> Result<(), BackupError> {
+    let refusal = || BackupError::Verification { detail };
     let mut wal = database.as_os_str().to_os_string();
     wal.push("-wal");
     match std::fs::metadata(PathBuf::from(wal)) {
@@ -146,8 +169,11 @@ fn refuse_nonempty_wal(database: &Path) -> Result<(), BackupError> {
     Ok(())
 }
 
-fn refuse_nonempty_attestation_ledger(database: &Path) -> Result<(), BackupError> {
-    refuse_nonempty_wal(database)?;
+fn refuse_nonempty_attestation_ledger(
+    database: &Path,
+    wal_detail: &'static str,
+) -> Result<(), BackupError> {
+    refuse_nonempty_wal(database, wal_detail)?;
     let refusal = || BackupError::Verification {
         detail: "public key authority ledger could not be inspected without changing files",
     };
@@ -180,27 +206,33 @@ fn refuse_nonempty_attestation_ledger(database: &Path) -> Result<(), BackupError
 }
 
 /// Recreate the disposable search projection from approved native revisions.
+///
+/// Delegated to the store so restore and ordinary operation rebuild the same
+/// projection the same way (the store also rebuilds the derived experience
+/// eligibility cache in the same transaction).
 fn rebuild_memory_fts(database: &Path) -> Result<(), BackupError> {
-    let connection = Connection::open(database).map_err(|_| BackupError::Verification {
+    let store = SqliteStore::open(database).map_err(|_| BackupError::Verification {
         detail: "the restored database could not rebuild memory search",
     })?;
-    let transaction =
-        connection
-            .unchecked_transaction()
-            .map_err(|_| BackupError::Verification {
-                detail: "the restored database could not begin rebuilding memory search",
-            })?;
-    transaction
-        .execute("DELETE FROM memory_fts", [])
+    store
+        .rebuild_memory_fts()
         .map_err(|_| BackupError::Verification {
-            detail: "the restored memory search projection could not be cleared",
+            detail: "the restored memory search projection could not be rebuilt",
         })?;
-    transaction.execute("INSERT INTO memory_fts(project_id,item_id,revision_id,document) SELECT r.project_id,r.item_id,r.id,r.document FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE t.item_id IS NULL", []).map_err(|_| BackupError::Verification {
-        detail: "the restored memory search projection could not be rebuilt",
-    })?;
-    transaction.commit().map_err(|_| BackupError::Verification {
-        detail: "the restored memory search projection could not be committed",
-    })
+    Ok(())
+}
+
+/// Remove a temporary database and the sidecars SQLite may have created for it.
+///
+/// A failed rebuild must leave neither a `.partial` database nor its WAL behind,
+/// and it must never have touched the destination.
+fn remove_database_files(database: &Path) {
+    let _ = std::fs::remove_file(database);
+    for residue in ["-wal", "-shm"] {
+        let mut path = database.as_os_str().to_os_string();
+        path.push(residue);
+        let _ = std::fs::remove_file(PathBuf::from(path));
+    }
 }
 
 /// Fold the outgoing database's WAL into it, set it aside and publish the copy.
@@ -261,9 +293,10 @@ fn publish(
     };
 
     // The restored data now answers to the destination's name, so the copy's own
-    // name is redundant. Removing it is what makes a successful restore leave a
-    // state root with nothing in it but the files that belong there.
-    let _ = std::fs::remove_file(temporary);
+    // name is redundant. Its WAL and shared-memory sidecars are the copy's too:
+    // the rebuild opened it for writing, and a sidecar left beside the state root
+    // is exactly the residue this operation promises not to leave.
+    remove_database_files(temporary);
 
     // Whatever WAL and shared-memory files are left belong to the database that
     // was just set aside. Leaving them here is the one way a restored file can
