@@ -487,10 +487,16 @@ mod security_transport_tests {
     /// collected rather than killed.
     #[test]
     fn a_slow_read_inside_the_read_bound_completes() {
+        assert_eq!(KEYCHAIN_READ_TIMEOUT, std::time::Duration::from_secs(20));
         assert!(
             KEYCHAIN_READ_TIMEOUT > KEYCHAIN_WRITE_TIMEOUT,
             "the read bound must outlive the write bound"
         );
+        // This child answers well inside the bound. The production bound's
+        // expiry is intentionally not waited out here; the connector suite's
+        // blocked-keychain test proves the outer 30 s refusal, and this test
+        // pins the read bound constant and proves a slow read is collected
+        // rather than reported as a failure.
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", "sleep 0.15; printf answered"])

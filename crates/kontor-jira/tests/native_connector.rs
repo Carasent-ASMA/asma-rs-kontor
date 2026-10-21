@@ -1610,6 +1610,112 @@ async fn native_observe_carries_the_issue_body() {
 }
 
 #[tokio::test]
+async fn native_observe_accepts_a_raw_node_sensitive_body_without_echoing_it() {
+    // The raw node already contains `password=...`; this is the shape the
+    // connector's whole-`fields` observation hash used to refuse at `live()`
+    // before `observed_body` could withhold the rendering (ASMA-8515 N-02).
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-9",
+            "id": "9009",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "status": {"id": "10214", "name": "In Development", "statusCategory": {"name": "In Progress"}},
+                "issuetype": {"name": "Task"},
+                "assignee": {"accountId": "acct-1", "displayName": "Operator"},
+                "updated": "2026-08-23T10:00:00.000+0000",
+                "description": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "password=not-a-real-secret"}]
+                    }]
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-9/transitions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "transitions": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/myself"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "accountId": "acct-1"
+        })))
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
+    let response = connector
+        .for_project(project_id)
+        .expect("project is configured")
+        .execute(
+            "observe",
+            &JiraRequest {
+                schema_version: SCHEMA_VERSION,
+                operation: JiraOperation::Observe,
+                issue_key: ExternalId::parse("ASMA-9").expect("issue key"),
+                idempotency_key: IdempotencyKey::parse("native-observe-raw-sensitive-body")
+                    .expect("key"),
+                intent_hash: None,
+                field_spec_hash: None,
+                workflow_spec_hash: None,
+                expected: None,
+                field_writes: Vec::new(),
+                destination: None,
+                ownership_action: OwnershipAction::Preserve,
+                transition: None,
+                authorized_apply: false,
+            },
+        )
+        .await
+        .expect("a raw-node sensitive body is observed, not refused");
+    assert_eq!(response.outcome, JiraOutcome::Observed);
+    let observation = response.observation.expect("observation");
+    assert_eq!(observation.observation_hash.as_str().len(), 64);
+    let body = observation.description.expect("the body is evidence");
+    assert!(body.present);
+    assert!(
+        body.plain_text.as_str().contains("withheld"),
+        "the rendering names the withholding: {}",
+        body.plain_text.as_str()
+    );
+    assert!(
+        !body.plain_text.as_str().contains("not-a-real-secret"),
+        "the sensitive raw text is never echoed"
+    );
+}
+
+#[tokio::test]
 async fn native_requests_time_out_without_holding_the_daemon_open() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -560,11 +560,13 @@ pub struct JiraReconcileReport {
     /// They are skipped before any Jira read or write, so no status can move on
     /// an epic outside the confirmed list.
     pub excluded: usize,
-    /// Subjects held at a durable typed conflict.
+    /// Confirmed epics held at a durable typed conflict.
     ///
-    /// A recorded unresolved conflict is the attention state. Retrying it every
-    /// pass is what produced about 3,100 `revision_conflict` refusals a day
-    /// (ASMA-8515 N-01); an operator resolves the conflict to release it.
+    /// A recorded unresolved conflict is the attention state for a subject in
+    /// the confirmed list. Retrying it every pass is what produced about 3,100
+    /// `revision_conflict` refusals a day (ASMA-8515 N-01); an operator
+    /// resolves the conflict to release it. Conflicts on excluded epics are
+    /// not counted here because those subjects are never read.
     pub attention: usize,
 }
 
@@ -4629,8 +4631,9 @@ impl Services {
         project_id: ProjectId,
         task: &kontor_core::repository::Task,
         plan: &PreparedTicketPlan,
-    ) -> Result<bool, ApiError> {
-        let mut repaired = false;
+    ) -> Result<(bool, bool), ApiError> {
+        let mut resolved = false;
+        let mut applied = false;
         for ticket in &plan.tickets {
             if !matches!(
                 ticket.content_conflict,
@@ -4668,7 +4671,9 @@ impl Services {
                 )
                 .await?;
             if !preview.writes {
-                repaired = true;
+                // The body already agrees; nothing was written. Count it as
+                // convergence, not as an apply.
+                resolved = true;
                 continue;
             }
             let body_hash = kontor_jira::description_hash(&authored)
@@ -4694,9 +4699,10 @@ impl Services {
                 },
             )
             .await?;
-            repaired = true;
+            resolved = true;
+            applied = true;
         }
-        Ok(repaired)
+        Ok((resolved, applied))
     }
 
     /// Compile the internal facts the pure Jira policy is allowed to inspect.
@@ -39580,14 +39586,14 @@ impl Services {
                 // holds the task's authored title, and a previous publication
                 // is better evidence still. Repairing it here is what stops the
                 // same two tasks warning on every pass (ASMA-8515 N-04).
-                let content_repaired = if plan.content_conflicts.is_empty() {
-                    false
+                let (content_resolved, content_applied) = if plan.content_conflicts.is_empty() {
+                    (false, false)
                 } else {
                     match self
                         .repair_placeholder_task_bodies(project.project_id, &task, &plan)
                         .await
                     {
-                        Ok(repaired) => repaired,
+                        Ok(outcome) => outcome,
                         Err(error) => {
                             tracing::warn!(
                                 project_id = %project.project_id,
@@ -39595,11 +39601,11 @@ impl Services {
                                 code = %error.code.as_str(),
                                 "automatic Jira reconciliation could not repair a task body"
                             );
-                            false
+                            (false, false)
                         }
                     }
                 };
-                if !content_repaired && !plan.content_conflicts.is_empty() {
+                if !content_resolved && !plan.content_conflicts.is_empty() {
                     for conflict in &plan.content_conflicts {
                         tracing::warn!(
                             project_id = %project.project_id,
@@ -39612,9 +39618,9 @@ impl Services {
                     report.content_conflicts = report.content_conflicts.saturating_add(1);
                 }
                 if plan.diff.is_empty() {
-                    if content_repaired {
+                    if content_applied {
                         report.applied = report.applied.saturating_add(1);
-                    } else if plan.content_conflicts.is_empty() {
+                    } else if content_resolved || plan.content_conflicts.is_empty() {
                         report.converged = report.converged.saturating_add(1);
                     }
                     continue;

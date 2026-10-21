@@ -478,7 +478,12 @@ impl JiraConnector {
             issue_key: external_at(&issue, &["key"])?,
             issue_id: external_at(&issue, &["id"])?,
         };
-        let observation_hash = CanonicalDocument::from_serializable(&json!({
+        // The whole `fields` object can contain person-authored prose, including
+        // a raw text node that already looks like a credential. Only its digest
+        // is stored; the rendering is withheld by `observed_body`. Hashing it
+        // through the strict constructor would refuse the observation at this
+        // line before that withholding could happen (ASMA-8515 N-02).
+        let observation_hash = CanonicalDocument::from_external_value(&json!({
             "schema_version": 1,
             "key": identity.issue_key.as_str(),
             "project": project,

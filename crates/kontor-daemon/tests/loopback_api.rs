@@ -19170,6 +19170,10 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
         world.daemon.jira_reconciler(),
         world.daemon.state().clone(),
     ));
+    // The controller's first pass is immediate; its next pass is the 30 s
+    // backstop. This asserts the immediate pass follows the same skip path the
+    // explicit replay above proved; waiting for a second poll would add half a
+    // minute without exercising a different decision.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         issue_reads.load(Ordering::SeqCst),
