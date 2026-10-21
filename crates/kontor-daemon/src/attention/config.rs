@@ -11,7 +11,11 @@
 //! once at start, so a change needs a daemon restart.
 
 use std::collections::BTreeSet;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+use kontor_fleet::FleetError;
+use kontor_fleet_activation::{Guard, read_guarded};
 
 use serde::Deserialize;
 
@@ -317,7 +321,7 @@ fn parse_with(document: &str, env: &EnvOverrides) -> Result<AttentionPolicy, Att
 ///
 /// # Errors
 /// Returns [`AttentionConfigError`] when a present file cannot be read or
-/// validated, or when `.env` is readable by anyone but its owner. An absent
+/// validated, or when `.env` is not an owner-only regular file. An absent
 /// `attention.yml` is not an error and emits nothing.
 pub fn read(state_root: &Path) -> Result<Option<AttentionPolicy>, AttentionConfigError> {
     let path = state_root.join(ATTENTION_FILE);
@@ -329,43 +333,56 @@ pub fn read(state_root: &Path) -> Result<Option<AttentionPolicy>, AttentionConfi
     parse_with(&document, &read_env(state_root)?).map(Some)
 }
 
+/// The `.env` file must be owner-only; checked before the shared guard, which
+/// only refuses group/other *write* bits.
+const ENV_READABLE: &str = ".env must be readable only by its owner (chmod 600)";
+
+/// The `.env` file rules, read by the shared guarded reader so it is checked
+/// like every other state-root file: a regular file (a symlink or a FIFO is
+/// refused before it is opened), owned by the state root's owner, bounded and
+/// the same inode when read as when checked.
+const ENV_GUARD: Guard = Guard {
+    symlink: ".env must be a regular file, not a symlink",
+    writable: ENV_READABLE,
+    owner: ".env must be owned by the state root's owner",
+    oversized: ".env exceeds 64 KiB",
+    swapped: ".env changed while it was being read",
+    utf8: ".env is not UTF-8",
+    limit: 64 * 1024,
+};
+
 /// Read the optional owner-only `<state root>/.env`.
 fn read_env(state_root: &Path) -> Result<EnvOverrides, AttentionConfigError> {
     let path = state_root.join(ENV_FILE);
-    let mut file = match std::fs::File::open(&path) {
-        Ok(file) => file,
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
             return Ok(EnvOverrides::default());
         }
         Err(source) => return Err(AttentionConfigError::Read { path, source }),
     };
-    // The mode is checked on the open handle, so the file read is the file
-    // checked.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = file
-            .metadata()
-            .map_err(|source| AttentionConfigError::Read {
-                path: path.clone(),
-                source,
-            })?;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return invalid(".env must be readable only by its owner (chmod 600)");
-        }
+    if metadata.file_type().is_file() && metadata.mode() & 0o077 != 0 {
+        return invalid(ENV_READABLE);
     }
-    let mut document = String::new();
-    std::io::Read::read_to_string(&mut file, &mut document)
-        .map_err(|source| AttentionConfigError::Read { path, source })?;
+    let document = read_guarded(state_root, &path, &ENV_GUARD).map_err(|error| match error {
+        FleetError::Read { source } => AttentionConfigError::Read { path, source },
+        FleetError::Invalid { rule } => AttentionConfigError::Invalid { rule },
+        _ => AttentionConfigError::Invalid {
+            rule: ".env could not be read safely",
+        },
+    })?;
     parse_env(&document)
 }
 
 /// Parse plain `KEY=VALUE` lines and `#` comments.
 ///
-/// Keys outside `KONTOR_ATTENTION_` belong to someone else and are skipped; an
-/// unknown key inside it is a typo that would silently do nothing, so it is
-/// refused. No rule echoes a line, because a line may hold a secret.
+/// A leading UTF-8 BOM and a shell `export ` prefix are accepted. Keys that do
+/// not mention `KONTOR_ATTENTION_` belong to someone else and are skipped; any
+/// other key that is not exactly a known one — a typo, another case, a quoted
+/// key — would silently do nothing, so it is refused. No rule echoes a line,
+/// because a line may hold a secret.
 fn parse_env(document: &str) -> Result<EnvOverrides, AttentionConfigError> {
+    let document = document.strip_prefix('\u{feff}').unwrap_or(document);
     let mut overrides = EnvOverrides::default();
     for line in document.lines() {
         let line = line.trim();
@@ -375,11 +392,16 @@ fn parse_env(document: &str) -> Result<EnvOverrides, AttentionConfigError> {
         let Some((key, value)) = line.split_once('=') else {
             return invalid(".env lines must be KEY=VALUE or # comments");
         };
-        let slot = match key.trim() {
+        let key = key.trim();
+        let key = key
+            .strip_prefix("export")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map_or(key, str::trim_start);
+        let slot = match key {
             ENV_TEAMS_URL => &mut overrides.teams_url,
             ENV_MENTIONS => &mut overrides.mentions,
-            other if other.starts_with(ENV_PREFIX) => {
-                return invalid(".env names an unknown KONTOR_ATTENTION_ key");
+            other if unquote(other).to_ascii_uppercase().contains(ENV_PREFIX) => {
+                return invalid(".env names an unknown or misspelled KONTOR_ATTENTION_ key");
             }
             _ => continue,
         };
@@ -674,7 +696,7 @@ emit:
         assert!(matches!(
             parse_env("KONTOR_ATTENTION_MENTION=a@example.com\n"),
             Err(AttentionConfigError::Invalid {
-                rule: ".env names an unknown KONTOR_ATTENTION_ key"
+                rule: ".env names an unknown or misspelled KONTOR_ATTENTION_ key"
             })
         ));
         assert!(matches!(
@@ -687,7 +709,95 @@ emit:
         ));
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn a_leading_bom_is_accepted() {
+        let parsed = parse_env("\u{feff}KONTOR_ATTENTION_MENTIONS=a@example.com\n")
+            .expect("a BOM-prefixed file");
+        assert_eq!(parsed.mentions.as_deref(), Some("a@example.com"));
+    }
+
+    #[test]
+    fn a_shell_export_prefix_is_accepted() {
+        let parsed = parse_env(
+            "export KONTOR_ATTENTION_MENTIONS=a@example.com\nexport\tKONTOR_ATTENTION_TEAMS_URL=https://a.example/w\n",
+        )
+        .expect("export lines");
+        assert_eq!(parsed.mentions.as_deref(), Some("a@example.com"));
+        assert_eq!(parsed.teams_url.as_deref(), Some("https://a.example/w"));
+    }
+
+    #[test]
+    fn a_key_in_another_case_is_refused_not_ignored() {
+        assert!(matches!(
+            parse_env("kontor_attention_mentions=a@example.com\n"),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env names an unknown or misspelled KONTOR_ATTENTION_ key"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_quoted_key_is_refused_not_ignored() {
+        assert!(matches!(
+            parse_env("\"KONTOR_ATTENTION_MENTIONS\"=a@example.com\n"),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env names an unknown or misspelled KONTOR_ATTENTION_ key"
+            })
+        ));
+        assert!(matches!(
+            parse_env("export 'KONTOR_ATTENTION_TEAMS_URL'=https://a.example/w\n"),
+            Err(AttentionConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn one_key_from_env_and_the_other_from_yaml() {
+        let policy = parse_with(EXAMPLE, &env(Some(SECRET_URL), None)).expect("url from .env");
+        assert_eq!(policy.destinations[0].url, SECRET_URL);
+        assert_eq!(policy.mention.targets, ["operator@example.com"]);
+
+        let policy =
+            parse_with(EXAMPLE, &env(None, Some("igor@example.com"))).expect("mentions from .env");
+        assert_eq!(
+            policy.destinations[0].url,
+            "https://example.logic.azure.com/workflows/attention"
+        );
+        assert_eq!(policy.mention.targets, ["igor@example.com"]);
+    }
+
+    #[test]
+    fn a_non_regular_env_is_refused_without_opening_it() {
+        let root = tempfile::tempdir().expect("a state root");
+        std::fs::write(root.path().join(ATTENTION_FILE), EXAMPLE).expect("the policy");
+        let env_path = root.path().join(ENV_FILE);
+
+        // A FIFO would block an open() forever; the guard refuses it first.
+        let made = std::process::Command::new("mkfifo")
+            .arg(&env_path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success());
+        assert!(matches!(
+            read(root.path()),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env must be a regular file, not a symlink"
+            })
+        ));
+        std::fs::remove_file(&env_path).expect("remove the FIFO");
+
+        let target = root.path().join("real.env");
+        std::fs::write(&target, format!("{ENV_MENTIONS}=igor@example.com\n")).expect("target");
+        std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .expect("chmod");
+        std::os::unix::fs::symlink(&target, &env_path).expect("symlink");
+        assert!(matches!(
+            read(root.path()),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env must be a regular file, not a symlink"
+            })
+        ));
+    }
+
     #[test]
     fn the_env_file_is_read_at_start_only_when_owner_only() {
         use std::os::unix::fs::PermissionsExt;

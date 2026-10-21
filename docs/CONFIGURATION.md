@@ -900,15 +900,23 @@ placeholder sample.
   whole `mention` block). Kinds, timeouts and attempts stay in `attention.yml`.
   `KONTOR_ATTENTION_TEAMS_URL` is refused unless exactly one `teams_workflow`
   sink exists.
-- **Arming.** `.env` is read only when `attention.yml` is present; `.env` alone
-  emits nothing.
-- **File mode.** `.env` must be readable only by its owner (`chmod 600`); a
-  file with any group or other permission bit refuses the start with a typed
-  rule.
-- **Format.** Plain `KEY=VALUE` lines and `#` comments; one pair of surrounding
-  quotes is stripped. Keys outside `KONTOR_ATTENTION_` are ignored, an unknown
-  `KONTOR_ATTENTION_` key or a repeated key is refused. No error or log prints a
-  value.
+- **Arming.** `attention.yml` is required: `.env` is read only when
+  `attention.yml` is present, so `.env` alone emits nothing. Once
+  `attention.yml` exists, a field it omits must come from `.env`; if neither
+  supplies the URL (or the mention list), the daemon refuses to start, by
+  design.
+- **File rules.** `.env` is read by the same guarded reader as other
+  state-root files. It must be a regular file (a symlink, FIFO or device is
+  refused without being opened), owned by the state root's owner, readable only
+  by its owner (`chmod 600`; any group or other permission bit is refused), at
+  most 64 KiB, UTF-8, and the same file when read as when checked. Each
+  failure refuses the start with a typed rule.
+- **Format.** Plain `KEY=VALUE` lines and `#` comments; a leading UTF-8 BOM and
+  a shell `export ` prefix are accepted, and one pair of surrounding quotes is
+  stripped from a value. Keys that do not mention `KONTOR_ATTENTION_` are
+  ignored. Any other key that is not exactly one of the two above — a typo,
+  another letter case, a quoted key — is refused, as is a repeated key or a
+  line without `=`. No error or log prints a value.
 - **Restart.** Values are read once when the daemon starts. There is no hot
   reload: restart the daemon after editing `.env`.
 
