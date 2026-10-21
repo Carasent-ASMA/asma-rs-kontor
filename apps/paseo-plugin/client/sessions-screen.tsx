@@ -44,6 +44,7 @@ import {
   MORE_STATUS_FILTERS,
   QUICK_STATUS_FILTERS,
   statusFilterLabel,
+  sessionAvailabilityLabel,
   type SessionFilters,
   type StatusFilter,
 } from "./session-view";
@@ -88,6 +89,9 @@ import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
 import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
+import { useSessionLifecycle } from "./use-session-lifecycle";
+import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
+import { useSessionAvailability } from "./use-session-availability";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -366,12 +370,12 @@ export const SessionRow = memo(function SessionRow({
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join(". ");
-  const meta = [displayContext, archived, history].filter((part): part is string => !!part).join(" · ");
+  const meta = [displayContext, archived, history, sessionAvailabilityLabel(entry)].filter((part): part is string => !!part).join(" · ");
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
   // Compact: the title and context lead, then model/report metadata can wrap.
   // The state badge stays visible; the native ID remains in the accessible label.
-  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history]
+  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history, sessionAvailabilityLabel(entry)]
     .filter((part): part is string => !!part)
     .join(" · ");
 
@@ -584,6 +588,7 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
 }
 
 type SessionResultRowProps = {
+  readonly lifecycleAction?: ReactNode;
   readonly entry: DirectoryEntry;
   readonly provenance: SessionProvenance;
   readonly colors: ThemeColors;
@@ -598,7 +603,7 @@ type SessionResultRowProps = {
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details, lifecycleAction }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
   const time = useUpdatedTime(entry.updatedAt, live);
@@ -634,11 +639,13 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           {provenance.parts.join(" › ")}
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
+        {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
         {compact ? <SessionUsage entry={entry} colors={colors} /> : null}
       </Pressable>
       {details}
       <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
         accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
+      {lifecycleAction}
     </View>
   );
 });
@@ -874,6 +881,7 @@ export function SlimActionButton({
  * native freshness pill shows it once, and problems surface in the source banner.
  */
 export function SlimToolbar({
+  action,
   hostLabel,
   activeCount,
   colors,
@@ -884,6 +892,7 @@ export function SlimToolbar({
   onFilters,
   onHide,
 }: {
+  readonly action?: ReactNode;
   readonly hostLabel: string;
   readonly activeCount: number;
   readonly colors: ThemeColors;
@@ -919,6 +928,7 @@ export function SlimToolbar({
           {hostLabel}
         </Text>
       </View>
+      {action}
       <SlimActionButton
         testID="sessions-slim-search"
         label="Search"
@@ -1351,7 +1361,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     includeArchived: view.includeArchived,
     enabled: directory === undefined,
   });
-  const { state, refresh } = directory ?? localDirectory;
+  const { state: rawState, refresh } = directory ?? localDirectory;
+  const availability = useSessionAvailability(host.id, rawState.entries, hostOnline && rawState.status === "ready" && view.status === "attention");
+  const state = useMemo(() => ({ ...rawState, entries: availability.entries }), [rawState, availability.entries]);
+  const lifecycle = useSessionLifecycle(host.id, refresh);
+  const [lifecycleOpen, setLifecycleOpen] = useState(false);
+  const lifecycleAnchor = useRef<View | null>(null);
+  const recoveryButton = useRef<View | null>(null);
+  const slimRecoveryButton = useRef<View | null>(null);
+  const archiveButtons = useRef(new Map<string, View>());
+  useEffect(() => { setLifecycleOpen(false); }, [host.id]);
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
   const shortcut = view.shortcut ?? null;
   const grouping: SessionGrouping = view.grouping ?? preferences.grouping;
@@ -2140,6 +2159,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </View>
   ) : null;
   const OptionsContainer = compact ? View : ScrollView;
+  const toolbar = toolbarLayout({ collapsed: toolbarCollapsed, compact });
   const fullToolbar = (
     <View
       testID="sessions-full-toolbar"
@@ -2147,6 +2167,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       style={{ gap: 8 }}
     >
       {compact ? null : notices}
+      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+        {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Recover" accessibilityLabel="Recover sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
+        {view.status === "attention" ? <>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{availability.checking ? "Checking exact session IDs…" : "Attention excludes confirmed missing IDs. Unknown availability stays visible."}</Text>
+          <Action small={!compact} colors={colors} label="Check availability" onPress={availability.refresh} />
+        </> : null}
+      </View>
 
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         {scopeLabel ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
@@ -2385,17 +2413,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height });
   };
 
-  const toolbar = toolbarLayout({
-    collapsed: toolbarCollapsed,
-    compact,
-  });
-  const mobileToolbar = <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24)}
+  const mobileToolbar = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+    <View style={{ flex: 1, minWidth: 0 }}>
+    <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
     query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
     summary={[scopeLabel, ...summaryParts, grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null].filter(Boolean).join(" · ")}
     searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
     onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onClear={handleClearFilters}
-    onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />;
+    onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
+    </View>
+    <View style={{ width: 80, alignItems: "flex-end" }}>
+      <Action ref={slimRecoveryButton} colors={colors} label="Recover" accessibilityLabel="Recover sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+        onPress={() => { quickHelpDismissRef.current?.(); setQuickChooserScope(null); lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />
+    </View>
+  </View>;
   const quickChooserLayer = compact && !mobileFiltersOpen && quickChooserScope === viewScope ? <MobileQuickChooser
     root={rootRef} rootSize={rootSize} anchor={quickChooserRef} colors={colors} status={view.status} counts={statusCounts}
     onStatus={(status) => updateFilter({ status })} onClose={() => setQuickChooserScope(null)} /> : null;
@@ -2428,6 +2460,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     >
       <SlimToolbar
+        action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Recover" accessibilityLabel="Recover sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
         hostLabel={host.label}
         activeCount={slimActiveCount}
         colors={colors}
@@ -2629,9 +2663,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         ListHeaderComponent={listHeader}
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
-            ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} />
-            : undefined;
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} />;
+            ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
+          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+                buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
+                onPress={() => { lifecycle.clear(); lifecycleAnchor.current = archiveButtons.current.get(item.entry.id) ?? slimRecoveryButton.current; setLifecycleOpen(true); void lifecycle.prepare("archive", "filtered", [item.entry.id]); }} /> : null;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -2641,6 +2677,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             details={details}
+            lifecycleAction={lifecycleAction}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
@@ -2706,6 +2743,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionMenuLayer}
       {detailsLayer}
       {quickChooserLayer}
+      {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
+        onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); }} /> : null}
     </View>
   );
 }
