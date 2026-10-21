@@ -1,0 +1,83 @@
+# Compatibility fixture A: alias and route-order change over the same fleet
+# policy. The canonical model id, effort and vendor stay the same; only the
+# host-local native aliases and the route order differ. The fleet policy is
+# unchanged. Test data, not a deployment file.
+schema_version: 1
+time_zone: Europe/Oslo
+
+paths:
+  state_root: /srv/kontor/desktop/realm
+  data_root: /srv/kontor/desktop/data
+  worktrees_root: /srv/kontor/desktop/worktrees
+  paseo_home: /srv/kontor/desktop/paseo
+  logs: /var/log/kontor/desktop
+
+binaries:
+  paseo: /opt/paseo/bin/paseo
+  git: /usr/bin/git
+  gh: /usr/bin/gh
+  python: /usr/bin/python3
+  cargo: /usr/local/bin/cargo
+
+project_cli:
+  example: /opt/example/bin/example
+
+runtime:
+  kontord:
+    endpoint: http://127.0.0.1:7717
+    port: 7717
+  paseo:
+    endpoint: ws://127.0.0.1:6767/ws
+    port: 6767
+
+provider_accounts:
+  claude-primary:
+    provider: claude
+    native_alias: desktop-claude-a
+    harness: paseo
+    credential: keychain:desktop/claude-primary
+    serves:
+      opus-example: claude-opus-example
+  claude-secondary:
+    provider: claude
+    native_alias: desktop-claude-b
+    harness: paseo
+    credential: keychain:desktop/claude-secondary
+    serves:
+      opus-example: claude-opus-example
+  codex-primary:
+    provider: codex
+    native_alias: desktop-codex-a
+    harness: paseo
+    credential: keychain:desktop/codex-primary
+    serves:
+      sol-example: gpt-example
+  cursor:
+    provider: cursor
+    native_alias: desktop-cursor-a
+    harness: paseo
+    credential: keychain:desktop/cursor
+    serves:
+      grok-example: grok-example
+  opencode:
+    provider: opencode
+    native_alias: desktop-open-model-a
+    harness: opencode
+    credential: keychain:desktop/opencode
+    serves:
+      open-example: example/model
+
+# The desktop prefers the secondary Claude slot.
+routes:
+  claude: [claude-secondary, claude-primary]
+  codex: [codex-primary]
+  cursor: [cursor]
+  opencode: [opencode]
+
+keychain:
+  service_prefix: desktop-kontor
+
+launchd:
+  labels:
+    daemon: com.desktop.kontor.daemon
+    desk: com.desktop.kontor.desk

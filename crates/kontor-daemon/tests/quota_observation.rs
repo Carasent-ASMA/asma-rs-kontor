@@ -49,24 +49,24 @@ fn codex_signal_for(alias: &str) -> QuotaSignal {
     }
 }
 
-/// The codex fingerprint the realm actually ships, read from
-/// `config/examples/quota-signals.yml` through the production parser.
+/// The codex fingerprint the test realm ships, read from
+/// `tests/fixtures/config/quota-signals.yml` through the production parser.
 ///
-/// Deliberately not a copy. `include_str!` binds this test to the real bytes, so
+/// Deliberately not a copy. `include_str!` binds this test to the fixture bytes, so
 /// weakening a marker in that file changes this test's input and recompiles it;
-/// a duplicated marker list here would stay green while the shipped signal got
+/// a duplicated marker list here would stay green while the fixture signal got
 /// looser, which is the failure this test exists to prevent.
 fn shipped_signal_for(alias: &str) -> QuotaSignal {
     let document = kontor_accounts::parse_quota_signals(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../config/examples/quota-signals.yml"
+        "/../../tests/fixtures/config/quota-signals.yml"
     )))
-    .expect("the shipped example parses and validates");
+    .expect("the quota-signals fixture parses and validates");
     document
         .signals
         .into_iter()
         .find(|signal| signal.provider == alias)
-        .unwrap_or_else(|| panic!("the shipped example carries a signal for {alias}"))
+        .unwrap_or_else(|| panic!("the fixture carries a signal for {alias}"))
 }
 
 /// Create an account addressable as `codex-work`.
@@ -1127,10 +1127,10 @@ async fn an_identical_semantic_refusal_still_proposes_exact_provenance() {
 ///
 /// The last case is the one that matters. `codex_signal_for` carries the single
 /// loose marker `usage limit`, which any assistant message discussing limit
-/// handling contains; the shipped fingerprint in `config/examples/quota-signals.yml`
+/// handling contains; the fixture fingerprint in `tests/fixtures/config/quota-signals.yml`
 /// deliberately demands the system-error framing, the settings URL and the retry
 /// wording *together* for exactly this reason. Both are asserted here, so a
-/// future loosening of the shipped signal fails a test rather than archiving a
+/// future loosening of the fixture signal fails a test rather than archiving a
 /// live seat over an assistant sentence.
 #[tokio::test]
 async fn a_no_match_appends_no_provenance_and_moves_no_pointer() {

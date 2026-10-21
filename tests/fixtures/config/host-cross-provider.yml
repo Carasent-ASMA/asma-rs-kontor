@@ -1,0 +1,88 @@
+# Compatibility fixture B: a different provider/harness route for the same
+# unchanged fleet policy. The `open-example` model keeps its canonical id,
+# vendor and effort; this host serves it through the qualified `glm-acp-agent`
+# route instead of the OpenCode route. The fleet policy is not edited.
+# Test data, not a deployment file.
+schema_version: 1
+time_zone: Europe/Oslo
+
+paths:
+  state_root: /srv/kontor/cross/realm
+  data_root: /srv/kontor/cross/data
+  worktrees_root: /srv/kontor/cross/worktrees
+  paseo_home: /srv/kontor/cross/paseo
+  logs: /var/log/kontor/cross
+
+binaries:
+  paseo: /opt/paseo/bin/paseo
+  git: /usr/bin/git
+  gh: /usr/bin/gh
+  python: /usr/bin/python3
+  cargo: /usr/local/bin/cargo
+
+project_cli:
+  example: /opt/example/bin/example
+
+runtime:
+  kontord:
+    endpoint: http://127.0.0.1:7717
+    port: 7717
+  paseo:
+    endpoint: ws://127.0.0.1:6767/ws
+    port: 6767
+
+provider_accounts:
+  claude-primary:
+    provider: claude
+    native_alias: cross-claude-a
+    harness: paseo
+    credential: keychain:cross/claude-primary
+    serves:
+      opus-example: claude-opus-example
+  claude-secondary:
+    provider: claude
+    native_alias: cross-claude-b
+    harness: paseo
+    credential: keychain:cross/claude-secondary
+    serves:
+      opus-example: claude-opus-example
+  codex-primary:
+    provider: codex
+    native_alias: cross-codex-a
+    harness: paseo
+    credential: keychain:cross/codex-primary
+    serves:
+      sol-example: gpt-example
+  cursor:
+    provider: cursor
+    native_alias: cross-cursor-a
+    harness: paseo
+    credential: keychain:cross/cursor
+    serves:
+      grok-example: grok-example
+  opencode:
+    # A different provider and harness for the same canonical model. The
+    # qualification names the contract revision that proved the route; without
+    # it the route is refused rather than silently substituted.
+    provider: glm-acp-agent
+    native_alias: cross-glm-acp-a
+    harness: acp-agent
+    credential: keychain:cross/glm-acp-agent
+    serves:
+      open-example: glm-5.3
+    efforts: [high, max]
+    qualification: 'glm-acp-agent@1'
+
+routes:
+  claude: [claude-primary, claude-secondary]
+  codex: [codex-primary]
+  cursor: [cursor]
+  opencode: [opencode]
+
+keychain:
+  service_prefix: cross-kontor
+
+launchd:
+  labels:
+    daemon: com.cross.kontor.daemon
+    desk: com.cross.kontor.desk

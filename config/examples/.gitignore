@@ -1,0 +1,2 @@
+# host.yml is this machine's own bootstrap input and is never committed.
+host.yml

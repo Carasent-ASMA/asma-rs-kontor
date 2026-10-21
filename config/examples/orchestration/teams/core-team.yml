@@ -1,0 +1,18 @@
+# Neutral Core Team example. It pins one role catalog revision and declares
+# both mandatory seats in order. Replace the synthetic catalog identity and
+# content hash with the revision the Realm holds before publishing.
+schema_version: 1
+version: 1
+role_catalog:
+  catalog_id: 01936f5a-1000-7000-8000-000000000000
+  version: 1
+  content_hash: 0000000000000000000000000000000000000000000000000000000000000000
+seats:
+  - role_slot_id: lsa
+    role_code: LSA
+    presence: required
+    ad_hoc_allowed: false
+  - role_slot_id: tpm
+    role_code: TPM
+    presence: required
+    ad_hoc_allowed: false
