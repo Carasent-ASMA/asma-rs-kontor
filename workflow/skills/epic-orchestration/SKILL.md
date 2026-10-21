@@ -98,11 +98,9 @@ may give the operator combined LSA/TPM/lead responsibility.
 Applies to new work.
 
 - Seats heal and finish their own work; no one babysits them.
-- Architecture and decision-record questions go to
-  `{{ project.decision_authorities.architecture }}` within its scope. Only a
-  real decision that authority cannot resolve goes to
-  `{{ project.decision_authorities.platform }}`. No status questions, no
-  "what next" questions, no heartbeat-like pings.
+- Only a real human decision that seats, advisors and committees cannot
+  resolve goes to `{{ project.decision_authorities.platform }}`. No status
+  questions, no "what next" questions, no heartbeat-like pings.
 - When a real decision is missing: notify `{{ project.decision_authorities.platform }}`,
   start advisor children the decision owner can talk to, and stop only the
   blocked ticket and the tickets that depend on it. All other work keeps moving.

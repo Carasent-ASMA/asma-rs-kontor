@@ -99,7 +99,7 @@ copy named below, not carried as a stale fact.
 
 | Row | Source skill | Disposition |
 | --- | --- | --- |
-| WP03-INV-01 | `epic-orchestration`, `orchestration-surface-transition` | Project-specific named authorities and personal escalation wording are replaced by `{{ project.decision_authorities.platform }}` and `{{ project.decision_authorities.architecture }}`; the parameter values name the authority, and the skill names no person. |
+| WP03-INV-01 | `epic-orchestration`, `orchestration-surface-transition` | Project-specific named authorities and personal escalation wording are replaced by `{{ project.decision_authorities.platform }}`; the parameter value names the platform authority, and the skill names no person. The architecture/ADR authority part belongs to WP-04. |
 | WP03-INV-02 | `epic-orchestration`, `paseo-direct-native-placement`, `seat-handoff` | The TPM cadence profile is `{{ project.supervision }}`; the Paseo watchdog/recovery policy is `<state-root>/supervision.yml`, sampled by `config/examples/paseo-supervision.yml`. One key does not stand for both files, and neither is a mirror of an owner-local state file. |
 | WP03-INV-03 | `agent-dispatch` | Host asset paths, account/keychain items and the real worktree example are removed; host values belong in `host.yml`, and examples use synthetic paths. |
 | WP03-INV-04 | `mini-project-kickoff`, `tracker-linked-creation` | Tracker scope is `{{ project.tracker.project_key }}`; issue types, status names and transition ids are read live from the pinned tracker catalog, never copied into the skill. |
