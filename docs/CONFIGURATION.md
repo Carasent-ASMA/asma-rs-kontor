@@ -53,6 +53,7 @@ Kontor YAML; a harness-owned file is a generated projection instead.
   orchestration/teams/core-team.yml one pinned Core Team roster
   orchestration/*.yml               workstreams and other project policy
   orchestration/tpm-supervision.yml  autonomous TPM cadence profile
+  orchestration/pr-desk.yml         PR desk policy: start budget, active-PR policy, silence windows, round limits
   tracker/*.yml                     tracker connection, field/workflow specs and credential references
   packs/*.yml                       team and profile overlay, committee presets and role prompts
   forge/github-app.example.yml      committed GitHub App placeholder
@@ -73,8 +74,9 @@ its own base and validation:
 
 | Class | Keys | Base | Validation |
 | --- | --- | --- | --- |
-| Config-file reference | `fleet`, `core_team`, `project.team_pack`, `project.fleet`, `project.supervision`, `project.tracker.spec` | the selected config folder root | Relative only, contained in the folder, must exist. `..` escapes and absolute paths are refused. |
+| Config-file reference | `fleet`, `core_team`, `project.team_pack`, `project.fleet`, `project.supervision`, `project.tracker.spec`, `project.pr_desk.settings` | the selected config folder root | Relative only, contained in the folder, must exist. `..` escapes and absolute paths are refused. |
 | Project resource path | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.decision_authorities.decision_records_root` | a declared `project.resource_roots` entry | The first segment is a root key; the root maps to a repository in `project.forge.repositories`, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused. Never resolved from, or checked for containment inside, the config folder. |
+| Desk history path | `project.pr_desk.history_root` | `host.paths.data_root` | Relative only and contained; absolute paths and `..` segments are refused. The learning log is `<history_root>/learning.log`. An absolute `host.paths.pr_desk` overrides the history root. |
 | Host path | `host.paths.*`, `host.binaries.*`, `host.project_cli.*` | this machine's filesystem | Absolute or `PATH`-resolved host state. Not a config reference. |
 | Convention | `project.worktree_layout` | the project's checkout convention | A pattern with `<key-slug>` and `<module>`, not a path to resolve. |
 | Credential reference | `credential`, `project.tracker.credential_alias` | the deployment's secret store | A non-secret reference such as `keychain:<service>/<account>`; never a value. |
@@ -124,7 +126,7 @@ It is a bootstrap input, never an activated policy.
 | --- | --- | --- |
 | `schema_version` | integer | `1` |
 | `time_zone` | IANA zone | Default zone for human-facing times; a captured vendor message keeps its own zone. |
-| `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; absolute paths on this machine. |
+| `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; optional `pr_desk`, an absolute desk history root that overrides `project.pr_desk.history_root`; absolute paths on this machine. |
 | `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
 | `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
 | `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
@@ -244,7 +246,8 @@ manifest reader changes before KR-14.
 For ASMA, the selected folder is `asma-modules/config/`. Its successor
 references are `fleet: orchestration/fleet.yml`,
 `supervision: orchestration/tpm-supervision.yml` (the TPM cadence profile),
-`tracker.spec: tracker/jira.yml` and `team_pack: packs/team.yml`; its project
+`tracker.spec: tracker/jira.yml`, `pr_desk.settings: orchestration/pr-desk.yml`
+and `team_pack: packs/team.yml`; its project
 resources use `resource_roots` `modules`/`kontor` against the two repositories.
 The Paseo watchdog policy is not a project key: it is
 `<state-root>/supervision.yml`. The fixtures above are labelled for that
@@ -319,6 +322,7 @@ and ASMA's concrete values are the test case in
 | `team_pack` | path | Folder-relative team/profile overlay. |
 | `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
 | `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
+| `pr_desk` | mapping | `command` (the desk invocation line), `settings` (folder-relative `orchestration/pr-desk.yml`), `history_root` (relative to `host.paths.data_root`); see the PR desk contract below. |
 | `merge_authority` | mapping | `role`, `policy`. |
 | `documentation_roots` | list | Project documentation roots. |
 | `gap_ledger` | path | Project gap ledger. |
@@ -338,6 +342,30 @@ owner-set project value scoped per team run (ASMA 2); the placement rule does
 not supply it, it is not a global team-run ceiling, and kontord has no such
 field.
 
+### The PR desk contract
+
+`project.pr_desk` is the owning parameter block for the project's PR desk:
+
+- `command` is the command line that invokes the desk in the project checkout.
+  ASMA's is `python3 _tools/ai-orchestration/pr_desk.py`; a neutral project
+  supplies its own executable or script.
+- `settings` is a config-file reference to `orchestration/pr-desk.yml`. It
+  resolves from the selected config folder, stays inside it, and must exist.
+- `history_root` is the desk history root relative to `host.paths.data_root`.
+  The learning log is `<host.paths.data_root>/<history_root>/learning.log`.
+
+`host.paths.pr_desk` is optional host bootstrap data. When present it is an
+absolute history root and wins over the data-root resolution, so the learning
+log becomes `<host.paths.pr_desk>/learning.log`. When absent, the project's
+`history_root` applies.
+
+`orchestration/pr-desk.yml` carries `schema_version` and the desk policy:
+`poll_start_budget`, `active_pr_policy`, `ready_silence_days`,
+`draft_silence_days`, `fix_round_limit` and `revise_round_limit`. The budget,
+the two silence windows and both round limits are positive integers.
+`active_pr_policy` is `unlimited` or `one_active`. The neutral example uses
+sample values; ASMA's values are in the schema test fixture.
+
 ASMA's values, exercised by the schema test:
 
 | Key | ASMA value |
@@ -351,6 +379,9 @@ ASMA's values, exercised by the schema test:
 | `forge.base_branch` | `master` |
 | `cli.command` | `asma` |
 | `project.supervision` | `orchestration/tpm-supervision.yml` (`autonomous_tpm_v1` TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
+| `project.pr_desk.command` | `python3 _tools/ai-orchestration/pr_desk.py` |
+| `project.pr_desk.settings`, `project.pr_desk.history_root` | `orchestration/pr-desk.yml`, `pr-review` |
+| `orchestration/pr-desk.yml` policy | `poll_start_budget: 3`, `active_pr_policy: unlimited`, `ready_silence_days: 3`, `draft_silence_days: 15`, `fix_round_limit: 2`, `revise_round_limit: 2` |
 | `documentation_roots` | `modules/_docs`, `kontor/docs` |
 | `check_runs` | `asma/publication-branch-title`, `asma/publication-identity` |
 | `capacity` | `max_delivery_seats: 2` (owner-set, per team run), `max_parallel_tasks: 7` (Paseo-direct placement ceiling), `start_admission: 4` (placement start) |

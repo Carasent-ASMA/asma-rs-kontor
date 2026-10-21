@@ -1,0 +1,10 @@
+# ASMA's PR desk policy values as the schema's test case. Test data, not a
+# live config file: the values mirror `_tools/ai-orchestration/pr_desk.py` in
+# the asma-modules checkout.
+schema_version: 1
+poll_start_budget: 3
+active_pr_policy: unlimited
+ready_silence_days: 3
+draft_silence_days: 15
+fix_round_limit: 2
+revise_round_limit: 2
