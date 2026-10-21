@@ -17,6 +17,8 @@ export type HostEvent = {
     | "copyText"
     | "toast"
     | "simulated.update"
+    | "simulated.review"
+    | "simulated.lifecycle"
     | "paseo.unsupported";
   readonly detail: string;
 };

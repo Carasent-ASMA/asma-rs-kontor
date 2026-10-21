@@ -4,6 +4,8 @@ import { DEFAULT_KEYBOARD_SETTINGS, keyboardSettingsSchema, type KeyboardSetting
 import { baseSessions, deskSessions, DESK_PROJECTS, DESK_WORKSPACES, roleSessions, scrollSessions, timeSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
 import { modelUsageSessions } from "../fixtures/model-usage";
 import { lifecycleSessions } from "../fixtures/lifecycle";
+import { recoverySessions } from "../fixtures/recovery";
+import { fixtureLifecycle } from "./session-lifecycle";
 import { integrationSessions } from "../fixtures/integration";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
@@ -36,7 +38,7 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions }[scenario.inventory];
+const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions, recovery: recoverySessions }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };
@@ -124,9 +126,11 @@ export const fakePaseo = refusingProxy("paseo", {
 
 // Configured sources (plugin RPC) --------------------------------------------
 
+const lifecycleRpc = fixtureLifecycle(fixtureSessions, simulateUpdate);
 export async function invokeRpc(method: string, input: unknown): Promise<unknown> {
   await new Promise((resolve) => setTimeout(resolve, 60));
   if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
+  if (method.startsWith("sessions.")) return lifecycleRpc(method, input);
   const reads = scenario.sources ? SOURCE_READS : [];
   switch (method) {
     case "sources.list":

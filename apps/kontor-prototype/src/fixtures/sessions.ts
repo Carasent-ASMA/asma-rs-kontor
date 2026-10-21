@@ -9,6 +9,9 @@
  */
 type NativeTelemetry = Pick<import("../../../paseo-plugin/client/session-directory").AgentDirectoryPage["agent"], "runtimeInfo" | "lastUsage" | "thinkingOptionId" | "effectiveThinkingOptionId">;
 export type FixtureAgent = NativeTelemetry & {
+  currentModeId?: string;
+  lastError?: string;
+  persistence?: { provider: string; sessionId: string };
   id: string;
   title: string;
   status: "initializing" | "idle" | "running" | "error" | "closed";

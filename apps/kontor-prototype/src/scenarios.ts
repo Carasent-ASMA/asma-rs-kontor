@@ -11,7 +11,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration";
+  readonly inventory: "base" | "large" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "recovery";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -42,6 +42,7 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "session-recovery", title: "Recovery and archive (simulated)", summary: "Fictional interrupted/quota/auth/unknown/waiting/children/concurrent/partial-failure cases. Manual review only; no real inventory effects. Bulk takeover remains open.", inventory: "recovery", sources: true, start: { status: "attention", grouping: "flat" } },
   { id: "compact-icons", title: "Compact controls: combined review", summary: "Fictional combined inventory: configured/reported/missing/custom models, absent/zero token reports, stale cases, roles and long titles. Hover or focus controls for help; touch opens exact Details. Source and status semantics remain unchanged.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" } },
   { id: "compact-icons-stale", title: "Compact controls: stale inventory", summary: "The combined fixture host goes offline at 3 seconds; model and counter report age remains unknown. Details preserves all source limits.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" }, hostOfflineAfterMs: 3000 },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
