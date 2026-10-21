@@ -2,7 +2,10 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({ View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-import { SessionStateMarker } from "../client/session-state-marker";
+import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { sessionStatusInk } from "../client/session-status-ink";
+import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
+import type { StatusFilter } from "../client/session-view";
 import { STATE_LABELS, type OrganizationState } from "../client/session-organization";
 import type { Colors } from "../client/page-controls";
 
@@ -24,9 +27,10 @@ function elements(node: ReactNode): Element[] {
   return [node, ...elements(node.props.children as ReactNode)];
 }
 function drawing(state: OrganizationState, colors = dark) {
-  const root = SessionStateMarker({ state, colors });
-  const symbol = elements(root).find(node => node.type === "Text")!;
-  return { root, symbol, color: (symbol.props.style as { color: string }).color };
+  const adapted = SessionStateMarker({ state, colors });
+  const root = SessionStatusIcon(adapted.props);
+  const symbol = elements(root).find(node => node.type === "Icon")!;
+  return { root, symbol, color: symbol.props.color as string };
 }
 function luminance(hex: string): number {
   const channels = hex.match(/[a-f\d]{2}/gi)!.map(value => parseInt(value, 16) / 255);
@@ -39,14 +43,34 @@ function contrast(a: string, b: string): number {
 }
 
 describe("compact session status markers", () => {
+  it("uses the agreed session icons and keeps history and filter choices distinct", () => {
+    expect(QUICK_FILTER_ICONS).toEqual({
+      all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
+      needs_input: "MessageCircleQuestion", attention: "Bell", favorites: "Star",
+      initializing: "Loader", closed: "Square", earlier_error: "History",
+    });
+  });
   it("distinguishes all seven states without hue or repeated status words", () => {
     const monochrome = { ...dark, accent: dark.foregroundMuted, statusSuccess: dark.foregroundMuted, statusWarning: dark.foregroundMuted, statusDanger: dark.foregroundMuted };
     const drawings = states.map(state => drawing(state, monochrome));
-    expect(new Set(drawings.map(value => value.symbol.props.children)).size).toBe(7);
+    expect(new Set(drawings.map(value => value.symbol.props.name)).size).toBe(7);
+    expect(drawings.map(value => value.symbol.props.name)).toEqual(states.map(state => QUICK_FILTER_ICONS[state === "failed" ? "error" : state]));
     for (const { root, symbol } of drawings) {
-      expect(symbol.props.children).toMatch(/^[●○◌□▲✕◆]$/u);
+      expect(symbol.props.children).toBeUndefined();
       expect(root.props.style).toMatchObject({ width: 16, height: 18, flexShrink: 0 });
     }
+  });
+
+  it.each([dark, light])("shares exact quick-filter icon identity and semantic ink without selection-dependent color", colors => {
+    for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
+      const root = SessionStatusIcon({ status, colors });
+      const icon = elements(root).find(node => node.type === "Icon")!;
+      expect(icon.props).toMatchObject({ name: QUICK_FILTER_ICONS[status], color: sessionStatusInk(status, colors) });
+    }
+    expect(sessionStatusInk("all", colors)).toBe(colors.foreground);
+    expect(sessionStatusInk("favorites", colors)).toBe(colors.foreground);
+    expect(sessionStatusInk("earlier_error", colors)).toBe(colors.foregroundMuted);
+    expect(sessionStatusInk("earlier_error", colors)).not.toBe(sessionStatusInk("error", colors));
   });
 
   it("adds no focus target, control or duplicate spoken status to a session row", () => {

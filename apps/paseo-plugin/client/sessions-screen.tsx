@@ -79,8 +79,7 @@ import type { useOrganizationSettings } from "./use-organization-settings";
 import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
-import { SessionStateMarker } from "./session-state-marker";
-import type { OrganizationState } from "./session-organization";
+import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { nativeFreshnessLabel } from "./native-freshness";
@@ -122,9 +121,6 @@ const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string
   { id: "role", label: "Role" },
   { id: "flat", label: "Flat" },
 ];
-const STATUS_DOTS: Partial<Record<StatusFilter, OrganizationState>> = {
-  running: "running", idle: "idle", error: "failed", needs_input: "needs_input", attention: "attention", initializing: "initializing", closed: "closed",
-};
 
 export function matchesShortcut(
   entry: DirectoryEntry,
@@ -1054,8 +1050,7 @@ export function FilterChip({
   colors,
   compact = false,
   count,
-  dot,
-  state,
+  status,
   checkbox = false,
   disabled = false,
   onBlur,
@@ -1069,9 +1064,8 @@ export function FilterChip({
   compact?: boolean;
   /** Matching sessions under the other active filters. */
   count?: number;
-  dot?: string;
   /** Same shape as session rows; the existing label supplies its meaning. */
-  state?: OrganizationState;
+  status?: StatusFilter;
   /** Multi-select choice rather than one of a set. */
   checkbox?: boolean;
   disabled?: boolean;
@@ -1104,7 +1098,7 @@ export function FilterChip({
         opacity: disabled ? 0.5 : 1,
       }}
     >
-      {state ? <SessionStateMarker state={state} colors={colors} /> : dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} /> : null}
+      {status ? <SessionStatusIcon status={status} colors={colors} /> : null}
       <Text style={{ color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
         {label}
       </Text>
@@ -2269,7 +2263,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             testID={`sessions-filter-${status}`}
             label={statusFilterLabel(status)}
             count={statusCounts[status]}
-            state={STATUS_DOTS[status]}
+            status={status}
             compact={compact}
             active={view.status === status}
             colors={colors}
@@ -2315,7 +2309,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
           <OptionLine label="More states" colors={colors}>
-            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} state={STATUS_DOTS[status]} dot={sessionStateColor(STATUS_DOTS[status] ?? null, colors)} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
+            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} status={status} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
           </OptionLine>
           <ToggleRow
             testID="sessions-advanced-archived"

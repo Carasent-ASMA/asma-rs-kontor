@@ -255,6 +255,7 @@ import {
   COMPACT_SCROLL_SLACK,
   compactToolbarOpen,
   FILTER_SUMMARY_TEST_ID,
+  FilterChip,
   FiltersButton,
   HIDE_FILTERS_TEST_ID,
   OPTIONS_MIN_HEIGHT,
@@ -272,7 +273,9 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
-import { SessionStateMarker } from "../client/session-state-marker";
+import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
+import type { StatusFilter } from "../client/session-view";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
@@ -475,7 +478,7 @@ describe("SessionsScreen toolbar events", () => {
     const earlier = findByTestID(harness.current(), "sessions-filter-earlier_error");
     expect(earlier.props.label).toBe("Earlier errors");
     expect(earlier.props.count).toBe(13);
-    expect(earlier.props.dot).not.toBe(colors.statusDanger);
+    expect(earlier.props.status).toBe("earlier_error");
     (earlier.props.onPress as () => void)(); harness.flush();
     expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
     expect(resultCues(history[0]!)).toContain("Earlier error · now closed");
@@ -492,6 +495,25 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toHaveLength(13);
     (findByTestID(harness.current(), "sessions-filter-error").props.onPress as () => void)(); harness.flush();
     expect(sessionRowIds()).toEqual(["current"]);
+  });
+
+  it.each([true, false])("keeps exact status icons, counts, selection and activation in quick/expanded filter choices, compact=%s", compact => {
+    for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
+      const onPress = vi.fn(), onFocus = vi.fn(), onBlur = vi.fn();
+      for (const active of [false, true]) {
+        const chip = FilterChip({ status, label: status, count: 3, colors, compact, active, onPress, onFocus, onBlur });
+        const marker = walk(chip).find(element => element.type === SessionStatusIcon)!;
+        const icon = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0])).find(element => element.type === "Icon")!;
+        expect(icon.props.name).toBe(QUICK_FILTER_ICONS[status]);
+        expect(chip.props.accessibilityLabel).toBe(`${status}, 3`);
+        expect(chip.props.accessibilityState).toEqual({ selected: active, disabled: false });
+        expect(chip.props.style).toMatchObject({ borderColor: active ? colors.accent : colors.border, backgroundColor: active ? colors.surface2 : colors.surface1 });
+        chip.props.onFocus?.(); chip.props.onBlur?.(); chip.props.onPress();
+      }
+      expect(onPress).toHaveBeenCalledTimes(2);
+      expect(onFocus).toHaveBeenCalledTimes(2);
+      expect(onBlur).toHaveBeenCalledTimes(2);
+    }
   });
 
   it.each([true, false])("updates the same row marker through native transitions without changing its accessible name or adding controls, compact=%s", compact => {
@@ -519,8 +541,8 @@ describe("SessionsScreen toolbar events", () => {
       expect(walk(row).some(element => element.type === StateBadge)).toBe(false);
     }
     // Labeled filters teach the same shapes, keeping their labels and exact counts.
-    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ state: "idle", label: "Idle", count: 1 });
-    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ state: "failed", label: "Error", count: 0 });
+    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: 1 });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: 0 });
   });
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
@@ -1508,14 +1530,15 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it("draws a Role header with its two leading states and a separate total, calling them last known when stale", () => {
-    const { drawn } = renderRoles(qaEntries());
+  it.each([true, false])("draws the same leading Role icons and counts with a separate total and stale cue, compact=%s", compact => {
+    const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(["▲", 1, "needs input", "✕", 1, "error"]);
+    expect(words).toEqual(compact ? [1, 1] : [1, "needs input", 1, "error"]);
+    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input", "failed"]);
     expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
     expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
@@ -1524,7 +1547,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(["Last known", "▲", 1, "needs input", "✕", 1, "error"]);
+      .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
   });
 
   it("shows a Role row's conflict cue and place, keeping the place beside the title on compact", () => {

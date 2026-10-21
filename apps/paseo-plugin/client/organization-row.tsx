@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from "react";
 import { PanResponder, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { aggregateState, aggregateSummary, leadingStates, ROLE_ROOT_KEY, STATE_LABELS, type OrganizationAggregate, type OrganizationGroup, type OrganizationGroupKind, type OrganizationRow, type OrganizationState } from "./session-organization";
-import { CHAIN_STATE_GLYPHS } from "./session-results";
+import { SessionStateMarker } from "./session-state-marker";
 import { COARSE_POINTER, type Colors } from "./page-controls";
 
 /** Display glossary for repeated workspace-name prefixes; grouping by prefix establishes no authority. */
@@ -15,22 +15,14 @@ const KIND_NAMES: Readonly<Record<OrganizationGroupKind, string>> = {
   workstream: "Workstream", epic: "Epic", "workspace-kind": "Workspace kind", workspace: "Workspace", project: "Native project", role: "Role", flat: "Sessions",
 };
 
-export function stateColor(state: OrganizationState | null, colors: Colors): string {
-  switch (state) {
-    case "needs_input": return colors.statusWarning;
-    case "failed": return colors.statusDanger;
-    case "running": return colors.accent;
-    case "attention": return colors.statusSuccess;
-    default: return colors.foregroundMuted;
-  }
-}
+export { stateColor } from "./session-status-ink";
 
-/** Dot and label of the highest-priority state; the full breakdown stays in the accessible label. */
+/** Highest-priority session icon; the full breakdown stays in the accessible label. */
 export function StateBadge({ state, colors, compact }: { state: OrganizationState | null; colors: Colors; compact: boolean }) {
   if (state === null) return <Text style={{ color: colors.foregroundMuted, fontSize: 9, opacity: 0.75 }}>No sessions</Text>;
   return <View style={{ flexDirection: "row", alignItems: "center", gap: compact ? 4 : 6 }}>
-    <View style={{ width: compact ? 5 : 7, height: compact ? 5 : 7, borderRadius: 4, backgroundColor: stateColor(state, colors), opacity: state === "closed" ? 0.6 : 1 }} />
-    <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: compact ? 9 : 10 }}>{STATE_LABELS[state]}</Text>
+    <SessionStateMarker state={state} colors={colors} />
+    {compact ? null : <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 10 }}>{STATE_LABELS[state]}</Text>}
   </View>;
 }
 
@@ -45,10 +37,10 @@ function StateCounts({ aggregate, colors, compact, stale }: { aggregate: Organiz
   return <View testID="organization-state-counts" style={{ flexDirection: "row", alignItems: "center", gap: compact ? 6 : 10, flexShrink: 1, minWidth: 0 }}>
     {stale ? <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: compact ? 9 : 10 }}>Last known</Text> : null}
     {states.map(({ state, count }) => <View key={state} style={{ flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 1, minWidth: 0 }}>
-      <Text style={{ color: stateColor(state, colors), fontSize: compact ? 10 : 11, opacity: state === "closed" ? 0.6 : 1 }}>{CHAIN_STATE_GLYPHS[state]}</Text>
+      <SessionStateMarker state={state} colors={colors} />
       <Text style={{ color: colors.foreground, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{count}</Text>
       {/* The word gives way first on a narrow header; the shape and count stay. */}
-      <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: compact ? 9 : 10 }}>{STATE_LABELS[state].toLocaleLowerCase()}</Text>
+      {compact ? null : <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: 10 }}>{STATE_LABELS[state].toLocaleLowerCase()}</Text>}
     </View>)}
   </View>;
 }
