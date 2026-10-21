@@ -276,6 +276,7 @@ import {
   SlimToolbar,
   toolbarOpenPatch,
 } from "../client/sessions-screen";
+import { SessionsLegend } from "../client/sessions-legend";
 import { MobileFiltersPage } from "../client/mobile-filters";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
@@ -1913,6 +1914,34 @@ describe("SessionsScreen mobile filter page", () => {
     compact = false; harness.flush();
     expect(fullToolbarShown()).toBe(true);
   });
+  it.each([true, false])("keeps Legend local across full-page Filters, resize and navigation without changing results (compact=%s)", (compact) => {
+    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true, query: "session-a", status: "idle" });
+    renderScreen(undefined, compact);
+    const before = readSessionView("host-a");
+    const rows = listRows();
+    const legend = () => walk(harness.current()).find((element) => element.type === SessionsLegend)!.props;
+    const toggleDesktopFilters = () => { (walk(harness.current()).find((element) => element.type === FiltersButton)!.props.onPress as () => void)(); harness.flush(); };
+    if (compact) openMobileFilters();
+    expect(legend().open).toBe(false);
+    (legend().onToggle as (open: boolean) => void)(true); harness.flush();
+    expect(readSessionView("host-a")).toEqual({ ...before, legendOpen: true });
+    if (compact) closeMobileFilters(); else toggleDesktopFilters();
+    expect(walk(harness.current()).some((element) => element.type === SessionsLegend)).toBe(false);
+    expect(listRows()).toEqual(rows);
+    if (compact) openMobileFilters(); else toggleDesktopFilters();
+    expect(legend().open).toBe(true);
+    renderScreen(undefined, false); harness.flush();
+    expect(legend().open).toBe(true);
+    // Leaving Sessions unmounts it; the same scoped view restores disclosure state on return.
+    harness.unmount(); harness.reset(); renderScreen(undefined, compact); harness.flush();
+    if (compact) openMobileFilters();
+    expect(legend().open).toBe(true);
+    expect(readSessionView("host-a")).toMatchObject({ query: before.query, status: before.status, includeArchived: before.includeArchived, legendOpen: true });
+    (legend().onToggle as (open: boolean) => void)(false); harness.flush();
+    expect(readSessionView("host-a")).toMatchObject({ query: before.query, status: before.status, legendOpen: false });
+    if (compact) closeMobileFilters();
+    expect(listRows()).toEqual(rows);
+  });
   it("bounds wide Filters & view by the screen it shares with the list, so a short window keeps every control in the frame", () => {
     patchSessionView("host-a", { advancedOpen: true });
     renderScreen(undefined, false);
@@ -1932,6 +1961,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(frame().maxHeight).toBe(138);
     layout(harness.current() as ElementLike, { height: 300 });
     expect(frame().maxHeight).toBe(132);
+    expect(walk(findByTestID(harness.current(), "sessions-options")).some((element) => element.type === SessionsLegend)).toBe(true);
   });
   it("chooses Workspace scope and Group by from compact selects that keep every choice, mark the current one and return focus", () => {
     const save = vi.fn(async () => true);
