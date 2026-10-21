@@ -116,12 +116,15 @@ never commit it. Receipts stay with the run that produced them.
 During development, `scripts/test-lanes.py` runs only what a change reaches:
 
 ```sh
-python3 scripts/test-lanes.py --lane fast --dry-run   # print the selection and commands
-python3 scripts/test-lanes.py --lane fast             # fmt, clippy + tests of affected quick packages, touched console checks
-python3 scripts/test-lanes.py --lane heavy            # slow packages' tests + console typecheck/tests, quiet, JSON receipt
-python3 scripts/test-lanes.py --lane full             # scripts/verify-tree.py --mode inplace
+KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane fast --dry-run
+KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane fast
+KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane heavy
+python3 scripts/test-lanes.py --lane full             # no project selection needed
 ```
 
+- The full lane delegates to `scripts/verify-tree.py` and does not read the
+  project selection. The fast and heavy lanes do; pass `KONTOR_CONFIG_FILE` or
+  `KONTOR_CONFIG_DIR`, or the tool refuses by name.
 - The selection is the files changed since the merge base with
   `origin/master` (`--base <rev>` to change it), plus uncommitted files unless
   `--no-worktree`, plus any `--changed <path>`. A change under a package's
@@ -182,19 +185,25 @@ project key, base branch and check name from one explicitly selected YAML
 config folder (`KONTOR_CONFIG_DIR`, or `--config-dir` where the tool offers
 it). The branch vocabulary comes from
 `crates/kontor-core/src/branch.rs`; none of those tools keeps its own copy.
-There is no implicit fallback to this checkout.
+There is no implicit fallback for the tools. The `pre-push` hook alone falls
+back to the committed projection when neither selection is set, so a clean
+agent shell can push this repository.
 
 The trusted-base workflow cannot read an external folder. It prefers the
 repository variables `KONTOR_PROJECT_KEY`, `KONTOR_BASE_BRANCH` and
 `KONTOR_CHECK_NAME` when all three are set, and writes a temporary projection
 recording them as the source. Otherwise it reads
-[`.github/kontor-project.yml`](.github/kontor-project.yml), the committed
-projection generated from the selected folder. Regenerate that file after a
-configuration change:
+[`.github/kontor-project.yml`](.github/kontor-project.yml). That committed
+projection is generated from
+[`tests/fixtures/config/asma-orchestration.yml`](tests/fixtures/config/asma-orchestration.yml),
+the ASMA schema test fixture. The live asma-modules config does not yet carry a
+`project:` block; do not treat it as the projection source. Regenerate the
+projection exactly with:
 
 ```sh
-python3 scripts/kontor_project.py --config-dir <config folder> \
-  project --format yaml
+python3 scripts/kontor_project.py \
+  --config-file tests/fixtures/config/asma-orchestration.yml \
+  project --format yaml > .github/kontor-project.yml
 ```
 
 The generated YAML carries the complete `generated:` provenance and quotes

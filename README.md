@@ -391,13 +391,15 @@ proves that a committed or staged export passes those gates without hidden
 working-tree state, and that the committed `Cargo.lock` satisfies every manifest
 under `--locked`. It runs every gate above except `verify:api`.
 
-For the inner loop, `python3 scripts/test-lanes.py --lane fast` runs formatting
-plus clippy and tests for the quick packages a change affects, and the console
-checks it touches; it exits `3`, naming the lane still required, when the
-change reaches a slow package or a workspace build or tooling file.
-`--lane heavy` runs the slow packages' tests and the console typecheck and
-tests, and writes a compact JSON receipt under `target/test-lanes/`;
-`--lane full` runs `verify-tree.py --mode inplace`.
+For the inner loop, set `KONTOR_CONFIG_FILE=.github/kontor-project.yml` and run
+`python3 scripts/test-lanes.py --lane fast`; it runs formatting plus clippy and
+tests for the quick packages a change affects, and the console checks it
+touches. It exits `3`, naming the lane still required, when the change reaches
+a slow package or a workspace build or tooling file. `--lane heavy` runs the
+slow packages' tests and the console typecheck and tests, and writes a compact
+JSON receipt under `target/test-lanes/`; it needs the same selection.
+`--lane full` runs `verify-tree.py --mode inplace` and needs no project
+selection.
 `scripts/test-timings.json` decides which packages are slow. Lanes shorten
 development; they do not replace the gate set before merge.
 

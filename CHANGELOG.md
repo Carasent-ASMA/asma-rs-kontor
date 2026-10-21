@@ -190,6 +190,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The publication check, pre-push hook and fast/heavy test lanes read the
+  project key, base branch and check name from the selected project
+  configuration (`KONTOR_CONFIG_DIR` / `KONTOR_CONFIG_FILE`). The pre-push hook
+  falls back to `.github/kontor-project.yml` in a clean agent shell, and the
+  workflow emits the configured check name through the Checks API.
+  `KONTOR_ALLOW_AGENT_PUSH` replaces `ASMA_ALLOW_AGENT_PUSH`.
 - CLI refusals now exit with their class instead of 1:
   - 3 (refused): `placement_blocked`, `ensure_mismatch` and
     `handoff_unsettled`.

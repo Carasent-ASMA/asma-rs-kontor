@@ -3,7 +3,7 @@ import concurrent.futures,importlib.util,io,json,subprocess,tarfile
 from datetime import datetime,timezone
 from pathlib import Path
 ROOT=Path.cwd();OUT=ROOT/'.qualification/reproduction'
-spec=importlib.util.spec_from_file_location('qualification',ROOT/'evidence/ASMA-8454-qualify-durable-desks.py');q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
+spec=importlib.util.spec_from_file_location('qualification',ROOT/'scripts/qualify-durable-desks.py');q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 BASE='e376f4059e47de8fb40956d4dbfbf6920dabc4ec';CURRENT=q.git('rev-parse','HEAD').strip()
 REL='crates/kontor-daemon/tests/loopback/message_delivery_proofs.rs';NAME='legacy_message_proof_duplicate_split_across_pages_is_terminal_without_delivery'
 COMMAND=q.LOOPBACK+['message_delivery_proofs::qualification_readonly_repeat_probe','--','--nocapture','--test-threads=1']

@@ -3,7 +3,7 @@ import hashlib,importlib.util,json,os,subprocess,tarfile,io
 from datetime import datetime,timezone
 from pathlib import Path
 ROOT=Path.cwd(); OUT=ROOT/'.qualification/reproduction'; OUT.mkdir(parents=True,exist_ok=True)
-spec=importlib.util.spec_from_file_location('qualification',ROOT/'evidence/ASMA-8454-qualify-durable-desks.py');q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
+spec=importlib.util.spec_from_file_location('qualification',ROOT/'scripts/qualify-durable-desks.py');q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 BASE='e376f4059e47de8fb40956d4dbfbf6920dabc4ec'; CURRENT=q.git('rev-parse','HEAD').strip()
 TREE=OUT/'base-e376f405'; TREE.mkdir(exist_ok=True)
 archive=subprocess.check_output(['git','archive',BASE],cwd=ROOT)

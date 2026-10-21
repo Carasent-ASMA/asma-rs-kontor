@@ -13,7 +13,8 @@
 # repository variables KONTOR_PROJECT_KEY, KONTOR_BASE_BRANCH and
 # KONTOR_CHECK_NAME when all three are set and writes a temporary projection
 # recording them as the source. Otherwise it reads the committed projection
-# `.github/kontor-project.yml`, itself generated from the config folder.
+# `.github/kontor-project.yml`, generated from the named ASMA schema fixture
+# `tests/fixtures/config/asma-orchestration.yml` (not the live config).
 # The job opens a check run named by the selected projection and completes it
 # with this job's result, so branch protection can require the configured name
 # even when the committed projection supplies it. A `dependabot/` branch opened
@@ -40,7 +41,7 @@ concurrency:
 
 jobs:
   identity:
-    name: publication-branch-title
+    name: Publication branch and title identity
     runs-on: ubuntu-latest
     steps:
       - name: Fetch the trusted sources from the exact workflow revision

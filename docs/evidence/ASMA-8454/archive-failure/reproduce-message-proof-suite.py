@@ -2,7 +2,7 @@ import concurrent.futures,importlib.util,json,os,subprocess
 from datetime import datetime,timezone
 from pathlib import Path
 ROOT=Path.cwd();OUT=ROOT/'.qualification/reproduction'
-spec=importlib.util.spec_from_file_location('qualification',ROOT/'evidence/ASMA-8454-qualify-durable-desks.py');q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
+spec=importlib.util.spec_from_file_location('qualification',ROOT/'scripts/qualify-durable-desks.py');q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 BASE='e376f4059e47de8fb40956d4dbfbf6920dabc4ec';CURRENT=q.git('rev-parse','HEAD').strip();COMMAND=q.LOOPBACK+['--','--nocapture','--test-threads=2']
 def run(label,tree,target,revision):
  env=q.environment();env['CARGO_TARGET_DIR']=str(target);env['CARGO_NET_OFFLINE']='true';env['RUST_TEST_THREADS']='2'

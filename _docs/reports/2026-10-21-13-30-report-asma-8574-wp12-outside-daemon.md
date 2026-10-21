@@ -50,9 +50,13 @@ bytes; the fleet and runtime behaviour, the alias-exemption constant and the
 
 ## Provenance and migration
 
-The committed projection `.github/kontor-project.yml` maps the selected config
-folder's `orchestration/orchestration.yml` values into the trusted-base
-workflow:
+The committed projection `.github/kontor-project.yml` is generated from the
+named ASMA schema fixture `tests/fixtures/config/asma-orchestration.yml`, not
+from the live asma-modules config (that config does not yet carry a `project:`
+block). Its `generated` block records the repo-relative source, a
+`source_revision` of `sha256:<digest>` and the same `source_sha256`. It carries
+two check runs from the fixture, including the publication check selected
+below. The projection maps those values into the trusted-base workflow:
 
 | Project key | Repository variable | Projection field |
 | --- | --- | --- |
@@ -64,10 +68,12 @@ When all three repository variables are set, CI writes a temporary projection
 whose `generated.source` is `repository-variables` and whose
 `generated.source_revision` is `github.workflow_sha`. When none is set, CI
 reads the committed projection. Setting only some of them fails closed.
-Regenerate the committed projection with:
+Regenerate the committed projection exactly with:
 
 ```sh
-python3 scripts/kontor_project.py --config-dir <config folder> project --format yaml
+python3 scripts/kontor_project.py \
+  --config-file tests/fixtures/config/asma-orchestration.yml \
+  project --format yaml > .github/kontor-project.yml
 ```
 
 ## Review corrections
@@ -75,25 +81,43 @@ python3 scripts/kontor_project.py --config-dir <config folder> project --format 
 - **Configured check name.** The workflow no longer prints the configured name
   only in the checker record. It opens a check run through the Checks API with
   the name read from the selected projection, then completes that check run
-  with the job result. The job's own check name is a static,
-  project-neutral label; branch protection must require the configured name.
-  The workflow gains `checks: write`.
+  with the job result. The job's own check name is the neutral workflow label
+  `Publication branch and title identity`; branch protection must require the
+  configured name. The workflow gains `checks: write`.
 - **Regeneration provenance.** `scripts/kontor_project.py project --format
-  yaml` now serializes the complete projection, including `generated:`.
-  Authored-folder output uses the public-safe source
-  `selected-config-folder/orchestration/orchestration.yml` and
-  `source_revision: working-copy`; JSON output carries the same provenance.
+  yaml` now serializes the complete projection, including `generated:`. A
+  source inside this checkout records its repo-relative path and
+  `source_revision: sha256:<digest>` plus `source_sha256`; a source outside it
+  uses the public-safe labels. JSON output carries the same provenance. The
+  committed projection round-trip is tested against its named fixture.
 - **Quoted strings.** Both generators quote every string. A config with
   `key: "ON"` or `base_branch: "2026"` round-trips as strings instead of
   reloading as a boolean or integer.
+- **Pre-push selection.** In a clean agent shell the hook falls back to
+  `.github/kontor-project.yml`; an explicit `KONTOR_CONFIG_DIR` or
+  `KONTOR_CONFIG_FILE` still wins. The clean-environment path is tested.
+- **Evidence restoration.** The four `docs/evidence/ASMA-8454/archive-failure`
+  scripts and the dated desk-qualification report were restored to
+  `origin/master`; the moved qualification runner remains at
+  `evidence/ASMA-8454-qualify-durable-desks.py`. The present non-redacted
+  manifest pins are 90/90 (`cleanup-receipt.json` is absent from the bundle).
+- **Non-blocking notes.** N2: the tokenomics store-label row is tagged WP-08.
+  N3: `apps/paseo-plugin/client/page-data.ts` still keys Jira links to the ASMA
+  tenant; it has no project-config surface in the plugin client, so it is
+  recorded for WP-08/WP-12 follow-up. N4: `test-lanes.py --lane full` no longer
+  reads a project selection, and the README/CONTRIBUTING examples show the
+  selection for the fast/heavy lanes. N8: the dated report body was restored.
+  N9: a CHANGELOG note records the configuration, hook and check-name changes.
+  N5/N6/N7 remain recorded reviewer notes with no WP-12 code change.
 
 ## Blocked rows
 
 | Row | Owner | Why it is blocked here |
 | --- | --- | --- |
-| `apps/console/public/tokenomics/index.html` store labels (`STORE_LABEL`) still key on the deployment's provider-account aliases | WP-08 | The file is one of the 51 `ALIAS_CODE_EXEMPTION` files. The alias scrub and the exemption removal are WP-08; WP-12 changes only the payload Jira base. |
+| `apps/console/public/tokenomics/index.html` store labels (`STORE_LABEL`) still key on the deployment's provider-account aliases | WP-08 (re-tagged from WP-12) | The file is one of the 51 `ALIAS_CODE_EXEMPTION` files. The alias scrub and the exemption removal are WP-08; WP-12 changes only the payload Jira base. |
 | Any remaining provider-account alias literal in the 51 `ALIAS_CODE_EXEMPTION` files | WP-08 | Same fence: WP-12 did not rename or remove those files, edit the exemption constant, or claim the tree alias-free. |
 | Person names in `crates/kontor-daemon/src/applications/desk_adams.rs` runtime strings | WP-08 | WP-08 owns runtime strings; WP-12 scrubbed tests and fixtures only. |
+| `apps/paseo-plugin/client/page-data.ts` hardcodes the ASMA key pattern and Jira tenant | WP-12 follow-up | The plugin client has no project-config surface; recorded rather than silently changed. |
 
 ## Verified
 
@@ -116,12 +140,16 @@ cargo test -p kontor-daemon --lib --locked
 cargo test -p kontor-daemon --test loopback_api durable_seats:: --locked
 cargo test -p kontor-daemon --test loopback_api desk_adams:: --locked
 cargo test -p kontor-daemon --test loopback_api pr_reviews:: --locked
+cargo test -p kontor-daemon --test loopback_api qualification:: --locked
+cargo test -p kontor-daemon --test loopback_api a_configured_jira_boundary_distinguishes_historical_from_native_completion --locked -- --exact --ignored
 ```
 
 The whole-tree public check reports no home path or run receipt and no account
 alias outside the 51 exempt files. The console reports 306 passing tests and a
 successful production build; the Paseo plugin reports 1,133 passing tests after
-the merge.
+the merge; the scripts report 263 passing/1 skipped and the publication tests
+37 passing after the review corrections. The two `qualification::` loopback
+tests pass on the merged head.
 
 `python3 scripts/verify-tree.py --mode inplace` was started, but it did not
 finish inside the 40-minute session limit. Three `kontor-daemon` loopback tests
@@ -133,5 +161,7 @@ resident-controller wait
 (`resident_failed_epic_apply_emits_no_immediate_replay_wake`). All three fail
 identically at the new base `f1223221` in a detached worktree, and on the
 merged tree, so they remain inherited baseline failures, not WP-12
-regressions. The full gate was not rerun after the merge; targeted coverage is
-the command list above.
+regressions. `a_configured_jira_boundary_distinguishes_historical_from_native_completion`
+is marked ignored as superseded; forced with `--ignored` it fails identically
+on the merged head and at `f1223221`. The full gate was not rerun after the
+merge; targeted coverage is the command list above.

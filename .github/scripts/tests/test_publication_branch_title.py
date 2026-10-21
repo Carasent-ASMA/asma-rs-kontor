@@ -281,9 +281,13 @@ class WorkflowContractTest(unittest.TestCase):
     def test_no_trigger_level_base_filter(self) -> None:
         self.assertNotRegex(self.text, r"(?m)^\s*branches:")
 
-    def test_the_configured_check_name_is_the_emitted_check(self) -> None:
+    def test_the_configured_check_name_is_the_emitted_api_check(self) -> None:
         project = checker.load_project(config_file=str(PROJECT_CONFIG), env={})
         self.assertEqual(project.check_name, "asma/publication-branch-title")
+        self.assertIn(
+            "    name: Publication branch and title identity", self.text
+        )
+        self.assertNotIn("vars.KONTOR_CHECK_NAME ||", self.text)
         run = _step_run(self.open)
         self.assertIn(
             'check_name=$(python3 "$PROJECT_HELPER_PATH" \\', run

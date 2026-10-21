@@ -494,17 +494,17 @@ def main() -> int:
     if not args.lane:
         parser.error("--lane is required unless --record-timings is used")
 
+    if args.lane == "full":
+        command = ["python3", "scripts/verify-tree.py", "--mode", "inplace"]
+        print("$ " + " ".join(command))
+        return subprocess.run(command, cwd=REPO_ROOT).returncode
+
     try:
         project = load_project(
             config_dir=args.config_dir, config_file=args.config_file
         )
     except ProjectConfigError as exc:
         raise LaneError(str(exc)) from exc
-
-    if args.lane == "full":
-        command = ["python3", "scripts/verify-tree.py", "--mode", "inplace"]
-        print("$ " + " ".join(command))
-        return subprocess.run(command, cwd=REPO_ROOT).returncode
 
     base = resolve_base(args.base, project.base_branch)
     files = changed_files(base, args.changed, not args.no_worktree)

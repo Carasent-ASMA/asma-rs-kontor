@@ -16,6 +16,7 @@ fallback to a list compiled into this file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -42,7 +43,6 @@ BRANCH_SOURCE_RELATIVE = Path("crates") / "kontor-core" / "src" / "branch.rs"
 PUBLICATION_CHECK_SUFFIX = "publication-branch-title"
 CONFIG_PROVENANCE_SOURCE = "selected-config-folder/orchestration/orchestration.yml"
 PROJECTION_PROVENANCE_SOURCE = "selected-projection"
-WORKING_COPY_REVISION = "working-copy"
 
 BRANCH_SHAPE_INVALID = "branch_shape_invalid"
 BRANCH_TYPE_UNKNOWN = "branch_type_unknown"
@@ -180,6 +180,10 @@ def load_project_config(path: Path) -> ProjectConfig:
     if not isinstance(data, dict):
         raise ProjectConfigError(f"{path}: expected a mapping")
 
+    if "project" not in data:
+        raise ProjectConfigError(
+            f"{path}: no project: block; select a project config or projection"
+        )
     project = _required_mapping(data.get("project"), f"{path}: project")
     key = _required_text(project.get("key"), f"{path}: project.key")
     tracker = project.get("tracker")
@@ -206,13 +210,7 @@ def load_project_config(path: Path) -> ProjectConfig:
     if isinstance(generated, dict):
         provenance = dict(generated)
     else:
-        source = (
-            CONFIG_PROVENANCE_SOURCE
-            if path.name == PROJECT_CONFIG_RELATIVE.name
-            and path.parent.name == PROJECT_CONFIG_RELATIVE.parent.name
-            else PROJECTION_PROVENANCE_SOURCE
-        )
-        provenance = {"source": source, "source_revision": WORKING_COPY_REVISION}
+        provenance = _source_provenance(path)
 
     return ProjectConfig(
         source=path,
@@ -382,6 +380,35 @@ def branch_is_canonical(
     return branch_refusal(
         branch, project_key=project_key, branch_types=branch_types
     ) is None
+
+
+def _public_source(path: Path) -> str:
+    """A public-safe source label: repo-relative when possible, never a home path."""
+
+    try:
+        relative = path.resolve().relative_to(_repository_root().resolve())
+    except ValueError:
+        if (
+            path.name == PROJECT_CONFIG_RELATIVE.name
+            and path.parent.name == PROJECT_CONFIG_RELATIVE.parent.name
+        ):
+            return CONFIG_PROVENANCE_SOURCE
+        return PROJECTION_PROVENANCE_SOURCE
+    return relative.as_posix()
+
+
+def _source_provenance(path: Path) -> dict[str, object]:
+    """The public source path and a content-addressed revision."""
+
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ProjectConfigError(f"cannot hash project source {path}: {exc}") from exc
+    return {
+        "source": _public_source(path),
+        "source_revision": f"sha256:{digest}",
+        "source_sha256": digest,
+    }
 
 
 def _project_projection(project: ProjectConfig) -> dict[str, object]:

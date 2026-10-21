@@ -7,6 +7,7 @@ Run from the repository root:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -112,7 +114,13 @@ class ProjectConfigurationTests(unittest.TestCase):
             project.provenance["source"],
             "selected-config-folder/orchestration/orchestration.yml",
         )
-        self.assertEqual(project.provenance["source_revision"], "working-copy")
+        self.assertRegex(
+            project.provenance["source_revision"], r"^sha256:[0-9a-f]{64}$"
+        )
+        self.assertEqual(
+            project.provenance["source_sha256"],
+            project.provenance["source_revision"].removeprefix("sha256:"),
+        )
 
     def test_a_generated_projection_records_its_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -182,6 +190,19 @@ class ProjectConfigurationTests(unittest.TestCase):
         )
         self.assertNotIn(tmp, rendered)
 
+    def test_a_config_without_a_project_block_is_refused_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "orchestration" / "orchestration.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "schema_version: 1\n"
+                "fleet: orchestration/fleet.yml\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(kontor_project.ProjectConfigError) as raised:
+                kontor_project.load_project_config(path)
+        self.assertIn("no project: block", str(raised.exception))
+
     def test_a_missing_publication_check_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = write_project(Path(tmp), key="EXM", base="main", check="ci/test")
@@ -205,6 +226,28 @@ class ProjectConfigurationTests(unittest.TestCase):
             )
             with self.assertRaises(kontor_project.ProjectConfigError):
                 kontor_project.load_project_config(path)
+
+
+class CommittedProjectionTests(unittest.TestCase):
+    def test_the_committed_projection_is_reproducible_from_its_source(self) -> None:
+        committed_path = REPO_ROOT / ".github" / "kontor-project.yml"
+        committed = kontor_project.load_yaml(committed_path)
+        self.assertIsInstance(committed, dict)
+        generated = committed["generated"]
+        source = REPO_ROOT / generated["source"]
+        self.assertTrue(source.is_file(), str(source))
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        self.assertEqual(generated["source_sha256"], digest)
+        self.assertEqual(generated["source_revision"], f"sha256:{digest}")
+        project = kontor_project.load_project_config(source)
+        rendered = kontor_project.render_project_projection(
+            project, format="yaml"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            regenerated_path = Path(tmp) / "projection.yml"
+            regenerated_path.write_text(rendered, encoding="utf-8")
+            regenerated = kontor_project.load_yaml(regenerated_path)
+        self.assertEqual(regenerated, committed)
 
 
 class GrammarTests(unittest.TestCase):
@@ -313,14 +356,18 @@ class HookTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("BLOCKED: agent push to refs/heads/main", result.stderr)
 
-    def test_the_hook_refuses_without_a_selection(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            write_project(Path(tmp), key="EXM", base="main")
-            env = self._env(Path(tmp))
-            env.pop("KONTOR_CONFIG_DIR")
-            result = run_hook("fix/EXM-7-repair-rows", env)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("no selected project configuration", result.stderr)
+    def test_the_hook_defaults_to_the_committed_projection(self) -> None:
+        env = os.environ.copy()
+        env.update({"PASEO_AGENT_ID": "test-agent"})
+        for key in (
+            "KONTOR_CONFIG_DIR",
+            "KONTOR_CONFIG_FILE",
+            "KONTOR_ALLOW_AGENT_PUSH",
+        ):
+            env.pop(key, None)
+        result = run_hook("fix/ASMA-7-repair-rows", env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("BLOCKED", result.stderr)
 
     def test_the_escape_hatch_is_deliberate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -340,6 +387,17 @@ class TestLanesTests(unittest.TestCase):
         assert spec is not None and spec.loader is not None
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
+
+    def test_the_full_lane_does_not_require_a_project_selection(self) -> None:
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.dict(
+            os.environ, {"KONTOR_CONFIG_DIR": "", "KONTOR_CONFIG_FILE": ""}
+        ), mock.patch.object(
+            sys, "argv", ["test-lanes.py", "--lane", "full"]
+        ), mock.patch.object(
+            self.module.subprocess, "run", return_value=completed
+        ):
+            self.assertEqual(self.module.main(), 0)
 
     def test_the_default_base_comes_from_the_project(self) -> None:
         self.assertEqual(
