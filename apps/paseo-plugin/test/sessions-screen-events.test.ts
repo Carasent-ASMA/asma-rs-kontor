@@ -271,6 +271,7 @@ import {
   SlimToolbar,
   toolbarOpenPatch,
 } from "../client/sessions-screen";
+import { SessionsLegend } from "../client/sessions-legend";
 import { StateBadge } from "../client/organization-row";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
@@ -2214,6 +2215,32 @@ describe("SessionsScreen compact toolbar", () => {
     expect([select("sessions-scope").expanded, menus()]).toEqual([false, []]);
   });
 
+  it("keeps Legend local across options, resize and navigation without changing results or filters", () => {
+    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true, query: "session-a", status: "idle" });
+    renderScreen();
+    const legend = () => walk(harness.current()).find((element) => element.type === SessionsLegend)!.props;
+    const before = readSessionView("host-a");
+    const rows = listRows();
+    expect(legend().open).toBe(false);
+    (legend().onToggle as (open: boolean) => void)(true); harness.flush();
+    expect(readSessionView("host-a")).toEqual({ ...before, legendOpen: true });
+    expect(listRows()).toEqual(rows);
+    const filters = () => walk(harness.current()).find((element) => element.type === FiltersButton)!.props;
+    (filters().onPress as () => void)(); harness.flush();
+    expect(walk(harness.current()).some((element) => element.type === SessionsLegend)).toBe(false);
+    (filters().onPress as () => void)(); harness.flush();
+    expect(legend().open).toBe(true);
+    renderScreen(undefined, false); harness.flush();
+    expect(legend().open).toBe(true);
+    // Leaving Sessions unmounts it; the same view restores its reference state on return.
+    harness.unmount(); harness.reset(); renderScreen(); harness.flush();
+    expect(legend().open).toBe(true);
+    expect(readSessionView("host-a")).toMatchObject({ query: before.query, status: before.status, includeArchived: before.includeArchived, legendOpen: true });
+    expect(listRows()).toEqual(rows);
+    (legend().onToggle as (open: boolean) => void)(false); harness.flush();
+    expect(readSessionView("host-a")).toMatchObject({ query: before.query, status: before.status, legendOpen: false });
+  });
+
   it("bounds compact Filters & view to its own scroll frame, so the list keeps a share of the viewport and every control stays in the frame", () => {
     patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true });
     renderScreen();
@@ -2240,7 +2267,7 @@ describe("SessionsScreen compact toolbar", () => {
     // Every control is still in the frame: nothing moved out or was dropped.
     const ids = walk(options()).map((element) => element.props.testID).filter(Boolean);
     expect(ids).toEqual(expect.arrayContaining(["sessions-grouping", "sessions-scope", "sessions-filter-initializing", "sessions-filter-closed", "sessions-advanced-archived", "sessions-arrange", "sessions-expand-all", "sessions-collapse-all", "sessions-options-count"]));
-    expect(walk(options()).some((element) => element.props.label === "Legend")).toBe(true);
+    expect(walk(options()).some((element) => element.type === SessionsLegend)).toBe(true);
   });
 
   it("bounds wide Filters & view by the screen it shares with the list, so a short window keeps every control in the frame", () => {
