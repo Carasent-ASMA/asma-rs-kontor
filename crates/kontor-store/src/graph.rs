@@ -2285,6 +2285,8 @@ impl SqliteStore {
                               AND live.scope_kind = 'mini_project'
                               AND live.scope_mini_project_id = a.scope_mini_project_id
                               AND lr.authorization_id IS NULL
+                              AND live.allowed_start <= ?1
+                              AND ?1 < live.allowed_end
                         ) AS live_grant,
                         att.attention_code, att.owner, att.review_by, att.raised_at
                  FROM execution_hold_conditions c
@@ -2302,7 +2304,8 @@ impl SqliteStore {
                  ORDER BY c.project_id, c.authorization_id",
             )
             .map_err(backend)?;
-        let mut rows = statement.query([]).map_err(backend)?;
+        let now = text(Timestamp::now());
+        let mut rows = statement.query(params![now]).map_err(backend)?;
         let mut holds = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
             let scope: String = row.get(2).map_err(backend)?;

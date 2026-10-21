@@ -6293,6 +6293,76 @@ async fn an_overdue_manual_hold_raises_one_typed_attention() {
     );
 }
 
+/// An expired but unrevoked grant is not a live grant.
+///
+/// `arms` already refuses a grant outside its window. Regression: the overdue
+/// sweep used to treat any non-revoked covering authorization as live, so an
+/// expired grant suppressed `hold_review_overdue` forever.
+#[tokio::test]
+async fn an_expired_unrevoked_grant_does_not_suppress_overdue_attention() {
+    const EPIC_KEY: &str = "ASMA-9451";
+    const TASK_KEY: &str = "ASMA-9452";
+    let fixture = kickoff_world("expired-grant", EPIC_KEY, TASK_KEY).await;
+    let (world, project) = (&fixture.world, fixture.project.as_str());
+
+    let mut body = epic_body(
+        1,
+        "Expired grant hold",
+        &fixture.category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": fixture.account_id,
+        "reason_code": "waiting_on_decision",
+        "reason": "Wait for the operator decision",
+        "lift_condition": "manual",
+        "review_by": "2020-01-01T00:00:00Z"
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("expired-grant-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    // A covering grant that has not been revoked but whose window closed.
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": applied.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2020-12-31T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": fixture.account_id,
+            "reason": "A window that has already closed"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("expired-grant-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    assert!(
+        armed.json()["revoked_at"].is_null(),
+        "the grant is unrevoked: {}",
+        armed.body
+    );
+
+    assert_eq!(
+        world.daemon.sweep_holds().await.expect("the sweep runs"),
+        1,
+        "an expired unrevoked grant must not suppress the overdue attention"
+    );
+    let held = epic_authorizations(world, project, &epic).await;
+    let hold = held
+        .iter()
+        .find(|entry| entry["revoked_at"].is_string())
+        .expect("the hold is still recorded");
+    assert_eq!(hold["hold"]["attention"]["code"], "hold_review_overdue");
+}
+
 /// A `review_date` hold lifts itself when its own review date arrives.
 #[tokio::test]
 async fn a_review_date_hold_lifts_at_its_review_date() {

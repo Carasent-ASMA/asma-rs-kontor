@@ -3326,6 +3326,19 @@ fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
         .collect::<Result<_, _>>()
         .expect("the migrated condition rows");
     assert_eq!(rows.len(), 2, "both revocations are now explicit holds");
+    let unheld: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM execution_authorization_revocations r
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM execution_hold_conditions c
+                 WHERE c.project_id = r.project_id
+                   AND c.authorization_id = r.authorization_id
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the anti-join reads");
+    assert_eq!(unheld, 0, "no revocation survives v135 without hold terms");
     assert_eq!(rows[0].1, "manual");
     assert_eq!(rows[1].1, "kickoff_ready");
     for row in &rows {

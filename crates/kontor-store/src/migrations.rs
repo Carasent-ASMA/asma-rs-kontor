@@ -1063,7 +1063,10 @@ mod release_integration_tests {
 
         let store = crate::SqliteStore::open(&path).expect("additive upgrade");
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
-        assert_eq!(store.schema_version().expect("upgraded version"), 134);
+        assert_eq!(
+            store.schema_version().expect("upgraded version"),
+            SCHEMA_VERSION
+        );
         drop(store);
         let connection = Connection::open(&path).expect("upgraded readback");
         let fingerprint: String = connection.query_row(
@@ -1352,7 +1355,10 @@ mod release_integration_tests {
         drop(connection);
 
         let store = crate::SqliteStore::open(&path).expect("released 124 upgrades");
-        assert_eq!(store.schema_version().expect("upgraded version"), 134);
+        assert_eq!(
+            store.schema_version().expect("upgraded version"),
+            SCHEMA_VERSION
+        );
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
         let binding = store
             .memory_binding(ProjectId::parse(PROJECT).expect("project id"), RUN)
@@ -1367,7 +1373,7 @@ mod release_integration_tests {
         let connection = Connection::open(&path).expect("upgraded readback");
         assert_eq!(
             read_user_version(&connection).expect("upgraded version"),
-            134
+            SCHEMA_VERSION
         );
         let fingerprint: String = connection
             .query_row(
