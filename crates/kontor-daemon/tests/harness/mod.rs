@@ -295,6 +295,11 @@ impl World {
     /// and `codex-personal`. Only the two Codex `provider:` lines are mapped
     /// back; every marker, reset prefix and zone stays the fixture bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
+        let document = Self::catalogued_quota_signal_document();
+        Self::open_empty_with_quota_signal_document(&document).await
+    }
+
+    fn catalogued_quota_signal_document() -> String {
         let mut document =
             include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
         for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
@@ -306,7 +311,7 @@ impl World {
             );
             document = document.replace(&line, &format!("    provider: {catalogued}\n"));
         }
-        Self::open_empty_with_quota_signal_document(&document).await
+        document
     }
 
     /// Start an empty Realm with an exact test-owned signal document.
@@ -446,9 +451,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             WorldComposition {
-                quota_signals: Some(
-                    include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned(),
-                ),
+                quota_signals: Some(Self::catalogued_quota_signal_document()),
                 succession_summarizer: Some(summarizer),
                 ..WorldComposition::default()
             },
@@ -471,9 +474,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             WorldComposition {
-                quota_signals: Some(
-                    include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned(),
-                ),
+                quota_signals: Some(Self::catalogued_quota_signal_document()),
                 runtime_summarizer: Some(summary.to_owned()),
                 ..WorldComposition::default()
             },

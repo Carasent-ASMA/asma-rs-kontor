@@ -20039,7 +20039,8 @@ async fn resident_failed_epic_apply_emits_no_immediate_replay_wake() {
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": ["ASMA-8204"]
             }]
         }))
         .expect("the Jira configuration serializes"),
@@ -27626,15 +27627,21 @@ async fn a_credential_rotation_during_the_transcript_fetch_still_redacts_the_pre
         .signed_as(&world, "admin")
         .with_key("rotated-summary-recovery")
         .send(&world);
-    let rotate = async {
-        history.entered().await;
+    tokio::pin!(recovery);
+    let recovered = tokio::select! {
+        response = &mut recovery => {
+            panic!("recovery returned before history entry: status={} body={}", response.status, response.body.replace(&previous_operator, "[SYNTHETIC_REDACTED]"));
+        }
+        () = history.entered() => {
         world
             .daemon
             .rotate_credentials()
             .expect("the realm rotates while the transcript is in flight");
         history.release();
+        tokio::time::timeout(std::time::Duration::from_secs(30), &mut recovery).await.expect("recovery still pending after history release")
+        }
+        () = tokio::time::sleep(std::time::Duration::from_secs(30)) => panic!("neither recovery response nor history entry within30s"),
     };
-    let (recovered, ()) = tokio::join!(recovery, rotate);
     assert_eq!(recovered.status, 200, "{}", recovered.body);
     assert_eq!(recovered.json()["state"], "confirmed");
 
