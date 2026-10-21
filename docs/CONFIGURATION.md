@@ -105,6 +105,8 @@ until clean empty-state startup, project isolation and admission are qualified.
   tracker/*.yml                     tracker connection, field/workflow specs and credential references
   packs/*.yml                       team and profile overlay, committee presets and role prompts
   forge/github-app.example.yml      committed GitHub App placeholder
+  attention.yml                     optional attention policy
+  attention.env                     placeholder sample for <state-root>/.env; never loaded here
   quota-signals.yml                 optional vendor refusal wording
   paseo-supervision.yml             optional daemon watchdog policy, not a project key
   host.example.yml                  committed host schema example
@@ -908,7 +910,7 @@ durable-recovery backstop described below, not a replacement event bus.
 ## Attention channel
 
 Copy [`config/examples/attention.yml`](../config/examples/attention.yml) to
-`<state-root>/attention.yml` only when this Realm should emit attention alerts.
+`<config-folder>/attention.yml` only when this Realm should emit attention alerts.
 An absent file means Kontor emits nothing; there is no default destination.
 
 The document mirrors the supervision policy's shape and rules:
@@ -935,7 +937,10 @@ The document mirrors the supervision policy's shape and rules:
 The Workflows URL and the mention list are secrets an operator edits more often
 than the policy. They may live in an optional `<state-root>/.env` instead;
 [`config/examples/attention.env`](../config/examples/attention.env) is the
-placeholder sample.
+placeholder sample. This is a separate secret input; policy stays in the selected
+YAML folder. The daemon reads the secret file only at `<state-root>/.env`; it does
+not search the selected folder, the working directory or its parents. The sample
+`attention.env` is never loaded as configuration.
 
 | Key | Overrides | Value |
 | --- | --- | --- |
