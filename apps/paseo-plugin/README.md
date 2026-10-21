@@ -976,3 +976,25 @@ seat can still bypass the guard with the MCP `create_workspace` tool or either
 CLI path. That residual is recorded in the
 ASMA-8507 evidence with the widened upstream action; G-20 is not closed by the
 hook alone.
+
+
+### Native availability and manual lifecycle actions
+
+Attention includes unread finished results as well as current actionable notices.
+A closed runtime, an old timestamp and an earlier error do not prove that a native
+record is absent. Exact-ID metadata reads distinguish a readable native record,
+a null record on the selected host, and an unknown/error reply. They do not load
+provider history or verify that a provider conversation can continue.
+
+Archive review reads the exact native ID again, even when it appears in the
+inventory. Missing or invalid replies cannot authorize an effect. Review and
+execution observations reconcile the list and counts; missing evidence expires
+after one minute and can be refreshed explicitly. A timeout, authentication error
+or different-ID reply stays unknown. Already archived and already absent outcomes
+mean no archive request was dispatched. An uncertain dispatched action retains
+its durable no-replay barrier.
+
+Archive remains usable for a readable, non-running native record without provider
+history. Resume requires its separate history and route preflight. Provider-history
+existence is unverified unless an authorized operation supplies that evidence;
+no bulk provider launch or permanent-death inference is performed.

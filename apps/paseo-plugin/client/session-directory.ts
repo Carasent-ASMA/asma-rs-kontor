@@ -1,3 +1,4 @@
+import { freshAvailability } from "../shared/session-lifecycle";
 import type {
   OwnedSubscription,
   PaseoAgentListOptions,
@@ -101,7 +102,7 @@ export function hasEarlierError(entry: DirectoryEntry): boolean {
 
 /** Retained error history does not create a current Attention signal. */
 export function hasSessionAttention(entry: DirectoryEntry): boolean {
-  return entry.archivedAt === null && !(entry.availability?.state === "missing" && entry.availability.revision === entry.updatedAt) &&
+  return entry.archivedAt === null && freshAvailability(entry)?.state !== "missing" && !freshAvailability(entry)?.archivedAt &&
     entry.requiresAttention && !hasEarlierError(entry);
 }
 

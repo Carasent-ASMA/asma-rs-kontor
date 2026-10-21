@@ -7,14 +7,21 @@ const id = z.string().min(1).max(200);
 export const recoveryTargetSchema = z.object({ provider: id, model: id, effort: id }).strict();
 export type RecoveryTarget = z.infer<typeof recoveryTargetSchema>;
 export const DEFAULT_RECOVERY_TARGET: RecoveryTarget = { provider: "codex", model: "gpt-6.1-sol", effort: "xhigh" };
-export const availabilitySchema = z.object({ state: z.enum(["readable", "missing", "unknown"]), reason: z.string(), checkedAt: z.string(), revision: z.string() });
+export const availabilitySchema = z.object({ agentId: id, nativeStatus: z.string().optional(), archivedAt: z.string().nullable().optional(), providerHistory: z.enum(["unverified", "not-reported"]).optional(), state: z.enum(["readable", "missing", "unknown"]), reason: z.string(), checkedAt: z.string(), revision: z.string() });
 export type SessionAvailability = z.infer<typeof availabilitySchema>;
+export const AVAILABILITY_TTL_MS = 60_000;
+/** Exact native read evidence expires; neither a timestamp nor provider failure proves absence. */
+export function freshAvailability(entry: { id: string; updatedAt: string; availability?: SessionAvailability }, now = Date.now()): SessionAvailability | undefined {
+  const value = entry.availability, age = value ? now - Date.parse(value.checkedAt) : NaN;
+  return value?.agentId === entry.id && value.revision === entry.updatedAt && age >= 0 && age < AVAILABILITY_TTL_MS ? value : undefined;
+}
 export const lifecycleRowSchema = z.object({
   id, title: z.string(), workspaceId: z.string().nullable(), cwd: z.string(), provider: z.string(), model: z.string().nullable(),
   effort: z.string().nullable(), mode: z.string().nullable(), nativeStatus: z.string(), fingerprint: z.string(),
   category: z.enum(["candidate", "unknown", "excluded"]), eligible: z.boolean(), reason: z.string(),
   children: z.array(z.object({ id, title: z.string(), status: z.string(), workspaceId: z.string().nullable() })),
-  outcome: z.enum(["pending", "intent", "submitted", "archived", "blocked", "uncertain"]), message: z.string().nullable(),
+  availability: availabilitySchema.optional(),
+  outcome: z.enum(["pending", "intent", "submitted", "archived", "blocked", "uncertain", "absent", "already_archived"]), message: z.string().nullable(),
 });
 export type LifecycleRow = z.infer<typeof lifecycleRowSchema>;
 export const lifecycleReviewSchema = z.object({
