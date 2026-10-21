@@ -1473,13 +1473,13 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   /** Search results for a few sessions, with the Updated time three hours back on a live list. */
-  function renderResults(compact: boolean, query = "found") {
+  function renderResults(compact: boolean, query = "found", entries = [
+    sessionEntry("found", { title: "SWE • found", updatedAt: "2026-10-18T10:00:00.000Z" }),
+    sessionEntry("found-too", { title: "QA • found too", status: "running", updatedAt: "2026-10-18T12:59:30.000Z" }),
+  ]) {
     vi.setSystemTime(Date.parse("2026-10-18T13:00:00.000Z"));
     const openAgent = vi.fn();
-    directory.state = { ...(directory.state as object), entries: [
-      sessionEntry("found", { title: "SWE • found", updatedAt: "2026-10-18T10:00:00.000Z" }),
-      sessionEntry("found-too", { title: "QA • found too", status: "running", updatedAt: "2026-10-18T12:59:30.000Z" }),
-    ] };
+    directory.state = { ...(directory.state as object), entries };
     patchSessionView("host-a", { query, grouping: "hierarchy", status: "all" });
     harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" },
       navigation: { openAgent, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as unknown as PluginScreenProps));
@@ -1493,6 +1493,14 @@ describe("SessionsScreen toolbar events", () => {
     const drawn = screen.drawn("found");
     expect(textOf(findByTestID(drawn, "sessions-row-age"))).toBe(shown);
     expect(textOf(findByTestID(screen.drawn("found-too"), "sessions-row-age"))).toBe(compact ? "just now" : "Updated just now");
+    // Compact gives the title its line to itself, and the state and the age lead the usage line; desktop keeps both by the title.
+    const lineOf = (testID: string) => walk(drawn).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes(testID)).at(-1)!;
+    const kinds = (line: ElementLike) => [line.props.children].flat(2).filter(Boolean).map((child) => {
+      const element = child as ElementLike & { type: unknown };
+      return element.type === SessionUsage ? "usage" : element.type === SessionStateMarker ? "state" : String(element.props.testID ?? "other");
+    });
+    expect(kinds(lineOf("sessions-row-title"))).toEqual(compact ? ["sessions-row-title"] : ["sessions-row-title", "sessions-row-age", "other", "state"]);
+    if (compact) expect(kinds(lineOf("sessions-row-age"))).toEqual(["state", "sessions-row-age", "usage"]);
     const row = findByTestID(drawn, "sessions-row-found");
     expect(String(row.props.accessibilityLabel).endsWith(". Updated 3 hours ago")).toBe(true);
     // The details button sits between the row and Show in tree, and opens the details only.
@@ -1512,6 +1520,25 @@ describe("SessionsScreen toolbar events", () => {
     // Show in tree leaves the results, and the details opened there close.
     (screen.result("found").props.onShowInTree as (entry: unknown) => void)(screen.result("found").props.entry); harness.flush();
     expect(walk(harness.current()).find((element) => element.props.testID === "sessions-details")).toBeUndefined();
+  });
+
+  it.each([true, false])("lets compact results that share a role and task wrap their titles to where they differ, and keeps desktop titles on one line (compact %s)", (compact) => {
+    // Synthetic sessions whose titles differ only after the shared role and task.
+    const titles = { first: "SWE • ASMA-1 • first subject", second: "SWE • ASMA-1 • second subject" };
+    const screen = renderResults(compact, "subject", Object.entries(titles).map(([id, title]) => sessionEntry(id, { title })));
+    expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
+    for (const [id, title] of Object.entries(titles)) {
+      const drawn = screen.drawn(id);
+      const shown = findByTestID(drawn, "sessions-row-title");
+      // The whole title is drawn; compact gives it a line of its own and three lines to reach the subject.
+      expect(textOf(shown)).toBe(title);
+      expect(shown.props.numberOfLines).toBe(compact ? 3 : 1);
+      const line = walk(drawn).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes("sessions-row-title")).at(-1)!;
+      expect([line.props.children].flat(2).filter(Boolean)).toHaveLength(compact ? 1 : 4);
+      // The row and Show in tree keep the full title in their names.
+      expect(String(findByTestID(drawn, `sessions-row-${id}`).props.accessibilityLabel).startsWith(`${title}. `)).toBe(true);
+      expect(String((drawn.props.children as ElementLike[])[2]!.props.accessibilityLabel)).toBe(`Show ${title} in the tree`);
+    }
   });
 
   it("gives rows the Updated time itself, not an age, while the list is not live", () => {

@@ -660,19 +660,24 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         })}
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text testID="sessions-row-title" numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
+          <Text testID="sessions-row-title" numberOfLines={compact ? 3 : 1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
             {entry.title}
           </Text>
-          {time ? rowAge(time, compact, colors) : null}
+          {/* Compact gives the title this line to itself and up to three lines, so titles that share a role and task still show where they differ; the state and the age lead the usage line below. */}
+          {time && !compact ? rowAge(time, compact, colors) : null}
           {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
-          <SessionStateMarker state={state} colors={colors} />
+          {compact ? null : <SessionStateMarker state={state} colors={colors} />}
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
           {provenance.parts.join(" › ")}
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
         {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
-        {compact ? <SessionUsage entry={entry} colors={colors} /> : null}
+        {compact ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
+          <SessionStateMarker state={state} colors={colors} />
+          {time ? rowAge(time, compact, colors) : null}
+          <SessionUsage entry={entry} colors={colors} />
+        </View> : null}
       </Pressable>
       {details}
       <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
