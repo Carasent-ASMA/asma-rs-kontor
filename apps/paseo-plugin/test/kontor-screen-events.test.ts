@@ -658,3 +658,18 @@ describe("Kontor shell native actions", () => {
     expect(screen.picker()!.props).toMatchObject({ label: "Billing", epicKey: null });
   });
 });
+
+it("finds a graphless plan by its explicit workstream and shows exact Plan context without linking unrelated sessions", async () => {
+  const { source, read } = await import("./plan-workstream-fixtures");
+  model.sources = [source]; model.reads = { [source.id]: read };
+  model.entries = [sessionEntry("unrelated", { labels: { epic: "ASMA-2" } })];
+  const screen = mount(true, { tab: "Plan" }); screen.openPicker();
+  const input = elements(screen.menu()!.props.header as ReactNode).find((node) => node.type === "TextInput")!;
+  (input.props.onChangeText as (value: string) => void)("adopus-graphql"); screen.render();
+  expect(screen.choices()).toEqual(["Plan: Declared plan"]);
+  expect(screen.menuItems().find((node) => node.props.label === source.title)?.props.detail).toBe("ASMA-7575 · adopus-graphql");
+  screen.choose(source.title);
+  expect(screen.picker()?.props).toMatchObject({ label: source.title, epicKey: "ASMA-7575" });
+  const page = screen.elements().find((node) => node.type === ReadOnlyPage)!;
+  expect(page.props.entries).toEqual([]);
+});

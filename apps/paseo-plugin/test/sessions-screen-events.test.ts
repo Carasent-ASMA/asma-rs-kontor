@@ -251,6 +251,7 @@ vi.mock("../client/use-session-directory", () => ({
 import { emptyDirectoryState } from "../client/session-directory";
 import {
   ActiveFilterSummary,
+  ClearFiltersButton,
   COMPACT_COLLAPSE_DISTANCE,
   COMPACT_SCROLL_SLACK,
   compactToolbarOpen,
@@ -341,7 +342,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces">) {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces" | "workstreamSources" | "workstreamReads" | "workstreamRegistry" | "planMappings">) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -788,7 +789,7 @@ describe("SessionsScreen toolbar events", () => {
 
   it("selects an empty native desk by ID, distinguishes duplicate names and retains selection across rename", () => {
     patchSessionView("host-a", { query: "", advancedOpen: true, shortcut: null, toolbarOpen: true });
-    const native: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces"> = { projects: [{ id: "prj_one", name: "DESK • RESEARCH" }, { id: "prj_two", name: "DESK • RESEARCH" }], workspaces: [] };
+    const native: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces" | "workstreamSources" | "workstreamReads" | "workstreamRegistry" | "planMappings"> = { projects: [{ id: "prj_one", name: "DESK • RESEARCH" }, { id: "prj_two", name: "DESK • RESEARCH" }], workspaces: [] };
     renderScreen(undefined, true, "ios", native);
     const openScope = () => { (findByTestID(harness.current(), "sessions-scope").props.onPress as () => void)(); harness.flush(); };
     openScope();
@@ -2262,5 +2263,27 @@ describe("SessionsScreen compact toolbar", () => {
     expect(frame().maxHeight).toBe(138);
     layout(harness.current() as ElementLike, { height: 300 });
     expect(frame().maxHeight).toBe(132);
+  });
+});
+
+describe("plan-derived visible workstream choices", () => {
+  beforeEach(() => { vi.useFakeTimers(); clearSessionViews(); harness.reset(); });
+  afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+  it("renders a graphless zero-session declaration and registry-only key, filters actual rows, and clears streams", async () => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })], status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", advancedOpen: true, includeArchived: false, streams: [], ...toolbarOpenPatch(true) });
+    const { planWorkstreamMappings } = await import("../client/plan-workstreams");
+    const mappings = planWorkstreamMappings([source], { plan: read }, (directory.state as { entries: import("../client/session-directory").DirectoryEntry[] }).entries, [], {}, {});
+    renderScreen(undefined, true, "ios", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry, planMappings: mappings });
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 sessions");
+    expect(findByTestID(harness.current(), "workstream-option-access").props.label).toContain("0 sessions");
+    expect(sessionRowIds()).toEqual([]);
+    (findByTestID(harness.current(), "workstream-option-adopus-graphql").props.onPress as () => void)(); harness.flush();
+    expandAll(); expect(sessionRowIds()).toEqual(["linked"]);
+    const clear = walk(harness.current()).find((node) => node.type === ClearFiltersButton)!;
+    (clear.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").streams).toBeNull();
+    harness.unmount();
   });
 });

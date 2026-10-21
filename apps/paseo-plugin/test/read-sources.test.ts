@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
-import { contributeReadSources, readConfiguredSource, sourceCatalog } from "../server/read-sources";
+import { contributeReadSources, readConfiguredSource, readWorkstreamRegistry, sourceCatalog } from "../server/read-sources";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema } from "../shared/organization";
 import { listReadSources, readSource, readPlanAssociations, type ReadSourceSummary } from "../shared/read-sources";
 
@@ -19,7 +19,7 @@ vi.mock("node:fs", async (original) => {
 
 const temporary: string[] = [];
 afterEach(async () => { await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
-async function fixture(content = "# Plan\n\nNo dependencies are inferred from this prose.") {
+async function fixture(content = "# Plan\n\n```plan-graph\nfixture\n```\nNo dependencies are inferred from this prose.") {
   const directory = await mkdtemp(join(tmpdir(), "kontor-source-")); temporary.push(directory);
   const path = join(directory, "plan.md"); await writeFile(path, content);
   const source: ReadSourceSummary = { id: "draft", title: "Draft", kind: "plan", path, workstream: null, epic: null, projectId: null, revisionKind: "saved draft" };
@@ -27,6 +27,15 @@ async function fixture(content = "# Plan\n\nNo dependencies are inferred from th
   return { source, graph, content };
 }
 describe("configured read sources", () => {
+  it("preserves explicit catalog workstreams through validation and exact-source reads", async () => {
+    const { source, graph } = await fixture();
+    const catalog = sourceCatalog(JSON.stringify([{ ...source, workstream: "ad-voca" }]));
+    expect(catalog.diagnostics).toEqual([]);
+    const result = await readConfiguredSource(catalog.sources[0]!, async () => JSON.stringify(graph));
+    expect(result.status).toBe("ready");
+    expect(result.source.workstream).toBe("ad-voca");
+    expect(source.workstream).toBeNull();
+  });
   it("fails closed for relative paths, duplicate IDs, unknown fields and malformed catalog", () => {
     expect(sourceCatalog("[]").sources).toEqual([]);
     for (const raw of ["no json", JSON.stringify([{ id: "x", title: "x", kind: "plan", path: "relative.md" }]), JSON.stringify([{ id: "x", title: "x", kind: "plan", path: "/tmp/p", credential: "forbidden" }])]) expect(sourceCatalog(raw).sources).toEqual([]);
@@ -52,7 +61,7 @@ describe("configured read sources", () => {
     expect(changed.graph).toBeNull(); expect(changed.diagnostics.join()).toContain("changed during");
   });
   it("reports source-specific exporter errors without legacy Markdown extraction", async () => {
-    const { source } = await fixture("```mermaid\ngraph TD\nA-->B\n```\nTASK-1 -> TASK-2");
+    const { source } = await fixture("```plan-graph\ninvalid\n```\n```mermaid\ngraph TD\nA-->B\n```\nTASK-1 -> TASK-2");
     const result = await readConfiguredSource(source, async () => { throw new Error("canonical dependency cycle A → B → A"); });
     expect(result.status).toBe("partial"); expect(result.graph).toBeNull(); expect(result.diagnostics.join()).toContain("dependency cycle");
   });
@@ -131,18 +140,18 @@ describe("operator catalog file on plugin load/reload", () => {
     const settings: PluginSettings<typeof organizationSettingsSchema> = { read: async () => ({ status: "ready", revision: "1", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} };
     const stop = contributeReadSources(server, settings);
     const handler = (name: string) => server.handle.mock.calls.find(([rpc]) => rpc.name === name)![1];
-    expect(handler(listReadSources.name)({}).sources).toEqual([]);
+    expect((await handler(listReadSources.name)({})).sources).toEqual([]);
     await writeFile(file, JSON.stringify([{ ...source, kind: "delivery" }]));
     await writeFile(source.path, JSON.stringify({ delivery: [] }));
-    expect(handler(listReadSources.name)({}).sources).toHaveLength(1);
+    expect((await handler(listReadSources.name)({})).sources).toHaveLength(1);
     expect(await handler(readSource.name)({ sourceId: source.id })).toMatchObject({ status: "ready", records: { delivery: [] } });
     await writeFile(file, JSON.stringify([source]));
     expect(await handler(readPlanAssociations.name)({})).toMatchObject({ sources: [source] });
     await writeFile(file, "invalid JSON");
-    expect(handler(listReadSources.name)({}).diagnostics.join()).toContain("Invalid source catalog");
+    expect((await handler(listReadSources.name)({})).diagnostics.join()).toContain("Invalid source catalog");
     expect(() => handler(readSource.name)({ sourceId: source.id })).toThrow("not in the configured host catalog");
     await rm(file);
-    expect(handler(listReadSources.name)({}).diagnostics.join()).toContain("No read sources configured");
+    expect((await handler(listReadSources.name)({})).diagnostics.join()).toContain("No read sources configured");
     stop();
   });
   it("uses the existing default Paseo home when PASEO_HOME is absent", async () => {
@@ -155,7 +164,7 @@ describe("operator catalog file on plugin load/reload", () => {
     "not JSON", JSON.stringify([{ ...entry, path: "relative.md" }]),
     JSON.stringify([{ ...entry, credential: "not allowed" }]), JSON.stringify([entry, entry]),
     JSON.stringify([{ ...entry, revisionKind: "approved revision" }]),
-    JSON.stringify(Array.from({ length: 65 }, (_, index) => ({ ...entry, id: `source-${index}` }))),
+    JSON.stringify(Array.from({ length: 513 }, (_, index) => ({ ...entry, id: `source-${index}` }))),
   ])("reports invalid file entries with the file origin (%#)", async (raw) => {
     await writeFile(file, raw); const result = sourceCatalog();
     expect(result.sources).toEqual([]); expect(result.diagnostics.join()).toContain(`Invalid source catalog ${file}:`);
@@ -170,4 +179,26 @@ describe("operator catalog file on plugin load/reload", () => {
     catalogFailure.denyOpen = true; const result = sourceCatalog();
     expect(result.sources).toEqual([]); expect(result.diagnostics.join()).toContain(`Cannot read source catalog ${file}: permission denied`);
   });
+});
+
+it("refreshes graphless metadata from exact read bytes despite an omitted catalog workstream", async () => {
+  const { source } = await fixture("---\nworkstream: tokenomics\nepic: ASMA-8353\n---\n# No graph");
+  const exporter = vi.fn();
+  const first = await readConfiguredSource(source, exporter);
+  expect(first).toMatchObject({ status: "ready", graph: null, planMetadata: { workstream: "tokenomics", epic: "ASMA-8353" } });
+  expect(exporter).not.toHaveBeenCalled();
+  await writeFile(source.path, "---\nworkstream: access\n---\n# Edited");
+  const next = await readConfiguredSource(source, exporter);
+  expect(next.planMetadata?.workstream).toBe("access"); expect(next.revision).not.toBe(first.revision);
+  expect((await readConfiguredSource({ ...source, workstream: "tokenomics" }, exporter)).planMetadata?.workstream).toBeNull();
+});
+it("refreshes the bounded authoritative registry and reports missing configuration", async () => {
+  const { source } = await fixture(); const root = dirname(source.path), file = join(root, "config/orchestration/workstreams.json");
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: { access: { name: "Access" } }, desks: {} }));
+  const first = await readWorkstreamRegistry(root);
+  await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: { reporting: { name: "Reporting" } }, desks: {} }));
+  const next = await readWorkstreamRegistry(root);
+  expect(next.revision).not.toBe(first.revision); expect(Object.keys(next.workstreams)).toEqual(["reporting"]);
+  expect((await readWorkstreamRegistry("relative")).diagnostics.join()).toContain("unavailable");
 });
