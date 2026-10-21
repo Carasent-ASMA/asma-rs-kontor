@@ -1964,3 +1964,66 @@ fn each_external_terminal_class_requires_its_own_corresponding_internal_outcome(
         }
     }
 }
+
+/// The ASMA task workflow's declared two-hop route is the pinned one, and it
+/// plans both moves without inventing an intermediate.
+///
+/// The synthetic fixture above proves the mechanism for a workflow shaped like
+/// the live one. This case pins the live fixture itself: `reopen` is
+/// READY FOR DEVELOPMENT, a DRAFT ticket reaches it first, and the next
+/// observation finishes at In Development. G-37's declared two-hop workflow is
+/// therefore supported from the shipped specification, not from a route the
+/// evaluator discovered at runtime.
+#[test]
+fn the_shipped_asma_task_workflow_plans_its_declared_two_hop_route() {
+    const ASMA_TASK_WORKFLOW: &str =
+        include_str!("../../kontor-jira/fixtures/external-workflow-asma.json");
+    let spec: ExternalWorkflowSpec =
+        serde_json::from_str(ASMA_TASK_WORKFLOW).expect("the ASMA task workflow parses");
+    spec.validate().expect("the shipped task workflow is valid");
+
+    let target = target_of(&spec, "implementation_active");
+    let hop = spec
+        .reopen
+        .clone()
+        .expect("the shipped task workflow declares a reopen status");
+    assert_eq!(
+        hop.status_name.as_str(),
+        "READY FOR DEVELOPMENT",
+        "the pinned intermediate is the one the live workflow declares"
+    );
+    let standing = spec
+        .inbound_compatible
+        .iter()
+        .find(|status| status.status_id == external("10237"))
+        .cloned()
+        .expect("DRAFT is an inbound status");
+    assert_eq!(target.status_name.as_str(), "In Development");
+
+    let principal = principal();
+    let facts = facts(TaskState::InProgress, false, None);
+    let standing_at = observation(&standing, Some(&principal.account_id));
+
+    // Only DRAFT -> READY FOR DEVELOPMENT is live. A direct move to In
+    // Development is not offered, and must not be fabricated.
+    let live = vec![route("11", &hop)];
+    let ReconciliationOutcome::Transition(first) =
+        reconcile(&held_input(&spec, &standing_at, &facts, &principal, &live))
+    else {
+        panic!("the declared intermediate must produce a plan");
+    };
+    assert_eq!(first.destination().status_id, hop.status_id);
+    assert_eq!(first.target.status_id, target.status_id);
+    assert!(first.is_staged_hop());
+
+    // Standing on the intermediate, the second move reaches the milestone.
+    let arrived = observation(&hop, Some(&principal.account_id));
+    let onward = vec![route("21", &target)];
+    let ReconciliationOutcome::Transition(second) =
+        reconcile(&held_input(&spec, &arrived, &facts, &principal, &onward))
+    else {
+        panic!("the second move must reach the milestone");
+    };
+    assert_eq!(second.destination().status_id, target.status_id);
+    assert!(!second.is_staged_hop());
+}

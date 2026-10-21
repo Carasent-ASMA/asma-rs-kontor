@@ -5,6 +5,7 @@ import { copyText, Icon, TextInput, useToast } from "@getpaseo/plugin/client/rea
 import { KeyboardAvoidingView, Linking, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { ControlHelpProvider } from "./control-help";
+import { declaredScope } from "./session-organization";
 import { SessionsScreen } from "./sessions-screen";
 import { useOrganizationSettings } from "./use-organization-settings";
 import { useKeyboardSettings } from "./use-keyboard-settings";
@@ -29,6 +30,7 @@ import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
+import { declaredPlanWorkstream, planWorkstreamMappings } from "./plan-workstreams";
 import { taskTeamReader } from "./task-team-source";
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
@@ -65,6 +67,9 @@ function HostScreen(props: PluginScreenProps) {
   const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
+  const planMappings = useMemo(() => planWorkstreamMappings(sourceState.sources, sourceState.reads, directory.state.entries,
+    workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName })), saved.displayMappings, saved.planAssociations),
+    [sourceState.sources, sourceState.reads, directory.state.entries, workspaces.entries, saved.displayMappings, saved.planAssociations]);
   const presentation = sourceState.error && !sourceState.available
     ? { ...organization, state: { ...organization.state, status: "error" as const, error: "Plugin source service unavailable; organization preferences are not current." } }
     : organization;
@@ -85,7 +90,7 @@ function HostScreen(props: PluginScreenProps) {
       const next = refreshContextSource(host.id, resolved.sourceId, resolved.sourceRevision);
       setRoute(next); setQuery(readRouteView(host.id, next).query); return;
     }
-    const revision = route.sourceId ? sourceState.reads[route.sourceId]?.revision ?? null : null;
+    const revision = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId)?.expectedSha256 ?? sourceState.reads[route.sourceId]?.revision ?? null : null;
     if (revision !== route.sourceRevision) {
       const next = refreshSourceRevision(host.id, revision);
       setRoute(next); setQuery(readRouteView(host.id, next).query);
@@ -98,8 +103,11 @@ function HostScreen(props: PluginScreenProps) {
     return [...names];
   }, [directory.state.entries, workspaces.entries, workspaces.projects]);
   const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
-  const scopedEpic = selectedPlan ? sourceState.reads[selectedPlan.id]?.graph?.epic.jira ?? selectedPlan.epic : route.epicKey;
-  const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId) && (scopedEpic === null || confirmedEpic(entry) === scopedEpic) && !(route.tab === "Overview" && route.sourceId && !scopedEpic)), [directory.state.entries, route.projectId, scopedEpic, route.tab, route.sourceId]);
+  const scopedEpic = selectedPlan ? sourceEpic(selectedPlan, sourceState.reads[selectedPlan.id]) : route.epicKey;
+  const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId)
+    && (selectedPlan ? saved.planAssociations[entry.id]?.includes(selectedPlan.id) || scopedEpic !== null && declaredScope(entry, saved.displayMappings).epic?.toUpperCase() === scopedEpic
+      : scopedEpic === null || declaredScope(entry, saved.displayMappings).epic?.toUpperCase() === scopedEpic)),
+    [directory.state.entries, route.projectId, scopedEpic, selectedPlan, saved.planAssociations, saved.displayMappings]);
   const sourcesInContext = sourceState.sources.filter((source) => sourceInProject(source, sourceState.reads[source.id], route.projectId, projectEpics)
     && (source.kind === "jira" || (scopedEpic === null || sourceEpic(source, sourceState.reads[source.id]) === scopedEpic)
       && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null))));
@@ -107,7 +115,7 @@ function HostScreen(props: PluginScreenProps) {
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
-  const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)].filter((key): key is string => key !== null))].sort();
+  const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceEpic(source, sourceState.reads[source.id]))].filter((key): key is string => key !== null))].sort();
   const projectName = route.projectId === null ? null : projects.find(([id]) => id === route.projectId)?.[1] ?? null;
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projectName ?? "Project unavailable");
   const heading = contextHeading(route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectName, projectEpics, sourceState.error);
@@ -121,8 +129,8 @@ function HostScreen(props: PluginScreenProps) {
     const source = sourceState.sources.find((candidate) => candidate.id === sourceId && candidate.kind === "plan");
     if (!source) return;
     // A global picker selection leaves the conversation's plan-association scope.
-    visit({ ...(tab ? { tab } : {}), sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null,
-      projectId: source.projectId, epicKey: sourceState.reads[sourceId]?.graph?.epic.jira ?? source.epic,
+    visit({ ...(tab ? { tab } : {}), sourceId, sourceRevision: source.expectedSha256 ?? sourceState.reads[sourceId]?.revision ?? null,
+      projectId: source.projectId, epicKey: sourceEpic(source, sourceState.reads[sourceId]),
       originAgentId: linkedContext && associationIds?.includes(sourceId) ? route.originAgentId : null });
   };
   const primary = layout.compact ? PRIMARY_MOBILE : PRIMARY_DESKTOP;
@@ -172,13 +180,13 @@ function HostScreen(props: PluginScreenProps) {
     </View>;
   const needle = pickerQuery.trim().toLocaleLowerCase();
   const matches = (...values: (string | null | undefined)[]) => !needle || values.some((value) => value?.toLocaleLowerCase().includes(needle));
-  const boundEpics = new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic));
+  const boundEpics = new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => sourceEpic(source, sourceState.reads[source.id])));
   const planSources: Record<string, string[]> = {};
   for (const source of sourceState.sources) {
-    const key = source.kind === "plan" ? (sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)?.toLocaleUpperCase() : undefined;
+    const key = source.kind === "plan" ? (sourceEpic(source, sourceState.reads[source.id]))?.toLocaleUpperCase() : undefined;
     if (key) (planSources[key] ??= []).push(source.id);
   }
-  const planChoices = pickerPlans.filter((source) => matches(source.title, sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic));
+  const planChoices = pickerPlans.filter((source) => matches(source.title, sourceEpic(source, sourceState.reads[source.id]), declaredPlanWorkstream(source, sourceState.reads[source.id])));
   const epicChoices = linkedContext ? [] : epics.filter((epicKey) => !boundEpics.has(epicKey) && matches(epicKey));
   const projectChoices = linkedContext ? [] : projects.filter(([id, name]) => matches(name, id));
   const group = (label: string) => <Text key={`group:${label}`} style={{ color: colors.foregroundMuted, fontSize: 10, fontWeight: "600", letterSpacing: 0.4, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 3 }}>{label.toLocaleUpperCase()}</Text>;
@@ -196,7 +204,7 @@ function HostScreen(props: PluginScreenProps) {
     <ScrollView role="menu" accessibilityLabel="Plan and project choices" keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
       <MenuItem label="All projects" accessibilityLabel="All projects, clear selection" tall={layout.compact} selected={unscoped} colors={colors} onPress={() => visit({ ...NO_SCOPE })} />
       {planChoices.length ? group(linkedContext ? "Plans linked to this conversation" : "Configured plans") : null}
-      {planChoices.map((source) => { const key = sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic; return <MenuItem key={`source:${source.id}`} label={source.title} detail={key && jiraIssueUrl(key) ? key : null} accessibilityLabel={`Plan: ${source.title}${key ? `, ${key}` : ""}`} tall={layout.compact} selected={route.sourceId === source.id} colors={colors} onPress={() => selectSource(source.id)} />; })}
+      {planChoices.map((source) => { const key = sourceEpic(source, sourceState.reads[source.id]); return <MenuItem key={`source:${source.id}`} label={source.title} detail={[key && jiraIssueUrl(key) ? key : null, declaredPlanWorkstream(source, sourceState.reads[source.id])].filter(Boolean).join(" · ") || null} accessibilityLabel={`Plan: ${source.title}${key ? `, ${key}` : ""}`} tall={layout.compact} selected={route.sourceId === source.id} colors={colors} onPress={() => selectSource(source.id)} />; })}
       {epicChoices.length ? group("Epics without a configured plan") : null}
       {epicChoices.map((epicKey) => { const count = directory.state.entries.filter((entry) => confirmedEpic(entry) === epicKey).length; return <MenuItem key={`epic:${epicKey}`} label={epicKey} detail={`${count} session${count === 1 ? "" : "s"}`} tall={layout.compact} selected={route.sourceId === null && route.epicKey === epicKey} colors={colors} onPress={() => visitContext({ projectId: null, epicKey, sourceId: null, sourceRevision: null, originAgentId: null })} />; })}
       {projectChoices.length ? group("Native projects") : null}
@@ -207,6 +215,8 @@ function HostScreen(props: PluginScreenProps) {
   let page;
   if (route.tab === "Sessions") page = <SessionsScreen key={sessionScopeKey(host.id, route)} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
+    planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads}
+    workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}
     planSources={planSources} onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     projects={projects.map(([id, name]) => ({ id, name }))}
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}

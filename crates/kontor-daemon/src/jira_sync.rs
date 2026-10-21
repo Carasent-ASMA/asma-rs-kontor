@@ -63,11 +63,16 @@ pub async fn poll_until_stopped(services: Arc<Services>, state: ApiState) {
                 blocked = report.blocked,
                 "automatic Jira reconciliation completed with blocked subjects"
             );
-        } else if report.task_subjects + report.epic_subjects > 0 {
+        } else if report.task_subjects + report.epic_subjects > 0
+            || report.excluded > 0
+            || report.attention > 0
+        {
             info!(
                 realm_id = %state.realm_id(),
                 task_subjects = report.task_subjects,
                 epic_subjects = report.epic_subjects,
+                excluded = report.excluded,
+                attention = report.attention,
                 converged = report.converged,
                 applied = report.applied,
                 "automatic Jira reconciliation completed"

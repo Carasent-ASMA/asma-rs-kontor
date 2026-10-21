@@ -69,6 +69,14 @@ project:
   fleet: orchestration/fleet.yml
   supervision: orchestration/tpm-supervision.yml
 
+  # The project's PR desk: the command that invokes it, the folder-relative
+  # policy file, and the history root under host.paths.data_root. The learning
+  # log is <history_root>/learning.log unless host.paths.pr_desk overrides it.
+  pr_desk:
+    command: example-pr-desk
+    settings: orchestration/pr-desk.yml
+    history_root: pr-review
+
   merge_authority:
     role: Platform Owner
     policy: independent-review-then-owner

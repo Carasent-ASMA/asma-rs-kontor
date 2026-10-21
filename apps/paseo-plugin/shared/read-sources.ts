@@ -5,6 +5,7 @@ export const sourceSummarySchema = z.object({
   id: z.string(), title: z.string(), kind: z.enum(["plan", "teams", "delivery", "decisions", "jira"]),
   path: z.string(), workstream: z.string().nullable(), epic: z.string().nullable(),
   projectId: z.string().nullable(), revisionKind: z.enum(["saved draft", "working copy", "approved revision"]),
+  logicalPlanId: z.string().optional(),
   expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
 });
 export const canonicalGraphSchema = z.object({
@@ -49,14 +50,21 @@ export const jiraHistorySchema = z.object({
 });
 export type JiraHistory = z.infer<typeof jiraHistorySchema>;
 export type JiraIssue = z.infer<typeof jiraIssueSchema>;
+export const workstreamRegistrySchema = z.object({
+  path: z.string().nullable(), revision: z.string().nullable(),
+  workstreams: z.record(z.string(), z.object({ name: z.string() })),
+  desks: z.record(z.string(), z.object({ name: z.string() })), diagnostics: z.array(z.string()),
+});
+export type WorkstreamRegistry = z.infer<typeof workstreamRegistrySchema>;
 export const sourceReadSchema = z.object({
   source: sourceSummarySchema, status: z.enum(["ready", "partial", "unavailable"]),
   revision: z.string().nullable(), readAt: z.string(), modifiedAt: z.string().nullable(),
   content: z.string().nullable(), graph: canonicalGraphSchema.nullable(), records: recordsSchema.nullable(),
   diagnostics: z.array(z.string()), jiraHistory: jiraHistorySchema.nullable().optional(),
+  planMetadata: z.object({ workstream: z.string().nullable(), epic: z.string().nullable(), diagnostics: z.array(z.string()) }).optional(),
 });
 export const listReadSources = defineRpc({ name: "sources.list", input: z.object({}).strict(),
-  output: z.object({ sources: z.array(sourceSummarySchema), diagnostics: z.array(z.string()) }) });
+  output: z.object({ sources: z.array(sourceSummarySchema), diagnostics: z.array(z.string()), registry: workstreamRegistrySchema.optional() }) });
 export const readSource = defineRpc({ name: "sources.read", input: z.object({ sourceId: z.string().min(1).max(128) }).strict(),
   output: sourceReadSchema });
 export const readPlanAssociations = defineRpc({ name: "sources.associations", input: z.object({}).strict(),

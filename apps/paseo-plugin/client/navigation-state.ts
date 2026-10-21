@@ -118,7 +118,7 @@ export function contextHeading(route: KontorRoute, sources: readonly ReadSourceS
   const jira = (value: string | null | undefined) => value && /^ASMA-[1-9]\d*$/.test(value) ? value : null;
   if (route.sourceId) {
     const plan = sources.find((source) => source.id === route.sourceId && source.kind === "plan") ?? null;
-    return { title: plan?.title ?? "Source unavailable", key: plan ? jira(reads[plan.id]?.graph?.epic.jira ?? plan.epic) : null, plan, plans: plan ? 1 : 0 };
+    return { title: plan?.title ?? "Source unavailable", key: plan ? jira(sourceEpic(plan, reads[plan.id])) : null, plan, plans: plan ? 1 : 0 };
   }
   if (route.epicKey) {
     const plans = contextPlanSources(route, sources, reads, allowedIds, projectEpics);

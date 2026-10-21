@@ -12,6 +12,10 @@ time_zone: Europe/Oslo
 paths:
   state_root: /var/lib/kontor/example/realm
   data_root: /var/lib/kontor/example/data
+  # Optional: an absolute desk history root. When present it overrides
+  # <data_root>/<project.pr_desk.history_root>; remove it to use that
+  # resolution. The learning log is <pr_desk>/learning.log.
+  pr_desk: /var/lib/kontor/example/desk
   worktrees_root: /var/lib/kontor/example/worktrees
   paseo_home: /var/lib/kontor/example/paseo
   logs: /var/log/kontor/example

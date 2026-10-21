@@ -142,14 +142,14 @@ describe("primary surfaces keep moved statements in labels and Source details", 
   it("shows the plan title once and one meta line; the revision kind, exact read and not-inferred statement are in the label and Source details", () => {
     const page = render("Plan", [planRead], { sourceId: "plan" });
     expect(page.visible.split("Configured plan")).toHaveLength(2);
-    expect(text(byId(page, "plan-meta").props.children as ReactNode)).toBe(`Captured document · task graph unavailable · read ${readTime(planRead.readAt)}`);
+    expect(text(byId(page, "plan-meta").props.children as ReactNode)).toBe(`Captured document · Workstream: unknown · task graph unavailable · read ${readTime(planRead.readAt)}`);
     for (const moved of ["Read-only working copy", "not a live plan revision", planRead.readAt, "0 linked sessions"]) expect(page.visible).not.toContain(moved);
-    expect(byId(page, "plan-meta").props.accessibilityLabel).toBe(`Read-only working copy · task graph unavailable · 0 linked sessions. Read ${planRead.readAt}. A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.`);
+    expect(byId(page, "plan-meta").props.accessibilityLabel).toBe(`Read-only working copy · Workstream: unknown · task graph unavailable · 0 linked sessions. Read ${planRead.readAt}. A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.`);
     model.open = true;
     const opened = render("Plan", [planRead], { sourceId: "plan" }).visible;
     model.open = false;
     expect(opened).toContain("A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.");
-    expect(opened).toContain("Read-only working copy · task graph unavailable · 0 linked sessions");
+    expect(opened).toContain("Read-only working copy · Workstream: unknown · task graph unavailable · 0 linked sessions");
     expect(opened).toContain(`Read ${planRead.readAt}`);
   });
   it("keeps the no-plan empty state to one sentence and one action, with the explanation in its label", () => {

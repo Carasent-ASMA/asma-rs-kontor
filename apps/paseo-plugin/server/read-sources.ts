@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
 import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, recordsSchema,
-  sourceSummarySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
+  sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
+import { GRAPH_FENCE, planMetadata } from "./plan-metadata";
 import type { organizationSettingsSchema } from "../shared/organization";
 import { readConfig } from "./config";
 
@@ -22,7 +23,7 @@ const entrySchema = sourceSummarySchema.extend({
 export type SourceCatalog = { sources: ReadSourceSummary[]; diagnostics: string[] };
 function parseSourceCatalog(raw: string, origin: string): SourceCatalog {
   try {
-    const sources = z.array(entrySchema).max(64).parse(JSON.parse(raw));
+    const sources = z.array(entrySchema).max(512).parse(JSON.parse(raw));
     if (new Set(sources.map((source) => source.id)).size !== sources.length) throw new Error("Duplicate source IDs");
     return { sources, diagnostics: [] };
   } catch (error) {
@@ -70,6 +71,17 @@ export async function boundedRead(path: string): Promise<string> {
   } finally { await handle.close(); }
 }
 export type ExportPlan = (path: string) => Promise<string>;
+/** One bounded authoritative file, refreshed with the catalog; no filesystem discovery in the UI. */
+export async function readWorkstreamRegistry(workspace = process.env.KONTOR_PLUGIN_ASMA_WORKSPACE?.trim()): Promise<WorkstreamRegistry> {
+  const result: WorkstreamRegistry = { path: null, revision: null, workstreams: {}, desks: {}, diagnostics: [] };
+  if (!workspace || !isAbsolute(workspace)) { result.diagnostics.push("Workstream registry unavailable: configure an absolute KONTOR_PLUGIN_ASMA_WORKSPACE."); return result; }
+  result.path = join(workspace, "config/orchestration/workstreams.json");
+  try {
+    const content = await boundedRead(result.path);
+    const raw = z.object({ schema_version: z.literal(1), workstreams: workstreamRegistrySchema.shape.workstreams, desks: workstreamRegistrySchema.shape.desks }).parse(JSON.parse(content));
+    return { ...result, workstreams: raw.workstreams, desks: raw.desks, revision: sha256(content) };
+  } catch (error) { result.diagnostics.push(`Workstream registry unavailable: ${error instanceof Error ? error.message : String(error)}`); return result; }
+}
 const exportPlan: ExportPlan = async (path) => {
   const workspace = process.env.KONTOR_PLUGIN_ASMA_WORKSPACE?.trim();
   if (workspace && !isAbsolute(workspace)) throw new Error("KONTOR_PLUGIN_ASMA_WORKSPACE must be an absolute host-side path");
@@ -108,7 +120,19 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
       return result;
     }
     result.content = content;
+    result.planMetadata = planMetadata(content);
+    result.diagnostics.push(...result.planMetadata.diagnostics);
+    if (source.workstream !== null && result.planMetadata.workstream !== null && source.workstream !== result.planMetadata.workstream) {
+      result.diagnostics.push("Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.");
+      result.planMetadata.workstream = null;
+    }
     result.status = "partial";
+    if (!GRAPH_FENCE.test(content)) {
+      if (source.epic && result.planMetadata.epic && source.epic !== result.planMetadata.epic) throw new Error("Configured epic differs from frontmatter epic");
+      result.status = "ready";
+      result.diagnostics.push("No canonical task graph declared; Markdown and explicit metadata only.");
+      return result;
+    }
     const graph = canonicalGraphSchema.parse(JSON.parse(await exporter(path)));
     const exportedPath = isAbsolute(graph.source) ? graph.source : `${dirname(path)}/${graph.source}`;
     if (await realpath(exportedPath) !== path) throw new Error("Canonical export names a different source");
@@ -116,6 +140,7 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
       throw new Error("Source changed during canonical export; retry this exact source");
     }
     if (source.epic !== null && graph.epic.jira !== source.epic) throw new Error("Configured epic differs from the canonical source epic");
+    if (result.planMetadata.epic !== null && result.planMetadata.epic !== graph.epic.jira) throw new Error("Frontmatter epic differs from the canonical source epic");
     result.graph = graph;
     result.status = "ready";
   } catch (error) {
@@ -131,7 +156,7 @@ export function contributeReadSources(server: Pick<PluginServerContext, "handle"
   let stopped = false;
   const firstRead = settings.read().then((state) => { if (latest === null && !stopped) latest = state; }, (error: unknown) => { readError = error instanceof Error ? error.message : String(error); });
   const stop = settings.subscribe((state) => { latest = state; readError = null; });
-  server.handle(listReadSources, () => currentCatalog());
+  server.handle(listReadSources, async () => ({ ...currentCatalog(), registry: await readWorkstreamRegistry() }));
   server.handle(readSource, ({ sourceId }) => {
     const source = currentCatalog().sources.find((entry) => entry.id === sourceId);
     if (!source) throw new Error("Source ID is not in the configured host catalog");
