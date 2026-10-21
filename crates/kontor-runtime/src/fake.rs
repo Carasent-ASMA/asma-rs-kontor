@@ -3050,6 +3050,25 @@ impl ScriptedFakeRuntime {
         self.lock().permissions.pending()
     }
 
+    /// Raise one permission on `binding` without adding a timeline event.
+    ///
+    /// Models a runtime that carries the permission lifecycle on its snapshot
+    /// rather than in the transcript, which is the shape the API fallback must
+    /// address.
+    ///
+    /// # Errors
+    /// Refuses a binding this fake does not own.
+    pub fn raise_permission(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        permission_id: ExternalId,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        state.session(binding)?;
+        state.permissions.open(binding.binding_id(), permission_id);
+        Ok(())
+    }
+
     /// How many native sessions this runtime owns for one seat.
     ///
     /// The AC-4 criterion is stated on this number: whatever a caller replays,
@@ -5993,6 +6012,26 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             queued,
             matches!(step, Some(ScriptStep::CloseStreamWithoutTerminal)),
         ))
+    }
+
+    async fn pending_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        let mut state = self.lock();
+        state.session(binding)?;
+        Ok(state.permissions.pending_for(binding.binding_id()))
+    }
+
+    async fn raised_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        let mut state = self.lock();
+        state.session(binding)?;
+        let mut raised = state.permissions.pending_for(binding.binding_id());
+        raised.extend(state.permissions.resolved_for(binding.binding_id()));
+        Ok(raised)
     }
 
     async fn respond_permission(

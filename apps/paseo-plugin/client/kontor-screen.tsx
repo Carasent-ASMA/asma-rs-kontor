@@ -4,6 +4,7 @@ import { useHosts } from "@getpaseo/plugin/client";
 import { copyText, Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { KeyboardAvoidingView, Linking, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
+import { ControlHelpProvider } from "./control-help";
 import { SessionsScreen } from "./sessions-screen";
 import { useOrganizationSettings } from "./use-organization-settings";
 import { useKeyboardSettings } from "./use-keyboard-settings";
@@ -238,7 +239,7 @@ function HostScreen(props: PluginScreenProps) {
     planView={readPageView(host.id, route, DEFAULT_PLAN_VIEW)} onPlanView={(view) => writePageView(host.id, route, view)}
     teamsView={readPageView(host.id, route, DEFAULT_TEAMS_VIEW)} onTeamsView={(view) => { writePageView(host.id, route, view); setTeamsViewRevision((revision) => revision + 1); }}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => { writeRouteView(host.id, route, { offset }); }} />;
-  return <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+  return <ControlHelpProvider colors={colors}><SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
     <View ref={rootRef} style={{ flex: 1 }} onLayout={(event) => { const { width, height } = event.nativeEvent.layout; if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height }); }}>
     {/* Paseo's own header above already names Kontor and, when there is a choice, the host; this row adds only what it cannot show. */}
     {layout.compact ? <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
@@ -264,7 +265,7 @@ function HostScreen(props: PluginScreenProps) {
     {layout.compact ? navigation : null}
     {menus}
     </View>
-  </KeyboardAvoidingView></SafeAreaView>;
+  </KeyboardAvoidingView></SafeAreaView></ControlHelpProvider>;
 }
 /** Bounded, left-aligned title-only selector; the confirmed Jira key floats on its lower border. */
 function ContextPicker({ label, epicKey, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {

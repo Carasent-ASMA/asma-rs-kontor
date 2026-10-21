@@ -836,6 +836,19 @@ impl AdmissionLedger {
             })
     }
 
+    /// The native session one seat currently holds, when it holds one.
+    ///
+    /// Read-only and used to attest an archived predecessor before a
+    /// replacement is admitted. It names only what this runtime already
+    /// recorded, so it can never hand back a caller-supplied native.
+    #[must_use]
+    pub fn occupied_native(&self, slot: &RoleSlotKey) -> Option<ExternalId> {
+        match self.slots.get(slot) {
+            Some(SlotAdmission::Occupied { native_id, .. }) => Some(native_id.clone()),
+            _ => None,
+        }
+    }
+
     /// Every seat whose launch is in flight, or was when it was last persisted.
     ///
     /// A checkpoint can be taken while a launch sits between its claim and its
