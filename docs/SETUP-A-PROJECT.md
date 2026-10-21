@@ -5,9 +5,9 @@
 > **Category:** runbook
 > **Scope:** An empty repository to a first Paseo-direct epic, with ASMA as the
 > worked example. The Kontor-governed option is described to its L3 boundary.
-> **Summary:** The executable order for adopting the pack: layout, documentation
-> governance, instructions, roles, skills, teams and fleet, parameters,
-> ownership, then the render, check, first epic and harness proof. The selected
+> **Summary:** The executable sequence in §0.1: layout, selected config,
+> project records, render, adapter links, entry files, first plan, then the
+> check and harness proof. The sections below are the reference. The selected
 > config folder is explicit and recorded. JSON authoring sources migrate to
 > YAML, and credentials stay references. The governed option is gated on its
 > config-folder reader, which is not installed by this pack revision.
@@ -66,6 +66,30 @@ The finish line is:
 The proof for this runbook is recorded in its pull request, not in this
 document. A project repeats the same commands in its own checkout.
 
+### 0.1 Executable order
+
+The sections below are the reference. Execute them in this order:
+
+1. **Create the layout.** Create the project tree and the selected config
+   folder (§1). Keep both paths absolute for the session.
+2. **Select and fill the config.** Copy the neutral folder (§7.1), fill every
+   `project:` value (§7.3), and copy and fill `host.yml` (§6). Do not render
+   before the `project:` block is filled.
+3. **Write the project records.** Copy the method documents, then write the
+   router, decision index, gap ledger and setup record; write the local
+   untracked config-path record (§2, §7.2). Do not add a plan row yet.
+4. **Render the skills.** Run `pack.py render` (§9).
+5. **Create the adapter links.** Create the `.claude` skill links, including
+   `.pack`, after render (§3). For a separate module root, run the adapter
+   `--dry-run`, `--apply`, `--check` sequence (§3).
+6. **Write the entry files.** Fill `AGENTS.md` from the selected config and
+   write the one-line `CLAUDE.md` (§3).
+7. **Create the first plan and its route.** Write the plan, add its router row
+   in the same change, then sync and validate (§10). Do not route a plan that
+   does not exist.
+8. **Check and prove.** Run `pack.py check` (§9) and the harness checks (§15).
+   Record the evidence; keep `.local/` and the logs untracked.
+
 ## 1. Layout (§8.1)
 
 Create the project layout. The first block is the repository; the second is the
@@ -90,6 +114,9 @@ config folder, which may live outside the repository.
     plans/<plan>.md
     operations/<setup-record>.md
   config/                         the selected config folder (or an external path)
+    .gitignore                    ignores host.yml
+    README.md                     neutral folder notes
+    attention.yml                 attention channel and message-class policy
     orchestration/
       orchestration.yml           entry: schema_version, fleet, core_team, project:
       orchestration.schema.yml    required-key schema for project:
@@ -107,21 +134,28 @@ config folder, which may live outside the repository.
     paseo-supervision.yml         sample for <state-root>/supervision.yml
 ```
 
-The single-repository example uses `docs` as its documentation root and
+`cp -R "$PACK/config/examples/." "$CONFIG/"` copies this whole tree, including
+`attention.yml`, `.gitignore` and `README.md`; do not build a hand-picked
+subset. The single-repository example uses `docs` as its documentation root and
 `config` as its config folder. A multi-repository project keeps one
 `resource_roots` entry per repository and may keep the config folder in the
 repository that owns the project, or outside every checkout. The root names are
 parameters; nothing in the pack requires `docs` or `config`.
 
-ASMA, as the first consumer, uses the public values in the `project:` block in
-[`tests/fixtures/config/asma-orchestration.yml`](../tests/fixtures/config/asma-orchestration.yml):
-`ASMA` as the tracker key, `Carasent-ASMA` as the forge organization,
-`Carasent-ASMA/asma-modules` and `Carasent-ASMA/asma-rs-kontor` as the
-repositories, `master` as the base branch and `asma` as the project CLI. Its
-documentation roots are `modules/_docs` and `kontor/docs`. Its config folder is
-the `config/` folder of its `asma-modules` checkout. The resolved absolute path
-is recorded in ASMA's setup record and in its service environment; it is host
-data and does not appear in this public repository.
+The public ASMA values in the `project:` block in
+[`tests/fixtures/config/asma-orchestration.yml`](../tests/fixtures/config/asma-orchestration.yml)
+are the schema's test case, not a live config folder. They show the shape a
+concrete project fills in: `ASMA` as the tracker key, `Carasent-ASMA` as the
+forge organization, `Carasent-ASMA/asma-modules` and
+`Carasent-ASMA/asma-rs-kontor` as the repositories, `master` as the base branch
+and `asma` as the project CLI. The ASMA setup record describes the state after
+WP-07 and WP-08: the `project:` block is installed in ASMA's selected `config/`
+folder, the documentation roots are `modules/_docs` and `kontor/docs`, and the
+absolute path is kept in ASMA's local setup record and service environment,
+never in this public repository. Until WP-07 and WP-08 land, do not point
+`pack.py --config-dir` at ASMA's current
+`config/orchestration/orchestration.yml`; it is a three-line selector with no
+`project:` block, and the tool refuses it with `project is missing ...`.
 
 ## 2. Documentation governance (§8.2)
 
@@ -148,8 +182,9 @@ the principles live in [`PRINCIPLES.md`](PRINCIPLES.md).
    reason list and the date.
 6. **Decision ids** are qualified by their document:
    `<file-slug>#DEC-<nn>`.
-7. **One gap ledger.** Every gap report goes to the project's one ledger with a
-   type (`kontord`, `workflow` or `tool`), an owner and a closure condition.
+7. **One gap ledger.** Every gap report goes to the project's one ledger with
+   the §6 fields: a stable id, a type (`kontord`, `workflow` or `tool`),
+   severity, evidence, observed revision, owner, closure condition and status.
 8. **Lifecycle.** Draft → approved → delivered → compacted into a dated summary
    in `history/`. Living documents are never archived.
 9. **Publication class.** A public project carries only class P material. The
@@ -200,9 +235,9 @@ The minimum project-owned files are:
 <!-- docs/GAPS.md -->
 # Project gap ledger
 
-| Id | Type | Gap | Owner | Opened | Closes when |
-| --- | --- | --- | --- | --- | --- |
-| G-001 | workflow | No gaps recorded yet. | <owner> | <date> | A real gap is recorded. |
+| Id | Type | Severity | Gap | Evidence | Observed revision | Owner | Closes when | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| G-001 | workflow | advisory | No gaps recorded yet. | The first project check. | <revision> | <owner> | A real gap is recorded. | open |
 ```
 
 ```markdown
@@ -226,11 +261,13 @@ accepted only by the authority that owns its scope.
 
 | Document | Summary | Status | When to load |
 | --- | --- | --- | --- |
-| [First epic](<plan>.md) | The first scoped epic | Draft | Driving the first epic |
+| — | No plans yet; add the plan and its row together | — | — |
 ```
 
 Add a plan's row and the plan file in the same change. A router row for a file
-that does not exist yet is a broken link, and `pack.py check` refuses it.
+that does not exist yet is a broken link, and `pack.py check` refuses it. The
+placeholder row is replaced in §0.1 step 7, not during the initial record
+setup.
 
 A plan is a document too. Copy
 [`workflow/templates/plan.md`](../workflow/templates/plan.md) and fill the
@@ -272,8 +309,11 @@ printf '@AGENTS.md\n' > "$PROJECT/CLAUDE.md"
 OpenCode reads `AGENTS.md` without a config file. If the project already has
 `opencode.json`, its `instructions` list names the entry file only — not
 `CLAUDE.md` or `copilot-instructions.md` — and the unconditional bytes stay at
-most 16 KiB. Generate it from YAML if you need it; do not maintain a second
-editable source. The proof leaves it absent.
+most 16 KiB. The pack ships no `opencode.json` generator in this revision. Do
+not hand-maintain a second editable source: treat a state-root or native JSON
+file as a generated projection with a recorded YAML source and content hash,
+and fence that projection until WP-08 owns its generator. The proof leaves it
+absent.
 
 The **router** in this runbook is the documentation router `docs/index.md`. The
 harnesses read it on demand through the file tools; the entry file and the
@@ -293,7 +333,12 @@ for d in "$PROJECT"/.github/skills/*/; do
   name=$(basename "$d")
   ln -sfn "../../.github/skills/$name" "$PROJECT/.claude/skills/$name"
 done
+ln -sfn "../../.github/skills/.pack" "$PROJECT/.claude/skills/.pack"
 ```
+
+The `.pack` link is separate because the shell `*` glob does not match a
+leading dot. Without it, a rendered skill's `../.pack/...` link works in the
+canonical `.github` tree but not through the `.claude` symlink view.
 
 `pack.py install-adapters` is for a separate module or worktree root where both
 `.agents` and `.claude` are adapters into this checkout:
@@ -301,12 +346,30 @@ done
 ```sh
 MODULE_ROOT=<absolute module or worktree root>
 python3 -B "$PACK/scripts/pack.py" install-adapters "$PROJECT" \
+  --target-root "$MODULE_ROOT" --dry-run
+python3 -B "$PACK/scripts/pack.py" install-adapters "$PROJECT" \
+  --target-root "$MODULE_ROOT" --apply
+python3 -B "$PACK/scripts/pack.py" install-adapters "$PROJECT" \
   --target-root "$MODULE_ROOT" --check
 ```
 
-Run `--check` first; `--apply` installs the missing links. It is not run
-against the project root after `render`, because render already owns
-`.agents/skills` as the byte mirror (gap G-02).
+On a fresh root run `--dry-run`, then `--apply`, then `--check`. `--check`
+before `--apply` exits 2 because the links do not exist yet; it is the
+post-install verification. It is not run against the project root after
+`render`, because render already owns `.agents/skills` as the byte mirror.
+
+The adapter scan skips the `.pack` dot-directory, so add the same `.pack` link
+beside both adapter catalogs after `--apply`; each link points at the project's
+canonical resources:
+
+```sh
+for catalog in "$MODULE_ROOT/.agents/skills" "$MODULE_ROOT/.claude/skills"; do
+  ln -sfn "$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+    "$PROJECT/.github/skills/.pack" "$catalog")" "$catalog/.pack"
+done
+```
+
+This is part of the workaround in gap G-02, not a separate link source.
 
 ## 4. Roles and personas (§8.4)
 
@@ -454,6 +517,10 @@ The rules are:
 - Project resource paths (`documentation_roots`, `gap_ledger`, `glossary`,
   `decision_records_root`) begin with a `project.resource_roots` key and
   resolve inside that repository checkout, never from the config folder.
+- A project with more than one `resource_roots` key passes one
+  `--resource-root KEY=PATH` per key to `pack.py check`; a declared root
+  without an override is reported as unchecked, and a required documentation
+  path under it fails. The ASMA example declares `modules` and `kontor`.
 - `host.paths.*`, `host.binaries.*` and `host.project_cli.*` are absolute or
   PATH-resolved host state.
 
@@ -468,9 +535,18 @@ that local record.
 LOCAL_RECORD="$PROJECT/.local/setup/config-folder"
 mkdir -p "$(dirname "$LOCAL_RECORD")"
 printf '%s\n' "$CONFIG" > "$LOCAL_RECORD"
-grep -qxF '.local/' "$PROJECT/.gitignore" 2>/dev/null \
-  || printf '.local/\n' >> "$PROJECT/.gitignore"
+GITIGNORE="$PROJECT/.gitignore"
+if ! grep -qxF '.local/' "$GITIGNORE" 2>/dev/null; then
+  if [ -s "$GITIGNORE" ] && [ -n "$(tail -c 1 "$GITIGNORE")" ]; then
+    printf '\n' >> "$GITIGNORE"
+  fi
+  printf '.local/\n' >> "$GITIGNORE"
+fi
+git -C "$PROJECT" check-ignore -v .local/setup/config-folder
 ```
+
+The append starts on a new line even when an existing `.gitignore` has no
+final newline; `git check-ignore` is the proof that the record is ignored.
 
 The check prints the resolved path in its final line, for example:
 
@@ -545,14 +621,19 @@ required key is in
 | Runtime and CLI | `runtime.matrix`, `cli.command`, `cli.verbs` | Paseo harness pairs; `asma` | Paseo/OpenCode pairs; `example` |
 | Team and fleet | `team_pack`, `fleet`, `supervision` | `packs/team.yml`, `orchestration/fleet.yml`, `orchestration/tpm-supervision.yml` | Same paths |
 | Desk and merge | `pr_desk.command`, `settings`, `history_root`; `merge_authority.role`, `policy` | The project desk command; independent review then owner | `example-pr-desk`; `independent-review-then-owner` |
-| Documentation | `documentation_roots`, `gap_ledger`, `attention_channel`, `glossary` | `modules/_docs`, `kontor/docs`; `modules/_docs/ai-orchestration/index.md`; `modules/UBIQUITOUS_LANGUAGE.md` | `project/docs`; `project/docs/GAPS.md`; `project/docs/GLOSSARY.md` |
+| Documentation | `documentation_roots`, `gap_ledger`, `attention_channel`, `glossary` | `modules/_docs`, `kontor/docs`; `modules/_docs/ai-orchestration/index.md`; `desk:adam`; `modules/UBIQUITOUS_LANGUAGE.md` | `project/docs`; `project/docs/GAPS.md`; `attention:platform-owner`; `project/docs/GLOSSARY.md` |
 | Checkout and checks | `worktree_layout`, `check_runs` | `.worktrees/<key-slug>/<module>`; the project's check names | `.worktrees/<key-slug>/<module>`; `publication-branch-title` |
 | Capacity | `capacity.max_delivery_seats`, `max_parallel_tasks`, `start_admission` | `2`, `7`, `4` | `1`, `2`, `1` |
 | Calendar | `time_zone`, `holiday_countries`, `currency` | `Europe/Oslo`, `['NO']`, `NOK` | `Europe/Oslo`, `['NO']`, `NOK` |
 
-Quote two-letter country codes. Unquoted `NO` is YAML 1.1 `false`, so
-`holiday_countries: [NO]` renders the holiday value as `false` (gap G-03).
-Use `['NO']`.
+The table shows the required quoted form. The shipped neutral example still has
+`holiday_countries: [NO]`; YAML 1.1 reads that as `[false]`, so a render shows
+`Holidays | false` (gap G-03). Quote two-letter country codes as `['NO']`.
+
+The same YAML 1.1 trap applies to `yes`, `no`, `on` and `off`: quote them as
+`'yes'`, `'no'`, `'on'` and `'off'`. Quote numeric-looking versions such as
+`'1.10'`; an unquoted `1.10` is a number, not the string the consumer expects.
+Parse the resolved value, not the source spelling.
 
 `orchestration.yml` is not a second copy of the fleet or the team pack. It
 selects them. `host.yml` is the machine's file; copy `host.example.yml`, replace
@@ -585,7 +666,11 @@ The migration procedure:
    Refuse both old and new sources together with a migration instruction.
 7. **Generate a native projection only when a consumer still needs it**, with
    the source path and the content hash recorded. Keep the projection out of
-   the authored set; regenerate it instead of editing it.
+   the authored set; regenerate it instead of editing it. State-root JSON files
+   that a runtime writes are projections, not authored sources; the pack ships
+   no generator for them in this revision, so fence them until WP-08 owns the
+   generator and its recorded source and hash. Do not create or edit them by
+   hand.
 8. **Preserve active pins and credential references.** A policy edit has no
    live effect until it is previewed, published and activated; a running work
    item keeps its pin.
@@ -607,6 +692,14 @@ provider_accounts:
 The reference names a secret-store entry. It is not an email address, a token,
 a provider home or a key path inside a repository. The PR desk, tracker and
 runtime resolve the value at use time from the deployment's secret store.
+
+The pack does not ship a project CLI, a PR desk or a credential resolver.
+`project.cli.command` and `project.pr_desk.command` name the adopter's own
+commands; `credential_alias` and `credential` name entries in the adopter's
+secret store. A project without a desk keeps the placeholder command and runs
+the review manually, and records the missing desk in its own gap ledger. A
+project without a secret store does not put values in YAML: it resolves the
+reference through its own store or records the gap and stops the tracker step.
 
 ## 8. What the project owns (§8.8)
 
@@ -649,8 +742,23 @@ Run the check:
 python3 -B "$PACK/scripts/pack.py" --config-dir "$CONFIG" check "$PROJECT"
 ```
 
-Run it once the entry files, the router and every routed document exist, and
-again after §10 creates the first plan. It checks:
+A multi-repository project supplies one `--resource-root` per declared
+`project.resource_roots` key. The ASMA example declares `modules` and `kontor`,
+so its check names both checkouts (absolute placeholders here; the real paths
+are host data):
+
+```sh
+python3 -B "$PACK/scripts/pack.py" --config-dir "$CONFIG" check "$PROJECT" \
+  --resource-root modules=<absolute asma-modules checkout> \
+  --resource-root kontor=<absolute asma-rs-kontor checkout>
+```
+
+A declared root without an override is reported as unchecked; a required
+documentation path under it fails. A single-root project maps its one root to
+the project checkout automatically.
+
+Run the check once the entry files, the router and every routed document exist,
+and again after §10 creates the first plan. It checks:
 
 - every pack placeholder resolves from the selected folder and no rendered
   placeholder remains;
@@ -712,10 +820,11 @@ The proof for this runbook stops before a real tracker write: it uses synthetic
 task keys and a disposable repository, so no external tracker, forge or
 credential is touched.
 
-## 11. Prove both surfaces read the same YAML source
+## 11. Validate both plans against the same YAML source
 
-The same selected folder is the source for both orchestration surfaces. The
-pack validates both plan markers against that one folder:
+The same selected folder is the source for both orchestration surfaces. This
+section is a `pack.py` validation, not proof that the daemon reads the folder.
+The pack validates both plan markers against that one folder:
 
 ```sh
 python3 -B "$PACK/scripts/pack.py" --config-dir "$CONFIG" validate \
@@ -729,6 +838,23 @@ folder in its final line, so the local record and the check name the same path.
 The flag, the environment variable and an invocation from another working
 directory **with the absolute path** must print the same absolute folder; the
 proof in the pull request shows all three.
+
+The governed plan that cannot launch yet is `status: On Hold`, not `Draft`. A
+`Draft` marker claims the plan is waiting for approval; this plan is waiting for
+a dependency. Carry the four hold fields:
+
+```yaml
+status: On Hold
+hold:
+  reason: waiting_on_dependency
+  owner: <owner>
+  lifts_when: WP-08 config-folder reader is released, deployed with readback and the L3 entry conditions are met.
+  review_by: <ISO date at most 30 days ahead>
+```
+
+`pack.py validate` checks the plan graph; `pack.py check` checks the hold's
+closed reason, owner, lift condition and review date. A valid hold is not
+launch authority.
 
 What this does **not** prove is the daemon reader. `kontord` does not yet read
 the selected folder in this pack revision; that is WP-08's config-folder
@@ -779,20 +905,28 @@ is complete; the governed option is authored but not launchable.
 
 ## 13. Known gaps and stop points
 
-These are pack or configuration gaps found while proving this runbook. A
-blocking gap stops the affected step; a workaround is named so the step can
-still be completed honestly.
+This section is the pack's one gap ledger. A gap in the pack, this runbook or
+its proof is recorded here once, using the WORKFLOW §6 fields. An adopting
+project keeps its own one ledger with the same fields; it links here for pack
+gaps and does not copy these rows.
 
-| Id | Kind | Gap | Owner | Effect |
-| --- | --- | --- | --- | --- |
-| G-01 | blocking (L3) | `kontord` does not yet read the selected config folder (`--config-dir` / `KONTOR_CONFIG_DIR`); the `project:` block is a schema fixture for the daemon until WP-08 | WP-08 (config-folder reader) | The executable proof stops at §11; the governed launch waits for L3. Do not start `kontord` to fill it. |
-| G-02 | workaround | `pack.py install-adapters` refuses a project root after `render` because `render` already owns `.agents/skills` as the byte mirror | Pack maintainers (WP-05 follow-up) | §3 creates the `.claude` links directly for the project root; `install-adapters` remains the command for separate module/worktree roots. |
-| G-03 | workaround | The neutral `holiday_countries: [NO]` is YAML 1.1 `false`, so an entry file renders the holiday value as `false` | WP-02 follow-up (neutral example) | Quote country codes as `['NO']`; §7.3 records the rule. |
-| G-04 | non-blocking | The pack ships the documentation router but no task/path procedure-router template | Pack maintainers (WP-04 follow-up) | The tested router is `docs/index.md`; a project adds `.github/agent-policy-routing.md` only when it needs one. |
-| G-05 | scope note | `pack.py check` validates the project block, paths, skills, links, routers, holds and graphs; it does not validate fleet-route semantics, tracker field maps or `host.yml` routes | WP-08 (activation) and WP-10 (direct desk/CLI readers) | The governed activation path validates its files at L3; the direct readers are WP-10's migration. Neither is a `pack.py check` rule. |
+Severity is `blocking`, `major`, `minor` or `advisory`; only `blocking` stops
+the affected step. Observed revision is the pack revision where the gap was
+reproduced; the row carries forward until it closes. Status is `open`,
+`carried` (the owner accepted it with evidence) or `closed` at a named rung.
 
-A gap is not closed by silence. Add each new gap to the project's gap ledger
-with a type, owner, evidence and closure condition.
+| Id | Type | Severity | Gap | Evidence | Observed revision | Owner | Closes when | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| G-01 | `kontord` | blocking | `kontord` does not read the selected config folder (`--config-dir` / `KONTOR_CONFIG_DIR`); the `project:` block is a schema fixture for the daemon until WP-08. | `rg -n 'config_dir\|--config-dir\|KONTOR_CONFIG_DIR' --glob '*.rs'` has no matches in this revision; `pack.py` is the only config-folder reader. | `fd792117` | WP-08 | `kontord` reads the selected folder, refuses a missing folder, an invalid file and an unactivated edit, and a governed plan validates against it. | open |
+| G-02 | `tool` | minor | `pack.py install-adapters` refuses a project root after `render` because `render` owns `.agents/skills` as the byte mirror; its adapter scan needs `SKILL.md`, so it also skips the `.pack` dot-directory. | `install-adapters --check` on a rendered project root exits 2 with `adapter path is owned by the target`; the manual project and module `.pack` links are the workaround. | `fd792117` | WP-09 (fresh-project proof) | The project-root adapter path and the project and module `.pack` links work without manual repair, or WP-09 closes or carries it with fresh-project evidence. | open |
+| G-03 | `workflow` | minor | The neutral `holiday_countries: [NO]` is YAML 1.1 `false`, so an entry file renders the holiday value as `false`. | `python3 -c "import sys; sys.path.insert(0, 'scripts'); import pack; print(pack.load_yaml_text('holiday_countries: [NO]'))"` prints `{'holiday_countries': [False]}`; a render shows `Holidays \| false`. | `fd792117` | WP-09 (fresh-project proof) | The neutral example quotes country codes and a fresh render shows `NO`, or WP-09 closes or carries it with fresh-project evidence. | open |
+| G-04 | `workflow` | minor | The pack ships the documentation router but no task/path procedure-router template. | `workflow/templates/` has `index-router.md` and no task/path procedure-router template. | `fd792117` | WP-09 (fresh-project proof) | The pack ships the task/path router template, or WP-09 closes or carries it with fresh-project evidence. | open |
+| G-05 | `tool` | advisory | `pack.py check` validates the project block, paths, skills, links, routers, holds and graphs; it does not validate fleet-route semantics, tracker field maps or `host.yml` routes. | `pack.py check` has no fleet-route, tracker-field-map or `host.yml` route validator. | `fd792117` | WP-08 (activation) / WP-10 (direct desk and CLI readers) | The activation path and the direct readers validate those files at their named rung, or WP-08/WP-10 close or carry the scope with evidence. | open |
+
+WP-09 owns G-02, G-03 and G-04 through its fresh-project proof: that proof must
+either close each row or mark it `carried` with its evidence. G-01 remains the
+L3 stop. A gap is not closed by silence; a new gap gets a row here, not a
+second ledger.
 
 ## 14. Done checklist
 
@@ -801,13 +935,15 @@ The setup is complete when all of these are true:
 - [ ] The selected config folder is absolute, recorded in the local untracked
       record (`.local/setup/config-folder`), and the same path is printed by
       the flag and environment invocations.
-- [ ] `.local/` is git-ignored, and the routed setup record contains no
-      absolute path.
+- [ ] `.local/` is git-ignored, `git check-ignore -v
+      .local/setup/config-folder` exits 0 and names `.gitignore`, and the
+      routed setup record contains no absolute path.
 - [ ] `pack.py check` passes and prints the resolved folder.
 - [ ] `AGENTS.md` is at most 8 KiB with no `{{ ... }}`; `CLAUDE.md` is exactly
       `@AGENTS.md`.
 - [ ] `.github/skills` is the canonical rendered tree; `.agents/skills` is its
-      byte mirror; `.claude/skills` points at the canonical tree.
+      byte mirror; `.claude/skills` points at the canonical tree, including
+      `.pack`.
 - [ ] `docs/index.md` routes every document once, and each plan validates.
 - [ ] `config/host.yml` exists for this machine and is ignored by version
       control.
