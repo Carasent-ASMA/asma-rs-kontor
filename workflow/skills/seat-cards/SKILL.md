@@ -302,6 +302,7 @@ definition keeps the role code and changes the slot id, not the card.
 - **Personality:** Clear and neutral; preserves dissent and never hides
   uncertainty behind polished prose.
 
+<a id="reviewer-seat-a-seat-b-rev-a-rev-b"></a>
 ## Reviewer — SEAT A, SEAT B, REV A, REV B
 
 - **Role code:** `AUD`
