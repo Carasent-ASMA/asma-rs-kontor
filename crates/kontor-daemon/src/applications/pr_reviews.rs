@@ -20,6 +20,23 @@ use kontor_core::repository::StoredPrReviewSubject;
 use kontor_core::spec::TeamPrReview;
 use kontor_store::JiraBindingSubject;
 
+/// Re-state a refusal that happened after part of a PR review's close landed.
+///
+/// A retirement whose acknowledgement was lost has already taken the session,
+/// and every session fenced before it is gone too. Keeping `unavailable`
+/// would tell the caller nothing changed and invite a fresh key; this close is
+/// idempotent and converges, so say that.
+fn partial_close(error: ApiError) -> ApiError {
+    ApiError::new(
+        error.realm_id,
+        ApiErrorCode::DeliveryUnconfirmed,
+        "the PR review close was partially applied: a session was retired or a seat released before the runtime refused",
+    )
+    .advising(
+        "retry this same close with the same idempotency key; it converges on the remaining seats and reopens nothing",
+    )
+}
+
 /// One seat a review places: its node's kind, its slot and its role,
 /// resolved in the role catalog before anything is written.
 struct ReviewSeat {
@@ -1059,6 +1076,7 @@ impl Services {
         let _held = self.pr_review_guard.lock().await;
         let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
         let subject = self.stored_pr_review(project_id, desk_key, &pull_request)?;
+        let mut partial = false;
         if !replayed {
             let mut seats = Vec::new();
             for node_id in [subject.adam_node_id, subject.room_node_id] {
@@ -1117,42 +1135,62 @@ impl Services {
                 }
             }
             for (node, hosted) in &live {
-                self.fence_node_session(
-                    project_id,
-                    node,
-                    hosted,
-                    (
-                        "PR review closed",
-                        "PR review closed; the session was already gone",
-                    ),
-                )
-                .await?;
+                match self
+                    .fence_pr_review_node_session(
+                        project_id,
+                        node,
+                        hosted,
+                        (
+                            "PR review closed",
+                            "PR review closed; the session was already gone",
+                        ),
+                    )
+                    .await
+                {
+                    Ok(()) => partial = true,
+                    Err(error) => {
+                        let unconfirmed = error.code == ApiErrorCode::DeliveryUnconfirmed;
+                        return Err(if partial || unconfirmed {
+                            partial_close(error)
+                        } else {
+                            error
+                        });
+                    }
+                }
             }
             let now = kontor_api::now();
             for (_, seat) in &seats {
-                state
-                    .with_store(|store| {
-                        store.observe_seat_binding(
-                            project_id,
-                            seat.id,
-                            &SeatLivenessObservation {
-                                released_at: Some(now),
-                                ..SeatLivenessObservation::default()
-                            },
-                            now,
-                        )
-                    })
-                    .map_err(|error| self.refuse(&error))?;
+                match state.with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        seat.id,
+                        &SeatLivenessObservation {
+                            released_at: Some(now),
+                            ..SeatLivenessObservation::default()
+                        },
+                        now,
+                    )
+                }) {
+                    Ok(_) => partial = true,
+                    Err(error) => {
+                        let error = self.refuse(&error);
+                        return Err(if partial { partial_close(error) } else { error });
+                    }
+                }
             }
         }
-        let (receipt_id, created) = self.record_classified(
+        let (receipt_id, created) = match self.record_classified(
             key,
             project_id,
             CommandKind::ClosePrReview,
             target,
             project.revision,
             &intent,
-        )?;
+        ) {
+            Ok(recorded) => recorded,
+            Err(error) if partial => return Err(partial_close(error)),
+            Err(error) => return Err(error),
+        };
         Ok(PrReviewOutcomeDto {
             review: self.pr_review_dto(&subject)?,
             receipt: MutationReceiptDto {
