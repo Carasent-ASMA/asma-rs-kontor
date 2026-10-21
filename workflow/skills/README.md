@@ -71,8 +71,9 @@ other two.
 
 ## Project parameters used here
 
-The skills use only keys from the `project:` block. The renderer and the tests
-check that every placeholder below resolves from the selected config folder.
+The skills use only keys from the `project:` block. The tests check that every
+placeholder below resolves from the selected config folder; the WP-05 renderer
+must apply the same rule.
 
 | Parameter | Used for |
 | --- | --- |
