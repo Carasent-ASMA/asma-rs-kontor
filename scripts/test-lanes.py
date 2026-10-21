@@ -38,9 +38,23 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:  # scripts/ is on sys.path when this file runs as a script
+    from kontor_project import ProjectConfig, ProjectConfigError, load_project
+except ImportError:  # imported from scripts/tests by path
+    import importlib.util
+
+    _PROJECT_SPEC = importlib.util.spec_from_file_location(
+        "kontor_project", Path(__file__).resolve().parent / "kontor_project.py"
+    )
+    assert _PROJECT_SPEC is not None and _PROJECT_SPEC.loader is not None
+    _PROJECT_MODULE = importlib.util.module_from_spec(_PROJECT_SPEC)
+    _PROJECT_SPEC.loader.exec_module(_PROJECT_MODULE)
+    ProjectConfig = _PROJECT_MODULE.ProjectConfig
+    ProjectConfigError = _PROJECT_MODULE.ProjectConfigError
+    load_project = _PROJECT_MODULE.load_project
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TIMINGS_PATH = REPO_ROOT / "scripts" / "test-timings.json"
-DEFAULT_BASE_CANDIDATES = ("origin/master", "master")
 HEAVY_THRESHOLD_SECONDS = 60.0
 FALLBACK_HEAVY_PACKAGES = {"kontor-store", "kontor-daemon", "kontor-tests-e2e"}
 
@@ -64,8 +78,14 @@ def git(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]
     )
 
 
-def resolve_base(requested: str | None) -> str | None:
-    candidates = (requested,) if requested else DEFAULT_BASE_CANDIDATES
+def base_candidates(base_branch: str) -> tuple[str, str]:
+    """The configured base branch, preferring the remote-tracking copy."""
+
+    return (f"origin/{base_branch}", base_branch)
+
+
+def resolve_base(requested: str | None, base_branch: str) -> str | None:
+    candidates = (requested,) if requested else base_candidates(base_branch)
     for candidate in candidates:
         if candidate is None:
             continue
@@ -285,9 +305,15 @@ def parse_log(text: str) -> dict:
 
 
 def write_receipt(
-    lane: str, receipts: list[dict], exit_code: int, streamed: bool, requested: str | None
+    lane: str,
+    receipts: list[dict],
+    exit_code: int,
+    streamed: bool,
+    requested: str | None,
+    project: ProjectConfig,
 ) -> Path:
     payload = {
+        "config": project.as_record(),
         "lane": lane,
         "exit_code": exit_code,
         "streamed": streamed,
@@ -434,7 +460,12 @@ def lane_commands(plan: dict, lane: str) -> list[list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", choices=["fast", "heavy", "full"])
-    parser.add_argument("--base", help="diff against this revision (default origin/master)")
+    parser.add_argument("--config-dir", help="explicit config folder")
+    parser.add_argument("--config-file", help="explicit generated projection file")
+    parser.add_argument(
+        "--base",
+        help="diff against this revision (default origin/<project.forge.base_branch>)",
+    )
     parser.add_argument(
         "--changed", action="append", default=[], help="extra changed path (repeatable)"
     )
@@ -463,12 +494,19 @@ def main() -> int:
     if not args.lane:
         parser.error("--lane is required unless --record-timings is used")
 
+    try:
+        project = load_project(
+            config_dir=args.config_dir, config_file=args.config_file
+        )
+    except ProjectConfigError as exc:
+        raise LaneError(str(exc)) from exc
+
     if args.lane == "full":
         command = ["python3", "scripts/verify-tree.py", "--mode", "inplace"]
         print("$ " + " ".join(command))
         return subprocess.run(command, cwd=REPO_ROOT).returncode
 
-    base = resolve_base(args.base)
+    base = resolve_base(args.base, project.base_branch)
     files = changed_files(base, args.changed, not args.no_worktree)
     roots, reverse = package_graph(cargo_metadata())
     plan = classify(files, roots, reverse, heavy_packages())
@@ -517,7 +555,9 @@ def main() -> int:
             exit_code = 1
             break
     print_summary(receipts)
-    receipt_path = write_receipt(args.lane, receipts, exit_code, stream, args.receipt)
+    receipt_path = write_receipt(
+        args.lane, receipts, exit_code, stream, args.receipt, project
+    )
     print(f"receipt: {receipt_path}")
     if exit_code == 0 and args.lane == "fast" and (plan["heavy"] or plan["e2e_required"]):
         heavy = plan["heavy"] or ["kontor-tests-e2e"]

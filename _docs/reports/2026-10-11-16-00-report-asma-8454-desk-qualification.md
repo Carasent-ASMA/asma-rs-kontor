@@ -118,9 +118,9 @@ The final evidence-only carrier receives its own fresh-target complete archive g
 The recorder uses pinned/offline Cargo where applicable, `RUSTC_WRAPPER=''`, worktree `CARGO_TARGET_DIR`/`TMPDIR`, `GIT_CEILING_DIRECTORIES` and removes inherited `KONTOR_AUTH`. The cached Swagger v5.17.14 ZIP has SHA-256 `481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc`; its read-only origin was `$HOME/.cache/op08-qa-20260921/target/debug/build/utoipa-swagger-ui-9f37ed19c045eada/out/v5.17.14.zip`. Rust/Cargo 1.97.1, Node v24.13.1 and pnpm 11.6.0 were used. Lockfile package versions/checksums are unchanged; the only Cargo.lock delta adds the existing `kontor-runtime` as a CLI test dependency. Temporary socket binding requires this environment's sandbox escalation; endpoints are ephemeral loopback fixtures.
 
 ```sh
-python3 scripts/qualify-durable-desks.py baseline
-python3 scripts/qualify-durable-desks.py declarations --declaration-source "$DECLARATION_SOURCE"
-python3 scripts/qualify-durable-desks.py mutations
+python3 evidence/ASMA-8454-qualify-durable-desks.py baseline
+python3 evidence/ASMA-8454-qualify-durable-desks.py declarations --declaration-source "$DECLARATION_SOURCE"
+python3 evidence/ASMA-8454-qualify-durable-desks.py mutations
 cargo test --offline --locked -p kontor-cli
 cargo test --offline --locked -p kontor-store
 cargo test --offline --locked -p kontor-runtime-paseo --test contract

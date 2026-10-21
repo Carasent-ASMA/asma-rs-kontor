@@ -1767,11 +1767,14 @@ branch-name ruleset is not evaluated; this check is the forge-side identity gate
 
 The repository also ships the dependency-free
 `asma/publication-branch-title` Actions check. Require it on the default branch
-as the forge-local grammar boundary: it rejects a PR unless the base is
-`master`, the branch is canonical, and branch and title carry the same Jira
-key. A `dependabot/` branch opened by `dependabot[bot]` is exempt from the
-branch and title rules (code `bot_branch_exempt`); the base and head checks
-still apply. The GitHub App check remains the stronger semantic boundary
+as the forge-local grammar boundary: it rejects a PR unless the base is the
+project's configured default branch, the branch is canonical, and branch and
+title carry the same Jira key. The project key, base branch and check name come
+from the selected YAML config folder; the trusted-base workflow reads a
+committed projection or the repository variables generated from that folder.
+A `dependabot/` branch opened by `dependabot[bot]` is exempt from the branch
+and title rules (code `bot_branch_exempt`); the base and head checks still
+apply. The GitHub App check remains the stronger semantic boundary
 because it also proves that key against Kontor's confirmed Jira binding.
 
 ## Other deployment data

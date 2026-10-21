@@ -349,7 +349,7 @@ interface” development shortcut.
 | `apps/console`, `apps/desktop` | Responsive console and Tauri shell |
 | `apps/paseo-plugin` | Paseo host plugin: observer-authority `kontor-observer` MCP server, session and creation hooks, and workspace placement guard |
 | `tests/contract`, `tests/e2e` | Cross-adapter contracts and full-system proof |
-| `scripts/` | `test-lanes.py` and its `test-timings.json`, `verify-tree.py`, and the durable desk qualification runner |
+| `scripts/` | `test-lanes.py` and its `test-timings.json`, `verify-tree.py`, and the pack and project-config helpers |
 
 ## Development and contribution
 

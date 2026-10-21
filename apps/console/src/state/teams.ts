@@ -1196,335 +1196,123 @@ export function validateTeam(draft: TeamDraft): readonly Issue[] {
 
 /* ---------------------------------------------------------------- fixtures */
 
-/** The live call that established the two promoted ceilings. */
-const CLAUDE_WINDOW_CITATION =
-  'live model catalog(provider="claude") → contextWindowMaxTokens: 1000000; corroborated by FLEET:273'
-
-/** The day the promoted cells were read. */
+/** The day the offline fixture was authored. */
 const OBSERVED = '2026-08-14'
 
-/** A ceiling a live read returned nothing for — a positive finding, not an absence. */
-function verifiedNoWindow(call: string): Sourced<number | null> {
-  return liveValue(null, `${call} → no context window field returned`, OBSERVED)
-}
-
 /**
- * A value read from the runtime this session and deliberately **not** promoted.
+ * The catalog offered by the explicit offline preview.
  *
- * The state is `fixture/needs-verification`, so nothing downstream treats it as
- * established — but the citation records exactly which route was read, so the
- * next reader can see that the conservatism is a decision rather than an
- * oversight, and can re-run the same call to check it.
- *
- * This exists because of the opencode-fronted vendors. Both of them resolve
- * 1:1 onto a route id (`{provider}/{id}`), and both of their fixture values
- * match that route's live payload exactly — so on evidence, each could be
- * promoted. Neither is, because one of them cannot be (its row is contested on
- * other grounds), and a principle applied to one vendor and not the other on
- * identical evidence is not yet a principle. Symmetry is kept in the
- * conservative direction, which is the direction the gate's own row-ambiguity
- * rule binds.
- *
- * @see the KON-MVP-20 re-gate record, RE-GATE-RECORD.md §4.2 (F2) (kept outside this repository)
- */
-function observedNotPromoted<T>(value: T, citation: string): Sourced<T> {
-  return {
-    value,
-    provenance: {
-      state: 'fixture/needs-verification',
-      reviewRef: null,
-      citation,
-      observedAt: OBSERVED,
-    },
-  }
-}
-
-/** An effort ladder read from the runtime this session. */
-function liveEfforts(values: readonly EffortLevel[], call: string): Sourced<readonly EffortLevel[]> {
-  return liveValue(values, `${call} → thinkingOptions`, OBSERVED)
-}
-
-/**
- * The catalog injected by tests and offered only by the explicit offline preview.
- *
- * Route ids and effort ladders are read from this runtime; ceilings and prices
- * are almost entirely unverified and say so per cell. The two exceptions are the
- * Claude ceilings, which the research gate promoted to `live` against a call
- * anyone can repeat.
- *
- * Nothing here is a guess dressed as a fact: where a live read returned no
- * window, the cell records `null` at state `live` — "we asked and there is
- * nothing to have" is a different answer from "nobody looked", and only the
- * provenance can tell them apart.
+ * This is deliberately obviously fake: the provider ids, route ids and prices
+ * are invented, and every cell says it is unverified. Production reads the
+ * live route catalog through `GET /v1/catalog`; this fixture exists only so the
+ * editor has something to render when an operator asks for the offline preview
+ * after a failed live read. It must never be mistaken for the deployment's
+ * catalogue.
  */
 export const FIXTURE_CATALOG: ModelCatalog = {
   providers: [
     {
-      id: 'cursor',
-      label: 'Cursor',
-      // Included in the plan at token rates, so tokens do cost — but against an
-      // allowance rather than a balance.
-      basis: unverified<ChargingBasis>('included_usage'),
+      id: 'alpha',
+      label: 'Alpha (offline fixture)',
+      basis: unverified<ChargingBasis>('metered'),
       reachedVia: null,
       pooledUsage: false,
     },
     {
-      id: 'deepseek',
-      label: 'DeepSeek',
-      // A vendor, not a provider in this runtime: `list_providers` enables
-      // claude, codex, opencode and cursor, and this vendor's routes are served
-      // through opencode. So the basis is an assertion about an entity the
-      // runtime does not have, on the axis that decides whether a dollar
-      // prints — flagged accordingly and never promoted.
-      basis: unverified<ChargingBasis>('metered'),
-      reachedVia: 'opencode',
-      // One credit balance serves every route, so pooling is definitional here
-      // rather than observed: a drained balance drains all of them at once.
-      pooledUsage: true,
-    },
-    {
-      id: 'codex',
-      label: 'Codex',
-      // Pooled, on the evidence of the 2026-08-21 outage: every Codex route
-      // died together when the plan allowance ran out. Note what `pooledUsage`
-      // claims and what it does not: one quota covers all of a provider's
-      // routes *for one account*. So a Codex rung under a Codex rung is worth
-      // nothing, while a second Codex account is a real fallback — which is why
-      // the account axis belongs below the rung rather than as another rung.
+      id: 'beta',
+      label: 'Beta (offline fixture)',
       basis: unverified<ChargingBasis>('plan_allowance'),
       reachedVia: null,
       pooledUsage: true,
     },
     {
-      id: 'claude',
-      label: 'Claude',
-      // Every Claude route draws from one plan window, which is what makes a
-      // Claude rung under a Claude rung worth nothing.
-      basis: unverified<ChargingBasis>('plan_allowance'),
-      reachedVia: null,
-      pooledUsage: true,
-    },
-    {
-      id: 'openrouter',
-      label: 'OpenRouter',
-      // Same as DeepSeek: reached through opencode, not itself enabled.
-      basis: unverified<ChargingBasis>('request_quota'),
-      reachedVia: 'opencode',
-      // Same balance argument as DeepSeek.
+      id: 'gamma',
+      label: 'Gamma (offline fixture)',
+      basis: unverified<ChargingBasis>('included_usage'),
+      reachedVia: 'beta',
       pooledUsage: true,
     },
   ],
   models: [
     {
-      // The runtime spells the Auto row `auto-smart` and marks it default. The
-      // fleet policy's `cursor/default` is chain shorthand for "the provider's
-      // Auto row", not a route id — and `ModelEntry.id` is contracted as the id
-      // exactly as the runtime spells it, so the default-ness is its own flag.
-      id: 'auto-smart',
-      label: 'Auto',
-      provider: 'cursor',
+      id: 'alpha-one',
+      label: 'Alpha One (offline fixture)',
+      provider: 'alpha',
       isDefault: true,
-      contextWindow: verifiedNoWindow('live model catalog(provider="cursor")'),
-      efforts: liveEfforts([], 'live model catalog(provider="cursor") → thinkingOptions: null'),
-      pricing: [],
+      contextWindow: unverified<number | null>(300_000),
+      efforts: unverified<readonly EffortLevel[]>(['low', 'high']),
+      pricing: [{ window: 0, inputPerMtok: 1, outputPerMtok: 2, provenance: UNVERIFIED }],
+      degradedLane: false,
+    },
+    {
+      id: 'alpha-two',
+      label: 'Alpha Two (offline fixture)',
+      provider: 'alpha',
+      isDefault: false,
+      contextWindow: unverified<number | null>(null),
+      efforts: unverified<readonly EffortLevel[]>(['off', 'low', 'high']),
+      pricing: [{ window: 0, inputPerMtok: 2, outputPerMtok: 4, provenance: UNVERIFIED }],
+      degradedLane: false,
+    },
+    {
+      id: 'alpha-fast',
+      label: 'Alpha Fast (offline fixture)',
+      provider: 'alpha',
+      isDefault: false,
+      contextWindow: unverified<number | null>(null),
+      efforts: unverified<readonly EffortLevel[]>(['low']),
+      pricing: [{ window: 0, inputPerMtok: 1, outputPerMtok: 1, provenance: UNVERIFIED }],
       degradedLane: true,
     },
     {
-      id: 'deepseek-flash',
-      label: 'DeepSeek V4.1 Flash',
-      provider: 'deepseek',
+      id: 'alpha-static',
+      label: 'Alpha Static (offline fixture)',
+      provider: 'alpha',
       isDefault: false,
-      // Was 256_000, which no source supports; the design doc claimed a
-      // correction to 1M that never landed. Neither number is established: the
-      // runtime serves this vendor through opencode, which returns no context
-      // window on ANY of its 361 routes, so the live second source the rule
-      // names cannot be obtained by that mechanism at all.
-      contextWindow: observedNotPromoted<number | null>(
-        null,
-        'live model catalog(provider="opencode") → route "deepseek/deepseek-flash" returned no contextWindowMaxTokens (0 of 361 routes report one)',
-      ),
-      // This row describes the direct route, and the live payload confirms the
-      // ladder exactly. It is still not promoted: `openrouter/deepseek/
-      // deepseek-flash` exposes high/xhigh instead, and three further
-      // `deepseek-flash` routes exist, so the price cell on this row cannot
-      // say which contract it describes — and a row whose price is contested
-      // does not get to promote its other cells piecemeal.
-      efforts: observedNotPromoted<readonly EffortLevel[]>(
-        ['low', 'high', 'max'],
-        'live model catalog(provider="opencode") → route "deepseek/deepseek-flash" thinkingOptions [low, high, max]',
-      ),
-      // The cache-miss input rate. NOT promotable, and not only because it is
-      // uncited here: the published curve has a cache-hit rate two orders of
-      // magnitude lower that a single `inputPerMtok` cannot represent, and this
-      // one row collapses at least three live routes with different effort
-      // ladders. A price cell that cannot say which route it prices cannot be
-      // promoted whatever the number is.
-      pricing: [
-        {
-          window: 0,
-          inputPerMtok: 0.14,
-          outputPerMtok: 0.28,
-          provenance: UNVERIFIED,
-        },
-      ],
-      degradedLane: false,
-    },
-    {
-      id: 'gpt-5.6-sol',
-      label: 'GPT-5.6 Sol',
-      provider: 'codex',
-      isDefault: false,
-      // Was 400_000, which nothing supports: the runtime returns no window for
-      // this provider and our own design doc asserts a different pair of
-      // numbers again. Three inconsistent values across our own artifacts is
-      // not a fact, and this one drove the prototype's flagship clamp demo.
-      contextWindow: verifiedNoWindow('live model catalog(provider="codex")'),
-      efforts: liveEfforts(
-        ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        'live model catalog(provider="codex")',
-      ),
-      pricing: [
-        {
-          window: 0,
-          inputPerMtok: 1.25,
-          outputPerMtok: 10,
-          provenance: UNVERIFIED,
-        },
-      ],
-      degradedLane: false,
-    },
-    {
-      id: 'gpt-5.6-terra',
-      label: 'GPT-5.6 Terra',
-      provider: 'codex',
-      isDefault: false,
-      contextWindow: verifiedNoWindow('live model catalog(provider="codex")'),
-      efforts: liveEfforts(
-        ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        'live model catalog(provider="codex")',
-      ),
-      pricing: [
-        {
-          window: 0,
-          inputPerMtok: 0.6,
-          outputPerMtok: 4,
-          provenance: UNVERIFIED,
-        },
-      ],
-      degradedLane: false,
-    },
-    {
-      id: 'gpt-5.6-luna',
-      label: 'GPT-5.6 Luna',
-      provider: 'codex',
-      isDefault: false,
-      contextWindow: verifiedNoWindow('live model catalog(provider="codex")'),
-      // Luna exposes no `ultra`, unlike its siblings — read, not assumed.
-      efforts: liveEfforts(
-        ['low', 'medium', 'high', 'xhigh', 'max'],
-        'live model catalog(provider="codex")',
-      ),
-      pricing: [],
-      degradedLane: false,
-    },
-    {
-      // Named by the fleet policy at Builder-chore rung 4, and confirmed live.
-      id: 'gpt-5.4-mini',
-      label: 'GPT-5.4 Mini',
-      provider: 'codex',
-      isDefault: false,
-      contextWindow: verifiedNoWindow('live model catalog(provider="codex")'),
-      efforts: liveEfforts(
-        ['low', 'medium', 'high', 'xhigh'],
-        'live model catalog(provider="codex")',
-      ),
-      pricing: [],
-      degradedLane: false,
-    },
-    {
-      id: 'claude-opus-5',
-      label: 'Claude Opus 5',
-      provider: 'claude',
-      isDefault: true,
-      // The only numeric ceilings this gate promoted. Re-checkable by repeating
-      // the call in the citation.
-      contextWindow: liveValue<number | null>(1_000_000, CLAUDE_WINDOW_CITATION, OBSERVED),
-      efforts: liveEfforts(
-        ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-        'live model catalog(provider="claude")',
-      ),
-      pricing: [
-        {
-          window: 0,
-          inputPerMtok: 5,
-          outputPerMtok: 25,
-          provenance: UNVERIFIED,
-        },
-      ],
-      degradedLane: false,
-    },
-    {
-      id: 'claude-fable-5',
-      label: 'Claude Fable 5',
-      provider: 'claude',
-      isDefault: false,
-      contextWindow: liveValue<number | null>(1_000_000, CLAUDE_WINDOW_CITATION, OBSERVED),
-      // No `off` on this route, unlike its sibling.
-      efforts: liveEfforts(
-        ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-        'live model catalog(provider="claude")',
-      ),
-      pricing: [
-        {
-          window: 0,
-          inputPerMtok: 10,
-          outputPerMtok: 50,
-          provenance: UNVERIFIED,
-        },
-      ],
-      degradedLane: false,
-    },
-    {
-      id: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-      label: 'Nemotron 3 Ultra (free route)',
-      provider: 'openrouter',
-      isDefault: false,
-      // DEMOTED from `live` at the re-gate's F2. The evidence here is identical
-      // to DeepSeek's above — same opencode payload, same 0-of-361 windows, and
-      // a fixture row that resolves 1:1 onto a route id the same way
-      // (`{provider}/{id}` → "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-      // whose live ladder [medium, high] matches this row exactly).
-      //
-      // On that evidence this row could be promoted. It is not, because the row
-      // it is symmetric with cannot be, and one vendor holding `live` while an
-      // identically-evidenced vendor holds `fixture` makes `live` mean two
-      // things: "the runtime returned this" in one cell and "the runtime
-      // returned this, from a row that may describe several routes" in the
-      // other. A state that means two things is not re-checkable, which is the
-      // one property promotion was supposed to buy.
-      //
-      // Sibling routes this row must not be confused with, both live:
-      // "opencode/nemotron-3-ultra-free" (thinkingOptions: null — a different
-      // ladder) and "openrouter/nvidia/nemotron-3-ultra-550b-a55b" (no :free).
-      contextWindow: observedNotPromoted<number | null>(
-        null,
-        'live model catalog(provider="opencode") → route "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" returned no contextWindowMaxTokens (0 of 361 routes report one)',
-      ),
-      efforts: observedNotPromoted<readonly EffortLevel[]>(
-        ['medium', 'high'],
-        'live model catalog(provider="opencode") → route "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" thinkingOptions [medium, high]',
-      ),
-      // Zero is the published token price and is not the operative fact: the
-      // scarce resource on this route is requests per day.
-      pricing: [
-        {
-          window: 0,
-          inputPerMtok: 0,
-          outputPerMtok: 0,
-          provenance: UNVERIFIED,
-        },
-      ],
+      contextWindow: unverified<number | null>(null),
+      efforts: unverified<readonly EffortLevel[]>([]),
+      pricing: [{ window: 0, inputPerMtok: 1, outputPerMtok: 2, provenance: UNVERIFIED }],
       degradedLane: true,
+    },
+    {
+      id: 'beta-one',
+      label: 'Beta One (offline fixture)',
+      provider: 'beta',
+      isDefault: true,
+      contextWindow: unverified<number | null>(null),
+      efforts: unverified<readonly EffortLevel[]>(['low', 'medium', 'high']),
+      pricing: [{ window: 0, inputPerMtok: 3, outputPerMtok: 6, provenance: UNVERIFIED }],
+      degradedLane: false,
+    },
+    {
+      id: 'beta-two',
+      label: 'Beta Two (offline fixture)',
+      provider: 'beta',
+      isDefault: false,
+      contextWindow: unverified<number | null>(null),
+      efforts: unverified<readonly EffortLevel[]>(['low', 'medium']),
+      pricing: [{ window: 0, inputPerMtok: 2, outputPerMtok: 3, provenance: UNVERIFIED }],
+      degradedLane: true,
+    },
+    {
+      id: 'gamma-one',
+      label: 'Gamma One (offline fixture)',
+      provider: 'gamma',
+      isDefault: true,
+      contextWindow: unverified<number | null>(null),
+      efforts: unverified<readonly EffortLevel[]>(['medium', 'high']),
+      pricing: [{ window: 0, inputPerMtok: 0, outputPerMtok: 0, provenance: UNVERIFIED }],
+      degradedLane: true,
+    },
+    {
+      id: 'gamma-two',
+      label: 'Gamma Two (offline fixture)',
+      provider: 'gamma',
+      isDefault: false,
+      contextWindow: unverified<number | null>(500_000),
+      efforts: unverified<readonly EffortLevel[]>(['high', 'max']),
+      pricing: [{ window: 0, inputPerMtok: 5, outputPerMtok: 10, provenance: UNVERIFIED }],
+      degradedLane: false,
     },
   ],
 }
@@ -1532,9 +1320,9 @@ export const FIXTURE_CATALOG: ModelCatalog = {
 /**
  * How the ambiguous telemetry label is resolved.
  *
- * `lead` in the local AgentsRoom statistics denotes the Lead Architect role,
- * therefore it maps to this editor's `architect` slot. Manual Test Lead is a
- * QA/release-verdict role and maps to `qa`; it is not the unqualified `lead`.
+ * `lead` in the local statistics denotes the lead architect role, therefore it
+ * maps to this editor's `architect` slot. Manual Test Lead is a QA/release
+ * verdict role and maps to `qa`; it is not the unqualified `lead`.
  */
 export const TELEMETRY_ROLE_RESOLUTION = {
   lead: 'architect',
@@ -1542,7 +1330,7 @@ export const TELEMETRY_ROLE_RESOLUTION = {
 } as const
 
 const NEED_BAND_TELEMETRY =
-  '$HOME/.agentsroom/stats/proj-1785577413079-edhf21.json; median non-zero per-agent/day tokens moved per prompt (input + cache creation + output), observed 2026-08-02..2026-08-14'
+  'Synthetic offline fixture; median non-zero per-agent/day tokens moved per prompt (input + cache creation + output)'
 
 /** A telemetry-derived band that remains unpromoted until a review signs it. */
 function observedBand(minTokens: number, rationale: string, role: string): SeatNeedBand {
@@ -1559,33 +1347,16 @@ function observedBand(minTokens: number, rationale: string, role: string): SeatN
 }
 
 /**
- * The drafts the prototype opens with.
+ * The drafts the explicit offline preview opens with.
  *
- * Every chain below is copied rung-for-rung from the fleet policy, and the
- * copying is the point: an earlier pass replaced a route that did not exist with
- * a plausible neighbour instead of re-reading the document the chains came from,
- * and put it on a chain the policy never assigns it to.
- *
- * The standard builder's two Codex rungs were adjacent until 2026-08-21, which
- * `codex.pooledUsage` proved could never both fire — whatever blocked the first
- * blocked the second. The fleet policy reordered them rather than re-pinning
- * anything, and this seed follows it rung for rung as before.
- *
- * Need bands are derived from observed AgentsRoom token telemetry. They remain
- * explicitly unpromoted until a later review signs the measurements; unlike the
- * old circular placeholders, these values can and do disagree with the seeded
- * context classes.
+ * Every name, role code and route below is synthetic. The chains exercise the
+ * editor's rules — a pooled provider repeated, a degraded verdict lane, an
+ * effort the route does not expose — without naming a real deployment's
+ * catalog. A publishable draft stays publishable against the fixture.
  */
-/**
- * The catalog revision this prototype fixture selects its roles from.
- *
- * A fixture still has to name a revision: a selection without one would be a
- * code floating free of the catalog that gives it meaning, which is the shape
- * the wire type exists to refuse.
- */
-const FIXTURE_ROLE_CATALOG = { id: 'standard-roles', version: 1 } as const
+const FIXTURE_ROLE_CATALOG = { id: 'offline-fixture-roles', version: 1 } as const
 
-/** One role selection against the fixture catalog revision. */
+/** One role selection against the offline fixture catalog revision. */
 const selects = (code: string): RoleSelection => ({
   catalog_revision: FIXTURE_ROLE_CATALOG,
   role_code: code,
@@ -1593,94 +1364,70 @@ const selects = (code: string): RoleSelection => ({
 
 export const SEED_TEAMS: readonly TeamDraft[] = [
   {
-    id: 'draft-plan-build-verify',
-    name: 'ASMA plan-build-verify (prototype fixture)',
+    id: 'draft-example-plan-build-verify',
+    name: 'Example plan-build-verify (offline fixture)',
     slots: [
       {
         id: 'architect',
-        role: selects('LSA'),
+        role: selects('ARCH'),
         capabilities: {
           chain: [
-            { provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
-            { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
-            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
-            {
-              provider: 'openrouter',
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              effort: 'high',
-            },
+            { provider: 'alpha', model: 'alpha-one', effort: 'high' },
+            { provider: 'beta', model: 'beta-one', effort: 'high' },
+            { provider: 'gamma', model: 'gamma-one', effort: 'medium' },
+            { provider: 'alpha', model: 'alpha-fast', effort: 'low' },
           ],
           context: { class: 'deep', enforcement: 'best_effort' },
-          need: observedBand(76_000, 'Median observed Software Architect token movement.', 'Software Architect'),
+          need: observedBand(76_000, 'Synthetic architect token movement.', 'Architect'),
           skills: ['create-implementation-plan', 'create-architectural-decision-record'],
           mayEvaluate: ['plan_agreed'],
           mayWaive: [],
         },
       },
       {
-        // Builder — standard. Terra sits at rung 4 rather than rung 3, matching
-        // the fleet policy's 2026-08-21 reordering: Luna and Terra draw on one
-        // Codex allowance, so adjacent they were one rung, not two. No pin
-        // changed — the same four models, separated.
         id: 'implementer',
         role: selects('SWE'),
         capabilities: {
           chain: [
-            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
-            { provider: 'codex', model: 'gpt-5.6-luna', effort: 'xhigh' },
-            {
-              provider: 'openrouter',
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              effort: 'high',
-            },
-            { provider: 'codex', model: 'gpt-5.6-terra', effort: 'high' },
+            { provider: 'alpha', model: 'alpha-one', effort: 'high' },
+            { provider: 'beta', model: 'beta-one', effort: 'medium' },
+            { provider: 'gamma', model: 'gamma-one', effort: 'medium' },
+            { provider: 'beta', model: 'beta-two', effort: 'low' },
           ],
           context: { class: 'standard', enforcement: 'best_effort' },
-          need: observedBand(36_000, 'Median observed Full-Stack Developer token movement.', 'Full-Stack Developer'),
+          need: observedBand(36_000, 'Synthetic builder token movement.', 'Builder'),
           skills: ['tdd', 'lint-fix'],
           mayEvaluate: [],
           mayWaive: [],
         },
       },
       {
-        // Tester.
         id: 'qa',
         role: selects('QA'),
         capabilities: {
           chain: [
-            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
-            {
-              provider: 'openrouter',
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              effort: 'high',
-            },
-            { provider: 'codex', model: 'gpt-5.6-luna', effort: 'high' },
-            { provider: 'cursor', model: 'auto-smart', effort: 'unset' },
+            { provider: 'alpha', model: 'alpha-two', effort: 'low' },
+            { provider: 'beta', model: 'beta-two', effort: 'medium' },
+            { provider: 'gamma', model: 'gamma-one', effort: 'high' },
           ],
           context: { class: 'standard', enforcement: 'best_effort' },
-          need: observedBand(44_000, 'Median observed QA Engineer token movement.', 'QA Engineer'),
+          need: observedBand(44_000, 'Synthetic QA token movement.', 'QA'),
           skills: ['run-mutation-tests'],
           mayEvaluate: ['qa_passed'],
           mayWaive: [],
         },
       },
       {
-        // Inspector.
         id: 'audit',
         role: selects('AUD'),
         capabilities: {
           chain: [
-            { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
-            { provider: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
-            { provider: 'deepseek', model: 'deepseek-flash', effort: 'max' },
-            {
-              provider: 'openrouter',
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              effort: 'high',
-            },
+            { provider: 'beta', model: 'beta-one', effort: 'high' },
+            { provider: 'alpha', model: 'alpha-one', effort: 'high' },
+            { provider: 'gamma', model: 'gamma-one', effort: 'high' },
           ],
-          context: { class: 'standard', enforcement: 'required' },
-          need: observedBand(44_000, 'Inspector uses the observed QA/review lane.', 'QA Engineer'),
+          context: { class: 'standard', enforcement: 'best_effort' },
+          need: observedBand(44_000, 'Synthetic inspector token movement.', 'Inspector'),
           skills: ['code-review', 'security-check'],
           mayEvaluate: ['audit_passed'],
           mayWaive: ['qa_passed'],
@@ -1689,26 +1436,20 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
     ],
   },
   {
-    id: 'draft-chore-lane',
-    name: 'ASMA chore lane (prototype fixture)',
+    id: 'draft-example-chore-lane',
+    name: 'Example chore lane (offline fixture)',
     slots: [
       {
         id: 'orchestrator',
-        role: selects('TPM'),
+        role: selects('PM'),
         capabilities: {
           chain: [
-            { provider: 'cursor', model: 'auto-smart', effort: 'unset' },
-            { provider: 'deepseek', model: 'deepseek-flash', effort: 'high' },
-            {
-              provider: 'openrouter',
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              effort: 'medium',
-            },
-            // The policy pins luna here, and only here among the chore lane.
-            { provider: 'codex', model: 'gpt-5.6-luna', effort: 'medium' },
+            { provider: 'gamma', model: 'gamma-one', effort: 'medium' },
+            { provider: 'alpha', model: 'alpha-fast', effort: 'low' },
+            { provider: 'beta', model: 'beta-one', effort: 'medium' },
           ],
           context: { class: 'lean', enforcement: 'best_effort' },
-          need: observedBand(398_000, 'Median observed Project Manager orchestration token movement.', 'Project Manager'),
+          need: observedBand(92_000, 'Synthetic coordinator token movement.', 'Coordinator'),
           skills: ['epic-orchestration'],
           mayEvaluate: [],
           mayWaive: [],
@@ -1719,20 +1460,12 @@ export const SEED_TEAMS: readonly TeamDraft[] = [
         role: selects('SWE'),
         capabilities: {
           chain: [
-            { provider: 'cursor', model: 'auto-smart', effort: 'unset' },
-            { provider: 'deepseek', model: 'deepseek-flash', effort: 'high' },
-            {
-              provider: 'openrouter',
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              effort: 'medium',
-            },
-            // The policy pins 5.4-mini at this rung, not luna. A chore rung
-            // exists for cost; filling it with a neighbouring route whose
-            // economics are unread was the defect, not the fix.
-            { provider: 'codex', model: 'gpt-5.4-mini', effort: 'medium' },
+            { provider: 'alpha', model: 'alpha-two', effort: 'low' },
+            { provider: 'gamma', model: 'gamma-one', effort: 'medium' },
+            { provider: 'beta', model: 'beta-two', effort: 'low' },
           ],
           context: { class: 'lean', enforcement: 'best_effort' },
-          need: observedBand(92_000, 'Median observed Git Expert chore token movement.', 'Git Expert'),
+          need: observedBand(92_000, 'Synthetic chore builder token movement.', 'Builder'),
           skills: ['lint-fix'],
           mayEvaluate: [],
           mayWaive: [],

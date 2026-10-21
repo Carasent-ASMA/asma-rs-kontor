@@ -1,0 +1,32 @@
+# Generated projection for the trusted-base publication check.
+#
+# `pull_request_target` runs from the default branch without a checkout, so it
+# cannot read the selected config folder. This file is the committed
+# projection of the values the checker needs; it is data, not a second
+# authoring source.
+#
+# Source: the selected config folder's orchestration/orchestration.yml
+#   project.key                     = ASMA
+#   project.forge.base_branch       = master
+#   project.check_runs              includes asma/publication-branch-title
+#
+# CI prefers repository variables (KONTOR_PROJECT_KEY, KONTOR_BASE_BRANCH,
+# KONTOR_CHECK_NAME) when all three are set, and writes a temporary projection
+# recording them as the source. Regenerate this file with:
+#
+#   python3 scripts/kontor_project.py --config-dir <config folder> \
+#     project --format yaml
+schema_version: 1
+generated:
+  source: selected-config-folder/orchestration/orchestration.yml
+  source_revision: workflow-pack
+  variables:
+    - KONTOR_PROJECT_KEY
+    - KONTOR_BASE_BRANCH
+    - KONTOR_CHECK_NAME
+project:
+  key: ASMA
+  forge:
+    base_branch: master
+  check_runs:
+    - asma/publication-branch-title

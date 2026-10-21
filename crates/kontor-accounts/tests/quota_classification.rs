@@ -13,7 +13,7 @@ use kontor_accounts::{QuotaBasis, QuotaSignal, classify};
 use kontor_core::id::{SpecVersion, Timestamp, parse_utc_timestamp};
 use kontor_core::spec::ProviderQuotaKind;
 
-/// The text Codex actually produced on 2026-08-21, from the report Igor filed.
+/// The text Codex actually produced on 2026-08-21, from the operator's report.
 const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
      https://chatgpt.com/codex/settings/usage to purchase more credits or try \
      again at Aug 23rd, 2026 9:35 AM.";

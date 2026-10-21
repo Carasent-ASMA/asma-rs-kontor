@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Trusted-base publication branch and title checker (ASMA-8103).
 
-Implements the bounded ASMA-8101 contract:
+Implements the bounded ASMA-8101 contract, parameterized by the selected
+project configuration:
 
-    ordinary branch  <type>/ASMA-<number>-<slug>
+    ordinary branch  <type>/<PROJECT>-<number>-<slug>
     ordinary title   <exact branch key> <summary>
     release branch   releases/v<X>.<Y>.<Z>        (the only keyless form)
     release title    Release v<exact captured version>
+
+The project key, base branch and check name come from the selected YAML config
+folder (or a generated projection in CI); the branch vocabulary comes from
+``kontor-core``'s ``BranchType`` enum. Nothing deployment-specific is compiled
+in.
 
 One exemption: a pull request opened by ``dependabot[bot]`` from a
 ``dependabot/`` branch carries no Jira key and is accepted with the code
@@ -32,26 +38,28 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+try:  # the workflow fetches this beside the checker
+    from kontor_project import (
+        ProjectConfigError,
+        branch_refusal,
+        load_branch_types,
+        load_project,
+    )
+except ImportError:  # running from a checkout: scripts/ is a sibling
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from kontor_project import (
+        ProjectConfigError,
+        branch_refusal,
+        load_branch_types,
+        load_project,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import TextIO
-
-PROJECT_KEY = "ASMA"
-DEFAULT_BASE = "master"
-BRANCH_TYPES: tuple[str, ...] = (
-    "feat",
-    "fix",
-    "docs",
-    "chore",
-    "refactor",
-    "test",
-    "perf",
-    "build",
-    "ci",
-    "releases",
-)
 
 CODE_OK = "ok"
 CODE_BOT_BRANCH_EXEMPT = "bot_branch_exempt"
@@ -73,17 +81,7 @@ ACCEPT_CODES: tuple[str, ...] = (CODE_OK, CODE_BOT_BRANCH_EXEMPT)
 # (exact pull request author login, branch prefix) pairs exempt from the grammar.
 BOT_BRANCHES: tuple[tuple[str, str], ...] = (("dependabot[bot]", "dependabot/"),)
 
-CHECK_NAME = "asma/publication-branch-title"
-
-_ORDINARY_BRANCH_RE = re.compile(
-    r"^(?P<branch_type>" + "|".join(BRANCH_TYPES) + r")/"
-    rf"(?P<key>{PROJECT_KEY}-[1-9][0-9]*)-"
-    r"(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)$"
-)
 _RELEASE_BRANCH_RE = re.compile(r"^releases/v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$")
-_KEY_PREFIX_RE = re.compile(r"^(?P<key>[A-Z][A-Z0-9]*-[1-9][0-9]*)(?=-|$)")
-_LOWERCASE_KEY_PREFIX_RE = re.compile(r"^[a-z][a-z0-9]*-[1-9][0-9]*(?=-|$)")
-_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _TITLE_LEAD_KEY_RE = re.compile(r"^(?P<key>[A-Z][A-Z0-9]*-[1-9][0-9]*) ")
 _HEAD_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -107,19 +105,29 @@ def _refuse(code: str, detail: str) -> Decision:
 
 
 def evaluate(
-    *, base_ref: str, head_ref: str, title: str, head_sha: str, pr_author: str = ""
+    *,
+    base_ref: str,
+    head_ref: str,
+    title: str,
+    head_sha: str,
+    pr_author: str = "",
+    project_key: str,
+    base_branch: str,
+    branch_types: tuple[str, ...],
 ) -> Decision:
     """Decide one current PR metadata snapshot. Pure function, no I/O.
 
     ``head_sha`` is the asserted ``pull_request.head.sha``; it is required so a
     run that cannot name the exact head never reports success. ``pr_author`` is
     the ``pull_request.user.login``; it matters only for the bot exemption.
+    ``project_key``, ``base_branch`` and ``branch_types`` come from the
+    selected project configuration and ``kontor-core``; none is compiled in.
     """
 
-    if base_ref != DEFAULT_BASE:
+    if base_ref != base_branch:
         return _refuse(
             CODE_BASE_BRANCH_NOT_DEFAULT,
-            f"the current base ref must be exactly {DEFAULT_BASE!r}",
+            f"the current base ref must be exactly {base_branch!r}",
         )
     if not isinstance(head_sha, str) or _HEAD_SHA_RE.fullmatch(head_sha) is None:
         return _refuse(
@@ -140,16 +148,29 @@ def evaluate(
             )
         return _accept(version, f"keyless release branch {head_ref}")
 
-    ordinary_match = _ORDINARY_BRANCH_RE.fullmatch(head_ref)
-    if ordinary_match is not None:
-        return _ordinary_title(ordinary_match.group("key"), title)
+    refusal = branch_refusal(
+        head_ref, project_key=project_key, branch_types=branch_types
+    )
+    if refusal is None:
+        key = _branch_key(head_ref)
+        return _ordinary_title(key, title)
 
     if _is_bot_branch(pr_author, head_ref):
         return Decision(
             True, CODE_BOT_BRANCH_EXEMPT, pr_author, f"bot branch {head_ref}"
         )
 
-    return _branch_refusal(head_ref)
+    return _branch_refusal(project_key, branch_types, refusal)
+
+
+def _branch_key(head_ref: str) -> str:
+    """The canonical key a branch that passed the grammar carries."""
+
+    rest = head_ref.split("/", 1)[1]
+    match = re.match(r"^([A-Z][A-Z0-9]*-[0-9]+)", rest)
+    if match is None:  # unreachable for a branch that passed the grammar
+        raise ValueError(f"canonical branch has no key: {head_ref}")
+    return match.group(1)
 
 
 def _is_bot_branch(pr_author: str, head_ref: str) -> bool:
@@ -181,53 +202,34 @@ def _ordinary_title(key: str, title: str) -> Decision:
     return _accept(key, f"ordinary branch key {key}")
 
 
-def _branch_refusal(head_ref: str) -> Decision:
-    prefix, separator, rest = head_ref.partition("/")
-    if not separator:
+_REFUSAL_MESSAGES = {
+    CODE_BRANCH_SHAPE_INVALID: "the branch must be <type>/<PROJECT>-<number>-<slug> or releases/v<X>.<Y>.<Z>",
+    CODE_BRANCH_TYPE_UNKNOWN: "the branch type is not declared by kontor-core",
+    CODE_BRANCH_KEY_MISSING: "the branch carries no tracker key after its type",
+    CODE_BRANCH_KEY_NOT_CANONICAL: "the branch key is not <PROJECT>-<positive number> without leading zeroes",
+    CODE_BRANCH_SLUG_INVALID: "the slug after the key must be non-empty lowercase words joined by single hyphens",
+    CODE_RELEASE_BRANCH_INVALID: "a releases/ branch is either releases/<PROJECT>-<number>-<slug> or releases/v<X>.<Y>.<Z>",
+}
+
+
+def _branch_refusal(
+    project_key: str,
+    branch_types: tuple[str, ...],
+    refusal: str,
+) -> Decision:
+    if refusal == CODE_BRANCH_PROJECT_MISMATCH:
         return _refuse(
-            CODE_BRANCH_SHAPE_INVALID,
-            "the branch must be <type>/ASMA-<number>-<slug> or releases/v<X>.<Y>.<Z>",
+            CODE_BRANCH_PROJECT_MISMATCH,
+            f"the branch key must belong to project {project_key}",
         )
-    if prefix not in BRANCH_TYPES:
+    if refusal == CODE_BRANCH_TYPE_UNKNOWN:
         return _refuse(
             CODE_BRANCH_TYPE_UNKNOWN,
-            "the branch type must be one of: " + ", ".join(BRANCH_TYPES),
-        )
-
-    key_match = _KEY_PREFIX_RE.match(rest)
-    if key_match is not None:
-        key = key_match.group("key")
-        if key.split("-", 1)[0] != PROJECT_KEY:
-            return _refuse(
-                CODE_BRANCH_PROJECT_MISMATCH,
-                f"the branch key must belong to project {PROJECT_KEY}",
-            )
-        slug = rest[key_match.end() :].removeprefix("-")
-        if slug == rest[key_match.end() :] or _SLUG_RE.fullmatch(slug) is None:
-            return _refuse(
-                CODE_BRANCH_SLUG_INVALID,
-                "the slug after the key must be non-empty lowercase words "
-                "joined by single hyphens",
-            )
-        return _refuse(
-            CODE_BRANCH_SHAPE_INVALID,
-            "the branch does not match the canonical grammar",
-        )
-
-    if _LOWERCASE_KEY_PREFIX_RE.match(rest) or rest[:1].isupper():
-        return _refuse(
-            CODE_BRANCH_KEY_NOT_CANONICAL,
-            "the branch key must be ASMA-<positive number> without leading zeroes",
-        )
-    if prefix == "releases":
-        return _refuse(
-            CODE_RELEASE_BRANCH_INVALID,
-            "a releases/ branch is either releases/ASMA-<number>-<slug> or "
-            "releases/v<X>.<Y>.<Z>",
+            "the branch type must be one of: " + ", ".join(branch_types),
         )
     return _refuse(
-        CODE_BRANCH_KEY_MISSING,
-        "the branch carries no ASMA key after its type",
+        refusal,
+        _REFUSAL_MESSAGES.get(refusal, "the branch does not satisfy the grammar"),
     )
 
 
@@ -258,30 +260,50 @@ def main(
     head_ref = env.get("HEAD_REF", "")
     head_sha = env.get("HEAD_SHA", "")
     pr_author = env.get("PR_AUTHOR", "")
+
+    try:
+        project = load_project(env=env)
+        branch_types = load_branch_types(env.get("KONTOR_BRANCH_GRAMMAR_SOURCE"))
+    except ProjectConfigError as exc:
+        print(f"publication-branch-title: {exc}", file=err)
+        return 2
+
     decision = evaluate(
         base_ref=base_ref,
         head_ref=head_ref,
         title=env.get("PR_TITLE", ""),
         head_sha=head_sha,
         pr_author=pr_author,
+        project_key=project.key,
+        base_branch=project.base_branch,
+        branch_types=branch_types,
     )
 
     record = {
         "action": env.get("PR_ACTION", ""),
         "base_ref": base_ref,
-        "check": CHECK_NAME,
+        "check": project.check_name,
         "code": decision.code,
+        "config_provenance": dict(project.provenance),
+        "config_source": str(project.source),
         "decision": "accept" if decision.accepted else "refuse",
         "head_ref": head_ref,
         "head_sha": head_sha,
         "pr_author": pr_author,
         "pr_number": _pr_number(env.get("PR_NUMBER", "")),
+        "project_key": project.key,
     }
     print(json.dumps(record, sort_keys=True), file=out)
     if not decision.accepted:
-        print(f"{CHECK_NAME}: refused {decision.code}: {decision.detail}", file=err)
+        print(
+            f"{project.check_name}: refused {decision.code}: {decision.detail}",
+            file=err,
+        )
         return 1
-    print(f"{CHECK_NAME}: accepted {decision.identity}: {decision.detail}", file=err)
+    print(
+        f"{project.check_name}: accepted {decision.identity}: {decision.detail}",
+        file=err,
+    )
     return 0
 
 

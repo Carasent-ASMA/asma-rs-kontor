@@ -14,9 +14,9 @@ Modes (KON-MVP-02 verification requirement):
 
 Every mode runs the full gate list: the public-tree refusal of home paths,
 run receipts and provider-account aliases (scripts/public_tree.py) and its
-tests, the scripts' own tests, cargo fmt --check, clippy -D warnings,
-workspace tests, cargo audit, cargo deny check, frozen pnpm install, typecheck,
-vitest run and the production dependency audit.
+tests, the scripts' own tests, the publication-check tests, cargo fmt --check,
+clippy -D warnings, workspace tests, cargo audit, cargo deny check, frozen
+pnpm install, typecheck, vitest run and the production dependency audit.
 
 Exit code 0 only when every gate passes.
 """
@@ -108,6 +108,18 @@ def run_gates(tree: Path) -> None:
     run([sys.executable, "scripts/public_tree.py", "."], tree)
     # -B: a .pyc embeds its absolute source path, which the check refuses.
     run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests"], tree)
+    run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            ".github/scripts/tests",
+        ],
+        tree,
+    )
     run(["cargo", "fmt", "--all", "--", "--check"], tree)
     run(
         ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],

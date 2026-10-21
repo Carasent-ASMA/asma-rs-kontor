@@ -212,7 +212,7 @@ mod tests {
          it at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets \
          10:40pm (Europe/Chisinau)";
 
-    /// The text Codex actually produced on 2026-08-21, from the report Igor filed.
+    /// The text Codex actually produced on 2026-08-21, from the operator's report.
     const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
          https://chatgpt.com/codex/settings/usage to purchase more credits or try \
          again at Aug 23rd, 2026 9:35 AM.";

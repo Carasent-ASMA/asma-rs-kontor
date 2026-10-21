@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Protect master/main from AGENT pushes only, and refuse an agent branch that
-# carries no canonical Jira key. Humans push normally.
+# Protect the configured base branch from AGENT pushes only, and refuse an
+# agent branch that carries no canonical tracker key. Humans push normally.
 #
 # Why an env sniff and not GitHub branch protection: agents push with the
 # developer's own git identity and credentials, so the forge cannot tell an
@@ -8,25 +8,47 @@
 # locally, by the variables they export into the shell they spawn.
 #
 # Applies to this repository once `git config core.hooksPath .githooks` is set
-# (see CONTRIBUTING.md). Escape hatch for a deliberate agent push: ASMA_ALLOW_AGENT_PUSH=1.
+# (see CONTRIBUTING.md). Escape hatch for a deliberate agent push:
+# KONTOR_ALLOW_AGENT_PUSH=1.
+#
+# The project key, base branch and publication check name come from the
+# selected YAML config folder (KONTOR_CONFIG_DIR or --config-dir). The branch
+# grammar is read from crates/kontor-core/src/branch.rs; this hook keeps no
+# second copy of either.
 
 if [ -z "$CLAUDECODE" ] && [ -z "$OPENCODE" ] && [ -z "$CODEX_HOME" ] \
   && [ -z "$AGENTSROOM_AGENT_ID" ] && [ -z "$PASEO_AGENT_ID" ]; then
   exit 0  # human shell — not our business
 fi
 
-[ "$ASMA_ALLOW_AGENT_PUSH" = "1" ] && exit 0
+[ "$KONTOR_ALLOW_AGENT_PUSH" = "1" ] && exit 0
 
-# Second rule (ASMA-8101): an agent may only publish a branch the ASMA CLI or
-# Kontor would have derived — `<type>/ASMA-<number>-<slug>` — or a hotpatch
-# line `releases/v<major>.<minor>.<patch>`. Same grammar as
-# asma-modules `_tools/asma-cli/src/asma_cli/publication_policy.py` and kontor-core
-# `branch.rs`; keep the three in step.
-branch_is_canonical() {
-  printf '%s\n' "$1" | grep -Eq \
-    '^(feat|fix|docs|chore|refactor|test|perf|build|ci|releases)/ASMA-[1-9][0-9]*-[a-z0-9]+(-[a-z0-9]+)*$' \
-  || printf '%s\n' "$1" | grep -Eq '^releases/v[0-9]+\.[0-9]+\.[0-9]+$'
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "BLOCKED: cannot locate the repository root" >&2
+  exit 1
 }
+helper="$root/scripts/kontor_project.py"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "BLOCKED: python3 is required to read the selected project configuration" >&2
+  exit 1
+fi
+
+if ! project_key=$(python3 "$helper" key); then
+  echo "" >&2
+  echo "BLOCKED: no selected project configuration" >&2
+  echo "" >&2
+  echo "  Select the project's YAML config folder before pushing:" >&2
+  echo "    KONTOR_CONFIG_DIR=/path/to/config git push ..." >&2
+  echo "" >&2
+  exit 1
+fi
+if ! base_branch=$(python3 "$helper" base-branch); then
+  exit 1
+fi
+if ! check_name=$(python3 "$helper" check-name); then
+  exit 1
+fi
 
 zero_sha='0000000000000000000000000000000000000000'
 
@@ -35,40 +57,45 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
   case "$remote_ref" in
     refs/heads/*)
       branch="${remote_ref#refs/heads/}"
-      # A deletion publishes nothing; the default branches are judged below.
-      if [ "$local_sha" != "$zero_sha" ] && [ "$branch" != master ] && [ "$branch" != main ] \
-        && ! branch_is_canonical "$branch"; then
+      # A deletion publishes nothing and is allowed.
+      if [ "$local_sha" = "$zero_sha" ]; then
+        continue
+      fi
+      if [ "$branch" = "$base_branch" ]; then
         echo "" >&2
-        echo "BLOCKED: agent push of branch '$branch' (branch_key_missing or not canonical)" >&2
+        echo "BLOCKED: agent push to $remote_ref" >&2
         echo "" >&2
-        echo "  Every published branch carries its Jira key, derived, not typed:" >&2
-        echo "    <type>/ASMA-<number>-<slug>   e.g. feat/ASMA-8101-publication-identity" >&2
+        echo "  An agent commit reaching $base_branch IS the delivery — there is no" >&2
+        echo "  review step behind it. Push a branch and open a PR instead:" >&2
         echo "" >&2
-        echo "  Create it deterministically and move your commits over:" >&2
-        echo "    asma git --repo <context> checkout -b --from ASMA-<number>" >&2
+        echo "    git checkout -b <type>/$project_key-<number>-<slug> $base_branch" >&2
+        echo "    git push -u origin <type>/$project_key-<number>-<slug>" >&2
+        echo "" >&2
+        echo "  The publication check is: $check_name" >&2
         echo "" >&2
         echo "  Deliberate exception, with the user's explicit go-ahead:" >&2
-        echo "    ASMA_ALLOW_AGENT_PUSH=1 git push ..." >&2
+        echo "    KONTOR_ALLOW_AGENT_PUSH=1 git push ..." >&2
         echo "" >&2
         exit 1
       fi
-      ;;
-  esac
-  case "$remote_ref" in
-    refs/heads/master | refs/heads/main)
-      echo "" >&2
-      echo "BLOCKED: agent push to $remote_ref" >&2
-      echo "" >&2
-      echo "  An agent commit reaching master IS the delivery — there is no" >&2
-      echo "  review step behind it. Push a branch and open a PR instead:" >&2
-      echo "" >&2
-      echo "    asma git checkout -b <branch> --from master" >&2
-      echo "    asma git commit --auto --push --create-pr" >&2
-      echo "" >&2
-      echo "  Deliberate exception, with the user's explicit go-ahead:" >&2
-      echo "    ASMA_ALLOW_AGENT_PUSH=1 git push ..." >&2
-      echo "" >&2
-      exit 1
+      if ! reason=$(python3 "$helper" check-branch --branch "$branch" 2>&1); then
+        echo "" >&2
+        echo "BLOCKED: agent push of branch '$branch' ($reason)" >&2
+        echo "" >&2
+        echo "  Every published branch carries its tracker key, derived, not typed:" >&2
+        echo "    <type>/$project_key-<number>-<slug>" >&2
+        echo "  The branch types are read from crates/kontor-core/src/branch.rs." >&2
+        echo "" >&2
+        echo "  Create it deterministically and move your commits over:" >&2
+        echo "    git checkout -b <type>/$project_key-<number>-<slug> $base_branch" >&2
+        echo "" >&2
+        echo "  The publication check is: $check_name" >&2
+        echo "" >&2
+        echo "  Deliberate exception, with the user's explicit go-ahead:" >&2
+        echo "    KONTOR_ALLOW_AGENT_PUSH=1 git push ..." >&2
+        echo "" >&2
+        exit 1
+      fi
       ;;
   esac
 done

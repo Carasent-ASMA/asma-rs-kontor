@@ -51,9 +51,9 @@ inspection. The setting exists because parallel worktrees each keep a
   [Native naming](docs/NATIVE_NAMING.md) describes the same grammar Kontor
   derives for task worktrees (ASMA-8101). Enable the local preflight once per
   clone with `git config core.hooksPath .githooks`; `.githooks/pre-push`
-  refuses an agent push of a non-canonical branch or of `master` before the
-  network round trip (it recognizes agent shells by their environment; humans
-  push normally).
+  refuses an agent push of a non-canonical branch or of the configured base
+  branch before the network round trip (it recognizes agent shells by their
+  environment; humans push normally).
 - Keep one issue/ticket to one reviewable diff.
 - Do not mix generated lockfile drift, formatting unrelated files or another
   contributor's work into the change.
@@ -174,6 +174,31 @@ checks that the committed `Cargo.lock` satisfies every manifest under
 and runs every gate above except `pnpm --filter kontor-console verify:api`,
 which runs separately. `--mode staged` does the same for the staged tree before
 a commit exists; `--mode inplace` runs the gates in the current tree.
+
+## The selected project configuration
+
+The publication check, the `pre-push` hook and `scripts/test-lanes.py` read the
+project key, base branch and check name from one explicitly selected YAML
+config folder (`KONTOR_CONFIG_DIR`, or `--config-dir` where the tool offers
+it). The branch vocabulary comes from
+`crates/kontor-core/src/branch.rs`; none of those tools keeps its own copy.
+There is no implicit fallback to this checkout.
+
+The trusted-base workflow cannot read an external folder. It prefers the
+repository variables `KONTOR_PROJECT_KEY`, `KONTOR_BASE_BRANCH` and
+`KONTOR_CHECK_NAME` when all three are set, and writes a temporary projection
+recording them as the source. Otherwise it reads
+[`.github/kontor-project.yml`](.github/kontor-project.yml), the committed
+projection generated from the selected folder. Regenerate that file after a
+configuration change:
+
+```sh
+python3 scripts/kontor_project.py --config-dir <config folder> \
+  project --format yaml
+```
+
+The retired escape hatch `ASMA_ALLOW_AGENT_PUSH` is now
+`KONTOR_ALLOW_AGENT_PUSH`.
 
 ## Pull requests
 

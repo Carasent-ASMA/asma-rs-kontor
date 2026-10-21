@@ -11,6 +11,7 @@ import io
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,8 +25,11 @@ FIXTURE_PATH = (
     / "fixtures"
     / "publication_branch_title_cases.json"
 )
+PROJECT_CONFIG = REPO_ROOT / ".github" / "kontor-project.yml"
+BRANCH_SOURCE = REPO_ROOT / "crates" / "kontor-core" / "src" / "branch.rs"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import publication_branch_title as checker  # noqa: E402
 
 REQUIRED_ACTIVITIES = (
@@ -41,10 +45,16 @@ REASON_CODES = {
     if name.startswith("CODE_") and value not in checker.ACCEPT_CODES
 }
 
-FETCH_STEP_NAME = "Fetch the checker from the exact workflow revision"
+FETCH_STEP_NAME = "Fetch the trusted sources from the exact workflow revision"
+PROJECT_STEP_NAME = "Project the repository variables"
 EVALUATE_STEP_NAME = "Evaluate the current branch and title"
 CHECKER_RELATIVE_PATH = ".github/scripts/publication_branch_title.py"
+PROJECT_HELPER_PATH = "scripts/kontor_project.py"
+YAML_HELPER_PATH = "scripts/pack.py"
+BRANCH_SOURCE_PATH = "crates/kontor-core/src/branch.rs"
+PROJECTION_PATH = ".github/kontor-project.yml"
 RUNNER_TEMP_CHECKER = "${{ runner.temp }}/publication_branch_title.py"
+RUNNER_TEMP_PROJECTION = "${{ runner.temp }}/kontor-project.yml"
 WORKFLOW_SHA_EXPRESSION = "${{ github.workflow_sha }}"
 HEAD_SHA_EXPRESSION = "${{ github.event.pull_request.head.sha }}"
 PR_AUTHOR_EXPRESSION = "${{ github.event.pull_request.user.login }}"
@@ -180,7 +190,7 @@ class FixtureCasesTest(unittest.TestCase):
             and case["expect"]["code"] == checker.CODE_OK
             and not release_re.fullmatch(case["headRef"])
         }
-        self.assertEqual(accepted_types, set(checker.BRANCH_TYPES))
+        self.assertEqual(accepted_types, set(checker.load_branch_types()))
 
     def test_fixture_covers_every_bot_exemption(self) -> None:
         exempt = {
@@ -219,6 +229,9 @@ class FixtureCasesTest(unittest.TestCase):
                     title=case["title"],
                     head_sha=case.get("headSha", self.default_head_sha),
                     pr_author=case.get("prAuthor", ""),
+                    project_key="ASMA",
+                    base_branch="master",
+                    branch_types=checker.load_branch_types(),
                 )
                 expect = case["expect"]
                 self.assertEqual(
@@ -245,6 +258,7 @@ class WorkflowContractTest(unittest.TestCase):
         cls.text = WORKFLOW_PATH.read_text(encoding="utf-8")
         cls.steps = _steps(cls.text)
         cls.fetch = _step_named(cls.steps, FETCH_STEP_NAME)
+        cls.project = _step_named(cls.steps, PROJECT_STEP_NAME)
         cls.evaluate = _step_named(cls.steps, EVALUATE_STEP_NAME)
 
     def test_trigger_is_pull_request_target_with_required_activities(self) -> None:
@@ -261,12 +275,13 @@ class WorkflowContractTest(unittest.TestCase):
     def test_no_trigger_level_base_filter(self) -> None:
         self.assertNotRegex(self.text, r"(?m)^\s*branches:")
 
-    def test_job_check_name_is_stable(self) -> None:
-        matches = re.findall(
-            r"(?m)^(\s*)name:\s*asma/publication-branch-title\s*$", self.text
+    def test_job_check_name_comes_from_the_project_projection(self) -> None:
+        self.assertRegex(
+            self.text,
+            r"(?m)^\s{4}name:\s*\$\{\{\s*vars\.KONTOR_CHECK_NAME\s*\|\|\s*"
+            r"'asma/publication-branch-title'\s*\}\}\s*$",
         )
-        self.assertEqual(len(matches), 1)
-        self.assertEqual(len(matches[0]), 4, "the check name must be the job name")
+        self.assertEqual(self.text.count("vars.KONTOR_CHECK_NAME"), 2)
 
     def test_steps_are_fetch_then_evaluate(self) -> None:
         names = [
@@ -275,7 +290,7 @@ class WorkflowContractTest(unittest.TestCase):
             for line in step.splitlines()
             if line.strip().startswith("- name: ")
         ]
-        self.assertEqual(names, [FETCH_STEP_NAME, EVALUATE_STEP_NAME])
+        self.assertEqual(names, [FETCH_STEP_NAME, PROJECT_STEP_NAME, EVALUATE_STEP_NAME])
 
     def test_no_checkout_or_repository_git_operation(self) -> None:
         self.assertNotIn("uses:", self.text)
@@ -295,10 +310,14 @@ class WorkflowContractTest(unittest.TestCase):
             _step_env(self.fetch).get("CHECKER_SOURCE_SHA"),
             WORKFLOW_SHA_EXPRESSION,
         )
-        self.assertEqual(self.text.count(WORKFLOW_SHA_EXPRESSION), 1)
+        self.assertEqual(self.text.count(WORKFLOW_SHA_EXPRESSION), 2)
         self.assertEqual(
             re.findall(r"ref=([^\s\"'\\]+)", _step_run(self.fetch)),
             ["${CHECKER_SOURCE_SHA}"],
+        )
+        self.assertEqual(
+            _step_env(self.project).get("WORKFLOW_SHA"),
+            WORKFLOW_SHA_EXPRESSION,
         )
 
     def test_event_base_sha_is_evidence_only(self) -> None:
@@ -339,8 +358,13 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("*[!0-9a-f]*", run)
         self.assertIn("Accept: application/vnd.github.raw+json", run)
         self.assertIn("X-GitHub-Api-Version: 2022-11-28", run)
-        self.assertIn("contents/" + CHECKER_RELATIVE_PATH, run)
-        self.assertIn('test -s "$CHECKER_PATH"', run)
+        self.assertIn('contents/${source_path}', run)
+        self.assertIn('fetch "' + CHECKER_RELATIVE_PATH + '" "$CHECKER_PATH"', run)
+        self.assertIn('fetch "' + PROJECT_HELPER_PATH + '"', run)
+        self.assertIn('fetch "' + YAML_HELPER_PATH + '"', run)
+        self.assertIn('fetch "' + BRANCH_SOURCE_PATH + '"', run)
+        self.assertIn('fetch "' + PROJECTION_PATH + '"', run)
+        self.assertIn('test -s "$target_path"', run)
         self.assertEqual(run.count("curl "), 1)
         self.assertNotIn("||", run)
         self.assertNotIn("wget", run)
@@ -382,6 +406,40 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn(".github/scripts", _step_run(self.evaluate))
         self.assertNotIn("continue-on-error", self.evaluate)
         self.assertNotIn("if:", self.evaluate)
+        self.assertNotIn("pip ", self.text)
+
+    def test_project_values_are_read_from_the_selection_or_a_projection(self) -> None:
+        env = _step_env(self.evaluate)
+        self.assertEqual(
+            env.get("KONTOR_CONFIG_FILE"),
+            "${{ runner.temp }}/selected-project.yml",
+        )
+        self.assertEqual(
+            env.get("KONTOR_BRANCH_GRAMMAR_SOURCE"),
+            "${{ runner.temp }}/branch.rs",
+        )
+        projection_env = _step_env(self.project)
+        self.assertEqual(
+            projection_env.get("KONTOR_PROJECT_KEY"),
+            "${{ vars.KONTOR_PROJECT_KEY }}",
+        )
+        self.assertEqual(
+            projection_env.get("KONTOR_BASE_BRANCH"),
+            "${{ vars.KONTOR_BASE_BRANCH }}",
+        )
+        self.assertEqual(
+            projection_env.get("KONTOR_CHECK_NAME"),
+            "${{ vars.KONTOR_CHECK_NAME }}",
+        )
+        self.assertEqual(
+            projection_env.get("COMMITTED_PROJECTION"), RUNNER_TEMP_PROJECTION
+        )
+        run = _step_run(self.project)
+        self.assertIn("source: repository-variables", run)
+        self.assertIn("source_revision: %s", run)
+        self.assertIn("KONTOR_PROJECT_KEY", run)
+        self.assertIn("cp \"$COMMITTED_PROJECTION\" \"$SELECTED_PROJECTION\"", run)
+        self.assertNotIn("${{", run)
 
     def test_bot_author_is_the_pull_request_author(self) -> None:
         self.assertEqual(
@@ -450,6 +508,8 @@ class CheckerCliTest(unittest.TestCase):
             "HEAD_REF": "feat/ASMA-8101-publication-branch-title-check",
             "HEAD_SHA": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
             "PR_TITLE": "ASMA-8101 Publication branch and title check",
+            "KONTOR_CONFIG_FILE": str(PROJECT_CONFIG),
+            "KONTOR_BRANCH_GRAMMAR_SOURCE": str(BRANCH_SOURCE),
         }
 
     def test_valid_metadata_accepts_and_records_the_asserted_head(self) -> None:
@@ -508,6 +568,71 @@ class CheckerCliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out.strip().splitlines()[-1])["code"], "head_sha_invalid")
         self.assertIn("head_sha_invalid", err)
+
+    def test_project_selection_is_required(self) -> None:
+        env = self._valid_env()
+        del env["KONTOR_CONFIG_FILE"]
+        code, out, err = self._run(env)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("no config selected", err)
+
+    def test_a_second_project_key_and_base_branch_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "orchestration" / "orchestration.yml"
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "schema_version: 1\n"
+                "project:\n"
+                "  key: EXM\n"
+                "  forge:\n"
+                "    base_branch: main\n"
+                "  check_runs:\n"
+                "    - exm/publication-branch-title\n",
+                encoding="utf-8",
+            )
+            env = self._valid_env()
+            env.update(
+                {
+                    "KONTOR_CONFIG_DIR": tmp,
+                    "KONTOR_CONFIG_FILE": "",
+                    "BASE_REF": "main",
+                    "HEAD_REF": "fix/EXM-42-repair-rows",
+                    "PR_TITLE": "EXM-42 Repair rows",
+                }
+            )
+            code, out, err = self._run(env)
+        self.assertEqual(code, 0, err)
+        record = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(record["code"], "ok")
+        self.assertEqual(record["project_key"], "EXM")
+        self.assertEqual(record["check"], "exm/publication-branch-title")
+        self.assertEqual(record["base_ref"], "main")
+        self.assertIn("config_source", record)
+        self.assertIn("config_provenance", record)
+
+    def test_the_same_branch_fails_under_another_project_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "orchestration" / "orchestration.yml"
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "schema_version: 1\n"
+                "project:\n"
+                "  key: EXM\n"
+                "  forge:\n"
+                "    base_branch: main\n"
+                "  check_runs: [exm/publication-branch-title]\n",
+                encoding="utf-8",
+            )
+            env = self._valid_env()
+            env.update({"KONTOR_CONFIG_DIR": tmp, "KONTOR_CONFIG_FILE": "", "BASE_REF": "main"})
+            code, out, err = self._run(env)
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            json.loads(out.strip().splitlines()[-1])["code"],
+            "branch_project_mismatch",
+        )
+        self.assertIn("branch_project_mismatch", err)
 
 
 if __name__ == "__main__":
