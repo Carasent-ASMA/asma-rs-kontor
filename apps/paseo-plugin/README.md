@@ -807,6 +807,18 @@ The tier is not configurable. The plugin names the realm state root but never
 reads `credentials.json`, never receives `KONTOR_AUTH`, and never writes to
 `kontord`. `test/security.test.ts` pins that boundary.
 
+The `kontor.status` RPC reports the host's realm for the client: `ready` (with
+the realm ID and label), `not-answering`, `refused` (with the HTTP status),
+`no-realm`, `mcp-missing`, `off` or `unknown`. On request, at most once per 30
+seconds, the server starts the configured `kontor-mcp` with the same state
+root, observer tier and serve profile that `agent.create` composes, calls the
+one observer tool `kontor_realm_get` and stops the process after the answer or
+5 seconds. Only an authenticated answer is `ready`; a completed handshake is
+not. The child gets only `PATH` and `HOME`, and its standard error is never
+read. `KONTOR_PLUGIN_MCP=off` returns `off` without starting anything. The
+registration does not depend on `floor.json`, and nothing else waits for it:
+Sessions, Paseo-direct work and the hooks work the same without a realm.
+
 ## Install and uninstall
 
 Install from this repository path; no registry is involved:

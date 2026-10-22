@@ -9,6 +9,7 @@ import { readTeamsSource } from "./shared/teams-source-snapshot";
 import { sourceCatalog, contributeReadSources } from "./server/read-sources";
 import { contributeSessionLifecycle } from "./server/session-lifecycle";
 import { contributeResponsibility } from "./server/responsibility";
+import { contributeKontorStatus } from "./server/kontor-status";
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
@@ -21,9 +22,10 @@ export default function plugin(server: PluginServerContext): () => void {
   });
   const stopSources = contributeReadSources(server, settings, sourceCatalog);
   contributeResponsibility(server);
+  const stopStatus = contributeKontorStatus(server);
   // The operator's floor.json is read once per worker start; off registers none of the three hooks.
   const floor = readFloor();
   reportFloor(floor);
   const stopHooks = floor.enabled ? contribute(server) : () => {};
-  return () => { stopSources(); stopHooks(); };
+  return () => { stopSources(); stopStatus(); stopHooks(); };
 }

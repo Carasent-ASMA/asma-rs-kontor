@@ -99,7 +99,7 @@ describe("server entry floor mode", () => {
     expect(off.settings).toEqual(["organization", "keyboard"]);
     expect(off.settings).toEqual(on.settings);
     expect(off.handlers).toEqual(on.handlers);
-    expect(off.handlers).toEqual(expect.arrayContaining(["sources.list", "sources.read", "sources.associations"]));
+    expect(off.handlers).toEqual(expect.arrayContaining(["sources.list", "sources.read", "sources.associations", "kontor.status"]));
     expect(off.cleanup()).toBeUndefined();
   });
 
