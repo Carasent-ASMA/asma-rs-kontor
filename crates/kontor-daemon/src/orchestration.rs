@@ -152,6 +152,7 @@ pub fn resolve_bundle(
     sources: &BundleSources<'_>,
     catalog: &RoleCatalogRevision,
 ) -> Result<ResolvedBundle, FleetError> {
+    crate::project_branch::parse(sources.orchestration).map_err(invalid)?;
     let publication_policy =
         crate::project_policy::parse(sources.orchestration).map_err(invalid)?;
     let selector: OrchestrationSource =

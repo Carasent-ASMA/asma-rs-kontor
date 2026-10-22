@@ -168,6 +168,23 @@ credential references such as `keychain:<service>/<account>`.
 
 ### Project publication authority
 
+`project.branch.types` narrows the shared `kontor-core` branch vocabulary. It
+must be nonempty and contain no duplicates. The supported anchored branch
+template is `^(type|type)/<KEY>-<number>-<slug>$`, with the declared types in
+order; `<KEY>` may instead be the exact `project.key`. The commit template is
+`^<KEY>-<number> <summary>$`, with the same literal-key option. Unknown types,
+unresolved placeholders, arbitrary regexes and another project's literal key
+refuse by field name and selected source. These templates do not replace
+canonical branch parsing or confirmed task/epic binding.
+
+Branch rules resolve into the existing publication policy's immutable bundle.
+Authoring edits and unactivated publications do not change publication
+judgement. Older bundles without branch rules retain the shared grammar;
+selected-folder startup requires the authored branch settings. The commit
+template is validated and pinned here; publication's head SHA does not attest
+to a commit message. Commit-message consumers must observe that message before
+claiming it satisfies the template.
+
 The optional pair below configures publication for one existing Kontor Project
 in this realm. `project_id` is its explicit internal UUIDv7, distinct from the
 public tracker key. Loading this folder never creates a Project.

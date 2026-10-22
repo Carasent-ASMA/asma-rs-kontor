@@ -54,6 +54,7 @@ pub mod jira_sync;
 pub mod lock;
 pub mod logging;
 pub mod orchestration;
+mod project_branch;
 mod project_policy;
 pub mod provider_config;
 pub mod quota_observation;

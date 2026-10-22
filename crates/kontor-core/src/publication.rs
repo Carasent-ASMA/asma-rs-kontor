@@ -13,14 +13,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::branch::{BranchName, BranchRefusal, TrackerKey};
+use crate::branch::{BranchName, BranchRefusal, ProjectBranchRules, TrackerKey, valid_base_branch};
 use crate::id::{ContentHash, ExternalName, ModuleKey, ProjectId};
 use crate::pull_request::ForgeRepository;
 use crate::{DomainError, DomainResult};
 
 /// The revision of the rules below. Bumped whenever a rule changes so a recorded
 /// decision can be read against the exact policy that produced it.
-pub const POLICY_REVISION: u32 = 5;
+pub const POLICY_REVISION: u32 = 6;
 
 /// Project publication authority, resolved from authoring data and pinned in a bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +36,9 @@ pub struct PublicationPolicy {
     pub module_repositories: BTreeMap<ModuleKey, ForgeRepository>,
     /// The only permitted publication base.
     pub base_branch: ExternalName,
+    /// Optional selected-project grammar, pinned alongside repository authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_rules: Option<ProjectBranchRules>,
 }
 
 impl PublicationPolicy {
@@ -44,6 +47,17 @@ impl PublicationPolicy {
     /// # Errors
     /// Refuses a root or module repository outside that list.
     pub fn validate(&self) -> DomainResult<()> {
+        if !valid_base_branch(self.base_branch.as_str()) {
+            return Err(DomainError::invalid(
+                "PublicationPolicy",
+                "invalid project.forge.base_branch",
+            ));
+        }
+        if let Some(rules) = &self.branch_rules {
+            rules
+                .validate()
+                .map_err(|rule| DomainError::invalid("PublicationPolicy", rule))?;
+        }
         if !self.repositories.contains(&self.root_repository) {
             return Err(DomainError::invalid(
                 "PublicationPolicy",

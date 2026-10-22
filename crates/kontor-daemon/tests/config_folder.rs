@@ -22,6 +22,9 @@ fn selection_is_explicit_and_the_flag_wins_over_the_environment() {
     assert!(selected.root().is_absolute());
     assert_eq!(selected.project.key, "EXM");
     assert_eq!(selected.project.forge.base_branch, "main");
+    let branch = selected.project.branch_rules.as_ref().unwrap();
+    assert_eq!(branch.project_key, "EXM");
+    assert_eq!(branch.types[0].as_str(), "feat");
     assert_eq!(
         selected.project.forge.repositories,
         ["example-org/example-project"]
@@ -31,6 +34,60 @@ fn selection_is_explicit_and_the_flag_wins_over_the_environment() {
         selected.root()
     );
     assert!(ConfigFolder::select(Some(&missing), Some(&folder)).is_err());
+}
+
+#[test]
+fn selected_branch_templates_refuse_invalid_or_cross_project_fields_by_source() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let path = folder.join(ENTRY);
+    let original: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (field, value, expected) in [
+        ("branch", serde_json::Value::Null, "project.branch"),
+        ("types", serde_json::json!([]), "project.branch.types"),
+        (
+            "types",
+            serde_json::json!(["fix", "fix"]),
+            "project.branch.types",
+        ),
+        ("types", serde_json::json!(["land"]), "project.branch.types"),
+        (
+            "pattern",
+            serde_json::json!("^(feat)/ASMA-<number>-<slug>$"),
+            "project.branch.pattern",
+        ),
+        ("pattern", serde_json::json!(".*"), "project.branch.pattern"),
+        (
+            "commit_pattern",
+            serde_json::json!("^ASMA-<number> <summary>$"),
+            "project.branch.commit_pattern",
+        ),
+        (
+            "commit_pattern",
+            serde_json::Value::Null,
+            "project.branch.commit_pattern",
+        ),
+        (
+            "base_branch",
+            serde_json::json!("../main"),
+            "project.forge.base_branch",
+        ),
+    ] {
+        let mut entry = original.clone();
+        if field == "branch" {
+            entry["project"].as_mapping_mut().unwrap().remove("branch");
+        } else if field == "base_branch" {
+            entry["project"]["forge"][field] = serde_yaml_ng::to_value(value).unwrap();
+        } else {
+            entry["project"]["branch"][field] = serde_yaml_ng::to_value(value).unwrap();
+        }
+        std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+        let error = ConfigFolder::select(Some(&folder), None).unwrap_err();
+        assert_eq!(error.path, path.canonicalize().unwrap());
+        assert!(error.problem.contains(expected), "{error}");
+        assert!(!error.to_string().contains("ASMA"), "{error}");
+    }
 }
 
 #[test]

@@ -122,7 +122,7 @@ verified reader the daemon's placement uses, and writes nothing.
 | Confirmed Jira bindings, key resolution and their evidence | `kontord` |
 | Repositories, pull requests and releases | GitHub |
 | Publication decisions: whether a branch, commit and title match a confirmed binding | `kontord` (append-only attestation ledger) |
-| The `asma/publication-identity` check run and `kontord`-requested squash merges | `kontord`'s GitHub App gateway, when installed and configured |
+| The exact publication-identity check selected by `project.check_runs` and `kontord`-requested squash merges | `kontord`'s GitHub App gateway, when installed and configured |
 | The activated fleet policy and Core Team roster | `kontord` state root: one activation record naming immutable, content-addressed artifacts |
 | Approved experience memory | `kontord`; a Cognee projection is derived and candidate-only |
 | A durable desk seat declared `paseo_direct` | Its operator, in Paseo; `kontord` records and reports the declaration |
@@ -159,10 +159,12 @@ display or backlog code is never a key. Before the ASMA workflow pushes or opens
 a pull request, `kontord` judges the repository, base branch, head branch, head
 commit and title against that binding and records accepted and refused decisions
 alike; the schema refuses any update or delete of a recorded decision (v119).
-When an operator installs the GitHub App and writes `config/github-app.json`, the
-daemon's gateway posts the `asma/publication-identity` check run and performs a
+When an operator installs the GitHub App and supplies `forge/github-app.yml` in
+the explicitly selected YAML config folder, the daemon's gateway posts the exact
+publication-identity name in `project.check_runs` and performs a
 squash merge only after re-judging the pull request's current head, refusing a
-head that moved. Without that file the gateway is inert. See
+head that moved. An App `check_name` must agree with that selection; without the
+App file the gateway is inert. See
 [native naming](docs/NATIVE_NAMING.md#publication-attestation).
 
 ## Consistency model
@@ -608,7 +610,8 @@ schemas.
   credentials.
 - External write identities are narrow and optional. The GitHub App gateway
   expects an App granted only `checks: write`, `pull_requests: read` and
-  `contents: write`; its private key is read from a path `config/github-app.json`
+  `contents: write`; its private key is read from a path the selected folder's
+  `forge/github-app.yml`
   names, never from the document, absent configuration leaves it inert, and a
   present document that does not parse refuses the start. The Jira credential lives
   in the platform keychain under an address scoped to the immutable realm and

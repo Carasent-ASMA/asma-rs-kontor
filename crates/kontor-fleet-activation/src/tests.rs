@@ -203,8 +203,13 @@ fn an_additive_publication_policy_is_verified_without_changing_legacy_manifest_b
         root_repository: root,
         module_repositories: BTreeMap::new(),
         base_branch: ExternalName::parse("main").unwrap(),
+        branch_rules: None,
     });
     let document = bundle.manifest.canonicalize().unwrap();
+    let value: serde_json::Value = serde_json::from_str(document.json()).unwrap();
+    assert!(value["publication_policy"].get("branch_rules").is_none());
+    let decoded: BundleManifest = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.canonicalize().unwrap(), document);
     assert_ne!(document.hash(), legacy.hash());
     bundle.bundle_hash = document.hash().clone();
     private(

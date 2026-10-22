@@ -127,23 +127,25 @@ impl Realm {
     fn seed_graph(&self, project: ProjectId, key: &str, root: &str) {
         self.daemon.state().with_store(|store| {
             let now = kontor_api::now();
-            store
-                .create_project(&NewProject {
-                    id: project,
-                    name: ExternalName::parse(&format!("{key} project")).unwrap(),
-                    root_path: ExternalName::parse(
-                        &self.directory.path().join(root).to_string_lossy(),
-                    )
-                    .unwrap(),
-                    created_at: now,
-                })
-                .unwrap();
+            if store.get_project(project).unwrap().is_none() {
+                store
+                    .create_project(&NewProject {
+                        id: project,
+                        name: ExternalName::parse(&format!("{key} project")).unwrap(),
+                        root_path: ExternalName::parse(
+                            &self.directory.path().join(root).to_string_lossy(),
+                        )
+                        .unwrap(),
+                        created_at: now,
+                    })
+                    .unwrap();
+            }
             let epic = MiniProjectId::generate();
             store
                 .create_mini_project(&NewMiniProject {
                     id: epic,
                     project_id: project,
-                    name: ExternalName::parse("Publication fixture").unwrap(),
+                    name: ExternalName::parse(&format!("{key} publication fixture")).unwrap(),
                     created_at: now,
                 })
                 .unwrap();
@@ -461,6 +463,64 @@ async fn unactivated_edits_publications_and_restart_preserve_authority_and_recei
             .await
             .reasons,
         ["publication_policy_invalid"]
+    );
+}
+
+#[tokio::test]
+async fn selected_branch_narrowing_changes_only_with_the_activated_policy() {
+    let realm = Realm::new("EXM", "example-org", "trunk", true);
+    let first = realm.publish(true);
+    assert!(
+        realm
+            .preview("EXM-2", "example-org/worker", "trunk")
+            .await
+            .accepted
+    );
+    let path = realm.folder.join(ENTRY);
+    let mut entry: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    entry["project"]["branch"]["types"] = serde_yaml_ng::to_value(vec!["fix"]).unwrap();
+    entry["project"]["branch"]["pattern"] = "^(fix)/<KEY>-<number>-<slug>$".into();
+    std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+    let candidate = realm.publish(false);
+    assert_ne!(candidate, first);
+    let realm = realm.restart();
+    assert!(
+        realm
+            .preview("EXM-2", "example-org/worker", "trunk")
+            .await
+            .accepted
+    );
+    assert_eq!(realm.publish(true), candidate);
+    let refused = realm.preview("EXM-2", "example-org/worker", "trunk").await;
+    assert_eq!(refused.reasons, ["branch_type_not_allowed"]);
+    assert_eq!(refused.source_bundle_hash.as_ref(), Some(&candidate));
+    let mut request = realm.request("EXM-2", "example-org/worker", "trunk");
+    request.head_branch = ExternalName::parse("fix/EXM-2-work").unwrap();
+    assert!(
+        realm
+            .daemon
+            .state()
+            .applications()
+            .preview_publication(realm.project, &request)
+            .await
+            .unwrap()
+            .accepted
+    );
+    // Even a confirmed foreign key stored in this project cannot widen its grammar.
+    realm.seed_graph(realm.project, "OTHER", "own");
+    request.head_branch = ExternalName::parse("fix/OTHER-2-work").unwrap();
+    request.title = Some(ExternalName::parse("OTHER-2 Work").unwrap());
+    assert_eq!(
+        realm
+            .daemon
+            .state()
+            .applications()
+            .preview_publication(realm.project, &request)
+            .await
+            .unwrap()
+            .reasons,
+        ["branch_project_mismatch"]
     );
 }
 

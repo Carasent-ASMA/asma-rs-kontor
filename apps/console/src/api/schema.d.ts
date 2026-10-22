@@ -7915,10 +7915,22 @@ export interface components {
          * @enum {string}
          */
         FleetPolicySelectionDto: "activation" | "fleet_yml";
+        /** @description The project's narrowing of the shared core grammar. */
+        FleetProjectBranchRulesDto: {
+            /** @description Anchored commit template; not evidence of an observed commit message. */
+            commit_pattern: string;
+            /** @description Anchored branch template. */
+            pattern: string;
+            /** @description Exact public tracker project key. */
+            project_key: string;
+            /** @description Allowed conventional branch types. */
+            types: string[];
+        };
         /** @description The explicit project publication policy pinned by an orchestration bundle. */
         FleetPublicationPolicyDto: {
             /** @description The only permitted publication base branch. */
             base_branch: string;
+            branch_rules?: null | components["schemas"]["FleetProjectBranchRulesDto"];
             /** @description Exact durable Task.module keys and their additional repository. */
             module_repositories: {
                 [key: string]: string;

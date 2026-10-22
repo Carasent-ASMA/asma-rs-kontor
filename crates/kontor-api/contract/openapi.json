@@ -21766,6 +21766,37 @@
           "fleet_yml"
         ]
       },
+      "FleetProjectBranchRulesDto": {
+        "type": "object",
+        "description": "The project's narrowing of the shared core grammar.",
+        "required": [
+          "project_key",
+          "types",
+          "pattern",
+          "commit_pattern"
+        ],
+        "properties": {
+          "commit_pattern": {
+            "type": "string",
+            "description": "Anchored commit template; not evidence of an observed commit message."
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Anchored branch template."
+          },
+          "project_key": {
+            "type": "string",
+            "description": "Exact public tracker project key."
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed conventional branch types."
+          }
+        }
+      },
       "FleetPublicationPolicyDto": {
         "type": "object",
         "description": "The explicit project publication policy pinned by an orchestration bundle.",
@@ -21780,6 +21811,17 @@
           "base_branch": {
             "type": "string",
             "description": "The only permitted publication base branch."
+          },
+          "branch_rules": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetProjectBranchRulesDto",
+                "description": "Selected branch templates, effective only with this activated policy."
+              }
+            ]
           },
           "module_repositories": {
             "type": "object",

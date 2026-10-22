@@ -17840,6 +17840,14 @@ fn fleet_bundle_manifest_dto(
                     .map(|(module, repository)| (module.to_string(), repository.to_string()))
                     .collect(),
                 base_branch: policy.base_branch.to_string(),
+                branch_rules: policy.branch_rules.as_ref().map(|rules| {
+                    kontor_api::applications::FleetProjectBranchRulesDto {
+                        project_key: rules.project_key.clone(),
+                        types: rules.types.iter().map(ToString::to_string).collect(),
+                        pattern: rules.pattern.clone(),
+                        commit_pattern: rules.commit_pattern.clone(),
+                    }
+                }),
             }
         }),
     }
@@ -47446,6 +47454,12 @@ impl Services {
                 PublicationDecision::refused(PublicationRefusal::ConsumerMismatch),
                 None,
             )
+        } else if let Some(reason) = policy
+            .branch_rules
+            .as_ref()
+            .and_then(|rules| rules.ensure_branch(&branch).err())
+        {
+            (PublicationDecision::refused_branch(reason), None)
         } else {
             match self.resolve_publication_binding_from_policy(project_id, key, &policy)? {
                 resolved if resolved.is_empty() => (PublicationDecision::unconfirmed(), None),

@@ -39,6 +39,9 @@ pub struct ProjectSettings {
     /// Validated authoring projection; publication reads only its activated bundle.
     #[serde(skip)]
     pub publication_policy: Option<kontor_core::publication::PublicationPolicy>,
+    /// Validated selected branch templates; publication uses the activated copy.
+    #[serde(skip)]
+    pub branch_rules: Option<kontor_core::branch::ProjectBranchRules>,
 }
 
 /// Tracker values needed to prevent cross-project selection.
@@ -99,9 +102,13 @@ impl ConfigFolder {
             return Err(refusal(root, "config folder is not a directory"));
         }
         let entry_path = root.join(ENTRY);
-        let mut entry: Entry = read_yaml(&entry_path)?;
         let text = std::fs::read_to_string(&entry_path)
             .map_err(|_| refusal(&entry_path, "config file cannot be read"))?;
+        let branch_rules = crate::project_branch::parse(&text)
+            .map_err(|problem| refusal(&entry_path, problem))?
+            .ok_or_else(|| refusal(&entry_path, "missing project.branch"))?;
+        let mut entry: Entry = read_yaml(&entry_path)?;
+        entry.project.branch_rules = Some(branch_rules);
         entry.project.publication_policy =
             crate::project_policy::parse(&text).map_err(|problem| refusal(&entry_path, problem))?;
         if entry.schema_version != 1 {
@@ -122,7 +129,6 @@ impl ConfigFolder {
                 .bytes()
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
             || project.name.trim().is_empty()
-            || project.forge.base_branch.trim().is_empty()
             || project.forge.repositories.is_empty()
             || project.resource_roots.is_empty()
             || project.check_runs.is_empty()
@@ -142,6 +148,9 @@ impl ConfigFolder {
                 &entry_path,
                 "invalid project identity in orchestration.yml",
             ));
+        }
+        if !kontor_core::branch::valid_base_branch(&project.forge.base_branch) {
+            return Err(refusal(&entry_path, "invalid project.forge.base_branch"));
         }
         let folder = Self {
             root,

@@ -3138,6 +3138,22 @@ pub struct FleetPublicationPolicyDto {
     pub module_repositories: std::collections::BTreeMap<String, String>,
     /// The only permitted publication base branch.
     pub base_branch: String,
+    /// Selected branch templates, effective only with this activated policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_rules: Option<FleetProjectBranchRulesDto>,
+}
+
+/// The project's narrowing of the shared core grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetProjectBranchRulesDto {
+    /// Exact public tracker project key.
+    pub project_key: String,
+    /// Allowed conventional branch types.
+    pub types: Vec<String>,
+    /// Anchored branch template.
+    pub pattern: String,
+    /// Anchored commit template; not evidence of an observed commit message.
+    pub commit_pattern: String,
 }
 
 /// The exact role catalog revision a bundle pins.

@@ -76,6 +76,14 @@ publication_contract:
   runtime: require the requested ProjectId to match the activated policy and an existing Project in the same realm; config loading never creates a Project
   activation: the existing immutable bundle manifest pins the resolved policy and source hashes; authoring edits or unactivated publications never replace authority
 
+branch_contract:
+  types: a nonempty unique subset of kontor-core BranchType, in declared order
+  pattern: anchored `^(type|type)/<KEY>-<number>-<slug>$`, with the declared types in order; a literal matching project.key is also valid
+  commit_pattern: anchored `^<KEY>-<number> <summary>$`, or the matching literal project.key
+  rule: templates narrow the shared grammar; arbitrary regexes and cross-project literals refuse by field name
+  publication: rules are pinned with publication policy in the activated bundle; confirmed task/epic binding remains required
+  commit_evidence: the commit template is validated and pinned; a head SHA alone does not prove a commit message
+
 # The two supervision files are distinct contracts.
 supervision_contract:
   project.supervision: folder-relative autonomous_tpm_v1 TPM cadence profile, read from the selected config folder
