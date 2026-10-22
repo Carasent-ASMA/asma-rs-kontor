@@ -105,10 +105,18 @@ struct Review {
 }
 
 async fn review_realm(slug: &str, review: Option<&str>) -> Review {
+    review_realm_with_selection(slug, review, false).await
+}
+
+async fn review_realm_with_selection(slug: &str, review: Option<&str>, historical: bool) -> Review {
     let world = World::open_empty_with_a_plane().await;
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let project = ensure_governed_project(&world, &format!("/tmp/kontor-{slug}"));
-    select_review_definition(&world, &project, review).await;
+    if historical {
+        prepare_qualification_definition(&world, &project, review, false, true).await;
+    } else {
+        select_review_definition(&world, &project, review).await;
+    }
     let category = first_category(&world).await;
     let name = format!("{slug} epic");
     let applied = Call::post(
@@ -157,6 +165,16 @@ async fn select_qualification_definition(
     project: &str,
     review: Option<&str>,
     leadership: bool,
+) {
+    prepare_qualification_definition(world, project, review, leadership, false).await;
+}
+
+async fn prepare_qualification_definition(
+    world: &World,
+    project: &str,
+    review: Option<&str>,
+    leadership: bool,
+    historical: bool,
 ) {
     let prefix = if leadership {
         "qualification"
@@ -356,6 +374,46 @@ async fn select_qualification_definition(
     .send(world)
     .await;
     assert_eq!(published.status, 200, "{}", published.body);
+    if historical {
+        // New selection refuses this domain before publication. Keep the existing
+        // runtime refusal covered on an explicit pre-domain historical selection.
+        let bundle = harness::DomainSelectionFixture::candidate(world, project_id);
+        let source = kontor_daemon::fleet::FleetSource::at(world.directory.path());
+        assert!(
+            source
+                .publish_bundle(&bundle)
+                .unwrap_err()
+                .to_string()
+                .contains("operational_domain_catalog_mismatch")
+        );
+        world.daemon.state().with_store(|store| {
+            let prior = store
+                .get_project_team_definition_default(project_id)
+                .unwrap()
+                .unwrap();
+            assert!(prior.operational_domain_bundle_hash.is_none());
+            let definition: TeamDefinitionSpec =
+                serde_json::from_value(definition.clone()).unwrap();
+            store
+                .set_project_team_definition_default(
+                    &kontor_core::repository::ProjectTeamDefinitionDefault {
+                        project_id,
+                        expected: Some(prior.definition),
+                        definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
+                            &definition,
+                        )
+                        .unwrap(),
+                        operational_domain_bundle_hash: None,
+                        selected_at: kontor_api::now(),
+                    },
+                    None,
+                )
+                .unwrap();
+        });
+        return;
+    }
+    let _domain_selection =
+        harness::DomainSelectionFixture::activate(world, project_id_of(project));
     let preview = Call::post(
         format!("/v1/projects/{project}/team-definition-selection:preview"),
         &serde_json::json!({"target_definition": {
@@ -1309,7 +1367,7 @@ async fn a_room_role_the_catalog_lacks_refuses_before_anything_is_written() {
         r#"{"slot_id": "judge", "role_code": "ZZZ"}"#,
     );
     assert_ne!(review, PR_REVIEW);
-    let realm = review_realm("prr-uncatalogued", Some(&review)).await;
+    let realm = review_realm_with_selection("prr-uncatalogued", Some(&review), true).await;
     let before = realm.world.fake.calls().len();
     let refused = open(
         &realm,

@@ -6,7 +6,7 @@ use crate::orchestration::{CoreTeamSource, CoreTeamSourceSeat, ResolvedBundle};
 use kontor_fleet_activation::domain::{domain_path, read_domain};
 use std::path::Path;
 
-fn start(root: &Path, folder: &Path) -> crate::Daemon {
+pub(super) fn start(root: &Path, folder: &Path) -> crate::Daemon {
     crate::Daemon::start(
         crate::DaemonConfig::at(root)
             .with_config_dir(folder)
@@ -16,7 +16,10 @@ fn start(root: &Path, folder: &Path) -> crate::Daemon {
     .unwrap()
 }
 
-fn resolve(services: &Services, folder: &Path) -> (ResolvedBundle, ContentHash, ContentHash) {
+pub(super) fn resolve(
+    services: &Services,
+    folder: &Path,
+) -> (ResolvedBundle, ContentHash, ContentHash) {
     let domain = services.purpose_source().unwrap();
     let catalog = &domain.role_catalogs[0];
     let roster = CoreTeamRevision::resolve(

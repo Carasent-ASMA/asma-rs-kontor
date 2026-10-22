@@ -737,6 +737,53 @@ impl FleetSource {
         kontor_fleet_activation::verify_bundle(&self.state_root, bundle_hash)
     }
 
+    /// New project selections use the one verified active bundle, never authoring.
+    pub(crate) fn active_domain_bundle(&self) -> Result<ContentHash, FleetError> {
+        if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            return Err(FleetError::Invalid {
+                rule: "operational_domain_unpinned",
+            });
+        }
+        kontor_fleet_activation::load(&self.state_root)?
+            .record
+            .source_bundle_hash
+            .ok_or(FleetError::Invalid {
+                rule: "operational_domain_unpinned",
+            })
+    }
+
+    /// Serialize selection with the existing activation writer through its local commit.
+    pub(crate) fn with_active_domain_bundle<T>(
+        &self,
+        expected: &ContentHash,
+        apply: impl FnOnce() -> T,
+    ) -> Result<T, FleetError> {
+        let _activation = self.lock();
+        if self.active_domain_bundle()?.as_str() != expected.as_str() {
+            return Err(FleetError::Invalid {
+                rule: "operational_domain_selection_moved",
+            });
+        }
+        self.operational_domain(expected)?;
+        Ok(apply())
+    }
+
+    /// Existing selections read their immutable context without consulting activation.
+    pub(crate) fn operational_domain(
+        &self,
+        hash: &ContentHash,
+    ) -> Result<(BundleManifest, kontor_profiles::OperationalDomainPack), FleetError> {
+        let verified = self.verify_bundle(hash)?;
+        let domain = kontor_fleet_activation::domain::read_domain(
+            &self.state_root,
+            &verified.manifest,
+            &verified.roster,
+        )?;
+        Ok((verified.manifest, domain))
+    }
+
     /// One published bundle manifest, verified as a canonical manifest at its
     /// content address. The read operation reports it beside the record.
     ///

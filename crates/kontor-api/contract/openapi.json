@@ -14618,6 +14618,13 @@
           "receipt"
         ],
         "properties": {
+          "operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact selected domain context, absent only on historical readback."
+          },
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "Durable apply/replay receipt."
@@ -25953,6 +25960,13 @@
               }
             ]
           },
+          "current_operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current domain context, absent on historical selections."
+          },
           "preview_hash": {
             "type": "string",
             "description": "Apply-bound comparison hash."
@@ -25973,6 +25987,13 @@
           "target_definition": {
             "$ref": "#/components/schemas/PinnedTeamDefinitionDto",
             "description": "Exact published target."
+          },
+          "target_operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Verified activated bundle bound to this proposed selection."
           }
         }
       },

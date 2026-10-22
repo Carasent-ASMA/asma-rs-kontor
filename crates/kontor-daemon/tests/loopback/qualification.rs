@@ -52,6 +52,8 @@ fn pin(realm: &Review) -> kontor_core::spec::TeamDefinitionSnapshot {
 }
 
 async fn select(realm: &Review, definition: &TeamDefinitionSpec, key: &str) {
+    let _domain_selection =
+        harness::DomainSelectionFixture::activate(&realm.world, realm.project_id);
     let preview = Call::post(
         format!(
             "/v1/projects/{}/team-definition-selection:preview",

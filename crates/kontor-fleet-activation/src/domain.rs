@@ -158,9 +158,35 @@ pub fn validate_domain(
     let resolved: Envelope = roster
         .deserialize()
         .map_err(|_| invalid("operational_domain_roster_mismatch"))?;
-    if roster.hash() != &manifest.core_team_revision_hash
-        || resolved.value.catalog_hash != manifest.role_catalog.content_hash
-        || resolved.value.seats.iter().any(|seat| {
+    if roster.hash() != &manifest.core_team_revision_hash {
+        return Err(invalid("operational_domain_roster_mismatch"));
+    }
+    validate_roster(&domain, &manifest.role_catalog, &resolved.value)?;
+    Ok(domain)
+}
+
+/// Reconcile an explicitly published or frozen roster with the same domain/catalog.
+/// This checks purposes already present; it never derives or adds them.
+///
+/// # Errors
+/// Missing purposes, a different catalog or a contradictory role/slot refuse.
+pub fn validate_roster(
+    domain: &OperationalDomainPack,
+    pin: &super::RoleCatalogPin,
+    roster: &CoreTeamRevision,
+) -> Result<(), FleetError> {
+    let catalog = domain
+        .role_catalogs
+        .iter()
+        .find(|catalog| catalog.catalog_id == pin.catalog_id && catalog.version == pin.version)
+        .ok_or_else(|| invalid("operational_domain_catalog_mismatch"))?;
+    if catalog
+        .canonicalize()
+        .map_err(|_| invalid("operational_domain_invalid"))?
+        .hash()
+        != &pin.content_hash
+        || roster.catalog_hash != pin.content_hash
+        || roster.seats.iter().any(|seat| {
             seat.role.catalog_id != catalog.catalog_id
                 || seat.role.catalog_revision != catalog.version
                 || catalog
@@ -185,15 +211,14 @@ pub fn validate_domain(
             &domain.delivery.control_role_code,
         ),
     ] {
-        if !resolved
-            .value
+        let seat = roster
             .seat_for_purpose(purpose)
-            .is_ok_and(|seat| &seat.role.role_code == code)
-        {
+            .map_err(|_| invalid("role_purpose_unpinned"))?;
+        if &seat.role.role_code != code {
             return Err(invalid("operational_domain_purpose_mismatch"));
         }
     }
-    Ok(domain)
+    Ok(())
 }
 
 /// Read and verify exact domain bytes through a pinned manifest and roster.

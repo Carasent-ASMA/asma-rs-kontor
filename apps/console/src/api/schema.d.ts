@@ -4610,6 +4610,8 @@ export interface components {
         };
         /** @description Newly selected default plus its durable receipt. */
         AppliedProjectTeamDefinitionSelectionDto: {
+            /** @description Exact selected domain context, absent only on historical readback. */
+            operational_domain_bundle_hash?: string | null;
             /** @description Durable apply/replay receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Exact selected default. */
@@ -9803,6 +9805,8 @@ export interface components {
         /** @description Exact comparison used to select the default for future epics. */
         ProjectTeamDefinitionSelectionPreviewDto: {
             current_definition?: null | components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Current domain context, absent on historical selections. */
+            current_operational_domain_bundle_hash?: string | null;
             /** @description Apply-bound comparison hash. */
             preview_hash: string;
             /** @description Owning project. */
@@ -9816,6 +9820,8 @@ export interface components {
             snapshot_cursor: number;
             /** @description Exact published target. */
             target_definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Verified activated bundle bound to this proposed selection. */
+            target_operational_domain_bundle_hash?: string | null;
         };
         /** @description What moving a project's default Team Definition is previewed against. */
         ProjectTeamDefinitionSelectionPreviewRequest: {

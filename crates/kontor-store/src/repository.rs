@@ -24693,63 +24693,11 @@ impl TeamDefinitionRepository for SqliteStore {
         expected_operational_domain_bundle_hash: Option<&ContentHash>,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        team_definition_in(&transaction, selection.project_id, &selection.definition)?;
-        // Compare-and-swap. The apply binds the selection its preview saw, in
-        // the same transaction that writes, so a bootstrap that observed "no
-        // default" cannot silently overwrite an explicit selection made between
-        // its read and its write.
-        let current: Option<(String, i64, String, Option<String>)> = transaction
-            .query_row(
-                "SELECT definition_id, version, canonical_hash, operational_domain_bundle_hash
-                 FROM project_team_definition_defaults WHERE project_id = ?1",
-                params![selection.project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let current_domain = current.as_ref().and_then(|row| row.3.as_deref());
-        if current_domain != expected_operational_domain_bundle_hash.map(ContentHash::as_str) {
-            return Err(conflict(
-                "project team definition default",
-                "operational_domain_selection_moved",
-            ));
-        }
-        let current = current
-            .map(|(definition_id, version, hash, _)| {
-                Ok::<_, RepositoryError>(TeamDefinitionSnapshot {
-                    definition_id: TeamDefinitionId::parse(&definition_id)?,
-                    version: read_version(version)?,
-                    canonical_hash: ContentHash::parse(&hash)?,
-                })
-            })
-            .transpose()?;
-        if current.as_ref() != selection.expected.as_ref() {
-            return Err(conflict(
-                "project team definition default",
-                "the selection changed since the preview it was applied from",
-            ));
-        }
-        transaction
-            .execute(
-                "INSERT INTO project_team_definition_defaults
-                     (project_id, definition_id, version, canonical_hash, selected_at, operational_domain_bundle_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(project_id) DO UPDATE SET
-                     definition_id = excluded.definition_id,
-                     version = excluded.version,
-                     canonical_hash = excluded.canonical_hash,
-                     selected_at = excluded.selected_at,
-                     operational_domain_bundle_hash = excluded.operational_domain_bundle_hash",
-                params![
-                    selection.project_id.to_string(),
-                    selection.definition.definition_id.to_string(),
-                    version_column(selection.definition.version),
-                    selection.definition.canonical_hash.as_str(),
-                    text(selection.selected_at),
-                    selection.operational_domain_bundle_hash.as_ref().map(ContentHash::as_str),
-                ],
-            )
-            .map_err(backend)?;
+        set_project_team_definition_default_in(
+            &transaction,
+            selection,
+            expected_operational_domain_bundle_hash,
+        )?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -26260,5 +26208,204 @@ impl SqliteStore {
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(changed)
+    }
+}
+
+fn set_project_team_definition_default_in(
+    transaction: &Transaction<'_>,
+    selection: &ProjectTeamDefinitionDefault,
+    expected_operational_domain_bundle_hash: Option<&ContentHash>,
+) -> RepositoryResult<()> {
+    team_definition_in(transaction, selection.project_id, &selection.definition)?;
+    // Compare-and-swap. The apply binds the selection its preview saw, in
+    // the same transaction that writes, so a bootstrap that observed "no
+    // default" cannot silently overwrite an explicit selection made between
+    // its read and its write.
+    let current: Option<(String, i64, String, Option<String>)> = transaction
+        .query_row(
+            "SELECT definition_id, version, canonical_hash, operational_domain_bundle_hash
+                 FROM project_team_definition_defaults WHERE project_id = ?1",
+            params![selection.project_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let current_domain = current.as_ref().and_then(|row| row.3.as_deref());
+    if current_domain != expected_operational_domain_bundle_hash.map(ContentHash::as_str) {
+        return Err(conflict(
+            "project team definition default",
+            "operational_domain_selection_moved",
+        ));
+    }
+    let current = current
+        .map(|(definition_id, version, hash, _)| {
+            Ok::<_, RepositoryError>(TeamDefinitionSnapshot {
+                definition_id: TeamDefinitionId::parse(&definition_id)?,
+                version: read_version(version)?,
+                canonical_hash: ContentHash::parse(&hash)?,
+            })
+        })
+        .transpose()?;
+    if current.as_ref() != selection.expected.as_ref() {
+        return Err(conflict(
+            "project team definition default",
+            "the selection changed since the preview it was applied from",
+        ));
+    }
+    transaction
+            .execute(
+                "INSERT INTO project_team_definition_defaults
+                     (project_id, definition_id, version, canonical_hash, selected_at, operational_domain_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                     definition_id = excluded.definition_id,
+                     version = excluded.version,
+                     canonical_hash = excluded.canonical_hash,
+                     selected_at = excluded.selected_at,
+                     operational_domain_bundle_hash = excluded.operational_domain_bundle_hash",
+                params![
+                    selection.project_id.to_string(),
+                    selection.definition.definition_id.to_string(),
+                    version_column(selection.definition.version),
+                    selection.definition.canonical_hash.as_str(),
+                    text(selection.selected_at),
+                    selection.operational_domain_bundle_hash.as_ref().map(ContentHash::as_str),
+                ],
+            )
+            .map_err(backend)?;
+    Ok(())
+}
+
+impl SqliteStore {
+    /// Select a domain-bound project default and retain its exact result atomically.
+    ///
+    /// # Errors
+    /// Stale project, roster, definition or domain context rolls back the receipt and selection.
+    pub fn select_project_team_definition(
+        &self,
+        selection: &ProjectTeamDefinitionDefault,
+        expected_domain: Option<&ContentHash>,
+        expected_roster: Option<&ContentHash>,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<CommandReceipt> {
+        let intent = envelope.peek(self.realm_id())?;
+        let transaction = self.begin()?;
+        ensure_atomic_local_intent_matches(
+            intent,
+            selection.project_id,
+            CommandKind::SelectProjectTeamDefinition,
+            &AggregateRef::Project {
+                project_id: selection.project_id,
+            },
+            intent.target_revision,
+        )?;
+        if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
+            ensure_atomic_local_replay(&existing, intent)?;
+            self.project_team_definition_selection_result(&existing)?;
+            return Ok(existing);
+        }
+        let revision: i64 = transaction
+            .query_row(
+                "SELECT revision FROM projects WHERE id = ?1",
+                params![selection.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        revision_of(revision)?.expect("project", intent.target_revision)?;
+        let roster = self
+            .get_current_core_team(selection.project_id)?
+            .map(|stored| {
+                let revision = kontor_teams::CoreTeamRevision {
+                    version: stored.version,
+                    catalog_hash: stored.catalog_hash,
+                    seats: serde_json::from_value(stored.seats).map_err(|_| {
+                        conflict("core team", "operational_domain_roster_unreadable")
+                    })?,
+                };
+                revision
+                    .canonicalize()
+                    .map(|document| document.hash().clone())
+                    .map_err(RepositoryError::from)
+            })
+            .transpose()?;
+        if roster.as_ref() != expected_roster {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_roster_moved",
+            ));
+        }
+        if selection.operational_domain_bundle_hash.is_none() {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_unpinned",
+            ));
+        }
+        set_project_team_definition_default_in(&transaction, selection, expected_domain)?;
+        let mut value: serde_json::Value = intent.intent.deserialize()?;
+        value["result"] =
+            serde_json::json!({"intent_hash": intent.intent.hash(), "selection": selection});
+        let payload = CanonicalDocument::from_value(&value)?;
+        let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
+        transaction.commit().map_err(backend)?;
+        Ok(receipt)
+    }
+
+    /// Exact original selection for replay, including after later defaults change.
+    ///
+    /// # Errors
+    /// Legacy receipts without a frozen result, tampering or cross-project results refuse.
+    pub fn project_team_definition_selection_result(
+        &self,
+        receipt: &CommandReceipt,
+    ) -> RepositoryResult<ProjectTeamDefinitionDefault> {
+        let (json, hash) =
+            local_or_legacy_command_result(&self.connection, receipt)?.ok_or_else(|| {
+                conflict(
+                    "project team definition default",
+                    "operational_domain_selection_result_unavailable",
+                )
+            })?;
+        #[derive(serde::Deserialize)]
+        struct ResultPayload {
+            intent_hash: ContentHash,
+            selection: ProjectTeamDefinitionDefault,
+        }
+        let mut value: serde_json::Value = stored_payload(&json, &hash)?.deserialize()?;
+        let result = value
+            .as_object_mut()
+            .and_then(|object| object.remove("result"))
+            .ok_or_else(|| {
+                conflict(
+                    "project team definition default",
+                    "operational_domain_selection_result_mismatch",
+                )
+            })?;
+        if CanonicalDocument::from_value(&value)?.hash() != receipt.intent.hash() {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_selection_result_mismatch",
+            ));
+        }
+        let payload: ResultPayload = serde_json::from_value(result).map_err(|_| {
+            conflict(
+                "project team definition default",
+                "operational_domain_selection_result_mismatch",
+            )
+        })?;
+        if payload.intent_hash != *receipt.intent.hash()
+            || payload.selection.project_id != receipt.project_id
+            || receipt.kind != CommandKind::SelectProjectTeamDefinition
+            || receipt.target
+                != (AggregateRef::Project {
+                    project_id: receipt.project_id,
+                })
+            || payload.selection.operational_domain_bundle_hash.is_none()
+        {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_selection_result_mismatch",
+            ));
+        }
+        Ok(payload.selection)
     }
 }

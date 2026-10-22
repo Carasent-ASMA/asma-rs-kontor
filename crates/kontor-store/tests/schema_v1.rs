@@ -827,7 +827,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v140 freezes task checkout intents and their first Git readback.
     // v141 adds nullable domain context to existing selection/epic wrappers,
     // without backfill.
-    assert_eq!(SCHEMA_VERSION, 141);
+    // v142 admits domain selection to the existing exact local-result ledger.
+    assert_eq!(SCHEMA_VERSION, 142);
 }
 
 #[test]

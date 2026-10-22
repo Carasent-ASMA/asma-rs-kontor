@@ -594,10 +594,24 @@ generation 18 to preserve these fields; older generation/claimed database
 combinations cannot discard or invent them. Historical unpinned record hashes
 remain unchanged. This does not create or restore an installation backup.
 
-General operational-domain runtime selection remains a later WP-08 checkpoint:
-project selection and epic application must resolve and authorize these wrapper
-pins before selected domain semantics can govern work. The passive persistence
-fields and artifact publication alone do not change runtime topology selection.
+Explicit project Team Definition selection requires a verified activated domain
+bundle. The published definition and topology must be exact members of that
+domain. A stored catalog under the same identity must agree; an existing Core
+Team must retain its frozen purposes under that same catalog and delivery.
+Preview binds the current and proposed domain bundle hashes and exact roster,
+including when the definition is unchanged. Prompt-only or delivery-only edits
+therefore require publication, activation and a new selection preview. Apply
+compares the project, roster and selection again and commits the selection and
+its exact command result atomically. Schema 140 extends the existing exact-intent
+local-result ledger to this command; it adds no table or pointer. Replay reads
+that original result even if
+the project default or activation later changes; it never re-selects current
+YAML. Historical receipts without a frozen result refuse
+`operational_domain_selection_result_unavailable` instead of inventing one.
+
+Atomic new-epic copying and general operational-domain runtime/admission consumers
+remain a later WP-08 checkpoint. Project selection and artifact publication
+alone do not change runtime topology selection.
 Legacy compiled fixtures remain available to explicit embedding/tests until
 that cleanup is complete.
 

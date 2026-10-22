@@ -619,6 +619,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         }),
     )
     .await;
+    let domain_selection =
+        harness::DomainSelectionFixture::activate(&world, ProjectId::parse(&project).unwrap());
     let selection = ok(
         &lead,
         "kontor_project_team_definition_selection_preview",
@@ -642,6 +644,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         }),
     )
     .await;
+
+    drop(domain_selection);
 
     // 3. An account profile a run could be pinned to.
     let account = ok(
