@@ -9242,6 +9242,7 @@ impl Services {
         self.preview_hash(&serde_json::json!({
             "schema_version": 1,
             "operation": "promotion_preview",
+            "roster": &roster.revision,
             "source": session.id.to_string(),
             "source_revision": session.revision.get(),
             "core_team_version": roster.revision.version.get(),
@@ -9263,6 +9264,8 @@ impl Services {
         self.preview_hash(&serde_json::json!({
             "schema_version": 1,
             "operation": "epic_roster_upgrade_preview",
+            "source_roster": &current.revision,
+            "target_roster": target,
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
             "bootstrap": bootstrap,
@@ -10618,6 +10621,8 @@ impl Services {
         let mut digest = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_preview",
+            // Effects are a summary; only the resolved roster binds every seat fact.
+            "roster": proposed,
             "project": project_id.to_string(),
             // The revision this would become and the exact catalog it resolved
             // against are both in the digest: the same seats resolved against a
@@ -10636,8 +10641,7 @@ impl Services {
                 .collect::<Vec<_>>(),
         });
         // A bundle-sourced preview names its bundle, so its hash authorizes
-        // only a bundle-sourced apply; an explicit-seat preview hash is
-        // unchanged.
+        // only a bundle-sourced apply, in addition to its exact resolved roster.
         if let Some(bundle) = source_bundle_hash {
             digest["source_bundle_hash"] = serde_json::json!(bundle.as_str());
         }
@@ -48696,6 +48700,10 @@ mod realm_spec_tests;
 #[cfg(test)]
 #[path = "applications/realm_pack_tests.rs"]
 mod realm_pack_tests;
+
+#[cfg(test)]
+#[path = "applications/roster_hash_tests.rs"]
+mod roster_hash_tests;
 
 #[cfg(test)]
 mod tests {

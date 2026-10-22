@@ -1700,6 +1700,13 @@ those exact bytes keeps its pin, is never retargeted, and its leadership launch
 is refused. A schema_version 1 record keeps its exact shape and behaviour and
 selects no roster.
 
+Core Team preview/apply hashes bind the complete resolved roster, including
+its exact ordered seat metadata, in addition to version, catalog and effects.
+Promotion binds the complete frozen roster; an explicit roster upgrade binds
+both the exact source and target rosters and the epic-side revision. An effects
+summary alone cannot authorize replacing metadata under the same version and
+catalog. A stale preview refuses before publication or effects.
+
 A project's Core Team can be published from a published bundle through the
 existing `kontor_core_team_preview` and `kontor_core_team_apply`: name
 `source_bundle_hash` instead of `seats` (exactly one of the two). Both steps
