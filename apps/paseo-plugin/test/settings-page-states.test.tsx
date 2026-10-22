@@ -154,16 +154,16 @@ describe("Settings presentation states", () => {
     const screen = mount({ state: ready });
     // Not editing: the revision is in the summary's label, not on the page.
     expect(screen.text()).not.toContain("Saved revision");
-    expect(screen.labels()).toContain("Saved revision rev-a. Grouping hierarchy · appearance system · 1 conversation with explicit plan links · 2 display mappings");
+    expect(screen.labels()).toContain("Saved revision rev-a. Layout grouped · grouping hierarchy · appearance system · 1 conversation with explicit plan links · 2 display mappings");
     const hashed = mount({ state: { ...ready, revision: "b079931e8f788330f264a50cfa7948a9fd1e87aebd41172a73ff9fdf6ed547db" } as typeof ready });
-    expect(hashed.labels().some((label) => label.startsWith("Saved revision b079931e8f78…. Grouping"))).toBe(true); expect(hashed.labels().join(" ")).not.toContain("2a73ff9f");
+    expect(hashed.labels().some((label) => label.startsWith("Saved revision b079931e8f78…. Layout"))).toBe(true); expect(hashed.labels().join(" ")).not.toContain("2a73ff9f");
     expect(hashed.text()).not.toContain("b079931e8f78");
     expect(mount({ state: state("ready", { values: DEFAULT_ORGANIZATION_SETTINGS } as Partial<Props["state"]>) }).text()).not.toMatch(/0 (conversations|display mappings)/);
-    expect(screen.text()).toContain("Grouping hierarchy · appearance system");
+    expect(screen.text()).toContain("Layout grouped · grouping hierarchy · appearance system");
     expect(screen.text()).toContain("1 conversation with explicit plan links · 2 display mappings");
     expect(screen.text()).not.toContain("Changes apply only after Save.");
     screen.press("Edit presentation");
-    expect(screen.text()).toContain("Editing revision rev-a"); expect(screen.text()).not.toContain("Grouping hierarchy · appearance system");
+    expect(screen.text()).toContain("Editing revision rev-a"); expect(screen.text()).not.toContain("Layout grouped · grouping hierarchy · appearance system");
     expect(screen.text()).toContain("Saved revision rev-a"); expect(screen.text()).toContain("Shared by every client of this host. Changes apply only after Save.");
     expect(ready.save).not.toHaveBeenCalled(); expect(ready.reset).not.toHaveBeenCalled();
   });

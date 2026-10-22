@@ -8,7 +8,7 @@ describe("proposed Current default overlay", () => {
   it("keeps Current and All in the native tree; Clear widens Current to All", () => {
     const view=readSessionView("current-overlay");
     for(const status of ["current","all"] as const){expect(isResultMode({...view,status})).toBe(false);expect(sessionFilterCount({...view,status})).toBe(status === "current" ? 1 : 0);}
-    const result={...view,status:"attention" as const};expect(isResultMode(result)).toBe(true);expect(clearSessionFilterPatch(result).status).toBe("all");
+    const result={...view,status:"attention" as const};expect(isResultMode(result)).toBe(false);expect(clearSessionFilterPatch(result).status).toBe("all");
     expect(clearSessionFilterPatch(view).status).toBe("all");
     expect(clearSessionFilterPatch({...view,status:"all"})).toEqual({});
   });

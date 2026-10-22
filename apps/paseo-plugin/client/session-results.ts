@@ -6,7 +6,7 @@ type Mappings = Parameters<typeof organizationScope>[1];
 
 /** Native desk results name their actual project and workspace. Other results follow
  * the workstream/epic view; declared associations never create native parent levels. */
-export type SessionProvenance = { readonly parts: readonly string[]; readonly desk: boolean; readonly workspace: string; readonly nativeDesk?: { readonly id: string; readonly name: string; readonly workspaceId: string | null } };
+export type SessionProvenance = { readonly parts: readonly string[]; readonly desk: boolean; readonly workspace: string; readonly association?: string; readonly nativeDesk?: { readonly id: string; readonly name: string; readonly workspaceId: string | null } };
 
 /** Whether the session names a Paseo workspace; the tree otherwise groups it by its working directory. */
 export function inWorkspace(entry: DirectoryEntry): boolean {
@@ -19,7 +19,7 @@ export function sessionProvenance(entry: DirectoryEntry, mappings: Mappings): Se
   const desk = scope.epic === UNASSIGNED_EPIC && isDeskWork(entry, mappings);
   // Say a working directory is not a workspace rather than pass it off as one.
   const workspace = inWorkspace(entry) ? workspaceLabel(entry) : entry.cwd ? `No workspace · ${entry.cwd}` : "No workspace";
-  if (native) return { parts: [native.name, workspace], desk: true, workspace, nativeDesk: native };
+  if (native) return { parts: [native.name, workspace], desk: true, workspace, nativeDesk: native, association: `Association ${scope.workstream} · ${epicLabel(scope.epic)}` };
   return { parts: desk ? [`${scope.workstream} desk`, workspace] : [scope.workstream, epicLabel(scope.epic), workspace], desk, workspace };
 }
 

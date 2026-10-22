@@ -138,8 +138,15 @@ project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.
 
-Sessions supports **Desks & workstreams**, **Desks & workspaces**, Role and Flat
-views. Native durable desks use the host's project ID, then its actual workspace
+Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
+lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
+**Desks & workspaces** and **Role**; switching back restores the last grouping.
+Search, state, task, assignment and association filters apply in both layouts,
+and changing layout or grouping preserves those filters and the sort. Grouped
+search/state/task matches open their branches temporarily; these disclosures do
+not overwrite saved expansion. Flat rows retain native placement and resolved
+associations, with Details and Show in tree beside the existing session action.
+Native durable desks use the host's project ID, then its actual workspace
 IDs, then their sessions in both tree views. Every desk session stays in its
 native workspace, including sessions with different or conflicting epic, desk or
 workstream declarations. Those declarations remain searchable/filterable
@@ -152,6 +159,15 @@ projects and workspaces remain separate by native ID.
 Outside native desks, the workstream/epic tree and repeated workspace-kind/role
 prefix groups keep their existing behavior. Explicit epic contexts and workstream
 association filters explore declared associations without changing native placement.
+
+Filters also offers searchable **Desk / workspace scope** and **Epic scope**.
+An exact desk choice uses the native project ID, distinguishing identical names;
+workstream choices keep canonical association keys, and epic choices use the same
+label/mapping/Jira-capture resolver as Details. Conflicting or missing epic
+evidence matches **Epic unknown**, never a title-derived epic. All three scope
+dimensions compose with the other filters. Active scopes remain visible above
+the list, can be removed individually, and **Clear scope** removes just these
+dimensions. Empty selections and unavailable keys stay explicit until cleared.
 
 The workstream association choices list only values resolved from sessions in the
 current scope: session mapping, workspace mapping, `desk` label, `workstream`
@@ -543,8 +559,12 @@ never turns on a filter. While the projection is loading or unavailable it is
 kept, never shown as unset; **Forget on this device** removes it. A change of
 Working as ends an Assigned to me or Unknown assignment **Show in tree**.
 **Clear filters** returns to All work and Any assignment and keeps Working as,
-the sort and grouping; **Reset view** returns to My work, Any assignment,
-Current order and the default grouping, keeping Working as.
+the sort, layout and grouping; **Reset view** returns to My work, Any assignment,
+Current order and the saved layout/grouping, keeping Working as. Layout is an
+optional field in the existing version 1 host organization document. Legacy
+Flat grouping reads as Flat with Desks & workstreams remembered; reading it
+does not migrate the stored document. Settings retains its draft/revision
+conflict flow and merges layout independently from grouping.
 
 The facts come from one operator-owned file,
 `$PASEO_HOME/plugin-config/kontor/responsibility.json`
@@ -587,7 +607,8 @@ data.
 
 **Sort** in Filters keeps **Current order** by default (state order, the saved
 arrangement and Role order). **Last changed at**, **Created at** and **Title**
-order the sessions within each group and in results; groups keep their order.
+order the entire filtered Flat list, or the sessions within each Grouped group;
+groups keep their identity and order.
 Missing or invalid times sort last, and ties break on session ID. An explicit
 sort ignores the saved session order without rewriting it, and Arrange stays
 off until Current order is chosen again.

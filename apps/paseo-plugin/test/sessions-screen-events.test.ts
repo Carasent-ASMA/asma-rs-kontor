@@ -1,3 +1,4 @@
+import { SessionScopeSelector } from "../client/session-scope-selector";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type {
@@ -594,6 +595,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it.each([true, false])("updates the same row marker through native transitions without changing its accessible name or adding controls, compact=%s", compact => {
+    patchSessionView("host-a", { layout: "flat" });
     patchSessionView("host-a", { query: "", grouping: "flat", status: "all", includeArchived: false });
     renderScreen(undefined, compact);
     const transitions = [
@@ -874,29 +876,24 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("selects an empty native desk by ID, distinguishes duplicate names and retains selection across rename", () => {
-    patchSessionView("host-a", { query: "", advancedOpen: true, shortcut: null, toolbarOpen: true });
+    patchSessionView("host-a", { query: "", layout: "grouped", advancedOpen: true, shortcut: null, toolbarOpen: true });
     const native: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces"> = { projects: [{ id: "prj_one", name: "DESK • RESEARCH" }, { id: "prj_two", name: "DESK • RESEARCH" }], workspaces: [] };
     renderScreen(undefined, false, "web", native);
-    const openScope = () => { (findByTestID(harness.current(), "sessions-scope").props.onPress as () => void)(); harness.flush(); };
-    openScope();
-    const choices = walk(harness.current()).filter((element) => element.type === MenuItem && element.props.label === "DESK • RESEARCH");
-    expect(choices.map((choice) => choice.props.detail)).toEqual(["prj_one", "prj_two"]);
-    (choices[0]!.props.onPress as () => void)(); harness.flush();
+    const selector = () => walk(harness.current()).find((node) => node.type === SessionScopeSelector && node.props.id === "scope")!.props as Parameters<typeof SessionScopeSelector>[0];
+    expect(selector().options.filter((choice) => choice.label === "DESK • RESEARCH").map((choice) => choice.detail)).toEqual(["prj_one", "prj_two"]);
+    selector().onChange("desk-project:prj_one"); harness.flush();
     expect(readSessionView("host-a").shortcut).toBe("desk-project:prj_one");
     expect(sessionRowIds()).toEqual([]);
-    expect(findByTestID(harness.current(), "sessions-scope").props.value).toBe("DESK • RESEARCH");
     native.workspaces = [{ id: "wks_empty_desk", name: "CSW • empty native desk", projectKey: "prj_one", projectName: "DESK • RESEARCH" }];
     harness.flush();
     expect(groupRows().filter((row) => row.group.kind === "workspace").map((row) => row.group.label)).toEqual(["CSW • empty native desk"]);
-    native.projects = [{ id: "prj_one", name: "DESK • DOCS" }, native.projects![1]!];
-    harness.flush();
-    expect(findByTestID(harness.current(), "sessions-scope").props.value).toBe("DESK • DOCS");
+    native.projects = [{ id: "prj_one", name: "DESK • DOCS" }, native.projects![1]!]; harness.flush();
+    expect(selector().options.find((choice) => choice.key === selector().selected)?.label).toBe("DESK • DOCS");
     expect(readSessionView("host-a").shortcut).toBe("desk-project:prj_one");
-    openScope();
-    expect(walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "DESK • DOCS")!.props.selected).toBe(true);
   });
 
   it.each([true, false])("keeps scoped native desk search, Details and Show in tree on one workspace (compact %s)", (compact) => {
+    patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: nativeDeskSessions() };
     patchSessionView("host-a", { query: "asma-99102 desk-epic-b", grouping: "hierarchy", shortcut: "desk-project:prj_desk", status: "all", scrollOffset: 390, toolbarOpen: true });
     const { scrollToOffset } = renderScreen(undefined, compact, compact ? "ios" : "web", { projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES, projectId: "prj_desk" });
@@ -1002,7 +999,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(save).toHaveBeenLastCalledWith({ expandedGroups: { [epic.group.key]: true } });
   });
 
-  it("lists a state filter's matches flat without opening or saving any branch", () => {
+  it("filters Grouped without saving the temporary matching branches", () => {
     directory.state = { ...(directory.state as object), entries: [
       sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
       sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
@@ -1013,21 +1010,24 @@ describe("SessionsScreen toolbar events", () => {
     expect(findByTestID(harness.current(), "sessions-collapse-all").props.disabled).toBe(false);
     setStateFilter("idle");
     expect(sessionRowIds()).toEqual(["quiet"]);
-    expect(findByTestID(harness.current(), "sessions-collapse-all").props.disabled).toBe(true);
+    expect(findByTestID(harness.current(), "sessions-collapse-all").props.disabled).toBe(false);
     setStateFilter("all");
     expect(sessionRowIds()).toEqual([]);
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
   });
 
   it("shows a desk result in its workspace under the desk, and names a missing epic elsewhere", () => {
+    patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: [
       sessionEntry("desk", { status: "idle", labels: { desk: "Adam" } }),
       sessionEntry("loose", { status: "running", title: "SWE • loose", labels: { workstream: "Kontor" } }),
       sessionEntry("loose-2", { status: "idle", title: "SWE • second", labels: { workstream: "Kontor" } }),
     ] };
     patchSessionView("host-a", { query: "" });
+    patchSessionView("host-a", { layout: "grouped" });
     renderScreen();
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:Epic unknown"]);
+    (findByTestID(harness.current(), "sessions-layout-flat").props.onPress as () => void)(); harness.flush();
     setStateFilter("idle");
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
@@ -1036,7 +1036,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}:${row.expanded}`).slice(0, 2)).toEqual(["workstream:Adam:true", "workspace:Workspace:true"]);
     expect(sessionRowIds()).toContain("desk");
     // Role grouping names the missing epic in each session's context too.
-    harness.reset(); patchSessionView("host-a", { grouping: "role", status: "all" }); renderScreen();
+    harness.reset(); patchSessionView("host-a", { layout: "grouped", grouping: "role", status: "all" }); renderScreen();
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["SWE:false", "No role:false"]);
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
@@ -1044,6 +1044,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const save = vi.fn(async () => true);
     directory.state = { ...(directory.state as object), entries: [
       sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
@@ -1072,11 +1073,13 @@ describe("SessionsScreen toolbar events", () => {
     expect(testIDs(harness.current())).not.toContain("sessions-peek");
     expect(sessionRowIds()).toEqual(["quiet"]);
     setStateFilter("all");
+    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
-    expect(save).not.toHaveBeenCalled();
+    expect(save.mock.calls).toEqual([[{ layout: "grouped", grouping: "hierarchy" }]]);
   });
 
   it("on a short compact screen, Show in tree keeps one Back row above the list, and Back brings the toolbar and filters back", () => {
+    patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: [
       sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
       sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
@@ -1117,6 +1120,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("places a session shown in the tree again once the tree rows are measured, so a list header cannot push it out of view", () => {
+    patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: [
       sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
       sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
@@ -1171,6 +1175,7 @@ describe("SessionsScreen toolbar events", () => {
   }
 
   it("retries a failed scroll to a tree row once, on that row", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, quietRow, indexes } = showQuietInTree();
     expect(quietRow()).toBe(43);
     failed();
@@ -1181,6 +1186,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("drops a scroll retry once Back has swapped the tree for the shorter results list", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, back, indexes } = showQuietInTree();
     failed();
     back();
@@ -1190,6 +1196,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("drops a scroll retry whose row a collapse removed, though the list mode is unchanged", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, indexes } = showQuietInTree();
     failed();
     // The workspace closes before the retry: three rows remain, and the list still shows the same session's tree.
@@ -1200,6 +1207,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("moves a scroll retry with its row when a live update shifts the tree", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, quietRow, indexes } = showQuietInTree();
     failed();
     addBusySibling();
@@ -1209,6 +1217,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("drops a scroll retry when Back and Show in tree place the same session again first", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, back, showInTree, indexes } = showQuietInTree();
     failed();
     back();
@@ -1223,6 +1232,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("drops a scroll retry when the screen moves to another host showing the same tree", () => {
+    patchSessionView("host-a", { layout: "flat" });
     let activeHost = "host-a";
     const { failed, indexes } = showQuietInTree(() => {
       harness.render(() =>
@@ -1253,6 +1263,7 @@ describe("SessionsScreen toolbar events", () => {
   }
 
   it("places a session shown in the tree on its row as that row stands when the first pass runs", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { back, showInTree, quietRow, indexes } = showQuietInTree();
     back();
     showInTree();
@@ -1263,6 +1274,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("drops the settle pass when a collapse removes the session's row, though the list mode is unchanged", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { back, showInTree, indexes } = showQuietInTree();
     back();
     showInTree();
@@ -1275,6 +1287,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("moves the settle pass with the session's row when a live update shifts the tree", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { back, showInTree, indexes } = showQuietInTree();
     back();
     showInTree();
@@ -1285,6 +1298,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("drops a scroll retry in the Role view when a collapse removes its row", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, quietRow, indexes } = showQuietInTree(() => { patchSessionView("host-a", { grouping: "role" }); renderScreen(); });
     expect([groupRows().map((row) => `${row.group.label}:${row.expanded}`), quietRow()]).toEqual([["No role:true"], 41]);
     failed();
@@ -1295,6 +1309,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("moves a scroll retry in the Role view with its row when a new session joins the role", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const { failed, quietRow, indexes } = showQuietInTree(() => { patchSessionView("host-a", { grouping: "role" }); renderScreen(); });
     failed();
     addBusySibling();
@@ -1509,6 +1524,7 @@ describe("SessionsScreen toolbar events", () => {
   }
 
   it.each([[true, "3h ago"], [false, "Updated 3 hours ago"]] as const)("gives each result its Updated time and its details beside the row, and keeps open and Show in tree (compact %s)", (compact, shown) => {
+    patchSessionView("host-a", { layout: "flat" });
     const screen = renderResults(compact);
     expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
     const drawn = screen.drawn("found");
@@ -1544,6 +1560,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it.each([true, false])("lets compact results that share a role and task wrap their titles to where they differ, and keeps desktop titles on one line (compact %s)", (compact) => {
+    patchSessionView("host-a", { layout: "flat" });
     // Synthetic sessions whose titles differ only after the shared role and task.
     const titles = { first: "SWE • ASMA-1 • first subject", second: "SWE • ASMA-1 • second subject" };
     const screen = renderResults(compact, "subject", Object.entries(titles).map(([id, title]) => sessionEntry(id, { title })));
@@ -1563,6 +1580,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("gives rows the Updated time itself, not an age, while the list is not live", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const screen = renderResults(true);
     expect(screen.result("found").props.live).toBe(true);
     directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
@@ -1574,6 +1592,7 @@ describe("SessionsScreen toolbar events", () => {
     // A tree row is told the same, and its details button sits beside it.
     harness.unmount();
     harness.reset();
+    patchSessionView("host-a", { layout: "grouped" });
     renderResults(true, "");
     directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
     harness.flush();
@@ -1763,6 +1782,7 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("opens a result's Role header for Show in tree without saving it, and the header is closed again after Back", () => {
+    patchSessionView("host-a", { layout: "flat" });
     const save = vi.fn(async (_patch: object) => true);
     renderRoles(qaEntries(), { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
     setStateFilter("idle");
@@ -1775,22 +1795,28 @@ describe("SessionsScreen toolbar events", () => {
     harness.flush();
     expect(sessionRowIds()).toEqual(["n"]);
     setStateFilter("all");
+    openMobileFilters();
+    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
+    closeMobileFilters();
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["QA:false"]);
     expect(save.mock.calls.filter(([patch]) => "expandedGroups" in patch)).toEqual([]);
   });
 
-  it("returns to the tree position it left when the search is cleared", () => {
+  it("returns to the remembered tree position when layout returns to Grouped", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("busy", { status: "running" }), sessionEntry("quiet")] };
     patchSessionView("host-a", { query: "" });
     const { scrollToOffset } = renderScreen(undefined, false);
     scroll(480);
     const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("quiet");
+    (findByTestID(harness.current(), "sessions-layout-flat").props.onPress as () => void)(); harness.flush();
     expect(readSessionView("host-a")).toMatchObject({ treeOffset: 480, scrollOffset: 0 });
     vi.runOnlyPendingTimers();
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 0, animated: false });
     scroll(40);
     search("");
+    expect(readSessionView("host-a").layout).toBe("flat");
+    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
     vi.runOnlyPendingTimers();
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 480, animated: false });
     expect(readSessionView("host-a")).toMatchObject({ scrollOffset: 480, treeOffset: undefined });
@@ -1927,9 +1953,10 @@ function renderCompact(options: ScreenOptions = {}) {
   );
 }
 
-/** Renders the session leaf the list would draw for the first session row. */
+/** Exercise the protected native leaf renderer; Flat result presentation has separate cases. */
 function renderSessionLeaf(): ElementLike & { readonly type: unknown } {
-  const row = listRows().find((candidate) => candidate.kind === "session")!;
+  const found = listRows().find((candidate) => candidate.kind === "session" || candidate.kind === "result")!;
+  const row = found.kind === "result" ? { kind: "session", entry: found.entry, parentKey: "flat", depth: 0 } : found;
   const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
   const leaf = renderItem({ item: row }).props.children as ElementLike & { readonly type: (props: unknown) => ElementLike };
   return leaf.type(leaf.props) as ElementLike & { readonly type: unknown };
@@ -2003,6 +2030,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(sessionRowIds().sort()).toEqual(["closed","error","old"]);
   });
   it("keeps a compact title and context together, with its Updated time, wrapped report metadata and state badge", () => {
+    patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
       status: "running", pendingPermissionCount: 1, archivedAt: "2026-10-18T11:00:00.000Z", workspaceName: "RSW • review",
@@ -2015,7 +2043,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(title.props.numberOfLines).toBe(3);
     // The context is nested inside the title's text, which wraps to three lines, not a line of its own.
     expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
-    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · RSW • review · Project · Archived");
+    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · Other work › Epic unknown › RSW • review · Archived");
     const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
     // The Updated value stays untruncated; model/report metadata can wrap beneath the title.
     const age = findByTestID(leaf, "sessions-row-age");
@@ -2068,6 +2096,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(shown[0]).not.toBe(shown[1]);
   });
   it("leaves wide layouts unchanged, including after a compact session", () => {
+    patchSessionView("host-a", { layout: "flat" });
     patchSessionView("host-a", { query: "", grouping: "flat", ...toolbarOpenPatch(false) });
     let compact = false;
     harness.render(() => SessionsScreen({
@@ -2152,83 +2181,29 @@ describe("SessionsScreen mobile filter page", () => {
     expect(frame().maxHeight).toBe(132);
     expect(walk(findByTestID(harness.current(), "sessions-options")).some((element) => element.type === SessionsLegend)).toBe(true);
   });
-  it("chooses Workspace scope and Group by from compact selects that keep every choice, mark the current one and return focus", () => {
+  it("keeps searchable scope independent from conditional Group by and Layout on compact", () => {
     const save = vi.fn(async () => true);
-    const organization = {
-      state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true },
-      save,
-    } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
-    directory.state = { ...(directory.state as object), entries: [sessionEntry("desk", { labels: { desk: "Ops" } }), sessionEntry("epic-work")] };
-    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true });
-    renderScreen(organization, true);
-    openMobileFilters();
-    const select = (id: string) => findByTestID(harness.current(), id).props;
-    const menus = () => walk(harness.current()).filter((element) => /^sessions-(scope|grouping)-menu$/.test(String(element.props.testID))).map((element) => element.props.testID);
-    const items = () => walk(harness.current()).filter((element) => typeof element.props.onPress === "function" && typeof element.props.selected === "boolean" && "tall" in element.props);
-    const choose = (label: string) => { (items().find((item) => item.props.label === label)!.props.onPress as () => void)(); harness.flush(); };
-    // React Native Web drops accessibilityState, so the open state reaches the DOM only as ARIA.
-    const ariaExpanded = (id: string) => {
-      const element = findByTestID(harness.current(), id) as ElementLike & { readonly type: (props: unknown) => unknown };
-      return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props["aria-expanded"];
-    };
-    const scopeFocus = vi.fn(), groupingFocus = vi.fn();
-    (select("sessions-scope").anchor as RefLike).current = { focus: scopeFocus };
-    (select("sessions-grouping").anchor as RefLike).current = { focus: groupingFocus };
-    expect([select("sessions-scope").value, select("sessions-scope").expanded, menus()]).toEqual(["All Paseo workspaces", false, []]);
-    expect(select("sessions-filter-all").count).toBe(2);
-
-    (select("sessions-scope").onPress as () => void)(); harness.flush();
-    expect([select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus()]).toEqual([true, true, ["sessions-scope-menu"]]);
-    // The menu frame is clamped to the screen (390x320: 130pt for five 44pt choices), so the choices scroll inside it.
-    const choices = (id: string) => {
-      const menu = findByTestID(harness.current(), `sessions-${id}-menu`);
-      const children = [menu.props.children].flat() as (ElementLike & { readonly type: unknown })[];
-      expect(children.map((child) => child.type)).toEqual(["ScrollView"]);
-      expect(children[0]!.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
-      return walk(children[0]).filter((element) => "tall" in element.props).map((element) => element.props.label);
-    };
-    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Outside desks"]);
-    // Durable desks lives only here; the four others repeat the desk shortcuts.
-    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Outside desks", false]]);
-    choose("Durable desks");
-    expect([select("sessions-scope").value, select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus(), scopeFocus.mock.calls.length]).toEqual(["Durable desks", false, false, [], 1]);
+    const organization = { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true, status: "all" });
+    renderScreen(organization, true); openMobileFilters();
+    const selector = () => walk(harness.current()).find((node) => node.type === SessionScopeSelector && node.props.id === "scope")!.props as Parameters<typeof SessionScopeSelector>[0];
+    expect(selector().options.map((choice) => choice.label)).toEqual(["Durable desks", "PR Review desk", "Adam desk", "Outside desks"]);
+    selector().onOpen(true); harness.flush();
+    expect(readSessionView("host-a").scopeOpen).toBe("desk");
+    selector().onChange("Desks"); harness.flush();
     expect(readSessionView("host-a").shortcut).toBe("Desks");
-    expect(select("sessions-filter-all").count).toBe(1);
-    expect([0, 1, 2, 3].map((index) => select(`sessions-shortcut-${index}`).active)).toEqual([false, false, false, false]);
-    // A desk shortcut picks the same scope, and the select follows it.
-    (select("sessions-shortcut-2").onPress as () => void)(); harness.flush();
-    expect(select("sessions-scope").value).toBe("Adam desk");
-
-    // Escape, a tap outside or Android back close through onClose without a choice.
-    (select("sessions-scope").onPress as () => void)(); harness.flush();
-    (findByTestID(harness.current(), "sessions-scope-menu").props.onClose as () => void)(); harness.flush();
-    expect([select("sessions-scope").value, select("sessions-scope").expanded, menus()]).toEqual(["Adam desk", false, []]);
-
-    (select("sessions-grouping").onPress as () => void)(); harness.flush();
-    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["Desks & workstreams", true], ["Desks & workspaces", false], ["Role", false], ["Flat", false]]);
-    expect(choices("grouping")).toEqual(["Desks & workstreams", "Desks & workspaces", "Role", "Flat"]);
-    choose("Role");
-    expect([select("sessions-grouping").value, menus(), groupingFocus.mock.calls.length]).toEqual(["Role", [], 1]);
-    expect(save).toHaveBeenCalledWith({ grouping: "role" });
-
-    // Menus keep no Tab, so the other select is reachable with one open; it swaps its menu in without a close, as a new
-    // opening against its own trigger, and back again.
-    const opening = (id: string) => AnchoredMenu(findByTestID(harness.current(), `sessions-${id}-menu`).props as Parameters<typeof AnchoredMenu>[0]);
-    (select("sessions-grouping").onPress as () => void)(); harness.flush();
-    const grouping = opening("grouping");
-    (select("sessions-scope").onPress as () => void)(); harness.flush();
-    expect([menus(), opening("scope").props.anchor]).toEqual([["sessions-scope-menu"], select("sessions-scope").anchor]);
-    expect(opening("scope").key).not.toBe(grouping.key);
-    (select("sessions-grouping").onPress as () => void)(); harness.flush();
-    expect([menus(), opening("grouping").key]).toEqual([["sessions-grouping-menu"], grouping.key]);
-    (findByTestID(harness.current(), "sessions-grouping-menu").props.onClose as () => void)(); harness.flush();
-
-    // A menu left open closes with the options panel and does not come back when it reopens.
-    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    (findByTestID(harness.current(), "sessions-grouping").props.onPress as () => void)(); harness.flush();
+    const items = walk(harness.current()).filter((node) => node.type === MenuItem);
+    expect(items.map((node) => node.props.label)).toEqual(["Desks & workstreams", "Desks & workspaces", "Role"]);
+    (items.find((node) => node.props.label === "Role")!.props.onPress as () => void)(); harness.flush();
+    expect(save).toHaveBeenCalledWith({ grouping: "role", layout: "grouped" });
+    (findByTestID(harness.current(), "sessions-layout-flat").props.onPress as () => void)(); harness.flush();
+    expect(testIDs(harness.current())).not.toContain("sessions-grouping");
+    expect(readSessionView("host-a")).toMatchObject({ layout: "flat", grouping: "role", shortcut: "Desks" });
+    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
+    expect(findByTestID(harness.current(), "sessions-grouping").props.value).toBe("Role");
     closeMobileFilters();
-    expect(menus()).toEqual([]);
-    openMobileFilters();
-    expect([select("sessions-scope").expanded, menus()]).toEqual([false, []]);
+    expect(readSessionView("host-a")).toMatchObject({ layout: "grouped", grouping: "role", shortcut: "Desks" });
   });
 
   it("keeps source warnings visible outside the closed compact toolbar", () => {
@@ -2364,7 +2339,7 @@ describe("SessionsScreen mobile filter page", () => {
       closeMobileFilters();
     }
     expect(readSessionView(scope)).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false, membership: "sessions",
-      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 70, peek: null });
+      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 0, peek: null });
     expect(sessionRowIds().sort()).toEqual(["match", "second"]);
     const cleared = readSessionView(scope);
     clear(); harness.flush();
@@ -2838,5 +2813,106 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     openFilters();
     expect(findByTestID(harness.current(), "sessions-working-as").props.value).toBe("Alex Example");
     expect([view.sort, view.sortDirection, view.grouping]).toEqual([undefined, undefined, undefined]);
+  });
+});
+
+describe("independent Layout, Group by and exact scope", () => {
+  beforeEach(() => {
+    vi.useFakeTimers(); vi.setSystemTime(Date.parse("2026-10-21T13:00:00Z"));
+    clearSessionViews({ work: "all", status: "all" }); harness.reset();
+    patchSessionView("host-a", { advancedOpen: true, toolbarOpen: true });
+  });
+  afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+  const press = (id: string) => { (findByTestID(harness.current(), id).props.onPress as () => void)(); harness.flush(); };
+  const scopeControl = (id: string) => walk(harness.current()).find((node) => node.type === SessionScopeSelector && node.props.id === id)!;
+  const chooseGroup = (label: string) => {
+    press("sessions-grouping");
+    const menu = findByTestID(harness.current(), "sessions-grouping-choices");
+    (walk(menu).find((node) => node.props.label === label)!.props.onPress as () => void)(); harness.flush();
+  };
+
+  it.each([320, 390, 1280])("retains the exact desk/workstream/epic + search/status/task/person intersection across layouts at %s", (width) => {
+    const compact = width < 600;
+    const projection = responsibilitySchema.parse({ schema: "kontor/responsibility@1", realm: "tracker.example", generatedAt: "2026-10-21T12:00:00Z", expiresAt: "2026-10-22T12:00:00Z",
+      provenance: { collector: "collect-responsibility@1", selection: ["ASMA-10", "ASMA-100"], complete: true, workstreams: null },
+      people: [{ accountId: "person-a", displayName: "Person Example", active: true, accountType: "atlassian" }],
+      issues: [{ key: "ASMA-10", type: "Epic", level: 1, parent: null, assignee: "person-a", workstreams: [] },
+        { key: "ASMA-100", type: "Epic", level: 1, parent: null, assignee: "person-a", workstreams: [] }], workstreams: [] });
+    const base = { projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "w_adam", workspaceName: "ADAM", title: "QA • selected topic", labels: { workstream: "alpha", epic: "ASMA-10", "asma.task": "ASMA-11" } };
+    const selected = sessionEntry("selected", base);
+    const entries = [selected, sessionEntry("twin", { ...base, projectKey: "prj_twin" }),
+      sessionEntry("wrong-stream", { ...base, labels: { ...base.labels, workstream: "alphabet" } }),
+      sessionEntry("wrong-epic", { ...base, labels: { ...base.labels, epic: "ASMA-100" } }),
+      sessionEntry("wrong-state", { ...base, status: "running" }), sessionEntry("wrong-search", { ...base, title: "QA • different" }),
+      sessionEntry("wrong-task", { ...base, labels: { ...base.labels, "asma.task": "ASMA-110" } })];
+    const save = vi.fn(async (_patch: object) => true);
+    patchSessionView("host-a", { layout: "grouped", shortcut: "desk-project:prj_desk", streams: ["alpha"], epic: { kind: "known", key: "ASMA-10" },
+      query: "selected topic", status: "idle", task: { jira: "ASMA-11", kontorId: null, label: "ASMA-11" }, assignment: "person:person-a", sort: "title", sortDirection: "desc" });
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" }, theme: { colors } as PluginTheme, params: {},
+      projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES,
+      directory: { state: { ...emptyDirectoryState(), status: "ready", entries, inventoryComplete: true, lastUpdatedAt: 0 }, refresh: vi.fn() },
+      responsibility: { status: "ready", projection, revision: "r1", readAt: "2026-10-21T12:59:00Z", diagnostics: [] },
+      organization: { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "r1", saving: false, saveError: null, save: async () => true, reset: async () => true, reload: async () => {} }, save },
+    } as Parameters<typeof SessionsScreen>[0]));
+    ((harness.current() as ElementLike).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width, height: 800 } } }); harness.flush();
+    const original = readSessionView("host-a");
+    expect(sessionRowIds()).toEqual(["selected"]);
+    if (compact) openMobileFilters();
+    for (const grouping of ["Role", "Desks & workspaces", "Desks & workstreams"]) {
+      chooseGroup(grouping);
+      if (compact) closeMobileFilters();
+      expect(sessionRowIds()).toEqual(["selected"]);
+      if (compact) openMobileFilters();
+      press("sessions-layout-flat");
+      expect(testIDs(harness.current())).not.toContain("sessions-grouping");
+      if (compact) closeMobileFilters();
+      expect(sessionRowIds()).toEqual(["selected"]);
+      expect(listRows().map((row) => row.kind)).toEqual(["result"]);
+      const drawn = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: unknown) => ElementLike)({ item: listRows()[0] });
+      expect(drawn.props.entry).toMatchObject(selected);
+      expect(drawn.props.provenance).toMatchObject({ parts: ["DESK • ADAM", "ADAM"], nativeDesk: { id: "prj_desk", workspaceId: "w_adam" }, association: "Association alpha · ASMA-10" });
+      if (compact) openMobileFilters();
+      press("sessions-layout-grouped");
+      expect(readSessionView("host-a")).toMatchObject({ query: original.query, status: original.status, shortcut: original.shortcut, streams: original.streams, epic: original.epic, task: original.task, assignment: original.assignment, sort: original.sort, sortDirection: original.sortDirection });
+    }
+    if (compact) closeMobileFilters();
+    expect(save.mock.calls.every(([patch]) => Object.keys(patch).every((key) => key === "layout" || key === "grouping"))).toBe(true);
+    expect(readSessionView("host-b").epic).toBeUndefined();
+  });
+
+  it("sorts the whole Flat list, while Grouped keeps identities and sorts its own leaves with stable ties and missing times", () => {
+    const entries = [sessionEntry("z", { labels: { epic: "ASMA-1" }, updatedAt: "2026-10-20T00:00:00Z" }),
+      sessionEntry("a", { labels: { epic: "ASMA-1" }, updatedAt: "2026-10-20T00:00:00Z" }),
+      sessionEntry("newest", { labels: { epic: "ASMA-2" }, updatedAt: "2026-10-21T00:00:00Z" }),
+      sessionEntry("missing", { labels: { epic: "ASMA-2" }, updatedAt: "invalid" })];
+    directory.state = { ...emptyDirectoryState(), status: "ready", entries, inventoryComplete: true, lastUpdatedAt: 0 };
+    patchSessionView("host-a", { layout: "grouped", sort: "updated", sortDirection: "desc" });
+    renderScreen(); expandAll();
+    const groups = groupRows().map((row) => row.group.key);
+    expect(sessionRowIds()).toEqual(["a", "z", "newest", "missing"]);
+    press("sessions-layout-flat"); expect(sessionRowIds()).toEqual(["newest", "a", "z", "missing"]);
+    press("sessions-sort-asc"); expect(sessionRowIds()).toEqual(["a", "z", "newest", "missing"]);
+    press("sessions-layout-grouped");
+    expect(groupRows().map((row) => row.group.key)).toEqual(groups);
+    expect(sessionRowIds()).toEqual(["a", "z", "newest", "missing"]);
+  });
+
+  it("keeps unavailable scopes explicit, removes one dimension, and clears scope without clearing filters or presentation", () => {
+    directory.state = { ...emptyDirectoryState(), status: "ready", entries: nativeDeskSessions(), inventoryComplete: true, lastUpdatedAt: 0 };
+    patchSessionView("host-a", { layout: "flat", grouping: "role", query: "LSA", sort: "title", shortcut: "desk-project:prj_gone", streams: ["gone"], epic: { kind: "known", key: "ASMA-404" } });
+    renderScreen(undefined, false, "web", { projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES });
+    expect(sessionRowIds()).toEqual([]);
+    expect(findByTestID(harness.current(), "sessions-remove-desk").props.label).toContain("Unavailable native desk");
+    expect(findByTestID(harness.current(), "sessions-remove-streams").props.label).toContain("Unavailable (gone)");
+    expect(findByTestID(harness.current(), "sessions-remove-epic").props.label).toContain("ASMA-404 (unavailable)");
+    expect(scopeControl("epic").props.selected).toBe("known:ASMA-404");
+    press("sessions-remove-epic"); expect(readSessionView("host-a").epic).toBeNull();
+    expect(readSessionView("host-a").streams).toEqual(["gone"]);
+    press("sessions-clear-scope");
+    expect(readSessionView("host-a")).toMatchObject({ shortcut: null, streams: null, epic: null, query: "LSA", sort: "title", layout: "flat", grouping: "role" });
+    expect(sessionRowIds().length).toBeGreaterThan(0);
+    (scopeControl("epic").props.onChange as (key: string) => void)("unknown"); harness.flush();
+    expect(readSessionView("host-a").epic).toEqual({ kind: "unknown" });
+    expect(sessionRowIds().sort()).toEqual(["desk-asw", "desk-csw", "desk-plan", "desk-unlabelled", "twin"]);
   });
 });

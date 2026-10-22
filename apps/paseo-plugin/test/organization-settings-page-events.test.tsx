@@ -54,6 +54,18 @@ function mount() {
 }
 beforeEach(() => { model.slots = []; model.cursor = 0; });
 describe("Settings page draft callbacks", () => {
+  it("retains grouping through Flat and reapplies only layout over concurrent grouping edits", async () => {
+    const screen = mount();
+    screen.click("Flat");
+    expect(screen.action("Role")).toBeUndefined();
+    screen.click("Grouped"); screen.click("Role"); screen.click("Flat");
+    screen.click("Grouped"); expect(screen.action("Role").props.selected).toBe(true);
+    screen.click("Discard draft"); screen.click("Edit presentation"); screen.click("Flat");
+    screen.publish({ ...screen.saved().values, grouping: "role", appearance: "dark" });
+    screen.click("Reapply local changes to latest saved values");
+    screen.click("Save preferences"); await screen.settle();
+    expect(screen.saved().values).toMatchObject({ layout: "flat", grouping: "role", appearance: "dark" });
+  });
   it.each(["workstream", "epic"] as const)("saves a JSON-valid cleared %s while retaining the other field", async (field) => {
     const screen = mount(); screen.clear(`Display ${field}`, "   "); screen.click("Save preferences");
     await Promise.resolve();
@@ -70,7 +82,7 @@ describe("Settings page draft callbacks", () => {
   });
   it("rejects an opening revision after a remote publication, retains the draft and explicitly reapplies onto the new revision", async () => {
     const screen = mount();
-    screen.clear("Display workstream", "Local review desk"); screen.click("role");
+    screen.clear("Display workstream", "Local review desk"); screen.click("Role");
     expect(screen.text()).toContain("Editing revision rev-a");
     const remote: OrganizationSettings = { ...screen.saved().values, appearance: "dark", favorites: ["remote-session"], expandedGroups: { "remote-group": true }, siblingOrder: { "remote-parent": ["second", "first"] }, planAssociations: { "remote-session": ["remote-plan"] }, displayMappings: { "session:native": { workstream: "Adam", epic: "ASMA-2" }, "workspace:other": { workstream: "Remote QA", epic: "ASMA-3" } } };
     // Rerender the actual page with B while its existing hook slots retain the local A draft.
@@ -79,7 +91,7 @@ describe("Settings page draft callbacks", () => {
     expect(screen.text()).toContain("Editing revision rev-a · newer saved values exist; this draft must be reviewed");
     expect(screen.input("Display workstream").props.value).toBe("Local review desk");
     expect(screen.input("Display epic").props.value).toBe("ASMA-1");
-    expect(screen.action("role").props.selected).toBe(true); expect(screen.action("system").props.selected).toBe(true);
+    expect(screen.action("Role").props.selected).toBe(true); expect(screen.action("system").props.selected).toBe(true);
 
     screen.click("Save preferences"); await screen.settle();
     expect(screen.text()).toContain("Save failed: conflict");
@@ -87,7 +99,7 @@ describe("Settings page draft callbacks", () => {
     expect(screen.text()).toContain("Editing revision rev-a");
     expect(screen.input("Display workstream").props.value).toBe("Local review desk");
     expect(screen.input("Display epic").props.value).toBe("ASMA-1");
-    expect(screen.action("role").props.selected).toBe(true);
+    expect(screen.action("Role").props.selected).toBe(true);
     expect(screen.save).toHaveBeenCalledTimes(1); expect(screen.save.mock.calls[0]![1]).toBe("rev-a");
     expect(await screen.save.mock.results[0]!.value).toBe(false);
     expect(screen.saved()).toEqual({ revision: "rev-b", values: remote });
@@ -97,13 +109,13 @@ describe("Settings page draft callbacks", () => {
     expect(screen.text()).toContain("Local edits reapplied. Review the draft, then save against the latest revision.");
     expect(screen.input("Display workstream").props.value).toBe("Local review desk");
     expect(screen.input("Display epic").props.value).toBe("ASMA-2");
-    expect(screen.action("role").props.selected).toBe(true); expect(screen.action("dark").props.selected).toBe(true);
+    expect(screen.action("Role").props.selected).toBe(true); expect(screen.action("dark").props.selected).toBe(true);
     expect(screen.saved()).toEqual({ revision: "rev-b", values: remote });
     expect(screen.save).toHaveBeenCalledTimes(1);
 
     screen.click("Save preferences"); await screen.settle();
     expect(screen.text()).toContain("Preferences saved on this host."); expect(screen.text()).not.toContain("Saved revision");
-    expect(screen.input("Saved revision rev-c. Grouping role · appearance dark · 1 conversation with explicit plan links · 2 display mappings")).toBeDefined();
+    expect(screen.input("Saved revision rev-c. Layout grouped · grouping role · appearance dark · 1 conversation with explicit plan links · 2 display mappings")).toBeDefined();
     expect(screen.text()).not.toContain("Editing revision"); expect(screen.text()).not.toContain("Save failed:");
     expect(screen.save).toHaveBeenCalledTimes(2); expect(screen.save.mock.calls[1]![1]).toBe("rev-b");
     expect(await screen.save.mock.results[1]!.value).toBe(true);
@@ -113,6 +125,6 @@ describe("Settings page draft callbacks", () => {
     screen.click("Edit presentation"); screen.click(`Map session: ${screen.props.entries[0]!.title}`);
     expect(screen.input("Display workstream").props.value).toBe("Local review desk");
     expect(screen.input("Display epic").props.value).toBe("ASMA-2");
-    expect(screen.action("role").props.selected).toBe(true); expect(screen.action("dark").props.selected).toBe(true);
+    expect(screen.action("Role").props.selected).toBe(true); expect(screen.action("dark").props.selected).toBe(true);
   });
 });
