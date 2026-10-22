@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -51,6 +54,7 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => (
 
 import { SessionsScreen, SlimToolbar } from "../client/sessions-screen";
 import { SessionLifecycleDialog } from "../client/session-lifecycle-view";
+import { createLifecycleService, type LifecycleClient } from "../server/session-lifecycle";
 import { DEFAULT_RECOVERY_TARGET, TAKEOVER_LIMIT, type LifecycleRow, type UnresolvedRef } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
 import { clearSessionViews, patchSessionView } from "../client/session-view-store";
@@ -139,7 +143,8 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     unresolved = [{ reviewId: review("archive", [SA]).id, agentId: SA }];
     executing.shift()!(archived(SA, "unconfirmed", UNCONFIRMED)); await settle();
     expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith(UNCONFIRMED); expect(fake.toast.show).not.toHaveBeenCalled();
-    expect(listedIds()).not.toContain(SA); expect(fake.refresh).toHaveBeenCalledTimes(1);
+    // Settled: only SA leaves; the live, complete directory is not walked again.
+    expect(listedIds()).not.toContain(SA); expect(listedIds()).toEqual(expect.arrayContaining([SWE, OTHER])); expect(fake.refresh).not.toHaveBeenCalled();
     expect(lineText()).toBe("1 archive not confirmed"); expect(checkAgain()?.props.disabled).toBe(false);
 
     (archiveX(SWE).props.onPress as () => void)(); await settle();
@@ -161,6 +166,29 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item").map(([, input]) => input)).toEqual([{ reviewId: review("archive", [SA]).id, agentId: SA }]);
     expect(count("sessions.lifecycle-execute-item")).toBe(before); expect(before).toBe(2);
     expect(recoveryLine()).toBeUndefined();
+  });
+
+  // The walk is the fallback for a directory without a complete live stream, judged when the archive settles.
+  const notLive = { live: false, inventoryComplete: false, staleReason: "Live updates are unavailable; the inventory may be incomplete." };
+  it.each([
+    ["stays live and complete", {}, {}, 0],
+    ["loses its live stream before the archive settles", {}, { status: "stale", ...notLive }, 1],
+    ["gains its live stream before the archive settles", notLive, {}, 0],
+    ["has no live stream", notLive, notLive, 1],
+    ["is live but its inventory is not complete", { inventoryComplete: false }, { inventoryComplete: false }, 1],
+    ["keeps its complete inventory but drops its live stream", {}, { live: false }, 1],
+    ["is marked stale though its stream is live and complete", {}, { status: "stale" }, 1],
+  ] as const)("changes only the archived row and walks again only without a complete live stream: directory %s", async (_case, atPress, atSettle, walks) => {
+    const base = fake.state as object;
+    fake.state = { ...base, ...atPress };
+    mount(layout); await settle();
+    press(archiveX(SA)); await settle();
+    fake.state = { ...base, ...atSettle }; harness.flush();
+    const before = fake.refresh.mock.calls.length;
+    executing.shift()!(archived(SA, "closed", "Archived. An exact-ID read shows its runtime closed. Durable history and files remain with the host.")); await settle();
+    expect(fake.refresh.mock.calls.length - before).toBe(walks);
+    expect(listedIds()).not.toContain(SA); expect(listedIds()).toEqual(expect.arrayContaining([SWE, OTHER]));
+    expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith(`Archived Session ${SA}.`); expect(fake.toast.error).not.toHaveBeenCalled(); expect(dialog()).toBeUndefined();
   });
 
   // SA's X leaves an unconfirmed archive; the durable owner review is what Details and Check both name.
@@ -321,5 +349,47 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     executing.shift()!(row(OTHER, { outcome: "blocked", message: "Fixture refusal." })); await settle();
     expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith("Fixture refusal."); expect(listedIds()).toContain(OTHER);
     expect(archiveX(OTHER).props).toMatchObject({ pending: false, disabled: false });
+  });
+
+  it.each([
+    ["an already-archived target whose exact read fails", () => Promise.reject(new Error("Timeout")), "unknown", "unknown", "Unknown: Native read failed: Timeout. Absence is not confirmed.", false],
+    ["an already-archived target whose exact read confirms absence", () => Promise.resolve(null), "missing", "missing", null, false],
+    // 139ce565 saved "missing" for an unlisted target whose read failed; hosts still hold such receipts (AUD r3).
+    ["an unlisted target whose exact read failed, as 139ce565 saved it", () => Promise.reject(new Error("Timeout")), "missing", "unknown", "Unknown: Native read failed: Timeout. Absence is not confirmed.", true],
+  ] as const)("reads back %s, from Resume's last receipt, as exactly that (QA1-FAST1-R2-P2-01)", async (_, refresh, stored, status, unknown, base) => {
+    // The receipt is the real service's own record of the X's preview and execute, so the dialog shows what the host saved.
+    const root = await mkdtemp(join(tmpdir(), "kontor-archive-x-receipt-"));
+    const records = base ? [] : [{ id: SA, title: `Session ${SA}`, provider: "codex", cwd: "/fixture", status: "closed", archivedAt: "2026-10-22", labels: {} }];
+    const files = async () => new Map(await Promise.all((await readdir(root)).map(async (name) => [name, await readFile(join(root, name), "utf8")] as const)));
+    let archives = 0;
+    const client = { agents: {
+      list: async (options?: { filter?: { includeArchived?: boolean } }) => ({ requestId: "fixture", pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+        entries: records.filter((record) => options?.filter?.includeArchived || !record.archivedAt).map((agent) => ({ agent, project: null })) }),
+      ref: () => ({ refresh, archive: async () => { archives++; return { archivedAt: "2026-10-22" }; }, send: async () => undefined, timeline: { refetch: async () => ({ entries: [], error: null }) } }),
+    }, providers: { snapshot: async () => ({ requestId: "fixture", generatedAt: "now", entries: [] }) } } as unknown as LifecycleClient;
+    try {
+      const service = createLifecycleService(client, root), receipt = await service.preview({ action: "archive", scope: "filtered", agentIds: [SA], target: DEFAULT_RECOVERY_TARGET });
+      await service.execute(receipt.id, SA);
+      if (base) {
+        // That build's review and blocked result differ from this one's only in the stored status.
+        const rewritten = [...await files()].filter(([, bytes]) => bytes.includes('"nativeStatus":"unknown"'));
+        for (const [name, bytes] of rewritten) await writeFile(join(root, name), bytes.replace('"nativeStatus":"unknown"', '"nativeStatus":"missing"'));
+        expect(rewritten.length).toBe(2);
+      }
+      expect((await service.read(receipt.id))!.rows[0]).toMatchObject({ nativeStatus: stored, availability: { state: status }, eligible: status === "missing" });
+      fake.rpc["sessions.lifecycle-review"] = (input) => service.read(input.reviewId as string | undefined);
+      const saved = await files();
+      mount(layout); await settle(); fake.calls = [];
+      press(resumeControls()[0]); harness.flush();
+      const body = () => { const shown = dialog()!; return walk((shown.type as (props: unknown) => unknown)(shown.props)); };
+      press(body().find((element) => element.props.label === "Read last action receipt"));
+      // The restore reads real files, so wait for its review rather than a fixed number of ticks.
+      await vi.waitFor(() => { harness.flush(); expect((dialog()!.props.lifecycle as { review: unknown; busy: boolean })).toMatchObject({ review: { id: receipt.id }, busy: false }); }, { timeout: 5_000 });
+      const texts = body().flatMap((element) => element.type === "Text" ? [String(element.props.children)] : []);
+      expect(texts).toContain(`${SA} · ${status}`);
+      if (unknown) { expect(texts).toContain(unknown); expect(texts.join("\n")).not.toMatch(/missing/i); }
+      expect(["sessions.lifecycle-preview", "sessions.lifecycle-execute-item", "sessions.lifecycle-reconcile-item"].map(count)).toEqual([0, 0, 0]); expect(archives).toBe(0);
+      expect(await files()).toEqual(saved);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

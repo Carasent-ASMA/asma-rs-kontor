@@ -76,7 +76,8 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
             onPress={() => lifecycle.setSelected(selected.includes(row.id) ? selected.filter((id) => id !== row.id) : [...selected, row.id])} style={{ minHeight: 44, justifyContent: "center" }}>
             {text(`${selected.includes(row.id) ? "☑" : "☐"} ${row.title}`)}
           </Pressable>}
-          {text(`${row.id} · ${row.nativeStatus}`, true)}
+          {/* Older saved receipts wrote "missing" for a failed read too: only the row's own confirmed read may say missing. */}
+          {text(`${row.id} · ${row.nativeStatus === "missing" && row.availability?.state !== "missing" ? "unknown" : row.nativeStatus}`, true)}
           {!archive || row.outcome === "pending" || row.outcome === "blocked" ? text(`${row.category === "unknown" ? "Unknown" : row.eligible ? "Eligible" : "Unavailable for this action"}: ${row.reason}`) : null}
           <Disclosure colors={colors} label="Session details">
             {text(`${row.provider}/${row.model ?? "unknown"}/${row.effort ?? "unknown"}`, true)}

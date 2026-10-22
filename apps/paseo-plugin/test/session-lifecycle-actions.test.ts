@@ -318,11 +318,36 @@ describe("P1 fresh native record reconciliation", () => {
 });
 
 describe("force-close archive and read-only settlement", () => {
-  it("rechecks exact placement after the final slow child inventory", async () => {
+  it("rechecks exact placement after the last child inventory", async () => {
     const s = await setup(), original = s.client.agents.list; let lists = 0;
-    s.client.agents.list = async options => { const result = await original(options); if (++lists === 3) s.records.set("a", agent("a", { workspaceId: "moved" })); return result; };
+    // Walk 1 is the preview, walk 2 the execute's only child walk; the exact-ID read after it still sees the move.
+    s.client.agents.list = async options => { const result = await original(options); if (++lists === 2) s.records.set("a", agent("a", { workspaceId: "moved" })); return result; };
     const review = await s.preview("archive");
     expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("walks only active sessions, once in the preview and once in the execute, however much archived history the host holds", async () => {
+    // Archived children never block (childrenOf), so archived history is never read for an archive.
+    const history = Array.from({ length: 1_000 }, (_, n) => agent(`old-${n}`, { status: "closed", archivedAt: "2026-01-01", labels: { "paseo.parent-agent-id": "a" } }));
+    const s = await setup([agent("a"), agent("b"), ...history]), calls: Array<{ includeArchived?: boolean; rows: number }> = [];
+    s.client.agents.list = async (options) => {
+      const rows = [...s.records.values()].filter((value) => options?.filter?.includeArchived || value.archivedAt == null);
+      const start = Number(options?.page?.cursor ?? 0), limit = options?.page?.limit ?? 200, page = rows.slice(start, start + limit), more = start + limit < rows.length;
+      calls.push({ includeArchived: options?.filter?.includeArchived, rows: page.length });
+      return { requestId: "fixture", entries: page.map((value) => ({ agent: value, project: null })), pageInfo: { hasMore: more, nextCursor: more ? String(start + limit) : null, prevCursor: null } } as unknown as PaseoAgentListResult;
+    };
+    const review = await s.preview("archive");
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("archived"); expect(s.archive).toHaveBeenCalledExactlyOnceWith("a");
+    expect(calls).toEqual([{ includeArchived: false, rows: 2 }, { includeArchived: false, rows: 2 }]);
+  });
+  it("still blocks an active child linked only by its parentAgentId field; Resume still walks archived history", async () => {
+    const child = { ...agent("child", { status: "idle" }), parentAgentId: "a" } as Agent;
+    const s = await setup([agent("a"), child]), original = s.client.agents.list, filters: unknown[] = [];
+    s.client.agents.list = async (options) => { filters.push(options?.filter); return original(options); };
+    const review = await s.preview("archive");
+    expect(review.rows[0]).toMatchObject({ eligible: false, children: [{ id: "child" }] });
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
+    await s.preview("resume", ["a"], "host");
+    expect(filters).toEqual([{ includeArchived: false }, { includeArchived: true }]);
   });
   it.each(["running", "initializing", "idle", "error", "closed"] as const)("archives exact %s even when activity updates during preflight", async (status) => {
     const s = await setup([agent("a", { status }), agent("b")]); const review = await s.preview("archive");

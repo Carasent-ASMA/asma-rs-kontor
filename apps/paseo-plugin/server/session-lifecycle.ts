@@ -87,11 +87,12 @@ export function lifecycleRow(agent: Agent, inventory: Agent[], action: Lifecycle
   return row;
 }
 
-async function inventory(client: LifecycleClient): Promise<Agent[]> {
+// Archive needs only the active children (childrenOf skips archived ones), so its walk never reads archived history.
+async function inventory(client: LifecycleClient, action: LifecycleReview["action"]): Promise<Agent[]> {
   const agents = new Map<string, Agent>(), cursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < 1_000; page++) {
-    const result = await client.agents.list({ filter: { includeArchived: true }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    const result = await client.agents.list({ filter: { includeArchived: action !== "archive" }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
     for (const { agent } of result.entries) agents.set(agent.id, agent);
     if (!result.pageInfo.hasMore) return [...agents.values()];
     const next = result.pageInfo.nextCursor;
@@ -178,15 +179,16 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   }
   async function preview(input: { action: LifecycleReview["action"]; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget }): Promise<LifecycleReview> {
     if (input.action === "archive" && (input.scope !== "filtered" || input.agentIds.length !== 1)) throw new Error("Archive requires one exact session ID.");
-    const all = await inventory(client), ids = new Set(input.agentIds);
+    const all = await inventory(client, input.action), ids = new Set(input.agentIds);
     const selectedIds = input.scope === "host" ? all.filter((agent) => agent.archivedAt == null).map((agent) => agent.id) : [...ids];
     const rows: LifecycleRow[] = [];
     for (const id of selectedIds) {
       const observed = await observe(id), listed = all.find((agent) => agent.id === id);
       const record = observed.agent ?? listed;
+      // No record: the exact read either confirmed absence ("missing") or failed ("unknown"); only absence reads as missing.
       const row: LifecycleRow = record ? lifecycleRow(record, all, input.action, input.target) : {
         id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null,
-        nativeStatus: "missing", fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
+        nativeStatus: observed.availability.state, fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
       };
       row.availability = observed.availability;
       if (!observed.agent) { row.eligible = input.action === "archive" && observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
@@ -270,7 +272,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       alreadyArchived = archivedMembership(found.agent);
       if (found.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(found.agent) : lifecycleRevision(found.agent)) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
-      const all = await inventory(client);
+      const all = await inventory(client, review.action);
       const current = lifecycleRow(found.agent, all, review.action, review.target);
       if (!current.eligible || (review.action === "archive" && current.children.length)) throw new Error(current.reason);
       if (review.action === "resume") {
@@ -283,15 +285,15 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         const history = await agent.timeline.refetch({ direction: "tail", limit: 1 });
         if (history.error || !history.entries.length) throw new Error(`Native history is unavailable; no continuation prompt sent. ${history.error ?? "No retained conversation entries."}`);
       }
-      // Final read after all potentially slow preflight calls. Never prompt an archived predecessor.
-      const finalInventory = review.action === "archive" ? await inventory(client) : all;
+      // Final read after all potentially slow preflight calls (Resume only; nothing slow runs between Archive's
+      // child walk and this read). Never prompt an archived predecessor.
       const latest = await observe(agentId); row.availability = latest.availability;
       if (!latest.agent) throw new Error(latest.availability.reason);
       const final = { agent: latest.agent };
       alreadyArchived = archivedMembership(final.agent);
       if (final.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(final.agent) : lifecycleRevision(final.agent)) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
-      const finalDecision = lifecycleRow(final.agent, finalInventory, review.action, review.target);
+      const finalDecision = lifecycleRow(final.agent, all, review.action, review.target);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry.";
       const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
