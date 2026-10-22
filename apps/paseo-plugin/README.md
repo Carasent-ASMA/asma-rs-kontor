@@ -116,6 +116,63 @@ The screen is a React Native plugin screen. It does not replace Paseo's native
 sidebar, footer, tab strip, session room or composer, and it does not embed the
 workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 
+### Start or switch and Recent
+
+- **One sheet.** **Start or switch** in the Kontor context row (an icon button
+  on compact layouts) and the global Command Center item **Start or switch
+  Kontor session…** open one sheet. With no query it lists up to 8 Recent
+  sessions; typing matches every non-archived session by title, place and
+  labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
+  the query to Sessions unscoped. A row opens by native ID through the same
+  path as Sessions. Rows carry no archive control.
+- **Recent.** Paseo keeps no visit history a plugin can read, so Kontor records
+  its own. Opening a session from Kontor, the **← Kontor** pill and **Back to
+  Kontor** each record that session's ID and time on this device (iOS settings
+  or web local storage, key `kontor.recent@1`; no titles). It keeps 20 visits
+  for 14 days (pruned on reads and writes), merged with the host's `lastUserMessageAt` ("Prompted", from any
+  device on the host). Archived and absent sessions are hidden, and their
+  visits kept. **Clear recent on this device** empties the visits and hides
+  prompts up to that moment, on this device only. Without a device store Recent
+  lasts until Paseo restarts; an unreadable stored value is left untouched until
+  Clear; the sheet says which. The plugin client is given no stable host
+  identity, so the store is per device rather than per host; native agent IDs
+  do not collide.
+- **New LSA (bounded create).** Off unless the operator writes exactly
+  `{"create":"on"}` to `$PASEO_HOME/plugin-config/kontor/create.json`
+  (default `~/.paseo/plugin-config/kontor/create.json`) on the host computer.
+  Any other content, an unreadable file or no file keeps it off, and the sheet
+  says why. The file is read on every request and never written by the plugin.
+  When on, **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
+  project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
+  to 48 characters after NFC normalization and never contains `•`, `·` or a
+  control character. The labels are `role=LSA`, `title.auto=<title>`,
+  `persona=kontor-lsa-adhoc@<hash>` and `create.request=<request ID>`; never a
+  `kontor.*` or orchestration label. Provider, model, effort and mode default
+  to the host's `LSA` agent profile, else the provider's own defaults; a
+  dangerous mode is marked. No first prompt is sent.
+- **Truthful outcome.** The request is recorded on the host, under
+  `$PASEO_HOME/plugin-state/kontor/session-create-v1/`, before one idempotent
+  native create. Success is claimed only from an exact readback: **Created and
+  verified**, or **Created with differences** naming each one, including the
+  chosen workspace's working directory. A failed or
+  unanswered dispatch (120 s) is **Outcome unknown** with **Check**, which reads
+  the host by the request label and never dispatches again. No matching session
+  leaves the outcome unknown because a delayed creation may still complete.
+  An unknown outcome stays blocked until a correlated readback confirms it;
+  otherwise the operator must reconcile it on the host. An unsettled or
+  unreadable record blocks the next create until it is settled. **Open
+  session** appears only once the session list shows the new session and the
+  app exposes plugin navigation. Nothing is created while the host is offline.
+- **Persona and rename.** The LSA persona goes in the system prompt. Its
+  delivery is confirmed only for Claude and Codex; other providers show
+  "Persona delivery unverified". A plugin cannot rename a session, so the
+  persona tells the session to rename itself with Paseo MCP `update_agent`, and
+  only while its title equals `title.auto`. It renames once, to
+  `LSA • <KEY> • <topic>`, when it has a confirmed epic key, and sets `epic` and
+  `title.auto`. It changes the topic only at a checkpoint. Once its title
+  differs from `title.auto`, which means the operator renamed it, it never
+  renames again.
+
 ## Organization and read-only pages
 
 The plugin body has Sessions, Overview, Plan, Board and More on compact clients.

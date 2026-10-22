@@ -8,11 +8,14 @@ import { createTeamsSourceAdapter } from "./server/teams-source-adapter";
 import { readTeamsSource } from "./shared/teams-source-snapshot";
 import { sourceCatalog, contributeReadSources } from "./server/read-sources";
 import { contributeSessionLifecycle } from "./server/session-lifecycle";
+import { contributeSessionCreate } from "./server/session-create";
 import { contributeResponsibility } from "./server/responsibility";
 import { contributeKontorStatus } from "./server/kontor-status";
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
+  // Registered whatever the floor; each request reads the operator's create.json, which is off unless it says on.
+  contributeSessionCreate(server);
   const settings = server.registerSettings(organizationSettings);
   server.registerSettings(keyboardSettings);
   server.handle(readTeamsSource, (input) => {

@@ -74,6 +74,9 @@ const clientFiles = [
   "../client/sessions-screen.tsx",
   "../client/toolbar-visibility.ts",
   "../client/use-session-directory.ts",
+  "../client/start-switch-sheet.tsx",
+  "../client/new-lsa-form.tsx",
+  "../client/recent-sessions.ts",
 ] as const;
 
 describe("client navigation stays on the borrowed host connection", () => {
@@ -143,5 +146,20 @@ describe("kontord status probe", () => {
     expect(entry).toContain("const stopStatus = contributeKontorStatus(server, floor.enabled);");
     expect(entry).toContain("const stopHooks = floor.enabled ? contribute(server) : () => {};");
     expect(entry).toContain("return () => { stopSources(); stopStatus(); stopHooks(); };");
+  });
+});
+
+describe("bounded session create", () => {
+  const text = source("../server/session-create.ts");
+
+  it("creates through one idempotent native call and never prompts, archives, renames or patches", () => {
+    expect(text.match(/agents\.create\(/g)).toHaveLength(1);
+    expect(text).toContain("agents.create({ idempotencyKey: input.requestId,");
+    expect(text).not.toMatch(/\.send\(|\.archive\(|ref\([^)]*\)\.update\(|setTitle|respondToPermission|config\.patch|initialPrompt|workspaces\.create/);
+  });
+
+  it("only reads the operator's create switch", () => {
+    expect(text).toContain('readFloor(file, "create")');
+    expect(text).not.toMatch(/(?:open|writeFile|rename|rm)\((?:file|switchFile)\b/);
   });
 });

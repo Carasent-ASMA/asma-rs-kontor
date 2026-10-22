@@ -69,6 +69,7 @@ import { ReadOnlyPage } from "../client/read-only-pages";
 import { TeamsSourcePage } from "../client/teams-source-page";
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { KeyboardSettingsCard } from "../client/keyboard-settings-card";
+import { StartSwitchSheet } from "../client/start-switch-sheet";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
 const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -786,4 +787,42 @@ it("finds a graphless plan by its explicit workstream and shows exact Plan conte
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: source.id, sourceRevision: read.revision, epicKey: "ASMA-7575" });
     expect(screen.picker()?.props).toMatchObject({ label: source.title, epicKey: "ASMA-7575" });
   }
+});
+
+describe("Start or switch entry", () => {
+  it.each([[true, "Start or switch session"], [false, "Start or switch"]])("opens one sheet from the context row and closes it (compact=%s)", (compact, label) => {
+    const screen = mount(compact, { tab: "Overview" });
+    expect(screen.action(label).props).toMatchObject({ icon: "History", expanded: false });
+    screen.click(label);
+    expect(screen.action(label).props.expanded).toBe(true);
+    const sheet = screen.elements().find((node) => node.type === StartSwitchSheet)!;
+    expect(sheet.props).toMatchObject({ compact, canOpen: true, hostStatus: "offline", directory: { entries: model.entries } });
+    (sheet.props.onClose as () => void)(); screen.render();
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
+  });
+
+  it("opens a row through the shared open path and closes the sheet", () => {
+    const screen = mount(false, { tab: "Overview" });
+    screen.click("Start or switch");
+    const sheet = screen.elements().find((node) => node.type === StartSwitchSheet)!;
+    (sheet.props.onOpen as (entry: DirectoryEntry) => void)(model.entries[0]!); screen.render();
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledWith({ agentId: "native", serverId: screen.props.host.id });
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
+  });
+
+  it("hands a search to Sessions unscoped, as a text query with every status", () => {
+    const screen = mount(false, { tab: "Board", epicKey: "ASMA-1" });
+    screen.click("Start or switch");
+    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
+    const route = hostNavigation(screen.props.host.id).route;
+    expect(route).toMatchObject({ tab: "Sessions", projectId: null, epicKey: null, sourceId: null });
+    expect(readSessionView(sessionScopeKey(screen.props.host.id, route))).toMatchObject({ query: "route review", task: null, status: "all", scrollOffset: 0 });
+  });
+
+  it("tells the sheet when this Paseo app cannot open sessions", () => {
+    const screen = mount(true, { tab: "Overview" });
+    (screen.props as { navigation?: unknown }).navigation = undefined; screen.render();
+    screen.click("Start or switch session");
+    expect(screen.elements().find((node) => node.type === StartSwitchSheet)!.props.canOpen).toBe(false);
+  });
 });

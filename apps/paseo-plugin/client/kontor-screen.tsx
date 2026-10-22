@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from "rea
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
 import { copyText, Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { KeyboardAvoidingView, Linking, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
+import { KeyboardAvoidingView, Linking, Platform, Pressable, SafeAreaView, ScrollView, Settings, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { ControlHelpProvider } from "./control-help";
 import { declaredScope } from "./session-organization";
@@ -33,9 +33,15 @@ import { useWorkspaceDirectory } from "./use-workspace-directory";
 import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
+import { StartSwitchSheet, SWITCH_SHEET } from "./start-switch-sheet";
+import { configureRecentStorage } from "./recent-sessions";
+import { deviceProfileStorage } from "./viewer-profile";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
 import { declaredPlanWorkstream, planWorkstreamMappings } from "./plan-workstreams";
 import { taskTeamReader } from "./task-team-source";
+
+// Set at plugin load, before Back to Kontor or the composer pill records a visit.
+configureRecentStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
 const PRIMARY_DESKTOP: Destination[] = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery"];
@@ -58,10 +64,10 @@ function HostScreen(props: PluginScreenProps) {
   const colors = appearanceColors(props.theme.colors, saved.appearance);
   const keyboard = useKeyboardSettings();
   const [route, setRoute] = useState(() => hostNavigation(host.id).route);
-  const [menu, setMenu] = useState<"more" | "context" | null>(null);
+  const [menu, setMenu] = useState<"more" | "context" | "switch" | null>(null);
   const [pickerQuery, setPickerQuery] = useState("");
   const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
-  const rootRef = useRef<View | null>(null), moreRef = useRef<View | null>(null), contextRef = useRef<View | null>(null);
+  const rootRef = useRef<View | null>(null), moreRef = useRef<View | null>(null), contextRef = useRef<View | null>(null), switchRef = useRef<View | null>(null);
   const [query, setQuery] = useState(() => readRouteView(host.id, route).query);
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   // The Teams page is controlled by its view in the navigation store, which does not render by itself.
@@ -98,6 +104,10 @@ function HostScreen(props: PluginScreenProps) {
   useEffect(() => {
     if (props.params.tab === "Plan") visit({ tab: "Plan", projectId: null, epicKey: null, sourceId: props.params.sourceId ?? null, originAgentId: props.params.agentId ?? null });
   }, [props.params.tab, props.params.sourceId, props.params.agentId, visit]);
+  // `at` makes each Command Center request a new URL, so the sheet reopens while the screen stays mounted.
+  useEffect(() => {
+    if (props.params.sheet === SWITCH_SHEET) setMenu("switch");
+  }, [props.params.sheet, props.params.at]);
   useEffect(() => {
     if (routeViewKey(hostNavigation(host.id).route) !== routeViewKey(route)) return;
     const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null, projectEpics);
@@ -151,7 +161,7 @@ function HostScreen(props: PluginScreenProps) {
   };
   const primary = layout.compact ? PRIMARY_MOBILE : PRIMARY_DESKTOP;
   const tabPress = (tab: Destination) => visitContext({ tab, ...tabScope(host.id, tab) });
-  const toggle = (kind: "more" | "context") => { setPickerQuery(""); setMenu(menu === kind ? null : kind); };
+  const toggle = (kind: "more" | "context" | "switch") => { setPickerQuery(""); setMenu(menu === kind ? null : kind); };
   const back = () => { const next = goBack(host.id); setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); setMenu(null); };
   useBackShortcut(keyboard.state.status === "ready" ? keyboard.state.values.backShortcut : "off", layout.platform === "web", rootRef, () => hostNavigation(host.id).back.length > 0, back);
   const setSearch = (value: string) => { writeRouteView(host.id, route, { query: value, offset: 0 }); setQuery(value); };
@@ -187,6 +197,9 @@ function HostScreen(props: PluginScreenProps) {
   if (route.sourceId || heading.plan) contextKind = "Plan";
   const sessionScopeLabel = route.tab === "Sessions" && contextKind === "Plan" ? route.epicKey ? "Epic sessions" : route.projectId ? "Project sessions" : "All sessions" : null;
   const contextPicker = <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} projectLabel={route.projectId === null ? "All projects" : `Project: ${projectName ?? "unavailable"}`} kind={contextKind} sessionScopeLabel={sessionScopeLabel} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} />;
+  const switchTrigger = layout.compact
+    ? <IconButton ref={switchRef} label="Start or switch session" icon="History" colors={colors} expanded={menu === "switch"} onPress={() => toggle("switch")} />
+    : <Action ref={switchRef} small colors={colors} icon="History" label="Start or switch" accessibilityLabel="Start or switch session" expanded={menu === "switch"} onPress={() => toggle("switch")} />;
   const freshness = <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} hostLabel={host.label} colors={colors} />;
   const moreActive = !primary.includes(route.tab);
   const navigationItems = <>
@@ -238,7 +251,12 @@ function HostScreen(props: PluginScreenProps) {
       {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
-  </AnchoredMenu> : null;
+  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostStatus={hostStatus} directory={directory.state}
+    canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
+    onShowAll={(text) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
+      const scope = sessionScopeKey(host.id, next);
+      patchSessionView(scope, sessionViewTransition(readSessionView(scope), { query: text, task: null, status: "all", scrollOffset: 0 }));
+    })} /> : null;
   let page;
   if (route.tab === "Sessions") page = <SessionsScreen key={sessionScopeKey(host.id, route)} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
@@ -282,6 +300,7 @@ function HostScreen(props: PluginScreenProps) {
     {layout.compact ? <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
       {canGoBack ? backButton : null}
       {contextPicker}
+      {switchTrigger}
       {freshness}
     </View> : <View testID="kontor-context-row" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 12, paddingHorizontal: 10, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
       {/* One row when it fits; on a narrow screen the context, status and return wrap below the views instead of hiding. */}
@@ -292,6 +311,7 @@ function HostScreen(props: PluginScreenProps) {
       <View testID="kontor-context-group" style={{ flexDirection: "row", alignItems: "center", gap: 8, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 44 }}>
         {contextPicker}
         <View style={{ flexGrow: 1 }} />
+        {switchTrigger}
         {freshness}
         {conversationReturn}
       </View>
