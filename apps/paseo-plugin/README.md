@@ -142,8 +142,10 @@ Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
 lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
 **Desks & workspaces** and **Role**; switching back restores the last grouping.
 The labelled **Grouped / Flat** segments stay above the scrolling list on mobile
-and desktop, beside the result count when present. Their checked state, keyboard
-focus outline and hover/focus help make the choice visible. Use Tab to reach the
+and desktop, beside the result count when present. In short compact windows,
+that row scrolls at the top of the list so session rows retain usable space.
+Their checked state, keyboard focus outline and hover/focus help make the choice
+visible. Use Tab to reach the
 selected segment, arrows to switch and Space or Enter to select. Layout is
 remembered through the existing host view and saved organization preferences;
 **Group by** and **Sort by** remain in Filters & view.

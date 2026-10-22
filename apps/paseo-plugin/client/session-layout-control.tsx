@@ -8,7 +8,7 @@ type Key = { key: string; target?: unknown; defaultPrevented?: boolean; altKey?:
 type KeyTarget = { addEventListener(type: "keydown", listener: (event: Key) => void): void; removeEventListener(type: "keydown", listener: (event: Key) => void): void };
 const HELP = "Grouped shows sessions in their groups. Flat shows one list. Search, filters and sort stay the same. Your layout is remembered.";
 
-/** One labelled radio segment per layout; stays outside the scrolling results and collapsing filters. */
+/** One labelled radio segment per layout, independent of the collapsing filters. */
 export function SessionLayoutControl({ value, colors, onChange }: {
   value: SessionLayout; colors: Colors; onChange(value: SessionLayout): void;
 }) {

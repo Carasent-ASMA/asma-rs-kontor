@@ -2914,7 +2914,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </Text>
   ) : null;
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
-  const shortPeek = peek !== null && compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const shortPeek = peek !== null && shortScreen;
   const peekDescription = peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`;
   let peekText = peekDescription;
   if (shortPeek) peekText = peekAncestors ? "In the tree · not saved" : "Not in this tree";
@@ -2953,7 +2954,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {assignmentState === "ready" && assignment !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-assignment-show-unknown" label="Show unknown assignment" accessibilityLabel="Show sessions whose assignment is unknown" colors={colors} compact={compact} onPress={() => chooseAssignment("unknown")} /> : null}
     </View>
   );
-  const listHeader = peek ? null : workLine;
+  // On short screens the utility row must scroll, so it cannot consume the list's last usable pixels.
+  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+    <View style={{ flex: 1, minWidth: 80 }}>
+      {listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
+    </View>
+    <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+  </View>;
+  const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
 
   return (
     <View
@@ -2974,12 +2982,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {activeScopeSummary}
       {compact ? null : fullToolbarSlot}
       {peekBar}
-      <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-        <View style={{ flex: 1, minWidth: 80 }}>
-          {listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
-        </View>
-        <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
-      </View>
+      {shortScreen ? null : layoutBar}
       <FlatList
         ref={listRef}
         testID="sessions-list"

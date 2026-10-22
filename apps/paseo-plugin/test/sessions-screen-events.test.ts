@@ -1108,7 +1108,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
     expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
-    expect(header()).toEqual([]);
+    expect(header()).toEqual(["sessions-layout-bar"]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
@@ -2865,6 +2865,34 @@ describe("independent Layout, Group by and exact scope", () => {
     const menu = findByTestID(harness.current(), "sessions-grouping-choices");
     (walk(menu).find((node) => node.props.label === label)!.props.onPress as () => void)(); harness.flush();
   };
+
+  it.each([320, 360])("scrolls the utility row inside the list at 390×%s and pins it again after resize without losing filters", (height) => {
+    directory.state = { ...emptyDirectoryState(), status: "ready", entries: [sessionEntry("match", { title: "SWE topic" })], inventoryComplete: true, lastUpdatedAt: 0 };
+    patchSessionView("host-a", { layout: "grouped", grouping: "role", query: "topic", status: "idle", sort: "title" });
+    renderScreen(undefined, true);
+    const resize = (height: number) => {
+      ((harness.current() as ElementLike).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }); harness.flush();
+    };
+    const list = () => findByTestID(harness.current(), "sessions-list");
+    const headerControls = () => walk(list().props.ListHeaderComponent).filter((node) => node.type === SessionLayoutControl);
+    const pinnedBars = () => ((harness.current() as ElementLike).props.children as ElementLike[]).filter((node) => node?.props?.testID === "sessions-layout-bar");
+    resize(height);
+    expect(headerControls()).toHaveLength(1);
+    expect(pinnedBars()).toHaveLength(0);
+    chooseLayout("flat");
+    expect(headerControls()[0]!.props.value).toBe("flat");
+    expect(listRows().map((row) => row.kind)).toEqual(["result"]);
+    resize(800);
+    expect(headerControls()).toHaveLength(0);
+    expect(pinnedBars()).toHaveLength(1);
+    expect(walk(harness.current()).filter((node) => node.type === SessionLayoutControl)).toHaveLength(1);
+    expect(readSessionView("host-a")).toMatchObject({ layout: "flat", grouping: "role", query: "topic", status: "idle", sort: "title" });
+    resize(height);
+    expect(headerControls()).toHaveLength(1);
+    expect(pinnedBars()).toHaveLength(0);
+    chooseLayout("grouped");
+    expect(headerControls()[0]!.props.value).toBe("grouped");
+  });
 
   it.each([320, 390, 1440])("keeps one layout control outside the list and collapsing filters at %s, and restores its scoped state on remount", (width) => {
     const compact = width < 600;
