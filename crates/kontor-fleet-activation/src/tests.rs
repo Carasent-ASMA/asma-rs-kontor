@@ -135,6 +135,7 @@ fn published_bundle() -> Bundle {
     let manifest = BundleManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         resolver: "kontor-fleet 0.2.1".to_owned(),
+        publication_policy: None,
         sources: BTreeMap::from([
             (
                 "orchestration.yml".to_owned(),
@@ -181,6 +182,52 @@ fn refused<T: std::fmt::Debug>(result: Result<T, FleetError>) -> &'static str {
 fn first(selection: &FleetSelection) -> (String, u16, u16) {
     let route = selection.selected.as_ref().expect("a selected route");
     (route.rung.provider.0.clone(), route.step, route.sub_step)
+}
+
+#[test]
+fn an_additive_publication_policy_is_verified_without_changing_legacy_manifest_bytes() {
+    use kontor_core::id::ProjectId;
+    use kontor_core::publication::PublicationPolicy;
+    use kontor_core::pull_request::ForgeRepository;
+
+    let mut bundle = published_bundle();
+    let legacy = bundle.manifest.canonicalize().unwrap();
+    let value: serde_json::Value = serde_json::from_str(legacy.json()).unwrap();
+    assert!(value.get("publication_policy").is_none());
+    let decoded: BundleManifest = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.canonicalize().unwrap(), legacy);
+    let root = ForgeRepository::parse("example-org/root").unwrap();
+    bundle.manifest.publication_policy = Some(PublicationPolicy {
+        project_id: ProjectId::generate(),
+        repositories: vec![root.clone()],
+        root_repository: root,
+        module_repositories: BTreeMap::new(),
+        base_branch: ExternalName::parse("main").unwrap(),
+    });
+    let document = bundle.manifest.canonicalize().unwrap();
+    assert_ne!(document.hash(), legacy.hash());
+    bundle.bundle_hash = document.hash().clone();
+    private(
+        &manifest_path(bundle.path(), &bundle.bundle_hash),
+        document.json().as_bytes(),
+    );
+    bundle.write_record(&bundle.record());
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .publication_policy,
+        bundle.manifest.publication_policy
+    );
+    bundle
+        .manifest
+        .publication_policy
+        .as_mut()
+        .unwrap()
+        .root_repository = ForgeRepository::parse("other-org/unlisted").unwrap();
+    assert!(bundle.manifest.canonicalize().is_err());
 }
 
 #[test]

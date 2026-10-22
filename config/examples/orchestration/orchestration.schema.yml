@@ -40,6 +40,7 @@ project:
     - time_zone
     - holiday_countries
     - currency
+  optional: [project_id, publication]
   nested:
     decision_authorities:
       required: [platform, architecture, decision_records_root]
@@ -60,6 +61,20 @@ project:
     capacity:
       required: [max_delivery_seats, max_parallel_tasks, start_admission]
       rule: max_parallel_tasks and start_admission are the Paseo-direct placement capacity ceiling and initial admission; start_admission must be <= max_parallel_tasks; max_delivery_seats is an owner-set project value scoped per team run, not supplied by the placement rule, not a global team-run ceiling, and kontord has no such field
+
+publication_contract:
+  presence: project_id and publication are either both absent or both present
+  absent: direct-only startup is valid; no publication authority is configured
+  project_id: an explicit internal Kontor ProjectId UUIDv7, never inferred from a tracker key, name, path or App
+  required: [root_repository, module_repositories]
+  repositories: every value is an exact validated entry in project.forge.repositories; membership alone grants no access
+  modules: exact durable Task.module ModuleKeys; no duplicates, wildcards, aliases, prefixes or path guesses; an empty mapping is valid
+  task_scope: configured root plus only the exact stored task module mapping
+  epic_scope: configured root plus the union for that epic's own stored tasks
+  base_branch: project.forge.base_branch, without a fallback
+  integrations: declared Kontor project_id values in the selected tracker or App must agree with project.project_id; they never supply authority
+  runtime: require the requested ProjectId to match the activated policy and an existing Project in the same realm; config loading never creates a Project
+  activation: the existing immutable bundle manifest pins the resolved policy and source hashes; authoring edits or unactivated publications never replace authority
 
 # The two supervision files are distinct contracts.
 supervision_contract:

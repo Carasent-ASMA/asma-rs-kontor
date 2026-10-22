@@ -815,7 +815,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // (ASMA-8453). v135 adds the typed operational-gap ledger (ASMA-8514).
     // v136 makes every hold state its terms and gives an overdue review one
     // typed attention record (ASMA-8517 / REQ-008).
-    assert_eq!(SCHEMA_VERSION, 136);
+    // v137 retains the activated publication policy's immutable source hash.
+    assert_eq!(SCHEMA_VERSION, 137);
 }
 
 #[test]
@@ -7078,6 +7079,11 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
+    // v137 adds a column too; the simulated v119 fixture must remove it before
+    // replaying the chain, just as it removes every later additive table.
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .unwrap();
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.

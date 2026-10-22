@@ -7740,6 +7740,7 @@ export interface components {
              * @description The schema that policy validates under.
              */
             policy_schema_version: number;
+            publication_policy?: null | components["schemas"]["FleetPublicationPolicyDto"];
             /** @description The resolver that produced the bundle. */
             resolver: string;
             /** @description The role catalog the Core Team revision was resolved against. */
@@ -7914,6 +7915,21 @@ export interface components {
          * @enum {string}
          */
         FleetPolicySelectionDto: "activation" | "fleet_yml";
+        /** @description The explicit project publication policy pinned by an orchestration bundle. */
+        FleetPublicationPolicyDto: {
+            /** @description The only permitted publication base branch. */
+            base_branch: string;
+            /** @description Exact durable Task.module keys and their additional repository. */
+            module_repositories: {
+                [key: string]: string;
+            };
+            /** @description The internal existing Kontor project this policy governs. */
+            project_id: string;
+            /** @description The project allowlist; membership alone grants no access. */
+            repositories: string[];
+            /** @description The repository every confirmed binding in the project may publish to. */
+            root_repository: string;
+        };
         /** @description The exact role catalog revision a bundle pins. */
         FleetRoleCatalogPinDto: {
             /** @description The catalog's stable identity. */
@@ -9985,6 +10001,8 @@ export interface components {
             replayed: boolean;
             /** @description The forge repository, as observed. */
             repository: string;
+            /** @description The immutable activated authorization bundle read for this judgement. */
+            source_bundle_hash?: string | null;
             /** @description The task the branch key resolved to, when the branch names a task. */
             task_id?: string | null;
             /** @description The pull-request title, when one exists. */

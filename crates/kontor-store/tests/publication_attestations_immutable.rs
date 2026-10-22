@@ -1,7 +1,8 @@
 //! Publication attestation rows refuse update and delete after recording (ASMA-8102).
 
 use kontor_core::id::{
-    ExternalName, IdempotencyKey, ProjectId, PublicationAttestationId, parse_utc_timestamp,
+    ContentHash, ExternalName, IdempotencyKey, ProjectId, PublicationAttestationId,
+    parse_utc_timestamp,
 };
 use kontor_core::publication::{CommitSha, PublicationDecision};
 use kontor_core::repository::{NewProject, ProjectRepository};
@@ -35,24 +36,42 @@ fn recorded_publication_attestations_are_immutable_at_the_database_boundary() {
     let attestation_id = PublicationAttestationId::generate();
     let key = IdempotencyKey::parse("asma-8102-immutability-probe").expect("key");
     let head = CommitSha::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("sha");
-    let recorded = store
-        .record_publication_attestation(&NewPublicationAttestation {
-            id: attestation_id,
-            project_id: project,
-            mini_project_id: None,
-            task_id: None,
-            repository: ExternalName::parse("Carasent-ASMA/asma-rs-kontor").expect("repo"),
-            base_branch: ExternalName::parse("master").expect("base"),
-            head_branch: ExternalName::parse("feat/ASMA-8102-probe").expect("head"),
-            head_sha: head,
-            pull_request: None,
-            title: None,
-            decision: PublicationDecision::accepted(),
-            idempotency_key: key,
-            recorded_at: parse_utc_timestamp("2026-09-22T00:01:00Z").expect("ts"),
-        })
-        .expect("record");
+    let policy_hash = ContentHash::of(b"publication policy fixture");
+    let mut decision = PublicationDecision::accepted();
+    decision.source_bundle_hash = Some(policy_hash.clone());
+    let new = NewPublicationAttestation {
+        id: attestation_id,
+        project_id: project,
+        mini_project_id: None,
+        task_id: None,
+        repository: ExternalName::parse("Carasent-ASMA/asma-rs-kontor").expect("repo"),
+        base_branch: ExternalName::parse("master").expect("base"),
+        head_branch: ExternalName::parse("feat/ASMA-8102-probe").expect("head"),
+        head_sha: head,
+        pull_request: None,
+        title: None,
+        decision,
+        idempotency_key: key,
+        recorded_at: parse_utc_timestamp("2026-09-22T00:01:00Z").expect("ts"),
+    };
+    let recorded = store.record_publication_attestation(&new).expect("record");
     assert!(matches!(recorded, AttestationRecord::Recorded(_)));
+    let replay = store.record_publication_attestation(&new).unwrap();
+    assert!(matches!(replay, AttestationRecord::Replayed(_)));
+    let mut moved = new.clone();
+    moved.decision.source_bundle_hash = Some(ContentHash::of(b"a changed governing policy"));
+    assert!(
+        store.record_publication_attestation(&moved).is_err(),
+        "a changed policy cannot replay an old acceptance"
+    );
+    let mut missing = new.clone();
+    missing.id = PublicationAttestationId::generate();
+    missing.idempotency_key = IdempotencyKey::parse("missing-source").unwrap();
+    missing.decision.source_bundle_hash = None;
+    assert!(
+        store.record_publication_attestation(&missing).is_err(),
+        "new accepted judgements require provenance"
+    );
 
     let connection = rusqlite::Connection::open(&path).expect("raw connection");
     assert!(
@@ -80,4 +99,17 @@ fn recorded_publication_attestations_are_immutable_at_the_database_boundary() {
         .expect("read")
         .expect("row remains");
     assert!(reread.decision.accepted);
+    assert_eq!(reread.decision.source_bundle_hash, Some(policy_hash));
+    assert!(
+        connection
+            .execute(
+                "UPDATE publication_attestations SET source_bundle_hash = ?1 WHERE id = ?2",
+                params![
+                    ContentHash::of(b"forged source").as_str(),
+                    attestation_id.to_string()
+                ],
+            )
+            .is_err(),
+        "source provenance is immutable too"
+    );
 }

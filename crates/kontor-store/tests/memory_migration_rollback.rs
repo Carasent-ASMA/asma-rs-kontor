@@ -93,6 +93,10 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
         .unwrap();
     drop(store);
     let connection = Connection::open(&database).unwrap();
+    // Remove the current-only v137 column before replaying the historical chain.
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .unwrap();
     // This fixture starts at today's schema; its v119 stamp must not
     // retain the later additive attention table or erase attention evidence.
     let attention_rows: i64 = connection

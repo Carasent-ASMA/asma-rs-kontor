@@ -3119,6 +3119,25 @@ pub struct FleetBundleManifestDto {
     /// The bundle's canonical Core Team revision.
     #[schema(value_type = String)]
     pub core_team_revision_hash: ContentHash,
+    /// Publication authority selected only when this bundle is activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_policy: Option<FleetPublicationPolicyDto>,
+}
+
+/// The explicit project publication policy pinned by an orchestration bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPublicationPolicyDto {
+    /// The internal existing Kontor project this policy governs.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The project allowlist; membership alone grants no access.
+    pub repositories: Vec<String>,
+    /// The repository every confirmed binding in the project may publish to.
+    pub root_repository: String,
+    /// Exact durable Task.module keys and their additional repository.
+    pub module_repositories: std::collections::BTreeMap<String, String>,
+    /// The only permitted publication base branch.
+    pub base_branch: String,
 }
 
 /// The exact role catalog revision a bundle pins.
@@ -14492,6 +14511,10 @@ pub struct PublicationDecisionDto {
     pub reasons: Vec<String>,
     /// The rules revision the decision was computed under.
     pub policy_revision: u32,
+    /// The immutable activated authorization bundle read for this judgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
     /// When it was judged.
     #[schema(value_type = String)]
     pub evaluated_at: Timestamp,

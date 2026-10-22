@@ -134,6 +134,7 @@ async fn review_realm(slug: &str, review: Option<&str>) -> Review {
         .expect("an epic id")
         .to_owned();
     confirm_test_epic_identity(&world, &project, &epic);
+    activate_publication_policy(&world, &project);
     Review {
         project_id: ProjectId::parse(&project).expect("a project id"),
         world,

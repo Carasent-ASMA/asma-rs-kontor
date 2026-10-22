@@ -2864,6 +2864,7 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE desks;
          DROP TABLE execution_hold_attention;
          DROP TABLE operational_gaps;
+         ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");

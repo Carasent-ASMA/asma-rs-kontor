@@ -64,6 +64,9 @@ pub struct OrchestrationSource {
     pub fleet: String,
     /// The Core Team source: [`CORE_TEAM_SOURCE`].
     pub core_team: String,
+    /// Project data; its publication policy resolves into the immutable manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<serde_yaml_ng::Value>,
 }
 
 /// `teams/core-team.yml`: the explicit selected roster.
@@ -149,12 +152,20 @@ pub fn resolve_bundle(
     sources: &BundleSources<'_>,
     catalog: &RoleCatalogRevision,
 ) -> Result<ResolvedBundle, FleetError> {
+    let publication_policy =
+        crate::project_policy::parse(sources.orchestration).map_err(invalid)?;
     let selector: OrchestrationSource =
         serde_yaml_ng::from_str(sources.orchestration).map_err(|_| invalid(O01))?;
     if selector.schema_version != SOURCE_SCHEMA_VERSION {
         return Err(invalid(O01));
     }
-    if selector.fleet != FLEET_SOURCE || selector.core_team != CORE_TEAM_SOURCE {
+    if !matches!(
+        selector.fleet.as_str(),
+        FLEET_SOURCE | "orchestration/fleet.yml"
+    ) || !matches!(
+        selector.core_team.as_str(),
+        CORE_TEAM_SOURCE | "orchestration/teams/core-team.yml"
+    ) {
         return Err(invalid(O02));
     }
     let policy = FleetSnapshot::parse_policy(sources.fleet)?;
@@ -209,6 +220,7 @@ pub fn resolve_bundle(
         policy_schema_version: policy.schema_version(),
         role_catalog: pin,
         core_team_revision_hash: roster.hash().clone(),
+        publication_policy,
     };
     Ok(ResolvedBundle {
         policy,
@@ -259,6 +271,7 @@ pub fn propose_orchestration() -> Result<String, FleetError> {
         schema_version: SOURCE_SCHEMA_VERSION,
         fleet: FLEET_SOURCE.to_owned(),
         core_team: CORE_TEAM_SOURCE.to_owned(),
+        project: None,
     })
     .map_err(|_| invalid(O01))
 }

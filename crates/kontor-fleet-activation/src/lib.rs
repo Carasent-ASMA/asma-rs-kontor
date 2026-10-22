@@ -321,6 +321,9 @@ pub struct BundleManifest {
     pub role_catalog: RoleCatalogPin,
     /// The published canonical Core Team revision.
     pub core_team_revision_hash: ContentHash,
+    /// Optional project publication authority, pinned by this manifest's hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_policy: Option<kontor_core::publication::PublicationPolicy>,
 }
 
 impl BundleManifest {
@@ -329,7 +332,12 @@ impl BundleManifest {
     /// # Errors
     /// M-09 when the manifest names another format or cannot be canonical.
     pub fn canonicalize(&self) -> Result<CanonicalDocument, FleetError> {
-        if self.schema_version != MANIFEST_SCHEMA_VERSION {
+        if self.schema_version != MANIFEST_SCHEMA_VERSION
+            || self
+                .publication_policy
+                .as_ref()
+                .is_some_and(|policy| policy.validate().is_err())
+        {
             return Err(invalid(M09));
         }
         CanonicalDocument::from_serializable(self).map_err(|_| invalid(M09))
@@ -434,7 +442,12 @@ pub fn verify_manifest(
     )?;
     let document = CanonicalDocument::from_stored(&text, hash).map_err(|_| invalid(M08))?;
     let manifest: BundleManifest = document.deserialize().map_err(|_| invalid(M09))?;
-    if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
+    if manifest.schema_version != MANIFEST_SCHEMA_VERSION
+        || manifest
+            .publication_policy
+            .as_ref()
+            .is_some_and(|policy| policy.validate().is_err())
+    {
         return Err(invalid(M09));
     }
     Ok(manifest)

@@ -15,6 +15,14 @@ project:
   # internal.
   key: EXM
   name: Example Project
+  # Synthetic internal id for this example. Supply the existing realm ProjectId;
+  # loading this file never creates it. Direct-only projects may omit this
+  # field together with publication, which leaves publication unconfigured.
+  project_id: '00000000-0000-7000-8000-000000000001'
+  publication:
+    root_repository: example-org/example-project
+    # Exact durable Task.module keys, independent of resource_roots aliases.
+    module_repositories: {}
   owner: Platform Owner
 
   # Project resource paths begin with one of these logical roots. Each root is

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 136;
+pub const SCHEMA_VERSION: i64 = 137;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -470,6 +470,8 @@ const MIGRATIONS: &[&str] = &[
     // themselves; and an overdue review raises one typed attention record
     // (ASMA-8517 / REQ-008).
     include_str!("../migrations/0136_hold_terms_and_attention.sql"),
+    // Schema v137. Pin publication judgements to their activated authorization bundle.
+    include_str!("../migrations/0137_publication_policy_provenance.sql"),
 ];
 
 const _: () = assert!(
@@ -1037,6 +1039,66 @@ fn verify_applied(connection: &Connection) -> Result<(), StoreError> {
 #[cfg(test)]
 mod release_integration_tests {
     use super::*;
+
+    #[test]
+    fn released_136_attestations_keep_their_original_decision_without_invented_provenance() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kontor.db");
+        let connection = Connection::open(&path).unwrap();
+        for migration in &MIGRATIONS[..136] {
+            connection.execute_batch(migration).unwrap();
+        }
+        let realm = RealmMetadata::create(RealmId::generate(), Timestamp::now());
+        connection.execute(
+            "INSERT INTO realm_metadata (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, ?2, ?3, NULL)",
+            rusqlite::params![realm.realm_id.to_string(), i64::from(realm.schema_version.get()), realm.created_at.to_string()],
+        ).unwrap();
+        let project = kontor_core::id::ProjectId::generate();
+        let attestation = kontor_core::id::PublicationAttestationId::generate();
+        connection.execute(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES (?1, 'Synthetic publication', '/tmp/publication-136', 1, '2026-10-01T00:00:00Z')",
+            [project.to_string()],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO publication_attestations
+             (id, project_id, repository, base_branch, head_branch, head_sha, accepted, reasons, policy_revision, idempotency_key, recorded_at)
+             VALUES (?1, ?2, 'example-org/root', 'main', 'feat/EXM-1-work', ?3, 1, '[]', 4, 'released-136', '2026-10-01T00:00:00Z')",
+            rusqlite::params![attestation.to_string(), project.to_string(), "a".repeat(40)],
+        ).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 136);
+        drop(connection);
+        let store = crate::SqliteStore::open(&path).unwrap();
+        assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
+        let record = store
+            .get_publication_attestation(project, attestation)
+            .unwrap()
+            .unwrap();
+        assert!(record.decision.accepted);
+        assert_eq!(record.decision.policy_revision, 4);
+        assert_eq!(record.decision.source_bundle_hash, None);
+        let connection = Connection::open(path).unwrap();
+        assert!(
+            connection
+                .execute(
+                    "UPDATE publication_attestations SET source_bundle_hash = ?1 WHERE id = ?2",
+                    rusqlite::params![
+                        ContentHash::of(b"invented provenance").as_str(),
+                        attestation.to_string()
+                    ],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "DELETE FROM publication_attestations WHERE id = ?1",
+                    [attestation.to_string()]
+                )
+                .is_err()
+        );
+    }
 
     /// Exercise a real released schema before applying the appended generations.
     #[test]

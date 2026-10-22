@@ -21386,6 +21386,17 @@
             "description": "The schema that policy validates under.",
             "minimum": 0
           },
+          "publication_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetPublicationPolicyDto",
+                "description": "Publication authority selected only when this bundle is activated."
+              }
+            ]
+          },
           "resolver": {
             "type": "string",
             "description": "The resolver that produced the bundle."
@@ -21754,6 +21765,48 @@
           "activation",
           "fleet_yml"
         ]
+      },
+      "FleetPublicationPolicyDto": {
+        "type": "object",
+        "description": "The explicit project publication policy pinned by an orchestration bundle.",
+        "required": [
+          "project_id",
+          "repositories",
+          "root_repository",
+          "module_repositories",
+          "base_branch"
+        ],
+        "properties": {
+          "base_branch": {
+            "type": "string",
+            "description": "The only permitted publication base branch."
+          },
+          "module_repositories": {
+            "type": "object",
+            "description": "Exact durable Task.module keys and their additional repository.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The internal existing Kontor project this policy governs."
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The project allowlist; membership alone grants no access."
+          },
+          "root_repository": {
+            "type": "string",
+            "description": "The repository every confirmed binding in the project may publish to."
+          }
+        }
       },
       "FleetRoleCatalogPinDto": {
         "type": "object",
@@ -26419,6 +26472,13 @@
           "repository": {
             "type": "string",
             "description": "The forge repository, as observed."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The immutable activated authorization bundle read for this judgement."
           },
           "task_id": {
             "type": [

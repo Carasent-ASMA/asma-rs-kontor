@@ -81,7 +81,8 @@ that explicitly supply a runtime registry retain their existing composition
 seam; the executable uses selected-folder startup.
 
 Project identity is available from the resolved entry at startup. Publication
-mapping and per-realm tracker/team installation are subsequent loader slices.
+uses the activated project policy described below; per-realm tracker/team
+installation remains a subsequent loader slice.
 Clean-start acceptance uses an empty state root and the explicitly selected
 YAML folder; startup does not repopulate work from plans or tracker epics.
 Generic snapshot and recovery capabilities remain available independently.
@@ -164,6 +165,58 @@ external tool requires JSON or another native format, that file is a generated
 projection with a recorded YAML source and content hash, not a second editable
 source. Credential values remain in the deployment's secret store; YAML holds
 credential references such as `keychain:<service>/<account>`.
+
+### Project publication authority
+
+The optional pair below configures publication for one existing Kontor Project
+in this realm. `project_id` is its explicit internal UUIDv7, distinct from the
+public tracker key. Loading this folder never creates a Project.
+
+```yaml
+project:
+  project_id: "00000000-0000-7000-8000-000000000001" # synthetic example
+  forge:
+    repositories: [example-org/root, example-org/worker]
+    base_branch: main
+  publication:
+    root_repository: example-org/root
+    module_repositories:
+      "components/worker": example-org/worker
+```
+
+Omitting both `project_id` and `publication` supports direct-only startup with
+an empty store and grants no publication authority. If either is present, both
+are required, including `root_repository` and `module_repositories`. An empty
+module map is valid for a root-only project. Invalid or partial policy is
+refused by field name at startup and bundle preview. Repository values must be
+exact validated entries in `project.forge.repositories`; membership in that
+list alone grants no access. Duplicate or invalid ModuleKeys, wildcards and
+unlisted repositories are refused.
+
+Module keys match durable `Task.module` values exactly. They are independent
+of `resource_roots`, checkout paths and names. A confirmed task binding admits
+the root and only its own mapped module repository. A confirmed epic binding
+admits the root and the union for its own stored tasks. An unmapped module adds
+nothing. The base is exactly `project.forge.base_branch`, with no fallback.
+
+The existing orchestration preview → publish → activate path resolves this
+policy into its immutable manifest, alongside the exact YAML source hashes.
+Publication reads that verified activated artifact. Editing authoring files,
+publishing without activation or restarting does not replace authority. An
+absent policy, invalid active artifact, missing realm Project, mismatched
+requested ProjectId, unconfirmed or ambiguous binding or unauthorized
+repository fails closed. Fleet placement retains its existing last-valid and
+run-pin rules; publication never widens access through a raw YAML fallback.
+
+Any internal `project_id` declared by the selected tracker spec, connector or
+GitHub App must agree with this policy. Those integrations constrain authority;
+none can supply or override it. A tracker spec without an internal ID is valid.
+Policy revision 5 decisions carry `source_bundle_hash` when an activated policy
+was read. New accepted receipts require that provenance; older receipts remain
+unchanged and do not gain invented hashes. An idempotency key cannot replay an
+old acceptance after the governing policy or durable binding changes. The App
+poller rejudges unchanged PR heads too and binds its report key to the observed
+publication, subject and governing decision.
 
 ### `host.yml`
 

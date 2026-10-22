@@ -211,6 +211,11 @@ impl JiraConnectors {
     pub fn for_project(&self, project_id: ProjectId) -> Option<&JiraConnector> {
         self.projects.get(&project_id)
     }
+
+    /// Explicit internal integration bindings, without credential material.
+    pub fn configured_project_ids(&self) -> impl Iterator<Item = ProjectId> + '_ {
+        self.projects.keys().copied()
+    }
 }
 
 #[derive(Clone)]

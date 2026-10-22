@@ -61563,6 +61563,48 @@ fn ensure_governed_project(world: &World, root_path: &str) -> String {
     project
 }
 
+/// Publication examples activate their own explicit policy, through the normal
+/// immutable bundle writer. The historic identifiers below grant nothing alone.
+fn activate_publication_policy(world: &World, project: &str) {
+    let mut orchestration: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&kontor_daemon::orchestration::propose_orchestration().unwrap())
+            .unwrap();
+    orchestration["project"] = serde_yaml_ng::to_value(serde_json::json!({
+        "project_id": project,
+        "forge": {
+            "repositories": ["Carasent-ASMA/asma-modules", "Carasent-ASMA/asma-rs-kontor"],
+            "base_branch": "master",
+        },
+        "publication": {
+            "root_repository": "Carasent-ASMA/asma-modules",
+            "module_repositories": {"_tools/asma-rs-kontor": "Carasent-ASMA/asma-rs-kontor"},
+        },
+    }))
+    .unwrap();
+    let catalog = bundled_role_catalog();
+    let bundle = kontor_daemon::orchestration::resolve_bundle(
+        &kontor_daemon::orchestration::BundleSources {
+            orchestration: &serde_yaml_ng::to_string(&orchestration).unwrap(),
+            fleet: include_str!("../../../config/examples/orchestration/fleet.yml"),
+            core_team: &kontor_daemon::orchestration::propose_core_team(&catalog).unwrap(),
+        },
+        &catalog,
+    )
+    .unwrap();
+    let source = kontor_daemon::fleet::FleetSource::at(world.directory.path());
+    let published = source.publish_bundle(&bundle).unwrap();
+    let standing = kontor_fleet_activation::read_activation(world.directory.path()).ok();
+    source
+        .activate_bundle(
+            &published.bundle_hash,
+            &kontor_daemon::fleet::ActivationFence {
+                policy_hash: standing.as_ref().map(|record| record.policy_hash.clone()),
+                source_bundle_hash: standing.and_then(|record| record.source_bundle_hash),
+            },
+        )
+        .unwrap();
+}
+
 async fn keyed_epic(world: &World, key: &str) -> KeyedEpic {
     keyed_epic_full(world, key, None, None).await
 }
@@ -61588,6 +61630,7 @@ async fn keyed_epic_full(
     ungoverned_root: Option<&str>,
     module: Option<&str>,
 ) -> KeyedEpic {
+    activate_publication_policy(world, GOVERNED_PROJECT_ID);
     let project = match ungoverned_root {
         Some(root) => ensure_project(world, key, "Kontor", root).await.json()["project_id"]
             .as_str()
@@ -61784,6 +61827,7 @@ async fn a_branch_key_resolving_to_an_epic_and_task_is_refused_as_ambiguous() {
         .as_str()
         .expect("id")
         .to_owned();
+    activate_publication_policy(&world, &project);
     let revision = created.json()["revision"].as_u64().expect("revision");
     let category = first_category(&world).await;
     let mut body = epic_body(
@@ -61959,7 +62003,11 @@ async fn a_publication_merge_without_a_github_app_is_refused_as_unsupported() {
     .send(&world)
     .await;
     assert_eq!(refused.code(), "unsupported_capability", "{}", refused.body);
-    assert!(refused.body.contains("github-app.json"), "{}", refused.body);
+    assert!(
+        refused.body.contains("forge/github-app.yml"),
+        "{}",
+        refused.body
+    );
 }
 /// Progress is derived from durable seats, not from what a start reported.
 ///
@@ -66706,7 +66754,7 @@ async fn another_project_does_not_inherit_the_governed_repositories() {
         assert_eq!(refused.status, 200, "{}", refused.body);
         assert_eq!(
             refused.json()["reasons"],
-            serde_json::json!(["repository_mismatch"]),
+            serde_json::json!(["publication_project_mismatch"]),
             "{repository} must not be authorized for an ungoverned project: {}",
             refused.body
         );

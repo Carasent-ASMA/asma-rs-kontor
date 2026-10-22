@@ -392,6 +392,26 @@ impl FleetSource {
         Ok(self.placement()?.map(|placement| placement.policy))
     }
 
+    /// Read publication authority only from the verified activated bundle.
+    /// Authoring edits and unactivated publications never enter this path.
+    pub(crate) fn publication_policy(
+        &self,
+    ) -> Result<Option<(ContentHash, kontor_core::publication::PublicationPolicy)>, FleetError>
+    {
+        if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            return Ok(None);
+        }
+        let activated = kontor_fleet_activation::load(&self.state_root)?;
+        Ok(activated.bundle.and_then(|bundle| {
+            activated
+                .record
+                .source_bundle_hash
+                .zip(bundle.manifest.publication_policy)
+        }))
+    }
+
     /// The policy placement reads and, under an aligned activation, the Core
     /// Team revision it selects — both from one verified read, so a leadership
     /// launch never pairs a policy with a roster from another activation.
