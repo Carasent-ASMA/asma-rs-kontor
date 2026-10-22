@@ -252,6 +252,8 @@ pub struct TaskWorktreeCorrection<'a> {
     pub branch: &'a ExternalName,
     /// Digest of the exact preview this command applies.
     pub preview_hash: &'a ContentHash,
+    /// Optional selected-source intent frozen atomically with the new claim.
+    pub checkout: Option<&'a crate::checkouts::TaskCheckoutPlacement>,
 }
 
 /// Immutable before/after evidence for one worktree-claim correction.
@@ -4295,6 +4297,18 @@ impl SqliteStore {
             )
             .map_err(backend)?;
 
+        if let Some(pin) = request.checkout {
+            if pin.project_id != project_id
+                || pin.task_id != request.task_id
+                || &pin.worktree != request.replacement
+            {
+                return Err(conflict(
+                    "task worktree correction",
+                    "checkout.intent_claim_mismatch",
+                ));
+            }
+            crate::checkouts::insert(&transaction, pin, request.command.created_at)?;
+        }
         let correction = StoredTaskWorktreeCorrection {
             receipt_id: request.command.receipt_id,
             project_id,

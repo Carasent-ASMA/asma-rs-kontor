@@ -58,6 +58,13 @@ pub(crate) fn validate(project: &Value) -> Result<(), &'static str> {
         .as_str()
         .filter(|layout| relative(layout, false))
         .ok_or("invalid or missing project.worktree_layout")?;
+    validate_layout(layout)
+}
+
+fn validate_layout(layout: &str) -> Result<(), &'static str> {
+    if !relative(layout, false) {
+        return Err("invalid project.worktree_layout");
+    }
     let parts: Vec<_> = layout.split('/').collect();
     if parts.first().is_none_or(|part| part.contains(['<', '>']))
         || parts.iter().filter(|part| **part == "<key-slug>").count() != 1
@@ -69,6 +76,32 @@ pub(crate) fn validate(project: &Value) -> Result<(), &'static str> {
         return Err("invalid project.worktree_layout placeholders");
     }
     Ok(())
+}
+
+pub(crate) fn render_layout(
+    layout: &str,
+    root: &str,
+    key: &kontor_core::branch::TrackerKey,
+    module: &kontor_core::id::ModuleKey,
+) -> Result<(String, String), &'static str> {
+    validate_layout(layout)?;
+    kontor_runtime::workspace::WorkspaceRoot::parse(root)
+        .map_err(|_| "worktree.project_root_invalid")?;
+    let prefix = layout
+        .split('/')
+        .take_while(|part| !part.contains('<'))
+        .collect::<Vec<_>>()
+        .join("/");
+    let rendered = layout
+        .replace("<key-slug>", &key.as_str().to_ascii_lowercase())
+        .replace("<module>", module.as_str());
+    let destination = format!("{}/{rendered}", root.trim_end_matches('/'));
+    kontor_runtime::workspace::WorkspaceRoot::parse(&destination)
+        .map_err(|_| "worktree.rendered_path_invalid")?;
+    Ok((
+        destination,
+        format!("{}/{prefix}", root.trim_end_matches('/')),
+    ))
 }
 
 fn resource(value: &Value, roots: &serde_yaml_ng::Mapping) -> Option<()> {

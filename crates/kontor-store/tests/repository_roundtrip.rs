@@ -2866,6 +2866,7 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE operational_gaps;
          DROP TABLE provider_marker_write_starts;
          DROP TABLE provider_marker_completions;
+         DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;
          ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;
          PRAGMA user_version = 114;",
         )

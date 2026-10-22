@@ -6673,7 +6673,7 @@ pub struct WorktreeClaimCorrectionRequest {
     /// Exact currently stored claim; a mismatch refuses rather than overwrites.
     #[schema(value_type = String)]
     pub old_worktree: ExternalName,
-    /// Exact deterministic ASMA catalog-module target.
+    /// Exact deterministic target rendered from the selected layout and durable module.
     #[schema(value_type = String)]
     pub new_worktree: ExternalName,
 }
@@ -6699,7 +6699,7 @@ pub struct WorktreeClaimCorrectionPreviewDto {
     /// Exact derived replacement.
     #[schema(value_type = String)]
     pub new_worktree: ExternalName,
-    /// Catalog module whose repository the target names.
+    /// Exact durable task module used to render the target.
     pub module: String,
     /// Jira-key publication branch the supported materializer must create.
     pub branch: String,
@@ -6747,7 +6747,7 @@ pub struct WorktreeClaimCorrectionAppliedDto {
     /// Exact replacement claim read from immutable evidence.
     #[schema(value_type = String)]
     pub new_worktree: ExternalName,
-    /// Catalog module whose repository the target names.
+    /// Exact durable task module used to render the target.
     pub module: String,
     /// Jira-key publication branch the supported materializer must create.
     pub branch: String,

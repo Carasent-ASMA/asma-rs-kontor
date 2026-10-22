@@ -2868,6 +2868,16 @@ fn rewind_to_schema_121(path: &std::path::Path) {
         publication_provenance, 0,
         "a historical rewind must not erase publication provenance"
     );
+    let checkout_rows: i64 = connection
+        .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        checkout_rows, 0,
+        "historical fixture must not erase checkout evidence"
+    );
+    connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
     connection
         .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
         .expect("the current-only v137 column is removed from the fixture");

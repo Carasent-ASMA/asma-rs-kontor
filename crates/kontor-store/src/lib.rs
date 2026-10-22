@@ -35,6 +35,7 @@ pub use attention::{AttentionObserver, AttentionSignal, AttentionSignalKind, tea
 
 pub mod authority;
 pub mod backup;
+pub mod checkouts;
 mod commands;
 mod consultation_permissions;
 mod consultation_releases;

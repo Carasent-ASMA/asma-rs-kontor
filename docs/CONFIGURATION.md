@@ -62,6 +62,7 @@ The first loader slice reads these bootstrap sources:
 | Selected-folder source | Contents |
 | --- | --- |
 | `host.yml` → `runtime.planes` | Existing runtime settings document (`schema_version: 4` or `5`, `runtimes` list), nested under a schema-1 host document |
+| `host.yml` → `checkouts` | Optional explicit root/exact-module task Git sources; validated before startup and frozen in durable placement intents before Git effects |
 | `tracker/connectors.yml` | Schema-1 connector bindings (`projects` list); separate from `project.tracker.spec`, the tracker specification entry |
 | `forge/github-app.yml` | Schema-1 GitHub App settings, with the private key kept outside the repository |
 | `orchestration/memory.yml` | Optional memory transport settings |
@@ -260,11 +261,53 @@ It is a bootstrap input, never an activated policy.
 | `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; optional `pr_desk`, an absolute desk history root that overrides `project.pr_desk.history_root`; absolute paths on this machine. |
 | `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
 | `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
+| `checkouts` | mapping | Optional task Git sources: required `root` record and `modules` mapping. Each record requires `repository`, `path`, `base_ref`; see below. These are sources, separate from destination layout. |
 | `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
 | `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential, serves, efforts?, qualification?}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value; `serves` maps each canonical fleet model to the model id this route launches (`route_model_id`); a cross-provider route, or a route with a different launch id, also states `qualification`. |
 | `routes` | mapping | Fleet domain → ordered logical slots this host enables. A slot omitted here is unavailable on this host. |
 | `keychain` | mapping | `service_prefix` for credential references. |
 | `launchd` | mapping | Service labels for the daemon and desk. |
+
+**Task checkout sources.** `host.checkouts.root` identifies the existing source
+whose canonical checkout root equals the durable `Project.root_path`.
+`host.checkouts.modules` uses exact canonical `Task.module` keys, including all
+relative path segments. An exact record selects its source; `{}` is valid.
+Without an exact record, the root supplies objects only for a normal tracked
+place at the resolved base commit, with no gitlink, symlink or nested repository
+boundary. A missing, new or inconclusive place requires an exact record, which
+may explicitly choose the root repository. Resource-root aliases, publication
+module mappings, repository names and origins never select a source.
+
+Each record's `repository` must be an exact validated
+`project.forge.repositories` member. This constrains source identity and grants
+no publication permission. Its `path` must be an absolute canonical existing
+working-checkout root; discovering a parent repository from a subdirectory is
+refused. `base_ref` is exactly `refs/heads/<project.forge.base_branch>` or
+`refs/remotes/<configured-remote>/<project.forge.base_branch>`, resolving to a
+commit. There is no default-branch search, fetch, clone or implicit remote task
+branch fallback. Configuration loading only validates and reads Git.
+
+Task destinations keep the existing contract: `project.worktree_layout`
+renders the full durable module and the confirmed tracker key. Root-only tasks
+require an explicit validated durable worktree and use the root source; no
+module or destination is invented. Deterministic claim correction still needs
+a module. An authored ticket link is not confirmation: an undeclared module
+task stays unplaced until native materialization reads its confirmed durable
+tracker binding. Its first derived claim and source intent commit together.
+Existing destinations must be exact checkout roots with the selected
+source's Git common directory, a confirmed branch and durable task ownership.
+Containment and cross-task/consultation collision guards apply.
+
+Before the first Git effect, a durable placement intent freezes the source
+record, canonical common directory, exact base ref, resolved commit, branch and
+claim. A pending retry uses that intent. A confirmed placement only verifies
+its existing destination; it never recreates a missing running binding.
+Host edits require restart for new placements and cannot switch an existing
+pin. Guarded claim correction freezes the replacement source with the claim
+atomically. Omitting `host.checkouts` permits empty/direct-only startup and
+disables managed task source selection without a legacy fallback. Consultation
+placement continues through its existing `consultation_root` consumer; this
+task source contract does not render or relocate consultations.
 
 **Route join (Q-04).** The fleet owns the canonical policy; the host owns the
 working route. They meet on two keys: the logical slot and the canonical model.
