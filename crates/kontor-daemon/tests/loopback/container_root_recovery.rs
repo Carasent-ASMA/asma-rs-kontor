@@ -970,7 +970,9 @@ async fn a_new_epic_apply_does_not_wait_for_a_container_recovery_in_flight() {
 /// held at its create, and writes only after the recovery's result is durable.
 #[tokio::test]
 async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let created = Call::post(
         "/v1/projects:ensure",
@@ -1073,7 +1075,17 @@ async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
         format!("/v1/projects/{project}/epics/{}/roster:upgrade-apply", epic.id),
         &serde_json::json!({"preview_hash":roster_preview.json()["preview_hash"],"expected_revision":1}),
     ).signed_as(&world, "admin").with_key("backlog-import-race-roster").send(&world).await;
-    assert_eq!(roster_upgrade.status, 200, "{}", roster_upgrade.body);
+    assert_eq!(roster_upgrade.status, 400, "{}", roster_upgrade.body);
+    assert!(roster_upgrade.body.contains("operational_domain_unpinned"));
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_epic_roster(project, epic.id))
+            .unwrap()
+            .is_none()
+    );
+    harness::legacy_epic::install_geometry(&world, project, epic.id);
     let revision = world
         .daemon
         .state()

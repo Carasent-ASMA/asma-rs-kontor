@@ -9,7 +9,185 @@ pub(super) struct ProjectDomainSelection {
     pub preview_hash: ContentHash,
 }
 
+/// One persisted selection, verified against its immutable published bytes.
+pub(super) struct RuntimeDomain {
+    pub bundle_hash: ContentHash,
+    pub domain: OperationalDomainPack,
+    pub topology: TopologySnapshot,
+    pub catalog: kontor_core::spec::RoleCatalogRevision,
+}
+
 impl Services {
+    /// Readback only: exact frozen role/slot bindings identify recorded seats.
+    /// This does not resolve kinds or grant authority to an unpinned roster.
+    pub(super) fn recorded_core_team_node(
+        &self,
+        project: ProjectId,
+        epic: MiniProjectId,
+    ) -> Result<Option<SessionTopologyNode>, ApiError> {
+        let Some(roster) = self.optional_frozen_roster(project, epic)? else {
+            return Ok(None);
+        };
+        self.state()?
+            .with_store(|store| {
+                Self::recorded_core_team_node_in(store, project, epic, &roster.revision)
+            })
+            .map_err(|error| self.refuse(&error))
+    }
+
+    pub(super) fn recorded_core_team_node_in(
+        store: &kontor_store::SqliteStore,
+        project: ProjectId,
+        epic: MiniProjectId,
+        roster: &CoreTeamRevision,
+    ) -> Result<Option<SessionTopologyNode>, RepositoryError> {
+        let mut found = None;
+        for node in store.list_topology_nodes(project, Some(epic))? {
+            if node.task_id.is_some() {
+                continue;
+            }
+            if store
+                .list_seat_bindings(project, node.id)?
+                .iter()
+                .any(|seat| {
+                    roster
+                        .seats
+                        .iter()
+                        .any(|frozen| Self::purpose_binding_matches(seat, frozen))
+                })
+            {
+                if found.is_some() {
+                    return Err(RepositoryError::Conflict {
+                        subject: "role slot",
+                        rule: "role_slot_binding_ambiguous",
+                    });
+                }
+                found = Some(node);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Recovery reuses the recorded persona, including its deliberate absence.
+    pub(super) fn prepare_epic_seat_launch(
+        &self,
+        epic: MiniProjectId,
+        role: &RoleCode,
+        intent: &StoredHostedSeatLaunchIntent,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let state = self.state()?;
+        let prepared = state
+            .with_store(|store| {
+                store.get_hosted_seat_launch_intent(
+                    intent.project_id,
+                    intent.seat_binding_id,
+                    intent.occupancy_generation,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .is_some();
+        let persona = if prepared {
+            None
+        } else {
+            self.freeze_epic_role_persona(intent.project_id, epic, role)?
+        };
+        let persona = state
+            .with_store(|store| store.prepare_hosted_seat_launch_persona(intent, persona.as_ref()))
+            .map_err(|error| self.refuse(&error))?;
+        if persona
+            .as_ref()
+            .is_some_and(|persona| &persona.role_code != role)
+        {
+            return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch"));
+        }
+        Ok(persona)
+    }
+
+    pub(super) fn domain_topology(
+        &self,
+        context: &RuntimeDomain,
+    ) -> Result<kontor_core::spec::ProjectSessionTopologySpec, ApiError> {
+        context
+            .domain
+            .topology_specs
+            .iter()
+            .find(|spec| {
+                spec.spec_id == context.topology.spec_id && spec.version == context.topology.version
+            })
+            .cloned()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "operational_domain_topology_mismatch",
+                )
+            })
+    }
+
+    pub(super) fn runtime_domain(
+        &self,
+        project: ProjectId,
+        epic: Option<MiniProjectId>,
+    ) -> Result<RuntimeDomain, ApiError> {
+        let state = self.state()?;
+        let unpinned = || self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned");
+        let (definition, bundle, roster) = match epic {
+            Some(epic) => {
+                self.epic_row(project, epic)?;
+                let pin = state
+                    .with_store(|store| store.get_mini_project_team_definition(project, epic))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(unpinned)?;
+                let bundle = pin.operational_domain_bundle_hash.ok_or_else(unpinned)?;
+                (
+                    pin.definition,
+                    bundle,
+                    self.frozen_roster(project, epic)?.revision,
+                )
+            }
+            None => return Err(unpinned()),
+        };
+        let domain =
+            self.domain_for_definition(project, &definition, Some(&bundle), Some(&roster))?;
+        // validate_roster proved every frozen seat agrees with the manifest's
+        // exact catalog pin; document order supplies no catalog authority.
+        let role = &roster
+            .seats
+            .first()
+            .expect("verified mandatory roster")
+            .role;
+        let catalog = domain
+            .role_catalogs
+            .iter()
+            .find(|catalog| {
+                catalog.catalog_id == role.catalog_id && catalog.version == role.catalog_revision
+            })
+            .expect("domain_for_definition verified the frozen catalog")
+            .clone();
+        let declared = domain
+            .team_definitions
+            .iter()
+            .find(|candidate| {
+                candidate.definition_id == definition.definition_id
+                    && candidate.version == definition.version
+            })
+            .expect("domain_for_definition verified the exact definition");
+        let topology = declared.topology.clone();
+        if let Some(epic) = epic
+            && self.epic_pin(project, epic)? != topology
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "operational_domain_topology_mismatch",
+            ));
+        }
+        Ok(RuntimeDomain {
+            bundle_hash: bundle,
+            domain,
+            topology,
+            catalog,
+        })
+    }
+
     pub(super) fn epic_domain_binding(
         &self,
         project: ProjectId,
@@ -108,7 +286,7 @@ impl Services {
         Ok(())
     }
 
-    fn domain_for_definition(
+    pub(super) fn domain_for_definition(
         &self,
         project: ProjectId,
         definition: &TeamDefinitionSnapshot,

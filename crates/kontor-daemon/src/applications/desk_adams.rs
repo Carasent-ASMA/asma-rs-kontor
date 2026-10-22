@@ -74,9 +74,10 @@ impl Services {
         project_id: ProjectId,
         epic_id: MiniProjectId,
     ) -> Result<TopologyKindKey, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         Ok(match self.epic_desk_leadership(project_id, epic_id)? {
             Some(led) => led.leadership.epic_kind,
-            None => self.domain.delivery.control_kind.clone(),
+            None => context.domain.delivery.control_kind,
         })
     }
 

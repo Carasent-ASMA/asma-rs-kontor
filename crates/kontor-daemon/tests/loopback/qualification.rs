@@ -238,6 +238,24 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     let original_bytes = original.canonicalize().expect("canonical");
     // Remove desks too for the rollback control; the bundled old revision is v1.
     let deskless = realm.world.daemon.state().with_store(|store| {
+        let historical = kontor_profiles::bundled_operational_domain()
+            .unwrap()
+            .team_definitions
+            .remove(0);
+        if store
+            .get_team_definition(
+                realm.project_id,
+                historical.definition_id,
+                historical.version,
+            )
+            .unwrap()
+            .is_none()
+        {
+            store
+                .publish_team_definition(realm.project_id, &historical, kontor_api::now())
+                .unwrap();
+        }
+
         store
             .get_team_definition(
                 realm.project_id,

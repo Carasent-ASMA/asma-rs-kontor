@@ -5,7 +5,7 @@ use super::domain_selection_tests::{activate, project, request, select};
 use super::*;
 use kontor_store::{EpicApplyCommand, EpicDomainBinding};
 
-async fn selected(
+pub(super) async fn selected(
     services: &Services,
     folder: &std::path::Path,
 ) -> (ProjectId, crate::orchestration::ResolvedBundle, ContentHash) {
@@ -44,7 +44,60 @@ async fn selected(
     (project, bundle, hash)
 }
 
-fn command(
+pub(super) async fn select_existing(
+    services: &Services,
+    folder: &std::path::Path,
+    project: ProjectId,
+) {
+    let (bundle, hash, _) = resolve(services, folder);
+    let domain = services.purpose_source().unwrap().clone();
+    services.fleet.publish_bundle(&bundle).unwrap();
+    activate(services, &hash);
+    services.state().unwrap().with_store(|store| {
+        for topology in &domain.topology_specs {
+            store
+                .publish_topology_spec(
+                    project,
+                    topology,
+                    &Shareability::default_for(ShareabilityTier::ProjectKnowledge).unwrap(),
+                    kontor_api::now(),
+                )
+                .unwrap();
+        }
+        for definition in &domain.team_definitions {
+            store
+                .publish_team_definition(project, definition, kontor_api::now())
+                .unwrap();
+        }
+        if store.get_current_core_team(project).unwrap().is_none() {
+            store
+                .publish_core_team_revision(
+                    &StoredCoreTeamRevision {
+                        project_id: project,
+                        version: bundle.revision.version,
+                        catalog_hash: bundle.revision.catalog_hash.clone(),
+                        seats: serde_json::to_value(&bundle.revision.seats).unwrap(),
+                        published_at: kontor_api::now(),
+                    },
+                    &domain.role_catalogs[0],
+                )
+                .unwrap();
+        }
+    });
+    let preview = services
+        .preview_project_team_definition_selection(project, &request(&domain))
+        .unwrap();
+    select(
+        services,
+        project,
+        preview.preview_hash,
+        &format!("select-{project}"),
+    )
+    .await
+    .unwrap();
+}
+
+pub(super) fn command(
     services: &Services,
     project: ProjectId,
     binding: &EpicDomainBinding,

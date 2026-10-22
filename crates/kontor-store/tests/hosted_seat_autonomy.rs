@@ -2857,6 +2857,26 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 /// where those rows lived.
 fn rewind_to_schema_121(path: &std::path::Path) {
     let connection = Connection::open(path).expect("the database opens");
+    for table in [
+        "project_team_definition_defaults",
+        "mini_project_team_definition_snapshots",
+    ] {
+        let pins: i64 = connection
+            .query_row(
+                &format!(
+                    "SELECT count(*) FROM {table} WHERE operational_domain_bundle_hash IS NOT NULL"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pins, 0, "historical fixture must not erase domain pins");
+        connection
+            .execute_batch(&format!(
+                "ALTER TABLE {table} DROP COLUMN operational_domain_bundle_hash;"
+            ))
+            .unwrap();
+    }
     let publication_provenance: i64 = connection
         .query_row(
             "SELECT count(*) FROM publication_attestations WHERE source_bundle_hash IS NOT NULL",
@@ -3322,5 +3342,69 @@ fn a_replayed_binding_is_proved_before_it_answers_unchanged() {
             }
         ),
         "{refused:?}"
+    );
+}
+
+#[test]
+fn launch_persona_is_atomic_with_intent_and_replay_preserves_frozen_absence() {
+    use kontor_core::id::{BoundedText, SchemaVersion};
+    use kontor_core::spec::{RolePersonaDelivery, RolePersonaSnapshot};
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "persona.atomic");
+    let launch = intent(&fixture, seat, SeatAutonomy::Advisory);
+    let persona = RolePersonaSnapshot::freeze(
+        RoleCode::parse("LSA").unwrap(),
+        BoundedText::parse("Pinned domain persona").unwrap(),
+        RolePersonaDelivery::CreateOnlyNoReadback,
+        SchemaVersion::parse(1).unwrap(),
+        at("2026-09-17T01:00:30Z"),
+    )
+    .unwrap();
+    let sql = Connection::open(&fixture.db_path).unwrap();
+    sql.execute_batch("CREATE TRIGGER fail_persona BEFORE INSERT ON hosted_seat_role_personas BEGIN SELECT RAISE(ABORT, 'persona fixture failure'); END;").unwrap();
+    assert!(
+        fixture
+            .store
+            .prepare_hosted_seat_launch_persona(&launch, Some(&persona))
+            .is_err()
+    );
+    assert!(
+        fixture
+            .store
+            .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+            .unwrap()
+            .is_none()
+    );
+    sql.execute_batch("DROP TRIGGER fail_persona;").unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .prepare_hosted_seat_launch_persona(&launch, Some(&persona))
+            .unwrap(),
+        Some(persona.clone())
+    );
+    let reopened = SqliteStore::open(&fixture.db_path).unwrap();
+    assert_eq!(
+        reopened
+            .prepare_hosted_seat_launch_persona(&launch, None)
+            .unwrap(),
+        Some(persona.clone())
+    );
+    let sparse = intent(
+        &fixture,
+        fixture.seat("TPM", "persona.sparse"),
+        SeatAutonomy::Advisory,
+    );
+    assert!(
+        reopened
+            .prepare_hosted_seat_launch_persona(&sparse, None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        reopened
+            .prepare_hosted_seat_launch_persona(&sparse, Some(&persona))
+            .unwrap()
+            .is_none()
     );
 }

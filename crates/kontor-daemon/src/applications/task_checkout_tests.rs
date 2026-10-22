@@ -85,6 +85,14 @@ impl World {
     }
 
     fn with_claim(module: Option<&str>, confirmed: bool, declared: bool) -> Self {
+        Self::with_domain_claim(module, confirmed, declared, false)
+    }
+    fn with_domain_claim(
+        module: Option<&str>,
+        confirmed: bool,
+        declared: bool,
+        pinned: bool,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let project_root = fixture::repository(&root.join("checkout"));
@@ -98,13 +106,15 @@ impl World {
             &folder,
             &serde_json::json!({"schema_version":5,"runtimes":[]}),
         );
+        let orchestration_yaml =
+            std::fs::read_to_string(folder.join(crate::config_folder::ENTRY)).unwrap();
         let mut folder = crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap();
         folder.checkouts = Some(fixture::inputs(&project_root));
         let home = root.join("state");
         std::fs::create_dir(&home).unwrap();
         let store = kontor_store::SqliteStore::open(&home.join("store.db")).unwrap();
         let project = ProjectId::generate();
-        let epic = MiniProjectId::generate();
+        let mut epic = MiniProjectId::generate();
         let task = TaskId::generate();
         let now = kontor_api::now();
         store
@@ -115,14 +125,135 @@ impl World {
                 created_at: now,
             })
             .unwrap();
-        store
-            .create_mini_project(&NewMiniProject {
-                id: epic,
-                project_id: project,
-                name: ExternalName::parse("Checkout epic").unwrap(),
-                created_at: now,
-            })
+        if pinned {
+            let domain = &folder.realm_pack.as_ref().unwrap().domain;
+            let catalog = &domain.role_catalogs[0];
+            let core = crate::orchestration::propose_core_team(catalog, domain).unwrap();
+            let orchestration = orchestration_yaml;
+            let fleet_yaml = include_str!("../../../../config/examples/orchestration/fleet.yml");
+            let mut bundle = crate::orchestration::resolve_bundle(
+                &crate::orchestration::BundleSources {
+                    orchestration: &orchestration,
+                    fleet: fleet_yaml,
+                    core_team: &core,
+                },
+                catalog,
+                domain,
+            )
             .unwrap();
+            let yaml = serde_yaml_ng::to_string(domain).unwrap();
+            let pin = kontor_fleet_activation::OperationalDomainPin {
+                source: "packs/operational-domain.yml".into(),
+                source_hash: ContentHash::of(yaml.as_bytes()),
+            };
+            bundle
+                .manifest
+                .sources
+                .insert(pin.source.clone(), pin.source_hash.clone());
+            bundle.manifest.operational_domain = Some(pin);
+            bundle.operational_domain = Some(yaml);
+            let fleet = crate::fleet::FleetSource::at(&home);
+            let hash = fleet.publish_bundle(&bundle).unwrap().bundle_hash;
+            fleet
+                .activate_bundle(&hash, &crate::fleet::ActivationFence::default())
+                .unwrap();
+            for spec in &domain.topology_specs {
+                store
+                    .publish_topology_spec(
+                        project,
+                        spec,
+                        &Shareability::default_for(ShareabilityTier::ProjectKnowledge).unwrap(),
+                        now,
+                    )
+                    .unwrap();
+            }
+            for definition in &domain.team_definitions {
+                store
+                    .publish_team_definition(project, definition, now)
+                    .unwrap();
+            }
+            store
+                .publish_core_team_revision(
+                    &StoredCoreTeamRevision {
+                        project_id: project,
+                        version: bundle.revision.version,
+                        catalog_hash: bundle.revision.catalog_hash.clone(),
+                        seats: serde_json::to_value(&bundle.revision.seats).unwrap(),
+                        published_at: now,
+                    },
+                    catalog,
+                )
+                .unwrap();
+            let selection = ProjectTeamDefinitionDefault {
+                project_id: project,
+                expected: None,
+                definition: TeamDefinitionSnapshot::from_revision(&domain.team_definitions[0])
+                    .unwrap(),
+                operational_domain_bundle_hash: Some(hash.clone()),
+                selected_at: now,
+            };
+            store
+                .set_project_team_definition_default(&selection, None)
+                .unwrap();
+            let selection = store
+                .get_project_team_definition_default(project)
+                .unwrap()
+                .unwrap();
+            let binding = kontor_store::EpicDomainBinding {
+                definition: selection.definition.clone(),
+                operational_domain_bundle_hash: hash,
+                roster: bundle.revision,
+            };
+            let pack = kontor_profiles::bundled_pack().unwrap();
+            let profile = kontor_profiles::resolve_profile(
+                &pack,
+                &kontor_profiles::PackCategoryKey::parse("code").unwrap(),
+                now,
+            )
+            .unwrap();
+            let envelope = ReceiptEnvelope::new(
+                store.realm_id(),
+                kontor_store::EpicApplyCommand {
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: IdempotencyKey::parse("checkout-pinned-epic").unwrap(),
+                    expected_revision: AggregateRevision::INITIAL,
+                    intent: CanonicalDocument::from_value(
+                        &serde_json::json!({"schema_version":1,"operation":"epics_apply", "project_id":project,"expected_project_revision":1,"domain_binding":binding}),
+                    )
+                    .unwrap(),
+                },
+            );
+            epic = store
+                .apply_epic_with_domain(
+                    &EpicApplication {
+                        project_id: project,
+                        name: ExternalName::parse("Checkout epic").unwrap(),
+                        epic_backlog_code: None,
+                        execution_scope: None,
+                        tasks: &[],
+                        profile: &profile.profile,
+                        definition: &profile.profile.definition,
+                        team: profile.team.as_ref(),
+                        team_source: kontor_store::TeamTemplateSource::Bundled,
+                        applied_at: now,
+                    },
+                    &binding,
+                    Some(&selection),
+                    &envelope,
+                )
+                .unwrap()
+                .unwrap()
+                .mini_project_id;
+        } else {
+            store
+                .create_mini_project(&NewMiniProject {
+                    id: epic,
+                    project_id: project,
+                    name: ExternalName::parse("Checkout epic").unwrap(),
+                    created_at: now,
+                })
+                .unwrap();
+        }
         store
             .create_task(&NewTask {
                 id: task,
@@ -574,8 +705,8 @@ fn root_only_claim_is_not_eligible_for_deterministic_correction() {
 #[tokio::test]
 async fn public_task_materialization_creates_from_host_source_before_native_binding_and_replays() {
     for world in [
-        World::new(None, true),
-        World::with_claim(Some("components/worker"), true, false),
+        World::with_domain_claim(None, true, true, true),
+        World::with_domain_claim(Some("components/worker"), true, false, true),
     ] {
         let epic = world
             .state

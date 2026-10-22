@@ -632,10 +632,28 @@ result and pin; it does not resolve today's selection. Historical receipt readba
 remains available without granting new domain effects. An unpinned existing epic
 cannot acquire domain authority by reapplying it: `operational_domain_unpinned`.
 
-General operational-domain runtime/admission consumers and native consultation
-remain later WP-08 checkpoints. This creation transaction does not change their
-selection rules. Legacy compiled fixtures remain available to explicit
-embedding/tests until that cleanup is complete.
+Epic runtime placement, control-role checks, consultation kind selection and
+admission resolve the epic's persisted domain bundle. Every resolution verifies
+the immutable artifact hash and its published Team Definition, topology, catalog
+and frozen roster. Current YAML, project defaults and later activation cannot
+reinterpret that epic. Missing pins refuse `operational_domain_unpinned`; missing
+or changed artifact bytes refuse before domain-dependent effects. Recorded
+roster, occupancy and persona history remains readable without granting effects.
+
+A new epic seat launch records its persona (including an absent prompt) atomically
+with its existing launch intent. Recovery reuses that exact stored persona;
+it never fills a missing historical persona from current config. Roster upgrade
+validates the proposed roster against the epic's domain before changing the pin,
+and its preview hash includes the domain identity when present.
+
+Project Quick sessions, project Desk Adams and PR-review seat persona selection
+retain their existing behavior in this checkpoint. Quick promotion has no eligible
+frozen domain snapshot: promotion can retain its intent but epic materialization
+refuses `operational_domain_unpinned`, with no native launch or handoff. A retry
+cannot acquire authority from today's project selection. Qualifying those project
+consumers needs a separate snapshot/recovery contract. Native consultation
+placement remains a later WP-08 checkpoint; selecting its pinned kind does not
+change its placement contract.
 
 ### The PR desk contract
 

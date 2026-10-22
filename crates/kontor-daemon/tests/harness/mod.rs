@@ -16,6 +16,7 @@
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
+pub(crate) mod historical_runtime;
 pub(crate) mod legacy_epic;
 #[path = "../../../kontor-jira/tests/support/catalog.rs"]
 pub(super) mod tracker_fixtures;
@@ -1532,12 +1533,35 @@ impl DomainSelectionFixture {
         use kontor_core::id::ContentHash;
         let mut domain = kontor_profiles::bundled_operational_domain().expect("fixture domain");
         world.daemon.state().with_store(|store| {
+            if let Some(roster) = store.get_current_core_team(project).unwrap() {
+                let seats: Vec<kontor_teams::CoreTeamSeat> =
+                    serde_json::from_value(roster.seats).unwrap();
+                if let Some(seat) = seats.first() {
+                    domain.role_catalogs = vec![
+                        store
+                            .get_role_catalog(seat.role.catalog_id, seat.role.catalog_revision)
+                            .unwrap()
+                            .unwrap(),
+                    ];
+                }
+            }
             domain.team_definitions = store
                 .list_team_definitions(project)
                 .expect("published definitions");
             domain.topology_specs = store
                 .list_topology_specs(project)
                 .expect("published topologies");
+        });
+        let catalog = &domain.role_catalogs[0];
+        domain.delivery.role_bindings.retain(|binding| {
+            catalog
+                .role(&binding.role_code)
+                .is_some_and(|role| role.lifecycle == kontor_core::spec::CodeLifecycle::Current)
+        });
+        domain.role_prompts.retain(|prompt| {
+            catalog
+                .role(&prompt.role_code)
+                .is_some_and(|role| role.lifecycle == kontor_core::spec::CodeLifecycle::Current)
         });
         domain
             .validate()
