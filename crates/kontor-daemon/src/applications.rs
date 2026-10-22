@@ -9448,7 +9448,9 @@ impl Services {
             })
             .map_err(|error| self.refuse(&error))?
         {
-            if intent.model_rung != existing.model_rung || intent.autonomy != existing.autonomy {
+            if intent.model_rung.canonical_rung() != existing.model_rung
+                || intent.autonomy != existing.autonomy
+            {
                 return Err(self.deny(
                     ApiErrorCode::StaleBinding,
                     "the launch intent's frozen route or autonomy disagrees with the bound occupancy",
@@ -9916,7 +9918,7 @@ impl Services {
                     HostedSeatLaunchIntentState::Installed => IntentState::Installed,
                 },
                 observed_native_id: row.observed_native_id,
-                route: catalog_route(&row.model_rung),
+                route: catalog_route(&row.model_rung.canonical_rung()),
             })
             .collect::<Vec<_>>();
         tpm_lineage::resolve(
@@ -29138,7 +29140,7 @@ impl ApplicationOperations for Services {
                         seat_binding_id,
                         occupancy_generation: FIRST_HOSTED_OCCUPANCY,
                         autonomy,
-                        model_rung: model_rung.clone(),
+                        model_rung: (model_rung.clone()).into(),
                         state: HostedSeatLaunchIntentState::Prepared,
                         observed_native_id: None,
                         prepared_at: kontor_api::now(),
@@ -29581,9 +29583,9 @@ impl ApplicationOperations for Services {
                     expected_seat_binding_revision: request.expected_seat_binding_revision,
                     occupancy_generation: request.occupancy_generation,
                     archived_predecessor,
-                    expected_model_rung: superseded.clone(),
+                    expected_model_rung: (superseded.clone()).into(),
                     expected_prepared_at: prepared_at,
-                    replacement_model_rung: replacement.clone(),
+                    replacement_model_rung: (replacement.clone()).into(),
                     recorded_at: kontor_api::now(),
                 })
             })
@@ -29911,7 +29913,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id: plan.binding.id,
                     occupancy_generation: successor_occupancy_generation,
                     autonomy: successor_autonomy,
-                    model_rung: plan.desired.clone(),
+                    model_rung: (plan.desired.clone()).into(),
                     state: HostedSeatLaunchIntentState::Prepared,
                     observed_native_id: None,
                     prepared_at: kontor_api::now(),
@@ -43814,6 +43816,30 @@ impl Services {
             )
             .map_err(|error| self.refuse_fleet_policy(&error))?;
             resolved.operational_domain = Some(pack.domain_yaml.clone());
+        }
+        if let Some(text) = self
+            .selected_config
+            .as_ref()
+            .and_then(|folder| folder.qualification_source.as_ref())
+        {
+            let source = kontor_fleet_activation::routes::QUALIFICATION_SOURCE;
+            let source_hash = ContentHash::of(text.as_bytes());
+            resolved
+                .manifest
+                .sources
+                .insert(source.into(), source_hash.clone());
+            resolved.manifest.qualification =
+                Some(kontor_fleet_activation::routes::QualificationPin {
+                    source: source.into(),
+                    source_hash,
+                });
+            kontor_fleet_activation::routes::validate_qualifications(
+                &resolved.manifest,
+                &resolved.policy,
+                text,
+            )
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+            resolved.qualification_source = Some(text.clone());
         }
         if resolved
             .manifest

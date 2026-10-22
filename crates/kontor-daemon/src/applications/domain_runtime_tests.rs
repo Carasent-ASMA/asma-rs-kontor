@@ -270,7 +270,8 @@ async fn prepared_epic_launch_recovers_exact_persona_and_absence_after_restart()
                 provider: kontor_core::spec::ProviderRef("codex".into()),
                 model: kontor_core::spec::ModelRef("gpt-5.6".into()),
                 effort: None,
-            },
+            }
+            .into(),
             state: HostedSeatLaunchIntentState::Prepared,
             observed_native_id: None,
             prepared_at: kontor_api::now(),

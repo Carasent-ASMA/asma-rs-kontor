@@ -36,6 +36,7 @@ use kontor_fleet::{
 use serde::{Deserialize, Serialize};
 
 pub mod domain;
+pub mod routes;
 pub use domain::OperationalDomainPin;
 
 /// The generated record naming the activated fleet policy.
@@ -336,6 +337,9 @@ pub struct BundleManifest {
     /// Exact selected domain source retained as an immutable artifact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operational_domain: Option<OperationalDomainPin>,
+    /// Optional exact qualification source; activation time is in FleetActivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<routes::QualificationPin>,
 }
 
 impl BundleManifest {
@@ -344,6 +348,9 @@ impl BundleManifest {
     /// # Errors
     /// M-09 when the manifest names another format or cannot be canonical.
     pub fn canonicalize(&self) -> Result<CanonicalDocument, FleetError> {
+        if let Some(pin) = &self.qualification {
+            pin.validate(self)?;
+        }
         if let Some(domain) = &self.operational_domain {
             domain.validate(self)?;
         }
@@ -461,6 +468,9 @@ pub fn verify_manifest(
     )?;
     let document = CanonicalDocument::from_stored(&text, hash).map_err(|_| invalid(M08))?;
     let manifest: BundleManifest = document.deserialize().map_err(|_| invalid(M09))?;
+    if let Some(pin) = &manifest.qualification {
+        pin.validate(&manifest)?;
+    }
     if let Some(domain) = &manifest.operational_domain {
         domain.validate(&manifest)?;
     }
@@ -586,6 +596,16 @@ fn verify_contents(
     }
     if manifest.operational_domain.is_some() {
         domain::read_domain(state_root, manifest, &roster)?;
+    }
+    if let Some(pin) = &manifest.qualification {
+        routes::validate_qualifications(
+            manifest,
+            &policy,
+            &routes::read_source(state_root, &pin.source_hash)?,
+        )?;
+    }
+    if manifest.sources.contains_key(routes::PROJECT_SOURCE) {
+        routes::read_matrix(state_root, manifest)?;
     }
     Ok((policy, roster))
 }

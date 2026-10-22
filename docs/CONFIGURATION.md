@@ -414,6 +414,13 @@ the host bootstrap file. Each record binds `route`, `harness`, the symbolic
 `harness`, `model`, `canonical_model_id`, `canonical_vendor`,
 `route_model_id`, `efforts` in declared order, comma-separated, and `revision`.
 Activation time is not part of that hash.
+The bundle manifest carries only `qualification: {source, source_hash}` and the
+same hash in `sources`. The existing `FleetActivation.activated_at`, linked by
+`source_bundle_hash`, supplies activation time; preview and publication keep the
+same manifest identity. Exact qualification and orchestration source bytes are
+retained by the bundle publisher. The runtime matrix is read from that pinned
+orchestration artifact; missing or tampered artifacts refuse without consulting
+the current selected folder.
 A host reference is exactly `<route>@<revision>`; the resolver splits once,
 compares both parts exactly, requires the activation record's `source_hash` to
 match the file bytes and `activated_at` to be present, verifies the record hash,
@@ -488,6 +495,17 @@ The snapshot records the working route (`route_provider`, `route_harness`,
 (`canonical_model`, `canonical_effort`, `canonical_vendor`). `route_model_id`
 is the id the working route actually launches; it may differ from
 `canonical_model`. It is authoritative for that run.
+The private carrier has `schema_version: 1` and is stored in existing launch
+route columns as `{schema_version: 1, resolved_route: {...}}`. Canonical seat
+bindings and public provenance remain canonical. Historical bare model rungs
+remain readable without rewriting them or inventing host/policy pins. An
+invalid envelope cannot be interpreted as a legacy rung.
+
+`host_route_hash` is SHA-256 of compact UTF-8 JSON with keys in exactly this
+order: `host_sha256`, `domain`, `slots`. `host_sha256` hashes the exact `host.yml`
+bytes; `slots` is the domain's exact ordered slot list. Native aliases remain
+private launch data and are absent from public route projections and errors.
+
 Editing `host.yml` or the fleet policy never rewrites an active run's snapshot:
 it is read from the run's launch intent and receipt, not re-resolved from the
 current files. A daemon restart

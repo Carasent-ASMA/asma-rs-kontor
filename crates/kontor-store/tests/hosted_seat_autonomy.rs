@@ -563,6 +563,191 @@ fn a_contradictory_authority_is_refused_by_the_schema() {
 // Pre-effect launch intent
 // ---------------------------------------------------------------------------
 
+fn resolved_route(alias: &str) -> kontor_core::launch_route::StoredLaunchRoute {
+    use kontor_core::launch_route::{ResolvedRoute, StoredLaunchRoute};
+    StoredLaunchRoute::resolved(ResolvedRoute {
+        schema_version: 1,
+        slot: rung().provider.0,
+        route_provider: "codex".into(),
+        route_harness: "paseo".into(),
+        native_alias: alias.into(),
+        qualification: None,
+        route_model_id: rung().model.0.clone(),
+        canonical_model: rung().model.0,
+        canonical_effort: None,
+        canonical_vendor: "example-vendor".into(),
+        policy_hash: ContentHash::of(b"frozen policy"),
+        host_route_hash: ContentHash::of(alias.as_bytes()),
+        resolved_at: at("2026-09-17T01:00:30Z"),
+    })
+    .unwrap()
+}
+
+#[test]
+fn private_host_route_survives_restart_and_refuses_current_host_substitution() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    let mut frozen = intent(&fixture, seat, SeatAutonomy::Bounded);
+    frozen.model_rung = resolved_route("private-original-host");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&frozen)
+        .unwrap();
+    let stored_bytes: String = Connection::open(&fixture.db_path)
+        .unwrap()
+        .query_row(
+            "SELECT model_rung FROM hosted_topology_seat_launch_intents WHERE seat_binding_id=?1",
+            [seat.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(stored_bytes.starts_with("{\"schema_version\":1,\"resolved_route\":"));
+    let reopened = SqliteStore::open(&fixture.db_path).unwrap();
+    let read = reopened
+        .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.model_rung, frozen.model_rung);
+    assert_eq!(read.model_rung.canonical_rung(), rung());
+    assert!(!format!("{read:?}").contains("private-original-host"));
+    let mut edited_host = frozen.clone();
+    edited_host.model_rung = resolved_route("private-edited-host");
+    assert_eq!(
+        edited_host.model_rung.canonical_rung(),
+        frozen.model_rung.canonical_rung()
+    );
+    assert!(
+        reopened
+            .prepare_hosted_seat_launch_intent(&edited_host)
+            .is_err()
+    );
+    assert_eq!(
+        reopened
+            .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+            .unwrap()
+            .unwrap()
+            .model_rung,
+        frozen.model_rung
+    );
+    let after: String = Connection::open(&fixture.db_path)
+        .unwrap()
+        .query_row(
+            "SELECT model_rung FROM hosted_topology_seat_launch_intents WHERE seat_binding_id=?1",
+            [seat.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_bytes, after);
+}
+
+#[test]
+fn private_envelope_supersession_compares_the_exact_frozen_host_route() {
+    use kontor_core::repository::HostedSeatLaunchIntentSupersession;
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    let mut frozen = intent(&fixture, seat, SeatAutonomy::Bounded);
+    frozen.model_rung = resolved_route("private-before");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&frozen)
+        .unwrap();
+    let binding = fixture
+        .store
+        .get_seat_binding(fixture.project_id, seat)
+        .unwrap()
+        .unwrap();
+    let mut replacement = HostedSeatLaunchIntentSupersession {
+        idempotency_key: IdempotencyKey::parse("private-route-cas").unwrap(),
+        intent_hash: ContentHash::of(b"private-route-cas"),
+        project_id: fixture.project_id,
+        seat_binding_id: seat,
+        expected_seat_binding_revision: binding.revision,
+        occupancy_generation: 1,
+        archived_predecessor: None,
+        expected_model_rung: resolved_route("private-imposter"),
+        expected_prepared_at: frozen.prepared_at,
+        replacement_model_rung: resolved_route("private-after"),
+        recorded_at: at("2026-09-17T01:01:00Z"),
+    };
+    assert_eq!(
+        replacement.expected_model_rung.canonical_rung(),
+        frozen.model_rung.canonical_rung()
+    );
+    assert!(
+        fixture
+            .store
+            .supersede_hosted_seat_launch_intent(&replacement)
+            .is_err()
+    );
+    replacement.expected_model_rung = frozen.model_rung;
+    fixture
+        .store
+        .supersede_hosted_seat_launch_intent(&replacement)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+            .unwrap()
+            .unwrap()
+            .model_rung,
+        replacement.replacement_model_rung
+    );
+    assert_eq!(
+        fixture
+            .store
+            .supersede_hosted_seat_launch_intent(&replacement)
+            .unwrap(),
+        kontor_store::Applied::Unchanged
+    );
+}
+
+#[test]
+fn historical_bare_route_is_read_without_rewriting_or_fabricating_a_host_pin() {
+    use kontor_core::launch_route::StoredLaunchRoute;
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    let legacy = intent(&fixture, seat, SeatAutonomy::Bounded);
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&legacy)
+        .unwrap();
+    let before: String = Connection::open(&fixture.db_path)
+        .unwrap()
+        .query_row(
+            "SELECT model_rung FROM hosted_topology_seat_launch_intents WHERE seat_binding_id=?1",
+            [seat.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, serde_json::to_string(&rung()).unwrap());
+    let read = fixture
+        .store
+        .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(read.model_rung, StoredLaunchRoute::Legacy(_)));
+    assert!(read.model_rung.frozen().is_none());
+    assert!(
+        fixture
+            .store
+            .prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                model_rung: resolved_route("not-an-adoption"),
+                ..read
+            })
+            .is_err()
+    );
+    let after: String = Connection::open(&fixture.db_path)
+        .unwrap()
+        .query_row(
+            "SELECT model_rung FROM hosted_topology_seat_launch_intents WHERE seat_binding_id=?1",
+            [seat.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, before);
+}
+
 /// Build one prepared intent for a seat's first occupancy.
 fn intent(
     fixture: &Fixture,
@@ -574,7 +759,7 @@ fn intent(
         seat_binding_id: seat,
         occupancy_generation: 1,
         autonomy,
-        model_rung: rung(),
+        model_rung: (rung()).into(),
         state: HostedSeatLaunchIntentState::Prepared,
         observed_native_id: None,
         prepared_at: at("2026-09-17T01:00:30Z"),
@@ -1124,7 +1309,7 @@ fn succession_effects_and_readback_are_proved_before_a_receipt_binds() {
             seat_binding_id: seat,
             occupancy_generation: 2,
             autonomy: SeatAutonomy::Supervised,
-            model_rung: rung(),
+            model_rung: (rung()).into(),
             state: HostedSeatLaunchIntentState::Prepared,
             observed_native_id: None,
             prepared_at: at("2026-09-17T02:04:30Z"),
@@ -1402,7 +1587,7 @@ fn land_effects(
             seat_binding_id: seat,
             occupancy_generation: occupancy,
             autonomy: SeatAutonomy::Supervised,
-            model_rung: rung(),
+            model_rung: (rung()).into(),
             state: HostedSeatLaunchIntentState::Prepared,
             observed_native_id: None,
             prepared_at: at("2026-09-17T03:01:40Z"),
@@ -2857,6 +3042,22 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 /// where those rows lived.
 fn rewind_to_schema_121(path: &std::path::Path) {
     let connection = Connection::open(path).expect("the database opens");
+    let consultation_pins: i64 = connection.query_row(
+        "SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_intent_hash IS NOT NULL OR consultation_git_readback IS NOT NULL",
+        [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        consultation_pins, 0,
+        "historical fixture must not erase consultation placement evidence"
+    );
+    connection
+        .execute_batch(
+            "DROP TRIGGER consultation_intent_immutable;
+         DROP TRIGGER consultation_readback_immutable;
+         ALTER TABLE topology_nodes DROP COLUMN consultation_intent;
+         ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash;
+         ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback;",
+        )
+        .expect("current-only v142 columns are removed from the historical fixture");
     for table in [
         "project_team_definition_defaults",
         "mini_project_team_definition_snapshots",

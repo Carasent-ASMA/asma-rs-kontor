@@ -141,6 +141,7 @@ fn published_bundle() -> Bundle {
         publication_policy: None,
         consultation_layout: None,
         operational_domain: None,
+        qualification: None,
         sources: BTreeMap::from([
             (
                 "orchestration.yml".to_owned(),
@@ -182,6 +183,107 @@ fn refused<T: std::fmt::Debug>(result: Result<T, FleetError>) -> &'static str {
         Err(FleetError::Invalid { rule }) => rule,
         other => panic!("expected a fail-closed refusal, got {other:?}"),
     }
+}
+
+#[test]
+fn pinned_route_sources_survive_current_edits_and_refuse_missing_or_tampered_bytes() {
+    use crate::routes::{self, QualificationPin};
+    let mut bundle = published_bundle();
+    let legacy = bundle.manifest.canonicalize().unwrap();
+    let project = "project:\n  runtime:\n    matrix:\n      - {harness: paseo, provider: codex}\n";
+    let qualifications = "schema_version: 1\nrecords: []\n";
+    let project_hash = ContentHash::of(project.as_bytes());
+    let qualification_hash = ContentHash::of(qualifications.as_bytes());
+    bundle
+        .manifest
+        .sources
+        .insert(routes::PROJECT_SOURCE.into(), project_hash.clone());
+    bundle.manifest.sources.insert(
+        routes::QUALIFICATION_SOURCE.into(),
+        qualification_hash.clone(),
+    );
+    bundle.manifest.qualification = Some(QualificationPin {
+        source: routes::QUALIFICATION_SOURCE.into(),
+        source_hash: qualification_hash.clone(),
+    });
+    let preview = bundle.manifest.canonicalize().unwrap();
+    assert!(!preview.json().contains("activated_at"));
+    bundle.bundle_hash = preview.hash().clone();
+    private(
+        &routes::source_path(bundle.path(), &project_hash),
+        project.as_bytes(),
+    );
+    private(
+        &routes::source_path(bundle.path(), &qualification_hash),
+        qualifications.as_bytes(),
+    );
+    private(
+        &manifest_path(bundle.path(), &bundle.bundle_hash),
+        preview.json().as_bytes(),
+    );
+    bundle.write_record(&bundle.record());
+    let activated = load(bundle.path()).unwrap();
+    let manifest = activated.bundle.unwrap().manifest;
+    let policy = activated.policy;
+    assert!(
+        routes::read_matrix(bundle.path(), &manifest)
+            .unwrap()
+            .allows("paseo", "codex")
+    );
+    assert!(
+        routes::read_qualifications(bundle.path(), &manifest, &policy, &activated.record)
+            .unwrap()
+            .is_some()
+    );
+    // Mutable authoring elsewhere is not an artifact readback source.
+    private(
+        &bundle.path().join(routes::PROJECT_SOURCE),
+        b"project: {runtime: {matrix: []}}\n",
+    );
+    assert!(
+        routes::read_matrix(bundle.path(), &manifest)
+            .unwrap()
+            .allows("paseo", "codex")
+    );
+    assert_eq!(manifest.canonicalize().unwrap(), preview);
+    assert_ne!(preview, legacy);
+    let mut other_record = activated.record.clone();
+    other_record.source_bundle_hash = Some(legacy.hash().clone());
+    assert_eq!(
+        refused(routes::read_qualifications(
+            bundle.path(),
+            &manifest,
+            &policy,
+            &other_record
+        )),
+        "route_qualification_unproven"
+    );
+    private(
+        &routes::source_path(bundle.path(), &project_hash),
+        b"project: {}\n",
+    );
+    assert_eq!(
+        refused(routes::read_matrix(bundle.path(), &manifest)),
+        "host_route_source_hash_mismatch"
+    );
+    std::fs::remove_file(routes::source_path(bundle.path(), &project_hash)).unwrap();
+    assert_eq!(
+        refused(routes::read_matrix(bundle.path(), &manifest)),
+        "host_route_source_missing"
+    );
+    private(
+        &routes::source_path(bundle.path(), &qualification_hash),
+        b"schema_version: 1\nrecords: []",
+    );
+    assert_eq!(
+        refused(routes::read_qualifications(
+            bundle.path(),
+            &manifest,
+            &policy,
+            &activated.record
+        )),
+        "host_route_source_hash_mismatch"
+    );
 }
 
 fn first(selection: &FleetSelection) -> (String, u16, u16) {

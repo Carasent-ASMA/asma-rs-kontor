@@ -86,6 +86,10 @@ pub struct ConfigFolder {
     pub tracker_specs: kontor_jira::jira::SpecCatalog,
     /// Selected profile/domain/preset candidates; loading activates nothing.
     pub realm_pack: Option<crate::realm_packs::RealmPack>,
+    /// Host route bootstrap snapshot; never re-read for an active launch.
+    pub host_routes: Option<kontor_fleet::host_routes::HostRoutes>,
+    /// Exact selected qualification candidate bytes; publication/activation is separate.
+    pub qualification_source: Option<String>,
 }
 
 impl ConfigFolder {
@@ -167,6 +171,8 @@ impl ConfigFolder {
             checkouts: None,
             tracker_specs: kontor_jira::jira::SpecCatalog::empty(),
             realm_pack: None,
+            host_routes: None,
+            qualification_source: None,
         };
         let fleet = folder.reference(&entry.fleet)?;
         folder.reference(&entry.core_team)?;
@@ -184,6 +190,21 @@ impl ConfigFolder {
         let mut folder = Self { fleet, ..folder };
         folder.publication_consumers = folder.publication_consumer_projects(&raw)?;
         folder.checkouts = crate::task_checkouts::read(&folder)?;
+        folder.host_routes = folder
+            .parse_optional("host.yml", |text| {
+                let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).map_err(|_| ())?;
+                if raw.get("provider_accounts").is_none() && raw.get("routes").is_none() {
+                    return Ok(None);
+                }
+                kontor_fleet::host_routes::HostRoutes::parse(text)
+                    .map(Some)
+                    .map_err(|_| ())
+            })?
+            .flatten();
+        folder.qualification_source = folder.parse_optional(
+            kontor_fleet_activation::routes::QUALIFICATION_SOURCE,
+            |text| Ok::<_, ()>(text.to_owned()),
+        )?;
         if !raw["project"]["tracker"]["spec"].is_null()
             && raw["project"]["tracker"]["spec"].as_str().is_none()
         {

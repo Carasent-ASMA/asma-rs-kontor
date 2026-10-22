@@ -125,6 +125,10 @@ pub struct ResolvedBundle {
     pub manifest: BundleManifest,
     /// Exact selected domain bytes, retained with the manifest's source descriptor.
     pub operational_domain: Option<String>,
+    /// Exact orchestration source bytes retained by the existing bundle publisher.
+    pub orchestration_source: Option<String>,
+    /// Optional exact qualification bytes; candidate validation activates nothing.
+    pub qualification_source: Option<String>,
 }
 
 /// The role catalog pin a Core Team source declares, read before any catalog
@@ -180,6 +184,7 @@ pub fn resolve_bundle(
         return Err(invalid(O02));
     }
     let policy = FleetSnapshot::parse_policy(sources.fleet)?;
+    kontor_fleet::host_routes::RuntimeMatrix::parse(sources.orchestration)?;
     let source: CoreTeamSource =
         serde_yaml_ng::from_str(sources.core_team).map_err(|_| invalid(O03))?;
     if source.schema_version != SOURCE_SCHEMA_VERSION {
@@ -226,6 +231,10 @@ pub fn resolve_bundle(
                 ORCHESTRATION_SOURCE.to_owned(),
                 ContentHash::of(sources.orchestration.as_bytes()),
             ),
+            (
+                kontor_fleet_activation::routes::PROJECT_SOURCE.to_owned(),
+                ContentHash::of(sources.orchestration.as_bytes()),
+            ),
             (FLEET_SOURCE.to_owned(), policy.hash().clone()),
             (
                 CORE_TEAM_SOURCE.to_owned(),
@@ -240,6 +249,7 @@ pub fn resolve_bundle(
         consultation_layout: crate::project_paths::consultation_policy(sources.orchestration)
             .map_err(invalid)?,
         operational_domain: None,
+        qualification: None,
     };
     Ok(ResolvedBundle {
         policy,
@@ -247,6 +257,8 @@ pub fn resolve_bundle(
         roster,
         manifest,
         operational_domain: None,
+        orchestration_source: Some(sources.orchestration.to_owned()),
+        qualification_source: None,
     })
 }
 
@@ -515,6 +527,10 @@ mod tests {
             BTreeMap::from([
                 (
                     ORCHESTRATION_SOURCE.to_owned(),
+                    ContentHash::of(authoring.orchestration.as_bytes())
+                ),
+                (
+                    kontor_fleet_activation::routes::PROJECT_SOURCE.to_owned(),
                     ContentHash::of(authoring.orchestration.as_bytes())
                 ),
                 (
