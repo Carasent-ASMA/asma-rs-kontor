@@ -450,7 +450,7 @@ export const SessionRow = memo(function SessionRow({
         <>
           {/* The title keeps the whole line; the context and the age take the line below, so neither squeezes it. */}
           <View style={{ flex: 1, minWidth: 0 }}>
-          <Text testID="sessions-row-title" numberOfLines={1} style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
+          <Text testID="sessions-row-title" numberOfLines={3} style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
             {displayTitle ?? entry.title}
           </Text>
           <View style={{ minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 8 }}>

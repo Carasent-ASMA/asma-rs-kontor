@@ -1768,6 +1768,33 @@ describe("SessionsScreen toolbar events", () => {
     expect(String(drawnRow.props.accessibilityLabel)).toContain("Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace");
   });
 
+  it("gives same-prefix Role subjects three compact title lines while preserving scoped IDs and full accessible titles", () => {
+    const subjects = ["Collect scope fixtures", "Review layout choices", "Check keyboard focus", "Verify native IDs", "Inspect group sorting", "Exercise empty scopes", "Confirm mobile wrapping"];
+    const entries = subjects.map((subject, n) => sessionEntry(`role-subject-${n}`, {
+      title: `SWE • ASMA-1234 • ${subject}`, labels: { epic: "ASMA-1234" },
+    }));
+    patchSessionView("host-a", { layout: "grouped", epic: { kind: "known", key: "ASMA-1234" } });
+    const { renderItem } = renderRoles([...entries,
+      sessionEntry("outside-epic", { title: entries[0]!.title, labels: { epic: "ASMA-12340" } }),
+    ]);
+    expandAll();
+    expect(sessionRowIds().sort()).toEqual(entries.map(entry => entry.id).sort());
+    for (const entry of entries) {
+      const wrapper = renderItem(listRows().find(row => row.kind === "session" && row.entry.id === entry.id));
+      const row = walk(wrapper).find(element => "compactContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+      expect(row.props.compactContext).toBeTypeOf("string");
+      expect(row.props.displayTitle).toBe(entry.title.replace(/^SWE • /, ""));
+      const drawn = row.type(row.props);
+      expect(findByTestID(drawn, "sessions-row-title").props).toMatchObject({
+        children: row.props.displayTitle, numberOfLines: 3, style: { fontSize: 14, lineHeight: 20 },
+      });
+      expect(drawn.props.testID).toBe(`sessions-row-${entry.id}`);
+      expect(drawn.props.accessibilityLabel).toContain(entry.title);
+      expect(drawn.props.accessibilityLabel).toContain(`Native ID ${entry.id}`);
+    }
+    // This is a component contract; actual 320/390 text fitting needs rendered evidence.
+  });
+
   it("arranges Role headers among themselves and keeps No role last", () => {
     const save = vi.fn(async () => true);
     patchSessionView("host-a", { arranging: true });
