@@ -189,58 +189,54 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 }
 
 /// Resolve a consultation route under its immutable policy provenance.
-///
-/// OpenCode is not added to the ordinary provider table above. The sole
-/// exception is the exact ASMA-8001 progression fallback accepted by an
-/// operator in an Admin-authorized initial recovery profile, under either the
-/// historical `deepseek/deepseek-v4-flash` id or its 2026-09-12 renamed
-/// successor `deepseek/deepseek-flash`. Its `plan` mode is behavioral
-/// guidance, not OS-level containment; the qualified canary proved shell
-/// writes remain possible. Every other OpenCode provider alias, model,
-/// effort, template route and future recovery source remains refused.
-///
-/// Cursor carries the same class of risk acceptance (operator exception,
-/// 2026-09-23): its `plan` mode refuses direct file tools but, per the Grok 4.6
-/// canary, not shell writes. Only the exact `cursor`/`gpt-5.6-sol`/`xhigh`
-/// route under an operator-accepted recovery profile is admitted, never a
-/// template route; the composed consultation MCP remains the only write path
-/// Kontor hands the seat.
-///
-/// A route whose source is the live fleet configuration runs Cursor and
-/// OpenCode in `plan`, under any account alias of either, for any model the
-/// owner-only `fleet.yml` lists, except `cursor`/`auto-smart`, whose vendor is
-/// unknown and never eligible for a reviewer slot. Claude and Codex modes are
-/// unchanged. The file accepts the same risk as the two accepted fallbacks
-/// above: `plan` is behavioral guidance, not an OS-level boundary.
+/// Fleet exceptions require an exact allowance from the frozen policy hash.
+/// Historical profile exceptions remain recovery-only, never new admission.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
-    if built_in_provider(&rung.provider.0) == "cursor" {
-        if provenance.is_fleet_configuration() && rung.model.0 != "auto-smart" {
-            return Ok(Some("plan"));
+    let provider = built_in_provider(&rung.provider.0);
+    if matches!(provider, "cursor" | "opencode") && provenance.is_fleet_configuration() {
+        // Keep the independent exclusion until its fleet-data migration lands.
+        if provider == "cursor" && rung.model.0 == "auto-smart" {
+            return Err(RuntimeError::PermissionModeUnsupported {
+                provider: rung.provider.0.clone(),
+            });
         }
+        return if provenance
+            .fleet_permissions
+            .as_ref()
+            .is_some_and(|permissions| permissions.permits(&provenance.evidence_hash, rung))
+        {
+            Ok(Some("plan"))
+        } else {
+            Err(RuntimeError::PermissionModeUnsupported {
+                provider: rung.provider.0.clone(),
+            })
+        };
+    }
+    if provider == "cursor" {
         let exact_route = rung.provider.0 == "cursor"
             && rung.model.0 == "gpt-5.6-sol"
             && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
-        if exact_route && provenance.is_operator_accepted_recovery() {
+        if exact_route && provenance.legacy_recovery && provenance.is_operator_accepted_recovery() {
             return Ok(Some("plan"));
         }
         return Err(RuntimeError::PermissionModeUnsupported {
             provider: rung.provider.0.clone(),
         });
     }
-    if built_in_provider(&rung.provider.0) == "opencode" {
-        if provenance.is_fleet_configuration() {
-            return Ok(Some("plan"));
-        }
+    if provider == "opencode" {
         let exact_model = rung.provider.0 == "opencode"
             && matches!(
                 rung.model.0.as_str(),
                 "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
             );
         let exact_effort = rung.effort.is_some_and(|effort| effort.as_str() == "max");
-        if exact_model && exact_effort && provenance.is_operator_accepted_initial_recovery_profile()
+        if exact_model
+            && exact_effort
+            && provenance.legacy_recovery
+            && provenance.is_operator_accepted_initial_recovery_profile()
         {
             return Ok(Some("plan"));
         }
@@ -2348,6 +2344,7 @@ mod tests {
         ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(ContentHash::of(
             b"initial recovery profile",
         ))
+        .for_legacy_recovery()
     }
 
     #[test]
@@ -2724,6 +2721,8 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 ConsultationRouteProvenance {
+                    fleet_permissions: None,
+                    legacy_recovery: false,
                     source: ConsultationRouteSource::InitialRecoveryProfile,
                     evidence_hash: profile_hash.clone(),
                     fallback_disposition: None,
@@ -2737,6 +2736,8 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 ConsultationRouteProvenance {
+                    fleet_permissions: None,
+                    legacy_recovery: false,
                     source: ConsultationRouteSource::InitialRecoveryProfile,
                     evidence_hash: profile_hash.clone(),
                     fallback_disposition: Some(ConsultationFallbackDisposition::Rejected),
@@ -2750,6 +2751,8 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 ConsultationRouteProvenance {
+                    fleet_permissions: None,
+                    legacy_recovery: false,
                     source: ConsultationRouteSource::MaterializationRecoveryProfile,
                     evidence_hash: profile_hash,
                     fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
@@ -2814,6 +2817,8 @@ mod tests {
     #[test]
     fn cursor_consultation_admits_only_the_exact_operator_accepted_recovery_route() {
         let accepted = |source| ConsultationRouteProvenance {
+            fleet_permissions: None,
+            legacy_recovery: true,
             source,
             evidence_hash: ContentHash::of(b"recovery profile"),
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
@@ -2900,14 +2905,15 @@ mod tests {
         }
     }
 
-    /// REQ-016: a consultation route whose source is the live fleet
-    /// configuration runs Cursor and OpenCode, under any account alias, in
-    /// `plan` for any model the file lists, while Cursor Auto, template routes
-    /// and unlisted sources stay refused and Claude and Codex keep their
-    /// ordinary modes.
+    /// Fleet exceptions are exact permissions, never a provider-wide grant.
     #[test]
     fn a_fleet_route_runs_cursor_and_opencode_consultations_in_plan_mode() {
-        let fleet = ConsultationRouteProvenance::fleet_configuration(ContentHash::of(b"fleet"));
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(include_str!(
+            "../../../tests/fixtures/config/consultation-permissions.yml"
+        ))
+        .unwrap();
+        let mut fleet = ConsultationRouteProvenance::fleet_configuration(policy.hash().clone());
+        fleet.fleet_permissions = Some(policy.consultation_permissions());
         let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
             PaseoRpc::consultation_agent_create(
                 "request-fleet-route".to_owned(),
@@ -2923,23 +2929,15 @@ mod tests {
         };
         for (rung, case) in [
             (
-                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
                 "a Cursor fleet route",
             ),
             (
-                route(
-                    "opencode",
-                    "openrouter/z-ai/glm-5.3-flash",
-                    Some(EffortLevel::Max),
-                ),
+                route("opencode", "example/review", Some(EffortLevel::Max)),
                 "an OpenCode fleet route",
             ),
             (
-                route(
-                    "opencode-zai",
-                    "zai-coding-plan/glm-5.3",
-                    Some(EffortLevel::Max),
-                ),
+                route("opencode-secondary", "example/default", None),
                 "an OpenCode fleet route under a per-service alias",
             ),
         ] {
@@ -2954,7 +2952,7 @@ mod tests {
                 "Cursor Auto has no vendor and is never eligible",
             ),
             (
-                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
                 template_provenance(),
                 "a template route keeps the fail-closed posture",
             ),
@@ -2964,6 +2962,38 @@ mod tests {
                 matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
                 "{case}: {error:?}"
             );
+        }
+        let mut wrong_hash = fleet.clone();
+        wrong_hash.evidence_hash = ContentHash::of(b"unrelated-policy");
+        let mut missing = fleet.clone();
+        missing.fleet_permissions = None;
+        for (rung, provenance) in [
+            (
+                route("cursor-secondary", "review-model", Some(EffortLevel::Xhigh)),
+                fleet.clone(),
+            ),
+            (
+                route("cursor", "other-model", Some(EffortLevel::Xhigh)),
+                fleet.clone(),
+            ),
+            (
+                route("cursor", "review-model", Some(EffortLevel::High)),
+                fleet.clone(),
+            ),
+            (route("cursor", "review-model", None), fleet.clone()),
+            (
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
+                wrong_hash,
+            ),
+            (
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
+                missing,
+            ),
+        ] {
+            assert!(matches!(
+                create(&rung, &provenance),
+                Err(RuntimeError::PermissionModeUnsupported { .. })
+            ));
         }
         for (rung, expected) in [
             (
@@ -2981,6 +3011,50 @@ mod tests {
                 request.message["config"]["modeId"], expected,
                 "{} keeps its ordinary consultation mode under a fleet route",
                 rung.provider.0
+            );
+        }
+    }
+
+    #[test]
+    fn fleet_permission_cannot_override_the_existing_automatic_model_exclusion() {
+        let text = include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+            .replace("id: review-model", "id: auto-smart");
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(&text).unwrap();
+        let mut provenance =
+            ConsultationRouteProvenance::fleet_configuration(policy.hash().clone());
+        provenance.fleet_permissions = Some(policy.consultation_permissions());
+        let rung = route("cursor", "auto-smart", Some(EffortLevel::Xhigh));
+        assert!(matches!(
+            consultation_route_permission_mode(&rung, &provenance),
+            Err(RuntimeError::PermissionModeUnsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn historical_recovery_permissions_cannot_admit_new_consultations() {
+        for (rung, source) in [
+            (
+                route("cursor", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                ConsultationRouteSource::InitialRecoveryProfile,
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-flash",
+                    Some(EffortLevel::Max),
+                ),
+                ConsultationRouteSource::InitialRecoveryProfile,
+            ),
+        ] {
+            let mut provenance =
+                ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(
+                    ContentHash::of(b"profile"),
+                );
+            provenance.source = source;
+            assert!(consultation_route_permission_mode(&rung, &provenance).is_err());
+            assert!(
+                consultation_route_permission_mode(&rung, &provenance.for_legacy_recovery())
+                    .is_ok()
             );
         }
     }

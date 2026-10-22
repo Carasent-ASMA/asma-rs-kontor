@@ -1100,6 +1100,15 @@ impl FleetSource {
         kontor_fleet_activation::verify_policy(&self.state_root, hash)
     }
 
+    /// Resolve only the exact immutable policy already frozen by admission.
+    /// No authoring, current activation, repair or last-valid fallback.
+    pub(crate) fn consultation_permissions(
+        &self,
+        hash: &ContentHash,
+    ) -> Result<kontor_fleet::ConsultationPermissions, FleetError> {
+        Ok(self.verify_published(hash)?.consultation_permissions())
+    }
+
     fn write_history(&self, snapshot: &FleetSnapshot) {
         if let Err(error) = self.store_history(snapshot) {
             tracing::warn!(error = %error, "fleet.history_write_failed");

@@ -113,3 +113,10 @@ rules:
   independent_of:
     team/01936f5a-0000-7000-8000-000000000001/verify: team/01936f5a-0000-7000-8000-000000000001/implement
     team/01936f5a-0000-7000-8000-000000000001/audit: team/01936f5a-0000-7000-8000-000000000001/implement
+
+# Behavioral plan-mode exceptions for fleet-origin consultations are opt-in.
+# Exact account slot + symbolic model + effort + plan; no provider-wide grant.
+# Publish and activate before use. This grants no OS/filesystem containment.
+consultation_permissions: []
+# Example entry (after independent risk acceptance):
+#   - {account: cursor, model: grok-example, effort: xhigh, mode: plan}

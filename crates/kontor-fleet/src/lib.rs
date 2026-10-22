@@ -22,6 +22,7 @@
 
 mod allocation;
 mod leadership;
+mod permissions;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,6 +39,7 @@ pub use allocation::{
     allocate, allocate_constrained, committee_constraints, committee_template_of,
 };
 pub use leadership::LeadershipKey;
+pub use permissions::ConsultationPermissions;
 
 /// Largest fleet document this build accepts, in bytes.
 pub const MAX_FILE_BYTES: u64 = 256 * 1024;
@@ -201,6 +203,8 @@ struct FleetDocument {
     bindings: BTreeMap<String, String>,
     #[serde(default)]
     rules: RulesSpec,
+    #[serde(default)]
+    consultation_permissions: Vec<permissions::PermissionSpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -579,6 +583,11 @@ pub struct FleetSnapshot {
 }
 
 impl FleetSnapshot {
+    /// Exact consultation exceptions from these validated policy bytes.
+    #[must_use]
+    pub fn consultation_permissions(&self) -> ConsultationPermissions {
+        permissions::resolve(self.hash(), &self.document)
+    }
     /// Parse and fully validate a schema_version 1 document.
     ///
     /// This is the unmigrated `fleet.yml` reader, and it reads no successor:
@@ -861,7 +870,8 @@ impl FleetDocument {
         self.validate_chains()?;
         self.validate_bindings(schema)?;
         self.validate_unavailable()?;
-        self.validate_rules()
+        self.validate_rules()?;
+        permissions::validate(self, schema)
     }
 
     fn validate_domains(&self) -> Result<(), FleetError> {
