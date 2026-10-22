@@ -6,6 +6,8 @@ import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { contributeReturnControl } from "./client/return-control";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
+import { disposeRetainedDirectories } from "./client/use-session-directory";
+import { forgetWorkspaceDirectories } from "./client/use-workspace-directory";
 
 export const SESSIONS_SCREEN_ID = "sessions";
 export const SESSIONS_SIDEBAR_ID = "sessions";
@@ -63,6 +65,8 @@ export default function contribute(client: PluginClientContext): () => void {
   const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID);
   const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
   return () => {
+    void disposeRetainedDirectories();
+    forgetWorkspaceDirectories();
     stopPlanControl();
     stopReturnControl();
     for (const cleanup of cleanups) {
