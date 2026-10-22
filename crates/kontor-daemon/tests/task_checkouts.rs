@@ -372,3 +372,43 @@ fn registered_submodule_source_requires_exact_module_record_and_has_its_own_comm
             .common_dir
     );
 }
+
+#[test]
+fn frozen_base_commit_uses_original_objects_when_replacement_refs_change() {
+    let (_directory, root) = temp();
+    let project = repository(&root.join("root"));
+    let frozen = snapshot(
+        &inputs(&project),
+        &project,
+        Some("components/worker"),
+        &root.join("task"),
+    );
+    std::fs::write(
+        project.join("components/worker/tracked.txt"),
+        "replacement\n",
+    )
+    .unwrap();
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "-m", "replacement tree"]);
+    let replacement = git(
+        &project,
+        &["commit-tree", "HEAD^{tree}", "-m", "standalone replacement"],
+    );
+    git(
+        &project,
+        &["replace", frozen.source.base_commit.as_str(), &replacement],
+    );
+    checkout::prepare(&frozen).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(
+            Path::new(&frozen.destination).join("components/worker/tracked.txt")
+        )
+        .unwrap(),
+        "base\n",
+        "a mutable replacement ref must not change the frozen commit's checkout contents"
+    );
+    assert_eq!(
+        checkout::readback(&frozen).unwrap()["head_commit"],
+        frozen.source.base_commit.as_str()
+    );
+}
