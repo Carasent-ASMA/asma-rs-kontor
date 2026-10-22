@@ -1,0 +1,27 @@
+{
+  "name": "@carasent/kontor-paseo-plugin-prototype",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Isolated review prototype: renders the Kontor Paseo plugin's own client source on react-native-web with a fixture host. Never installed into Paseo.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "5.104.4",
+    "@types/react": "~19.2.0",
+    "@types/react-dom": "~19.2.0",
+    "lucide-react": "1.50.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native-web": "0.21.4",
+    "typescript": "5.9.3",
+    "vite": "8.2.1",
+    "vitest": "4.1.10",
+    "zod": "4.4.3"
+  }
+}
