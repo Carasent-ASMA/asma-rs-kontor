@@ -5958,6 +5958,9 @@ impl SqliteStore {
         &self,
         intent: &StoredHostedSeatLaunchIntent,
     ) -> RepositoryResult<Applied> {
+        if let kontor_core::launch_route::StoredLaunchRoute::Resolved(_) = &intent.model_rung {
+            intent.model_rung.validate()?;
+        }
         let generation =
             i64::try_from(intent.occupancy_generation).map_err(|_| RepositoryError::Backend {
                 detail: "a hosted-seat launch intent generation is invalid".to_owned(),
@@ -6181,6 +6184,11 @@ impl SqliteStore {
         &self,
         request: &HostedSeatLaunchIntentSupersession,
     ) -> RepositoryResult<Applied> {
+        if let kontor_core::launch_route::StoredLaunchRoute::Resolved(_) =
+            &request.replacement_model_rung
+        {
+            request.replacement_model_rung.validate()?;
+        }
         let project = request.project_id.to_string();
         let binding = request.seat_binding_id.to_string();
         let generation =

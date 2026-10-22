@@ -39764,7 +39764,7 @@ async fn a_leadership_launch_intent_supersession_is_held_to_the_activated_chain(
         })
     };
     assert_eq!(
-        intent(world).model_rung.provider.0,
+        intent(world).model_rung.canonical_rung().provider.0,
         "opencode",
         "nothing was swapped"
     );
@@ -39792,7 +39792,10 @@ async fn a_leadership_launch_intent_supersession_is_held_to_the_activated_chain(
     )
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
-    assert_eq!(intent(world).model_rung, codex_sol(EffortLevel::Xhigh));
+    assert_eq!(
+        intent(world).model_rung.canonical_rung(),
+        codex_sol(EffortLevel::Xhigh)
+    );
     let replay = supersede(
         world,
         project,
@@ -67273,7 +67276,7 @@ async fn a_never_bound_prepared_launch_intent_is_superseded_in_place() {
             .expect("the intent still exists");
         // Superseded in place: same seat, same generation, still prepared, so
         // the launch that follows is the first launch of this occupancy.
-        assert_eq!(intent.model_rung.provider.0, "codex");
+        assert_eq!(intent.model_rung.canonical_rung().provider.0, "codex");
         assert_eq!(intent.state, HostedSeatLaunchIntentState::Prepared);
         assert!(intent.observed_native_id.is_none());
         assert!(intent.installed_at.is_none());
@@ -67558,9 +67561,13 @@ async fn a_launch_intent_supersession_is_exactly_once_under_replay_and_drift() {
             .get_hosted_seat_launch_intent(project_id, binding_id, 1)
             .expect("the intent reads")
             .expect("the intent exists");
-        assert_eq!(intent.model_rung.provider.0, "codex");
+        assert_eq!(intent.model_rung.canonical_rung().provider.0, "codex");
         assert_eq!(
-            intent.model_rung.effort.map(|e| e.as_str().to_owned()),
+            intent
+                .model_rung
+                .canonical_rung()
+                .effort
+                .map(|e| e.as_str().to_owned()),
             Some("xhigh".to_owned())
         );
     });
@@ -71552,6 +71559,29 @@ async fn wedged_successor_launch_intent(archive: bool) -> (Composed, String, ser
     body["expected_predecessor_native_id"] = serde_json::json!(native);
     body["expected_predecessor_generation"] = serde_json::json!(generation);
     body["expected_predecessor_archived_at"] = serde_json::json!(archived_at.to_string());
+    // This fixture selects another account, then proves a high-effort successor.
+    // Publish those capabilities explicitly; the shared native catalog stays narrow.
+    let mut policy: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&native_fixture_catalog()).unwrap();
+    policy["domains"]["codex"]["accounts"]
+        .as_sequence_mut()
+        .unwrap()
+        .push(
+            body["desired_model_route"]["provider"]
+                .as_str()
+                .unwrap()
+                .into(),
+        );
+    policy["models"]["sol"]["efforts"]
+        .as_sequence_mut()
+        .unwrap()
+        .push("high".into());
+    activate_through_the_registry(
+        &composed.world,
+        &serde_yaml_ng::to_string(&policy).unwrap(),
+        "inert-successor-explicit-capabilities",
+    )
+    .await;
     (composed, binding, body)
 }
 
@@ -71601,7 +71631,10 @@ async fn an_inert_successor_intent_can_supersede_an_archived_predecessor() {
             .get_hosted_seat_launch_intent(project_id, binding_id, 2)
             .unwrap()
             .unwrap();
-        assert_eq!(intent.model_rung.provider.0, "codex-personal");
+        assert_eq!(
+            intent.model_rung.canonical_rung().provider.0,
+            "codex-personal"
+        );
         assert_eq!(intent.state, HostedSeatLaunchIntentState::Prepared);
         assert!(intent.observed_native_id.is_none());
     });
@@ -71857,9 +71890,9 @@ async fn an_inert_successor_intent_recovers_a_receipt_after_cas_commit_and_succe
                     .unwrap(),
                     occupancy_generation: 2,
                     archived_predecessor: Some(predecessor),
-                    expected_model_rung: expected_model,
+                    expected_model_rung: (expected_model).into(),
                     expected_prepared_at: prepared_at,
-                    replacement_model_rung: replacement_model,
+                    replacement_model_rung: (replacement_model).into(),
                     recorded_at: kontor_api::now(),
                 },
             )

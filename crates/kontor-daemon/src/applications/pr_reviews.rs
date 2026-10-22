@@ -944,7 +944,7 @@ impl Services {
                     seat_binding_id: seat.id,
                     occupancy_generation: generation,
                     autonomy,
-                    model_rung: model_rung.clone(),
+                    model_rung: (model_rung.clone()).into(),
                     state: HostedSeatLaunchIntentState::Prepared,
                     observed_native_id: None,
                     prepared_at: kontor_api::now(),

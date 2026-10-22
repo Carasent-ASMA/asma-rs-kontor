@@ -21,6 +21,7 @@
 //!   reads either version and is what activation uses.
 
 mod allocation;
+pub mod host_routes;
 mod leadership;
 mod permissions;
 mod providers;

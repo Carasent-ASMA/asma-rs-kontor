@@ -1165,12 +1165,12 @@ pub struct HostedSeatLaunchIntentSupersession {
     /// Absent for the original never-bound recovery path.
     pub archived_predecessor: Option<StoredHostedTopologySeat>,
     /// The exact inert route being superseded. Compared verbatim.
-    pub expected_model_rung: crate::spec::ModelRung,
+    pub expected_model_rung: crate::launch_route::StoredLaunchRoute,
     /// The exact instant the inert intent was prepared. Compared verbatim, so a
     /// re-prepared intent carrying the same route is still a different intent.
     pub expected_prepared_at: Timestamp,
     /// The catalog-approved route that replaces it.
-    pub replacement_model_rung: crate::spec::ModelRung,
+    pub replacement_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Commit instant.
     pub recorded_at: Timestamp,
 }
@@ -1187,7 +1187,7 @@ pub struct StoredHostedSeatLaunchIntent {
     /// Exact authority resolved before the native call. Immutable once written.
     pub autonomy: SeatAutonomy,
     /// Frozen route the same launch asked for.
-    pub model_rung: crate::spec::ModelRung,
+    pub model_rung: crate::launch_route::StoredLaunchRoute,
     /// Whether the native has been reconciled against this intent.
     pub state: HostedSeatLaunchIntentState,
     /// The native the launch produced, once observed.

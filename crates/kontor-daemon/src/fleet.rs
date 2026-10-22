@@ -579,6 +579,39 @@ impl FleetSource {
         bundle: &crate::orchestration::ResolvedBundle,
     ) -> Result<PublishedBundle, FleetError> {
         let manifest = bundle.manifest.canonicalize()?;
+        let project_hash = bundle
+            .manifest
+            .sources
+            .get(kontor_fleet_activation::routes::PROJECT_SOURCE);
+        match (project_hash, bundle.orchestration_source.as_deref()) {
+            (Some(hash), Some(text)) if ContentHash::of(text.as_bytes()) == *hash => {
+                kontor_fleet::host_routes::RuntimeMatrix::parse(text)?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(FleetError::Invalid {
+                    rule: "host_route_source_missing_or_unbound",
+                });
+            }
+        }
+        match (
+            &bundle.manifest.qualification,
+            bundle.qualification_source.as_deref(),
+        ) {
+            (Some(_), Some(text)) => {
+                kontor_fleet_activation::routes::validate_qualifications(
+                    &bundle.manifest,
+                    &bundle.policy,
+                    text,
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(FleetError::Invalid {
+                    rule: "route_qualification_unproven",
+                });
+            }
+        }
         match (
             &bundle.manifest.operational_domain,
             &bundle.operational_domain,
@@ -654,6 +687,29 @@ impl FleetSource {
         } else {
             false
         };
+        let mut source_created = false;
+        for text in [
+            bundle.orchestration_source.as_deref(),
+            bundle.qualification_source.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let hash = ContentHash::of(text.as_bytes());
+            let path = kontor_fleet_activation::routes::source_path(&self.state_root, &hash);
+            if std::fs::symlink_metadata(&path).is_err() {
+                store_immutable(
+                    &self
+                        .state_root
+                        .join(kontor_fleet_activation::routes::SOURCE_HISTORY_DIR),
+                    &path,
+                    text.as_bytes(),
+                )
+                .map_err(|source| FleetError::Write { source })?;
+                source_created = true;
+            }
+            kontor_fleet_activation::routes::read_source(&self.state_root, &hash)?;
+        }
         let manifest_path =
             kontor_fleet_activation::manifest_path(&self.state_root, manifest.hash());
         let manifest_created = if std::fs::symlink_metadata(&manifest_path).is_ok() {
@@ -671,7 +727,11 @@ impl FleetSource {
         Ok(PublishedBundle {
             bundle_hash: manifest.hash().clone(),
             manifest: verified.manifest,
-            created: policy.created || roster_created || domain_created || manifest_created,
+            created: policy.created
+                || roster_created
+                || domain_created
+                || source_created
+                || manifest_created,
         })
     }
 
@@ -2875,6 +2935,74 @@ bindings:
         assert_eq!(refusal(&source), C07);
         write_private(&roster, &good);
         assert!(source.placement().expect("verified").is_some());
+    }
+
+    #[test]
+    fn route_source_publication_is_immutable_and_activation_replay_reuses_its_event() {
+        use kontor_fleet_activation::routes;
+        let root = tempfile::tempdir().unwrap();
+        let source = FleetSource::at(root.path());
+        let authoring = crate::orchestration::fixture::authoring();
+        let mut resolved = crate::orchestration::resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .unwrap();
+        let text = "schema_version: 1\nrecords: []\n";
+        let hash = ContentHash::of(text.as_bytes());
+        resolved
+            .manifest
+            .sources
+            .insert(routes::QUALIFICATION_SOURCE.into(), hash.clone());
+        resolved.manifest.qualification = Some(routes::QualificationPin {
+            source: routes::QUALIFICATION_SOURCE.into(),
+            source_hash: hash.clone(),
+        });
+        resolved.qualification_source = Some(text.into());
+        let preview = resolved.manifest.canonicalize().unwrap();
+        let published = source.publish_bundle(&resolved).unwrap();
+        assert_eq!(&published.bundle_hash, preview.hash());
+        assert_eq!(published.manifest.canonicalize().unwrap(), preview);
+        let first = source
+            .activate_bundle(&published.bundle_hash, &ActivationFence::default())
+            .unwrap();
+        let replay = source
+            .activate_bundle(
+                &published.bundle_hash,
+                &ActivationFence::of(Some(&first.record)),
+            )
+            .unwrap();
+        assert!(!replay.changed);
+        assert_eq!(replay.record, first.record);
+        assert!(
+            routes::read_qualifications(
+                root.path(),
+                &published.manifest,
+                &resolved.policy,
+                &replay.record
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert_eq!(
+            source.publish_bundle(&resolved).unwrap().bundle_hash,
+            published.bundle_hash
+        );
+        std::fs::remove_file(routes::source_path(root.path(), &hash)).unwrap();
+        assert!(source.publish_bundle(&resolved).is_err());
+        assert!(
+            !routes::source_path(root.path(), &hash).exists(),
+            "republication must not repair a missing artifact from authoring bytes"
+        );
+        assert!(
+            source
+                .activate_bundle(
+                    &published.bundle_hash,
+                    &ActivationFence::of(Some(&first.record))
+                )
+                .is_err()
+        );
     }
 
     #[test]
