@@ -822,7 +822,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // both permanence triggers across the table rebuild (ASMA-7968). v138
     // records durable completion for that correction so a replay never writes
     // a marker the operator restored for a later outage.
-    assert_eq!(SCHEMA_VERSION, 138);
+    // v139 retains the activated publication policy's immutable source hash.
+    assert_eq!(SCHEMA_VERSION, 139);
 }
 
 #[test]
@@ -7158,6 +7159,11 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
+    // v137 adds a column too; the simulated v119 fixture must remove it before
+    // replaying the chain, just as it removes every later additive table.
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .unwrap();
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.

@@ -134,7 +134,8 @@ confirmed Jira key it is, or to a task whose confirmed link it is, and judges:
   (`branch_binding_mismatch`, `binding_unconfirmed`, `binding_ambiguous` when
   the key resolves to more than one confirmed subject, or a grammar code such
   as `branch_shape_invalid`);
-- the base branch is the default branch (`base_branch_not_default`);
+- the base branch is the activated `project.forge.base_branch`
+  (`base_branch_not_default`);
 - a title, when given, leads with the same canonical key as the branch and one
   space. Epic work uses the epic branch; child work uses that task's own branch
   (`pr_title_key_missing`, `pr_title_key_mismatch`). A pull-request number
@@ -142,22 +143,27 @@ confirmed Jira key it is, or to a task whose confirmed link it is, and judges:
 
 Accepted and refused decisions are both recorded, idempotently per caller key,
 and are readable by observers. Each decision carries the policy revision it was
-judged under; `kontor_core::publication::POLICY_REVISION` is 4 at this revision
-(repository scope, ambiguity and the missing-title rule arrived with #239,
-`e3a0c6c8`). Schema v119 makes the ledger append-only: triggers refuse update
+judged under; `kontor_core::publication::POLICY_REVISION` is 5 at this revision.
+The selected folder's explicit ProjectId and exact root/module mapping must be
+activated in the orchestration bundle; absent policy authorizes nothing. See
+[project publication authority](CONFIGURATION.md#project-publication-authority).
+Decisions cite the governing `source_bundle_hash`; schema v137 requires it for
+new accepted receipts and preserves older receipts without inventing provenance.
+Changed policy or binding refuses replay of an old acceptance under the same
+caller key. Schema v119 makes the ledger append-only: triggers refuse update
 and delete of a recorded attestation (ASMA-8102, #265, `835c5815`). A refused
 decision is evidence that the rail held. A malformed commit identity is a
 malformed request, not a decision.
 
 Two forge-side checks sit beside the attestation. The GitHub App gateway
-(#195, `e4bb5fbd`) posts the `asma/publication-identity` check run and performs
-head-bound merges once `config/github-app.json` is installed; see
+posts the selected `project.check_runs` publication-identity check and performs
+head-bound merges once `forge/github-app.yml` is configured; see
 [CONFIGURATION.md](CONFIGURATION.md#github-app-for-publication-identity-asma-8101).
-The `asma/publication-branch-title` workflow (#280, `8acdbd17`) runs on
+The publication-branch-title workflow runs on
 `pull_request_target`, fetches its checker from the exact workflow revision and
 executes nothing from the pull-request head. It judges only the branch shape,
 the title's leading key (or `Release v<version>` for a release branch) and the
-`master` base. One exception: a `dependabot/` branch opened by `dependabot[bot]`
+configured base. One exception: a `dependabot/` branch opened by `dependabot[bot]`
 is accepted as `bot_branch_exempt`, and the base and head-sha checks still run.
 The checker (`.github/scripts/publication_branch_title.py`) reads the project
 key, base branch and check name from the selected YAML config folder; the

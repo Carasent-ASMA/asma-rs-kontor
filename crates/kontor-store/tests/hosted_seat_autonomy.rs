@@ -2857,6 +2857,20 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 /// where those rows lived.
 fn rewind_to_schema_121(path: &std::path::Path) {
     let connection = Connection::open(path).expect("the database opens");
+    let publication_provenance: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM publication_attestations WHERE source_bundle_hash IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        publication_provenance, 0,
+        "a historical rewind must not erase publication provenance"
+    );
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .expect("the current-only v137 column is removed from the fixture");
     // This stopped fixture started at today's schema. A historical stamp must
     // also remove the later additive tables, or a forward open would correctly
     // refuse to create them again. Refuse to erase any fixture evidence.

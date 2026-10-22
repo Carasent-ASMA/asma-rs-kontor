@@ -36,6 +36,9 @@ pub struct ProjectSettings {
     pub worktree_layout: String,
     /// Configured check-run names.
     pub check_runs: Vec<String>,
+    /// Validated authoring projection; publication reads only its activated bundle.
+    #[serde(skip)]
+    pub publication_policy: Option<kontor_core::publication::PublicationPolicy>,
 }
 
 /// Tracker values needed to prevent cross-project selection.
@@ -70,6 +73,8 @@ pub struct ConfigFolder {
     pub project: ProjectSettings,
     /// The selected fleet authoring path; activation state stays in the state root.
     pub fleet: PathBuf,
+    /// Explicit integration bindings constrain publication; they never authorize it.
+    pub(crate) publication_consumers: Vec<kontor_core::id::ProjectId>,
 }
 
 impl ConfigFolder {
@@ -94,7 +99,11 @@ impl ConfigFolder {
             return Err(refusal(root, "config folder is not a directory"));
         }
         let entry_path = root.join(ENTRY);
-        let entry: Entry = read_yaml(&entry_path)?;
+        let mut entry: Entry = read_yaml(&entry_path)?;
+        let text = std::fs::read_to_string(&entry_path)
+            .map_err(|_| refusal(&entry_path, "config file cannot be read"))?;
+        entry.project.publication_policy =
+            crate::project_policy::parse(&text).map_err(|problem| refusal(&entry_path, problem))?;
         if entry.schema_version != 1 {
             return Err(refusal(
                 &entry_path,
@@ -138,6 +147,7 @@ impl ConfigFolder {
             root,
             project: entry.project,
             fleet: PathBuf::new(),
+            publication_consumers: Vec::new(),
         };
         let fleet = folder.reference(&entry.fleet)?;
         folder.reference(&entry.core_team)?;
@@ -153,7 +163,57 @@ impl ConfigFolder {
             }
         }
         folder.validate_tree(&folder.root)?;
-        Ok(Self { fleet, ..folder })
+        let mut folder = Self { fleet, ..folder };
+        folder.publication_consumers = folder.publication_consumer_projects(&raw)?;
+        Ok(folder)
+    }
+
+    fn publication_consumer_projects(
+        &self,
+        entry: &serde_yaml_ng::Value,
+    ) -> Result<Vec<kontor_core::id::ProjectId>, ConfigError> {
+        let mut projects = Vec::new();
+        let sources = [
+            entry["project"]["tracker"]["spec"].as_str(),
+            Some("tracker/connectors.yml"),
+            Some("forge/github-app.yml"),
+        ];
+        for source in sources.into_iter().flatten() {
+            let Some(document) = self.optional::<serde_yaml_ng::Value>(source)? else {
+                continue;
+            };
+            let ids = document.get("project_id").into_iter().chain(
+                document
+                    .get("projects")
+                    .and_then(serde_yaml_ng::Value::as_sequence)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|project| project.get("project_id")),
+            );
+            for id in ids {
+                let id = id
+                    .as_str()
+                    .and_then(|text| kontor_core::id::ProjectId::parse(text).ok())
+                    .ok_or_else(|| {
+                        refusal(self.root.join(source), "invalid consumer project_id")
+                    })?;
+                if self
+                    .project
+                    .publication_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.project_id != id)
+                {
+                    return Err(refusal(
+                        self.root.join(source),
+                        "consumer project_id conflicts with project.project_id",
+                    ));
+                }
+                if !projects.contains(&id) {
+                    projects.push(id);
+                }
+            }
+        }
+        Ok(projects)
     }
 
     /// The resolved absolute folder path, for service launch and readback.

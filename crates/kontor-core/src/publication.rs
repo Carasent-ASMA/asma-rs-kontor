@@ -9,15 +9,77 @@
 //! reasons are stable codes. It never talks to a repository, a tracker or a
 //! forge; the daemon assembles the binding from durable state.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::branch::{BranchName, BranchRefusal, TrackerKey};
-use crate::id::ExternalName;
+use crate::id::{ContentHash, ExternalName, ModuleKey, ProjectId};
+use crate::pull_request::ForgeRepository;
 use crate::{DomainError, DomainResult};
 
 /// The revision of the rules below. Bumped whenever a rule changes so a recorded
 /// decision can be read against the exact policy that produced it.
-pub const POLICY_REVISION: u32 = 4;
+pub const POLICY_REVISION: u32 = 5;
+
+/// Project publication authority, resolved from authoring data and pinned in a bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationPolicy {
+    /// The existing realm project this policy may govern, never a creation request.
+    pub project_id: ProjectId,
+    /// The project-owned repository allowlist; membership alone grants nothing.
+    pub repositories: Vec<ForgeRepository>,
+    /// The repository every confirmed binding in this project may publish to.
+    pub root_repository: ForgeRepository,
+    /// Exact durable task module keys and their additional publication repository.
+    pub module_repositories: BTreeMap<ModuleKey, ForgeRepository>,
+    /// The only permitted publication base.
+    pub base_branch: ExternalName,
+}
+
+impl PublicationPolicy {
+    /// Check that every granted repository is in the project's explicit allowlist.
+    ///
+    /// # Errors
+    /// Refuses a root or module repository outside that list.
+    pub fn validate(&self) -> DomainResult<()> {
+        if !self.repositories.contains(&self.root_repository) {
+            return Err(DomainError::invalid(
+                "PublicationPolicy",
+                "project.publication.root_repository must be in project.forge.repositories",
+            ));
+        }
+        if self
+            .module_repositories
+            .values()
+            .any(|repository| !self.repositories.contains(repository))
+        {
+            return Err(DomainError::invalid(
+                "PublicationPolicy",
+                "project.publication.module_repositories must be in project.forge.repositories",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The root plus only the exact module mappings these stored tasks contribute.
+    #[must_use]
+    pub fn authorized_repositories<'a>(
+        &self,
+        modules: impl IntoIterator<Item = &'a ModuleKey>,
+    ) -> Vec<ForgeRepository> {
+        let mut repositories = vec![self.root_repository.clone()];
+        for module in modules {
+            if let Some(repository) = self.module_repositories.get(module)
+                && !repositories.contains(repository)
+            {
+                repositories.push(repository.clone());
+            }
+        }
+        repositories
+    }
+}
 
 /// A Git commit identity: exactly forty lowercase hexadecimal digits.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -88,7 +150,7 @@ pub struct PublicationBinding {
     /// Every confirmed task key in the epic. Retained in the frozen binding as
     /// evidence of the resolved graph; it never widens the branch identity.
     pub child_keys: Vec<TrackerKey>,
-    /// The repository's default branch, the only permitted base.
+    /// The project's configured publication base, the only permitted base.
     pub default_branch: ExternalName,
 }
 
@@ -112,6 +174,14 @@ crate::closed_enum! {
     /// Why a publication was refused. Each spelling is the stable code a producer
     /// reports; the branch codes are [`BranchRefusal`]'s own spellings.
     PublicationRefusal, "PublicationRefusal" {
+        /// No activated bundle declares project publication authority.
+        PolicyUnconfigured => "publication_policy_unconfigured",
+        /// The activated policy or its immutable artifacts cannot be verified.
+        PolicyInvalid => "publication_policy_invalid",
+        /// The activated policy governs another internal project identity.
+        ProjectMismatch => "publication_project_mismatch",
+        /// A selected integration is bound to another internal project identity.
+        ConsumerMismatch => "publication_consumer_mismatch",
         /// The forge repository is outside the project's approved publication scope.
         RepositoryMismatch => "repository_mismatch",
         /// The head branch is not the branch the binding allows.
@@ -134,6 +204,18 @@ impl PublicationRefusal {
     #[must_use]
     pub const fn rule(self) -> &'static str {
         match self {
+            Self::PolicyUnconfigured => {
+                "publication_policy_unconfigured: activate an explicit project publication policy"
+            }
+            Self::PolicyInvalid => {
+                "publication_policy_invalid: the activated publication policy must verify"
+            }
+            Self::ProjectMismatch => {
+                "publication_project_mismatch: the requested project must equal the activated policy project"
+            }
+            Self::ConsumerMismatch => {
+                "publication_consumer_mismatch: integration project bindings must agree with the activated policy"
+            }
             Self::RepositoryMismatch => {
                 "repository_mismatch: the publication repository must be in the project's approved scope"
             }
@@ -149,7 +231,7 @@ impl PublicationRefusal {
                 "pr_title_key_mismatch: the pull-request title must carry the same confirmed Jira key as its branch"
             }
             Self::BaseBranchNotDefault => {
-                "base_branch_not_default: a publication targets the repository's default branch"
+                "base_branch_not_default: a publication targets the configured project base branch"
             }
         }
     }
@@ -165,6 +247,9 @@ pub struct PublicationDecision {
     pub reasons: Vec<String>,
     /// The rules revision this decision was computed under.
     pub policy_revision: u32,
+    /// The immutable activated policy bundle read for this judgement, when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bundle_hash: Option<ContentHash>,
 }
 
 impl PublicationDecision {
@@ -175,6 +260,7 @@ impl PublicationDecision {
             accepted: true,
             reasons: Vec::new(),
             policy_revision: POLICY_REVISION,
+            source_bundle_hash: None,
         }
     }
 
@@ -186,6 +272,7 @@ impl PublicationDecision {
             accepted: false,
             reasons: vec![refusal.as_str().to_owned()],
             policy_revision: POLICY_REVISION,
+            source_bundle_hash: None,
         }
     }
 
@@ -202,6 +289,18 @@ impl PublicationDecision {
             accepted: false,
             reasons: vec![PublicationRefusal::BindingAmbiguous.as_str().to_owned()],
             policy_revision: POLICY_REVISION,
+            source_bundle_hash: None,
+        }
+    }
+
+    /// Refuse an unavailable or mismatched publication authority without resolving a binding.
+    #[must_use]
+    pub fn refused(refusal: PublicationRefusal) -> Self {
+        Self {
+            accepted: false,
+            reasons: vec![refusal.as_str().to_owned()],
+            policy_revision: POLICY_REVISION,
+            source_bundle_hash: None,
         }
     }
 
@@ -268,5 +367,6 @@ pub fn evaluate(
             .map(|refusal: &PublicationRefusal| refusal.as_str().to_owned())
             .collect(),
         policy_revision: POLICY_REVISION,
+        source_bundle_hash: None,
     }
 }

@@ -581,6 +581,53 @@ fn the_neutral_orchestration_matches_the_project_schema() {
     validate_orchestration("config/examples/orchestration/orchestration.yml");
 }
 
+#[test]
+fn publication_is_an_optional_explicit_project_policy_in_the_same_schema() {
+    use kontor_core::id::{ExternalName, ProjectId};
+    use kontor_core::publication::PublicationPolicy;
+    use kontor_core::pull_request::ForgeRepository;
+
+    let schema = read("config/examples/orchestration/orchestration.schema.yml");
+    assert_eq!(
+        schema_keys(&schema["project"]["optional"], "project.optional"),
+        ["project_id", "publication"]
+    );
+    assert_eq!(
+        schema_keys(
+            &schema["publication_contract"]["required"],
+            "publication.required"
+        ),
+        ["root_repository", "module_repositories"]
+    );
+    let document = read("config/examples/orchestration/orchestration.yml");
+    let project = &document["project"];
+    let policy = PublicationPolicy {
+        project_id: ProjectId::parse(project["project_id"].as_str().unwrap()).unwrap(),
+        repositories: sequence(&project["forge"]["repositories"], "repositories")
+            .iter()
+            .map(|value| ForgeRepository::parse(value.as_str().unwrap()).unwrap())
+            .collect(),
+        root_repository: ForgeRepository::parse(
+            project["publication"]["root_repository"].as_str().unwrap(),
+        )
+        .unwrap(),
+        module_repositories: serde_yaml_ng::from_value(
+            project["publication"]["module_repositories"].clone(),
+        )
+        .unwrap(),
+        base_branch: ExternalName::parse(project["forge"]["base_branch"].as_str().unwrap())
+            .unwrap(),
+    };
+    policy.validate().unwrap();
+    assert!(
+        policy.module_repositories.is_empty(),
+        "the neutral example is root-only"
+    );
+    let direct = read("tests/fixtures/config/asma-orchestration.yml");
+    assert!(direct["project"].get("project_id").is_none());
+    assert!(direct["project"].get("publication").is_none());
+}
+
 fn schema_keys(value: &Value, path: &str) -> Vec<String> {
     sequence(value, path)
         .iter()

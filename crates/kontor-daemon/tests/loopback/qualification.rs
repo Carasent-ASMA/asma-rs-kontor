@@ -413,6 +413,9 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     .send(&realm.world)
     .await;
     assert_eq!(ad_hoc.status, 200, "{}", ad_hoc.body);
+    // Legacy leadership retains its original routing and pins. The publication
+    // journey below explicitly activates its own repository authority.
+    activate_publication_policy(&realm.world, &realm.project);
     let bodies = [
         open_body(&realm.epic_key, MODULE_REPOSITORY, 101, Some(routes())),
         open_body(&realm.epic_key, MODULE_REPOSITORY, 102, Some(routes())),

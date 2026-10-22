@@ -54,6 +54,7 @@ pub mod jira_sync;
 pub mod lock;
 pub mod logging;
 pub mod orchestration;
+mod project_policy;
 pub mod provider_config;
 pub mod provider_marker;
 pub mod quota_observation;
@@ -684,6 +685,9 @@ impl Daemon {
                 None => crate::fleet::FleetSource::at(&config.state_root),
             }),
             succession_summarizer,
+            selected
+                .map(|folder| folder.publication_consumers.clone())
+                .unwrap_or_default(),
         )
         .map_err(|source| StartupError::Applications { source })?;
 

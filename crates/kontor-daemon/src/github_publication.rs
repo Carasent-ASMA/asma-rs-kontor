@@ -16,14 +16,14 @@
 //! document does. The private key is read from a path the document names and
 //! never from the document itself.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
-use kontor_api::applications::{ApplicationOperations, PublicationIdentityRequest};
+use kontor_api::applications::PublicationIdentityRequest;
 use kontor_api::state::{ApiState, BarrierState};
 use kontor_core::id::{ExternalName, IdempotencyKey, ProjectId, Timestamp};
 use kontor_core::publication::CommitSha;
@@ -678,12 +678,37 @@ pub fn check_key(repository: &str, facts: &PullRequestFacts) -> IdempotencyKey {
         .expect("a hex key is a valid idempotency key")
 }
 
+/// Stable across retries, distinct for an observed retarget, binding or policy change.
+pub(crate) fn policy_check_key(
+    request: &PublicationIdentityRequest,
+    decision: &kontor_core::publication::PublicationDecision,
+    epic_id: Option<kontor_core::id::MiniProjectId>,
+    task_id: Option<kontor_core::id::TaskId>,
+) -> IdempotencyKey {
+    let basis = serde_json::json!({
+        "schema_version": 1,
+        "repository": request.repository,
+        "base_branch": request.base_branch,
+        "head_branch": request.head_branch,
+        "head_sha": request.head_sha,
+        "pull_request": request.pull_request,
+        "title": request.title,
+        "decision": decision,
+        "epic_id": epic_id,
+        "task_id": task_id,
+    });
+    let document = kontor_core::id::CanonicalDocument::from_serializable(&basis)
+        .expect("publication facts are canonical JSON values");
+    IdempotencyKey::parse(&format!("github-check-{}", document.hash()))
+        .expect("a digest forms a valid idempotency key")
+}
+
 /// One poll: judge every open pull request of every governed repository and
-/// post a check run for each head/title not yet reported this process.
+/// Re-evaluate current authority before suppressing an unchanged last report.
 pub async fn judge_open_pull_requests(
     gateway: &GithubPublicationGateway,
     services: &Services,
-    posted: &mut BTreeSet<String>,
+    posted: &mut BTreeMap<(String, u64), String>,
 ) {
     let project_id = gateway.config().project_id;
     for repository in &gateway.config().repositories {
@@ -695,10 +720,6 @@ pub async fn judge_open_pull_requests(
             }
         };
         for facts in pull_requests {
-            let key = check_key(repository, &facts);
-            if posted.contains(key.as_str()) {
-                continue;
-            }
             let request = match identity_of(repository, &facts) {
                 Ok(request) => request,
                 Err(error) => {
@@ -706,19 +727,27 @@ pub async fn judge_open_pull_requests(
                     continue;
                 }
             };
-            let decision = match services
-                .attest_publication(&key, project_id, &request)
-                .await
-            {
+            let (key, decision) = match services.attest_publication_check(project_id, &request) {
                 Ok(decision) => decision,
                 Err(error) => {
                     warn!(repository, number = facts.number, %error, "publication could not be judged");
                     continue;
                 }
             };
+            let subject = (repository.clone(), facts.number);
+            if posted
+                .get(&subject)
+                .is_some_and(|posted| posted == key.as_str())
+            {
+                continue;
+            }
+            let policy = decision
+                .source_bundle_hash
+                .as_ref()
+                .map_or("unconfigured", kontor_core::id::ContentHash::as_str);
             let summary = if decision.accepted {
                 format!(
-                    "Branch `{}` at `{}` is bound to Kontor epic {} (attestation {}).",
+                    "Branch `{}` at `{}` is bound to Kontor epic {} (attestation {}, policy bundle {}).",
                     request.head_branch.as_str(),
                     &facts.head.sha[..12.min(facts.head.sha.len())],
                     decision
@@ -729,15 +758,17 @@ pub async fn judge_open_pull_requests(
                         .attestation_id
                         .map(|id| id.to_string())
                         .unwrap_or_default(),
+                    policy,
                 )
             } else {
                 format!(
-                    "Refused: {}. Expected `<type>/ASMA-<number>-<slug>` bound to a confirmed Kontor/Jira epic or task, base `master`, title leading with a key of that epic. Attestation {}.",
+                    "Refused: {}. Expected a canonical branch and matching title bound to a confirmed tracker epic or task, targeting the configured base branch. Attestation {}, policy bundle {}.",
                     decision.reasons.join(", "),
                     decision
                         .attestation_id
                         .map(|id| id.to_string())
                         .unwrap_or_default(),
+                    policy,
                 )
             };
             match gateway
@@ -751,7 +782,7 @@ pub async fn judge_open_pull_requests(
                         accepted = decision.accepted,
                         "publication check posted"
                     );
-                    posted.insert(key.as_str().to_owned());
+                    posted.insert(subject, key.as_str().to_owned());
                 }
                 Err(error) => {
                     warn!(repository, number = facts.number, %error, "publication check could not be posted")
@@ -774,7 +805,7 @@ pub async fn poll_until_stopped(
     let mut stops = state.signals().stops();
     let mut ticker = tokio::time::interval(Duration::from_secs(gateway.config().poll_seconds));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut posted = BTreeSet::new();
+    let mut posted = BTreeMap::new();
     loop {
         if state.signals().is_stopping() {
             return;
@@ -884,6 +915,42 @@ mod tests {
             key_pair_from_pem("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn policy_bound_check_keys_change_on_retarget_revocation_and_binding_changes() {
+        use kontor_core::id::{ContentHash, MiniProjectId};
+        use kontor_core::publication::PublicationDecision;
+
+        let mut request = PublicationIdentityRequest {
+            repository: ExternalName::parse("example-org/root").unwrap(),
+            base_branch: ExternalName::parse("main").unwrap(),
+            head_branch: ExternalName::parse("feat/EXM-1-work").unwrap(),
+            head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            pull_request: Some(1),
+            title: Some(ExternalName::parse("EXM-1 Work").unwrap()),
+        };
+        let mut decision = PublicationDecision::accepted();
+        decision.source_bundle_hash = Some(ContentHash::of(b"first activated policy"));
+        let epic = Some(MiniProjectId::generate());
+        let first = policy_check_key(&request, &decision, epic, None);
+        assert_eq!(first, policy_check_key(&request, &decision, epic, None));
+        request.base_branch = ExternalName::parse("develop").unwrap();
+        assert_ne!(first, policy_check_key(&request, &decision, epic, None));
+        request.base_branch = ExternalName::parse("main").unwrap();
+        decision.source_bundle_hash = Some(ContentHash::of(b"replacement activated policy"));
+        assert_ne!(first, policy_check_key(&request, &decision, epic, None));
+        decision.source_bundle_hash = Some(ContentHash::of(b"first activated policy"));
+        decision.accepted = false;
+        decision.reasons.push("repository_mismatch".to_owned());
+        assert_ne!(first, policy_check_key(&request, &decision, epic, None));
+        decision.accepted = true;
+        decision.reasons.clear();
+        assert_ne!(
+            first,
+            policy_check_key(&request, &decision, Some(MiniProjectId::generate()), None)
+        );
+        assert_eq!(first, policy_check_key(&request, &decision, epic, None));
     }
 
     #[test]

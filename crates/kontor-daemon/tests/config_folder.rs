@@ -40,6 +40,12 @@ fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
     let entry_path = folder.join(ENTRY);
     let mut entry: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
+    let project_id = entry["project"]["project_id"]
+        .as_str()
+        .map(kontor_core::id::ProjectId::parse)
+        .transpose()
+        .unwrap()
+        .unwrap_or_else(kontor_core::id::ProjectId::generate);
     std::fs::create_dir_all(folder.join("forge")).unwrap();
     let cases = [
         (vec!["publication-branch-title"], None),
@@ -61,7 +67,7 @@ fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
             "app_id": 1,
             "installation_id": 2,
             "private_key_path": root.path().join("absent-key.pem"),
-            "project_id": kontor_core::id::ProjectId::generate(),
+            "project_id": project_id,
             "repositories": ["example-org/example-project"],
         });
         if let Some(name) = override_name {
@@ -72,6 +78,7 @@ fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
             serde_yaml_ng::from_str(&text).expect("structurally valid public App fixture");
         document.validate().unwrap();
         std::fs::write(folder.join("forge/github-app.yml"), text).unwrap();
+        ConfigFolder::select(Some(&folder), None).expect("valid project/App binding fixture");
         let error = Daemon::start_configured(
             DaemonConfig::at(root.path().join(format!("state-{index}"))).with_config_dir(&folder),
         )
@@ -83,6 +90,137 @@ fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
             !error.contains("private key"),
             "check identity is validated before key access"
         );
+    }
+}
+
+#[test]
+fn selected_tracker_and_app_bindings_constrain_the_explicit_project() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let entry: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(folder.join(ENTRY)).unwrap()).unwrap();
+    let id = entry["project"]["project_id"].as_str().unwrap();
+    let other = kontor_core::id::ProjectId::generate().to_string();
+    for source in [
+        "tracker/jira.yml",
+        "tracker/connectors.yml",
+        "forge/github-app.yml",
+    ] {
+        let path = folder.join(source);
+        let original = std::fs::read(&path).ok();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (binding, expected) in [
+            (id, None),
+            (other.as_str(), Some("conflicts")),
+            ("invalid-id-canary", Some("invalid")),
+        ] {
+            let document = if source == "tracker/connectors.yml" {
+                serde_json::json!({"projects": [{"project_id": binding}]})
+            } else {
+                serde_json::json!({"project_id": binding})
+            };
+            std::fs::write(&path, serde_yaml_ng::to_string(&document).unwrap()).unwrap();
+            let result = ConfigFolder::select(Some(&folder), None);
+            if let Some(reason) = expected {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains(source)
+                        && error.contains("project_id")
+                        && error.contains(reason),
+                    "{error}"
+                );
+                assert!(
+                    !error.contains(&other) && !error.contains("invalid-id-canary"),
+                    "{error}"
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+        if let Some(bytes) = original {
+            std::fs::write(&path, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn publication_policy_refuses_partial_or_invalid_identity_by_field_name() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let path = folder.join(ENTRY);
+    let mut original: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    original["project"]
+        .as_mapping_mut()
+        .unwrap()
+        .remove("project_id");
+    original["project"]
+        .as_mapping_mut()
+        .unwrap()
+        .remove("publication");
+    let id = kontor_core::id::ProjectId::generate();
+    for (project_id, publication, field) in [
+        (Some(serde_json::json!(id)), None, "project.publication"),
+        (
+            None,
+            Some(serde_json::json!({
+                "root_repository": "example-org/example-project",
+                "module_repositories": {},
+            })),
+            "project.project_id",
+        ),
+        (
+            Some(serde_json::json!("not-an-id")),
+            Some(serde_json::json!({
+                "root_repository": "example-org/example-project",
+                "module_repositories": {},
+            })),
+            "project.project_id",
+        ),
+        (
+            Some(serde_json::json!(id)),
+            Some(serde_json::json!({"root_repository": "example-org/example-project"})),
+            "project.publication.module_repositories",
+        ),
+        (
+            Some(serde_json::json!(id)),
+            Some(serde_json::json!({
+                "root_repository": "other-org/unlisted",
+                "module_repositories": {},
+            })),
+            "project.publication.root_repository",
+        ),
+        (
+            Some(serde_json::json!(id)),
+            Some(serde_json::json!({
+                "root_repository": "example-org/example-project",
+                "module_repositories": {"components/*": "example-org/example-project"},
+            })),
+            "project.publication.module_repositories",
+        ),
+        (
+            Some(serde_json::json!(id)),
+            Some(serde_json::json!({
+                "root_repository": "example-org/example-project",
+                "module_repositories": {"components/worker": "example-org/*"},
+            })),
+            "project.publication.module_repositories",
+        ),
+    ] {
+        let mut entry = original.clone();
+        if let Some(value) = project_id {
+            entry["project"]["project_id"] = serde_yaml_ng::to_value(value).unwrap();
+        }
+        if let Some(value) = publication {
+            entry["project"]["publication"] = serde_yaml_ng::to_value(value).unwrap();
+        }
+        std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+        let error = ConfigFolder::select(Some(&folder), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(field), "{field}: {error}");
     }
 }
 
@@ -205,6 +343,22 @@ async fn two_selected_folders_start_independent_realms_and_report_their_own_iden
         )
         .replace("base_branch: main", "base_branch: develop");
     std::fs::write(&entry, changed).unwrap();
+    let project_a = kontor_core::id::ProjectId::generate();
+    let project_b = kontor_core::id::ProjectId::generate();
+    for (folder, project, repository) in [
+        (&folder_a, project_a, "example-org/example-project"),
+        (&folder_b, project_b, "alternate-org/alternate-project"),
+    ] {
+        let path = folder.join(ENTRY);
+        let mut value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        value["project"]["project_id"] = serde_yaml_ng::to_value(project).unwrap();
+        value["project"]["publication"] = serde_yaml_ng::to_value(serde_json::json!({
+            "root_repository": repository, "module_repositories": {},
+        }))
+        .unwrap();
+        std::fs::write(path, serde_yaml_ng::to_string(&value).unwrap()).unwrap();
+    }
     support::write_runtime_planes(
         &folder_a,
         &serde_json::json!({"schema_version":5,"runtimes":[]}),
@@ -224,7 +378,25 @@ async fn two_selected_folders_start_independent_realms_and_report_their_own_iden
     let first_settings = first.config().config_folder().unwrap();
     let second_settings = second.config().config_folder().unwrap();
     assert_eq!(first_settings.project.key, "EXM");
+    assert_eq!(
+        first_settings
+            .project
+            .publication_policy
+            .as_ref()
+            .unwrap()
+            .project_id,
+        project_a
+    );
     assert_eq!(second_settings.project.key, "ALT");
+    assert_eq!(
+        second_settings
+            .project
+            .publication_policy
+            .as_ref()
+            .unwrap()
+            .project_id,
+        project_b
+    );
     assert_eq!(second_settings.project.forge.base_branch, "develop");
     assert_eq!(
         second_settings.project.forge.repositories,
