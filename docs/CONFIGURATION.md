@@ -536,10 +536,28 @@ catalog reads and restart retain installed bytes and do not publish edits.
 The neutral example has generic roles, no accounts, no clinical scenarios and
 no project prompt. Worker model routes come from activated fleet bindings.
 
-Operational-domain candidates are validated and cached in this checkpoint;
-runtime selection and authority-bearing lead/program/control purposes require
-the separately pinned Core Team resolution contract. Legacy compiled fixtures
-remain available to explicit embedding/tests until that cleanup is complete.
+New Core Team resolution uses the selected operational domain and its exact
+catalog snapshot. The existing delivery keys `architecture_closer_code`,
+`process_closer_code` and `control_role_code` derive read-only resolved seat
+`purposes`: `architecture_closer`, `process_closer`, `control`, in that fixed
+order without duplicates. They are not authored seat fields or caller privileges.
+Exact `RoleCode` equality assigns them; labels, ordering and `ad_hoc_allowed`
+grant nothing. Each purpose has one required owner, architecture and process
+remain separate, and process plus control can occupy the same seat.
+
+Published and epic-pinned rosters retain these markers with their exact
+catalog/version/role/slot bindings. Later delivery edits, restart or publication
+of another Core Team cannot reinterpret a frozen roster. Legacy rows without
+`purposes` remain readable and serialize without the empty field; they grant no
+purpose authority. A dependent operation refuses `role_purpose_unpinned` until
+an independently authorized operator explicitly previews/applies a tagged Core
+Team revision and explicitly upgrades the epic roster. Startup and reads never
+backfill markers. Selected-folder epic bootstrap requires a published Core Team.
+
+General operational-domain runtime selection remains a later WP-08 checkpoint;
+this resolved-purpose contract does not change runtime topology selection.
+Legacy compiled fixtures remain available to explicit embedding/tests until
+that cleanup is complete.
 
 ### The PR desk contract
 
@@ -1661,7 +1679,10 @@ is refused. A schema_version 1 record keeps its exact shape and behaviour and
 selects no roster.
 
 Core Team preview/apply hashes bind the complete resolved roster, including
-its exact ordered seat metadata, in addition to version, catalog and effects.
+its exact ordered seat metadata and purposes, in addition to version, catalog,
+selected raw pack source hashes and effects. The apply intent names that
+authorization hash. The exact catalog and resolved seats publish atomically;
+unknown or non-current roles and conflicting immutable catalog bytes refuse.
 Promotion binds the complete frozen roster; an explicit roster upgrade binds
 both the exact source and target rosters and the epic-side revision. An effects
 summary alone cannot authorize replacing metadata under the same version and
@@ -1670,13 +1691,14 @@ catalog. A stale preview refuses before publication or effects.
 A project's Core Team can be published from a published bundle through the
 existing `kontor_core_team_preview` and `kontor_core_team_apply`: name
 `source_bundle_hash` instead of `seats` (exactly one of the two). Both steps
-re-verify the bundle's immutable artifacts, derive the seats from its roster
-through the same resolver, and require the result to be the bundle's roster
-byte for byte — the bundle must be authored at the project's next Core Team
+re-verify the bundle's immutable artifacts and publish its frozen resolved
+roster byte for byte, including purposes. They never rederive purposes from a
+later delivery edit. The bundle must be authored at the project's next Core Team
 version against the catalog the realm holds, or the preview refuses. The apply
 names the bundle in its intent, receipt and outcome. Nothing else changes: no
 epic pin or running seat is retargeted, and an explicit-seat request is
-unchanged.
+unchanged. Bundle manifests also pin the four selected pack sources used during
+resolution; an unactivated authoring edit cannot replace those immutable bytes.
 
 #### Direct-mode resolution without a daemon
 

@@ -173,16 +173,24 @@ impl Services {
                     )
                 })?;
                 let required = if question.scope.needs_architecture_closer() {
-                    MANDATORY_LEAD_ROLE
+                    CoreTeamSeatPurpose::ArchitectureCloser
                 } else {
-                    MANDATORY_PROGRAM_ROLE
+                    CoreTeamSeatPurpose::ProcessCloser
                 };
                 self.require_completion_authority(project, epic, required, seat.id, generation)?;
+                let architecture =
+                    self.epic_purpose(project, epic, CoreTeamSeatPurpose::ArchitectureCloser)?;
+                let process =
+                    self.epic_purpose(project, epic, CoreTeamSeatPurpose::ProcessCloser)?;
                 let policy = CloserPolicy {
-                    architecture_closer: RoleKey::parse(&MANDATORY_LEAD_ROLE.to_ascii_lowercase())
-                        .map_err(|error| self.refuse_domain(&error))?,
-                    process_closer: RoleKey::parse(&MANDATORY_PROGRAM_ROLE.to_ascii_lowercase())
-                        .map_err(|error| self.refuse_domain(&error))?,
+                    architecture_closer: RoleKey::parse(
+                        &architecture.role.role_code.as_str().to_ascii_lowercase(),
+                    )
+                    .map_err(|error| self.refuse_domain(&error))?,
+                    process_closer: RoleKey::parse(
+                        &process.role.role_code.as_str().to_ascii_lowercase(),
+                    )
+                    .map_err(|error| self.refuse_domain(&error))?,
                 };
                 question
                     .dispose(

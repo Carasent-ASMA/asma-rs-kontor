@@ -405,6 +405,15 @@ waits or escalates. See [Configuration](docs/CONFIGURATION.md#activated-fleet-po
 and the [live fleet routing decision](_docs/architecture/2026-09-24-20-45-architecture-live-fleet-routing.md).
 No live realm activation is recorded here.
 
+Core Team authority is resolved once from the selected delivery/catalog
+snapshot, then frozen as typed seat purposes for architecture closure, process
+closure and control. Authority checks use those purposes and the exact pinned
+catalog/role/slot binding; current delivery selectors, names and seat order
+cannot reinterpret stored rosters. Preview/apply, promotion and explicit roster
+upgrade hashes bind the full snapshots including purposes. Legacy untagged
+rosters stay readable and non-granting until an independently authorized,
+explicitly previewed/applied revision and epic-roster upgrade adopt the markers.
+
 Quota headroom has one deliberate status caveat. The account-before-rung
 resolver computes typed `Admit`, `Wait` and `NeedsHuman` outcomes, and launch
 honours `Admit`. The delivery launch boundary still has to return a model rung,

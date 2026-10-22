@@ -6697,6 +6697,8 @@ export interface components {
             native_seat?: null | components["schemas"]["CoreTeamNativeSeatDto"];
             /** @description When a concrete epic materializes it. */
             presence: string;
+            /** @description Frozen purposes derived by the server; legacy empty is non-granting. Never accepted as authored seat selections. */
+            purposes?: ("architecture_closer" | "process_closer" | "control")[];
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
             role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];

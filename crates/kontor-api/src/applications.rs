@@ -793,6 +793,15 @@ pub struct AppliedProfileDto {
     pub receipt: MutationReceiptDto,
 }
 
+fn core_team_purposes_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    serde_json::from_value(serde_json::json!({
+        "type":"array", "uniqueItems":true,
+        "description":"Frozen purposes derived by the server; legacy empty is non-granting. Never accepted as authored seat selections.",
+        "items":{"type":"string", "enum":kontor_core::spec::CoreTeamSeatPurpose::ALL},
+    }))
+    .expect("frozen purpose schema")
+}
+
 /// One Core Team seat: the standard role, the policy it is held under, and the
 /// seat filling it if any.
 ///
@@ -809,6 +818,10 @@ pub struct CoreTeamSeatDto {
     pub presence: EpicPresence,
     /// Whether the role may open a Quick session.
     pub ad_hoc_allowed: bool,
+    /// Frozen derived purposes: architecture_closer, process_closer, control. Legacy empty is non-granting.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[schema(schema_with = core_team_purposes_schema, required = false)]
+    pub purposes: Vec<kontor_core::spec::CoreTeamSeatPurpose>,
     /// The binding filling it, once one has been materialized.
     #[schema(value_type = Option<String>)]
     pub seat_binding_id: Option<SeatBindingId>,

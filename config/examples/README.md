@@ -120,6 +120,13 @@ Committee candidates must be submitted to the existing preview/apply surface;
 reading their catalog or restarting does not publish them. An existing preset
 revision cannot be replaced by editing its YAML.
 
+The domain's existing delivery selectors derive the resolved Core Team seat
+`purposes` (`architecture_closer`, `process_closer`, `control`) by exact catalog
+role code. Do not author purposes in YAML or submit them as seat selections.
+Preview/apply pins them with catalog and source hashes; an epic retains its
+frozen purposes until explicit roster upgrade. Legacy empty markers remain
+readable but refuse authority-dependent operations as `role_purpose_unpinned`.
+
 The neutral pack has no accounts, clinical roles, persona scenarios or project
 system prompt. Its worker templates leave model routes to activated fleet
 bindings; committee model ids are explicit placeholders to replace before

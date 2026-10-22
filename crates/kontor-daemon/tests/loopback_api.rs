@@ -38532,6 +38532,7 @@ fn activate_aligned_bundle(
             core_team,
         },
         &bundled_role_catalog(),
+        &kontor_profiles::bundled_operational_domain().unwrap(),
     )
     .expect("the bundle resolves");
     let source = kontor_daemon::fleet::FleetSource::at(root);
@@ -46489,6 +46490,13 @@ async fn partial_epic_admission_reuses_its_frozen_definition_after_default_chang
         store
             .pin_mini_project_team_definition(&definition)
             .expect("partial definition pin");
+        // A partial admission retains its exact roster alongside its other pins.
+        let mut roster = store
+            .get_epic_roster(project, original_epic)
+            .expect("roster reads")
+            .expect("original frozen roster");
+        roster.mini_project_id = partial_epic;
+        store.put_epic_roster(&roster).expect("partial roster pin");
         assert!(
             store
                 .list_topology_nodes(project, Some(partial_epic))
@@ -61628,9 +61636,14 @@ fn activate_publication_policy(world: &World, project: &str) {
         &kontor_daemon::orchestration::BundleSources {
             orchestration: &serde_yaml_ng::to_string(&orchestration).unwrap(),
             fleet: include_str!("../../../config/examples/orchestration/fleet.yml"),
-            core_team: &kontor_daemon::orchestration::propose_core_team(&catalog).unwrap(),
+            core_team: &kontor_daemon::orchestration::propose_core_team(
+                &catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap(),
+            )
+            .unwrap(),
         },
         &catalog,
+        &kontor_profiles::bundled_operational_domain().unwrap(),
     )
     .unwrap();
     let source = kontor_daemon::fleet::FleetSource::at(world.directory.path());

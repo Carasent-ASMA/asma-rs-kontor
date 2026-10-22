@@ -646,6 +646,29 @@ async fn public_task_materialization_creates_from_host_source_before_native_bind
                 .confirm_jira_materialization_batch(world.project, &batch, now)
                 .unwrap();
         });
+        // This test declares its control authority explicitly; checkout inputs grant none.
+        let domain = &world.folder.realm_pack.as_ref().unwrap().domain;
+        let revision = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &domain.role_catalogs[0],
+            &[],
+            domain.delivery.purpose_roles(),
+        )
+        .unwrap();
+        world
+            .services
+            .freeze_roster(
+                world.project,
+                epic,
+                &FrozenRoster {
+                    revision,
+                    revision_of_epic: AggregateRevision::INITIAL,
+                    quick_session_id: None,
+                },
+                None,
+                kontor_api::now(),
+            )
+            .unwrap();
         let control = SemanticTopologyRequest {
             target: SemanticTopologyTargetDto::EpicControl { epic_id: epic },
             expected_revision: AggregateRevision::INITIAL,

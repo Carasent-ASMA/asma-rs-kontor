@@ -237,6 +237,7 @@ pub struct DeliveryRoleBinding {
 /// data makes, and reading it from here is what keeps the choice correctable
 /// without a code change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationalDelivery {
     /// The kind one epic materializes as.
     pub epic_kind: TopologyKindKey,
@@ -271,6 +272,16 @@ pub struct OperationalDelivery {
 }
 
 impl OperationalDelivery {
+    /// Borrow the three typed resolver selectors, with no second authored map.
+    #[must_use]
+    pub fn purpose_roles(&self) -> kontor_teams::CoreTeamPurposeRoles<'_> {
+        kontor_teams::CoreTeamPurposeRoles {
+            architecture_closer: &self.architecture_closer_code,
+            process_closer: &self.process_closer_code,
+            control: &self.control_role_code,
+        }
+    }
+
     /// The catalog code one Foundation role is recorded under, if it has one.
     ///
     /// A role with no binding returns `None`, and the caller refuses rather
@@ -296,6 +307,7 @@ pub struct RolePrompt {
 
 /// The Operational domain data bundled independently of Foundation profiles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationalDomainPack {
     /// Schema generation of this data file.
     pub schema_version: SchemaVersion,
@@ -392,6 +404,28 @@ impl OperationalDomainPack {
             }
         }
         let catalog = &self.role_catalogs[0];
+        if self.delivery.architecture_closer_code == self.delivery.process_closer_code {
+            return Err(DomainError::invalid(
+                "OperationalDomainPack",
+                "architecture/process purpose selectors must be separate",
+            ));
+        }
+        for code in [
+            &self.delivery.architecture_closer_code,
+            &self.delivery.process_closer_code,
+            &self.delivery.control_role_code,
+        ] {
+            if catalog
+                .role(code)
+                .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
+            {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "purpose selector requires a current catalog role",
+                ));
+            }
+        }
+
         for code in [
             &self.delivery.control_role_code,
             &self.delivery.architecture_closer_code,

@@ -476,10 +476,13 @@ impl Services {
     }
 
     fn refuse_desk_led_roster(&self, roster: &FrozenRoster) -> Result<(), ApiError> {
+        let architecture =
+            self.frozen_purpose(&roster.revision, CoreTeamSeatPurpose::ArchitectureCloser)?;
+        let process = self.frozen_purpose(&roster.revision, CoreTeamSeatPurpose::ProcessCloser)?;
         if roster.revision.seats.iter().any(|seat| {
             seat.presence != EpicPresence::OnDemand
-                && ![MANDATORY_LEAD_ROLE, MANDATORY_PROGRAM_ROLE]
-                    .contains(&seat.role.role_code.as_str())
+                && seat.role_slot_id != architecture.role_slot_id
+                && seat.role_slot_id != process.role_slot_id
         }) {
             return Err(self
                 .deny(
@@ -615,13 +618,13 @@ impl Services {
             project_id,
             &subject,
             request.from_seat_binding_id,
-            MANDATORY_LEAD_ROLE,
+            CoreTeamSeatPurpose::ArchitectureCloser,
         )?;
         let to = self.subject_seat(
             project_id,
             &subject,
             request.to_seat_binding_id,
-            MANDATORY_PROGRAM_ROLE,
+            CoreTeamSeatPurpose::ProcessCloser,
         )?;
         let fleet = self.fleet.current();
         let desired = parse_runtime_model_route(&request.model_route, fleet.as_deref())
@@ -746,14 +749,24 @@ impl Services {
         project_id: ProjectId,
         subject: &StoredDeskAdamSubject,
         seat_binding_id: SeatBindingId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<SeatBinding, ApiError> {
+        let epic = subject.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::RoleSlotUnbound,
+                "role_purpose_unpinned: subject has no epic roster",
+            )
+        })?;
+        let expected = self.epic_purpose(project_id, epic, purpose)?;
         self.state()?
             .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
             .map_err(|error| self.refuse(&error))?
             .filter(|seat| {
                 seat.topology_node_id == subject.topology_node_id
-                    && seat.role.role_code.as_str() == role_code
+                    && seat.role_slot_id == expected.role_slot_id
+                    && seat.role.catalog_id == expected.role.catalog_id
+                    && seat.role.catalog_revision == expected.role.catalog_revision
+                    && seat.role.role_code == expected.role.role_code
                     && seat.is_non_terminal()
             })
             .ok_or_else(|| {
@@ -1077,15 +1090,42 @@ impl Services {
         leadership: &TeamDeskLeadership,
     ) -> Result<SeatBinding, ApiError> {
         let state = self.state()?;
-        let lead =
-            RoleCode::parse(MANDATORY_LEAD_ROLE).map_err(|error| self.refuse_domain(&error))?;
+        // Unscoped resume retains its durable role/slot; it grants no epic purpose.
+        let held: Vec<_> = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(SeatBinding::is_non_terminal)
+            .collect();
+        if !held.is_empty() {
+            let [binding] = held.as_slice() else {
+                return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_ambiguous"));
+            };
+            let declared = definition
+                .container(&leadership.ad_hoc_kind)
+                .is_some_and(|container| {
+                    container.slots.iter().any(|slot| {
+                        slot.slot_id == binding.role_slot_id
+                            && slot.role_code.as_ref() == Some(&binding.role.role_code)
+                    })
+                });
+            if !declared {
+                return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch"));
+            }
+            return Ok(binding.clone());
+        }
+        let roster = self.epic_bootstrap_roster(project_id)?;
+        let role = self
+            .frozen_purpose(&roster.revision, CoreTeamSeatPurpose::ArchitectureCloser)?
+            .role;
+        let lead = &role.role_code;
         let slot = definition
             .container(&leadership.ad_hoc_kind)
             .and_then(|container| {
                 container
                     .slots
                     .iter()
-                    .find(|slot| slot.role_code.as_ref() == Some(&lead))
+                    .find(|slot| slot.role_code.as_ref() == Some(lead))
             })
             .ok_or_else(|| {
                 self.deny(
@@ -1097,16 +1137,25 @@ impl Services {
             state
                 .with_store(|store| store.list_seat_bindings(project_id, node.id))
                 .map_err(|error| self.refuse(&error))
-                .map(|seats| {
-                    seats
+                .and_then(|seats| {
+                    let held = seats
                         .into_iter()
-                        .find(|seat| seat.role_slot_id == slot.slot_id && seat.is_non_terminal())
+                        .find(|seat| seat.role_slot_id == slot.slot_id && seat.is_non_terminal());
+                    if held.as_ref().is_some_and(|seat| {
+                        seat.role.catalog_id != role.catalog_id
+                            || seat.role.catalog_revision != role.catalog_revision
+                            || seat.role.role_code != role.role_code
+                    }) {
+                        return Err(
+                            self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch")
+                        );
+                    }
+                    Ok(held)
                 })
         };
         if let Some(seat) = held()? {
             return Ok(seat);
         }
-        let role = self.catalog_role_for_code(&lead)?;
         let now = kontor_api::now();
         let created = state.with_store(|store| {
             store.create_seat_binding(&NewSeatBinding {
@@ -1114,7 +1163,7 @@ impl Services {
                 project_id,
                 topology_node_id: node.id,
                 role_slot_id: slot.slot_id.clone(),
-                role,
+                role: role.clone(),
                 // Leadership presence, not delivery work: no task, no TeamRun.
                 task_id: None,
                 team_run_id: None,
@@ -1690,9 +1739,6 @@ impl Services {
         control: &SessionTopologyNode,
         role_code: &RoleCode,
     ) -> Result<Option<String>, ApiError> {
-        if role_code.as_str() != MANDATORY_LEAD_ROLE {
-            return Ok(None);
-        }
         let state = self.state()?;
         let project_id = control.project_id;
         let Some(subject) = state
@@ -1701,6 +1747,14 @@ impl Services {
         else {
             return Ok(None);
         };
+        let Some(epic) = subject.mini_project_id else {
+            return Ok(None);
+        };
+        let expected =
+            self.epic_purpose(project_id, epic, CoreTeamSeatPurpose::ArchitectureCloser)?;
+        if role_code != &expected.role.role_code {
+            return Ok(None);
+        }
         let Some(origin) = subject.origin_topology_node_id else {
             return Ok(None);
         };

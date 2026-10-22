@@ -1051,6 +1051,29 @@ async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
         .expect("the imported task exists")
         .id;
     confirm_test_epic_identity(&world, &project_text, &epic.id.to_string());
+    // Imported work has no roster authority until an explicit admin upgrade.
+    publish_core_team(
+        &world,
+        &project_text,
+        serde_json::json!([seat("LSA", "required", true)]),
+    )
+    .await;
+    let roster_preview = Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/roster:upgrade-preview",
+            epic.id
+        ),
+        &serde_json::json!({"target":{"id":"core-team","version":1}}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(roster_preview.status, 200, "{}", roster_preview.body);
+    let roster_upgrade = Call::post(
+        format!("/v1/projects/{project}/epics/{}/roster:upgrade-apply", epic.id),
+        &serde_json::json!({"preview_hash":roster_preview.json()["preview_hash"],"expected_revision":1}),
+    ).signed_as(&world, "admin").with_key("backlog-import-race-roster").send(&world).await;
+    assert_eq!(roster_upgrade.status, 200, "{}", roster_upgrade.body);
     let revision = world
         .daemon
         .state()

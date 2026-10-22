@@ -92,7 +92,11 @@ impl Realm {
             .remove(0);
         std::fs::write(
             folder.join("orchestration/teams/core-team.yml"),
-            kontor_daemon::orchestration::propose_core_team(&catalog).unwrap(),
+            kontor_daemon::orchestration::propose_core_team(
+                &catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap(),
+            )
+            .unwrap(),
         )
         .unwrap();
         let tracker = folder.join("tracker/jira.yml");
@@ -219,6 +223,7 @@ impl Realm {
                 core_team: &team,
             },
             &catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
         )
         .unwrap();
         let source = FleetSource::at(&self.daemon.config().state_root);

@@ -335,10 +335,7 @@ use kontor_store::{
     TurnDispatch, UnconfirmedAdmission,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
-use kontor_teams::{
-    CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, MANDATORY_LEAD_ROLE,
-    MANDATORY_PROGRAM_ROLE,
-};
+use kontor_teams::{CoreTeamRevision, CoreTeamSeat, CoreTeamSeatPurpose, CoreTeamSeatSelection};
 
 use crate::succession::{
     GovernedSuccessionSummarizer, SuccessionHandoffRequest, SuccessionRedactionPolicy,
@@ -7890,7 +7887,7 @@ impl Services {
         {
             return Ok(published);
         }
-        self.domain
+        self.purpose_source()?
             .role_catalogs
             .iter()
             .find(|catalog| catalog.catalog_id == catalog_id && catalog.version == version)
@@ -7930,12 +7927,16 @@ impl Services {
 
     /// The catalog revision this build publishes.
     fn published_catalog(&self) -> Result<RoleCatalogRevision, ApiError> {
-        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "this build ships no role catalog",
-            )
-        })?;
+        let catalog = self
+            .purpose_source()?
+            .role_catalogs
+            .first()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this build ships no role catalog",
+                )
+            })?;
         self.catalog_revision(catalog.catalog_id, catalog.version)
     }
 
@@ -8143,6 +8144,76 @@ impl Services {
             .transpose()
     }
 
+    /// Only new resolution consults selected authoring. Stored roster purposes never do.
+    fn purpose_source(&self) -> Result<&OperationalDomainPack, ApiError> {
+        match self.selected_config.as_ref() {
+            None => Ok(&self.domain),
+            Some(folder) => folder
+                .realm_pack
+                .as_ref()
+                .map(|pack| &pack.domain)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "project.team_pack.operational_domain is not configured",
+                    )
+                }),
+        }
+    }
+
+    fn frozen_purpose(
+        &self,
+        roster: &CoreTeamRevision,
+        purpose: CoreTeamSeatPurpose,
+    ) -> Result<CoreTeamSeat, ApiError> {
+        let seat = roster
+            .seat_for_purpose(purpose)
+            .map_err(|error| match error {
+                kontor_core::DomainError::MissingAuthority { .. } => {
+                    self.deny(ApiErrorCode::RoleSlotUnbound, "role_purpose_unpinned")
+                }
+                _ => self.refuse_domain(&error),
+            })?;
+        let catalog = self.catalog_revision(seat.role.catalog_id, seat.role.catalog_revision)?;
+        if catalog
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?
+            .hash()
+            != &roster.catalog_hash
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "role_purpose_catalog_hash_mismatch",
+            ));
+        }
+        if catalog
+            .role(&seat.role.role_code)
+            .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
+        {
+            return Err(self.deny(
+                ApiErrorCode::RoleSlotUnbound,
+                "role_purpose_catalog_role_mismatch",
+            ));
+        }
+        Ok(seat.clone())
+    }
+
+    fn purpose_binding_matches(binding: &SeatBinding, owner: &CoreTeamSeat) -> bool {
+        binding.role_slot_id == owner.role_slot_id
+            && binding.role.catalog_id == owner.role.catalog_id
+            && binding.role.catalog_revision == owner.role.catalog_revision
+            && binding.role.role_code == owner.role.role_code
+    }
+
+    fn epic_purpose(
+        &self,
+        project: ProjectId,
+        epic: MiniProjectId,
+        purpose: CoreTeamSeatPurpose,
+    ) -> Result<CoreTeamSeat, ApiError> {
+        self.frozen_purpose(&self.frozen_roster(project, epic)?.revision, purpose)
+    }
+
     /// Resolve one caller's selections into the next immutable revision.
     ///
     /// Every selection is resolved against the exact catalog revision it names,
@@ -8151,9 +8222,10 @@ impl Services {
     /// which one it was resolved against.
     fn resolve_core_team(
         &self,
-        project_id: ProjectId,
+        _project_id: ProjectId,
         seats: &[CoreTeamSeatSelectionDto],
         current: Option<&CoreTeamRevision>,
+        bundle: Option<&CanonicalDocument>,
     ) -> Result<CoreTeamRevision, ApiError> {
         let first = seats
             .first()
@@ -8175,6 +8247,51 @@ impl Services {
         let catalog_id =
             RoleCatalogId::parse(&first.id).map_err(|error| self.refuse_domain(&error))?;
         let catalog = self.catalog_revision(catalog_id, first.version)?;
+        if let Some(bundle) = bundle {
+            #[derive(serde::Deserialize)]
+            struct Envelope {
+                value: CoreTeamRevision,
+            }
+            let revision = bundle
+                .deserialize::<Envelope>()
+                .map_err(|error| self.refuse_domain(&error))?
+                .value;
+            let next = current
+                .map_or(Ok(SpecVersion::FIRST), |current| current.version.next())
+                .map_err(|error| self.refuse_domain(&error))?;
+            if revision.version != next {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the bundle's Core Team revision is not the revision this project would publish next",
+                ));
+            }
+            if &revision.catalog_hash
+                != catalog
+                    .canonicalize()
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .hash()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "role_purpose_source_catalog_hash_mismatch",
+                ));
+            }
+            for purpose in CoreTeamSeatPurpose::ALL {
+                self.frozen_purpose(&revision, *purpose)?;
+            }
+            return Ok(revision);
+        }
+        let domain = self.purpose_source()?;
+        if !domain
+            .role_catalogs
+            .iter()
+            .any(|candidate| candidate == &catalog)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "role_purpose_source_catalog_mismatch",
+            ));
+        }
         let selections: Vec<CoreTeamSeatSelection> = seats
             .iter()
             .map(|seat| CoreTeamSeatSelection {
@@ -8187,9 +8304,13 @@ impl Services {
         let version = current
             .map_or(Ok(SpecVersion::FIRST), |current| current.version.next())
             .map_err(|error| self.refuse_domain(&error))?;
-        let _ = project_id;
-        CoreTeamRevision::resolve(version, &catalog, &selections)
-            .map_err(|error| self.refuse_domain(&error))
+        CoreTeamRevision::resolve(
+            version,
+            &catalog,
+            &selections,
+            domain.delivery.purpose_roles(),
+        )
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     // -- Quick sessions ------------------------------------------------------
@@ -8357,6 +8478,9 @@ impl Services {
                 "this project has published no Core Team revision",
             )
         })?;
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&current, *purpose)?;
+        }
         Ok((
             session,
             FrozenRoster {
@@ -8410,24 +8534,24 @@ impl Services {
             })
     }
 
-    /// The roster a new epic freezes.
-    ///
-    /// The project's published Core Team when it has one, and otherwise the two
-    /// mandatory roles alone: [`CoreTeamRevision::resolve`] inserts `LSA` and
-    /// `TPM` into every revision it resolves, so resolving no selections at all
-    /// against the catalog this build ships yields exactly the smallest roster
-    /// that satisfies the guarantee.
-    ///
-    /// Refusing instead would make publishing a Core Team a precondition for
-    /// having an epic at all. Nothing else in the contract imposes that, and the
-    /// realm that prompted this — two epics, eighteen tasks done, no governed
-    /// architecture lead — is what happens when the structure is optional.
+    /// Freeze the published Core Team for a new epic. Selected-folder work
+    /// requires explicit publication; an untagged stored roster grants no purpose.
     fn epic_bootstrap_roster(&self, project_id: ProjectId) -> Result<FrozenRoster, ApiError> {
-        let revision = match self.stored_core_team(project_id)? {
-            Some(published) => published,
-            None => CoreTeamRevision::resolve(SpecVersion::FIRST, &self.published_catalog()?, &[])
+        let revision =
+            match self.stored_core_team(project_id)? {
+                Some(published) => published,
+                None if self.selected_config.is_some() => return Err(self.deny(
+                    ApiErrorCode::RoleSlotUnbound,
+                    "role_purpose_unpinned: explicitly publish a Core Team before epic bootstrap",
+                )),
+                None => CoreTeamRevision::resolve(
+                    SpecVersion::FIRST,
+                    &self.published_catalog()?,
+                    &[],
+                    self.purpose_source()?.delivery.purpose_roles(),
+                )
                 .map_err(|error| self.refuse_domain(&error))?,
-        };
+            };
         Ok(FrozenRoster {
             revision,
             revision_of_epic: AggregateRevision::INITIAL,
@@ -8840,7 +8964,11 @@ impl Services {
         if self.optional_frozen_roster(project_id, epic_id)?.is_none() {
             return Ok(RosterGovernance::RosterUnfrozen);
         }
-        for role_code in [MANDATORY_PROGRAM_ROLE, MANDATORY_LEAD_ROLE] {
+        for role_code in [
+            CoreTeamSeatPurpose::ProcessCloser,
+            CoreTeamSeatPurpose::ArchitectureCloser,
+            CoreTeamSeatPurpose::Control,
+        ] {
             match self.epic_control_seat(project_id, epic_id, role_code) {
                 Ok(_) => {}
                 Err(error)
@@ -8904,6 +9032,9 @@ impl Services {
                 "this project has not published that Core Team revision as its current one",
             ));
         }
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&current, *purpose)?;
+        }
         Ok(current)
     }
 
@@ -8960,6 +9091,9 @@ impl Services {
         roster: &FrozenRoster,
         now: Timestamp,
     ) -> Result<Vec<(CoreTeamSeat, SeatBindingId)>, ApiError> {
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&roster.revision, *purpose)?;
+        }
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let held = state
@@ -8978,6 +9112,11 @@ impl Services {
             if let Some(existing) = held.iter().find(|binding| {
                 binding.role_slot_id == seat.role_slot_id && binding.is_non_terminal()
             }) {
+                if !Self::purpose_binding_matches(existing, seat) {
+                    return Err(
+                        self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch")
+                    );
+                }
                 seats.push((seat.clone(), existing.id));
                 continue;
             }
@@ -10525,6 +10664,7 @@ impl Services {
         let mut digest = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_preview",
+            "purpose_sources": self.selected_config.as_ref().and_then(|folder| folder.realm_pack.as_ref()).map(|pack| &pack.sources),
             // Effects are a summary; only the resolved roster binds every seat fact.
             "roster": proposed,
             "project": project_id.to_string(),
@@ -10585,6 +10725,7 @@ impl Services {
                     },
                     presence: seat.presence,
                     ad_hoc_allowed: seat.ad_hoc_allowed,
+                    purposes: seat.purposes.clone(),
                     seat_binding_id: None,
                     native_seat: None,
                     role_persona: None,
@@ -11200,6 +11341,11 @@ impl Services {
     ) -> Result<SessionTopologyNode, ApiError> {
         if let Some(desk_key) = scope.desk_key.as_ref() {
             return self.ensure_desk(project_id, desk_key);
+        }
+        if let Some(epic) = scope.epic_id
+            && scope.kind.as_ref() == Some(&self.epic_control_kind(project_id, epic)?)
+        {
+            self.epic_purpose(project_id, epic, CoreTeamSeatPurpose::Control)?;
         }
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
@@ -18765,7 +18911,8 @@ fn core_team_effects(
             )?,
             Some(existing)
                 if existing.presence != seat.presence
-                    || existing.ad_hoc_allowed != seat.ad_hoc_allowed =>
+                    || existing.ad_hoc_allowed != seat.ad_hoc_allowed
+                    || existing.purposes != seat.purposes =>
             {
                 push(
                     slot,
@@ -19507,9 +19654,9 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<SeatBindingId, ApiError> {
-        self.live_control_seats(project_id, epic_id, role_code)?
+        self.live_control_seats(project_id, epic_id, purpose)?
             .first()
             .copied()
             .ok_or_else(|| {
@@ -19529,8 +19676,9 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<Vec<SeatBindingId>, ApiError> {
+        let expected = self.epic_purpose(project_id, epic_id, purpose)?;
         let scope = self.resolve_scope(
             project_id,
             &SemanticTopologyTargetDto::EpicControl { epic_id },
@@ -19557,7 +19705,10 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .into_iter()
             .filter(|seat| {
-                seat.role.role_code.as_str() == role_code
+                seat.role_slot_id == expected.role_slot_id
+                    && seat.role.catalog_id == expected.role.catalog_id
+                    && seat.role.catalog_revision == expected.role.catalog_revision
+                    && seat.role.role_code == expected.role.role_code
                     && seat.lifecycle != TopologyLifecycle::Retired
             })
             .map(|seat| seat.id)
@@ -19580,10 +19731,10 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<SeatBindingId, ApiError> {
         match self
-            .live_control_seats(project_id, epic_id, role_code)?
+            .live_control_seats(project_id, epic_id, purpose)?
             .as_slice()
         {
             [only] => Ok(*only),
@@ -19618,11 +19769,11 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
         seat_binding_id: SeatBindingId,
         occupancy_generation: u64,
     ) -> Result<RemediationAuthority, ApiError> {
-        let current = self.epic_control_seat(project_id, epic_id, role_code)?;
+        let current = self.epic_control_seat(project_id, epic_id, purpose)?;
         if current != seat_binding_id {
             return Err(self.deny(
                 ApiErrorCode::Forbidden,
@@ -19882,7 +20033,8 @@ impl Services {
         now: Timestamp,
     ) -> Result<(StoredEpicCompletion, CompiledCompletion), ApiError> {
         let compiled = self.builtin_completion()?;
-        let tpm = self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
+        let tpm =
+            self.epic_control_seat(project_id, epic_id, CoreTeamSeatPurpose::ProcessCloser)?;
         let requirements = self.epic_ticket_requirements(project_id, epic_id)?;
         if requirements.is_empty() {
             return Err(self.deny(
@@ -20588,7 +20740,7 @@ impl Services {
                 let live = self.sole_live_control_seat(
                     stored.project_id,
                     stored.mini_project_id,
-                    MANDATORY_PROGRAM_ROLE,
+                    CoreTeamSeatPurpose::ProcessCloser,
                 )?;
                 if live != *seat_binding_id {
                     forward.tpm_seat_id = live;
@@ -24578,15 +24730,22 @@ impl ApplicationOperations for Services {
                     .projection_capabilities
                     .contains(&NodeProjectionCapability::SessionHost)
             {
-                let slot = self.control_slot()?;
+                let owner = self.epic_purpose(project_id, epic_id, CoreTeamSeatPurpose::Control)?;
+                let slot = owner.role_slot_id.clone();
                 let held = state
                     .with_store(|store| store.list_seat_bindings(project_id, leaf.id))
                     .map_err(|error| self.refuse(&error))?
                     .into_iter()
-                    .any(|binding| binding.role_slot_id == slot && binding.is_non_terminal());
-                if !held {
-                    let role =
-                        self.catalog_role_for_code(&self.domain.delivery.control_role_code)?;
+                    .find(|binding| binding.role_slot_id == slot && binding.is_non_terminal());
+                if let Some(binding) = &held
+                    && !Self::purpose_binding_matches(binding, &owner)
+                {
+                    return Err(
+                        self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch")
+                    );
+                }
+                if held.is_none() {
+                    let role = owner.role;
                     let now = kontor_api::now();
                     let deadline = now
                         .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
@@ -27272,7 +27431,7 @@ impl ApplicationOperations for Services {
             realm_id: state.realm_id(),
             orchestration: crate::orchestration::propose_orchestration()
                 .map_err(|error| self.refuse_fleet_policy(&error))?,
-            core_team: crate::orchestration::propose_core_team(&catalog)
+            core_team: crate::orchestration::propose_core_team(&catalog, self.purpose_source()?)
                 .map_err(|error| self.refuse_fleet_policy(&error))?,
             role_catalog: FleetRoleCatalogPinDto {
                 catalog_id: catalog.catalog_id,
@@ -27754,7 +27913,8 @@ impl ApplicationOperations for Services {
             request.seats.as_deref(),
             request.source_bundle_hash.as_ref(),
         )?;
-        let proposed = self.resolve_core_team(project_id, &seats, stored.as_ref())?;
+        let proposed =
+            self.resolve_core_team(project_id, &seats, stored.as_ref(), bundle_roster.as_ref())?;
         self.confirm_bundle_roster(&proposed, bundle_roster.as_ref())?;
         let effects = core_team_effects(stored.as_ref(), &proposed)
             .map_err(|error| self.refuse_domain(&error))?;
@@ -27820,7 +27980,12 @@ impl ApplicationOperations for Services {
                 request.seats.as_deref(),
                 request.source_bundle_hash.as_ref(),
             )?;
-            let proposed = self.resolve_core_team(project_id, &seats, stored.as_ref())?;
+            let proposed = self.resolve_core_team(
+                project_id,
+                &seats,
+                stored.as_ref(),
+                bundle_roster.as_ref(),
+            )?;
             self.confirm_bundle_roster(&proposed, bundle_roster.as_ref())?;
             let effects = core_team_effects(stored.as_ref(), &proposed)
                 .map_err(|error| self.refuse_domain(&error))?;
@@ -27842,15 +28007,24 @@ impl ApplicationOperations for Services {
                     "the resolved Core Team could not be canonicalized",
                 )
             })?;
+            let first = proposed
+                .seats
+                .first()
+                .ok_or_else(|| self.deny(ApiErrorCode::InvalidRequest, "role_purpose_unpinned"))?;
+            let catalog =
+                self.catalog_revision(first.role.catalog_id, first.role.catalog_revision)?;
             state
                 .with_store(|store| {
-                    store.publish_core_team_revision(&StoredCoreTeamRevision {
-                        project_id,
-                        version: proposed.version,
-                        catalog_hash: proposed.catalog_hash.clone(),
-                        seats,
-                        published_at: kontor_api::now(),
-                    })
+                    store.publish_core_team_revision(
+                        &StoredCoreTeamRevision {
+                            project_id,
+                            version: proposed.version,
+                            catalog_hash: proposed.catalog_hash.clone(),
+                            seats,
+                            published_at: kontor_api::now(),
+                        },
+                        &catalog,
+                    )
                 })
                 .map_err(|error| self.refuse(&error))?;
         }
@@ -29737,6 +29911,10 @@ impl ApplicationOperations for Services {
             }
         };
 
+        // Legacy resume is readable, but cannot dispatch an unpinned purpose.
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&roster.revision, *purpose)?;
+        }
         let epic_id = match &existing {
             Some(promotion) => promotion.mini_project_id,
             None => {
@@ -29840,10 +30018,14 @@ impl ApplicationOperations for Services {
         // The roster was frozen with the promotion row above, so the seats and
         // the record of what they were created from cannot disagree, and a
         // resumed apply finds both.
+        let architecture =
+            self.frozen_purpose(&roster.revision, CoreTeamSeatPurpose::ArchitectureCloser)?;
         let seats = self.materialize_roster_seats(project_id, &control, &roster, now)?;
         let lsa = seats
             .iter()
-            .find(|(seat, _)| seat.role.role_code.as_str() == MANDATORY_LEAD_ROLE)
+            .find(|(seat, _)| {
+                seat.role_slot_id == architecture.role_slot_id && seat.role == architecture.role
+            })
             .map(|(_, id)| *id)
             .ok_or_else(|| {
                 self.deny(
@@ -32809,8 +32991,8 @@ impl ApplicationOperations for Services {
             project_id,
             epic_id,
             match &request.action {
-                RemediationActionDto::LsaProposal { .. } => MANDATORY_LEAD_ROLE,
-                RemediationActionDto::TpmRoute { .. } => MANDATORY_PROGRAM_ROLE,
+                RemediationActionDto::LsaProposal { .. } => CoreTeamSeatPurpose::ArchitectureCloser,
+                RemediationActionDto::TpmRoute { .. } => CoreTeamSeatPurpose::ProcessCloser,
             },
             seat_binding_id,
             seat_occupancy_generation,
@@ -32982,7 +33164,7 @@ impl ApplicationOperations for Services {
                 let lsa_actor = self.require_completion_authority(
                     project_id,
                     epic_id,
-                    MANDATORY_LEAD_ROLE,
+                    CoreTeamSeatPurpose::ArchitectureCloser,
                     proposal.lsa_seat_binding_id,
                     proposal.lsa_occupancy_generation,
                 )?;
@@ -33062,8 +33244,11 @@ impl ApplicationOperations for Services {
                         "this completion is not waiting for that bounded or needs_human remediation route",
                     ));
                 };
-                let live_tpm =
-                    self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
+                let live_tpm = self.epic_control_seat(
+                    project_id,
+                    epic_id,
+                    CoreTeamSeatPurpose::ProcessCloser,
+                )?;
                 if current.tpm_seat_id != live_tpm || actor.seat_binding_id != live_tpm {
                     return Err(self.deny(
                         ApiErrorCode::StaleBinding,
@@ -42572,15 +42757,23 @@ impl Services {
         let pin = crate::orchestration::catalog_pin_of(core_team)
             .map_err(|error| self.refuse_fleet_policy(&error))?;
         let catalog = self.catalog_revision(pin.catalog_id, pin.version)?;
-        let resolved = crate::orchestration::resolve_bundle(
+        let mut resolved = crate::orchestration::resolve_bundle(
             &crate::orchestration::BundleSources {
                 orchestration,
                 fleet,
                 core_team,
             },
             &catalog,
+            self.purpose_source()?,
         )
         .map_err(|error| self.refuse_fleet_policy(&error))?;
+        if let Some(pack) = self
+            .selected_config
+            .as_ref()
+            .and_then(|folder| folder.realm_pack.as_ref())
+        {
+            resolved.manifest.sources.extend(pack.sources.clone());
+        }
         if resolved
             .manifest
             .publication_policy
@@ -44371,16 +44564,20 @@ impl Services {
                 "this epic has no control plane for its delivery seats to belong to",
             ));
         };
-        let slot = self.control_slot()?;
+        let owner = self.epic_purpose(project_id, epic_id, CoreTeamSeatPurpose::Control)?;
+        let slot = owner.role_slot_id.clone();
         if let Some(held) = state
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
             .find(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
         {
+            if !Self::purpose_binding_matches(&held, &owner) {
+                return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch"));
+            }
             return Ok(Some(held.id));
         }
-        let role = self.catalog_role_for_code(&self.domain.delivery.control_role_code)?;
+        let role = owner.role;
         let now = kontor_api::now();
         let deadline = now
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
@@ -44554,14 +44751,23 @@ impl Services {
             // closing it is not the moment to build one.
             return Ok(());
         };
-        let slot = self.control_slot()?;
-        let now = kontor_api::now();
-        for binding in state
+        let owner = self.epic_purpose(project_id, epic_id, CoreTeamSeatPurpose::Control)?;
+        let bindings: Vec<_> = state
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .filter(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
+            .filter(|binding| {
+                binding.role_slot_id == owner.role_slot_id && binding.is_non_terminal()
+            })
+            .collect();
+        if bindings
+            .iter()
+            .any(|binding| !Self::purpose_binding_matches(binding, &owner))
         {
+            return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch"));
+        }
+        let now = kontor_api::now();
+        for binding in bindings {
             state
                 .with_store(|store| {
                     store.observe_seat_binding(
@@ -44577,12 +44783,6 @@ impl Services {
                 .map_err(|error| self.refuse(&error))?;
         }
         Ok(())
-    }
-
-    /// The role slot an epic's control seat occupies.
-    fn control_slot(&self) -> Result<RoleSlotId, ApiError> {
-        let code = self.domain.delivery.control_role_code.as_str();
-        RoleSlotId::parse(&code.to_ascii_lowercase()).map_err(|error| self.refuse_domain(&error))
     }
 
     /// Return the node already there, or create the requested one.
@@ -48013,6 +48213,10 @@ mod realm_pack_tests;
 mod roster_hash_tests;
 
 #[cfg(test)]
+#[path = "applications/role_purpose_tests.rs"]
+mod role_purpose_tests;
+
+#[cfg(test)]
 mod tests {
 
     #[tokio::test(start_paused = true)]
@@ -50070,9 +50274,16 @@ mod coherence {
         }
         let control = control.expect("the control plane exists");
 
-        let revision =
-            kontor_teams::operational::CoreTeamRevision::resolve(catalog.version, &catalog, &[])
-                .expect("the mandatory roster resolves");
+        let revision = kontor_teams::operational::CoreTeamRevision::resolve(
+            catalog.version,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("the mandatory roster resolves");
         let lead = revision
             .seats
             .iter()

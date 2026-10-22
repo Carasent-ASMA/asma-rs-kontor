@@ -2182,8 +2182,16 @@ bindings:
             .expect("the bundled domain loads")
             .role_catalogs
             .remove(0);
-        let roster =
-            CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).expect("LSA and TPM");
+        let roster = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM");
         let pinned = roster.canonicalize().expect("canonical roster");
         let keys: Vec<LeadershipKey> = roster
             .seats
@@ -2409,8 +2417,16 @@ bindings:
             .expect("the bundled domain loads")
             .role_catalogs
             .remove(0);
-        let roster =
-            CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).expect("LSA and TPM");
+        let roster = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM");
         let pinned = roster.canonicalize().expect("canonical roster");
         let leadership: Vec<LeadershipKey> = roster
             .seats
@@ -2552,9 +2568,12 @@ bindings:
         source: &FleetSource,
         authoring: &crate::orchestration::fixture::Authoring,
     ) -> (PublishedBundle, crate::orchestration::ResolvedBundle) {
-        let resolved =
-            crate::orchestration::resolve_bundle(&authoring.sources(), &authoring.catalog)
-                .expect("the bundle resolves");
+        let resolved = crate::orchestration::resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("the bundle resolves");
         (
             source.publish_bundle(&resolved).expect("published"),
             resolved,
