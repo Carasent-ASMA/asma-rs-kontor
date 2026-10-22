@@ -1461,6 +1461,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     enabled: directory === undefined,
   });
   const { state: rawState, refresh } = directory ?? localDirectory;
+  // Read when an action settles, not when it started: a live, complete directory already streams that row's change.
+  const liveDirectory = useRef(false);
+  liveDirectory.current = rawState.status === "ready" && rawState.live && rawState.inventoryComplete === true;
   const availability = useSessionAvailability(host.id, rawState.entries, hostOnline && rawState.status === "ready" && view.status === "attention");
   const state = useMemo(() => ({ ...rawState, entries: availability.entries.filter((entry) => matchesMembership(entry, view.membership)) }), [rawState, availability.entries, view.membership]);
   const lifecycleHelp = useControlHelp("");
@@ -1470,7 +1473,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (rows.some((row) => row.availability?.state === "missing" || row.availability?.archivedAt)) {
       lifecycleAnchor.current = recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current;
     }
-    availability.reconcile(rows); refresh();
+    // The settled rows' own dispositions hide or update them at once; only a directory without a complete live
+    // stream needs the full walk, which would otherwise rebuild every row for one session's change.
+    availability.reconcile(rows); if (!liveDirectory.current) refresh();
   };
   const lifecycle = useSessionLifecycle(host.id, lifecycleChanged);
   // Archives whose fence is still held stay checkable after their rows leave, a later review and a reload.

@@ -1113,15 +1113,21 @@ Attention includes unread finished results as well as current actionable notices
 A closed runtime, an old timestamp and an earlier error do not prove that a native
 record is absent. Exact-ID metadata reads distinguish a readable native record,
 a null record on the selected host, and an unknown/error reply. They do not load
-provider history or verify that a provider conversation can continue.
+provider history or verify that a provider conversation can continue. Reviews and
+receipts keep that distinction: a row whose exact read failed is shown by its ID
+and stays unknown, never missing.
 
 The per-session X performs one exact-session Archive after native preflight.
 Native archive requests cancellation and closes the runtime, including an active
 turn and its provider tools. Managed child sessions block this action to prevent
-an unseen cascade. Native identity/placement and child impact are rechecked;
-activity updates alone do not make a running session impossible to stop.
-History and files are retained. Success requires exact-ID archived and closed
-readback with no active turn. A lost acknowledgement stays uncertain until
+an unseen cascade. Only active children block, so that check reads the active
+inventory and never archived history. Native identity/placement and child impact
+are rechecked; activity updates alone do not make a running session impossible to stop.
+While the directory has a complete live stream, a settled action changes only its
+own rows; without one, the directory is read again in full.
+History and files are retained. Success requires an exact-ID read showing the
+session archived with no active turn; whether its runtime closed is reported
+separately. A lost acknowledgement stays uncertain until
 **Check native outcome** verifies retirement using metadata only. It never
 resends the archive or removes the original no-replay fence.
 
