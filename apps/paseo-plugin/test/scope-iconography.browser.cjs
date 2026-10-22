@@ -1,5 +1,5 @@
 // Offline 679-session fixture: use PREVIEW_ORIGIN, PLAYWRIGHT_MODULE and EVIDENCE_DIR.
-// The fixture renders the candidate's real client modules through react-native-web.
+// The fixture renders real client modules through react-native-web; ?scenario=contextual has one idle and one running session.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,6 +29,52 @@ async function scopeControls(page, touch) {
   }
 }
 async function activate(button, touch) { if (touch) await button.tap(); else await button.click(); }
+async function checkContextual(page, touch, theme, name, filter) {
+  await page.goto(`${origin}/?theme=${theme}&scenario=contextual`);
+  await activate(page.getByTestId(touch ? 'sessions-mobile-filters-trigger' : 'sessions-advanced-toggle'), touch);
+  if (filter === 'search') await page.getByTestId('sessions-search').fill('Unique quiet');
+  else await activate(page.getByTestId('sessions-filter-idle'), touch);
+  const kontor = () => page.getByRole('button', { name: /^Workstream Kontor,/ });
+  if (!touch) assert.ok((await kontor().innerText()).includes('Idle 1/1'));
+  await activate(page.getByRole('button', { name: 'Legend', exact: true }), touch);
+  assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('matching the current search and filters'));
+  await activate(page.getByTestId('sessions-layout-flat'), touch);
+  if (touch) await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
+  assert.equal(await page.getByTestId('sessions-result-context-quiet').count(), 1);
+  assert.equal(await page.getByTestId('sessions-result-context-busy').count(), 0);
+  const before = await state(page);
+  await activate(page.getByRole('button', { name: 'Show Unique quiet session in the tree', exact: true }), touch);
+  assert.ok((await kontor().innerText()).includes('Running 1/2'));
+  assert.ok((await kontor().getAttribute('aria-label')).includes('Idle: 1 of 2 sessions'));
+  assert.equal(await page.getByTestId('sessions-row-context-busy').count(), 1, 'nonmatching context remains');
+  if (touch) await page.getByTestId('sessions-mobile-filters-trigger').tap();
+  const legend = page.getByTestId('sessions-legend');
+  assert.ok((await legend.innerText()).includes('retained surrounding context'));
+  assert.ok((await legend.innerText()).includes("outside the results' search, task or explicit state filter"));
+  if (touch) {
+    await legend.scrollIntoViewIfNeeded();
+    await snap(page, `${name}-${filter}-context-legend`);
+    await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
+  } else {
+    await page.keyboard.press('Tab');
+    await kontor().focus();
+    await page.getByRole('tooltip').waitFor();
+    assert.ok((await page.getByRole('tooltip').innerText()).includes('retained surrounding context'));
+    await snap(page, `${name}-${filter}-context-help`);
+    await page.keyboard.press('Escape');
+  }
+  await activate(page.getByRole('button', { name: /^Epic ASMA-99100,/ }), touch);
+  assert.ok((await kontor().innerText()).includes('Running 1/2'), 'collapsed context keeps its denominator');
+  await activate(page.getByRole('button', { name: 'Back to 1 result', exact: true }), touch);
+  assert.equal(await page.getByTestId('sessions-result-context-quiet').count(), 1);
+  assert.equal(await page.getByTestId('sessions-result-context-busy').count(), 0);
+  const after = await state(page);
+  assert.equal(after.query, before.query);
+  assert.equal(after.status, before.status);
+  assert.equal(after.peek, null);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  return { filter, status: 'PASS', matchingResults: 1, contextualDescendants: 2, backResults: 1 };
+}
 async function check(width, theme) {
   const touch = width < 600;
   const context = await browser.newContext({ viewport: { width, height: width === 1440 ? 1000 : 844 }, hasTouch: touch, isMobile: touch });
@@ -104,8 +150,10 @@ async function check(width, theme) {
     assert.ok((await kontor().getAttribute('aria-label')).includes('Running: 1 of 1 session'));
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     assert.equal(overflow, false, 'no horizontal document overflow');
+    const contextualPeeks = [];
+    for (const filter of ['search', 'state']) contextualPeeks.push(await checkContextual(page, touch, theme, name, filter));
     assert.equal(errors.length, 0, errors.join('\n'));
-    report.cases.push({ name, status: 'PASS', counts, nestedBadges: badges, noOverflow: true, pageErrors: errors });
+    report.cases.push({ name, status: 'PASS', counts, nestedBadges: badges, contextualPeeks, noOverflow: true, pageErrors: errors });
   } catch (error) {
     report.cases.push({ name, status: 'FAIL', error: error.message, pageErrors: errors });
     await snap(page, `${name}-failure`);

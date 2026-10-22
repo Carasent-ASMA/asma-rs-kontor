@@ -1,13 +1,13 @@
 import { Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { KIND_ICONS, KIND_NAMES, WORKSPACE_KINDS } from "./organization-row";
+import { groupStateScopeHelp, KIND_ICONS, KIND_NAMES, WORKSPACE_KINDS } from "./organization-row";
 import { Disclosure, type Colors } from "./page-controls";
 import { deskIcon } from "./desk-icon";
 import { SESSION_SHORTCUTS } from "./session-scope-chip";
 
 /** Static reference: the same icons and workspace definitions as the tree. */
-export function SessionsLegend({ colors, compact, open, onToggle }: {
-  colors: Colors; compact: boolean; open: boolean; onToggle: (open: boolean) => void;
+export function SessionsLegend({ colors, compact, open, onToggle, contextual = false }: {
+  colors: Colors; compact: boolean; open: boolean; onToggle: (open: boolean) => void; contextual?: boolean;
 }) {
   const referenceColors = { ...colors, accent: colors.foreground };
   const section = { flexGrow: 1, flexBasis: compact ? "auto" as const : 220, minWidth: 0, gap: 8 };
@@ -32,7 +32,7 @@ export function SessionsLegend({ colors, compact, open, onToggle }: {
           </View>
           <Text style={text}>{choice.label}: {choice.help}</Text>
         </View>)}
-        <Text style={text}>Scope counts are before search and other filters. Group state ratios count the sessions remaining after those filters. Each session has one displayed state; native lifecycle and attention signals can overlap.</Text>
+        <Text style={text}>Scope counts are before search and other filters. {groupStateScopeHelp(contextual)} Each session has one displayed state; native lifecycle and attention signals can overlap.</Text>
       </View>
       <View style={section}>
         <Text accessibilityRole="header" style={heading}>Desk icons</Text>

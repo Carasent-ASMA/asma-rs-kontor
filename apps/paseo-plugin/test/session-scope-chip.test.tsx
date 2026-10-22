@@ -132,6 +132,17 @@ describe("group primary state shares", () => {
     button.onPress(); expect(help.dismiss).toHaveBeenCalledOnce(); expect(onToggle).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])("uses the same scope explanation in the tooltip and accessible hint, contextual=%s", (contextual) => {
+    const group = buildOrganizationTree({ entries, grouping: "flat" })[0]!;
+    const tree = OrganizationRowView({ row: { kind: "group", group, depth: 0, expanded: false }, colors, compact: false, contextual,
+      disabled: false, arranging: false, selected: false, favorite: false, onToggle() {}, onFavorite() {}, onMove() {}, onSelect() {} });
+    const hint = walk(tree).find(node => node.type === "Pressable")!.props.accessibilityHint;
+    expect(help.text).toBe(hint);
+    expect(hint).toContain(contextual ? "retained surrounding context" : "matching the current search and filters");
+    expect(hint).toContain("including collapsed branches");
+    expect(hint).toContain("Native lifecycle and attention signals can overlap");
+  });
+
   it.each(["hierarchy", "placement", "role"] as const)("uses current filtered descendants for every nested %s denominator", (grouping) => {
     const tree = buildOrganizationTree({ entries: entries.map((entry) => ({ ...entry, labels: { workstream: "Kontor", epic: "ASMA-99100", role: "QA" } })), grouping });
     const groups = (values: readonly (typeof tree)[number][]): typeof tree => values.flatMap((group) => [group, ...groups(group.groups)]);

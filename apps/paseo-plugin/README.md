@@ -167,12 +167,18 @@ keyboard focus and in accessible names/hints; touch keeps the captions. Counts
 describe the current project/epic context before search and other filters.
 Each shortcut has a 44 pt target, a pressed state, a focus border and an
 underlined selected caption. Group rows show the primary displayed state as
-count/total, such as **Running 2/85**, at every tree depth. The denominator is
-the descendant sessions remaining after search and filters, including collapsed
-branches. Empty groups say **No sessions**. Hover/focus help and accessible hints
+count/total, such as **Running 2/85**, at every tree depth. The denominator counts
+descendant sessions represented in the displayed tree, including collapsed
+branches. In normal Grouped view, these are only the current search/filter
+matches. **Show in tree** from Flat results retains surrounding context, so its
+denominator can also include sessions outside the results' search, task or
+explicit state filter. Project, desk, workstream, epic and assignment scopes
+still apply, as does **Current** when selected. **Back to results** restores the
+matching results. Empty groups say **No sessions**. Hover/focus help and accessible hints
 explain the full displayed-state breakdown and the existing priority order;
 native lifecycle and attention signals can overlap those displayed states. The
-Legend provides the same scope and desk explanations on touch screens.
+Legend provides the same scope and desk explanations on touch screens and
+describes whether the current tree counts matches or retained context.
 Desk rows retain their full names: PR Review uses
 a pull request, Adam a bot, QA a flask and QSW a bolt; unknown desks use an
 armchair. These glyphs describe presentation, never durable desk configuration.

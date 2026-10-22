@@ -2629,7 +2629,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
           <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
-          <SessionsLegend colors={colors} compact={compact} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
+          <SessionsLegend colors={colors} compact={compact} contextual={peek !== null} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
         </OptionsContainer>
       ) : null}
     </View>
@@ -3013,7 +3013,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
-          return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
+          return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             details={details}
             lifecycleAction={lifecycleAction}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}

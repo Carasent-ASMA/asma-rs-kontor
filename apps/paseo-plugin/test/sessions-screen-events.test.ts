@@ -1045,6 +1045,68 @@ describe("SessionsScreen toolbar events", () => {
     expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · Epic unknown · Workspace", "Kontor · Epic unknown · Workspace"]);
   });
 
+  it.each([
+    { compact: false, filter: "search" }, { compact: true, filter: "search" },
+    { compact: false, filter: "state" }, { compact: true, filter: "state" },
+  ])("keeps denominator help truthful during contextual peek, compact=$compact filter=$filter", ({ compact, filter }) => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("quiet", { title: "Unique quiet session", status: "idle", labels: { workstream: "alpha", epic: "ASMA-1" } }),
+      sessionEntry("busy", { status: "running", labels: { workstream: "alpha", epic: "ASMA-1" } }),
+      sessionEntry("outside", { status: "idle", labels: { workstream: "beta", epic: "ASMA-2" } }),
+    ] };
+    const query = filter === "search" ? "Unique quiet" : "";
+    const status = filter === "state" ? "idle" : "all";
+    patchSessionView("host-a", { layout: "grouped", query, status, streams: ["alpha"], legendOpen: true });
+    renderScreen(undefined, compact);
+    const renderItem = (item: ListRow) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item });
+    const header = (row: GroupRow) => {
+      const element = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+      return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props;
+    };
+    const legendText = () => {
+      if (compact) openMobileFilters();
+      const element = walk(harness.current()).find((node) => node.type === SessionsLegend)!;
+      const text = textOf(SessionsLegend(element.props as Parameters<typeof SessionsLegend>[0]));
+      if (compact) closeMobileFilters();
+      return text;
+    };
+    const setLayout = (layout: "flat" | "grouped") => {
+      if (compact) openMobileFilters();
+      (findByTestID(harness.current(), `sessions-layout-${layout}`).props.onPress as () => void)(); harness.flush();
+      if (compact) closeMobileFilters();
+    };
+    const filteredKeys = groupRows().map((row) => row.group.key);
+    expect(groupRows().every((row) => row.group.aggregate.total === 1)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityLabel)).toContain("Idle: 1 of 1 session");
+    setLayout("flat");
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    const result = listRows()[0] as Extract<ListRow, { kind: "result" }>;
+    (renderItem(result).props.onShowInTree as (entry: typeof result.entry) => void)(result.entry); harness.flush();
+    expect(sessionRowIds().sort()).toEqual(["busy", "quiet"]);
+    expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
+    for (const row of groupRows()) {
+      expect(String(header(row).accessibilityLabel)).toContain("Running: 1 of 2 sessions. Idle: 1 of 2 sessions");
+      expect(String(header(row).accessibilityHint)).toContain("retained surrounding context");
+      expect(String(header(row).accessibilityHint)).toContain("outside the results' search, task or explicit state filter");
+      expect(String(header(row).accessibilityHint)).toContain("Current still applies when selected");
+    }
+    expect(legendText()).toContain("retained surrounding context");
+    toggle("workspace");
+    expect(sessionRowIds()).toEqual([]);
+    expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityHint)).toContain("including collapsed branches");
+    const back = walk(findByTestID(harness.current(), "sessions-peek")).find((node) => node.props.label === "Back to 1 result")!;
+    (back.props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    expect(readSessionView("host-a")).toMatchObject({ query, status, streams: ["alpha"], peek: null });
+    setLayout("grouped");
+    expect(groupRows().map((row) => row.group.key)).toEqual(filteredKeys);
+    expect(groupRows().every((row) => row.group.aggregate.total === 1)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityHint)).toContain("matching the current search and filters");
+    expect(legendText()).toContain("matching the current search and filters");
+    expect(legendText()).not.toContain("retained surrounding context");
+  });
+
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
     patchSessionView("host-a", { layout: "flat" });
     const save = vi.fn(async () => true);

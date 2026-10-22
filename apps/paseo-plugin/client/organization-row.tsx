@@ -25,8 +25,13 @@ export function groupStateSummary(aggregate: OrganizationAggregate): string {
   return leadingStates(aggregate, Infinity).map(({ state, count }) => `${STATE_LABELS[state]}: ${count} of ${aggregate.total} ${unit}`).join(". ") || "No sessions";
 }
 
-export function groupStateHelp(aggregate: OrganizationAggregate): string {
-  return `${groupStateSummary(aggregate)}. The denominator is every descendant session remaining in this group's current search and filter scope, including collapsed branches. Each session has one displayed state, in priority order: Needs input, Error, Running, Attention, Starting, Idle, Closed. Native lifecycle and attention signals can overlap; for example a running session that needs input is counted as Needs input here. These are displayed-state counts, not counts of every attention signal. ${nativeCounts(aggregate)}`;
+export function groupStateScopeHelp(contextual: boolean): string {
+  if (contextual) return "The denominator counts every descendant session in the retained surrounding context, including collapsed branches. Show in tree can include sessions outside the results' search, task or explicit state filter. Project, desk, workstream, epic and assignment scopes still apply; Current still applies when selected. Back to results returns to matching sessions.";
+  return "The denominator counts descendant sessions matching the current search and filters, including collapsed branches.";
+}
+
+export function groupStateHelp(aggregate: OrganizationAggregate, contextual = false): string {
+  return `${groupStateSummary(aggregate)}. ${groupStateScopeHelp(contextual)} Each session has one displayed state, in priority order: Needs input, Error, Running, Attention, Starting, Idle, Closed. Native lifecycle and attention signals can overlap; for example a running session that needs input is counted as Needs input here. These are displayed-state counts, not counts of every attention signal. ${nativeCounts(aggregate)}`;
 }
 
 /** One primary state and its share, at every depth and width; the row owns focus and full help. */
@@ -63,7 +68,7 @@ export function groupDisplayLabel(group: OrganizationGroup): string {
   return group.kind === "workspace" && group.parentKey?.includes("/kind:") ? group.label.slice(group.label.indexOf("•") + 1).trim() : group.label;
 }
 
-export function OrganizationRowView({ row, colors, compact, children, details, lifecycleAction, disabled, arranging, selected, favorite, stale = false, actions, onFavorite, onToggle, onMove, onSelect }: {
+export function OrganizationRowView({ row, colors, compact, children, details, lifecycleAction, disabled, arranging, selected, favorite, stale = false, contextual = false, actions, onFavorite, onToggle, onMove, onSelect }: {
   row: OrganizationRow; colors: Colors; compact: boolean; children?: ReactNode;
   /** A session's own control beside its row button, never inside it. */
   details?: ReactNode;
@@ -73,11 +78,13 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   arranging: boolean; selected: boolean; favorite: boolean;
   /** The sessions were not read live; a Role header calls its states last known. */
   stale?: boolean;
+  /** Show in tree retains surrounding sessions outside the result filters. */
+  contextual?: boolean;
   /** Contextual destinations shown under an expanded group. */
   actions?: ReactNode;
   onFavorite: () => void; onToggle: () => void; onMove: (distance: number) => void; onSelect: () => void;
 }) {
-  const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known. " : ""}${groupStateHelp(row.group.aggregate)}` : "");
+  const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known. " : ""}${groupStateHelp(row.group.aggregate, contextual)}` : "");
   if (row.kind === "empty") {
     return <View style={{ minHeight: compact ? 36 : 30, justifyContent: "center", paddingLeft: indentOf(row.depth, compact) + 8 }}>
       <Guides depth={row.depth} compact={compact} colors={colors} />
@@ -133,7 +140,7 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
       {handle}
       <Pressable {...help.bindings} accessibilityRole="button" accessibilityState={{ expanded: row.expanded }} aria-expanded={row.expanded}
         accessibilityLabel={`${name}${meaning ? ` (${meaning})` : ""}${group.detail ? `, ${group.detail}` : ""}, ${groupCount(group)} ${group.unitTotal === 1 ? group.unit.slice(0, -1) : group.unit}. ${summary}. ${nativeCounts(group.aggregate)}`}
-        accessibilityHint={groupStateHelp(group.aggregate)}
+        accessibilityHint={groupStateHelp(group.aggregate, contextual)}
         onPress={() => { help.dismiss(); onToggle(); }}
         style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ flex: 1, minWidth: 0, minHeight: height, flexDirection: "row", alignItems: "center", gap: compact ? 5 : 8, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.foreground : "transparent", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
         <Text style={{ width: 10, color: colors.foregroundMuted, fontSize: 13 }}>{row.expanded ? "⌄" : "›"}</Text>
