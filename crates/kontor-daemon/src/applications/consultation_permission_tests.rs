@@ -134,3 +134,113 @@ fn consultation_permissions_refuse_new_recovery_and_missing_policy_before_effect
             .len()
     );
 }
+
+#[test]
+fn recovery_permission_requires_an_exact_frozen_policy_and_preserves_profile_source() {
+    let world = World::with_layout(None, true, true, true, Some("managed/<key-slug>/<module>"));
+    let policy = world.services.fleet.publish(POLICY).unwrap();
+    let rung = selected_route();
+    let legacy = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version":1, "ordered_rungs":[rung],
+        // A launch-provenance match alone is not a permission pin.
+        "constraint_policy_hash":policy.hash,
+    }))
+    .unwrap();
+    let source = "seat_recovery_profile";
+    let legacy_provenance = world
+        .services
+        .recovery_route_provenance(source, &legacy)
+        .unwrap();
+    assert_eq!(legacy_provenance.permission_policy_hash, None);
+    let error = world
+        .services
+        .qualify_consultation_permissions(legacy_provenance, &rung)
+        .unwrap_err();
+    assert_eq!(error.code, ApiErrorCode::PlacementBlocked);
+    assert!(error.rule.contains("consultation_permission_unpinned"));
+    let profile = |hash: &ContentHash, source: &str| {
+        CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version":1,"ordered_rungs":[rung],
+            "consultation_permission_policy":{"source":source,"policy_hash":hash},
+        }))
+        .unwrap()
+    };
+    let pinned = profile(&policy.hash, "fleet_configuration");
+    let provenance = world
+        .services
+        .recovery_route_provenance(source, &pinned)
+        .unwrap();
+    assert_eq!(
+        provenance.source,
+        ConsultationRouteSource::SeatRecoveryProfile
+    );
+    assert_eq!(provenance.evidence_hash, *pinned.hash());
+    assert_ne!(provenance.evidence_hash, policy.hash);
+    let qualified = world
+        .services
+        .qualify_consultation_permissions(provenance, &rung)
+        .unwrap();
+    assert_eq!(qualified.permission_policy_hash, Some(policy.hash.clone()));
+    let different = world
+        .services
+        .fleet
+        .publish(&POLICY.replace("effort: xhigh, mode:", "effort: high, mode:"))
+        .unwrap();
+    for document in [
+        profile(&different.hash, "fleet_configuration"),
+        profile(&ContentHash::of(b"missing"), "fleet_configuration"),
+    ] {
+        let provenance = world
+            .services
+            .recovery_route_provenance(source, &document)
+            .unwrap();
+        assert!(
+            world
+                .services
+                .qualify_consultation_permissions(provenance, &rung)
+                .is_err()
+        );
+    }
+    assert!(
+        world
+            .services
+            .recovery_route_provenance(source, &profile(&policy.hash, "template"))
+            .is_err()
+    );
+    for malformed in [
+        serde_json::Value::Null,
+        serde_json::json!({"source":"fleet_configuration"}),
+        serde_json::json!({"source":"fleet_configuration","policy_hash":policy.hash,"extra":true}),
+    ] {
+        assert!(
+            frozen_recovery_permission_hash(
+                &serde_json::json!({"consultation_permission_policy":malformed})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn recovery_permission_rejects_conflicting_frozen_route_policy() {
+    let world = World::with_layout(None, true, true, true, Some("managed/<key-slug>/<module>"));
+    let policy = world.services.fleet.publish(POLICY).unwrap();
+    for source in [None, Some("fleet_configuration")] {
+        let mut value = serde_json::json!({
+            "schema_version":1,"ordered_rungs":[selected_route()],
+            "consultation_permission_policy":{"source":"fleet_configuration","policy_hash":policy.hash},
+            "fleet_provenance":{"policy_hash":ContentHash::of(b"different route policy"),
+                "binding_key":"committee/example/reviewer","chain":"review","step":1,"sub_step":1,"vendor":"example"},
+        });
+        if let Some(source) = source {
+            value["consultation_route_source"] = serde_json::json!(source);
+        }
+        let profile = CanonicalDocument::from_value(&value).unwrap();
+        let error = world
+            .services
+            .recovery_route_provenance("seat_recovery_profile", &profile)
+            .unwrap_err();
+        assert_eq!(error.code, ApiErrorCode::PlacementBlocked);
+        assert!(error.rule.contains("consultation_permission_mismatch"));
+    }
+}

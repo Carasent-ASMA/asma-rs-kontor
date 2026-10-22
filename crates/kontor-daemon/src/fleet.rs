@@ -1096,7 +1096,7 @@ impl FleetSource {
     }
 
     /// The published artifact for `hash`, re-read, re-hashed and re-validated.
-    fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
+    pub(crate) fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
         kontor_fleet_activation::verify_policy(&self.state_root, hash)
     }
 

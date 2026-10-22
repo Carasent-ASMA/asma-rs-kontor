@@ -380,11 +380,13 @@ pub struct ConsultationRouteProvenance {
     pub evidence_hash: ContentHash,
     /// Operator disposition when this is a fallback rather than template data.
     pub fallback_disposition: Option<ConsultationFallbackDisposition>,
-    /// Validated permissions from immutable history at `evidence_hash`.
+    /// Exact permission policy, separate from a recovery profile's evidence hash.
+    pub permission_policy_hash: Option<ContentHash>,
+    /// Validated permissions from immutable history at `permission_policy_hash`.
     /// This is an internal projection, never caller-authored API input.
     pub fleet_permissions: Option<kontor_fleet::ConsultationPermissions>,
     /// Only restoration or explicit recovery of an already durable run may set
-    /// this. Historical profile exceptions cannot admit a new consultation.
+    /// this. A profile-only historical row grants no permission exception.
     pub legacy_recovery: bool,
 }
 
@@ -403,6 +405,7 @@ impl ConsultationRouteProvenance {
             evidence_hash,
             fallback_disposition: None,
             fleet_permissions: None,
+            permission_policy_hash: None,
             legacy_recovery: false,
         }
     }
@@ -415,6 +418,7 @@ impl ConsultationRouteProvenance {
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
             fleet_permissions: None,
+            permission_policy_hash: None,
             legacy_recovery: false,
         }
     }
@@ -423,6 +427,7 @@ impl ConsultationRouteProvenance {
     #[must_use]
     pub fn fleet_configuration(evidence_hash: ContentHash) -> Self {
         Self {
+            permission_policy_hash: Some(evidence_hash.clone()),
             source: ConsultationRouteSource::FleetConfiguration,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),

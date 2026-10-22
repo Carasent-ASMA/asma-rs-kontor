@@ -15599,6 +15599,27 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
     }
 }
 
+/// Synthetic exact allowance for a positive runtime contract; never a profile-only grant.
+fn consultation_permission_policy(provider: &str, rung: &ModelRung) -> kontor_fleet::FleetSnapshot {
+    let efforts: Vec<_> = rung
+        .effort
+        .map(|effort| effort.as_str())
+        .into_iter()
+        .collect();
+    let model = rung.effort.map_or_else(
+        || "review".to_owned(),
+        |effort| format!("review@{}", effort.as_str()),
+    );
+    let document = serde_json::json!({
+        "schema_version":2,
+        "domains":{"review":{"provider":provider,"accounts":[rung.provider.0]}},
+        "models":{"review":{"domain":"review","id":rung.model.0,"vendor":"example","efforts":efforts}},
+        "chains":{"review":[[model]]},"bindings":{},
+        "consultation_permissions":[{"account":rung.provider.0,"model":"review","effort":rung.effort.map(|effort| effort.as_str()),"mode":"plan"}],
+    });
+    kontor_fleet::FleetSnapshot::parse_policy(&document.to_string()).unwrap()
+}
+
 /// A consultation on a per-service OpenCode alias is launched as OpenCode:
 /// it carries the operator-accepted fallback marker with the route provenance
 /// hash and no read-only marker. Its retire check reads exactly that pair
@@ -15607,7 +15628,18 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
 /// and retirement disagree.
 #[tokio::test]
 async fn an_opencode_alias_consultation_launches_with_its_fallback_marker() {
-    let requested = fleet_provenance();
+    let rung = ModelRung {
+        provider: ProviderRef("opencode-zai".to_owned()),
+        model: ModelRef("zai-coding-plan/glm-5.3".to_owned()),
+        effort: None,
+    };
+    let policy = consultation_permission_policy("opencode", &rung);
+    let mut requested = fleet_provenance();
+    requested.policy_hash = policy.hash().clone();
+    let mut provenance = kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+        policy.hash().clone(),
+    );
+    provenance.fleet_permissions = Some(policy.consultation_permissions());
     let seat_binding_id = SeatBindingId::generate();
     let run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
     let mut agent = v(AGENT);
@@ -15667,9 +15699,7 @@ async fn an_opencode_alias_consultation_launches_with_its_fallback_marker() {
             model: ModelRef("zai-coding-plan/glm-5.3".to_owned()),
             effort: None,
         },
-        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
-            requested.policy_hash.clone(),
-        ),
+        route_provenance: provenance,
         fleet_provenance: Some(requested.clone()),
         context_policy: standard_context_policy(),
         requested_at: at("2026-08-16T09:10:00Z"),

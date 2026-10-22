@@ -188,55 +188,26 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
     }
 }
 
-/// Resolve a consultation route under its immutable policy provenance.
-/// Fleet exceptions require an exact allowance from the frozen policy hash.
-/// Historical profile exceptions remain recovery-only, never new admission.
+/// Resolve permission from the exact immutable policy, independently of route lineage.
+/// Profile-only historical evidence never supplies a permission grant.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
     let provider = built_in_provider(&rung.provider.0);
-    if matches!(provider, "cursor" | "opencode") && provenance.is_fleet_configuration() {
-        // Keep the independent exclusion until its fleet-data migration lands.
-        if provider == "cursor" && rung.model.0 == "auto-smart" {
-            return Err(RuntimeError::PermissionModeUnsupported {
-                provider: rung.provider.0.clone(),
-            });
-        }
-        return if provenance
-            .fleet_permissions
-            .as_ref()
-            .is_some_and(|permissions| permissions.permits(&provenance.evidence_hash, rung))
-        {
-            Ok(Some("plan"))
-        } else {
-            Err(RuntimeError::PermissionModeUnsupported {
-                provider: rung.provider.0.clone(),
+    if matches!(provider, "cursor" | "opencode") {
+        let authorized_source = provenance.is_fleet_configuration()
+            || (provenance.legacy_recovery && provenance.is_operator_accepted_recovery());
+        let pinned = provenance.permission_policy_hash.as_ref();
+        if authorized_source
+            && !(provider == "cursor" && rung.model.0 == "auto-smart")
+            && (!provenance.is_fleet_configuration() || pinned == Some(&provenance.evidence_hash))
+            && pinned.is_some_and(|hash| {
+                provenance
+                    .fleet_permissions
+                    .as_ref()
+                    .is_some_and(|permissions| permissions.permits(hash, rung))
             })
-        };
-    }
-    if provider == "cursor" {
-        let exact_route = rung.provider.0 == "cursor"
-            && rung.model.0 == "gpt-5.6-sol"
-            && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
-        if exact_route && provenance.legacy_recovery && provenance.is_operator_accepted_recovery() {
-            return Ok(Some("plan"));
-        }
-        return Err(RuntimeError::PermissionModeUnsupported {
-            provider: rung.provider.0.clone(),
-        });
-    }
-    if provider == "opencode" {
-        let exact_model = rung.provider.0 == "opencode"
-            && matches!(
-                rung.model.0.as_str(),
-                "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
-            );
-        let exact_effort = rung.effort.is_some_and(|effort| effort.as_str() == "max");
-        if exact_model
-            && exact_effort
-            && provenance.legacy_recovery
-            && provenance.is_operator_accepted_initial_recovery_profile()
         {
             return Ok(Some("plan"));
         }
@@ -2341,10 +2312,28 @@ mod tests {
     }
 
     fn accepted_initial_recovery_provenance() -> ConsultationRouteProvenance {
-        ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(ContentHash::of(
-            b"initial recovery profile",
-        ))
-        .for_legacy_recovery()
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(
+            &include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+                .replace("example/review", "deepseek/deepseek-v4-flash")
+                .replace("example/default", "deepseek/deepseek-flash")
+                .replace(
+                    "id: deepseek/deepseek-flash",
+                    "id: deepseek/deepseek-flash\n    efforts: [max]",
+                )
+                .replace(
+                    "account: opencode-secondary, model: open-default, effort: null",
+                    "account: opencode, model: open-default, effort: max",
+                ),
+        )
+        .unwrap();
+        let mut provenance =
+            ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(
+                ContentHash::of(b"initial recovery profile"),
+            )
+            .for_legacy_recovery();
+        provenance.permission_policy_hash = Some(policy.hash().clone());
+        provenance.fleet_permissions = Some(policy.consultation_permissions());
+        provenance
     }
 
     #[test]
@@ -2636,7 +2625,7 @@ mod tests {
         ));
     }
 
-    /// The ASMA-8001 fallback is exact and intentionally risk-accepted.
+    /// A pinned exact fallback remains intentionally risk-accepted.
     ///
     /// OpenCode `plan` describes the seat's expected behavior but does not
     /// claim OS-level containment. The qualified canary demonstrated that a
@@ -2722,6 +2711,7 @@ mod tests {
                 ),
                 ConsultationRouteProvenance {
                     fleet_permissions: None,
+                    permission_policy_hash: None,
                     legacy_recovery: false,
                     source: ConsultationRouteSource::InitialRecoveryProfile,
                     evidence_hash: profile_hash.clone(),
@@ -2737,6 +2727,7 @@ mod tests {
                 ),
                 ConsultationRouteProvenance {
                     fleet_permissions: None,
+                    permission_policy_hash: None,
                     legacy_recovery: false,
                     source: ConsultationRouteSource::InitialRecoveryProfile,
                     evidence_hash: profile_hash.clone(),
@@ -2752,6 +2743,7 @@ mod tests {
                 ),
                 ConsultationRouteProvenance {
                     fleet_permissions: None,
+                    permission_policy_hash: None,
                     legacy_recovery: false,
                     source: ConsultationRouteSource::MaterializationRecoveryProfile,
                     evidence_hash: profile_hash,
@@ -2810,14 +2802,18 @@ mod tests {
         ));
     }
 
-    /// The 2026-09-23 operator exception admits one exact Cursor route under any
-    /// operator-accepted recovery profile, in `plan`, with the scoped credential
-    /// in the frame only. Template data, other routes, aliases and unaccepted
-    /// fallbacks stay refused before an RPC exists.
+    /// Recovery keeps profile lineage and scoped credential transport, but its
+    /// permission comes only from an exact immutable fleet policy pin.
     #[test]
     fn cursor_consultation_admits_only_the_exact_operator_accepted_recovery_route() {
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(
+            &include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+                .replace("review-model", "gpt-5.6-sol"),
+        )
+        .unwrap();
         let accepted = |source| ConsultationRouteProvenance {
-            fleet_permissions: None,
+            fleet_permissions: Some(policy.consultation_permissions()),
+            permission_policy_hash: Some(policy.hash().clone()),
             legacy_recovery: true,
             source,
             evidence_hash: ContentHash::of(b"recovery profile"),
@@ -3031,6 +3027,41 @@ mod tests {
     }
 
     #[test]
+    fn profile_permission_pin_is_independent_of_profile_hash_and_exactly_enforced() {
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(include_str!(
+            "../../../tests/fixtures/config/consultation-permissions.yml"
+        ))
+        .unwrap();
+        let rung = route("cursor", "review-model", Some(EffortLevel::Xhigh));
+        let mut profile = ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(
+            ContentHash::of(b"canonical profile evidence"),
+        );
+        profile.source = ConsultationRouteSource::SeatRecoveryProfile;
+        profile.permission_policy_hash = Some(policy.hash().clone());
+        profile.fleet_permissions = Some(policy.consultation_permissions());
+        assert!(
+            consultation_route_permission_mode(&rung, &profile).is_err(),
+            "new admission cannot assert recovery authority"
+        );
+        profile = profile.for_legacy_recovery();
+        assert_ne!(
+            profile.permission_policy_hash.as_ref(),
+            Some(&profile.evidence_hash)
+        );
+        assert_eq!(
+            consultation_route_permission_mode(&rung, &profile).unwrap(),
+            Some("plan")
+        );
+        profile.permission_policy_hash = Some(ContentHash::of(b"unrelated policy"));
+        assert!(consultation_route_permission_mode(&rung, &profile).is_err());
+        profile.permission_policy_hash = None;
+        assert!(
+            consultation_route_permission_mode(&rung, &profile).is_err(),
+            "a profile hash is not a policy pin"
+        );
+    }
+
+    #[test]
     fn historical_recovery_permissions_cannot_admit_new_consultations() {
         for (rung, source) in [
             (
@@ -3054,7 +3085,7 @@ mod tests {
             assert!(consultation_route_permission_mode(&rung, &provenance).is_err());
             assert!(
                 consultation_route_permission_mode(&rung, &provenance.for_legacy_recovery())
-                    .is_ok()
+                    .is_err()
             );
         }
     }
