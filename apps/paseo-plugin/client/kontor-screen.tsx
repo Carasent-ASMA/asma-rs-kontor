@@ -18,7 +18,7 @@ import { kontordLine, kontordSentence } from "./kontord-copy";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import type { DirectoryEntry } from "./session-directory";
-import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
+import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, Copy, IconButton, type Colors } from "./page-controls";
@@ -64,6 +64,7 @@ function HostScreen(props: PluginScreenProps) {
   const colors = appearanceColors(props.theme.colors, saved.appearance);
   const keyboard = useKeyboardSettings();
   const [route, setRoute] = useState(() => hostNavigation(host.id).route);
+  const [sessionsRevision, setSessionsRevision] = useState(0);
   const [menu, setMenu] = useState<"more" | "context" | "switch" | null>(null);
   const [pickerQuery, setPickerQuery] = useState("");
   const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
@@ -255,10 +256,13 @@ function HostScreen(props: PluginScreenProps) {
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
     onShowAll={(text) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
       const scope = sessionScopeKey(host.id, next);
-      patchSessionView(scope, sessionViewTransition(readSessionView(scope), { query: text, task: null, status: "all", scrollOffset: 0 }));
+      const current = readSessionView(scope);
+      patchSessionView(scope, sessionViewTransition(current, { ...clearSessionFilterPatch(current), query: text, membership: "sessions", includeArchived: false, scrollOffset: 0 }));
+      // Sessions keeps a local view snapshot, so the same route must read the replacement too.
+      setSessionsRevision((revision) => revision + 1);
     })} /> : null;
   let page;
-  if (route.tab === "Sessions") page = <SessionsScreen key={sessionScopeKey(host.id, route)} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
+  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}

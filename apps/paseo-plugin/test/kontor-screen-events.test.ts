@@ -53,8 +53,9 @@ vi.mock("../client/keyboard-shortcuts", async (original) => ({
 }));
 
 import { KontorScreen } from "../client/kontor-screen";
-import { DESTINATIONS, hostNavigation, navigate, readRouteView, sessionScopeKey, type KontorRoute } from "../client/navigation-state";
-import { readSessionView } from "../client/session-view-store";
+import { DESTINATIONS, hostNavigation, navigate, NO_SCOPE, readRouteView, sessionScopeKey, type KontorRoute } from "../client/navigation-state";
+import { patchSessionView, readSessionView } from "../client/session-view-store";
+import { filterDirectoryEntries } from "../client/session-view";
 import type { BoardSessions } from "../client/board-sessions";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
@@ -69,7 +70,7 @@ import { ReadOnlyPage } from "../client/read-only-pages";
 import { TeamsSourcePage } from "../client/teams-source-page";
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { KeyboardSettingsCard } from "../client/keyboard-settings-card";
-import { StartSwitchSheet } from "../client/start-switch-sheet";
+import { StartSwitchSheet, switchRows } from "../client/start-switch-sheet";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
 const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -810,13 +811,47 @@ describe("Start or switch entry", () => {
     expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
   });
 
-  it("hands a search to Sessions unscoped, as a text query with every status", () => {
-    const screen = mount(false, { tab: "Board", epicKey: "ASMA-1" });
-    screen.click("Start or switch");
+  it.each([true, false])("replaces seeded destination predicates with the sheet's exact non-archived matches (compact=%s)", (compact) => {
+    model.entries = Array.from({ length: 23 }, (_, index) => sessionEntry(`match-${index}`, { title: `Route review ${index}`, status: index % 2 ? "closed" : "error" }));
+    model.entries.push(sessionEntry("archived-match", { title: "Route review archived", archivedAt: "2026-10-22" }), sessionEntry("other", { title: "Unrelated" }));
+    const screen = mount(compact, { tab: "Board", projectId: "prj-unrelated", epicKey: "ASMA-1", sourceId: "unrelated-plan", sourceRevision: "old", originAgentId: "unrelated-origin" });
+    const scope = sessionScopeKey(screen.props.host.id, { ...hostNavigation(screen.props.host.id).route, ...NO_SCOPE, tab: "Sessions" });
+    patchSessionView(scope, { query: "old query", status: "favorites", task: { jira: "ASMA-2", kontorId: null, label: "Unrelated task" },
+      shortcut: "desk-unrelated", streams: ["unrelated-workstream"], epic: { kind: "known", key: "ASMA-2" }, work: "mine", assignment: "me", membership: "archived", includeArchived: true,
+      layout: "flat", grouping: "role", sort: "title", sortDirection: "desc", advancedOpen: true, toolbarOpen: true, legendOpen: true, scrollOffset: 123, peek: { sessionId: "other", resultsOffset: 10 } });
+    const promised = switchRows(model.entries, "route review", Date.now());
+    expect(promised.total).toBe(23);
+    screen.click(compact ? "Start or switch session" : "Start or switch");
     (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
     const route = hostNavigation(screen.props.host.id).route;
-    expect(route).toMatchObject({ tab: "Sessions", projectId: null, epicKey: null, sourceId: null });
-    expect(readSessionView(sessionScopeKey(screen.props.host.id, route))).toMatchObject({ query: "route review", task: null, status: "all", scrollOffset: 0 });
+    expect(route).toMatchObject({ tab: "Sessions", ...NO_SCOPE });
+    const view = readSessionView(sessionScopeKey(screen.props.host.id, route));
+    expect(view).toMatchObject({ query: "route review", task: null, status: "all", shortcut: null, streams: null, epic: null, work: "all", assignment: "any", membership: "sessions", includeArchived: false, scrollOffset: 0, peek: null });
+    expect(view).toMatchObject({ layout: "flat", grouping: "role", sort: "title", sortDirection: "desc", advancedOpen: true, toolbarOpen: true, legendOpen: true });
+    const matches = filterDirectoryEntries(model.entries, view);
+    expect(matches.map((entry) => entry.id)).toEqual(Array.from({ length: promised.total }, (_, index) => `match-${index}`));
+    expect(matches.every((entry) => entry.archivedAt === null)).toBe(true);
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
+  });
+
+  it.each([true, false])("resets inventory history even when the destination has no narrowing filters (compact=%s)", (compact) => {
+    const screen = mount(compact, { tab: "Overview" });
+    const scope = sessionScopeKey(screen.props.host.id, { ...hostNavigation(screen.props.host.id).route, ...NO_SCOPE, tab: "Sessions" });
+    patchSessionView(scope, { query: "", status: "all", work: "all", assignment: "any", membership: "sessions", includeArchived: true });
+    screen.click(compact ? "Start or switch session" : "Start or switch");
+    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
+    expect(readSessionView(scope)).toMatchObject({ query: "route review", status: "all", membership: "sessions", includeArchived: false });
+  });
+
+  it.each([true, false])("remounts an already-open unscoped Sessions page to read the replacement view (compact=%s)", (compact) => {
+    const screen = mount(compact, { tab: "Sessions", ...NO_SCOPE });
+    const previous = screen.elements().find((node) => node.type === SessionsScreen)!;
+    screen.click(compact ? "Start or switch session" : "Start or switch");
+    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
+    const next = screen.elements().find((node) => node.type === SessionsScreen)!;
+    expect(next.key).not.toBe(previous.key);
+    expect(next.props.viewScope).toBe(previous.props.viewScope);
+    expect(readSessionView(String(next.props.viewScope)).query).toBe("route review");
   });
 
   it("tells the sheet when this Paseo app cannot open sessions", () => {

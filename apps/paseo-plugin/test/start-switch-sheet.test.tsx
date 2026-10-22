@@ -7,6 +7,7 @@ const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, effect: 0, deps: [] as (readonly unknown[] | undefined)[],
   rpc: {} as Record<string, ReturnType<typeof vi.fn>>,
   focusControl: vi.fn(),
+  platform: "web",
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
@@ -24,7 +25,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useState: <T,>(initial: T | (() => T)) => model.useState(initial),
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void, deps?: readonly unknown[]) => model.useEffect(effect, deps) }));
-vi.mock("react-native", () => ({ ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
+vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name] }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
@@ -70,6 +71,7 @@ const directory = (entries: DirectoryEntry[], live = true): DirectoryState => ({
 beforeEach(() => {
   model.slots = []; model.cursor = 0; model.effect = 0; model.deps = [];
   model.focusControl.mockClear();
+  model.platform = "web";
   model.rpc = { "sessions.create-options": vi.fn(async () => OPTIONS), "sessions.create": vi.fn(), "sessions.create-check": vi.fn() };
   configureRecentStorage(null);
 });
@@ -291,13 +293,45 @@ describe("New LSA form", () => {
     expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Desk", "Provider", "Model", "Effort", "Mode"]);
     expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM / ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
     expect(radios.find((node) => node.props.accessibilityLabel === "Gemini, Provider error: not signed in.")?.props).toMatchObject({ disabled: true, accessibilityState: { checked: false, disabled: true } });
-    expect(radios.every((node) => (node.props.style as { minHeight: number }).minHeight >= 44)).toBe(true);
+    expect(radios.every((node) => (node.props.style as (state: { focused: boolean }) => { minHeight: number })({ focused: false }).minHeight >= 44)).toBe(true);
   });
 
   it("warns about a dangerous mode before Create", () => {
     const f = form();
     (f.tree.find((node) => node.props.accessibilityLabel === "Bypass ⚠")!.props.onPress as () => void)(); f.render();
     expect(byTestId(f.tree, "kontor-new-lsa-danger")?.props.children).toEqual(["⚠ ", "Bypass", " is a dangerous permission mode on this host."]);
+  });
+
+  it("selects a focused unchecked radio with Space, moves focus with arrows and skips disabled providers", () => {
+    const f = form();
+    const group = (label: string) => elements(f.tree.find((node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === label)).filter((node) => node.props.accessibilityRole === "radio");
+    const key = (label: string, index: number, value: string) => {
+      const radios = group(label), focus = radios.map(() => ({ focus: vi.fn() }));
+      const event = { key: value, preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: { parentElement: { querySelectorAll: () => focus } } };
+      (radios[index]!.props.onKeyDown as (event: object) => void)(event); f.render();
+      expect(event.preventDefault).toHaveBeenCalled();
+      return focus;
+    };
+    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([0, -1]);
+    key("Desk", 1, " ");
+    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([false, true]);
+    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([-1, 0]);
+    expect(key("Desk", 1, "ArrowLeft")[0]!.focus).toHaveBeenCalledTimes(1);
+    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([true, false]);
+    expect(key("Provider", 0, "ArrowRight")[2]!.focus).toHaveBeenCalledTimes(1);
+    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([false, false, true]);
+    expect(key("Provider", 2, "ArrowDown")[0]!.focus).toHaveBeenCalledTimes(1);
+    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([true, false, false]);
+  });
+
+  it("keeps native radio and disabled semantics without web-only keyboard or tab props", () => {
+    model.platform = "ios";
+    const f = form();
+    const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
+    expect(radios.length).toBeGreaterThan(0);
+    expect(radios.every((node) => node.props.onKeyDown === undefined && node.props.tabIndex === undefined)).toBe(true);
+    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM / ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
+    expect(radios.find((node) => node.props.disabled)?.props.accessibilityState).toEqual({ checked: false, disabled: true });
   });
 
   it("sends one request, waits for the host, and offers Open only for a listed, verified session", async () => {

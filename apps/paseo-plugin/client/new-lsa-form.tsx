@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { adhocTitle, checkCreate, executeCreate, normalizeTopic, topicProblem, TOPIC_MAX, type CreateOptions, type CreateOutcome } from "../shared/session-create";
@@ -175,14 +175,36 @@ function Choices({ label, options, selected, onSelect, colors, tall, empty }: {
   label: string; options: readonly { id: string; label: string; disabled?: boolean; note?: string | null }[]; selected: string | null;
   onSelect: (id: string) => void; colors: Colors; tall: boolean; empty?: string;
 }) {
+  const enabled = options.filter((option) => !option.disabled);
+  const tabStop = enabled.find((option) => option.id === selected)?.id ?? enabled[0]?.id;
   return <View accessibilityRole="radiogroup" accessibilityLabel={label} style={{ gap: 4 }}>
     <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{label}</Text>
     {options.length ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
       {options.map((option) => {
         const checked = option.id === selected, disabled = !!option.disabled;
         return <Pressable key={option.id} accessibilityRole="radio" accessibilityLabel={option.note ? `${option.label}, ${option.note}` : option.label} accessibilityState={{ checked, disabled }} aria-checked={checked} aria-disabled={disabled}
-          disabled={disabled} onPress={() => onSelect(option.id)} style={{ minHeight: tall ? 44 : 30, maxWidth: "100%", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, justifyContent: "center",
-            borderColor: checked ? colors.accent : colors.border, backgroundColor: checked ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 }}>
+          {...(Platform.OS === "web" ? { tabIndex: !disabled && option.id === tabStop ? 0 : -1, onKeyDown: (event: {
+            key: string; repeat?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean;
+            currentTarget: { parentElement: { querySelectorAll(selector: string): ArrayLike<{ focus(): void }> } | null };
+            preventDefault(): void; stopPropagation(): void;
+          }) => {
+            if (disabled || event.altKey || event.ctrlKey || event.metaKey) return;
+            if (event.key === " " || event.key === "Spacebar") {
+              event.preventDefault(); event.stopPropagation();
+              if (!event.repeat) onSelect(option.id);
+              return;
+            }
+            if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+            event.preventDefault(); event.stopPropagation();
+            const index = enabled.findIndex((choice) => choice.id === option.id);
+            const step = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+            const next = enabled[event.key === "Home" ? 0 : event.key === "End" ? enabled.length - 1 : (index + step + enabled.length) % enabled.length];
+            if (!next) return;
+            onSelect(next.id);
+            event.currentTarget.parentElement?.querySelectorAll('[role="radio"]')[options.findIndex((choice) => choice.id === next.id)]?.focus();
+          } } : {})}
+          disabled={disabled} onPress={() => onSelect(option.id)} style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 30, maxWidth: "100%", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, justifyContent: "center",
+            borderColor: checked || focused ? colors.accent : colors.border, backgroundColor: checked ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
           <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: checked ? "600" : "400" }}>{option.label}</Text>
         </Pressable>;
       })}
