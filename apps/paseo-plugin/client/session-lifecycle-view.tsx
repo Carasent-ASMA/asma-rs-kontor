@@ -4,14 +4,14 @@ import { ScrollView, Icon } from "@getpaseo/plugin/client/react-native";
 import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { useControlHelp } from "./control-help";
-import { RESUME_PROMPT, TAKEOVER_LIMIT } from "../shared/session-lifecycle";
+import { RESUME_PROMPT, TAKEOVER_LIMIT, unresolvedArchive } from "../shared/session-lifecycle";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
 
-export function ArchiveSessionButton({ session, onPress, colors, disabled = false, compact = false, buttonRef }: { session: { id: string; title: string }; onPress: () => void; colors: Colors; disabled?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
+export function ArchiveSessionButton({ session, onPress, colors, disabled = false, pending = false, compact = false, buttonRef }: { session: { id: string; title: string }; onPress: () => void; colors: Colors; disabled?: boolean; pending?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
   const help = useControlHelp("Archive session", buttonRef);
   return <>
-    <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={`Archive session: ${session.title} (${session.id})`} accessibilityHint="Stop and archive this exact session. History and files remain. Sessions with managed children are protected."
-      disabled={disabled} accessibilityState={{ disabled }} onPress={() => { help.dismiss(); onPress(); }}
+    <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={pending ? `Archiving ${session.title}…` : `Archive session: ${session.title} (${session.id})`} accessibilityHint="Stop and archive this exact session. History and files remain. Sessions with managed children are protected."
+      disabled={disabled} accessibilityState={{ disabled, busy: pending }} onPress={() => { help.dismiss(); onPress(); }}
       style={{ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
       <Icon name="X" size={14} color={colors.foregroundMuted} />
     </Pressable>
@@ -37,7 +37,7 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
   return <AnchoredMenu anchor={root} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={archive ? "Archive session outcome" : "Resume sessions"} dialog testID="session-lifecycle-dialog"
     header={<View style={{ gap: 6 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 16 }}>{archive ? "Archive session" : "Resume sessions"}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>
       {review ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{!archive ? <Action colors={colors} label={running ? "Executing one session at a time…" : `Resume ${eligibleSelected} eligible · ${selected.length} selected`} disabled={running || eligibleSelected === 0} onPress={() => { void lifecycle.run(); }} /> : null}
-        {running ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}
+        {running && !archive ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}
         {archive && !running && review.rows.some((row) => row.outcome === "blocked" && !row.reconcileReviewId || row.outcome === "pending") ? <Action colors={colors} label="Retry Archive" disabled={busy} onPress={() => { void lifecycle.prepare("archive", "filtered", review.rows.map((row) => row.id)); }} /> : null}</View> : null}
     </View>}>
     <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 10, padding: 12 }}>
@@ -84,7 +84,7 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
           </Disclosure>
           {row.children.map((child) => text(`Protected child: ${child.title} · ${child.id} · ${child.status} · ${child.workspaceId ?? "no workspace"}`, true))}
           {row.outcome !== "pending" ? <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{`${row.outcome}: ${row.message ?? "Read receipt before retry."}`}</Text> : null}
-          {archive && (["uncertain", "intent"].includes(row.outcome) || row.reconcileReviewId || lifecycle.error) ? <Action colors={colors} label="Check native outcome" disabled={busy || running} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
+          {archive && (unresolvedArchive(row) || row.reconcileReviewId || lifecycle.error) ? <Action colors={colors} label="Check native outcome" disabled={busy || running} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
         </View>)}
         {!archive ? text("Unselected and blocked sessions remain unchanged. Preflight blocks can be reviewed again; an uncertain dispatch is held for native reconciliation. Close/cancel does not undo a request already sent.", true) : null}
       </>}

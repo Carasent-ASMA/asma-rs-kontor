@@ -711,7 +711,9 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return refreshPromise ?? Promise.resolve();
     }
     refreshing = true;
-    if (entries.size > 0) {
+    // A routine refresh of a live, complete, ready directory stays calm; every
+    // other state keeps today's stale marking.
+    if (entries.size > 0 && !(status === "ready" && subscriptionActive && inventoryComplete && staleReason === null)) {
       status = "stale";
       staleReason = staleReason ?? reason;
       emit();

@@ -1,11 +1,11 @@
 import { mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult } from "@getpaseo/client";
 import { createLifecycleService, lifecycleRow, type LifecycleClient } from "../server/session-lifecycle";
-import { DEFAULT_RECOVERY_TARGET as target, previewLifecycle, executeLifecycleItem } from "../shared/session-lifecycle";
+import { DEFAULT_RECOVERY_TARGET as target, previewLifecycle, executeLifecycleItem, unresolvedArchive, type LifecycleReview } from "../shared/session-lifecycle";
 import { hasSessionAttention, toDirectoryEntry } from "../client/session-directory";
 import { matchesStatus } from "../client/session-view";
 import { openSessionById } from "../client/session-actions";
@@ -224,7 +224,7 @@ describe("reviewed exact-ID effects and durable replay", () => {
     const s = await setup(), review = await s.preview("archive"); let reads = 0;
     s.archive.mockImplementationOnce(async () => ({ archivedAt: "acknowledged-only" }));
     s.refresh.mockImplementation(async (id) => ({ agent: ++reads === 3 ? agent("other-id", { archivedAt: "now", status: "closed" }) : s.records.get(id)!, project: null }));
-    expect(await s.service.execute(review.id, "a")).toMatchObject({ id: "a", outcome: "uncertain", message: expect.stringContaining("exact-ID terminal") });
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ id: "a", outcome: "uncertain", message: expect.stringContaining("exact-ID read does not show") });
     expect(s.records.get("a")).toMatchObject({ status: "error", archivedAt: null });
     const reloaded = createLifecycleService(s.client, s.root);
     expect((await reloaded.read(review.id))?.rows[0]?.outcome).toBe("uncertain");
@@ -330,14 +330,16 @@ describe("force-close archive and read-only settlement", () => {
     expect((await s.service.execute(review.id, "a")).outcome).toBe("archived");
     expect(s.archive).toHaveBeenCalledExactlyOnceWith("a"); expect(s.records.get("b")?.archivedAt).toBeNull(); expect(s.send).not.toHaveBeenCalled();
   });
-  it("settles a lost archive acknowledgement after reload by metadata only while retaining its fence", async () => {
+  it("holds a lost archive acknowledgement unconfirmed, then settles it after reload by an exact-ID closed read", async () => {
     const s = await setup(), review = await s.preview("archive");
     s.archive.mockImplementationOnce(async (id) => { s.records.set(id, agent(id, { status: "closed", archivedAt: "now" })); throw new Error("Lost acknowledgement"); });
-    expect((await s.service.execute(review.id, "a")).outcome).toBe("uncertain");
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
+    expect((await readdir(s.root)).some((name) => name.startsWith("intent-"))).toBe(true);
     const reloaded = createLifecycleService(s.client, s.root);
-    expect(await reloaded.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", message: expect.stringContaining("No additional") });
+    expect(await reloaded.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("No additional") });
     expect((await reloaded.execute(review.id, "a")).outcome).toBe("archived");
-    expect(s.archive).toHaveBeenCalledTimes(1); expect((await readdir(s.root)).some((name) => name.startsWith("intent-"))).toBe(true);
+    expect(s.archive).toHaveBeenCalledTimes(1); expect((await readdir(s.root)).some((name) => name.startsWith("intent-"))).toBe(false);
+    expect((await readdir(s.root)).some((name) => name.startsWith("done-"))).toBe(true);
   });
   it.each(["missing", "mismatch", "timeout", "still-running"])("never settles %s as archived or resends", async (state) => {
     const s = await setup(), review = await s.preview("archive"); s.archive.mockRejectedValueOnce(new Error("Lost transport"));
@@ -365,5 +367,404 @@ describe("force-close archive and read-only settlement", () => {
     s.records.set("a", agent("a"));
     expect(await reloaded.dispositions(["a"])).toMatchObject({ a: { state: "readable", localRemoval: false } });
     expect(s.archive).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled();
+  });
+});
+
+const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const LEGACY = "Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request.";
+const turn = { turnId: "fixture-turn", startedAt: "2026-10-22T00:00:00.000Z" } as Agent["activeTurn"];
+const fencePath = (root: string, id: string) => join(root, `intent-${sha(id)}.json`);
+const fenceBytes = (root: string, id: string) => nativeFs.readFile(fencePath(root, id), "utf8").catch(() => null);
+const resultFile = (root: string, reviewId: string, id: string) => join(root, `result-${reviewId}-${sha(id)}.json`);
+type Setup = Awaited<ReturnType<typeof setup>>;
+/** Paseo 0.12: archivedAt is persisted before the runtime close, which may then fail or lose its reply. */
+function archiveAs(s: Setup, patch: Partial<Agent>, failure?: string) {
+  s.archive.mockImplementationOnce(async (id) => {
+    s.records.set(id, { ...s.records.get(id)!, archivedAt: "2026-10-22", ...patch });
+    if (failure) throw new Error(failure);
+    return { archivedAt: "2026-10-22" };
+  });
+}
+/** A fence and result row exactly as the pre-split success check left them after a resolved archive. */
+async function legacyFence(s: Setup, review: LifecycleReview, patch: { message?: string; archivedAt?: string | null; fence?: Record<string, unknown> } = {}) {
+  const row = review.rows[0]!;
+  const saved = { ...row, outcome: "uncertain", message: patch.message ?? LEGACY, availability: { ...row.availability!, archivedAt: patch.archivedAt === undefined ? "2026-10-21" : patch.archivedAt } };
+  await writeFile(resultFile(s.root, review.id, row.id), JSON.stringify(saved));
+  const contents = JSON.stringify({ reviewId: review.id, agentId: row.id, action: "archive", phase: "uncertain", fingerprint: row.fingerprint, message: saved.message, ...patch.fence });
+  await writeFile(fencePath(s.root, row.id), contents);
+  s.records.set(row.id, { ...s.records.get(row.id)!, status: "idle", archivedAt: "2026-10-21" });
+  return contents;
+}
+
+describe("Archive X membership, runtime and fences", () => {
+  it("1 resolves with a closed read: archived/closed, fence released, revision fence kept", async () => {
+    const s = await setup(), review = await s.preview("archive");
+    expect(await fenceBytes(s.root, "a")).toBeNull();
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("runtime closed") });
+    expect(await fenceBytes(s.root, "a")).toBeNull();
+    expect((await readdir(s.root)).filter((name) => name.startsWith("done-"))).toHaveLength(1);
+    expect(s.archive).toHaveBeenCalledExactlyOnceWith("a");
+  });
+  it("2 resolves with a cold idle read: archived/not-observed, released, never called closed", async () => {
+    const s = await setup([agent("a", { status: "idle", lastError: undefined })]), review = await s.preview("archive");
+    archiveAs(s, { status: "idle" });
+    const row = await s.service.execute(review.id, "a");
+    expect(row).toMatchObject({ outcome: "archived", runtime: "not-observed", nativeStatus: "idle" });
+    expect(row.message).not.toMatch(/verified|shows its runtime closed/);
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it.each<[string, Partial<Agent>]>([["running only", { status: "running" }], ["an active turn only", { status: "idle", activeTurn: turn }]])("3-4 resolves but the read shows %s: uncertain, fence retained", async (_label, patch) => {
+    const s = await setup(), review = await s.preview("archive");
+    archiveAs(s, patch);
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "uncertain", message: expect.stringContaining("does not show this session archived and inactive") });
+    expect(JSON.parse((await fenceBytes(s.root, "a"))!)).toMatchObject({ reviewId: review.id, agentId: "a", phase: "uncertain" });
+    expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("5-6 a known close-error text and a lost acknowledgement classify alike: archived/unconfirmed, fence retained", async () => {
+    for (const failure of ["Runtime close failed: session.close() rejected", "Timeout waiting for the archive acknowledgement"]) {
+      const s = await setup(), review = await s.preview("archive");
+      archiveAs(s, { status: "idle" }, failure);
+      const row = await s.service.execute(review.id, "a");
+      expect(row).toMatchObject({ outcome: "archived", runtime: "unconfirmed", message: `Archived. The archive reply did not confirm completion (${failure}), so stopping its runtime is not confirmed.` });
+      expect(unresolvedArchive(row)).toBe(true);
+      expect(JSON.parse((await fenceBytes(s.root, "a"))!)).toMatchObject({ reviewId: review.id, agentId: "a", action: "archive", phase: "unconfirmed", fingerprint: row.fingerprint });
+      expect((await readdir(s.root)).some((name) => name.startsWith("done-"))).toBe(true);
+      expect(s.archive).toHaveBeenCalledTimes(1);
+    }
+  });
+  it("7 rejects without archivedAt: uncertain, fence retained", async () => {
+    const s = await setup(), review = await s.preview("archive"); s.archive.mockRejectedValueOnce(new Error("Lost transport"));
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "uncertain", message: "Archive not confirmed: Lost transport" });
+    expect(JSON.parse((await fenceBytes(s.root, "a"))!)).toMatchObject({ phase: "uncertain" }); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it.each<[string, Partial<Agent>]>([
+    ["archived and running", { status: "running" }], ["archived with an active turn", { status: "idle", activeTurn: turn }], ["running and not archived", { status: "running", archivedAt: null }],
+  ])("8 rejects with a read %s: uncertain, the row stays", async (_label, patch) => {
+    const s = await setup(), review = await s.preview("archive");
+    archiveAs(s, patch, "Lost acknowledgement");
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "uncertain", message: "Archive not confirmed: the session still reports activity." });
+    expect(JSON.parse((await fenceBytes(s.root, "a"))!)).toMatchObject({ phase: "uncertain" }); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("9 preflight finds archived and inactive with no earlier fence: already_archived, no request, own lock released", async () => {
+    const s = await setup([agent("a", { status: "idle", archivedAt: "2026-10-22" })]), review = await s.preview("archive");
+    expect(review.rows[0]!.eligible).toBe(true);
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "already_archived", message: "Already archived on this host. No archive request was sent." });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each<[string, Partial<Agent>]>([["an active turn", { status: "idle", activeTurn: turn }], ["status running", { status: "running" }]])("10-11 preflight keeps archivedAt with %s blocked without a request", async (_label, patch) => {
+    const s = await setup(), review = await s.preview("archive"); s.records.set("a", agent("a", { archivedAt: "2026-10-22", ...patch }));
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("runtime retirement is not confirmed") });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each(["intent", "uncertain", "unconfirmed"].flatMap((phase) => [[phase, null], [phase, "2026-10-22"]]))("12 an existing %s fence (archivedAt %s) stays untouched and names its owner", async (phase, archivedAt) => {
+    const s = await setup(), owner = await s.preview("archive");
+    const contents = JSON.stringify({ reviewId: owner.id, agentId: "a", action: "archive", phase, fingerprint: owner.rows[0]!.fingerprint });
+    await writeFile(fencePath(s.root, "a"), contents);
+    s.records.set("a", agent("a", { status: "idle", archivedAt }));
+    const contender = await s.preview("archive");
+    expect(await s.service.execute(contender.id, "a")).toMatchObject({ outcome: "blocked", reconcileReviewId: owner.id });
+    expect(await fenceBytes(s.root, "a")).toBe(contents); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("13 an unconfirmed fence survives an idle read and is released only by a closed read", async () => {
+    const s = await setup(), review = await s.preview("archive");
+    archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
+    const held = await fenceBytes(s.root, "a"), reloaded = createLifecycleService(s.client, s.root);
+    const idle = await reloaded.reconcile(review.id, "a");
+    expect(idle).toMatchObject({ outcome: "archived", runtime: "unconfirmed" }); expect(unresolvedArchive(idle)).toBe(true);
+    expect(await fenceBytes(s.root, "a")).toBe(held);
+    s.records.set("a", { ...s.records.get("a")!, status: "closed" });
+    expect(await reloaded.execute(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("No additional") });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect((await readdir(s.root)).some((name) => name.startsWith("done-"))).toBe(true);
+    expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("14 releases a legacy predicate-miss fence with its exact owner provenance and no request", async () => {
+    const s = await setup(), review = await s.preview("archive"); await legacyFence(s, review);
+    expect(await createLifecycleService(s.client, s.root).reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "not-observed" });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each<[string, Parameters<typeof legacyFence>[2]]>([
+    ["the text without post-dispatch archivedAt", { archivedAt: null }],
+    ["archivedAt without the text", { message: "Archive outcome remains uncertain. The original no-replay fence is preserved." }],
+    ["near-miss text", { message: LEGACY.replace("do not retry", "do not resend") }],
+    ["a wrong review ID", { fence: { reviewId: "00000000-0000-4000-8000-000000000009" } }],
+    ["a wrong agent ID", { fence: { agentId: "b" } }],
+    ["a wrong action", { fence: { action: "resume" } }],
+    ["a wrong fingerprint", { fence: { fingerprint: "other-revision" } }],
+  ])("15 keeps a legacy fence with %s", async (_label, patch) => {
+    const s = await setup(), review = await s.preview("archive"), contents = await legacyFence(s, review, patch);
+    const result = await s.service.reconcile(review.id, "a");
+    expect(result).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
+    expect(await fenceBytes(s.root, "a")).toBe(contents); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("15 never releases a foreign owner's fence, even on a closed read", async () => {
+    const s = await setup(), mine = await s.preview("archive"); await legacyFence(s, mine);
+    const other = await s.preview("archive"), contents = JSON.stringify({ reviewId: other.id, agentId: "a", action: "archive", phase: "unconfirmed", fingerprint: other.rows[0]!.fingerprint });
+    await writeFile(fencePath(s.root, "a"), contents); s.records.set("a", { ...s.records.get("a")!, status: "closed" });
+    expect(await s.service.reconcile(mine.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("does not belong to this review") });
+    expect(await fenceBytes(s.root, "a")).toBe(contents); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("15 an idle archived record with no fence history is not settled by reconcile", async () => {
+    const s = await setup(), review = await s.preview("archive"); s.records.set("a", agent("a", { status: "idle", archivedAt: "2026-10-22" }));
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "pending" });
+    expect((await s.service.read(review.id))?.rows[0]?.outcome).toBe("pending");
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each(["archived/unconfirmed", "legacy uncertain"])("16 SA (%s) stays recoverable after SWE success, a later Resume and a remount, then settles by an exact-ID read", async (kind) => {
+    const s = await setup([agent("sa"), agent("swe"), agent("b")]), sa = await s.preview("archive", ["sa"]);
+    if (kind === "legacy uncertain") await legacyFence(s, sa);
+    else { archiveAs(s, { status: "idle" }, "Lost acknowledgement"); expect(await s.service.execute(sa.id, "sa")).toMatchObject({ outcome: "archived", runtime: "unconfirmed" }); }
+    const held = await fenceBytes(s.root, "sa"), swe = await s.preview("archive", ["swe"]);
+    expect(await s.service.execute(swe.id, "swe")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    const calls = s.archive.mock.calls.length, resume = await s.preview("resume", ["b"]);
+    expect(JSON.parse(await nativeFs.readFile(join(s.root, "latest.json"), "utf8"))).toEqual({ id: resume.id });
+    const remounted = createLifecycleService(s.client, s.root);
+    expect((await remounted.read())?.unresolved).toEqual([{ reviewId: sa.id, agentId: "sa" }]);
+    // The owner's preview row is still pending; only its result file carries the outcome the lookup listed.
+    expect(JSON.parse(await nativeFs.readFile(join(s.root, `${sa.id}.json`), "utf8")).rows[0].outcome).toBe("pending");
+    expect(JSON.parse(await nativeFs.readFile(resultFile(s.root, sa.id, "sa"), "utf8"))).toMatchObject(kind === "legacy uncertain" ? { outcome: "uncertain" } : { outcome: "archived", runtime: "unconfirmed" });
+    expect(await fenceBytes(s.root, "sa")).toBe(held);
+    s.records.set("sa", { ...s.records.get("sa")!, status: "closed" });
+    expect(await remounted.reconcile(sa.id, "sa")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "sa")).toBeNull();
+    expect((await remounted.read())?.unresolved).toEqual([]);
+    expect(s.archive).toHaveBeenCalledTimes(calls);
+  });
+});
+
+describe("17 unresolved lookup identity", () => {
+  async function base() {
+    const s = await setup(), review = await s.preview("archive");
+    archiveAs(s, { status: "idle" }, "Lost acknowledgement");
+    const row = await s.service.execute(review.id, "a");
+    return { s, review, row, lock: JSON.parse((await fenceBytes(s.root, "a"))!) as Record<string, unknown> };
+  }
+  type Base = Awaited<ReturnType<typeof base>>;
+  const rewrite = (s: Setup, lock: Record<string, unknown>) => writeFile(fencePath(s.root, "a"), JSON.stringify(lock));
+  it.each<[string, (c: Base) => Promise<unknown>]>([
+    ["a file-name/agent hash mismatch", ({ s, lock }) => rewrite(s, { ...lock, agentId: "b" })],
+    ["a missing owner review", ({ s, lock }) => rewrite(s, { ...lock, reviewId: randomUUID() })],
+    ["an owner review whose internal ID differs", async ({ s, review, lock }) => {
+      const alias = randomUUID(); await writeFile(join(s.root, `${alias}.json`), await nativeFs.readFile(join(s.root, `${review.id}.json`), "utf8")); await rewrite(s, { ...lock, reviewId: alias });
+    }],
+    ["an owner review for Resume", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await s.preview("resume")).id })],
+    ["no owner row for that ID", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await s.preview("archive", ["b"])).id })],
+    ["a fingerprint mismatch", ({ s, lock }) => rewrite(s, { ...lock, fingerprint: "other-revision" })],
+    ["a phase outside the set", ({ s, lock }) => rewrite(s, { ...lock, phase: "bogus" })],
+    ["a Resume-only phase on an archive fence", ({ s, lock }) => rewrite(s, { ...lock, phase: "submitted" })],
+    ["AUD P2-01 a settled-phase fence whose owner result is unreadable", async ({ s, review, lock }) => { await rewrite(s, { ...lock, phase: "archived" }); vi.mocked(readFile).mockImplementation(async (...args) => {
+      if (args[0] === resultFile(s.root, review.id, "a")) throw Object.assign(new Error("fixture read fault"), { code: "EACCES" });
+      return nativeFs.readFile(...args);
+    }); }],
+    ["AUD P2-01 a settled-phase fence whose owner review is missing", ({ s, lock }) => rewrite(s, { ...lock, reviewId: randomUUID(), phase: "blocked" })],
+    ["a non-preflight fence over a pending owner row", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await s.preview("archive")).id, phase: "intent" })],
+    ["malformed fence JSON", ({ s }) => writeFile(fencePath(s.root, "a"), "not json")],
+    ["malformed owner result JSON", ({ s, review }) => writeFile(resultFile(s.root, review.id, "a"), "not json")],
+    ["an owner result outside the row schema", ({ s, review }) => writeFile(resultFile(s.root, review.id, "a"), JSON.stringify({ id: "a", outcome: "archived" }))],
+    ["an unreadable owner result", async ({ s, review }) => { vi.mocked(readFile).mockImplementation(async (...args) => {
+      if (args[0] === resultFile(s.root, review.id, "a")) throw Object.assign(new Error("fixture read fault"), { code: "EACCES" });
+      return nativeFs.readFile(...args);
+    }); }],
+  ])("rejects the no-ID read for %s and changes nothing", async (_label, mutate) => {
+    const c = await base(); await mutate(c); const before = await fenceBytes(c.s.root, "a");
+    await expect(c.s.service.read()).rejects.toThrow("Archive checks could not be fully read: 1 fence(s) could not be validated. No fence was changed.");
+    expect(await fenceBytes(c.s.root, "a")).toBe(before); expect(c.s.archive).toHaveBeenCalledTimes(1);
+  });
+  it.each<[string, (c: Base) => Promise<unknown>]>([
+    ["a Resume fence", ({ s, lock }) => rewrite(s, { ...lock, action: "resume" })],
+    ["an in-flight preflight over its pending owner row", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await s.preview("archive")).id, phase: "preflight" })],
+    ["a settled-phase fence over a settled owner row", ({ s, review, row, lock }) => Promise.all([rewrite(s, { ...lock, phase: "archived" }), writeFile(resultFile(s.root, review.id, "a"), JSON.stringify({ ...row, runtime: "closed" }))])],
+    ["a merged row settled closed", ({ s, review, row }) => writeFile(resultFile(s.root, review.id, "a"), JSON.stringify({ ...row, runtime: "closed" }))],
+    ["a merged row settled not-observed", ({ s, review, row }) => writeFile(resultFile(s.root, review.id, "a"), JSON.stringify({ ...row, runtime: "not-observed" }))],
+    ["a merged row already archived", ({ s, review, row }) => writeFile(resultFile(s.root, review.id, "a"), JSON.stringify({ ...row, outcome: "already_archived", runtime: undefined }))],
+    ["a preview row saying uncertain whose result is settled", async ({ s, review, row }) => {
+      const file = join(s.root, `${review.id}.json`), saved = JSON.parse(await nativeFs.readFile(file, "utf8"));
+      saved.rows[0].outcome = "uncertain"; await writeFile(file, JSON.stringify(saved));
+      await writeFile(resultFile(s.root, review.id, "a"), JSON.stringify({ ...row, runtime: "closed" }));
+    }],
+  ])("does not list %s and reports no error", async (_label, mutate) => {
+    const c = await base(); await mutate(c); const before = await fenceBytes(c.s.root, "a");
+    expect((await c.s.service.read())?.unresolved).toEqual([]);
+    expect(await fenceBytes(c.s.root, "a")).toBe(before); expect(c.s.archive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("18 unresolved bounds and shape", () => {
+  async function fences(count: number) {
+    const s = await setup(), template = await s.preview("archive"), ids: string[] = [];
+    for (let n = 0; n < count; n++) {
+      const id = `fence-${n}`, reviewId = randomUUID(), row = { ...template.rows[0]!, id };
+      await writeFile(join(s.root, `${reviewId}.json`), JSON.stringify({ ...template, id: reviewId, rows: [row] }));
+      await writeFile(resultFile(s.root, reviewId, id), JSON.stringify({ ...row, outcome: "uncertain", message: "Fixture unknown outcome." }));
+      await writeFile(fencePath(s.root, id), JSON.stringify({ reviewId, agentId: id, action: "archive", phase: "uncertain", fingerprint: row.fingerprint }));
+      ids.push(id);
+    }
+    return { s, ids };
+  }
+  it("lists exactly 100", async () => {
+    const { s, ids } = await fences(100), refs = (await s.service.read())!.unresolved!;
+    expect(refs).toHaveLength(100); expect(new Set(refs.map((ref) => ref.agentId))).toEqual(new Set(ids));
+  });
+  it("rejects 101 explicitly instead of truncating", async () => {
+    const { s } = await fences(101), failure = await s.service.read().catch((error: Error) => error.message);
+    expect(failure).toBe("More than 100 archives are not confirmed (101 found). The list cannot be shown exactly; no fence was changed.");
+    expect(failure).not.toContain("100+");
+  });
+  it("returns [] with no fences, omits the field from read(id) and never saves it", async () => {
+    const s = await setup(), review = await s.preview("archive");
+    expect((await s.service.read())?.unresolved).toEqual([]);
+    expect(await s.service.read(review.id)).not.toHaveProperty("unresolved");
+    archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
+    expect((await s.service.read())?.unresolved).toEqual([{ reviewId: review.id, agentId: "a" }]);
+    for (const name of (await readdir(s.root)).filter((entry) => entry.endsWith(".json"))) expect(await nativeFs.readFile(join(s.root, name), "utf8")).not.toContain("unresolved");
+  });
+  it("returns null only when no fence exists", async () => {
+    const s = await setup(); expect(await s.service.read()).toBeNull();
+    const review = await s.preview("archive"); archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
+    await nativeFs.unlink(join(s.root, "latest.json"));
+    await expect(s.service.read()).rejects.toThrow("1 archive fence(s) are not confirmed, but no review pointer exists");
+  });
+});
+
+describe("19 a listed ref grants no authority", () => {
+  it("execute still blocks through the fence and reconcile re-checks ownership", async () => {
+    const s = await setup(), review = await s.preview("archive");
+    archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
+    expect((await s.service.read())?.unresolved).toEqual([{ reviewId: review.id, agentId: "a" }]);
+    const contender = await s.preview("archive"), held = await fenceBytes(s.root, "a");
+    expect(await s.service.execute(contender.id, "a")).toMatchObject({ outcome: "blocked", reconcileReviewId: review.id });
+    expect(await fenceBytes(s.root, "a")).toBe(held);
+    const moved = JSON.stringify({ ...JSON.parse(held!), reviewId: contender.id });
+    await writeFile(fencePath(s.root, "a"), moved); s.records.set("a", { ...s.records.get("a")!, status: "closed" });
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ message: expect.stringContaining("does not belong to this review") });
+    expect(await fenceBytes(s.root, "a")).toBe(moved); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("20 reconcile saves before it releases, and releases only the fence it read", () => {
+  async function unconfirmed() {
+    const s = await setup(), review = await s.preview("archive");
+    archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
+    s.records.set("a", { ...s.records.get("a")!, status: "closed" });
+    return { s, review, held: (await fenceBytes(s.root, "a"))! };
+  }
+  const savedRow = async (s: Setup, reviewId: string) => JSON.parse(await nativeFs.readFile(resultFile(s.root, reviewId, "a"), "utf8"));
+  it("QA P2-03 a result write fault after a closed read keeps the fence, the row and the recovery ref", async () => {
+    const { s, review, held } = await unconfirmed(), temp = `${resultFile(s.root, review.id, "a")}.`;
+    let fault = true;
+    vi.mocked(open).mockImplementation(async (...args) => {
+      if (fault && String(args[0]).startsWith(temp)) { fault = false; throw Object.assign(new Error("fixture write fault"), { code: "EIO" }); }
+      return nativeFs.open(...args);
+    });
+    await expect(s.service.reconcile(review.id, "a")).rejects.toThrow("fixture write fault");
+    expect(await fenceBytes(s.root, "a")).toBe(held);
+    expect(await savedRow(s, review.id)).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
+    await s.preview("resume", ["b"]);
+    const fresh = createLifecycleService(s.client, s.root);
+    expect((await fresh.read())?.unresolved).toEqual([{ reviewId: review.id, agentId: "a" }]);
+    expect(await fresh.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("an interrupted release leaves its owned fence behind a settled row; the next Check releases it without archiving", async () => {
+    const { s, review, held } = await unconfirmed();
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    await writeFile(fencePath(s.root, "a"), held);
+    expect((await s.service.read())?.unresolved).toEqual([]);
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("a Check behind a settled row leaves an execute's in-flight preflight fence to that execute", async () => {
+    const { s, review, held } = await unconfirmed();
+    await s.service.reconcile(review.id, "a");
+    const preflight = JSON.stringify({ ...JSON.parse(held), phase: "preflight", message: undefined });
+    await writeFile(fencePath(s.root, "a"), preflight);
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "a")).toBe(preflight); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("AUD P1 a successor Resume fence placed during the exact-ID read survives, and the saved result is not overwritten", async () => {
+    const { s, review, held } = await unconfirmed(), resume = await s.preview("resume", ["b"]);
+    const successor = JSON.stringify({ reviewId: resume.id, agentId: "a", action: "resume", phase: "preflight", fingerprint: JSON.parse(held).fingerprint });
+    s.refresh.mockImplementationOnce(async (id) => {
+      // A concurrent Check released the fence and a successor took the session while this read was in flight.
+      await nativeFs.unlink(fencePath(s.root, "a")); await nativeFs.writeFile(fencePath(s.root, "a"), successor);
+      return { agent: s.records.get(id)!, project: null };
+    });
+    const saved = await savedRow(s, review.id);
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("so this result was not recorded") });
+    expect(await fenceBytes(s.root, "a")).toBe(successor);
+    expect(await savedRow(s, review.id)).toEqual(saved);
+    expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
+  });
+  it("AUD P1-01 service interleaving: a second Check settles and a Resume takes the session while the first Check reads", async () => {
+    const s = await setup(), resume = await s.preview("resume", ["a"]), review = await s.preview("archive");
+    archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
+    s.records.set("a", { ...s.records.get("a")!, status: "closed" });
+    let openFirst!: () => void, openResume!: () => void;
+    const firstRead = new Promise<void>((resolve) => { openFirst = resolve; }), resumeRead = new Promise<void>((resolve) => { openResume = resolve; });
+    const found = (id: string) => ({ agent: s.records.get(id)!, project: null });
+    s.refresh.mockImplementationOnce(async (id) => { await firstRead; return found(id); })
+      .mockImplementationOnce(async (id) => found(id))
+      .mockImplementationOnce(async (id) => { await resumeRead; return found(id); });
+    const before = s.refresh.mock.calls.length;
+    const until = async (reads: number) => { for (let n = 0; n < 500 && s.refresh.mock.calls.length < before + reads; n++) await new Promise((resolve) => setTimeout(resolve, 1)); expect(s.refresh).toHaveBeenCalledTimes(before + reads); };
+    const first = s.service.reconcile(review.id, "a"); await until(1);
+    expect(await createLifecycleService(s.client, s.root).reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "a")).toBeNull();
+    const resuming = createLifecycleService(s.client, s.root).execute(resume.id, "a"); await until(3);
+    const successor = await fenceBytes(s.root, "a");
+    expect(JSON.parse(successor!)).toMatchObject({ reviewId: resume.id, agentId: "a", action: "resume", phase: "preflight" });
+    openFirst();
+    expect(await first).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "a")).toBe(successor);
+    openResume();
+    expect(await resuming).toMatchObject({ outcome: "blocked", message: "Already archived on this host. No archive request was sent." });
+    expect(await fenceBytes(s.root, "a")).toBeNull();
+    expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
+  });
+  it("legacy provenance never releases while the exact-ID read still shows activity", async () => {
+    const s = await setup(), review = await s.preview("archive"), held = await legacyFence(s, review);
+    s.records.set("a", { ...s.records.get("a")!, status: "idle", archivedAt: "2026-10-21", activeTurn: turn });
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "uncertain" });
+    expect(await fenceBytes(s.root, "a")).toBe(held); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("AUD P1 r2 a late archive ACK never overwrites a successor Resume fence taken after a Check released the intent", async () => {
+    const s = await setup(), resume = await s.preview("resume", ["a"]), review = await s.preview("archive"), original = s.records.get("a")!;
+    let ack!: () => void, readResume!: () => void;
+    const acked = new Promise<void>((resolve) => { ack = resolve; }), resumeRead = new Promise<void>((resolve) => { readResume = resolve; });
+    s.archive.mockImplementationOnce(async (id) => { s.records.set(id, { ...s.records.get(id)!, status: "closed", archivedAt: "2026-10-22" }); await acked; return { archivedAt: "2026-10-22" }; });
+    const archiving = s.service.execute(review.id, "a");
+    for (let n = 0; n < 500 && !s.archive.mock.calls.length; n++) await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(s.archive).toHaveBeenCalledTimes(1);
+    expect(await createLifecycleService(s.client, s.root).reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(await fenceBytes(s.root, "a")).toBeNull();
+    s.records.set("a", original);
+    const reads = s.refresh.mock.calls.length;
+    s.refresh.mockImplementationOnce(async (id) => { await resumeRead; return { agent: s.records.get(id)!, project: null }; });
+    const resuming = createLifecycleService(s.client, s.root).execute(resume.id, "a");
+    for (let n = 0; n < 500 && s.refresh.mock.calls.length === reads; n++) await new Promise((resolve) => setTimeout(resolve, 1));
+    const successor = (await fenceBytes(s.root, "a"))!;
+    expect(JSON.parse(successor)).toMatchObject({ reviewId: resume.id, agentId: "a", action: "resume", phase: "preflight", token: expect.any(String) });
+    ack();
+    expect(await archiving).toMatchObject({ outcome: "uncertain", message: expect.stringContaining("so this result was not recorded") });
+    expect(await fenceBytes(s.root, "a")).toBe(successor);
+    expect(await savedRow(s, review.id)).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
+    s.records.set("a", { ...original, status: "closed", archivedAt: "2026-10-22" }); readResume();
+    expect(await resuming).toMatchObject({ outcome: "blocked" });
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.send).not.toHaveBeenCalled(); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("an execute whose preflight fence changed never writes its intent or dispatches", async () => {
+    const s = await setup(), review = await s.preview("archive"), other = JSON.stringify({ reviewId: randomUUID(), agentId: "a", action: "resume", phase: "preflight", fingerprint: "other", token: "fixture" });
+    s.refresh.mockImplementationOnce(async (id) => { await nativeFs.writeFile(fencePath(s.root, "a"), other); return { agent: s.records.get(id)!, project: null }; });
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("Another action took this session's fence before dispatch") });
+    expect(await fenceBytes(s.root, "a")).toBe(other);
+    expect(await nativeFs.readFile(resultFile(s.root, review.id, "a"), "utf8").catch(() => null)).toBeNull();
+    expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("a fence already released during the read reports its read unsaved, without an error or a release", async () => {
+    const { s, review } = await unconfirmed(), saved = await savedRow(s, review.id);
+    s.refresh.mockImplementationOnce(async (id) => { await nativeFs.unlink(fencePath(s.root, "a")); return { agent: s.records.get(id)!, project: null }; });
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("so this result was not recorded") });
+    expect(await savedRow(s, review.id)).toEqual(saved);
+    expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { PaseoApi, PaseoAgentListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readConfig } from "./config";
 import {
-  TAKEOVER_LIMIT, RESUME_PROMPT, lifecycleReviewSchema, lifecycleRowSchema, lifecycleCapabilities,
+  TAKEOVER_LIMIT, RESUME_PROMPT, lifecycleReviewSchema, lifecycleRowSchema, lifecycleCapabilities, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
-  type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability,
+  type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type UnresolvedRef,
 } from "../shared/session-lifecycle";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -21,6 +21,25 @@ export type LifecycleClient = {
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const archiveIntentReferenceSchema = z.object({ agentId: z.string(), action: z.literal("archive"), reviewId: z.string().uuid() });
+const fenceSchema = z.object({ reviewId: z.string(), agentId: z.string(), action: z.enum(["resume", "archive"]), phase: z.string(), fingerprint: z.string() });
+/** Written only by the pre-runtime-split success check; kept solely to recognise its fences (G3). */
+const LEGACY_PREDICATE_MISS = "Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request.";
+const UNRESOLVED_LIMIT = 100;
+// Compare-and-swap: every fence phase write, its paired result save and every release run only while the fence
+// still holds the exact bytes this call read or wrote (every field, including phase and the per-execute token), so a
+// fence written after that (a successor Resume or Archive) is never overwritten or removed. One step per path at a time.
+// ponytail: an in-process queue; one plugin worker owns the root. Cross-process ownership would need a lock directory.
+const fenceSteps = new Map<string, Promise<unknown>>();
+function whileOwned(path: string, expected: string, step: () => Promise<unknown>): Promise<boolean> {
+  const next = (fenceSteps.get(path) ?? Promise.resolve()).then(async () => {
+    const current = await readFile(path, "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
+    if (current !== expected) return false;
+    await step(); return true;
+  });
+  fenceSteps.set(path, next.catch(() => {}));
+  return next;
+}
+const release = (path: string, expected: string) => whileOwned(path, expected, () => unlink(path));
 export function lifecycleRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.status, agent.archivedAt, agent.updatedAt, agent.provider, agent.model,
     agent.cwd, agent.workspaceId, agent.currentModeId, agent.effectiveThinkingOptionId, agent.activeTurn,
@@ -33,8 +52,13 @@ function parent(agent: Agent) { return ("parentAgentId" in agent && typeof agent
 function archiveRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.createdAt, agent.provider, agent.cwd, agent.workspaceId, agent.persistence, parent(agent)]));
 }
-function terminalArchive(agent?: Agent): boolean {
-  return !!agent?.archivedAt && agent.status === "closed" && !agent.activeTurn;
+// Paseo 0.12 persists archivedAt before closing the runtime and stores an archived running record as idle,
+// so "closed" is runtime evidence, never the membership test.
+function active(agent?: Agent): boolean {
+  return !!agent && (!!agent.activeTurn || agent.status === "running" || agent.status === "initializing");
+}
+function archivedMembership(agent?: Agent): boolean {
+  return !!agent?.archivedAt && !active(agent);
 }
 function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
   // Block every managed child, even one the native cascade would detach today.
@@ -101,10 +125,17 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   async function read(id?: string): Promise<LifecycleReview | null> {
     await ready();
     if (!id) {
-      let latest: { id: string };
+      let latest: { id: string } | undefined;
       try { latest = JSON.parse(await readFile(join(root, "latest.json"), "utf8")); }
-      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return null; throw error; }
-      return read(latest.id);
+      catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+      // The latest pointer moves with every review, so recovery comes from the durable fences instead.
+      const unresolved = await unresolvedArchives();
+      if (!latest) {
+        if (unresolved.length) throw new Error(`${unresolved.length} archive fence(s) are not confirmed, but no review pointer exists. No fence was changed.`);
+        return null;
+      }
+      const review = await read(latest.id);
+      return review && { ...review, unresolved };
     }
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid review ID");
     const review = lifecycleReviewSchema.parse(JSON.parse(await readFile(reviewPath(id), "utf8")));
@@ -113,6 +144,32 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return row; throw error; }
     }));
     return review;
+  }
+  /** Metadata-only: local fences and their owner's merged result. A listed ref is a hint, never authority. */
+  async function unresolvedArchives(): Promise<UnresolvedRef[]> {
+    const refs: UnresolvedRef[] = [];
+    let problems = 0;
+    for (const name of (await readdir(root)).filter((entry) => /^intent-[a-f0-9]{64}\.json$/.test(entry)).sort()) {
+      try {
+        const lock = fenceSchema.parse(JSON.parse(await readFile(join(root, name), "utf8")));
+        if (name !== `intent-${hash(lock.agentId)}.json` || !z.string().uuid().safeParse(lock.reviewId).success) { problems++; continue; }
+        // Resume fences are not archive recovery work.
+        if (lock.action !== "archive") continue;
+        if (!["preflight", "intent", "uncertain", "unconfirmed", "archived", "blocked", "absent", "already_archived"].includes(lock.phase)) { problems++; continue; }
+        // The owner's merged row decides for every phase, so an unreadable owner never reads as settled. Execute saves
+        // that row before each fence write after preflight; only an in-flight preflight still has a pending row.
+        const owner = await read(lock.reviewId), row = owner?.rows.find((entry) => entry.id === lock.agentId);
+        if (!owner || owner.id !== lock.reviewId || owner.action !== "archive" || !row || row.fingerprint !== lock.fingerprint || (row.outcome === "pending" && lock.phase !== "preflight")) { problems++; continue; }
+        if (unresolvedArchive(row)) refs.push({ reviewId: lock.reviewId, agentId: lock.agentId });
+      } catch {
+        // A fence released between the directory read and this read is no longer recovery work.
+        if (await readFile(join(root, name)).then(() => true, (error) => error?.code !== "ENOENT")) problems++;
+      }
+    }
+    // Every unvalidated fence still blocks its ID in execute, so it must never read as "none".
+    if (problems) throw new Error(`Archive checks could not be fully read: ${problems} fence(s) could not be validated. No fence was changed.`);
+    if (refs.length > UNRESOLVED_LIMIT) throw new Error(`More than ${UNRESOLVED_LIMIT} archives are not confirmed (${refs.length} found). The list cannot be shown exactly; no fence was changed.`);
+    return refs;
   }
   async function capabilities() {
     const snapshot = await client.providers.snapshot();
@@ -133,7 +190,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       };
       row.availability = observed.availability;
       if (!observed.agent) { row.eligible = input.action === "archive" && observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
-      if (input.action === "archive" && terminalArchive(observed.agent)) row.eligible = true;
+      if (input.action === "archive" && archivedMembership(observed.agent)) row.eligible = true;
       rows.push(row);
     }
     const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows, limitation: TAKEOVER_LIMIT };
@@ -174,7 +231,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const review = await read(reviewId);
     const row = review?.rows.find((entry) => entry.id === agentId);
     if (!review || !row) throw new Error("Exact session ID is not in this review.");
-    if (row.outcome !== "pending") return review.action === "archive" && ["intent", "uncertain"].includes(row.outcome) ? reconcile(reviewId, agentId) : row;
+    if (row.outcome !== "pending") return review.action === "archive" && unresolvedArchive(row) ? reconcile(reviewId, agentId) : row;
     if (!row.eligible) { const blocked = { ...row, outcome: "blocked" as const, message: row.reason }; await saveRow(reviewId, blocked); return blocked; }
     // A per-session lock covers competing reviews/actions and survives worker reload/crash.
     const lockPath = join(root, `intent-${hash(agentId)}.json`);
@@ -194,12 +251,15 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
           ? "An earlier archive owns this session. Check its native outcome; no second dispatch was made."
           : "An earlier action blocked this request. Its archive reconciliation reference is unavailable; no second dispatch was made. No retry or lock removal was attempted." };
     }
-    await lock.writeFile(JSON.stringify({ reviewId, agentId, action: review.action, phase: "preflight", fingerprint: row.fingerprint })); await lock.sync(); await lock.close();
+    // The token makes each fence write unique, so a release never matches another execute's identical fence.
+    const token = randomUUID(), preflight = JSON.stringify({ reviewId, agentId, action: review.action, phase: "preflight", fingerprint: row.fingerprint, token });
+    await lock.writeFile(preflight); await lock.sync(); await lock.close();
+    let ours = preflight;
     let dispatchStarted = false, alreadyArchived = false;
     try {
       // Another click may have read pending before the first owner saved its result and released.
       const settled = (await read(reviewId))?.rows.find((entry) => entry.id === agentId);
-      if (settled && settled.outcome !== "pending") { await unlink(lockPath); return settled; }
+      if (settled && settled.outcome !== "pending") { await release(lockPath, ours); return settled; }
       const doneFile = join(root, `done-${hash(`${agentId}:${row.fingerprint}`)}.json`);
       try { await readFile(doneFile, "utf8"); throw new Error("This exact session revision already has a dispatched action. Reconcile its receipt before another action."); }
       catch (error) { if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error; }
@@ -207,8 +267,8 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const observed = await observe(agentId); row.availability = observed.availability;
       if (!observed.agent) throw new Error(observed.availability.reason);
       const found = { agent: observed.agent };
-      alreadyArchived = terminalArchive(found.agent);
-      if (found.agent.archivedAt != null) throw new Error(terminalArchive(found.agent) ? "Already archived and closed on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
+      alreadyArchived = archivedMembership(found.agent);
+      if (found.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(found.agent) : lifecycleRevision(found.agent)) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
       const all = await inventory(client);
       const current = lifecycleRow(found.agent, all, review.action, review.target);
@@ -228,25 +288,33 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const latest = await observe(agentId); row.availability = latest.availability;
       if (!latest.agent) throw new Error(latest.availability.reason);
       const final = { agent: latest.agent };
-      alreadyArchived = terminalArchive(final.agent);
-      if (final.agent.archivedAt != null) throw new Error(terminalArchive(final.agent) ? "Already archived and closed on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
+      alreadyArchived = archivedMembership(final.agent);
+      if (final.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(final.agent) : lifecycleRevision(final.agent)) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
       const finalDecision = lifecycleRow(final.agent, finalInventory, review.action, review.target);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
-      row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry."; await saveRow(reviewId, row);
-      await writeFile(lockPath, JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint }), { mode: 0o600 });
-      dispatchStarted = true;
+      row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry.";
+      const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
+      if (!await whileOwned(lockPath, ours, async () => { await saveRow(reviewId, row); await writeFile(lockPath, intent, { mode: 0o600 }); }))
+        throw new Error("Another action took this session's fence before dispatch. Nothing was sent; review again.");
+      ours = intent; dispatchStarted = true;
       if (review.action === "resume") {
         await agent.send(RESUME_PROMPT, { messageId: `kontor-resume-${review.id}-${hash(agentId).slice(0, 12)}`, activeTurnBehavior: "steer" });
         row.outcome = "submitted"; row.message = "Resume prompt accepted in the same session. Completion and resolution of the original failure are not verified.";
       } else {
-        const receipt = await agent.archive();
-        if ("agentId" in receipt && receipt.agentId !== agentId) throw new Error("Archive acknowledgement identified another session. Check native outcome; no retry was made.");
+        // A rejected reply can follow a persisted archive, so read before classifying. A rejection is untyped here:
+        // a lost acknowledgement looks the same as a close error, so neither is reported as a proven close failure.
+        const reply = await agent.archive().then((receipt) => ({ receipt }), (error: unknown) => ({ error }));
+        if ("receipt" in reply && "agentId" in reply.receipt && reply.receipt.agentId !== agentId) throw new Error("Archive acknowledgement identified another session. Check native outcome; no retry was made.");
         const observedAfter = await observe(agentId); row.availability = observedAfter.availability;
         const after = observedAfter.agent;
-        if (!terminalArchive(after)) throw new Error("Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request.");
-        row.nativeStatus = after!.status;
-        row.outcome = "archived"; row.message = "Native archive succeeded and closed state was verified. Durable history and files remain with the host.";
+        if ("error" in reply && !archivedMembership(after)) throw new Error(active(after) ? "Archive not confirmed: the session still reports activity." : `Archive not confirmed: ${errorText(reply.error)}`);
+        if (!archivedMembership(after)) throw new Error("Archive returned, but an exact-ID read does not show this session archived and inactive. Check again; do not retry the request.");
+        row.nativeStatus = after!.status; row.outcome = "archived";
+        row.runtime = "error" in reply ? "unconfirmed" : after!.status === "closed" ? "closed" : "not-observed";
+        row.message = "error" in reply ? `Archived. The archive reply did not confirm completion (${errorText(reply.error)}), so stopping its runtime is not confirmed.`
+          : row.runtime === "closed" ? "Archived. An exact-ID read shows its runtime closed. Durable history and files remain with the host."
+          : "Archived. The host did not report its runtime as closed. Durable history and files remain with the host.";
       }
     } catch (error) {
       row.outcome = dispatchStarted ? "uncertain" : row.availability?.state === "missing" ? "absent" : review.action === "archive" && alreadyArchived ? "already_archived" : "blocked";
@@ -257,31 +325,57 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         row.message = "No native record exists for this exact ID on this host. A local stale-row removal was recorded; no daemon archive was performed.";
       }
     }
-    await saveRow(reviewId, row);
-    await writeFile(lockPath, JSON.stringify({ reviewId, agentId, action: review.action, phase: row.outcome, fingerprint: row.fingerprint, message: row.message }), { mode: 0o600 });
-    if (dispatchStarted) await writeFile(join(root, `done-${hash(`${agentId}:${row.fingerprint}`)}.json`), JSON.stringify(row), { mode: 0o600 });
-    // Unknown effects retain the session lock. A fresh review may retry a known preflight block.
-    if (row.outcome !== "uncertain") await unlink(lockPath);
-    return row;
+    const written = JSON.stringify({ reviewId, agentId, action: review.action, phase: row.runtime === "unconfirmed" ? "unconfirmed" : row.outcome, fingerprint: row.fingerprint, message: row.message, token });
+    const done = async () => { if (dispatchStarted) await writeFile(join(root, `done-${hash(`${agentId}:${row.fingerprint}`)}.json`), JSON.stringify(row), { mode: 0o600 }); };
+    // Unknown effects and an unconfirmed runtime retain the session lock. A fresh review may retry a known preflight block.
+    if (await whileOwned(lockPath, ours, async () => {
+      await saveRow(reviewId, row); await done();
+      if (unresolvedArchive(row)) await writeFile(lockPath, written, { mode: 0o600 }); else await unlink(lockPath);
+    })) return row;
+    // A Check settled and released this fence while the request ran, and a successor may hold the path now: that saved
+    // result and fence stand. This call reports what it observed, unsaved; only the dispatch record is added.
+    await done();
+    return { ...row, message: `${row.message ?? ""} This session's fence now belongs to another action, so this result was not recorded.`.trim() };
   }
-  /** Metadata-only settlement of a dispatched archive. Never resend or delete its fence. */
+  /** Settles a dispatched archive by an exact-ID read. Never resends; releases only its own fence (G3). */
   async function reconcile(reviewId: string, agentId: string): Promise<LifecycleRow> {
     const review = await read(reviewId), row = review?.rows.find((entry) => entry.id === agentId);
     if (!review || !row || review.action !== "archive") throw new Error("Exact archive ID is not in this review.");
+    const lockPath = join(root, `intent-${hash(agentId)}.json`);
+    let fence: unknown, bytes = "";
+    try { bytes = await readFile(lockPath, "utf8"); fence = JSON.parse(bytes); }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) fence = "unreadable"; }
+    const lock = fenceSchema.safeParse(fence);
+    const owned = lock.success && lock.data.reviewId === reviewId && lock.data.agentId === agentId && lock.data.action === "archive" && lock.data.fingerprint === row.fingerprint;
     if (row.outcome === "pending") {
-      let intent: { reviewId: string; agentId: string; action: string };
-      try { intent = JSON.parse(await readFile(join(root, `intent-${hash(agentId)}.json`), "utf8")); }
-      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return row; throw error; }
-      if (intent.reviewId !== reviewId || intent.agentId !== agentId || intent.action !== "archive") throw new Error("This review does not own the pending archive intent.");
-    } else if (!["intent", "uncertain"].includes(row.outcome)) return row;
-    const observed = await observe(agentId);
-    const result: LifecycleRow = { ...row, availability: observed.availability,
-      nativeStatus: observed.agent?.status ?? row.nativeStatus,
-      outcome: terminalArchive(observed.agent) ? "archived" : "uncertain",
-      message: terminalArchive(observed.agent) ? "Native archive and closed runtime verified by an exact-ID read. No additional archive request was sent."
-        : "Archive outcome remains uncertain. The original no-replay fence is preserved. " + observed.availability.reason };
-    await saveRow(reviewId, result);
-    return result;
+      if (fence === undefined) return row;
+      if (!lock.success || lock.data.reviewId !== reviewId || lock.data.agentId !== agentId || lock.data.action !== "archive") throw new Error("This review does not own the pending archive intent.");
+    } else if (!unresolvedArchive(row)) {
+      // A saved settled row whose release was interrupted: execute releases exactly this owned fence for such a row.
+      // A preflight fence belongs to an execute that is releasing it itself.
+      if (owned && lock.data.phase !== "preflight") await release(lockPath, bytes);
+      return row;
+    }
+    // Only the old success branch saved this text, and only after archive() resolved and a read showed archivedAt.
+    const legacy = row.outcome === "uncertain" && row.message === LEGACY_PREDICATE_MISS && !!row.availability?.archivedAt;
+    const observed = await observe(agentId), after = observed.agent;
+    const closed = archivedMembership(after) && after!.status === "closed";
+    const settled = closed || (legacy && owned && archivedMembership(after));
+    const foreign = fence !== undefined && !owned ? " This session's archive fence does not belong to this review, so it was not released." : "";
+    const result: LifecycleRow = { ...row, availability: observed.availability, nativeStatus: after?.status ?? row.nativeStatus,
+      ...(settled ? { outcome: "archived" as const, runtime: closed ? "closed" as const : "not-observed" as const,
+        message: (closed ? "Archived. An exact-ID read shows its runtime closed. No additional archive request was sent." : "Archived. The archive had returned; the host did not report its runtime as closed. No additional archive request was sent.") + foreign }
+      : archivedMembership(after) ? { outcome: "archived" as const, runtime: "unconfirmed" as const,
+        message: "Archived, but an exact-ID read does not show its runtime closed, so stopping it is still not confirmed. The fence is kept; no additional archive request was sent." + foreign }
+      : { outcome: "uncertain" as const, runtime: undefined, message: "Archive outcome remains uncertain. The original no-replay fence is preserved. " + observed.availability.reason + foreign }) };
+    if (!owned) { await saveRow(reviewId, result); return result; }
+    // Save before releasing, both only while the fence still holds the bytes read above: an execute finishing, or a
+    // successor, may have changed it during the read; then the saved result and that fence stand, and this call reports
+    // its read unsaved. A failed save keeps
+    // the fence and the unresolved row, so the lookup still lists it; an interrupted release leaves an owned fence
+    // behind a settled row, which the next Check releases. A pending row's fence belongs to an execute in preflight.
+    if (await whileOwned(lockPath, bytes, async () => { await saveRow(reviewId, result); if (settled && row.outcome !== "pending") await unlink(lockPath); })) return result;
+    return { ...result, message: `${result.message ?? ""} This session's fence changed during the read, so this result was not recorded.`.trim() };
   }
   return { capabilities, preview, read, execute, reconcile, probe, dispositions };
 }

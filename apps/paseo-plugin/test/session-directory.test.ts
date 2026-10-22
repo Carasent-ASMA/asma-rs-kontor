@@ -1321,3 +1321,55 @@ describe("SessionDirectory", () => {
     expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(1);
   });
 });
+
+describe("routine refresh after an Archive X", () => {
+  async function started(fake: ReturnType<typeof fakeDirectory>) {
+    const states: DirectoryState[] = [];
+    const directory = new SessionDirectory({ client: () => fake.client, includeArchived: false, onChange: (state) => { states.push(state); } });
+    await directory.start();
+    return { directory, states, latest: () => states[states.length - 1]! };
+  }
+
+  it("keeps a live, complete, ready directory calm while the refresh walks", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]), s = await started(fake);
+    expect(s.latest()).toMatchObject({ status: "ready", live: true, inventoryComplete: true, staleReason: null });
+    const from = s.states.length, held = fake.holdNextPage(), refreshing = s.directory.refresh();
+    await held.started;
+    expect(s.states.slice(from).map((state) => state.status)).not.toContain("stale");
+    held.release(); await refreshing;
+    expect(s.states.slice(from).every((state) => state.status === "ready" && state.staleReason === null)).toBe(true);
+    await s.directory.dispose();
+  });
+
+  it("still reports a failed calm refresh as stale", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]), s = await started(fake);
+    fake.failNext(); await s.directory.refresh();
+    expect(s.latest()).toMatchObject({ status: "stale", staleReason: "Could not refresh the full directory.", error: expect.stringMatching(/daemon unavailable/) });
+    await s.directory.dispose();
+  });
+
+  it.each<[string, (fake: ReturnType<typeof fakeDirectory>, s: Awaited<ReturnType<typeof started>>) => Promise<void> | void, RegExp]>([
+    ["stopped live updates", (fake) => fake.emitError(new Error("socket lost")), /Live updates stopped/],
+    ["a failed refresh", async (fake, s) => { fake.failNext(); await s.directory.refresh(); }, /Could not refresh/],
+    ["a partial inventory", async (fake, s) => { fake.failSubscription(); s.directory.markHostOffline(); await s.directory.reconnect(); }, /may be incomplete|Live updates are unavailable/],
+  ])("keeps %s stale through a routine refresh", async (_label, arrange, reason) => {
+    const fake = fakeDirectory([[entry("agent-a")]]), s = await started(fake);
+    await arrange(fake, s);
+    expect(s.latest().staleReason).toMatch(reason);
+    const from = s.states.length, held = fake.holdNextPage(), refreshing = s.directory.refresh();
+    await held.started;
+    expect(s.states.slice(from).length).toBeGreaterThan(0);
+    expect(s.states.slice(from).every((state) => state.status === "stale" && reason.test(state.staleReason ?? ""))).toBe(true);
+    held.release(); await refreshing;
+    await s.directory.dispose();
+  });
+
+  it("keeps an offline host offline instead of walking", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]), s = await started(fake);
+    s.directory.markHostOffline(); const calls = fake.listCalls.length;
+    await s.directory.refresh();
+    expect(s.latest()).toMatchObject({ status: "stale", staleReason: expect.stringMatching(/disconnected/) });
+    expect(fake.listCalls).toHaveLength(calls);
+    await s.directory.dispose();
+  });
+});
