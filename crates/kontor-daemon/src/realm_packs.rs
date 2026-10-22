@@ -15,6 +15,10 @@ pub struct RealmPack {
     pub profiles: ProfilePackSpec,
     /// Candidate topology, role catalogs and delivery correspondence.
     pub domain: OperationalDomainPack,
+    /// Selected-folder-relative source retained in the bundle descriptor.
+    pub domain_source: String,
+    /// Exact captured bytes, shared by validation, preview and publication.
+    pub domain_yaml: String,
     /// Committee revision candidates.
     pub presets: ConsultationPresetPack,
     /// Exact authored source hashes, by folder-relative YAML path.
@@ -37,23 +41,19 @@ struct Manifest {
 pub(crate) fn read(folder: &ConfigFolder, source: &str) -> Result<RealmPack, ConfigError> {
     let mut sources = BTreeMap::new();
     let mut document = |source: &str| {
-        let path = folder.reference(source)?;
-        let text = std::fs::read_to_string(&path).map_err(|_| ConfigError {
-            path: path.clone(),
-            problem: "pack source cannot be read",
-        })?;
+        let text = folder.pack_source(source)?;
         let value: serde_json::Value = serde_yaml_ng::from_str(&text).map_err(|_| ConfigError {
-            path,
+            path: folder.root().join(source),
             problem: "invalid YAML pack source",
         })?;
         sources.insert(source.to_owned(), ContentHash::of(text.as_bytes()));
-        Ok::<_, ConfigError>(value)
+        Ok::<_, ConfigError>((value, text))
     };
     let invalid = |source: &str, problem| ConfigError {
         path: folder.root().join(source),
         problem,
     };
-    let manifest: Manifest = serde_json::from_value(document(source)?)
+    let manifest: Manifest = serde_json::from_value(document(source)?.0)
         .map_err(|_| invalid(source, "invalid project.team_pack manifest"))?;
     if manifest.schema_version != 1 {
         return Err(invalid(
@@ -61,26 +61,24 @@ pub(crate) fn read(folder: &ConfigFolder, source: &str) -> Result<RealmPack, Con
             "unsupported project.team_pack schema_version",
         ));
     }
-    let profiles = kontor_profiles::pack::parse_pack(
-        &document(&manifest.profile_pack)?.to_string(),
-    )
-    .map_err(|_| {
-        invalid(
-            &manifest.profile_pack,
-            "invalid profile pack or team references",
-        )
-    })?;
-    let domain = kontor_profiles::pack::parse_operational_domain_pack(
-        &document(&manifest.operational_domain)?.to_string(),
-    )
-    .map_err(|_| {
-        invalid(
-            &manifest.operational_domain,
-            "invalid operational domain pack",
-        )
-    })?;
+    let profiles =
+        kontor_profiles::pack::parse_pack(&document(&manifest.profile_pack)?.0.to_string())
+            .map_err(|_| {
+                invalid(
+                    &manifest.profile_pack,
+                    "invalid profile pack or team references",
+                )
+            })?;
+    let (domain_value, domain_yaml) = document(&manifest.operational_domain)?;
+    let domain = kontor_profiles::pack::parse_operational_domain_pack(&domain_value.to_string())
+        .map_err(|_| {
+            invalid(
+                &manifest.operational_domain,
+                "invalid operational domain pack",
+            )
+        })?;
     let presets = kontor_profiles::pack::parse_consultation_presets(
-        &document(&manifest.committee_presets)?.to_string(),
+        &document(&manifest.committee_presets)?.0.to_string(),
     )
     .map_err(|_| invalid(&manifest.committee_presets, "invalid committee preset pack"))?;
     for role in profiles
@@ -106,6 +104,8 @@ pub(crate) fn read(folder: &ConfigFolder, source: &str) -> Result<RealmPack, Con
     Ok(RealmPack {
         profiles,
         domain,
+        domain_source: manifest.operational_domain,
+        domain_yaml,
         presets,
         sources,
     })

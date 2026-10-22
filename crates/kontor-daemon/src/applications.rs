@@ -18364,6 +18364,12 @@ fn fleet_bundle_manifest_dto(
             content_hash: manifest.role_catalog.content_hash.clone(),
         },
         core_team_revision_hash: manifest.core_team_revision_hash.clone(),
+        operational_domain: manifest.operational_domain.as_ref().map(|pin| {
+            kontor_api::applications::OperationalDomainPinDto {
+                source: pin.source.clone(),
+                source_hash: pin.source_hash.clone(),
+            }
+        }),
         publication_policy: manifest.publication_policy.as_ref().map(|policy| {
             kontor_api::applications::FleetPublicationPolicyDto {
                 project_id: policy.project_id,
@@ -43466,6 +43472,18 @@ impl Services {
             .and_then(|folder| folder.realm_pack.as_ref())
         {
             resolved.manifest.sources.extend(pack.sources.clone());
+            resolved.manifest.operational_domain =
+                Some(kontor_fleet_activation::OperationalDomainPin {
+                    source: pack.domain_source.clone(),
+                    source_hash: ContentHash::of(pack.domain_yaml.as_bytes()),
+                });
+            kontor_fleet_activation::domain::validate_domain(
+                &resolved.manifest,
+                &resolved.roster,
+                &pack.domain_yaml,
+            )
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+            resolved.operational_domain = Some(pack.domain_yaml.clone());
         }
         if resolved
             .manifest
@@ -48908,6 +48926,10 @@ mod roster_hash_tests;
 #[cfg(test)]
 #[path = "applications/role_purpose_tests.rs"]
 mod role_purpose_tests;
+
+#[cfg(test)]
+#[path = "applications/domain_bundle_tests.rs"]
+mod domain_bundle_tests;
 
 #[cfg(test)]
 mod tests {

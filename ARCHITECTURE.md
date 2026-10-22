@@ -405,6 +405,15 @@ waits or escalates. See [Configuration](docs/CONFIGURATION.md#activated-fleet-po
 and the [live fleet routing decision](_docs/architecture/2026-09-24-20-45-architecture-live-fleet-routing.md).
 No live realm activation is recorded here.
 
+Selected bundles also retain the exact operational-domain YAML as an immutable
+content-addressed artifact. Its manifest descriptor agrees with the source hash
+map; publication validates it against the same catalog and frozen purpose roster
+before exposing the manifest. Activation and reads verify it through the shared
+reader. Missing or changed artifacts refuse instead of being repaired from current
+YAML. Historical manifests remain readable without acquiring domain authority.
+Project/epic domain selection wrappers and their runtime consumers remain a
+separate implementation checkpoint; artifact publication alone grants no new work.
+
 Core Team authority is resolved once from the selected delivery/catalog
 snapshot, then frozen as typed seat purposes for architecture closure, process
 closure and control. Authority checks use those purposes and the exact pinned

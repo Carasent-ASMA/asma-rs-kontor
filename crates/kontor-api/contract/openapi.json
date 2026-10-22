@@ -21506,6 +21506,17 @@
             "type": "string",
             "description": "The bundle's canonical Core Team revision."
           },
+          "operational_domain": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationalDomainPinDto",
+                "description": "Exact selected domain artifact retained by bundle publication."
+              }
+            ]
+          },
           "policy_hash": {
             "type": "string",
             "description": "The bundle's policy."
@@ -24179,6 +24190,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "OperationalDomainPinDto": {
+        "type": "object",
+        "description": "Folder-relative authoring provenance and exact immutable domain byte identity.",
+        "required": [
+          "source",
+          "source_hash"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Selected-folder-relative YAML path; never a runtime lookup path."
+          },
+          "source_hash": {
+            "type": "string",
+            "description": "SHA-256 of the exact authored UTF-8 bytes."
+          }
+        }
       },
       "OperationalGapDto": {
         "type": "object",

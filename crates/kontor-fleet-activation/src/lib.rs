@@ -35,6 +35,9 @@ use kontor_fleet::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod domain;
+pub use domain::OperationalDomainPin;
+
 /// The generated record naming the activated fleet policy.
 pub const FLEET_ACTIVATION_FILE: &str = "fleet-activation.json";
 
@@ -330,6 +333,9 @@ pub struct BundleManifest {
     /// Optional consultation placement, resolved from the same selected project entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consultation_layout: Option<kontor_core::placement::ConsultationLayout>,
+    /// Exact selected domain source retained as an immutable artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain: Option<OperationalDomainPin>,
 }
 
 impl BundleManifest {
@@ -338,6 +344,9 @@ impl BundleManifest {
     /// # Errors
     /// M-09 when the manifest names another format or cannot be canonical.
     pub fn canonicalize(&self) -> Result<CanonicalDocument, FleetError> {
+        if let Some(domain) = &self.operational_domain {
+            domain.validate(self)?;
+        }
         if self.schema_version != MANIFEST_SCHEMA_VERSION
             || self
                 .publication_policy
@@ -452,6 +461,9 @@ pub fn verify_manifest(
     )?;
     let document = CanonicalDocument::from_stored(&text, hash).map_err(|_| invalid(M08))?;
     let manifest: BundleManifest = document.deserialize().map_err(|_| invalid(M09))?;
+    if let Some(domain) = &manifest.operational_domain {
+        domain.validate(&manifest)?;
+    }
     if manifest.schema_version != MANIFEST_SCHEMA_VERSION
         || manifest
             .publication_policy
@@ -571,6 +583,9 @@ fn verify_contents(
         });
     if !agrees {
         return Err(invalid(M10));
+    }
+    if manifest.operational_domain.is_some() {
+        domain::read_domain(state_root, manifest, &roster)?;
     }
     Ok((policy, roster))
 }

@@ -395,6 +395,9 @@ impl OperationalDomainPack {
             &self.delivery.epic_kind,
             &self.delivery.control_kind,
             &self.delivery.task_kind,
+            &self.delivery.quick_kind,
+            &self.delivery.advisor_kind,
+            &self.delivery.committee_kind,
         ] {
             if !topology.node_kinds.iter().any(|node| &node.kind == kind) {
                 return Err(DomainError::invalid(
@@ -426,6 +429,15 @@ impl OperationalDomainPack {
             }
         }
 
+        let mut bound_roles = BTreeSet::new();
+        for binding in &self.delivery.role_bindings {
+            if !bound_roles.insert(&binding.role) {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "declares duplicate delivery role bindings",
+                ));
+            }
+        }
         for code in [
             &self.delivery.control_role_code,
             &self.delivery.architecture_closer_code,
@@ -434,7 +446,10 @@ impl OperationalDomainPack {
         .into_iter()
         .chain(self.delivery.role_bindings.iter().map(|it| &it.role_code))
         {
-            if catalog.role(code).is_none() {
+            if catalog
+                .role(code)
+                .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
+            {
                 return Err(DomainError::invalid(
                     "OperationalDomainPack",
                     "delivery names a role code the catalog does not declare",
@@ -443,7 +458,10 @@ impl OperationalDomainPack {
         }
         let mut prompted = BTreeSet::new();
         for role_prompt in &self.role_prompts {
-            if catalog.role(&role_prompt.role_code).is_none() {
+            if catalog
+                .role(&role_prompt.role_code)
+                .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
+            {
                 return Err(DomainError::invalid(
                     "OperationalDomainPack",
                     "a role prompt names a role code the catalog does not declare",

@@ -295,6 +295,12 @@ impl ConfigFolder {
     /// # Errors
     /// Refuses absolute paths, traversal, escapes, JSON and missing files by name.
     pub fn reference(&self, value: &str) -> Result<PathBuf, ConfigError> {
+        let resolved = self.reference_path(value)?;
+        let _: serde_yaml_ng::Value = read_yaml(&resolved)?;
+        Ok(resolved)
+    }
+
+    fn reference_path(&self, value: &str) -> Result<PathBuf, ConfigError> {
         let relative = Path::new(value);
         if relative
             .components()
@@ -322,8 +328,31 @@ impl ConfigFolder {
                 "config reference must name a file inside the selected folder",
             ));
         }
-        let _: serde_yaml_ng::Value = read_yaml(&resolved)?;
         Ok(resolved)
+    }
+
+    /// Capture bounded, owner-checked pack bytes once for parsing and hashing.
+    pub(crate) fn pack_source(&self, source: &str) -> Result<String, ConfigError> {
+        let path = self.reference_path(source)?;
+        let guard = kontor_fleet_activation::Guard {
+            symlink: "pack source is not a regular file",
+            writable: "pack source is group or world writable",
+            owner: "pack source owner differs from selected folder",
+            oversized: "pack source exceeds the size limit",
+            swapped: "pack source changed during read",
+            utf8: "pack source is not UTF-8",
+            limit: kontor_fleet_activation::domain::MAX_DOMAIN_BYTES,
+            forbidden_mode: 0o022,
+        };
+        kontor_fleet_activation::read_guarded(&self.root, &path, &guard).map_err(|error| {
+            refusal(
+                path,
+                match error {
+                    kontor_fleet::FleetError::Invalid { rule } => rule,
+                    _ => "pack source cannot be read",
+                },
+            )
+        })
     }
 
     /// Read an optional YAML bootstrap file, without consulting another folder.

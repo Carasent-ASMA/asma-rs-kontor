@@ -3146,6 +3146,19 @@ pub struct FleetBundleManifestDto {
     /// Publication authority selected only when this bundle is activated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication_policy: Option<FleetPublicationPolicyDto>,
+    /// Exact selected domain artifact retained by bundle publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain: Option<OperationalDomainPinDto>,
+}
+
+/// Folder-relative authoring provenance and exact immutable domain byte identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct OperationalDomainPinDto {
+    /// Selected-folder-relative YAML path; never a runtime lookup path.
+    pub source: String,
+    /// SHA-256 of the exact authored UTF-8 bytes.
+    #[schema(value_type = String)]
+    pub source_hash: ContentHash,
 }
 
 /// The explicit project publication policy pinned by an orchestration bundle.

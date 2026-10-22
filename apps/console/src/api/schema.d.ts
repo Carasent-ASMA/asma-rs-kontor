@@ -7780,6 +7780,7 @@ export interface components {
         FleetBundleManifestDto: {
             /** @description The bundle's canonical Core Team revision. */
             core_team_revision_hash: string;
+            operational_domain?: null | components["schemas"]["OperationalDomainPinDto"];
             /** @description The bundle's policy. */
             policy_hash: string;
             /**
@@ -9050,6 +9051,13 @@ export interface components {
             } | null;
             /** @description The pull request. */
             pull_request: components["schemas"]["PullRequestRequest"];
+        };
+        /** @description Folder-relative authoring provenance and exact immutable domain byte identity. */
+        OperationalDomainPinDto: {
+            /** @description Selected-folder-relative YAML path; never a runtime lookup path. */
+            source: string;
+            /** @description SHA-256 of the exact authored UTF-8 bytes. */
+            source_hash: string;
         };
         /** @description One durable operational-gap record, as it was written. */
         OperationalGapDto: {
