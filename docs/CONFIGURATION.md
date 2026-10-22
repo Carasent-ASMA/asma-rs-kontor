@@ -578,10 +578,26 @@ an independently authorized operator explicitly previews/applies a tagged Core
 Team revision and explicitly upgrades the epic roster. Startup and reads never
 backfill markers. Selected-folder epic bootstrap requires a published Core Team.
 
-General operational-domain runtime selection remains a later WP-08 checkpoint;
-the artifact publication below does not yet bind project/epic selections or
-change runtime topology selection. Those consumers must use explicit wrapper
-pins before selected domain semantics can govern work.
+Project and epic Team Definition selection records have an optional
+`operational_domain_bundle_hash`, pointing to the existing canonical bundle
+manifest rather than changing definition/topology identity. Schema 139 adds the
+nullable columns to the existing tables without filling historical rows. A
+project selection compares the expected domain hash alongside the expected
+definition; an epic pin remains immutable when the project default changes.
+Absent fields deserialize as no pin and stay omitted on serialization.
+
+The existing definition-retitle migration intent does not bind domain context.
+It refuses `operational_domain_upgrade_unsupported` for a domain-pinned epic;
+an in-flight retitle also prevents first attaching a domain pin. Historical
+retitle intents and reads retain their existing behavior. Generic exports use
+generation 18 to preserve these fields; older generation/claimed database
+combinations cannot discard or invent them. Historical unpinned record hashes
+remain unchanged. This does not create or restore an installation backup.
+
+General operational-domain runtime selection remains a later WP-08 checkpoint:
+project selection and epic application must resolve and authorize these wrapper
+pins before selected domain semantics can govern work. The passive persistence
+fields and artifact publication alone do not change runtime topology selection.
 Legacy compiled fixtures remain available to explicit embedding/tests until
 that cleanup is complete.
 

@@ -399,6 +399,257 @@ fn definitions_round_trip_byte_exactly_and_list_deterministically() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn domain_context_is_cas_bound_even_when_definition_is_unchanged_and_epics_keep_their_pin() {
+    let f = fixture();
+    f.store
+        .publish_team_definition(f.project_id, &f.definition, f.created_at)
+        .unwrap();
+    let first = ContentHash::of(b"authorized domain bundle A");
+    let second = ContentHash::of(b"authorized domain bundle B");
+    let mut selection = ProjectTeamDefinitionDefault {
+        project_id: f.project_id,
+        expected: None,
+        definition: snapshot(&f.definition),
+        operational_domain_bundle_hash: Some(first.clone()),
+        selected_at: f.created_at,
+    };
+    f.store
+        .set_project_team_definition_default(&selection, None)
+        .unwrap();
+    let pin = MiniProjectTeamDefinitionSnapshot {
+        project_id: f.project_id,
+        mini_project_id: f.mini_project_id,
+        definition: selection.definition.clone(),
+        operational_domain_bundle_hash: Some(first.clone()),
+        pinned_at: f.created_at,
+    };
+    f.store.pin_mini_project_team_definition(&pin).unwrap();
+    selection.expected = Some(selection.definition.clone());
+    selection.operational_domain_bundle_hash = Some(second.clone());
+    let stale = f
+        .store
+        .set_project_team_definition_default(&selection, None)
+        .unwrap_err();
+    assert!(
+        stale
+            .to_string()
+            .contains("operational_domain_selection_moved")
+    );
+    assert_eq!(
+        f.store
+            .get_project_team_definition_default(f.project_id)
+            .unwrap()
+            .unwrap()
+            .operational_domain_bundle_hash,
+        Some(first.clone())
+    );
+    f.store
+        .set_project_team_definition_default(&selection, Some(&first))
+        .unwrap();
+    assert!(
+        f.store
+            .set_project_team_definition_default(&selection, Some(&first))
+            .is_err()
+    );
+    assert_eq!(
+        f.store
+            .get_mini_project_team_definition(f.project_id, f.mini_project_id)
+            .unwrap(),
+        Some(pin.clone())
+    );
+    let mut forged = pin.clone();
+    forged.operational_domain_bundle_hash = Some(second.clone());
+    assert!(f.store.pin_mini_project_team_definition(&forged).is_err());
+    assert!(
+        f.store
+            .get_mini_project_team_definition(ProjectId::generate(), f.mini_project_id)
+            .unwrap()
+            .is_none()
+    );
+    let exported = kontor_store::backup::export_realm(&f.store, f.created_at).unwrap();
+    assert_eq!(
+        exported.records.project_team_definition_defaults[0]
+            .operational_domain_bundle_hash
+            .as_deref(),
+        Some(second.as_str())
+    );
+    assert_eq!(
+        exported.records.mini_project_team_definition_snapshots[0]
+            .operational_domain_bundle_hash
+            .as_deref(),
+        Some(first.as_str())
+    );
+    let mut old_generation = exported.clone();
+    old_generation.schema_version = 17;
+    assert!(
+        old_generation
+            .verify()
+            .unwrap_err()
+            .to_string()
+            .contains("operational domain pin completeness")
+    );
+    old_generation.database_schema_version = 138;
+    assert!(
+        old_generation.verify().is_err(),
+        "old generation cannot carry new pin metadata"
+    );
+    let reopened = SqliteStore::open(&f.home.path().join("kontor.db")).unwrap();
+    assert_eq!(
+        reopened
+            .get_project_team_definition_default(f.project_id)
+            .unwrap()
+            .unwrap()
+            .operational_domain_bundle_hash,
+        Some(second)
+    );
+    assert_eq!(
+        reopened
+            .get_mini_project_team_definition(f.project_id, f.mini_project_id)
+            .unwrap(),
+        Some(pin)
+    );
+}
+
+#[test]
+fn legacy_domain_context_stays_absent_and_upgrade_preserves_original_record_bytes() {
+    let f = fixture();
+    f.store
+        .publish_team_definition(f.project_id, &f.definition, f.created_at)
+        .unwrap();
+    let selection = ProjectTeamDefinitionDefault {
+        project_id: f.project_id,
+        expected: None,
+        definition: snapshot(&f.definition),
+        operational_domain_bundle_hash: None,
+        selected_at: f.created_at,
+    };
+    f.store
+        .set_project_team_definition_default(&selection, None)
+        .unwrap();
+    let pin = MiniProjectTeamDefinitionSnapshot {
+        project_id: f.project_id,
+        mini_project_id: f.mini_project_id,
+        definition: selection.definition.clone(),
+        operational_domain_bundle_hash: None,
+        pinned_at: f.created_at,
+    };
+    f.store.pin_mini_project_team_definition(&pin).unwrap();
+    let original_selection = f
+        .store
+        .get_project_team_definition_default(f.project_id)
+        .unwrap()
+        .unwrap();
+    let selection_bytes = serde_json::to_string(&original_selection).unwrap();
+    let pin_bytes = serde_json::to_string(&pin).unwrap();
+    assert!(!selection_bytes.contains("operational_domain"));
+    assert!(!pin_bytes.contains("operational_domain"));
+    assert_eq!(
+        serde_json::from_str::<ProjectTeamDefinitionDefault>(&selection_bytes).unwrap(),
+        original_selection
+    );
+    assert_eq!(
+        serde_json::from_str::<MiniProjectTeamDefinitionSnapshot>(&pin_bytes).unwrap(),
+        pin
+    );
+    let export = kontor_store::backup::export_realm(&f.store, f.created_at).unwrap();
+    let records = export.canonical_records_bytes().unwrap();
+    assert!(!String::from_utf8_lossy(&records).contains("operational_domain_bundle_hash"));
+    // Reconstruct the previous column shape in this disposable store only.
+    let connection = rusqlite::Connection::open(f.home.path().join("kontor.db")).unwrap();
+    connection.execute_batch("ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash;
+        ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;
+        PRAGMA user_version = 138;").unwrap();
+    drop(connection);
+    drop(f.store);
+    let reopened = SqliteStore::open(&f.home.path().join("kontor.db")).unwrap();
+    assert_eq!(
+        serde_json::to_string(
+            &reopened
+                .get_project_team_definition_default(f.project_id)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        selection_bytes
+    );
+    assert_eq!(
+        serde_json::to_string(
+            &reopened
+                .get_mini_project_team_definition(f.project_id, f.mini_project_id)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        pin_bytes
+    );
+    assert_eq!(
+        kontor_store::backup::export_realm(&reopened, f.created_at)
+            .unwrap()
+            .canonical_records_bytes()
+            .unwrap(),
+        records
+    );
+    let mut historical = export;
+    historical.schema_version = 17;
+    historical.database_schema_version = 138;
+    let bytes = historical.canonical_bytes().unwrap();
+    let decoded = kontor_store::backup::KontorExportV1::parse(&bytes).unwrap();
+    assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+}
+
+#[test]
+fn definition_only_upgrade_cannot_reinterpret_an_epics_domain_pin() {
+    let f = fixture();
+    f.store
+        .publish_team_definition(f.project_id, &f.definition, f.created_at)
+        .unwrap();
+    let second = next_revision(&f.definition, 2);
+    f.store
+        .publish_team_definition(f.project_id, &second, f.created_at)
+        .unwrap();
+    let pin = MiniProjectTeamDefinitionSnapshot {
+        project_id: f.project_id,
+        mini_project_id: f.mini_project_id,
+        definition: snapshot(&f.definition),
+        operational_domain_bundle_hash: Some(ContentHash::of(b"frozen domain")),
+        pinned_at: f.created_at,
+    };
+    f.store.pin_mini_project_team_definition(&pin).unwrap();
+    let request = NewTeamDefinitionMigration {
+        id: TeamDefinitionMigrationId::generate(),
+        project_id: f.project_id,
+        mini_project_id: f.mini_project_id,
+        idempotency_key: IdempotencyKey::parse("domain-definition-only-upgrade").unwrap(),
+        from: Some(pin.definition.clone()),
+        to: snapshot(&second),
+        targets: vec![],
+        command_intent_hash: ContentHash::of(b"definition-only intent"),
+        recorded_at: f.created_at,
+    };
+    let error = f
+        .store
+        .record_team_definition_migration(&request)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("operational_domain_upgrade_unsupported")
+    );
+    assert!(
+        f.store
+            .get_team_definition_migration(f.project_id, request.id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.store
+            .get_mini_project_team_definition(f.project_id, f.mini_project_id)
+            .unwrap(),
+        Some(pin)
+    );
+}
+
+#[test]
 fn the_project_default_is_re_selectable_and_refuses_a_hash_that_was_never_published() {
     let f = fixture();
     f.store
@@ -410,20 +661,28 @@ fn the_project_default_is_re_selectable_and_refuses_a_hash_that_was_never_publis
         .expect("v2 publishes");
 
     f.store
-        .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-            project_id: f.project_id,
-            expected: None,
-            definition: snapshot(&f.definition),
-            selected_at: f.created_at,
-        })
+        .set_project_team_definition_default(
+            &ProjectTeamDefinitionDefault {
+                operational_domain_bundle_hash: None,
+                project_id: f.project_id,
+                expected: None,
+                definition: snapshot(&f.definition),
+                selected_at: f.created_at,
+            },
+            None,
+        )
         .expect("v1 is selected");
     f.store
-        .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-            project_id: f.project_id,
-            expected: Some(snapshot(&f.definition)),
-            definition: snapshot(&second),
-            selected_at: at("2026-09-01T13:00:00Z"),
-        })
+        .set_project_team_definition_default(
+            &ProjectTeamDefinitionDefault {
+                operational_domain_bundle_hash: None,
+                project_id: f.project_id,
+                expected: Some(snapshot(&f.definition)),
+                definition: snapshot(&second),
+                selected_at: at("2026-09-01T13:00:00Z"),
+            },
+            None,
+        )
         .expect("the default moves to v2");
     assert_eq!(
         f.store
@@ -439,14 +698,63 @@ fn the_project_default_is_re_selectable_and_refuses_a_hash_that_was_never_publis
     forged.canonical_hash = ContentHash::of(b"not these bytes");
     assert!(
         f.store
-            .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-                project_id: f.project_id,
-                expected: Some(snapshot(&second)),
-                definition: forged,
-                selected_at: f.created_at,
-            })
+            .set_project_team_definition_default(
+                &ProjectTeamDefinitionDefault {
+                    operational_domain_bundle_hash: None,
+                    project_id: f.project_id,
+                    expected: Some(snapshot(&second)),
+                    definition: forged,
+                    selected_at: f.created_at,
+                },
+                None
+            )
             .is_err(),
         "a selection must name the exact published bytes"
+    );
+}
+
+#[test]
+fn domain_context_cannot_be_attached_behind_an_inflight_legacy_migration() {
+    let f = fixture();
+    f.store
+        .publish_team_definition(f.project_id, &f.definition, f.created_at)
+        .unwrap();
+    let request = NewTeamDefinitionMigration {
+        id: TeamDefinitionMigrationId::generate(),
+        project_id: f.project_id,
+        mini_project_id: f.mini_project_id,
+        idempotency_key: IdempotencyKey::parse("legacy-definition-intent").unwrap(),
+        from: None,
+        to: snapshot(&f.definition),
+        targets: vec![],
+        command_intent_hash: ContentHash::of(b"legacy retitle"),
+        recorded_at: f.created_at,
+    };
+    let original = f.store.record_team_definition_migration(&request).unwrap();
+    let pin = MiniProjectTeamDefinitionSnapshot {
+        project_id: f.project_id,
+        mini_project_id: f.mini_project_id,
+        definition: snapshot(&f.definition),
+        operational_domain_bundle_hash: Some(ContentHash::of(b"new domain context")),
+        pinned_at: f.created_at,
+    };
+    let error = f.store.pin_mini_project_team_definition(&pin).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("operational_domain_migration_in_flight")
+    );
+    assert_eq!(
+        f.store
+            .get_team_definition_migration(f.project_id, request.id)
+            .unwrap(),
+        Some(original)
+    );
+    assert!(
+        f.store
+            .get_mini_project_team_definition(f.project_id, f.mini_project_id)
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -462,6 +770,7 @@ fn an_epic_keeps_its_frozen_definition_when_the_project_default_moves() {
         .expect("v2 publishes");
     f.store
         .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            operational_domain_bundle_hash: None,
             project_id: f.project_id,
             mini_project_id: f.mini_project_id,
             definition: snapshot(&f.definition),
@@ -472,12 +781,16 @@ fn an_epic_keeps_its_frozen_definition_when_the_project_default_moves() {
     // Selecting a newer project default is exactly the mutant this kills: an
     // epic reads its own frozen pin, never the project's current preference.
     f.store
-        .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-            project_id: f.project_id,
-            expected: None,
-            definition: snapshot(&second),
-            selected_at: at("2026-09-01T13:00:00Z"),
-        })
+        .set_project_team_definition_default(
+            &ProjectTeamDefinitionDefault {
+                operational_domain_bundle_hash: None,
+                project_id: f.project_id,
+                expected: None,
+                definition: snapshot(&second),
+                selected_at: at("2026-09-01T13:00:00Z"),
+            },
+            None,
+        )
         .expect("the project default moves to v2");
 
     assert_eq!(
@@ -499,6 +812,7 @@ fn a_second_pin_for_the_same_epic_is_refused() {
         .publish_team_definition(f.project_id, &f.definition, f.created_at)
         .expect("v1 publishes");
     let pin = MiniProjectTeamDefinitionSnapshot {
+        operational_domain_bundle_hash: None,
         project_id: f.project_id,
         mini_project_id: f.mini_project_id,
         definition: snapshot(&f.definition),
@@ -535,6 +849,7 @@ fn migration_fixture() -> Migration {
         .expect("v2 publishes");
     f.store
         .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            operational_domain_bundle_hash: None,
             project_id: f.project_id,
             mini_project_id: f.mini_project_id,
             definition: snapshot(&f.definition),
@@ -1889,6 +2204,7 @@ fn a_topic_cannot_be_supplied_across_a_project_boundary() {
     other
         .store
         .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            operational_domain_bundle_hash: None,
             project_id: other.project_id,
             mini_project_id: other.mini_project_id,
             definition: snapshot(&other.definition),
@@ -2167,21 +2483,29 @@ fn a_stale_selection_preview_cannot_overwrite_a_newer_choice() {
     // Someone previews "there is no default yet", then an explicit selection
     // lands before they apply.
     f.store
-        .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-            project_id: f.project_id,
-            expected: None,
-            definition: snapshot(&second),
-            selected_at: at("2026-09-01T13:00:00Z"),
-        })
+        .set_project_team_definition_default(
+            &ProjectTeamDefinitionDefault {
+                operational_domain_bundle_hash: None,
+                project_id: f.project_id,
+                expected: None,
+                definition: snapshot(&second),
+                selected_at: at("2026-09-01T13:00:00Z"),
+            },
+            None,
+        )
         .expect("the explicit selection lands first");
     assert!(
         f.store
-            .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-                project_id: f.project_id,
-                expected: None,
-                definition: snapshot(&f.definition),
-                selected_at: at("2026-09-01T13:01:00Z"),
-            })
+            .set_project_team_definition_default(
+                &ProjectTeamDefinitionDefault {
+                    operational_domain_bundle_hash: None,
+                    project_id: f.project_id,
+                    expected: None,
+                    definition: snapshot(&f.definition),
+                    selected_at: at("2026-09-01T13:01:00Z"),
+                },
+                None
+            )
             .is_err(),
         "a bootstrap that observed no default must not overwrite the choice \
          made after it looked"

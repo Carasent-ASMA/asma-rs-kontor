@@ -118,15 +118,20 @@ fn fixture() -> Fixture {
         .publish_team_definition(project_id, &second, created_at)
         .expect("v2 publishes");
     store
-        .set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-            project_id,
-            expected: None,
-            definition: snapshot(&second),
-            selected_at: created_at,
-        })
+        .set_project_team_definition_default(
+            &ProjectTeamDefinitionDefault {
+                operational_domain_bundle_hash: None,
+                project_id,
+                expected: None,
+                definition: snapshot(&second),
+                selected_at: created_at,
+            },
+            None,
+        )
         .expect("the project selects v2 for future epics");
     store
         .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            operational_domain_bundle_hash: None,
             project_id,
             mini_project_id,
             definition: snapshot(&definition),

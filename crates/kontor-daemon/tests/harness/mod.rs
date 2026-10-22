@@ -754,6 +754,7 @@ impl World {
                 store
                     .set_project_team_definition_default(
                         &kontor_core::repository::ProjectTeamDefinitionDefault {
+                            operational_domain_bundle_hash: None,
                             project_id: project,
                             expected: None,
                             definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
@@ -762,6 +763,7 @@ impl World {
                             .expect("a snapshot"),
                             selected_at: at("2026-08-10T09:00:00Z"),
                         },
+                        None,
                     )
                     .expect("the world selects its own naming authority");
 

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 138;
+pub const SCHEMA_VERSION: i64 = 139;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -474,6 +474,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0137_publication_policy_provenance.sql"),
     // Schema v138. Immutable task checkout intents and correlated Git readback.
     include_str!("../migrations/0138_task_checkout_placements.sql"),
+    // Domain context on existing project selections and epic snapshots; no backfill.
+    include_str!("../migrations/0139_operational_domain_pins.sql"),
 ];
 
 const _: () = assert!(
