@@ -14021,6 +14021,42 @@ impl SqliteStore {
         Ok(installed)
     }
 
+    /// Read every installed mapping, validating its immutable digest.
+    pub fn installed_ticket_field_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<TicketFieldSpec>> {
+        let mut statement = self.connection.prepare("SELECT definition, definition_hash FROM ticket_field_specs WHERE project_id = ?1 ORDER BY connector, external_project, issue_type, version").map_err(backend)?;
+        let rows = statement
+            .query_map([project_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        rows.map(|row| {
+            let (json, hash) = row.map_err(backend)?;
+            stored_document(&json, &hash)
+        })
+        .collect()
+    }
+
+    /// Read every installed workflow, validating its immutable digest.
+    pub fn installed_external_workflow_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ExternalWorkflowSpec>> {
+        let mut statement = self.connection.prepare("SELECT definition, definition_hash FROM external_workflow_specs WHERE project_id = ?1 ORDER BY connector, external_project, issue_type, version").map_err(backend)?;
+        let rows = statement
+            .query_map([project_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        rows.map(|row| {
+            let (json, hash) = row.map_err(backend)?;
+            stored_document(&json, &hash)
+        })
+        .collect()
+    }
+
     /// Install one workflow revision and record its Admin authority atomically.
     ///
     /// The command payload retains the original resulting project revision, so
@@ -14030,6 +14066,24 @@ impl SqliteStore {
         project_id: ProjectId,
         expected_revision: AggregateRevision,
         spec: &ExternalWorkflowSpec,
+        envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<(
+        ContentHash,
+        AggregateRevision,
+        crate::graph::Applied,
+        CommandReceipt,
+    )> {
+        self.install_tracker_specs_with_intent(project_id, expected_revision, spec, None, envelope)
+    }
+
+    /// Install the workflow and its selected field mapping in the same receipt transaction.
+    /// Existing revision identities are immutable; authoring never overwrites them.
+    pub fn install_tracker_specs_with_intent(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        spec: &ExternalWorkflowSpec,
+        fields: Option<&TicketFieldSpec>,
         envelope: &ReceiptEnvelope<NewCommandIntent>,
     ) -> RepositoryResult<(
         ContentHash,
@@ -14054,13 +14108,71 @@ impl SqliteStore {
             return Ok((hash, revision, crate::graph::Applied::Unchanged, existing));
         }
 
-        let (hash, revision, applied) = install_external_workflow_spec_in_transaction(
+        let (hash, mut revision, mut applied) = install_external_workflow_spec_in_transaction(
             &transaction,
             project_id,
             expected_revision,
             spec,
             intent.created_at,
         )?;
+        if let Some(fields) = fields {
+            if fields.connector != spec.connector
+                || fields.project != spec.project
+                || fields.issue_type != spec.issue_type
+            {
+                return Err(conflict(
+                    "tracker field specification",
+                    "the mapping does not match the workflow selector",
+                ));
+            }
+            let document = fields.canonicalize()?;
+            let intent_value: serde_json::Value = from_json(intent.intent.json())?;
+            if intent_value["field_definition_hash"].as_str() != Some(document.hash().as_str()) {
+                return Err(conflict(
+                    "tracker field specification",
+                    "the command does not bind the field mapping hash",
+                ));
+            }
+            let existing: Option<(String, String)> = transaction.query_row(
+                "SELECT definition, definition_hash FROM ticket_field_specs WHERE project_id = ?1 AND connector = ?2 AND external_project = ?3 AND issue_type = ?4 AND version = ?5",
+                params![project_id.to_string(), fields.connector.as_str(), fields.project.as_str(), fields.issue_type.as_str(), version_column(fields.version)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(backend)?;
+            if let Some((json, hash)) = existing {
+                if stored_document::<TicketFieldSpec>(&json, &hash)? != *fields {
+                    return Err(conflict(
+                        "tracker field specification",
+                        "the installed immutable revision has different canonical bytes",
+                    ));
+                }
+            } else {
+                transaction.execute(
+                    "INSERT INTO ticket_field_specs (project_id, connector, external_project, issue_type, version, definition, definition_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![project_id.to_string(), fields.connector.as_str(), fields.project.as_str(), fields.issue_type.as_str(), version_column(fields.version), document.json(), document.hash().as_str(), text(intent.created_at)],
+                ).map_err(backend)?;
+                if applied == crate::graph::Applied::Unchanged {
+                    let next = revision.next()?;
+                    let changed = transaction
+                        .execute(
+                            "UPDATE projects SET revision = ?1 WHERE id = ?2 AND revision = ?3",
+                            params![
+                                revision_column(next)?,
+                                project_id.to_string(),
+                                revision_column(revision)?
+                            ],
+                        )
+                        .map_err(backend)?;
+                    if changed != 1 {
+                        return Err(conflict(
+                            "project",
+                            "the project moved during tracker field installation",
+                        ));
+                    }
+                    revision = next;
+                    applied = crate::graph::Applied::Created;
+                }
+            }
+        }
         let mut recorded = intent.clone();
         recorded.payload = workflow_install_result_payload(&intent.intent, revision, applied)?;
         let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;

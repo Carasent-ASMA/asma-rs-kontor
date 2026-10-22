@@ -16,6 +16,9 @@
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
+#[path = "../../../kontor-jira/tests/support/catalog.rs"]
+pub(super) mod tracker_fixtures;
+
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -625,6 +628,7 @@ impl World {
             RuntimeRegistry::new()
         };
         let mut config = DaemonConfig::at(directory.path())
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog"))
             .with_port(0)
             .with_capacity(capacity)
             // The production deadline is twenty seconds, which is the right

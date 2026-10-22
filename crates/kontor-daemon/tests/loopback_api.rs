@@ -32,6 +32,8 @@
 #[path = "support/config.rs"]
 mod config_support;
 
+use harness::tracker_fixtures;
+
 // This binary uses part of the shared harness; the rest is not dead code.
 #[allow(dead_code)]
 mod harness;
@@ -2342,7 +2344,9 @@ fn observe(world: &World, run: AgentRunId, sequence: u64, revision: u64) {
 async fn a_non_loopback_bind_is_refused_and_leaves_nothing_behind() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
     let refused = Daemon::start(
-        DaemonConfig::at(directory.path()).with_bind("0.0.0.0:7717".parse().expect("an address")),
+        DaemonConfig::at(directory.path())
+            .with_bind("0.0.0.0:7717".parse().expect("an address"))
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new(),
     );
     assert!(
@@ -2365,7 +2369,9 @@ async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() 
     // template's (see the harness on why a realm row cannot be re-identified).
     let first = World::open_created_realm().await;
     let second = Daemon::start(
-        DaemonConfig::at(first.directory.path()).with_port(0),
+        DaemonConfig::at(first.directory.path())
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new(),
     );
     assert!(
@@ -3099,7 +3105,9 @@ async fn the_feed_resumes_from_sqlite_after_the_process_is_rebuilt() {
     drop(daemon);
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new(),
     )
     .expect("the same state root reopens");
@@ -4695,7 +4703,9 @@ async fn shutdown_shuts_scheduling_and_releases_the_state_root() {
 
     // The claim is gone, so the next daemon may take it.
     let next = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new(),
     )
     .expect("a released state root can be claimed again");
@@ -5339,7 +5349,9 @@ async fn a_legacy_backlog_is_imported_replayed_after_restart_and_switched_once()
     daemon.state().signals().stop();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -14095,7 +14107,9 @@ async fn a_phase_advancing_gate_replays_after_revision_change_and_restart() {
     drop(daemon);
     fake.rebuild_adapter_state();
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -14716,7 +14730,9 @@ async fn a_historical_gate_rejection_recovery_routes_once_and_replays_after_rest
     drop(daemon);
     fake.rebuild_adapter_state();
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -17613,7 +17629,9 @@ async fn a_restart_converges_a_workflow_left_fenced_by_the_earlier_predicate() {
     drop(daemon);
     fake.rebuild_adapter_state();
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -17784,7 +17802,9 @@ async fn a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up() {
     drop(daemon);
     fake.rebuild_adapter_state();
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -19332,7 +19352,7 @@ async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_
         "ASMA-8201",
     );
     world.daemon.state().with_store(|store| {
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -19511,7 +19531,7 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
         "ASMA-8204",
     );
     world.daemon.state().with_store(|store| {
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -19693,7 +19713,7 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
         "ASMA-8205",
     );
     world.daemon.state().with_store(|store| {
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -19955,7 +19975,7 @@ async fn resolving_an_unchanged_held_task_conflict_allows_reconciliation_to_cont
         store
             .confirm_jira_materialization_batch(project_id, &batch_id, now)
             .expect("the Jira task batch confirms");
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -20097,7 +20117,7 @@ async fn resident_failed_epic_apply_emits_no_immediate_replay_wake() {
         "ASMA-8204",
     );
     world.daemon.state().with_store(|store| {
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -20333,7 +20353,7 @@ async fn request_and_resident_jira_reconciliation_ignore_an_unrelated_connector_
             })
             .expect("the unrelated ticket link is created");
 
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -21419,7 +21439,9 @@ async fn epic_read_preserves_the_team_revision_apply_froze_across_restart() {
     daemon.state().signals().stop();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new(),
     )
     .expect("the same state root reopens");
@@ -23591,7 +23613,9 @@ async fn a_session_bound_before_a_restart_is_operable_after_it() {
     // each seat sits are gone, exactly as they are in production.
     fake.rebuild_adapter_state();
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -23725,7 +23749,9 @@ async fn a_legacy_binding_without_a_snapshot_recovers_in_place_after_restart() {
     fake.rebuild_adapter_state();
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -23833,7 +23859,9 @@ async fn a_binding_whose_session_is_gone_is_not_restored() {
     fake.rebuild_adapter_state();
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -23950,7 +23978,9 @@ async fn a_forged_but_self_consistent_claim_is_not_restored() {
     drop(daemon);
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -24011,7 +24041,9 @@ async fn a_claim_that_exceeds_what_the_runtime_can_prove_is_not_restored() {
     drop(daemon);
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -24076,7 +24108,9 @@ async fn an_unreadable_binding_claim_shuts_scheduling_rather_than_vanishing() {
     drop(daemon);
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -31037,7 +31071,9 @@ async fn check_delivery_epoch_barrier(derived: bool, fail_commit: bool) {
     fake.rebuild_adapter_state();
     fake.forget_timeline_epochs();
     let daemon = Daemon::start(
-        DaemonConfig::at(directory.path()).with_port(0),
+        DaemonConfig::at(directory.path())
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -31266,7 +31302,9 @@ async fn check_replay_after_restart_sends_once(derived: bool) {
     drop(daemon);
     fake.rebuild_adapter_state();
     let daemon = Daemon::start(
-        DaemonConfig::at(directory.path()).with_port(0),
+        DaemonConfig::at(directory.path())
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -33358,7 +33396,9 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
     fake.rebuild_adapter_state();
 
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -48187,7 +48227,9 @@ async fn a_reopened_realm_admits_under_the_stored_capacity_and_the_scheduler_pro
     daemon.state().signals().stop();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
@@ -63159,7 +63201,7 @@ async fn description_world(
     // operation on the epic: the selection is by entity kind and frozen
     // profile, and falling back to whatever is bundled is refused.
     world.daemon.state().with_store(|store| {
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -64163,7 +64205,7 @@ async fn seed_confirmed_epic_binding(world: &World, project_id: ProjectId, epic_
             .expect("the binding confirms");
     });
     world.daemon.state().with_store(|store| {
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -64515,7 +64557,7 @@ async fn seed_confirmed_task_binding(
             .confirm_jira_materialization_batch(project_id, &batch_id, now)
             .expect("the task-only batch confirms");
 
-        let spec = kontor_jira::jira::SpecCatalog::bundled()
+        let spec = tracker_fixtures::catalog()
             .expect("the Jira catalog loads")
             .workflow_specs()
             .iter()
@@ -71590,7 +71632,9 @@ async fn artifact_recovery_of_a_closed_legacy_producer_replays_after_daemon_rest
     drop(daemon);
     fake.rebuild_adapter_state();
     let restarted = Daemon::start(
-        DaemonConfig::at(directory.path()).with_port(0),
+        DaemonConfig::at(directory.path())
+            .with_port(0)
+            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog")),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,

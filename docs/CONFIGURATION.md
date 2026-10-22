@@ -596,7 +596,7 @@ recorded as such instead of being migrated.
 | `config/orchestration/pr-desk.yml` (ASMA) | human-edited desk decision file; `pr_desk.py` reads `desk`, `skip_repositories` and `durable_seats` | Keep it as the project's `project.pr_desk.settings` file. Add the six policy keys (`poll_start_budget`, `active_pr_policy`, `ready_silence_days`, `draft_silence_days`, `fix_round_limit`, `revise_round_limit`) beside `schema_version`; extra project-owned keys are allowed beside the required seven. | Its `desk.desk_folder` key retires in favour of `project.pr_desk.history_root` plus `host.paths.pr_desk`. ASMA's host sets `host.paths.pr_desk` to the current desk folder so the learning log stays in place. `PR_DESK_DIR` stays the explicit top-precedence host override. The live desk path stays in `host.yml`, never in this public tree. | WP-10 |
 | `crates/kontor-teams/fixtures/mvp-team-pack.json` | human-edited seed compiled by `kontor-teams/src/spec.rs` | YAML team pack in the selected folder; neutral default in the pack. | Back up, convert, compare resolved teams and slots, update the reader, remove the bundled editable copy. A native JSON projection is generated only if a runtime still reads it. | WP-08 |
 | `crates/kontor-profiles/fixtures/mvp-profile-pack.json`, `operational-domain.json`, `consultation-presets.json` | human-edited seeds compiled by `kontor-profiles/src/seeds.rs` | YAML profile/domain/preset packs in the selected folder. | Same conversion and equivalence check; ASMA's overlay moves to its folder, the neutral default stays neutral. | WP-08 |
-| `crates/kontor-jira/fixtures/*.json` | human-edited ASMA tracker fixtures compiled by `kontor-jira/src/jira.rs` | YAML tracker specs installed per Realm from the selected folder. | Move ASMA's compiled tracker fixtures, install the specs per Realm, keep active pins, remove the compiled ASMA catalog. | WP-08 |
+| `crates/kontor-jira/tests/fixtures/*.json` | Test-only historical tracker documents; no deployment compiles them. | ASMA's six authored specs move to its selected `tracker/*.yml`; neutral folders declare their own specs or none. | Selected catalogs offer candidates; explicit Admin installation atomically publishes field/workflow hashes per realm/project. Installed bytes keep their immutable pins. | WP-08 |
 | `crates/kontor-mcp/seats/*.json` | human-edited MCP seat configurations; external clients, `crates/kontor-mcp/tests/seats.rs` and `seats/README.md` | YAML seat profiles in `packs/`, rendered to the native seat files. | Generate the three native JSON files from YAML with source provenance; do not add a second authority model. | WP-08, WP-10 |
 | `plugin-config/kontor/floor.json` | operator-owned server file; Paseo plugin server start (KN-04 / ASMA-8551) | **Proposal:** YAML source `orchestration/plugin-floor.yml`; generated projection at `<PASEO_HOME>/plugin-config/kontor/floor.json`. | See the KN-04 proposal below. The decision's value table, read-once/reload-only behaviour and doubt-leaves-floor-on rule are unchanged. | WP-05, WP-08, KN-04 successor |
 | `opencode.json`, `.github/mcp.json` | harness-native files (ASMA) | Generated projections from YAML. | Q-03: no handwritten JSON exception; render deterministically and record the YAML source. | WP-11 |
@@ -992,17 +992,46 @@ Selection is exact and fail-closed:
   type, frozen work-profile id and frozen work-profile revision;
 - epic reconciliation selects the generic epic policy and reads only epic
   completion plus child-task evidence;
-- the selected bundled workflow must have an identical installed immutable
-  revision in the project before any Jira write;
+- the workflow and field mapping must be installed immutable revisions in
+  the same realm/project before any Jira write;
 - task identity comes from the canonical task-to-Jira ledger, while epic
   identity comes from its confirmed epic binding; display item codes and
   native names are never reverse-parsed into Jira keys.
+
+The selected `project.tracker.spec` is a YAML catalog manifest. It declares
+`schema_version: 1`, `kind: jira`, the matching public `project_key`, and an
+explicit list of typed YAML references:
+
+```yaml
+specs:
+  - {kind: ticket_fields, path: tracker/fields.yml}
+  - {kind: external_workflow, path: tracker/workflow.yml}
+```
+
+Each referenced document uses the existing `TicketFieldSpec` or
+`ExternalWorkflowSpec` schema. References resolve inside the selected folder;
+JSON, traversal, missing files, invalid documents, duplicate revision selectors
+and conflicting external-project identities refuse startup by source. The
+external project key is declared by those documents, never derived from the
+public tracker key or an internal ProjectId. `specs: []` (or an omitted tracker
+spec selection) offers no specs; no ASMA catalog is compiled or inherited.
+Catalog loading creates no Project and installs no policy.
+
+Installation binds the exact workflow hash and its one matching field mapping
+hash in the existing Admin command and project revision transaction. Read both
+catalogs back with `installed: true`. Existing identities cannot be overwritten;
+a conflicting edit requires a new revision. Reconciliation reads the installed,
+hash-verified bytes, including after restart or removal from the authoring
+catalog. An uninstalled YAML edit never replaces governing policy. More than
+one installed workflow for the same entity/frozen profile, or more than one
+matching field revision, refuses as ambiguous; there is no latest-version guess.
+Native connector bindings remain separate in `tracker/connectors.yml`.
 
 Install each required workflow revision through
 `connectors/{connector}/workflow-specs:install` (or the matching Kontor MCP
 tool), using a fresh project revision and a stable idempotency key. A project
 with high-stakes tasks and a Jira epic normally needs both the high-stakes task
-revision and the generic epic revision installed. Read the workflow catalog
+revision and the generic epic revision installed. Read the catalogs
 back and require `installed: true` for each exact selected revision.
 
 Every external transition is derived from a fresh issue observation and the

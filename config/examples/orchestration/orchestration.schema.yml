@@ -224,3 +224,22 @@ route_snapshot:
     - canonical_effort
     - canonical_vendor
     - resolved_at
+
+# Tracker documents are authoring candidates; explicit Admin installation
+# publishes their immutable revisions into the selected realm/project.
+tracker_specs:
+  manifest: project.tracker.spec
+  required: [schema_version, kind, project_key, specs]
+  schema_version: 1
+  kind: jira
+  specs:
+    entry_required: [kind, path]
+    kind_values: [ticket_fields, external_workflow]
+    path: folder-relative existing YAML file, contained after symlink resolution
+  constraints:
+    - project_key equals project.key
+    - exactly one declared external project across the selected specs
+    - duplicate type/connector/external-project/issue-type/version selectors refuse
+    - loading installs nothing; omission or an empty list has no bundled fallback
+    - installation binds workflow and matching field hashes in one Admin receipt
+    - installed immutable bytes govern until explicitly installed policy changes

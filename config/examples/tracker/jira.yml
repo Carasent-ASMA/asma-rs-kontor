@@ -8,5 +8,7 @@ credential_alias: tracker-api-token
 
 # Tracker field, option, issue-type and status maps are installed per Realm
 # like Team Definitions. Point at the project's own YAML specs here; the
-# default example ships none.
+# default example ships none. Entries are {kind: ticket_fields |
+# external_workflow, path: tracker/<name>.yml}; paths are folder-relative.
+# Installing a workflow also installs its one exact matching field mapping.
 specs: []

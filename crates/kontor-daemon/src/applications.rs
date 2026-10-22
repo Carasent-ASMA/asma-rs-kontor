@@ -1086,8 +1086,8 @@ pub struct Services {
     /// build carries, so admission reads *which* kinds and role codes delivery
     /// uses rather than knowing them.
     domain: OperationalDomainPack,
-    /// The connector specifications this build ships, parsed on first use.
-    connectors: OnceLock<SpecCatalog>,
+    /// The selected realm catalog; immutable for this process.
+    connectors: SpecCatalog,
     /// Native Jira connectors from strict operator configuration.
     jira: JiraConnectors,
     /// How many simultaneous runs this Realm admits, from its configuration.
@@ -1261,6 +1261,7 @@ impl Services {
         succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
         publication_consumers: Vec<ProjectId>,
         selected_config: Option<crate::config_folder::ConfigFolder>,
+        connectors: SpecCatalog,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -1271,7 +1272,7 @@ impl Services {
             state: Mutex::new(None),
             pack: kontor_profiles::seeds::bundled_pack()?,
             domain: kontor_profiles::bundled_operational_domain()?,
-            connectors: OnceLock::new(),
+            connectors,
             jira,
             capacity,
             runtime_roots,
@@ -3911,23 +3912,9 @@ impl Services {
             })
     }
 
-    /// The connector specifications this build ships.
-    ///
-    /// ponytail: parsed once per process and held, because the bundled data is
-    /// compiled into the binary and cannot change while it runs. A deployment
-    /// that later loads specifications of its own would replace this with the
-    /// same loader reading its directory — not with a second catalogue.
-    fn connector_catalog(&self) -> Result<&SpecCatalog, ApiError> {
-        if let Some(catalog) = self.connectors.get() {
-            return Ok(catalog);
-        }
-        let catalog = SpecCatalog::bundled().map_err(|_| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "this build's bundled connector specifications did not load",
-            )
-        })?;
-        Ok(self.connectors.get_or_init(|| catalog))
+    /// The validated catalog selected for this realm, never a global fallback.
+    fn connector_catalog(&self) -> &SpecCatalog {
+        &self.connectors
     }
 
     /// Resolve the ticket-link shorthand to the catalogue's canonical key.
@@ -4161,10 +4148,48 @@ impl Services {
         })
     }
 
-    /// Select one exact bundled field mapping and installed workflow policy.
+    /// Activated tracker policy is the realm's immutable installed revisions.
+    /// A restart or an uninstalled YAML edit cannot replace these bytes.
+    fn installed_connector_catalog(&self, project_id: ProjectId) -> Result<SpecCatalog, ApiError> {
+        let state = self.state()?;
+        let (fields, workflows) = state
+            .with_store(|store| {
+                Ok::<_, kontor_core::repository::RepositoryError>((
+                    store.installed_ticket_field_specs(project_id)?,
+                    store.installed_external_workflow_specs(project_id)?,
+                ))
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let mut catalog = SpecCatalog::empty();
+        for spec in fields {
+            let document = spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?;
+            catalog.load_field_spec(document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "installed tracker field specification is invalid",
+                )
+            })?;
+        }
+        for spec in workflows {
+            let document = spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?;
+            catalog.load_workflow_spec(document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "installed tracker workflow specification is invalid",
+                )
+            })?;
+        }
+        Ok(catalog)
+    }
+
+    /// Select one exact installed field mapping and workflow policy.
     ///
     /// Entity kind and frozen work-profile revision are both selection keys.
-    /// Falling back to the first bundled specification is forbidden: that was
+    /// Falling back to the first specification is forbidden: that was
     /// the divergence that made high-stakes tickets silently use `code@1`.
     fn jira_specs_for(
         &self,
@@ -4172,14 +4197,19 @@ impl Services {
         issue_type: &str,
         work_profile: Option<PinnedProfile>,
     ) -> Result<(CompiledFieldSpec, CompiledWorkflowSpec), ApiError> {
-        let catalog = self.connector_catalog()?;
+        let installed;
+        let catalog = if self.selected_config.is_some() {
+            installed = self.installed_connector_catalog(project_id)?;
+            &installed
+        } else {
+            self.connector_catalog()
+        };
         let workflows: Vec<&CompiledWorkflowSpec> = catalog
             .workflow_specs()
             .iter()
             .filter(|compiled| {
                 let spec = compiled.spec();
                 spec.connector.as_str() == "connector.jira"
-                    && spec.project.as_str() == "asma"
                     && spec.issue_type.as_str() == issue_type
                     && spec.work_profile.as_ref()
                         == work_profile.as_ref().map(|profile| &profile.key)
@@ -4190,7 +4220,7 @@ impl Services {
         if workflows.len() != 1 {
             return Err(self.deny(
                 ApiErrorCode::UnsupportedCapability,
-                "this build does not contain exactly one Jira workflow specification for the entity kind and frozen profile",
+                "the selected catalog does not contain exactly one Jira workflow specification for the entity kind and frozen profile",
             ));
         }
         let external = workflows[0].clone();
@@ -4207,7 +4237,7 @@ impl Services {
         if fields.len() != 1 {
             return Err(self.deny(
                 ApiErrorCode::UnsupportedCapability,
-                "this build does not contain exactly one Jira field specification for the selected entity kind",
+                "the selected catalog does not contain exactly one Jira field specification for the selected entity kind",
             ));
         }
         let field = fields[0].clone();
@@ -4231,7 +4261,7 @@ impl Services {
         if &installed != external.spec() {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the installed Jira workflow revision differs from the bundled immutable specification",
+                "the installed Jira workflow revision differs from the selected immutable specification",
             ));
         }
         Ok((field.clone(), external.clone()))
@@ -40029,9 +40059,10 @@ impl ApplicationOperations for Services {
         connector: &str,
     ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
         let state = self.state()?;
+        self.project_row(project_id)?;
         let connector =
             ConnectorKey::parse(connector).map_err(|error| self.refuse_domain(&error))?;
-        let catalog = self.connector_catalog()?;
+        let catalog = self.connector_catalog();
         let mut specs = Vec::new();
         for compiled in catalog.field_specs() {
             let spec = compiled.spec();
@@ -40048,7 +40079,7 @@ impl ApplicationOperations for Services {
             let installed = state
                 .with_store(|store| store.get_ticket_field_spec(&selector))
                 .map_err(|error| self.refuse(&error))?
-                .is_some();
+                .is_some_and(|installed| installed == *spec);
             specs.push(ConnectorSpecDto {
                 connector: spec.connector.as_str().to_owned(),
                 external_project: spec.project.as_str().to_owned(),
@@ -40072,8 +40103,9 @@ impl ApplicationOperations for Services {
         connector: &str,
     ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
         let state = self.state()?;
+        self.project_row(project_id)?;
         let connector = self.canonical_connector(connector)?;
-        let catalog = self.connector_catalog()?;
+        let catalog = self.connector_catalog();
         let mut specs = Vec::new();
         for compiled in catalog.workflow_specs() {
             let spec = compiled.spec();
@@ -40093,7 +40125,7 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?
-                .is_some();
+                .is_some_and(|installed| installed == *spec);
             specs.push(ConnectorSpecDto {
                 connector: spec.connector.as_str().to_owned(),
                 external_project: spec.project.as_str().to_owned(),
@@ -40126,7 +40158,7 @@ impl ApplicationOperations for Services {
         let issue_type = kontor_core::id::ExternalIssueTypeKey::parse(&request.issue_type)
             .map_err(|error| self.refuse_domain(&error))?;
         let matches: Vec<&CompiledWorkflowSpec> = self
-            .connector_catalog()?
+            .connector_catalog()
             .workflow_specs()
             .iter()
             .filter(|compiled| {
@@ -40142,17 +40174,36 @@ impl ApplicationOperations for Services {
             [] => {
                 return Err(self.deny(
                     ApiErrorCode::NotFound,
-                    "this build ships no external-workflow specification for that exact selector",
+                    "the selected catalog has no external-workflow specification for that exact selector",
                 ));
             }
             _ => {
                 return Err(self.deny(
                     ApiErrorCode::RevisionConflict,
-                    "the shipped external-workflow selector is ambiguous",
+                    "the selected external-workflow selector is ambiguous",
                 ));
             }
         };
-        let intent = self.intent(&serde_json::json!({
+        let fields = if self.selected_config.is_some() {
+            let matches: Vec<_> = self
+                .connectors
+                .field_specs()
+                .iter()
+                .filter(|field| {
+                    let field = field.spec();
+                    field.connector == connector
+                        && field.project == external_project
+                        && field.issue_type == issue_type
+                })
+                .collect();
+            match matches.as_slice() {
+                [field] => Some(*field),
+                _ => return Err(self.deny(ApiErrorCode::InvalidRequest, "install requires exactly one selected tracker field specification for the workflow")),
+            }
+        } else {
+            None
+        };
+        let mut intent_value = serde_json::json!({
             "schema_version": 1,
             "operation": "install_workflow_spec",
             "project_id": project_id.to_string(),
@@ -40162,7 +40213,11 @@ impl ApplicationOperations for Services {
             "version": request.version.get(),
             "definition_hash": compiled.hash().as_str(),
             "expected_revision": request.expected_revision.get(),
-        }))?;
+        });
+        if let Some(fields) = fields {
+            intent_value["field_definition_hash"] = serde_json::json!(fields.hash().as_str());
+        }
+        let intent = self.intent(&intent_value)?;
         let target = AggregateRef::Project { project_id };
         let replayed = self.replayed(key, &intent, Some(&target))?;
         let (receipt_id, applied, revision) = if let Some(receipt) = replayed {
@@ -40222,10 +40277,11 @@ impl ApplicationOperations for Services {
             );
             let (_, revision, applied, receipt) = state
                 .with_store(|store| {
-                    store.install_external_workflow_spec_with_intent(
+                    store.install_tracker_specs_with_intent(
                         project_id,
                         request.expected_revision,
                         compiled.spec(),
+                        fields.map(CompiledFieldSpec::spec),
                         &command,
                     )
                 })
@@ -48578,6 +48634,14 @@ impl Services {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/config.rs"]
+mod config_fixture;
+
+#[cfg(test)]
+#[path = "applications/realm_spec_tests.rs"]
+mod realm_spec_tests;
+
+#[cfg(test)]
 mod tests {
 
     #[tokio::test(start_paused = true)]
@@ -48600,6 +48664,7 @@ mod tests {
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
             Vec::new(),
             None,
+            kontor_jira::jira::SpecCatalog::empty(),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -48664,6 +48729,7 @@ mod tests {
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
             Vec::new(),
             None,
+            kontor_jira::jira::SpecCatalog::empty(),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -50706,6 +50772,7 @@ mod coherence {
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
             Vec::new(),
             None,
+            kontor_jira::jira::SpecCatalog::empty(),
         )
         .expect("services compose");
         let state = kontor_api::state::ApiState::new(kontor_api::state::ApiParts {

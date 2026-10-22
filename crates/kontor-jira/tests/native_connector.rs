@@ -1,5 +1,8 @@
 //! Native Jira transport and configuration contract.
 
+#[path = "support/catalog.rs"]
+mod tracker_fixtures;
+
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -209,7 +212,7 @@ fn collect_gate_keys(predicate: &InternalPredicate, keys: &mut BTreeSet<String>)
 
 #[test]
 fn bundled_high_stakes_workflow_is_pinned_to_its_actual_gates() {
-    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let catalog = tracker_fixtures::catalog().expect("the bundled catalogue is valid");
     let workflow = catalog
         .select_workflow_spec(&WorkflowSpecKey {
             connector: ConnectorKey::parse("connector.jira").expect("connector"),
@@ -239,7 +242,7 @@ fn bundled_high_stakes_workflow_is_pinned_to_its_actual_gates() {
 
 #[test]
 fn bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion() {
-    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let catalog = tracker_fixtures::catalog().expect("the bundled catalogue is valid");
     let key = WorkflowSpecKey {
         connector: ConnectorKey::parse("connector.jira").expect("connector"),
         project: ExternalProjectKey::parse("asma").expect("project"),
@@ -343,7 +346,7 @@ fn bundled_docs_workflow_drives_its_frozen_review_gates_and_requires_completion(
 
 #[test]
 fn bundled_task_workflows_never_cross_profile_pins() {
-    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let catalog = tracker_fixtures::catalog().expect("the bundled catalogue is valid");
     let task = ExternalIssueTypeKey::parse("task").expect("issue type");
     let connector = ConnectorKey::parse("connector.jira").expect("connector");
     let project = ExternalProjectKey::parse("asma").expect("project");
@@ -392,7 +395,7 @@ fn bundled_task_workflows_never_cross_profile_pins() {
 
 #[test]
 fn bundled_epic_specs_are_generic_and_entity_specific() {
-    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let catalog = tracker_fixtures::catalog().expect("the bundled catalogue is valid");
     let connector = ConnectorKey::parse("connector.jira").expect("connector");
     let project = ExternalProjectKey::parse("asma").expect("project");
     let epic = ExternalIssueTypeKey::parse("epic").expect("issue type");
@@ -501,7 +504,7 @@ fn bundled_epic_specs_are_generic_and_entity_specific() {
 
 #[test]
 fn an_installed_v1_epic_workflow_remains_selectable_and_hash_stable() {
-    let source = include_str!("../fixtures/external-workflow-asma-epic.json");
+    let source = include_str!("fixtures/external-workflow-asma-epic.json");
     let source_value: serde_json::Value = serde_json::from_str(source).expect("v1 fixture JSON");
     let expected = kontor_core::id::CanonicalDocument::from_value(&source_value)
         .expect("v1 canonical document");
@@ -530,7 +533,7 @@ fn an_installed_v1_epic_workflow_remains_selectable_and_hash_stable() {
 
 #[tokio::test]
 async fn entity_neutral_delegation_binds_apply_to_observation_route_and_readback() {
-    let catalog = SpecCatalog::bundled().expect("the bundled catalogue is valid");
+    let catalog = tracker_fixtures::catalog().expect("the bundled catalogue is valid");
     let connector = ConnectorKey::parse("connector.jira").expect("connector");
     let project = ExternalProjectKey::parse("asma").expect("project");
     let epic = ExternalIssueTypeKey::parse("epic").expect("issue type");
