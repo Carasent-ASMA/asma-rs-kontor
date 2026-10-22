@@ -243,3 +243,18 @@ tracker_specs:
     - loading installs nothing; omission or an empty list has no bundled fallback
     - installation binds workflow and matching field hashes in one Admin receipt
     - installed immutable bytes govern until explicitly installed policy changes
+
+# The selected pack is authoring; existing publication/apply paths remain the writer.
+team_pack:
+  manifest: project.team_pack
+  schema_version: 1
+  required: [schema_version, profile_pack, operational_domain, committee_presets]
+  extra_keys: refused
+  references: contained existing YAML files relative to the selected folder root
+  validation: existing typed profile/team/domain/preset schemas plus logical-role delivery correspondence
+  read: exact source hashes cached at startup; no hot-read or installation
+  absent: empty/direct-only daemon startup may omit the pack; no compiled profile/preset fallback
+  profiles: selected candidates and explicitly registered packs; stored revisions and run pins govern execution
+  selected_team_authority: registered input; never compiled-seed revision reconciliation
+  committees: explicit existing preview/apply; reading a catalog or restarting publishes nothing
+  domain: candidate validation here; runtime authority requires resolved frozen Core Team purposes

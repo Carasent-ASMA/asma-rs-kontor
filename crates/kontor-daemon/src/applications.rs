@@ -1072,7 +1072,8 @@ const SEAT_ATTACH_SECONDS: i64 = 600;
 pub struct Services {
     realm_id: kontor_core::id::RealmId,
     state: Mutex<Option<ApiState>>,
-    pack: ProfilePackSpec,
+    pack: Option<ProfilePackSpec>,
+    presets: Option<kontor_profiles::pack::ConsultationPresetPack>,
     /// The Operational topology vocabulary and delivery binding this build
     /// ships.
     ///
@@ -1183,7 +1184,10 @@ impl std::fmt::Debug for Services {
                     .unwrap_or_else(PoisonError::into_inner)
                     .is_some(),
             )
-            .field("pack", &self.pack.pack_id.as_str())
+            .field(
+                "pack",
+                &self.pack.as_ref().map(|pack| pack.pack_id.as_str()),
+            )
             .field("capacity", &self.capacity)
             .finish_non_exhaustive()
     }
@@ -1220,6 +1224,16 @@ impl Services {
         selected_config: Option<crate::config_folder::ConfigFolder>,
         connectors: SpecCatalog,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
+        let (pack, presets) = match selected_config.as_ref() {
+            Some(folder) => (
+                folder.realm_pack.as_ref().map(|pack| pack.profiles.clone()),
+                folder.realm_pack.as_ref().map(|pack| pack.presets.clone()),
+            ),
+            None => (
+                Some(kontor_profiles::seeds::bundled_pack()?),
+                Some(kontor_profiles::seeds::bundled_consultation_presets()?),
+            ),
+        };
         Ok(Arc::new(Self {
             realm_id,
             github,
@@ -1227,7 +1241,8 @@ impl Services {
             selected_config,
             checkout_guard: tokio::sync::Mutex::new(()),
             state: Mutex::new(None),
-            pack: kontor_profiles::seeds::bundled_pack()?,
+            pack,
+            presets,
             domain: kontor_profiles::bundled_operational_domain()?,
             connectors,
             jira,
@@ -2408,7 +2423,7 @@ impl Services {
         let registered = state
             .with_store(SqliteStore::list_profile_packs)
             .map_err(|error| self.refuse(&error))?;
-        let mut packs = vec![self.pack.clone()];
+        let mut packs: Vec<_> = self.pack.iter().cloned().collect();
         for pack in &registered {
             // A stored pack is re-parsed and re-validated rather than trusted.
             // It was validated when it was registered, but the rules that
@@ -2450,7 +2465,12 @@ impl Services {
         at: Timestamp,
     ) -> Result<(ResolvedProfileBundle, TeamTemplateSource), ApiError> {
         let (pack, category) = self.owning_pack(category)?;
-        let source = if self.pack.category(&category).is_some() {
+        let source = if self.selected_config.is_none()
+            && self
+                .pack
+                .as_ref()
+                .is_some_and(|pack| pack.category(&category).is_some())
+        {
             TeamTemplateSource::Bundled
         } else {
             TeamTemplateSource::Registered
@@ -10843,13 +10863,15 @@ impl Services {
         family: ConsultationFamily,
     ) -> Result<Vec<StoredConsultationProfileRevision>, ApiError> {
         let state = self.state()?;
-        if family == ConsultationFamily::Committee {
+        if family == ConsultationFamily::Committee && self.selected_config.is_none() {
             let published = state
                 .with_store(|store| store.list_consultation_profile_revisions(project_id, family))
                 .map_err(|error| self.refuse(&error))?;
-            let presets = kontor_profiles::seeds::bundled_consultation_presets()
-                .map_err(|error| self.refuse_domain(&error))?;
-            for template in presets.committee_templates {
+            for template in self
+                .presets
+                .iter()
+                .flat_map(|pack| &pack.committee_templates)
+            {
                 let id = template.template_id.to_string();
                 if published.iter().any(|revision| {
                     revision.profile_id == id && revision.version == template.version
@@ -22730,8 +22752,13 @@ impl ApplicationOperations for Services {
                         .map(|slot| slot.id.as_role_key().as_str().to_owned())
                         .collect(),
                     definition_hash: revision.definition.hash().as_str().to_owned(),
-                    source: if pack_index == 0 {
-                        "bundled".to_owned()
+                    source: if pack_index == 0 && self.pack.is_some() {
+                        if self.selected_config.is_some() {
+                            "selected"
+                        } else {
+                            "bundled"
+                        }
+                        .to_owned()
                     } else {
                         "registered".to_owned()
                     },
@@ -38839,11 +38866,11 @@ impl ApplicationOperations for Services {
 
         // The seeds win every category they advertise. Registration widens the
         // catalogue; it never redefines what an already-frozen epic pinned.
-        if let Some(shadowed) = parsed
-            .manifest
-            .iter()
-            .find(|entry| self.pack.category(&entry.category).is_some())
-        {
+        if let Some(shadowed) = parsed.manifest.iter().find(|entry| {
+            self.pack
+                .as_ref()
+                .is_some_and(|pack| pack.category(&entry.category).is_some())
+        }) {
             let _ = shadowed;
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
@@ -38925,7 +38952,16 @@ impl ApplicationOperations for Services {
         let registered = state
             .with_store(SqliteStore::list_profile_packs)
             .map_err(|error| self.refuse(&error))?;
-        let mut packs = vec![pack_dto(&self.pack, "bundled", None, AppliedDto::Unchanged)];
+        let source = if self.selected_config.is_some() {
+            "selected"
+        } else {
+            "bundled"
+        };
+        let mut packs: Vec<_> = self
+            .pack
+            .iter()
+            .map(|pack| pack_dto(pack, source, None, AppliedDto::Unchanged))
+            .collect();
         for pack in &registered {
             let parsed = parse_pack(&pack.document).map_err(|error| self.refuse_domain(&error))?;
             packs.push(pack_dto(
@@ -42950,8 +42986,24 @@ impl Services {
             .collect();
         let team_snapshot = TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION)
             .with_context_policy(
-                self.pack
-                    .context_policy_for(&workflow.snapshot.definition, &seeded_roles),
+                self.packs()?
+                    .iter()
+                    .find(|pack| {
+                        pack.profile(
+                            &workflow.snapshot.definition.id,
+                            workflow.snapshot.definition.version,
+                        )
+                        .is_some()
+                    })
+                    .map_or_else(
+                        || kontor_core::spec::TeamContextPolicySeed {
+                            work_profile: workflow.snapshot.definition.context_window,
+                            role_seeds: Vec::new(),
+                        },
+                        |pack| {
+                            pack.context_policy_for(&workflow.snapshot.definition, &seeded_roles)
+                        },
+                    ),
             )
             .map_err(|error| self.refuse_domain(&error))?;
 
@@ -47947,6 +47999,10 @@ mod config_fixture;
 #[cfg(test)]
 #[path = "applications/realm_spec_tests.rs"]
 mod realm_spec_tests;
+
+#[cfg(test)]
+#[path = "applications/realm_pack_tests.rs"]
+mod realm_pack_tests;
 
 #[cfg(test)]
 mod tests {
