@@ -3599,6 +3599,14 @@ pub struct ProjectTeamDefinitionSelectionPreviewDto {
     pub current_definition: Option<PinnedTeamDefinitionDto>,
     /// Exact published target.
     pub target_definition: PinnedTeamDefinitionDto,
+    /// Current domain context, absent on historical selections.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_operational_domain_bundle_hash: Option<ContentHash>,
+    /// Verified activated bundle bound to this proposed selection.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_operational_domain_bundle_hash: Option<ContentHash>,
     /// Apply-bound comparison hash.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
@@ -3612,6 +3620,10 @@ pub struct ProjectTeamDefinitionSelectionPreviewDto {
 pub struct AppliedProjectTeamDefinitionSelectionDto {
     /// Exact selected default.
     pub selected_definition: PinnedTeamDefinitionDto,
+    /// Exact selected domain context, absent only on historical readback.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// Durable apply/replay receipt.
     pub receipt: MutationReceiptDto,
 }

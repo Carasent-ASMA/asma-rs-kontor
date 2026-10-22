@@ -1383,3 +1383,92 @@ impl Answer {
         frames
     }
 }
+
+/// Explicit fixture authority for project selection. Removing this temporary
+/// activation afterwards also exercises that a durable selection outlives it.
+/// No business aggregate is seeded by this authoring/publication helper.
+pub(crate) struct DomainSelectionFixture {
+    activation: std::path::PathBuf,
+    previous: Option<Vec<u8>>,
+}
+impl DomainSelectionFixture {
+    pub(crate) fn activate(world: &World, project: ProjectId) -> Self {
+        let activation = world
+            .directory
+            .path()
+            .join(kontor_fleet_activation::FLEET_ACTIVATION_FILE);
+        let previous = std::fs::read(&activation).ok();
+        let bundle = Self::candidate(world, project);
+        let source = kontor_daemon::fleet::FleetSource::at(world.directory.path());
+        let published = source.publish_bundle(&bundle).expect("fixture publication");
+        let standing = kontor_fleet_activation::read_activation(world.directory.path()).ok();
+        source
+            .activate_bundle(
+                &published.bundle_hash,
+                &kontor_daemon::fleet::ActivationFence {
+                    policy_hash: standing.as_ref().map(|r| r.policy_hash.clone()),
+                    source_bundle_hash: standing.and_then(|r| r.source_bundle_hash),
+                },
+            )
+            .expect("fixture explicit activation");
+        Self {
+            activation,
+            previous,
+        }
+    }
+    pub(crate) fn candidate(
+        world: &World,
+        project: ProjectId,
+    ) -> kontor_daemon::orchestration::ResolvedBundle {
+        use kontor_core::id::ContentHash;
+        let mut domain = kontor_profiles::bundled_operational_domain().expect("fixture domain");
+        world.daemon.state().with_store(|store| {
+            domain.team_definitions = store
+                .list_team_definitions(project)
+                .expect("published definitions");
+            domain.topology_specs = store
+                .list_topology_specs(project)
+                .expect("published topologies");
+        });
+        domain
+            .validate()
+            .expect("fixture domain agrees with its published revisions");
+        let catalog = &domain.role_catalogs[0];
+        let core_team = kontor_daemon::orchestration::propose_core_team(catalog, &domain)
+            .expect("explicit fixture roster");
+        let orchestration = kontor_daemon::orchestration::propose_orchestration().unwrap();
+        let fleet = include_str!("../../../../config/examples/orchestration/fleet.yml");
+        let mut bundle = kontor_daemon::orchestration::resolve_bundle(
+            &kontor_daemon::orchestration::BundleSources {
+                orchestration: &orchestration,
+                fleet,
+                core_team: &core_team,
+            },
+            catalog,
+            &domain,
+        )
+        .expect("fixture bundle resolves");
+        let yaml = serde_yaml_ng::to_string(&domain).unwrap();
+        let descriptor = kontor_fleet_activation::OperationalDomainPin {
+            source: "packs/test-domain.yml".to_owned(),
+            source_hash: ContentHash::of(yaml.as_bytes()),
+        };
+        bundle
+            .manifest
+            .sources
+            .insert(descriptor.source.clone(), descriptor.source_hash.clone());
+        bundle.manifest.operational_domain = Some(descriptor);
+        bundle.operational_domain = Some(yaml);
+        bundle
+    }
+}
+impl Drop for DomainSelectionFixture {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::fs::write(&self.activation, previous)
+                .expect("restore prior disposable activation");
+        } else {
+            std::fs::remove_file(&self.activation).expect("remove temporary fixture activation");
+        }
+    }
+}

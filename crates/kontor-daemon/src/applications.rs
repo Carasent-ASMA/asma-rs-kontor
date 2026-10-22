@@ -28,6 +28,7 @@
 mod artifact_submission;
 mod committee_evidence;
 mod desk_adams;
+mod domain_context;
 mod durable_seats;
 mod memory_projection;
 mod open_questions;
@@ -10885,91 +10886,6 @@ impl Services {
         Err(self.deny(
             ApiErrorCode::RevisionConflict,
             "no published revision still produces the project selection preview",
-        ))
-    }
-
-    fn project_team_definition_selection(
-        &self,
-        project_id: ProjectId,
-        target: &TeamDefinitionRefDto,
-    ) -> Result<
-        (
-            Option<TeamDefinitionSnapshot>,
-            TeamDefinitionSnapshot,
-            ContentHash,
-        ),
-        ApiError,
-    > {
-        let state = self.state()?;
-        self.project_row(project_id)?;
-        let current = state
-            .with_store(|store| store.get_project_team_definition_default(project_id))
-            .map_err(|error| self.refuse(&error))?
-            .map(|selection| selection.definition);
-        let definition = state
-            .with_store(|store| store.get_team_definition(project_id, target.id, target.version))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "the target Team Definition is not published in this project",
-                )
-            })?;
-        let selected = TeamDefinitionSnapshot::from_revision(&definition)
-            .map_err(|error| self.refuse_domain(&error))?;
-        if current.as_ref() == Some(&selected) {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "the project already selects that Team Definition revision",
-            ));
-        }
-        let current_value = current.as_ref().map(|snapshot| {
-            serde_json::json!({
-                "id": snapshot.definition_id.to_string(),
-                "version": snapshot.version.get(),
-                "hash": snapshot.canonical_hash.as_str(),
-            })
-        });
-        let hash = self.preview_hash(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "project_team_definition_selection_preview",
-            "project": project_id.to_string(),
-            "current": current_value,
-            "target": {
-                "id": selected.definition_id.to_string(),
-                "version": selected.version.get(),
-                "hash": selected.canonical_hash.as_str(),
-            },
-        }))?;
-        Ok((current, selected, hash))
-    }
-
-    fn target_of_project_team_definition_preview(
-        &self,
-        project_id: ProjectId,
-        preview_hash: &ContentHash,
-    ) -> Result<(Option<TeamDefinitionSnapshot>, TeamDefinitionSnapshot), ApiError> {
-        let state = self.state()?;
-        for candidate in state
-            .with_store(|store| store.list_team_definitions(project_id))
-            .map_err(|error| self.refuse(&error))?
-        {
-            let reference = TeamDefinitionRefDto {
-                id: candidate.definition_id,
-                version: candidate.version,
-            };
-            let Ok((current, target, hash)) =
-                self.project_team_definition_selection(project_id, &reference)
-            else {
-                continue;
-            };
-            if &hash == preview_hash {
-                return Ok((current, target));
-            }
-        }
-        Err(self.deny(
-            ApiErrorCode::RevisionConflict,
-            "no published Team Definition still produces this selection preview",
         ))
     }
 
@@ -24877,14 +24793,21 @@ impl ApplicationOperations for Services {
         request: &ProjectTeamDefinitionSelectionPreviewRequest,
     ) -> Result<ProjectTeamDefinitionSelectionPreviewDto, ApiError> {
         let state = self.state()?;
-        let (current, target, preview_hash) =
+        let selection =
             self.project_team_definition_selection(project_id, &request.target_definition)?;
         Ok(ProjectTeamDefinitionSelectionPreviewDto {
             realm_id: state.realm_id(),
             project_id,
-            current_definition: current.as_ref().map(Self::pinned_team_definition_dto),
-            target_definition: Self::pinned_team_definition_dto(&target),
-            preview_hash,
+            current_definition: selection
+                .current
+                .as_ref()
+                .map(|held| Self::pinned_team_definition_dto(&held.definition)),
+            target_definition: Self::pinned_team_definition_dto(&selection.target.definition),
+            current_operational_domain_bundle_hash: selection
+                .current
+                .and_then(|held| held.operational_domain_bundle_hash),
+            target_operational_domain_bundle_hash: selection.target.operational_domain_bundle_hash,
+            preview_hash: selection.preview_hash,
             snapshot_cursor: self.cursor()?,
         })
     }
@@ -25427,7 +25350,7 @@ impl ApplicationOperations for Services {
         request: &ProjectTeamDefinitionSelectionApplyRequest,
     ) -> Result<AppliedProjectTeamDefinitionSelectionDto, ApiError> {
         let state = self.state()?;
-        let project = self.project_at(project_id, request.expected_revision)?;
+        self.project_row(project_id)?;
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "project_team_definition_selection_apply",
@@ -25435,53 +25358,75 @@ impl ApplicationOperations for Services {
             "preview": request.preview_hash.as_str(),
         }))?;
         let aggregate = AggregateRef::Project { project_id };
-        let replayed = self.replayed(key, &intent, Some(&aggregate))?.is_some();
-        if !replayed {
-            let (expected, selected) =
-                self.target_of_project_team_definition_preview(project_id, &request.preview_hash)?;
-            state
-                .with_store(|store| {
-                    store.set_project_team_definition_default(
-                        &ProjectTeamDefinitionDefault {
-                            operational_domain_bundle_hash: None,
-                            project_id,
-                            expected,
-                            definition: selected,
-                            selected_at: kontor_api::now(),
-                        },
-                        None,
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?;
+        let replayed = self.replayed(key, &intent, Some(&aggregate))?;
+        if replayed
+            .as_ref()
+            .is_some_and(|receipt| receipt.target_revision != request.expected_revision)
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key names another expected project revision",
+            ));
         }
-        let receipt_id = self.record(
-            key,
-            project_id,
-            CommandKind::SelectProjectTeamDefinition,
-            aggregate,
-            project.revision,
-            &intent,
-        )?;
+        let was_replayed = replayed.is_some();
+        let receipt = if let Some(receipt) = replayed {
+            receipt
+        } else {
+            self.project_at(project_id, request.expected_revision)?;
+            let selection =
+                self.target_of_project_team_definition_preview(project_id, &request.preview_hash)?;
+            let bundle = selection
+                .target
+                .operational_domain_bundle_hash
+                .as_ref()
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            self.fleet
+                .with_active_domain_bundle(bundle, || {
+                    state.with_store(|store| {
+                        store.select_project_team_definition(
+                            &selection.target,
+                            selection
+                                .current
+                                .as_ref()
+                                .and_then(|held| held.operational_domain_bundle_hash.as_ref()),
+                            selection.roster_hash.as_ref(),
+                            &ReceiptEnvelope::new(
+                                state.realm_id(),
+                                NewLocalCommand {
+                                    project_id,
+                                    receipt_id: CommandReceiptId::generate(),
+                                    idempotency_key: key.clone(),
+                                    kind: CommandKind::SelectProjectTeamDefinition,
+                                    target: aggregate,
+                                    target_revision: request.expected_revision,
+                                    intent,
+                                    created_at: kontor_api::now(),
+                                },
+                            ),
+                        )
+                    })
+                })
+                .map_err(|error| self.refuse_fleet_policy(&error))?
+                .map_err(|error| self.refuse(&error))?
+        };
         let selected = state
-            .with_store(|store| store.get_project_team_definition_default(project_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the selected project Team Definition could not be read back",
-                )
-            })?;
+            .with_store(|store| store.project_team_definition_selection_result(&receipt))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
         Ok(AppliedProjectTeamDefinitionSelectionDto {
             selected_definition: Self::pinned_team_definition_dto(&selected.definition),
+            operational_domain_bundle_hash: selected.operational_domain_bundle_hash,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
-                receipt_id: receipt_id.to_string(),
-                applied: if replayed {
+                receipt_id: receipt.id.to_string(),
+                applied: if was_replayed {
                     AppliedDto::Unchanged
                 } else {
                     AppliedDto::Updated
                 },
-                revision: project.revision,
+                revision: receipt.target_revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -50742,3 +50687,7 @@ mod coherence {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "applications/domain_selection_tests.rs"]
+mod domain_selection_tests;

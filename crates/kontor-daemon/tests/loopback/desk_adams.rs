@@ -297,6 +297,8 @@ async fn select_desk_led_definition(world: &World, project: &str) -> TeamDefinit
     .send(world)
     .await;
     assert_eq!(published.status, 200, "{}", published.body);
+    let _domain_selection =
+        harness::DomainSelectionFixture::activate(world, project_id_of(project));
     let preview = Call::post(
         format!("/v1/projects/{project}/team-definition-selection:preview"),
         &serde_json::json!({"target_definition": {

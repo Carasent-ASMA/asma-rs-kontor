@@ -819,7 +819,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v137 retains the activated publication policy's immutable source hash.
     // v138 freezes task checkout intents and their first Git readback.
     // v139 adds nullable domain context to existing selection/epic wrappers, without backfill.
-    assert_eq!(SCHEMA_VERSION, 139);
+    // v140 admits domain selection to the existing exact local-result ledger.
+    assert_eq!(SCHEMA_VERSION, 140);
 }
 
 #[test]
