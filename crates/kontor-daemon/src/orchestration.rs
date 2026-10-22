@@ -235,6 +235,8 @@ pub fn resolve_bundle(
         role_catalog: pin,
         core_team_revision_hash: roster.hash().clone(),
         publication_policy,
+        consultation_layout: crate::project_paths::consultation_policy(sources.orchestration)
+            .map_err(invalid)?,
     };
     Ok(ResolvedBundle {
         policy,
@@ -423,6 +425,39 @@ mod tests {
         let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).expect("YAML");
         edit(&mut value);
         serde_yaml_ng::to_string(&value).expect("YAML")
+    }
+
+    #[test]
+    fn selected_consultation_layout_is_validated_and_bound_to_the_bundle_hash() {
+        let mut source = authoring();
+        source.orchestration = edited(&source.orchestration, |value| {
+            value["project"] = serde_yaml_ng::from_str(
+                "key: EXM\nworktree_layout: managed/trees/<key-slug>/<module>\nconsultation_layout: consultations/<key-slug>/<node>\nforge: {base_branch: trunk}\nbranch:\n  types: [chore]\n  pattern: '^(chore)/<KEY>-<number>-<slug>$'\n  commit_pattern: '^<KEY>-<number> <summary>$'\n",
+            ).unwrap();
+        });
+        let domain = kontor_profiles::bundled_operational_domain().unwrap();
+        let first = resolve_bundle(&source.sources(), &source.catalog, &domain).unwrap();
+        let layout = first.manifest.consultation_layout.as_ref().unwrap();
+        assert_eq!(layout.template, "consultations/<key-slug>/<node>");
+        assert_eq!(layout.worktree_layout, "managed/trees/<key-slug>/<module>");
+        assert_eq!(layout.base_branch, "trunk");
+        let first_hash = first.manifest.canonicalize().unwrap();
+        source.orchestration = edited(&source.orchestration, |value| {
+            value["project"]["consultation_layout"] = "rooms/<node>/<key-slug>".into();
+        });
+        let second = resolve_bundle(&source.sources(), &source.catalog, &domain).unwrap();
+        assert_eq!(first.roster, second.roster);
+        assert_ne!(
+            first_hash.hash(),
+            second.manifest.canonicalize().unwrap().hash()
+        );
+        source.orchestration = edited(&source.orchestration, |value| {
+            value["project"]["consultation_layout"] = "../<key-slug>/<node>".into();
+        });
+        assert_eq!(
+            refused(resolve_bundle(&source.sources(), &source.catalog, &domain)),
+            "invalid project.consultation_layout"
+        );
     }
 
     #[test]

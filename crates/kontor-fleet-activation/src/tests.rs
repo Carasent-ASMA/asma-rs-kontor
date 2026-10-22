@@ -136,6 +136,7 @@ fn published_bundle() -> Bundle {
         schema_version: MANIFEST_SCHEMA_VERSION,
         resolver: "kontor-fleet 0.2.1".to_owned(),
         publication_policy: None,
+        consultation_layout: None,
         sources: BTreeMap::from([
             (
                 "orchestration.yml".to_owned(),
@@ -233,6 +234,104 @@ fn an_additive_publication_policy_is_verified_without_changing_legacy_manifest_b
         .unwrap()
         .root_repository = ForgeRepository::parse("other-org/unlisted").unwrap();
     assert!(bundle.manifest.canonicalize().is_err());
+}
+
+#[test]
+fn consultation_layout_is_pinned_by_activation_and_legacy_manifests_stay_unchanged() {
+    use kontor_core::branch::{BranchType, ProjectBranchRules};
+    use kontor_core::placement::ConsultationLayout;
+
+    let mut bundle = published_bundle();
+    let legacy = bundle.manifest.canonicalize().unwrap();
+    assert!(!legacy.json().contains("consultation_layout"));
+    let decoded: BundleManifest = serde_json::from_str(legacy.json()).unwrap();
+    assert_eq!(decoded.canonicalize().unwrap(), legacy);
+    let layout = ConsultationLayout {
+        worktree_layout: "managed/trees/<key-slug>/<module>".into(),
+        template: "consultations/<key-slug>/<node>".into(),
+        branch_rules: ProjectBranchRules {
+            project_key: "EXM".into(),
+            types: vec![BranchType::Chore],
+            pattern: "^(chore)/<KEY>-<number>-<slug>$".into(),
+            commit_pattern: "^<KEY>-<number> <summary>$".into(),
+        },
+        base_branch: "trunk".into(),
+    };
+    bundle.manifest.consultation_layout = Some(layout.clone());
+    let first = bundle.manifest.canonicalize().unwrap();
+    private(
+        &manifest_path(bundle.path(), first.hash()),
+        first.json().as_bytes(),
+    );
+    assert!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout
+            .is_none()
+    );
+    bundle.bundle_hash = first.hash().clone();
+    bundle.write_record(&bundle.record());
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout,
+        Some(layout.clone())
+    );
+
+    bundle
+        .manifest
+        .consultation_layout
+        .as_mut()
+        .unwrap()
+        .template = "new/<node>/<key-slug>".into();
+    let edited = bundle.manifest.canonicalize().unwrap();
+    assert_ne!(first.hash(), edited.hash());
+    private(
+        &manifest_path(bundle.path(), edited.hash()),
+        edited.json().as_bytes(),
+    );
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout,
+        Some(layout)
+    );
+    bundle.bundle_hash = edited.hash().clone();
+    bundle.write_record(&bundle.record());
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout,
+        bundle.manifest.consultation_layout
+    );
+
+    bundle
+        .manifest
+        .consultation_layout
+        .as_mut()
+        .unwrap()
+        .template = "../<node>/<key-slug>".into();
+    assert!(bundle.manifest.canonicalize().is_err());
+    let malformed = CanonicalDocument::from_serializable(&bundle.manifest).unwrap();
+    private(
+        &manifest_path(bundle.path(), malformed.hash()),
+        malformed.json().as_bytes(),
+    );
+    bundle.bundle_hash = malformed.hash().clone();
+    bundle.write_record(&bundle.record());
+    assert_eq!(refused(load(bundle.path())), M09);
 }
 
 #[test]

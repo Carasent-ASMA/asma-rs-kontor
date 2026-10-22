@@ -62,20 +62,35 @@ pub(crate) fn validate(project: &Value) -> Result<(), &'static str> {
 }
 
 fn validate_layout(layout: &str) -> Result<(), &'static str> {
-    if !relative(layout, false) {
-        return Err("invalid project.worktree_layout");
-    }
-    let parts: Vec<_> = layout.split('/').collect();
-    if parts.first().is_none_or(|part| part.contains(['<', '>']))
-        || parts.iter().filter(|part| **part == "<key-slug>").count() != 1
-        || parts.iter().filter(|part| **part == "<module>").count() != 1
-        || parts
-            .iter()
-            .any(|part| part.contains(['<', '>']) && !matches!(*part, "<key-slug>" | "<module>"))
-    {
-        return Err("invalid project.worktree_layout placeholders");
-    }
-    Ok(())
+    kontor_core::placement::managed_root(layout).map(|_| ())
+}
+
+pub(crate) fn consultation_policy(
+    text: &str,
+) -> Result<Option<kontor_core::placement::ConsultationLayout>, &'static str> {
+    let value: Value =
+        serde_yaml_ng::from_str(text).map_err(|_| "invalid project.consultation_layout YAML")?;
+    let project = &value["project"];
+    let Some(template) = project.get("consultation_layout") else {
+        return Ok(None);
+    };
+    let policy = kontor_core::placement::ConsultationLayout {
+        template: template
+            .as_str()
+            .ok_or("invalid project.consultation_layout")?
+            .to_owned(),
+        worktree_layout: project["worktree_layout"]
+            .as_str()
+            .ok_or("invalid or missing project.worktree_layout")?
+            .to_owned(),
+        branch_rules: crate::project_branch::parse(text)?.ok_or("missing project.branch")?,
+        base_branch: project["forge"]["base_branch"]
+            .as_str()
+            .ok_or("invalid or missing project.forge.base_branch")?
+            .to_owned(),
+    };
+    policy.validate()?;
+    Ok(Some(policy))
 }
 
 pub(crate) fn render_layout(
@@ -87,11 +102,7 @@ pub(crate) fn render_layout(
     validate_layout(layout)?;
     kontor_runtime::workspace::WorkspaceRoot::parse(root)
         .map_err(|_| "worktree.project_root_invalid")?;
-    let prefix = layout
-        .split('/')
-        .take_while(|part| !part.contains('<'))
-        .collect::<Vec<_>>()
-        .join("/");
+    let prefix = kontor_core::placement::managed_root(layout)?;
     let rendered = layout
         .replace("<key-slug>", &key.as_str().to_ascii_lowercase())
         .replace("<module>", module.as_str());

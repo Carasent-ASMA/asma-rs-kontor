@@ -225,6 +225,50 @@ fn selected_resource_paths_and_worktree_layout_refuse_invalid_sources_without_gu
 }
 
 #[test]
+fn consultation_layout_is_optional_but_present_invalid_values_refuse_by_source() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let path = folder.join(ENTRY);
+    let mut entry: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    entry["project"]
+        .as_mapping_mut()
+        .unwrap()
+        .remove("consultation_layout");
+    std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+    assert!(
+        ConfigFolder::select(Some(&folder), None)
+            .unwrap()
+            .project
+            .consultation_layout
+            .is_none()
+    );
+    for invalid in [
+        serde_json::Value::Null,
+        serde_json::json!(17),
+        serde_json::json!("/consultations/<key-slug>/<node>"),
+        serde_json::json!("consultations/../<key-slug>/<node>"),
+        serde_json::json!("consultations/<key-slug>/<module>"),
+        serde_json::json!("consultations/<key-slug>/<node>/<node>"),
+    ] {
+        entry["project"]["consultation_layout"] = serde_yaml_ng::to_value(invalid).unwrap();
+        std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+        let error = ConfigFolder::select(Some(&folder), None).unwrap_err();
+        assert_eq!(error.path, path.canonicalize().unwrap());
+        assert!(error.problem.contains("project.consultation_layout"));
+    }
+    entry["project"]["consultation_layout"] = "consultations/<key-slug>/<node>".into();
+    entry["project"]["worktree_layout"] = "managed/trees/<key-slug>/<module>".into();
+    std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+    let selected = ConfigFolder::select(Some(&folder), None).unwrap();
+    assert_eq!(
+        selected.project.consultation_layout.as_deref(),
+        Some("consultations/<key-slug>/<node>")
+    );
+    assert!(!root.path().join("managed").exists());
+}
+
+#[test]
 fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
     let root = tempfile::tempdir().unwrap();
     let folder = support::write_config_folder(root.path());

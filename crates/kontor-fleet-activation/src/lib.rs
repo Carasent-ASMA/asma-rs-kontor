@@ -324,6 +324,9 @@ pub struct BundleManifest {
     /// Optional project publication authority, pinned by this manifest's hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication_policy: Option<kontor_core::publication::PublicationPolicy>,
+    /// Optional consultation placement, resolved from the same selected project entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consultation_layout: Option<kontor_core::placement::ConsultationLayout>,
 }
 
 impl BundleManifest {
@@ -337,6 +340,10 @@ impl BundleManifest {
                 .publication_policy
                 .as_ref()
                 .is_some_and(|policy| policy.validate().is_err())
+            || self
+                .consultation_layout
+                .as_ref()
+                .is_some_and(|layout| layout.validate().is_err())
         {
             return Err(invalid(M09));
         }
@@ -447,6 +454,10 @@ pub fn verify_manifest(
             .publication_policy
             .as_ref()
             .is_some_and(|policy| policy.validate().is_err())
+        || manifest
+            .consultation_layout
+            .as_ref()
+            .is_some_and(|layout| layout.validate().is_err())
     {
         return Err(invalid(M09));
     }

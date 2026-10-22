@@ -40,7 +40,7 @@ project:
     - time_zone
     - holiday_countries
     - currency
-  optional: [project_id, publication]
+  optional: [project_id, publication, consultation_layout]
   nested:
     decision_authorities:
       required: [platform, architecture, decision_records_root]
@@ -151,6 +151,18 @@ paths:
       - host.checkouts.modules.<Task.module>.path
   conventions:
     project.worktree_layout: an exact relative pattern with a literal managed root and exactly one whole <key-slug> and <module> segment; no unknown placeholders, absolute paths or traversal; not a resolved path
+    project.consultation_layout: optional relative pattern under the literal managed-root prefix of worktree_layout; exactly one whole <key-slug> and <node> segment; no module substitution, unknown or repeated placeholders, absolute paths or traversal
+
+consultation_layout_contract:
+  presence: optional for empty/direct-only startup; omission supplies no placement policy
+  key_slug: confirmed canonical epic tracker key in lowercase
+  node: canonical durable TopologyNodeId owned by the epic and project
+  root: durable Project.root_path plus the literal managed-root prefix of pinned project.worktree_layout
+  branch: existing confirmed epic-key and node derivation under selected project.branch grammar
+  source: existing host.checkouts.root; no separate consultation source selector
+  activation: exact layout, managed-root pattern, base branch and branch grammar are derived into the existing immutable bundle manifest; edits or unactivated publications never replace the activated policy
+  placement: freeze source, branch, destination and config identity in the existing consultation intent before Git; prove root, common directory, ownership, containment and readback
+  legacy: resume only exact durable bindings and pins; directory existence alone never authorizes adoption or relocation
 
 # Host checkout sources constrain Git input identity, never publication authority.
 task_checkout_sources:
@@ -171,7 +183,7 @@ task_checkout_sources:
   snapshot: derive an undeclared module claim only after durable tracker confirmation; freeze the first claim and source record, canonical common directory, exact base ref and commit atomically before Git; retries preserve the snapshot and confirmed bindings only verify readback
   changes: host input is bootstrap-bound; later edits cannot change existing placements; guarded correction freezes the replacement source atomically with its exact claim
   remote_task_branch: no implicit remote fallback; explicit input required
-  consultation: unchanged existing consultation_root consumer; not a Task.module layout or source consumer
+  consultation: uses the declared root source under consultation_layout_contract; never fabricates Task.module
 
 # The fleet/host join. The fleet owns canonical model/vendor/effort policy; the
 # host owns the working provider/harness/account route. The logical slot is the

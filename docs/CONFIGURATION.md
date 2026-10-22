@@ -129,7 +129,7 @@ its own base and validation:
 | Project resource path | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.decision_authorities.decision_records_root` | a declared `project.resource_roots` entry | The first segment is a root key; the root maps to a repository in `project.forge.repositories`, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused. Never resolved from, or checked for containment inside, the config folder. |
 | Desk history path | `project.pr_desk.history_root` | `host.paths.data_root` | Relative only and contained; absolute paths and `..` segments are refused. The learning log is `<resolved root>/learning.log`, resolved by `PR_DESK_DIR`, then `host.paths.pr_desk`, then `<data_root>/<history_root>`. |
 | Host path | `host.paths.*`, `host.binaries.*`, `host.project_cli.*` | this machine's filesystem | Absolute or `PATH`-resolved host state. Not a config reference. |
-| Convention | `project.worktree_layout` | the project's checkout convention | A pattern with `<key-slug>` and `<module>`, not a path to resolve. |
+| Convention | `project.worktree_layout`, `project.consultation_layout` | the project's placement patterns | Task pattern uses `<key-slug>`/`<module>`; consultation pattern uses `<key-slug>`/`<node>` under the same managed root. |
 | Credential reference | `credential`, `project.tracker.credential_alias` | the deployment's secret store | A non-secret reference such as `keychain:<service>/<account>`; never a value. |
 
 `project.resource_roots` names each checkout the project resources live in, so
@@ -305,9 +305,27 @@ its existing destination; it never recreates a missing running binding.
 Host edits require restart for new placements and cannot switch an existing
 pin. Guarded claim correction freezes the replacement source with the claim
 atomically. Omitting `host.checkouts` permits empty/direct-only startup and
-disables managed task source selection without a legacy fallback. Consultation
-placement continues through its existing `consultation_root` consumer; this
-task source contract does not render or relocate consultations.
+disables managed task source selection without a legacy fallback.
+
+`project.consultation_layout` is an optional relative pattern such as
+`consultations/<key-slug>/<node>`. Its root is the durable project root joined
+with the literal prefix of the pinned `worktree_layout`: for
+`managed/trees/<key-slug>/<module>`, a consultation belongs under
+`<project root>/managed/trees/consultations/<epic-key-slug>/<node>`.
+Both placeholders must appear exactly once as whole path segments. Absolute,
+empty, dot/traversal, unknown and repeated components refuse by field name.
+The key is the confirmed canonical epic key; the node is the durable
+TopologyNodeId belonging to that epic/project. No task module is substituted.
+
+The existing bundle manifest pins the layout, managed-root pattern, base
+branch and shared branch rules together. An omitted layout keeps empty/direct
+startup possible and supplies no consultation placement policy. Publishing
+another bundle or editing YAML does not change the activated layout. The
+native consumer must freeze the root checkout source, branch and exact target
+through the existing consultation intent before Git, and preserve existing
+durably bound legacy placements. This checkpoint validates and pins the
+policy; native intent/readback consumption remains WP-08 work, so it does not
+claim selected consultation placement is complete.
 
 **Route join (Q-04).** The fleet owns the canonical policy; the host owns the
 working route. They meet on two keys: the logical slot and the canonical model.
@@ -503,6 +521,7 @@ and ASMA's concrete values are the test case in
 | `attention_channel` | string | Where typed attention is raised. |
 | `glossary` | path | Project glossary. |
 | `worktree_layout` | string | Checkout convention, with `<key-slug>` and `<module>` placeholders. |
+| `consultation_layout` | optional string | Relative consultation pattern with exactly one whole `<key-slug>` and `<node>` segment, under the managed-root prefix of `worktree_layout`. |
 | `check_runs` | list | Required check-run names. |
 | `capacity` | mapping | `max_delivery_seats`, `max_parallel_tasks`, `start_admission`; see the capacity rules below. |
 | `time_zone` | IANA zone | Project default. |
