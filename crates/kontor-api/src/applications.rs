@@ -5229,6 +5229,11 @@ pub struct InitialExecutionHoldPreviewDto {
 /// authorization before the epic becomes governable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEpicRequest {
+    /// Optional preview precondition. A different selected/pinned domain refuses.
+    /// Omission resolves the explicitly selected project domain at apply time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub expected_operational_domain_bundle_hash: Option<ContentHash>,
     /// The revision the caller read the project at.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
@@ -5412,6 +5417,10 @@ pub struct EpicControlPlaneDto {
 /// One epic after it was applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct AppliedEpicDto {
+    /// Exact immutable domain bundle bound to this epic operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// The Realm it belongs to.
     #[schema(value_type = String)]
     pub realm_id: kontor_core::id::RealmId,
@@ -5492,6 +5501,10 @@ pub struct PreviewEpicTaskDto {
 /// The result of judging an epic with the exact apply rules and no writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct PreviewEpicDto {
+    /// Exact immutable domain bundle bound to this epic operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// The Realm that judged the graph.
     #[schema(value_type = String)]
     pub realm_id: kontor_core::id::RealmId,

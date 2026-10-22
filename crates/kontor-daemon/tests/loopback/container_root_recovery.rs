@@ -1063,7 +1063,7 @@ async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
             "/v1/projects/{project}/epics/{}/roster:upgrade-preview",
             epic.id
         ),
-        &serde_json::json!({"target":{"id":"core-team","version":1}}),
+        &serde_json::json!({"target":{"id":"core-team","version":current_core_team_revision(&world, &project_text) - 1}}),
     )
     .signed_as(&world, "admin")
     .send(&world)

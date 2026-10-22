@@ -467,7 +467,10 @@ async fn pair_realm_with(
             // Explicit fixture snapshot, not an API grant from an unselected catalog.
             let domain = kontor_profiles::bundled_operational_domain().unwrap();
             let roster = kontor_teams::CoreTeamRevision::resolve(
-                SpecVersion::FIRST,
+                SpecVersion::parse(
+                    u32::try_from(current_core_team_revision(world, &project)).unwrap(),
+                )
+                .unwrap(),
                 catalog,
                 &[],
                 domain.delivery.purpose_roles(),

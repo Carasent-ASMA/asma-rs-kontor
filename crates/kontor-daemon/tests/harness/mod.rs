@@ -16,6 +16,7 @@
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
+pub(crate) mod legacy_epic;
 #[path = "../../../kontor-jira/tests/support/catalog.rs"]
 pub(super) mod tracker_fixtures;
 
@@ -175,6 +176,8 @@ fn install_migrated_database(directory: &Path) {
 
 /// One started Realm, its router and the runtime behind it.
 pub(crate) struct World {
+    /// Explicit pre-domain graph construction for historical migration tests.
+    pub(crate) historical_epics: bool,
     /// Kept for its `Drop`: the state root outlives every request in a test.
     pub(crate) directory: TempDir,
     pub(crate) daemon: Daemon,
@@ -234,6 +237,10 @@ struct WorldComposition {
 }
 
 impl World {
+    pub(crate) fn with_historical_epics(mut self) -> Self {
+        self.historical_epics = true;
+        self
+    }
     /// Trusted synthetic startup composition through the ordinary client seam.
     pub(crate) async fn open_with_memory_cognee(client: kontor_memory_cognee::Client) -> Self {
         Self::compose_with_connector(
@@ -795,6 +802,7 @@ impl World {
         }
 
         Self {
+            historical_epics: false,
             directory,
             daemon,
             router,
@@ -1415,6 +1423,107 @@ impl DomainSelectionFixture {
             activation,
             previous,
         }
+    }
+    /// Explicit test installation: publish/activate exact bytes, then select and
+    /// publish the roster. It creates no business graph and retains old epic pins.
+    pub(crate) fn bind(world: &World, project: ProjectId) {
+        use kontor_core::repository::{ProjectTeamDefinitionDefault, StoredCoreTeamRevision};
+        let domain = kontor_profiles::bundled_operational_domain().unwrap();
+        world.daemon.state().with_store(|store| {
+            for topology in &domain.topology_specs {
+                if store
+                    .get_topology_spec(project, topology.spec_id, topology.version)
+                    .unwrap()
+                    .is_none()
+                {
+                    store
+                        .publish_topology_spec(
+                            project,
+                            topology,
+                            &kontor_core::spec::Shareability::default_for(
+                                kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+                            )
+                            .unwrap(),
+                            kontor_api::now(),
+                        )
+                        .unwrap();
+                }
+            }
+            for definition in &domain.team_definitions {
+                if store
+                    .get_team_definition(project, definition.definition_id, definition.version)
+                    .unwrap()
+                    .is_none()
+                {
+                    store
+                        .publish_team_definition(project, definition, kontor_api::now())
+                        .unwrap();
+                }
+            }
+            if store
+                .get_project_team_definition_default(project)
+                .unwrap()
+                .is_none()
+            {
+                store
+                    .set_project_team_definition_default(
+                        &ProjectTeamDefinitionDefault {
+                            project_id: project,
+                            expected: None,
+                            definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
+                                &domain.team_definitions[0],
+                            )
+                            .unwrap(),
+                            operational_domain_bundle_hash: None,
+                            selected_at: kontor_api::now(),
+                        },
+                        None,
+                    )
+                    .unwrap();
+            }
+        });
+        let bundle = Self::candidate(world, project);
+        let _activation = Self::activate(world, project);
+        let hash = kontor_fleet_activation::read_activation(world.directory.path())
+            .unwrap()
+            .source_bundle_hash
+            .unwrap();
+        let domain: kontor_profiles::OperationalDomainPack =
+            serde_yaml_ng::from_str(bundle.operational_domain.as_ref().unwrap()).unwrap();
+        world.daemon.state().with_store(|store| {
+            if store.get_current_core_team(project).unwrap().is_none() {
+                store
+                    .publish_core_team_revision(
+                        &StoredCoreTeamRevision {
+                            project_id: project,
+                            version: bundle.revision.version,
+                            catalog_hash: bundle.revision.catalog_hash.clone(),
+                            seats: serde_json::to_value(&bundle.revision.seats).unwrap(),
+                            published_at: kontor_api::now(),
+                        },
+                        &domain.role_catalogs[0],
+                    )
+                    .unwrap();
+            }
+            let held = store
+                .get_project_team_definition_default(project)
+                .unwrap()
+                .unwrap();
+            if held.operational_domain_bundle_hash.as_ref() != Some(&hash) {
+                store
+                    .set_project_team_definition_default(
+                        &ProjectTeamDefinitionDefault {
+                            project_id: project,
+                            expected: Some(held.definition.clone()),
+                            definition: held.definition,
+                            operational_domain_bundle_hash: Some(hash),
+                            selected_at: kontor_api::now(),
+                        },
+                        held.operational_domain_bundle_hash.as_ref(),
+                    )
+                    .unwrap();
+            }
+        });
     }
     pub(crate) fn candidate(
         world: &World,

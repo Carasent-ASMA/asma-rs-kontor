@@ -828,7 +828,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v141 adds nullable domain context to existing selection/epic wrappers,
     // without backfill.
     // v142 admits domain selection to the existing exact local-result ledger.
-    assert_eq!(SCHEMA_VERSION, 142);
+    // v143 admits epic creation to the existing exact local-result ledger.
+    assert_eq!(SCHEMA_VERSION, 143);
 }
 
 #[test]

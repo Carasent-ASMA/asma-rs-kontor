@@ -2963,6 +2963,10 @@ impl Services {
             )
         })?;
         self.sealed(AppliedEpicDto {
+            operational_domain_bundle_hash: state
+                .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+                .and_then(|pin| pin.operational_domain_bundle_hash),
             realm_id: state.realm_id(),
             project_id,
             epic_id,
@@ -7108,7 +7112,7 @@ impl Services {
                 })
             })
             .collect();
-        let document = self.intent(&serde_json::json!({
+        let mut value = serde_json::json!({
             "schema_version": 1,
             "epic_id": epic.epic_id.to_string(),
             "revision": epic.revision.get(),
@@ -7118,7 +7122,11 @@ impl Services {
                 .as_ref()
                 .map(|team| serde_json::json!([team.id.as_str(), team.version.get()])),
             "tasks": tasks,
-        }))?;
+        });
+        if let Some(domain) = &epic.operational_domain_bundle_hash {
+            value["operational_domain_bundle_hash"] = serde_json::json!(domain);
+        }
+        let document = self.intent(&value)?;
         Ok(document.hash().as_str().to_owned())
     }
 
@@ -34314,14 +34322,69 @@ impl ApplicationOperations for Services {
                 .expect("an epic intent is an object")
                 .insert("desk_adam_origin".to_owned(), origin_intent);
         }
+        if let Some(expected) = &request.expected_operational_domain_bundle_hash {
+            intent_document["expected_operational_domain_bundle_hash"] =
+                serde_json::json!(expected);
+        }
+        // Preserve old request bytes; only new receipts carry resolved context.
+        let prior = state
+            .with_store(|store| store.get_receipt_by_key(key))
+            .map_err(|error| self.refuse(&error))?;
+        let replay_binding: Option<kontor_store::EpicDomainBinding> = prior
+            .as_ref()
+            .map(|receipt| receipt.intent.deserialize::<serde_json::Value>())
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?
+            .and_then(|value| value.get("domain_binding").cloned())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "operational_domain_creation_intent_unreadable",
+                )
+            })?;
+        if let Some(binding) = &replay_binding {
+            intent_document["domain_binding"] = serde_json::json!(binding);
+            intent_document["project_id"] = serde_json::json!(project_id);
+            intent_document["expected_project_revision"] =
+                serde_json::json!(request.expected_revision);
+        }
         let intent = self.intent(&intent_document)?;
-        if let Some(receipt) = self.replayed(key, &intent, None)? {
+        if let Some(receipt) = prior {
+            if receipt.intent.hash() != intent.hash() {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
             let AggregateRef::MiniProject { mini_project_id } = receipt.target else {
                 return Err(self.deny(
                     ApiErrorCode::IdempotencyConflict,
                     "the idempotency key was already used for a different operation",
                 ));
             };
+            if receipt.project_id != project_id || receipt.kind != CommandKind::ApplyEpicGraph {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "epic creation receipt target mismatch",
+                ));
+            }
+            if let Some(binding) = &replay_binding {
+                let result = state
+                    .with_store(|store| store.epic_domain_creation_result(&receipt))
+                    .map_err(|error| self.refuse(&error))?;
+                if &result != binding {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "operational_domain_creation_result_mismatch",
+                    ));
+                }
+                self.verify_epic_domain_replay(project_id, mini_project_id, binding)?;
+            } else {
+                // Historical readback remains available; it grants no new domain effects.
+                return self.applied_epic_replay(project_id, mini_project_id);
+            }
             let epic = self.epic_row(project_id, mini_project_id)?;
             let initial_hold = match &request.initial_hold {
                 Some(hold) => Some(
@@ -34334,6 +34397,25 @@ impl ApplicationOperations for Services {
                 self.bind_desk_adam_origin(project_id, mini_project_id, origin)
                     .await?;
             }
+            state
+                .with_store(|store| -> Result<(), RepositoryError> {
+                    if store
+                        .get_adaptive_admission_state(project_id, mini_project_id)?
+                        .is_none()
+                    {
+                        let seed = AdaptivePosition::initial(self.capacity.adaptive);
+                        store.create_adaptive_admission_state(&NewAdaptiveAdmissionState {
+                            project_id,
+                            mini_project_id,
+                            current_window: seed.current_window,
+                            clean_observation_streak: seed.clean_observation_streak,
+                            last_observation_id: seed.last_observation_id,
+                            created_at: now,
+                        })?;
+                    }
+                    Ok(())
+                })
+                .map_err(|error| self.refuse(&error))?;
             // Also on replay. Governance is installed only after a requested
             // hold has converged, so recovery preserves the admission barrier.
             self.govern_epic(project_id, mini_project_id)?;
@@ -34341,6 +34423,25 @@ impl ApplicationOperations for Services {
             replay.initial_hold = initial_hold;
             return Ok(replay);
         }
+
+        let (domain_binding, domain_selection) = self.epic_domain_binding(
+            project_id,
+            &request.name,
+            request.expected_operational_domain_bundle_hash.as_ref(),
+        )?;
+        intent_document["domain_binding"] = serde_json::json!(domain_binding);
+        intent_document["project_id"] = serde_json::json!(project_id);
+        intent_document["expected_project_revision"] = serde_json::json!(request.expected_revision);
+        let intent = self.intent(&intent_document)?;
+        let creation = ReceiptEnvelope::new(
+            state.realm_id(),
+            kontor_store::EpicApplyCommand {
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                expected_revision: request.expected_revision,
+                intent: intent.clone(),
+            },
+        );
 
         let PreparedEpic {
             bundle,
@@ -34363,18 +34464,22 @@ impl ApplicationOperations for Services {
         if request.initial_hold.is_some() {
             let preview = state
                 .with_store(|store| {
-                    store.preview_epic(&EpicApplication {
-                        project_id,
-                        name: request.name.clone(),
-                        epic_backlog_code: epic_backlog_code.as_ref(),
-                        execution_scope: execution_scope.as_ref(),
-                        tasks: &tasks,
-                        profile: &bundle.profile,
-                        definition: &bundle.profile.definition,
-                        team: bundle.team.as_ref(),
-                        team_source,
-                        applied_at: now,
-                    })
+                    store.preview_epic_with_domain(
+                        &EpicApplication {
+                            project_id,
+                            name: request.name.clone(),
+                            epic_backlog_code: epic_backlog_code.as_ref(),
+                            execution_scope: execution_scope.as_ref(),
+                            tasks: &tasks,
+                            profile: &bundle.profile,
+                            definition: &bundle.profile.definition,
+                            team: bundle.team.as_ref(),
+                            team_source,
+                            applied_at: now,
+                        },
+                        &domain_binding,
+                        domain_selection.as_ref(),
+                    )
                 })
                 .map_err(|error| self.refuse(&error))?;
             if preview.applied != Applied::Created
@@ -34412,19 +34517,27 @@ impl ApplicationOperations for Services {
         // a claim releases that hold, takes the lifecycle lock, and retries the
         // write under it; that retry sees every claim the wait made durable.
         let seed = AdaptivePosition::initial(self.capacity.adaptive);
-        let write = |store: &SqliteStore| -> Result<AppliedEpic, RepositoryError> {
-            let applied = store.apply_epic(&EpicApplication {
-                project_id,
-                name: request.name.clone(),
-                epic_backlog_code: epic_backlog_code.as_ref(),
-                execution_scope: execution_scope.as_ref(),
-                tasks: &tasks,
-                profile: &bundle.profile,
-                definition: &bundle.profile.definition,
-                team: bundle.team.as_ref(),
-                team_source,
-                applied_at: now,
-            })?;
+        let write = |store: &SqliteStore| -> Result<Option<AppliedEpic>, RepositoryError> {
+            let Some(applied) = store.apply_epic_with_domain(
+                &EpicApplication {
+                    project_id,
+                    name: request.name.clone(),
+                    epic_backlog_code: epic_backlog_code.as_ref(),
+                    execution_scope: execution_scope.as_ref(),
+                    tasks: &tasks,
+                    profile: &bundle.profile,
+                    definition: &bundle.profile.definition,
+                    team: bundle.team.as_ref(),
+                    team_source,
+                    applied_at: now,
+                },
+                &domain_binding,
+                domain_selection.as_ref(),
+                &creation,
+            )?
+            else {
+                return Ok(None);
+            };
             // Seeded once, when the epic first exists. Applying the same
             // epic again is idempotent and must stay that way — and it must
             // not reset a position later observations have already moved.
@@ -34441,7 +34554,7 @@ impl ApplicationOperations for Services {
                     created_at: now,
                 })?;
             }
-            Ok(applied)
+            Ok(Some(applied))
         };
         let applied = state
             .with_store(|store| {
@@ -34459,6 +34572,12 @@ impl ApplicationOperations for Services {
                     .with_store(write)
                     .map_err(|error| self.refuse(&error))?
             }
+        };
+
+        let Some(applied) = applied else {
+            // The store observed the winning call. Resume its exact intent after
+            // releasing both store and native lifecycle locks.
+            return self.apply_epic(key, project_id, request).await;
         };
 
         // Before governance can remove the scheduler's ungoverned barrier,
@@ -34503,25 +34622,11 @@ impl ApplicationOperations for Services {
         // crash boundary.
         self.govern_epic(project_id, applied.mini_project_id)?;
 
-        // The receipt is recorded *after* the graph, because the goal it targets
-        // has to exist for the target reference to resolve. It is what makes the
-        // apply attributable, and what makes a reused key with different bytes a
-        // conflict rather than a second epic.
-        self.record(
-            key,
-            project_id,
-            CommandKind::ApplyEpicGraph,
-            AggregateRef::MiniProject {
-                mini_project_id: applied.mini_project_id,
-            },
-            applied.revision,
-            &intent,
-        )?;
-
         // Digested from what was *stored*, not from what resolved it. The
         // resolved bundle's own digest covers `resolved_at`, so returning it here
         // made an unchanged reapply look like drift on every replay.
         self.sealed(AppliedEpicDto {
+            operational_domain_bundle_hash: Some(domain_binding.operational_domain_bundle_hash),
             realm_id: state.realm_id(),
             project_id,
             epic_id: applied.mini_project_id,
@@ -34584,6 +34689,11 @@ impl ApplicationOperations for Services {
     ) -> Result<PreviewEpicDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
+        let (domain_binding, domain_selection) = self.epic_domain_binding(
+            project_id,
+            &request.name,
+            request.expected_operational_domain_bundle_hash.as_ref(),
+        )?;
         let PreparedEpic {
             bundle,
             effective_team,
@@ -34601,18 +34711,22 @@ impl ApplicationOperations for Services {
         )?;
         let preview = state
             .with_store(|store| {
-                store.preview_epic(&EpicApplication {
-                    project_id,
-                    name: request.name.clone(),
-                    epic_backlog_code: epic_backlog_code.as_ref(),
-                    execution_scope: execution_scope.as_ref(),
-                    tasks: &tasks,
-                    profile: &bundle.profile,
-                    definition: &bundle.profile.definition,
-                    team: bundle.team.as_ref(),
-                    team_source,
-                    applied_at: now,
-                })
+                store.preview_epic_with_domain(
+                    &EpicApplication {
+                        project_id,
+                        name: request.name.clone(),
+                        epic_backlog_code: epic_backlog_code.as_ref(),
+                        execution_scope: execution_scope.as_ref(),
+                        tasks: &tasks,
+                        profile: &bundle.profile,
+                        definition: &bundle.profile.definition,
+                        team: bundle.team.as_ref(),
+                        team_source,
+                        applied_at: now,
+                    },
+                    &domain_binding,
+                    domain_selection.as_ref(),
+                )
             })
             .map_err(|error| self.refuse(&error))?;
 
@@ -34624,6 +34738,7 @@ impl ApplicationOperations for Services {
         }
 
         Ok(PreviewEpicDto {
+            operational_domain_bundle_hash: Some(domain_binding.operational_domain_bundle_hash),
             realm_id: state.realm_id(),
             project_id,
             epic_id: (preview.applied != Applied::Created).then_some(preview.mini_project_id),
@@ -51387,3 +51502,7 @@ mod coherence {
 #[cfg(test)]
 #[path = "applications/domain_selection_tests.rs"]
 mod domain_selection_tests;
+
+#[cfg(test)]
+#[path = "applications/epic_domain_tests.rs"]
+mod epic_domain_tests;

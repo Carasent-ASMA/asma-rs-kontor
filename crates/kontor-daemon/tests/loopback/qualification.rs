@@ -6,24 +6,25 @@ use kontor_store::backup::{create_snapshot, export_realm};
 
 /// Create the old-pin control before any desk vocabulary is selected.
 async fn legacy_realm() -> Review {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let root = world.directory.path().join("qualification-repository");
     let project = ensure_governed_project(&world, root.to_str().expect("path"));
     let category = first_category(&world).await;
     let name = "Qualification legacy";
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        &world,
+        &project,
         &epic_body(
             current_project_revision(&world, &project).await,
             name,
             &category,
             serde_json::json!([{"title": "Legacy fixture", "module": "_tools/asma-rs-kontor"}]),
         ),
+        "qualification-legacy",
     )
-    .signed_as(&world, "admin")
-    .with_key("qualification-legacy")
-    .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("epic").to_owned();
@@ -458,6 +459,7 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
         task_key,
     } = realm;
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -502,6 +504,7 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     let router = daemon.router();
     let realm = Review {
         world: World {
+            historical_epics,
             directory,
             daemon,
             router,

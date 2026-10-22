@@ -4556,6 +4556,8 @@ export interface components {
             epic_id: string;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             initial_hold?: null | components["schemas"]["AuthorizationProjectionDto"];
+            /** @description Exact immutable domain bundle bound to this epic operation. */
+            operational_domain_bundle_hash?: string | null;
             /** @description The project. */
             project_id: string;
             /** @description The Realm it belongs to. */
@@ -4723,6 +4725,11 @@ export interface components {
              */
             epic_backlog_code?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
+            /**
+             * @description Optional preview precondition. A different selected/pinned domain refuses.
+             *     Omission resolves the explicitly selected project domain at apply time.
+             */
+            expected_operational_domain_bundle_hash?: string | null;
             /**
              * Format: int64
              * @description The revision the caller read the project at.
@@ -9499,6 +9506,8 @@ export interface components {
             epic_id?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             initial_hold?: null | components["schemas"]["InitialExecutionHoldPreviewDto"];
+            /** @description Exact immutable domain bundle bound to this epic operation. */
+            operational_domain_bundle_hash?: string | null;
             /** @description The owning project. */
             project_id: string;
             /** @description The Realm that judged the graph. */

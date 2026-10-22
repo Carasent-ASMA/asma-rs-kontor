@@ -1727,6 +1727,136 @@ pub(crate) fn target_project(target: &AggregateRef) -> Option<ProjectId> {
     }
 }
 
+pub(crate) fn pin_mini_project_team_definition_in(
+    transaction: &Transaction<'_>,
+    snapshot: &MiniProjectTeamDefinitionSnapshot,
+) -> RepositoryResult<()> {
+    let owns_mini_project = transaction
+        .query_row(
+            "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+            params![
+                snapshot.project_id.to_string(),
+                snapshot.mini_project_id.to_string()
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(backend)?
+        .is_some();
+    if !owns_mini_project {
+        return Err(RepositoryError::NotFound {
+            subject: "mini project",
+        });
+    }
+    team_definition_in(transaction, snapshot.project_id, &snapshot.definition)?;
+    if snapshot.operational_domain_bundle_hash.is_some() {
+        let migrating: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_definition_migration_intents
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND state IN ('recorded', 'applying'))",
+                params![snapshot.project_id.to_string(), snapshot.mini_project_id.to_string()],
+                |row| row.get(0),
+            ).map_err(backend)?;
+        if migrating {
+            return Err(conflict(
+                "mini project team definition",
+                "operational_domain_migration_in_flight",
+            ));
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO mini_project_team_definition_snapshots
+                     (mini_project_id, project_id, definition_id, version, canonical_hash,
+                      pinned_at, operational_domain_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                snapshot.mini_project_id.to_string(),
+                snapshot.project_id.to_string(),
+                snapshot.definition.definition_id.to_string(),
+                version_column(snapshot.definition.version),
+                snapshot.definition.canonical_hash.as_str(),
+                text(snapshot.pinned_at),
+                snapshot
+                    .operational_domain_bundle_hash
+                    .as_ref()
+                    .map(ContentHash::as_str),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+pub(crate) fn pin_mini_project_topology_in(
+    transaction: &Transaction<'_>,
+    snapshot: &MiniProjectTopologySnapshot,
+) -> RepositoryResult<()> {
+    let owns_mini_project = transaction
+        .query_row(
+            "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+            params![
+                snapshot.project_id.to_string(),
+                snapshot.mini_project_id.to_string()
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(backend)?
+        .is_some();
+    if !owns_mini_project {
+        return Err(RepositoryError::NotFound {
+            subject: "mini project",
+        });
+    }
+    topology_spec_in(transaction, snapshot.project_id, &snapshot.topology)?;
+    transaction
+        .execute(
+            "INSERT INTO mini_project_topology_snapshots
+                     (mini_project_id, project_id, spec_id, version, canonical_hash, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                snapshot.mini_project_id.to_string(),
+                snapshot.project_id.to_string(),
+                snapshot.topology.spec_id.to_string(),
+                version_column(snapshot.topology.version),
+                snapshot.topology.canonical_hash.as_str(),
+                text(snapshot.pinned_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+pub(crate) fn put_epic_roster_in(
+    transaction: &Transaction<'_>,
+    roster: &StoredEpicRoster,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
+                     core_team_version = excluded.core_team_version,
+                     catalog_hash = excluded.catalog_hash,
+                     seats = excluded.seats,
+                     revision = epic_rosters.revision + 1,
+                     pinned_at = excluded.pinned_at",
+            params![
+                roster.project_id.to_string(),
+                roster.mini_project_id.to_string(),
+                version_column(roster.core_team_version),
+                roster.catalog_hash.as_str(),
+                roster.seats.to_string(),
+                roster.quick_session_id.map(|id| id.to_string()),
+                i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                text(roster.pinned_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
 impl SqliteStore {
     /// Open one short transaction.
     ///
@@ -8370,30 +8500,7 @@ impl SqliteStore {
     /// Returns a backend error.
     pub fn put_epic_roster(&self, roster: &StoredEpicRoster) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO epic_rosters
-                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
-                      quick_session_id, revision, pinned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
-                     core_team_version = excluded.core_team_version,
-                     catalog_hash = excluded.catalog_hash,
-                     seats = excluded.seats,
-                     revision = epic_rosters.revision + 1,
-                     pinned_at = excluded.pinned_at",
-                params![
-                    roster.project_id.to_string(),
-                    roster.mini_project_id.to_string(),
-                    version_column(roster.core_team_version),
-                    roster.catalog_hash.as_str(),
-                    roster.seats.to_string(),
-                    roster.quick_session_id.map(|id| id.to_string()),
-                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
-                    text(roster.pinned_at),
-                ],
-            )
-            .map_err(backend)?;
+        put_epic_roster_in(&transaction, roster)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -11084,39 +11191,7 @@ impl TopologyRepository for SqliteStore {
         snapshot: &MiniProjectTopologySnapshot,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        let owns_mini_project = transaction
-            .query_row(
-                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
-                params![
-                    snapshot.project_id.to_string(),
-                    snapshot.mini_project_id.to_string()
-                ],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(backend)?
-            .is_some();
-        if !owns_mini_project {
-            return Err(RepositoryError::NotFound {
-                subject: "mini project",
-            });
-        }
-        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
-        transaction
-            .execute(
-                "INSERT INTO mini_project_topology_snapshots
-                     (mini_project_id, project_id, spec_id, version, canonical_hash, pinned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    snapshot.mini_project_id.to_string(),
-                    snapshot.project_id.to_string(),
-                    snapshot.topology.spec_id.to_string(),
-                    version_column(snapshot.topology.version),
-                    snapshot.topology.canonical_hash.as_str(),
-                    text(snapshot.pinned_at),
-                ],
-            )
-            .map_err(backend)?;
+        pin_mini_project_topology_in(&transaction, snapshot)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -15392,18 +15467,7 @@ fn record_atomic_local_result(
     request: &NewLocalCommand,
     payload: &CanonicalDocument,
 ) -> RepositoryResult<CommandReceipt> {
-    if crate::commands::intent::insert_local_command(transaction, request)?.is_some() {
-        return Err(conflict(
-            "command receipt",
-            "the idempotency key appeared during one atomic local change",
-        ));
-    }
-    transaction.execute(
-        "INSERT INTO local_command_results (project_id, receipt_id, payload, payload_hash, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![request.project_id.to_string(), request.receipt_id.to_string(),
-            payload.json(), payload.hash().as_str(), text(request.created_at)],
-    ).map_err(backend)?;
+    record_pending_local_result(transaction, request, payload)?;
     let evidence = ExternalId::parse(payload.hash().as_str())?;
     crate::commands::receipts::append_transition(
         transaction,
@@ -15429,10 +15493,42 @@ fn record_atomic_local_result(
     )
 }
 
+/// Freeze the local result while follow-up effects remain unconfirmed.
+pub(crate) fn record_pending_local_result(
+    transaction: &Transaction<'_>,
+    request: &NewLocalCommand,
+    payload: &CanonicalDocument,
+) -> RepositoryResult<()> {
+    if crate::commands::intent::insert_local_command(transaction, request)?.is_some() {
+        return Err(conflict(
+            "command receipt",
+            "the idempotency key appeared during one atomic local change",
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO local_command_results (project_id, receipt_id, payload, payload_hash, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![request.project_id.to_string(), request.receipt_id.to_string(),
+            payload.json(), payload.hash().as_str(), text(request.created_at)],
+    ).map_err(backend)?;
+    transaction
+        .execute(
+            "UPDATE command_receipts SET result_ref = ?3
+         WHERE project_id = ?1 AND id = ?2 AND state = 'intent_persisted'",
+            params![
+                request.project_id.to_string(),
+                request.receipt_id.to_string(),
+                payload.hash().as_str()
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
 /// Existing atomic results remain readable from their historical outbox. A
 /// present local result always wins, including when its hash is corrupt: the
 /// parser must refuse that corruption rather than fall back to older bytes.
-fn local_or_legacy_command_result(
+pub(crate) fn local_or_legacy_command_result(
     connection: &Connection,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<Option<(String, String)>> {
@@ -24745,58 +24841,7 @@ impl TeamDefinitionRepository for SqliteStore {
         snapshot: &MiniProjectTeamDefinitionSnapshot,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        let owns_mini_project = transaction
-            .query_row(
-                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
-                params![
-                    snapshot.project_id.to_string(),
-                    snapshot.mini_project_id.to_string()
-                ],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(backend)?
-            .is_some();
-        if !owns_mini_project {
-            return Err(RepositoryError::NotFound {
-                subject: "mini project",
-            });
-        }
-        team_definition_in(&transaction, snapshot.project_id, &snapshot.definition)?;
-        if snapshot.operational_domain_bundle_hash.is_some() {
-            let migrating: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM team_definition_migration_intents
-                 WHERE project_id = ?1 AND mini_project_id = ?2 AND state IN ('recorded', 'applying'))",
-                params![snapshot.project_id.to_string(), snapshot.mini_project_id.to_string()],
-                |row| row.get(0),
-            ).map_err(backend)?;
-            if migrating {
-                return Err(conflict(
-                    "mini project team definition",
-                    "operational_domain_migration_in_flight",
-                ));
-            }
-        }
-        transaction
-            .execute(
-                "INSERT INTO mini_project_team_definition_snapshots
-                     (mini_project_id, project_id, definition_id, version, canonical_hash,
-                      pinned_at, operational_domain_bundle_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    snapshot.mini_project_id.to_string(),
-                    snapshot.project_id.to_string(),
-                    snapshot.definition.definition_id.to_string(),
-                    version_column(snapshot.definition.version),
-                    snapshot.definition.canonical_hash.as_str(),
-                    text(snapshot.pinned_at),
-                    snapshot
-                        .operational_domain_bundle_hash
-                        .as_ref()
-                        .map(ContentHash::as_str),
-                ],
-            )
-            .map_err(backend)?;
+        pin_mini_project_team_definition_in(&transaction, snapshot)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }

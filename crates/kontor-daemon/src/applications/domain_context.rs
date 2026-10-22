@@ -10,6 +10,104 @@ pub(super) struct ProjectDomainSelection {
 }
 
 impl Services {
+    pub(super) fn epic_domain_binding(
+        &self,
+        project: ProjectId,
+        name: &ExternalName,
+        expected: Option<&ContentHash>,
+    ) -> Result<
+        (
+            kontor_store::EpicDomainBinding,
+            Option<ProjectTeamDefinitionDefault>,
+        ),
+        ApiError,
+    > {
+        self.project_row(project)?;
+        let state = self.state()?;
+        let epic = state
+            .with_store(|store| store.list_mini_projects(project))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|epic| &epic.name == name);
+        let (definition, bundle, roster, selection) = if let Some(epic) = epic {
+            let pin = state
+                .with_store(|store| store.get_mini_project_team_definition(project, epic.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            let bundle = pin.operational_domain_bundle_hash.ok_or_else(|| {
+                self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+            })?;
+            (
+                pin.definition,
+                bundle,
+                self.frozen_roster(project, epic.id)?.revision,
+                None,
+            )
+        } else {
+            let selected = state
+                .with_store(|store| store.get_project_team_definition_default(project))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            let bundle = selected
+                .operational_domain_bundle_hash
+                .clone()
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            let roster = self
+                .stored_core_team(project)?
+                .ok_or_else(|| self.deny(ApiErrorCode::RoleSlotUnbound, "role_purpose_unpinned"))?;
+            (selected.definition.clone(), bundle, roster, Some(selected))
+        };
+        if expected.is_some_and(|expected| expected != &bundle) {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "operational_domain_epic_target_moved",
+            ));
+        }
+        self.domain_for_definition(project, &definition, Some(&bundle), Some(&roster))?;
+        Ok((
+            kontor_store::EpicDomainBinding {
+                definition,
+                operational_domain_bundle_hash: bundle,
+                roster,
+            },
+            selection,
+        ))
+    }
+
+    /// Replay uses its recorded context, without reading today's selection or YAML.
+    pub(super) fn verify_epic_domain_replay(
+        &self,
+        project: ProjectId,
+        epic: MiniProjectId,
+        binding: &kontor_store::EpicDomainBinding,
+    ) -> Result<(), ApiError> {
+        let pin = self
+            .state()?
+            .with_store(|store| store.get_mini_project_team_definition(project, epic))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+            })?;
+        if pin.definition != binding.definition
+            || pin.operational_domain_bundle_hash.as_ref()
+                != Some(&binding.operational_domain_bundle_hash)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "operational_domain_creation_result_mismatch",
+            ));
+        }
+        // Never reconstruct a missing frozen roster from the current project.
+        self.frozen_roster(project, epic)?;
+        Ok(())
+    }
+
     fn domain_for_definition(
         &self,
         project: ProjectId,

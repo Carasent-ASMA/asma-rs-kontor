@@ -4,7 +4,7 @@ use super::domain_bundle_tests::{resolve, start};
 use super::*;
 use kontor_core::repository::NewProject;
 
-fn project(services: &Services, domain: &OperationalDomainPack) -> ProjectId {
+pub(super) fn project(services: &Services, domain: &OperationalDomainPack) -> ProjectId {
     let id = ProjectId::generate();
     services.state().unwrap().with_store(|store| {
         store
@@ -33,7 +33,9 @@ fn project(services: &Services, domain: &OperationalDomainPack) -> ProjectId {
     });
     id
 }
-fn request(domain: &OperationalDomainPack) -> ProjectTeamDefinitionSelectionPreviewRequest {
+pub(super) fn request(
+    domain: &OperationalDomainPack,
+) -> ProjectTeamDefinitionSelectionPreviewRequest {
     ProjectTeamDefinitionSelectionPreviewRequest {
         target_definition: TeamDefinitionRefDto {
             id: domain.team_definitions[0].definition_id,
@@ -41,7 +43,7 @@ fn request(domain: &OperationalDomainPack) -> ProjectTeamDefinitionSelectionPrev
         },
     }
 }
-async fn select(
+pub(super) async fn select(
     services: &Services,
     project: ProjectId,
     preview: ContentHash,
@@ -65,7 +67,7 @@ fn pin(services: &Services, project: ProjectId) -> Option<ProjectTeamDefinitionD
         .with_store(|store| store.get_project_team_definition_default(project))
         .unwrap()
 }
-fn activate(services: &Services, hash: &ContentHash) {
+pub(super) fn activate(services: &Services, hash: &ContentHash) {
     let standing = services.fleet.status().record;
     services
         .fleet

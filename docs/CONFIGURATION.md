@@ -609,11 +609,33 @@ the project default or activation later changes; it never re-selects current
 YAML. Historical receipts without a frozen result refuse
 `operational_domain_selection_result_unavailable` instead of inventing one.
 
-Atomic new-epic copying and general operational-domain runtime/admission consumers
-remain a later WP-08 checkpoint. Project selection and artifact publication
-alone do not change runtime topology selection.
-Legacy compiled fixtures remain available to explicit embedding/tests until
-that cleanup is complete.
+Epic preview and apply require an explicit project domain selection and published
+Core Team with frozen purposes. They verify the immutable bundle, exact published
+Team Definition/topology/catalog and roster agreement. New creation copies the
+domain hash, definition, topology and exact roster in the same transaction as the
+graph and its creation intent/result/receipt. Schema 141 admits epic creation to
+the existing exact-intent local-result ledger; no new table, pointer or backfill
+is introduced. A changed selection or roster between resolution and commit
+refuses and rolls back all of these writes. The receipt remains
+`intent_persisted` while kickoff holds, origin fencing or governance are
+unconfirmed. The existing success hook confirms it only after the application
+returns successfully; a retry resumes the original frozen creation context.
+
+Preview and apply return `operational_domain_bundle_hash`. A client can send it
+as `expected_operational_domain_bundle_hash` to bind apply to that preview;
+a different target refuses `operational_domain_epic_target_moved`. Omission
+selects the explicitly configured project domain at apply time. The creation
+intent and graph digest bind the resolved domain even when the client omits the
+precondition. An existing epic uses its frozen pin, independently of later
+activation, selection, YAML edits or restart. Receipt replay verifies its original
+result and pin; it does not resolve today's selection. Historical receipt readback
+remains available without granting new domain effects. An unpinned existing epic
+cannot acquire domain authority by reapplying it: `operational_domain_unpinned`.
+
+General operational-domain runtime/admission consumers and native consultation
+remain later WP-08 checkpoints. This creation transaction does not change their
+selection rules. Legacy compiled fixtures remain available to explicit
+embedding/tests until that cleanup is complete.
 
 ### The PR desk contract
 

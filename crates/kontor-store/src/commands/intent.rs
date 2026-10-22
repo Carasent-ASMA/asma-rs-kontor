@@ -201,7 +201,10 @@ pub(crate) fn complete_local_command(
             rule: "a successful local operation may only complete its persisted intent",
         });
     }
-    let evidence = ExternalId::parse(receipt.intent.hash().as_str())?;
+    let evidence = receipt
+        .result_ref
+        .clone()
+        .map_or_else(|| ExternalId::parse(receipt.intent.hash().as_str()), Ok)?;
     let completed = store
         .apply_command_transition(&crate::commands::receipts::CommandTransition {
             project_id: receipt.project_id,
