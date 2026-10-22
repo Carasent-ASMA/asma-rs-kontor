@@ -141,6 +141,12 @@ filters; the native **← Kontor** control returns to the last host-local view.
 Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
 lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
 **Desks & workspaces** and **Role**; switching back restores the last grouping.
+The labelled **Grouped / Flat** segments stay above the scrolling list on mobile
+and desktop, beside the result count when present. Their checked state, keyboard
+focus outline and hover/focus help make the choice visible. Use Tab to reach the
+selected segment, arrows to switch and Space or Enter to select. Layout is
+remembered through the existing host view and saved organization preferences;
+**Group by** and **Sort by** remain in Filters & view.
 Search, state, task, assignment and association filters apply in both layouts,
 and changing layout or grouping preserves those filters and the sort. Grouped
 search/state/task matches open their branches temporarily; these disclosures do
