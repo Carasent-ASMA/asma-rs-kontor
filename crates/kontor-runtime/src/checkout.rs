@@ -421,7 +421,11 @@ fn ensure_commit(root: &Path, commit: &CommitSha) -> Result<()> {
 
 fn git(root: &Path) -> Command {
     let mut command = Command::new("git");
-    command.current_dir(root).stdin(Stdio::null());
+    // A frozen commit names its original objects, independent of mutable refs/replace.
+    command
+        .arg("--no-replace-objects")
+        .current_dir(root)
+        .stdin(Stdio::null());
     for key in [
         "GIT_DIR",
         "GIT_WORK_TREE",
