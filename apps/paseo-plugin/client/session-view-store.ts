@@ -61,7 +61,7 @@ export function isResultMode(view: SessionFilters & { readonly task?: SessionTas
 /** Count narrowing choices only. Presentation and explicit route context are separate. */
 export function sessionFilterCount(view: SessionViewState): number {
   return [view.query.trim().length > 0, view.status !== "all", !!view.task,
-    view.shortcut != null, view.streams != null, view.includeArchived !== DEFAULT_SESSION_FILTERS.includeArchived,
+    view.shortcut != null, view.streams != null, view.membership === "archived",
     workScopeOf(view) !== "all", assignmentOf(view) !== "any"].filter(Boolean).length;
 }
 
@@ -69,7 +69,7 @@ export function sessionFilterCount(view: SessionViewState): number {
 export function clearSessionFilterPatch(view: SessionViewState): Partial<SessionViewState> {
   if (sessionFilterCount(view) === 0) return {};
   return { query: "", status: "all", task: null, shortcut: null, streams: null,
-    includeArchived: DEFAULT_SESSION_FILTERS.includeArchived, work: "all", assignment: "any", scrollOffset: 0, peek: null };
+    includeArchived: DEFAULT_SESSION_FILTERS.includeArchived, membership: DEFAULT_SESSION_FILTERS.membership, work: "all", assignment: "any", scrollOffset: 0, peek: null };
 }
 
 /** What a new app session shows: filters cleared, My work, Any assignment, Current order and the saved grouping; Working as stays. */
@@ -77,7 +77,7 @@ export function resetSessionViewPatch(view: SessionViewState): Partial<SessionVi
   return { ...clearSessionFilterPatch(view), status: DEFAULT_SESSION_FILTERS.status, work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, arranging: false, scrollOffset: 0, peek: null };
 }
 
-const RESULT_KEYS = ["query", "status", "task", "includeArchived", "shortcut", "streams", "grouping", "work", "assignment", "sort", "sortDirection"] as const;
+const RESULT_KEYS = ["query", "status", "task", "includeArchived", "membership", "shortcut", "streams", "grouping", "work", "assignment", "sort", "sortDirection"] as const;
 
 /**
  * The patch to apply for a view change. Entering results keeps the tree offset

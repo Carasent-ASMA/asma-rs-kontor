@@ -42,6 +42,7 @@ import {
   archivedLabel,
   earlierErrorLabel,
   matchesQuery,
+  matchesMembership,
   matchesStatus,
   MORE_STATUS_FILTERS,
   QUICK_STATUS_FILTERS,
@@ -297,7 +298,7 @@ export function activeFilterParts(input: {
     input.status !== "all" ? statusFilterLabel(input.status) : null,
     input.shortcut !== null ? shortcutLabel(input.shortcut) : null,
     input.streams !== null ? `${input.streams.length} workstream${input.streams.length === 1 ? "" : "s"}` : null,
-    input.includeArchived ? "Archived included" : null,
+    input.includeArchived ? "Archived history" : null,
   ].filter((part): part is string => part !== null);
 }
 
@@ -1443,15 +1444,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     hostView.hostId === host.id && hostView.viewScope === viewScope
       ? hostView.view
       : readSessionView(viewScope);
+  const includeArchived = view.membership === "archived";
   const localDirectory = useSessionDirectory({
     hostId: host.id,
     hostStatus: hostSummary?.status ?? "offline",
-    includeArchived: view.includeArchived,
+    includeArchived,
     enabled: directory === undefined,
   });
   const { state: rawState, refresh } = directory ?? localDirectory;
   const availability = useSessionAvailability(host.id, rawState.entries, hostOnline && rawState.status === "ready" && view.status === "attention");
-  const state = useMemo(() => ({ ...rawState, entries: availability.entries }), [rawState, availability.entries]);
+  const state = useMemo(() => ({ ...rawState, entries: availability.entries.filter((entry) => matchesMembership(entry, view.membership)) }), [rawState, availability.entries, view.membership]);
   const lifecycleHelp = useControlHelp("");
   const lifecycle = useSessionLifecycle(host.id, (rows) => {
     // A fresh absence/archive can remove the row before the review measures its trigger.
@@ -1484,7 +1486,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const personRef = useRef<View | null>(null);
   const workingAsRef = useRef<View | null>(null);
   const editsDisabled = !hostOnline || organization?.state.status !== "ready" || organization.state.saving;
-  useEffect(() => { onIncludeArchived?.(view.includeArchived); }, [view.includeArchived, onIncludeArchived]);
+  useEffect(() => { onIncludeArchived?.(includeArchived); }, [includeArchived, onIncludeArchived]);
   const savePreference = (patch: Partial<OrganizationSettings>) => {
     if (!organization || editsDisabled) return;
     void organization.save(patch).then((saved) => setSaveMessage(saved ? null : "Organization was not saved. Reload preferences in Settings and review the conflict; no newer revision was overwritten."));
@@ -2184,7 +2186,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     streams !== null ? `${streams.length} workstream${streams.length === 1 ? "" : "s"}` : null,
     shortcut === "Desks" ? "Durable desks only" : null,
     view.status === "closed" ? "Closed sessions" : view.status === "initializing" ? "Starting sessions" : null,
-    view.includeArchived ? "Including archived" : null,
+    includeArchived ? "Archived history" : null,
   ].filter((part): part is string => !!part);
   // One explanation of the inventory counts, under About these counts in the association selector.
   const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; in All work the tree also lists empty native workspaces until workstream or assignment choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. ${work === "all" ? "Plan-only choices are included." : "My work lists choices with sessions here; All work adds plan-only choices."}${workstreamNote ? ` ${workstreamNote}` : ""} An assignment filter adds its own count to each choice and never changes these.`;
@@ -2197,7 +2199,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const activeCount = sessionFilterCount(view);
   const clearable = activeCount > 0;
   const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
-  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label, work: [work === "mine" ? "My work" : null, assignmentPart].filter(Boolean).join(" · ") || null });
+  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived, task: task?.label, work: [work === "mine" ? "My work" : null, assignmentPart].filter(Boolean).join(" · ") || null });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = activeCount;
   // While the compact toolbar is open, a short list still has room for the small drag that closes it.
@@ -2533,12 +2535,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           </OptionLine>
           <ToggleRow
             testID="sessions-advanced-archived"
-            label="Include archived sessions"
-            description="Archived is separate from the native closed state."
-            checked={view.includeArchived}
+            label="Archived history"
+            description="Only confirmed archived sessions. State, search and assignment still apply."
+            checked={includeArchived}
             colors={colors}
             {...focusProps}
-            onPress={() => updateFilter({ includeArchived: !view.includeArchived })}
+            onPress={() => updateFilter({ membership: includeArchived ? "sessions" : "archived" })}
           />
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
             <FilterChip testID="sessions-arrange" label={arranging ? "Done arranging" : "Arrange"} compact={compact} active={arranging} colors={colors} {...focusProps} disabled={(!compact && toolbarCollapsed) || (!arranging && (narrowed || editsDisabled || sort !== "current"))} onPress={() => { pinFilterInteraction(); setOrderSelection(null); updateView({ arranging: !arranging }); }} />

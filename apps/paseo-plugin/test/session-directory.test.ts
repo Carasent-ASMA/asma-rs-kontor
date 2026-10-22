@@ -293,6 +293,18 @@ function waitForState(
 }
 
 describe("collectDirectory", () => {
+  it("enforces native archive membership on every page even if an upstream page includes an archive", async () => {
+    const pages = [[entry("live-a"), entry("archived-a", { archivedAt: "2026-10-18T11:00:00Z" })],
+      [entry("closed-readable", { status: "closed" }), entry("archived-b", { archivedAt: "2026-10-18T11:00:00Z" })]];
+    const list = vi.fn(async (options: PaseoAgentListOptions) => {
+      const index = cursorIndex(options.page?.cursor);
+      return { requestId: "fixture", entries: pages[index], pageInfo: pageInfo(index, pages.length) };
+    });
+    const client = { agents: { list } } as unknown as DirectoryClient;
+    expect((await collectDirectory(client, false)).entries.map((row) => row.id)).toEqual(["live-a", "closed-readable"]);
+    expect((await collectDirectory(client, true)).entries.map((row) => row.id)).toEqual(["live-a", "archived-a", "closed-readable", "archived-b"]);
+    expect(list).toHaveBeenCalledTimes(4);
+  });
   it("reads every page instead of stopping at the visible page", async () => {
     const pages = [
       Array.from({ length: 200 }, (_, index) => entry(`page-1-${index}`)),
@@ -331,6 +343,23 @@ describe("collectDirectory", () => {
 });
 
 describe("SessionDirectory", () => {
+  it("drops archived rows immediately when leaving history even while the replacement read waits or fails", async () => {
+    const fake = fakeDirectory([[entry("live"), entry("archived", { archivedAt: "2026-10-18T11:00:00Z" })]]);
+    const directory = new SessionDirectory({ client: () => fake.client, includeArchived: true, onChange: () => {} });
+    await directory.start();
+    expect(directory.getState().entries.map((row) => row.id).sort()).toEqual(["archived", "live"]);
+    const held = fake.holdNextSubscribe();
+    const changing = directory.setIncludeArchived(false);
+    await held.started;
+    try {
+      expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
+    } finally {
+      fake.failNext(); held.release(); await changing;
+    }
+    expect(directory.getState().status).toBe("stale");
+    expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
+    await directory.dispose();
+  });
   it("keeps prompt and current-turn times separate from metadata updates, and clears a lost turn start", () => {
     const seed = entry("times", { status: "running" });
     const prompt = "2026-10-18T08:00:00.000Z";

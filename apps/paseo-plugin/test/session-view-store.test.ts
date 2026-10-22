@@ -71,7 +71,7 @@ describe("filtered results and the tree position", () => {
 
   it.each([
     { query: "missing" }, { status: "favorites" as const }, { task },
-    { shortcut: "desk-project:example" }, { streams: [] }, { includeArchived: true },
+    { shortcut: "desk-project:example" }, { streams: [] }, { membership: "archived" as const },
   ])("counts and clears a single visible or advanced-only criterion %j", (patch) => {
     const view = { ...readSessionView("host-a"), status: "all" as const, grouping: "flat" as const, advancedOpen: true, ...patch };
     expect(sessionFilterCount(view)).toBe(1);
@@ -81,11 +81,11 @@ describe("filtered results and the tree position", () => {
   });
 
   it("clears every filter idempotently while keeping view preferences and the existing tree anchor", () => {
-    const current = { ...readSessionView("host-a"), query: "missing", status: "favorites" as const, task, shortcut: "Adam", streams: [], includeArchived: true,
+    const current = { ...readSessionView("host-a"), query: "missing", status: "favorites" as const, task, shortcut: "Adam", streams: [], includeArchived: true, membership: "archived" as const,
       grouping: "flat" as const, advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 40, treeOffset: 600 };
     expect(sessionFilterCount(current)).toBe(6);
     const cleared = { ...current, ...sessionViewTransition(current, clearSessionFilterPatch(current)) };
-    expect(cleared).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false,
+    expect(cleared).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false, membership: "sessions",
       grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 600, peek: null });
     expect(sessionFilterCount(cleared)).toBe(0);
     const twice = { ...cleared, ...sessionViewTransition(cleared, clearSessionFilterPatch(cleared)) };
@@ -145,6 +145,19 @@ describe("work scope, order and reset", () => {
     expect(sessionFilterCount({ ...all, work: "all", assignment: "me" })).toBe(1);
     expect(sessionFilterCount({ ...all, assignment: "person:account-b" })).toBe(2);
     expect(sessionFilterCount({ ...all, status: "current", work: "all", assignment: "me" })).toBe(2);
+  });
+
+  it("clears archive membership and resets to ordinary Current without changing viewing identity or presentation on Clear", () => {
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    const view = { ...readSessionView("host-a"), status: "all" as const, work: "all" as const, membership: "archived" as const,
+      includeArchived: true, assignment: "person:account-b" as const, sort: "title" as const, grouping: "role" as const };
+    expect(sessionFilterCount(view)).toBe(2);
+    const cleared = { ...view, ...clearSessionFilterPatch(view) };
+    expect(cleared).toMatchObject({ membership: "sessions", status: "all", work: "all", assignment: "any", sort: "title", grouping: "role" });
+    expect(sessionFilterCount(cleared)).toBe(0);
+    expect(sessionFilterCount({ ...cleared, includeArchived: true })).toBe(0);
+    expect({ ...view, ...resetSessionViewPatch(view) }).toMatchObject({ membership: "sessions", status: "current", work: "mine", assignment: "any", sort: undefined, grouping: undefined });
+    expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
   });
 
   it("clears to All work and Any assignment and keeps sort, grouping and Working as", () => {

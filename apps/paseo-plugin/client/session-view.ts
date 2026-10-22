@@ -2,6 +2,7 @@ import { freshAvailability } from "../shared/session-lifecycle";
 import {
   hasEarlierError,
   hasSessionAttention,
+  isArchivedSession,
   type DirectoryEntry,
   type SessionStatus,
 } from "./session-directory";
@@ -31,10 +32,15 @@ export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
 ];
 export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error"];
 
+export type SessionMembership = "sessions" | "archived";
+
 export type SessionFilters = {
   readonly query: string;
   readonly status: StatusFilter;
+  /** Native inventory query scope only; never a union of ordinary sessions and archives. */
   readonly includeArchived: boolean;
+  /** Absent in older views means ordinary, nonarchived sessions. */
+  readonly membership?: SessionMembership;
   readonly advancedOpen: boolean;
 };
 
@@ -42,6 +48,7 @@ export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
   status: "current",
   includeArchived: false,
+  membership: "sessions",
   advancedOpen: false,
 };
 
@@ -80,6 +87,11 @@ export function matchesQuery(entry: DirectoryEntry, query: string): boolean {
   return tokens.every((token) => entry.searchText.includes(token));
 }
 
+/** Archive membership is chosen before state, search, scope, assignment or presentation order. */
+export function matchesMembership(entry: DirectoryEntry, membership: SessionMembership = "sessions"): boolean {
+  return isArchivedSession(entry) === (membership === "archived");
+}
+
 /**
  * Error follows the current native lifecycle. Earlier errors remain separately
  * reachable without inflating current Error or Attention counts.
@@ -92,7 +104,7 @@ export function matchesStatus(
   switch (status) {
     case "current":
       // Age and provider-history uncertainty never prove a session broken.
-      return entry.archivedAt === null && freshAvailability(entry)?.state !== "missing" && !freshAvailability(entry)?.archivedAt && (entry.needsInput || entry.status !== "closed" && entry.status !== "error");
+      return !isArchivedSession(entry) && freshAvailability(entry)?.state !== "missing" && (entry.needsInput || entry.status !== "closed" && entry.status !== "error");
     case ALL_STATUS_FILTER:
       return true;
     case "favorites":
@@ -115,7 +127,7 @@ export function matchesFilters(
   filters: SessionFilters,
   favorites: readonly string[] = [],
 ): boolean {
-  return matchesStatus(entry, filters.status, favorites) && matchesQuery(entry, filters.query);
+  return matchesMembership(entry, filters.membership) && matchesStatus(entry, filters.status, favorites) && matchesQuery(entry, filters.query);
 }
 
 export function filterDirectoryEntries(
@@ -132,7 +144,7 @@ export function activeFilterCount(filters: SessionFilters): number {
   if (filters.status !== ALL_STATUS_FILTER) {
     count += 1;
   }
-  if (filters.includeArchived) {
+  if (filters.membership === "archived") {
     count += 1;
   }
   return count;
