@@ -1085,3 +1085,429 @@ async fn formal_committee_recovery_unknown_rank_or_vendor_refuses_before_fencing
         });
     }
 }
+
+/// The canonical recovery document carries permission authority separately from
+/// credential-propagation route lineage, including a crash after retirement.
+#[tokio::test]
+async fn formal_committee_recovery_permission_pin_survives_restart_and_rejects_tamper() {
+    let realm = consultation_realm(
+        "/tmp/kontor-recovery-permission-pin",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let policy = permitted_committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "codex-sol"),
+        (&committee_fleet_key("reviewer-b"), "cursor-grok"),
+        (&committee_fleet_key("judge"), "codex-sol"),
+    ]);
+    let hash =
+        activate_through_the_registry(&realm.world, &policy, "recovery-permission-active").await;
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Frozen recovery permission",
+        "recovery-permission-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = committee_readback(&realm.world, &realm.project, &run).await;
+    let slot = RoleSlotId::parse("reviewer-b").unwrap();
+    realm.world.fake.refusing_launch_of(&slot);
+    let pending = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-b",
+        "credential_propagation",
+        serde_json::json!([]),
+        "recovery-permission-retry",
+    )
+    .await;
+    assert_eq!(pending.status, 503, "{}", pending.body);
+    let predecessor = formal_seat(&read, "reviewer-b");
+    let profile = |realm: &ConsultationRealm| {
+        realm
+            .world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.get_consultation_recovery_attempt(
+                    project_id_of(&realm.project),
+                    ConsultationRunId::Committee(
+                        kontor_core::id::CommitteeRunId::parse(&run).unwrap(),
+                    ),
+                    &slot,
+                    &ExternalId::parse(
+                        predecessor["observed_binding"]["native_id"]
+                            .as_str()
+                            .unwrap(),
+                    )
+                    .unwrap(),
+                )
+            })
+            .unwrap()
+            .unwrap()
+    };
+    let frozen = profile(&realm);
+    assert_eq!(
+        frozen.recovery_profile["consultation_permission_policy"],
+        serde_json::json!({"source":"fleet_configuration","policy_hash":hash})
+    );
+    assert!(
+        frozen
+            .recovery_profile
+            .get("consultation_route_source")
+            .is_none(),
+        "a fleet match must not relabel credential propagation"
+    );
+    let path = kontor_fleet_activation::policy_path(
+        realm.world.directory.path(),
+        &ContentHash::parse(&hash).unwrap(),
+    );
+    let before = realm.world.fake.calls();
+    std::fs::write(&path, format!("{policy}\n# tampered\n")).unwrap();
+    let tampered = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-b",
+        "credential_propagation",
+        serde_json::json!([]),
+        "recovery-permission-retry",
+    )
+    .await;
+    assert_ne!(tampered.status, 200, "{}", tampered.body);
+    assert_eq!(realm.world.fake.calls(), before);
+    std::fs::remove_file(&path).unwrap();
+    let missing = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-b",
+        "credential_propagation",
+        serde_json::json!([]),
+        "recovery-permission-retry",
+    )
+    .await;
+    assert_ne!(missing.status, 200, "{}", missing.body);
+    assert_eq!(realm.world.fake.calls(), before);
+    std::fs::write(&path, &policy).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let changed = committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "codex-sol"),
+        (&committee_fleet_key("reviewer-b"), "codex-sol"),
+        (&committee_fleet_key("judge"), "codex-sol"),
+    ]);
+    activate_through_the_registry(&realm.world, &changed, "recovery-permission-next").await;
+    write_fleet(&realm.world, &changed);
+    realm.world.fake.allowing_launch_of(&slot);
+    let ConsultationRealm {
+        world,
+        project,
+        epic,
+        caller,
+    } = realm;
+    let realm = ConsultationRealm {
+        world: world.restart_native_consultations().await,
+        project,
+        epic,
+        caller,
+    };
+    let active_path = realm
+        .world
+        .directory
+        .path()
+        .join(kontor_fleet_activation::FLEET_ACTIVATION_FILE);
+    let active_bytes = std::fs::read(&active_path).unwrap();
+    std::fs::write(&active_path, b"unreadable current activation").unwrap();
+    assert!(kontor_fleet_activation::read_activation(realm.world.directory.path()).is_err());
+    let resumed = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-b",
+        "credential_propagation",
+        serde_json::json!([]),
+        "recovery-permission-retry",
+    )
+    .await;
+    std::fs::write(&active_path, active_bytes).unwrap();
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(
+        profile(&realm).recovery_profile_hash,
+        frozen.recovery_profile_hash
+    );
+    assert_eq!(profile(&realm).recovery_profile, frozen.recovery_profile);
+    let after = committee_readback(&realm.world, &realm.project, &run).await;
+    assert_eq!(
+        formal_seat(&after, "reviewer-b")["model_route"],
+        predecessor["model_route"]
+    );
+    assert_ne!(
+        formal_seat(&after, "reviewer-b")["observed_binding"]["native_id"],
+        predecessor["observed_binding"]["native_id"]
+    );
+    for other in ["reviewer-a", "judge"] {
+        assert_eq!(formal_seat(&after, other), formal_seat(&read, other));
+    }
+    let calls = realm.world.fake.calls();
+    let replay = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-b",
+        "credential_propagation",
+        serde_json::json!([]),
+        "recovery-permission-retry",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(realm.world.fake.calls(), calls);
+}
+
+/// Test-only pre-boundary intent: old writers persisted a profile and constraint
+/// identity without permission authority. New preparation cannot produce this grant.
+#[tokio::test]
+async fn formal_committee_legacy_profile_only_recovery_refuses_without_effects() {
+    let realm =
+        consultation_realm("/tmp/kontor-recovery-legacy-pin", &[("Cursor", "cursor")]).await;
+    let policy = permitted_committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "codex-sol"),
+        (&committee_fleet_key("reviewer-b"), "cursor-grok"),
+        (&committee_fleet_key("judge"), "codex-sol"),
+    ]);
+    let hash =
+        activate_through_the_registry(&realm.world, &policy, "legacy-permission-active").await;
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Legacy recovery evidence",
+        "legacy-permission-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = committee_readback(&realm.world, &realm.project, &run).await;
+    let project = project_id_of(&realm.project);
+    let seat = formal_seat(&read, "reviewer-b");
+    let binding = SeatBindingId::parse(seat["seat_binding_id"].as_str().unwrap()).unwrap();
+    let predecessor = realm
+        .world
+        .daemon
+        .state()
+        .with_store(|s| s.get_consultation_seat_by_binding(project, binding))
+        .unwrap()
+        .unwrap();
+    let native = predecessor
+        .native_identity
+        .as_ref()
+        .unwrap()
+        .native_id
+        .clone();
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version":1,"operation":"recover_consultation_seat","project":realm.project,
+        "committee_run":run,"seat_binding_id":binding.to_string(),"expected_native_id":native,
+        "reason":"credential_propagation","recovery_profile":[],
+    }))
+    .unwrap();
+    let profile = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version":1,"ordered_rungs":[predecessor.model_rung],"constraint_policy_hash":hash,
+        "constraint_candidate":{"rung":predecessor.model_rung,"step":1,"sub_step":1,"vendor":"xai","independence":"xai"},
+    })).unwrap();
+    let attempt = realm
+        .world
+        .daemon
+        .state()
+        .with_store(|s| {
+            s.prepare_consultation_recovery_attempt(
+                &kontor_core::repository::NewConsultationRecoveryAttempt {
+                    project_id: project,
+                    predecessor: predecessor.clone(),
+                    expected_revision: AggregateRevision::parse(read["revision"].as_u64().unwrap())
+                        .unwrap(),
+                    recovery_reason: "credential_propagation".into(),
+                    request_intent_hash: intent.hash().clone(),
+                    recovery_profile: profile.clone(),
+                    selected_model_rung: predecessor.model_rung.clone(),
+                    prepared_at: kontor_api::now(),
+                },
+            )
+        })
+        .unwrap();
+    let before = committee_readback(&realm.world, &realm.project, &run).await;
+    let calls = realm.world.fake.calls();
+    let refused = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-b",
+        "credential_propagation",
+        serde_json::json!([]),
+        "legacy-permission-retry",
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused.body.contains("consultation_permission_unpinned"),
+        "{}",
+        refused.body
+    );
+    assert_eq!(realm.world.fake.calls(), calls);
+    assert_eq!(
+        committee_readback(&realm.world, &realm.project, &run).await,
+        before
+    );
+    realm.world.daemon.state().with_store(|s| {
+        let unchanged = s
+            .get_consultation_recovery_attempt(
+                project,
+                predecessor.run_id,
+                &predecessor.role_slot_id,
+                &native,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unchanged.recovery_profile_hash,
+            attempt.recovery_profile_hash
+        );
+        assert_eq!(unchanged.recovery_profile, attempt.recovery_profile);
+        assert!(
+            unchanged
+                .recovery_profile
+                .get("consultation_permission_policy")
+                .is_none()
+        );
+        assert!(
+            s.get_consultation_recovery_successor(
+                project,
+                predecessor.run_id,
+                &predecessor.role_slot_id,
+                &native
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            s.get_receipt_by_key(&IdempotencyKey::parse("legacy-permission-retry").unwrap())
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
+#[tokio::test]
+async fn formal_committee_materialization_profile_freezes_permission_policy() {
+    let realm = consultation_realm(
+        "/tmp/kontor-materialization-policy-pin",
+        &[("Recovery account", "opencode-recovery")],
+    )
+    .await;
+    let policy = permitted_committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "codex-sol"),
+        (&committee_fleet_key("reviewer-b"), "claude-then-codex"),
+        (&committee_fleet_key("judge"), "codex-sol"),
+    ]);
+    let policy = policy
+        .replace("provider: cursor", "provider: opencode")
+        .replace("id: grok-4.7", "id: example/recovery")
+        .replace("accounts: [cursor]", "accounts: [opencode-recovery]")
+        .replace("account: cursor,", "account: opencode-recovery,");
+    activate_through_the_registry(&realm.world, &policy, "materialization-permission-active").await;
+    let slot = RoleSlotId::parse("reviewer-a").unwrap();
+    realm.world.fake.refusing_launch_of(&slot);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Materialization permission",
+        "materialization-permission-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 503, "{}", invoked.body);
+    let project = project_id_of(&realm.project);
+    let run = realm
+        .world
+        .daemon
+        .state()
+        .with_store(|s| {
+            s.get_consultation_run_by_key(
+                project,
+                &IdempotencyKey::parse("materialization-permission-invoke").unwrap(),
+            )
+        })
+        .unwrap()
+        .unwrap();
+    let read = committee_readback(&realm.world, &realm.project, &run.id.as_text()).await;
+    let seat = formal_seat(&read, "reviewer-b");
+    assert!(seat["observed_binding"].is_null());
+    let next = policy.replace(
+        &format!("{}: claude-then-codex", committee_fleet_key("reviewer-b")),
+        &format!("{}: cursor-grok", committee_fleet_key("reviewer-b")),
+    );
+    let hash =
+        activate_through_the_registry(&realm.world, &next, "materialization-permission-next").await;
+    refresh_committee_fixture_quota(&realm.world, &realm.project).await;
+    let endpoint = format!(
+        "/v1/projects/{}/committee-runs/{}/seats/{}/reroute-unmaterialized",
+        realm.project,
+        run.id.as_text(),
+        seat["seat_binding_id"].as_str().unwrap()
+    );
+    let body = serde_json::json!({"expected_revision":read["revision"],"expected_occupancy_generation":seat["occupancy_generation"],
+        "expected_model_route":seat["model_route"],"reason":"permission_mode_unsupported","recovery_profile":[{"provider":"opencode-recovery","model":"example/recovery"}]});
+    let before = realm.world.fake.calls();
+    let rerouted = Call::post(&endpoint, &body)
+        .signed_as(&realm.world, "admin")
+        .with_key("materialization-permission-reroute")
+        .send(&realm.world)
+        .await;
+    assert_eq!(rerouted.status, 200, "{}", rerouted.body);
+    assert_eq!(realm.world.fake.calls(), before);
+    let (profile, _) = realm
+        .world
+        .daemon
+        .state()
+        .with_store(|s| {
+            let seat = s
+                .get_consultation_seat_by_binding(
+                    project,
+                    SeatBindingId::parse(seat["seat_binding_id"].as_str().unwrap()).unwrap(),
+                )?
+                .unwrap();
+            s.get_consultation_generation_profile(project, &seat)
+        })
+        .unwrap()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(profile.json()).unwrap();
+    assert_eq!(value["consultation_permission_policy"]["policy_hash"], hash);
+    assert!(value.get("consultation_route_source").is_none());
+    let changed = committee_fleet_yaml(&[]);
+    activate_through_the_registry(&realm.world, &changed, "materialization-permission-later").await;
+    realm.world.fake.allowing_launch_of(&slot);
+    let resumed = invoke_fleet_committee(
+        &realm,
+        "Materialization permission",
+        "materialization-permission-invoke",
+    )
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(
+        formal_seat(
+            &committee_readback(&realm.world, &realm.project, &run.id.as_text()).await,
+            "reviewer-b"
+        )["model_route"]["provider"],
+        "opencode-recovery"
+    );
+    let calls = realm.world.fake.calls();
+    let replay = Call::post(&endpoint, &body)
+        .signed_as(&realm.world, "admin")
+        .with_key("materialization-permission-reroute")
+        .send(&realm.world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(realm.world.fake.calls(), calls);
+}

@@ -2336,11 +2336,24 @@ to a frozen run. Missing or tampered artifacts refuse; they are never repaired
 from authoring. No new table, active pointer or editable projection is added.
 Ordinary Claude and Codex modes are unchanged.
 
-Historical exact recovery-profile exceptions remain recovery-only. Their profile
-hash is not a fleet permission-policy pin, and cannot admit a new consultation.
-Replacing those historical exceptions with fleet-owned recovery policy requires
-an explicit policy pin in the existing recovery intent/replay contract. The
-current policy is never substituted for a missing pin.
+Recovery profiles keep their own canonical evidence hash and route source.
+New native replacement and native-less materialization recovery also freeze
+`consultation_permission_policy: {source: fleet_configuration, policy_hash: ...}`
+in the existing canonical profile document before effects. This is the exact
+verified activated policy used to prepare that recovery, independently of
+whether a fleet chain selected its route. It is not an API permission knob.
+Cursor/OpenCode effects require an exact allowance in that immutable artifact.
+Pending recovery reads the recorded policy, never current authoring or activation;
+restart, later activation and a matching current fleet route cannot replace it.
+A conflicting route-policy hash, malformed source, absent/tampered artifact or
+missing allowance refuses before native retirement or launch.
+
+Historical profile-only rows remain readable and existing committed receipts
+remain replayable without new effects. Their profile hash, constraint policy hash
+or incidental fleet match is not a permission pin. They receive no backfill and
+cannot grant a new Cursor/OpenCode launch or replacement; missing permission
+metadata refuses as `consultation_permission_unpinned`. Ordinary provider modes,
+recovery fencing, whole-Committee constraints and settlement rules remain intact.
 
 Fleet-selected provider-outage recovery freezes `consultation_route_source:
 fleet_configuration` together with its existing `fleet_provenance` in the same

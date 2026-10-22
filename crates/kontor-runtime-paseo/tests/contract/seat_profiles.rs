@@ -150,9 +150,22 @@ fn every_admitted_consultation_and_committee_seat_composes_the_consultation_prof
         ("cursor", "gpt-5.6-sol"),
     ] {
         let rung = rung(provider, model);
-        let provenance = kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
-            ContentHash::of(b"a fleet policy"),
-        );
+        let mut provenance =
+            kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+                ContentHash::of(b"a fleet policy"),
+            );
+        let family = match provider {
+            "cursor" => Some("cursor"),
+            "opencode" | "opencode-zai" => Some("opencode"),
+            _ => None,
+        };
+        if let Some(family) = family {
+            let policy = consultation_permission_policy(family, &rung);
+            provenance = kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+                policy.hash().clone(),
+            );
+            provenance.fleet_permissions = Some(policy.consultation_permissions());
+        }
         for (family, run) in [
             (
                 "advisor",
