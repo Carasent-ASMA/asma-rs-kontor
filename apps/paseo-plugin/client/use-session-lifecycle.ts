@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRpc } from "@getpaseo/plugin/client";
-import { DEFAULT_RECOVERY_TARGET, executeLifecycleItem, reconcileLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, type LifecycleReview, type RecoveryTarget } from "../shared/session-lifecycle";
+import { DEFAULT_RECOVERY_TARGET, executeLifecycleItem, reconcileLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, type LifecycleReview, type LifecycleRow, type RecoveryTarget } from "../shared/session-lifecycle";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
 export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
@@ -21,6 +21,9 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
     return () => { cancel.current = true; };
   }, [hostId]);
   const fail = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure));
+  // Hermes evaluates plugin bundles with function-scoped let/const, so an updater made in the execute loop would
+  // write a later row's ID with an earlier result. Rows reach the updater only as this call's arguments.
+  const putRow = (reviewId: string, id: string, result: LifecycleRow) => setReview((current) => current?.id === reviewId ? { ...current, rows: current.rows.map((entry) => entry.id === id ? result : entry) } : current);
   const prepare = async (action: LifecycleReview["action"], scope: LifecycleReview["scope"], ids: string[]) => {
     if (active.current) return;
     active.current = true; cancel.current = false; setBusy(true); setError(null); setAction(action);
@@ -59,7 +62,7 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
         // A transport failure has an unknown outcome: stop, then read the durable receipt.
         const result = await execute({ reviewId: batch.id, agentId: id });
         if (owner.current !== host) break;
-        setReview((current) => current?.id === batch.id ? { ...current, rows: current.rows.map((entry) => entry.id === id ? result : entry) } : current);
+        putRow(batch.id, id, result);
         onChanged([result]);
       }
     } catch (failure) { fail(failure); }
@@ -73,7 +76,7 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
     try {
       const result = await check({ reviewId: row.reconcileReviewId ?? batch.id, agentId: id });
       if (owner.current !== host) return;
-      setReview((current) => current?.id === batch.id ? { ...current, rows: current.rows.map((entry) => entry.id === id ? result : entry) } : current);
+      putRow(batch.id, id, result);
       onChanged([result]);
     } catch (failure) { if (owner.current === host) fail(failure); }
     finally { active.current = false; if (owner.current === host) setBusy(false); }

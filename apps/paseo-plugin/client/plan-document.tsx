@@ -60,12 +60,17 @@ export function taskDeclaration(content: string, taskId: string): { line: number
   return null;
 }
 export function headingAnchor(text: string): string { return text.toLocaleLowerCase().replace(/[^\w\u00c0-\uffff\s-]/g, "").trim().replace(/\s+/g, "-"); }
+// Hermes evaluates plugin bundles with function-scoped let/const, so a press handler made in the match loop would
+// open the paragraph's last link. Each target reaches its handler only as this call's argument.
+function linkText(key: number, label: string, target: string, colors: Colors, onLink: (target: string) => void) {
+  return <Text key={key} accessibilityRole="link" accessibilityLabel={`${label}: ${target}`} onPress={() => onLink(target)} style={{ color: colors.accent, textDecorationLine: "underline" }}>{label}</Text>;
+}
 function Inline({ text, colors, onLink }: { text: string; colors: Colors; onLink: (target: string) => void }) {
   const pattern = /\[([^\]\n]+)\]\(([^\s()]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;
   const pieces = []; let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     pieces.push(text.slice(cursor, match.index));
-    if (match[1] && match[2]) { const target = match[2]; pieces.push(<Text key={match.index} accessibilityRole="link" accessibilityLabel={`${match[1]}: ${target}`} onPress={() => onLink(target)} style={{ color: colors.accent, textDecorationLine: "underline" }}>{match[1]}</Text>); }
+    if (match[1] && match[2]) pieces.push(linkText(match.index, match[1], match[2], colors, onLink));
     else pieces.push(<Text key={match.index} style={match[3] ? { fontWeight: "700" } : { fontFamily: "monospace" }}>{match[3] ?? match[4]}</Text>);
     cursor = match.index + match[0].length;
   }
