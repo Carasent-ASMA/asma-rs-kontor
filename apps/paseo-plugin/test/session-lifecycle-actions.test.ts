@@ -212,11 +212,13 @@ describe("reviewed exact-ID effects and durable replay", () => {
     const good = await setup(), ready = await good.preview("archive"); expect((await good.service.execute(ready.id, "a")).outcome).toBe("archived"); expect(good.records.has("a")).toBe(true);
     const files = await readdir(good.root); expect(files.some((file) => file.startsWith("result-"))).toBe(true); expect(await readFile(join(good.root, "latest.json"), "utf8")).toContain(ready.id);
   });
-  it("keeps scope explicit, missing IDs visible and archive limited to one session", async () => {
+  it("keeps scope explicit, missing IDs visible and archive bounded to selected IDs", async () => {
     const s = await setup(); expect((await s.preview()).rows.map((row) => row.id)).toEqual(["a"]);
     expect((await s.preview("resume", [], "host")).rows).toHaveLength(2);
     expect((await s.preview("resume", ["missing"])).rows[0]).toMatchObject({ id: "missing", eligible: false, nativeStatus: "missing" });
-    await expect(s.preview("archive", ["a", "b"])).rejects.toThrow("one exact session");
+    expect((await s.preview("archive", ["a", "b"])).rows.map((row) => row.id)).toEqual(["a", "b"]);
+    for (const ids of [[], Array.from({ length: 51 }, (_, n) => `fixture-${n}`)]) await expect(s.preview("archive", ids)).rejects.toThrow("1–50");
+    await expect(s.preview("archive", ["a"], "host")).rejects.toThrow("filtered scope");
     expect(previewLifecycle.input.safeParse({ action: "archive", scope: "filtered", agentIds: ["a"], target, arbitraryPath: "/etc/passwd" }).success).toBe(false);
     expect(executeLifecycleItem.input.safeParse({ reviewId: "../../x", agentId: "a" }).success).toBe(false);
   });
@@ -231,6 +233,42 @@ describe("reviewed exact-ID effects and durable replay", () => {
     expect((await reloaded.execute(review.id, "a")).outcome).toBe("uncertain");
     expect((await reloaded.execute((await s.preview("archive")).id, "a")).outcome).toBe("blocked");
     expect(s.archive).toHaveBeenCalledExactlyOnceWith("a"); expect(s.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("bounded bulk archive and managed children", () => {
+  const family = () => [agent("parent"), agent("child", { labels: { "paseo.parent-agent-id": "parent" } }), agent("grandchild", { parentAgentId: "child" } as Partial<Agent>), agent("other")];
+  it("previews without effects, orders all selected descendants first, and archives only exact selected IDs", async () => {
+    const s = await setup(family()), review = await s.preview("archive", ["parent", "child", "grandchild"]);
+    expect(review.rows.map((row) => row.id)).toEqual(["grandchild", "child", "parent"]);
+    expect(review.rows.every((row) => row.eligible)).toBe(true); expect(s.archive).not.toHaveBeenCalled();
+    for (const row of review.rows) expect(await s.service.execute(review.id, row.id)).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(s.archive.mock.calls.map(([id]) => id)).toEqual(["grandchild", "child", "parent"]);
+    expect(s.records.get("other")!.archivedAt).toBeNull(); expect(s.send).not.toHaveBeenCalled();
+  });
+  it("blocks an unselected child, an out-of-order parent, and a newly attached child", async () => {
+    const s = await setup(family()), partial = await s.preview("archive", ["parent", "other"]);
+    expect(partial.rows.find((row) => row.id === "parent")!.eligible).toBe(false);
+    expect(await s.service.execute(partial.id, "parent")).toMatchObject({ outcome: "blocked" });
+    const full = await s.preview("archive", ["parent", "child", "grandchild"]);
+    expect(await s.service.execute(full.id, "parent")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("children") });
+    await s.service.execute(full.id, "grandchild");
+    s.records.set("new", agent("new", { labels: { "paseo.parent-agent-id": "child" } }));
+    expect(await s.service.execute(full.id, "child")).toMatchObject({ outcome: "blocked" });
+    expect(s.archive.mock.calls.map(([id]) => id)).toEqual(["grandchild"]);
+  });
+  it("keeps an unconfirmed child's parent blocked even if archive membership was saved", async () => {
+    const s = await setup(family().filter((row) => row.id !== "grandchild")), review = await s.preview("archive", ["parent", "child"]);
+    s.archive.mockImplementationOnce(async (id) => { s.records.set(id, { ...s.records.get(id)!, archivedAt: "now", status: "idle" }); throw new Error("Lost acknowledgement"); });
+    expect(await s.service.execute(review.id, "child")).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
+    expect(await s.service.execute(review.id, "parent")).toMatchObject({ outcome: "blocked" });
+    expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("accepts exactly 50 and rejects a cyclic child graph without dispatch", async () => {
+    const s = await setup(Array.from({ length: 50 }, (_, n) => agent(`fixture-${n}`)));
+    expect((await s.preview("archive", [...s.records.keys()])).rows).toHaveLength(50);
+    const cycle = await setup([agent("a", { labels: { "paseo.parent-agent-id": "b" } }), agent("b", { labels: { "paseo.parent-agent-id": "a" } })]);
+    await expect(cycle.preview("archive", ["a", "b"])).rejects.toThrow("cycle"); expect(cycle.archive).not.toHaveBeenCalled();
   });
 });
 describe("Attention availability evidence", () => {

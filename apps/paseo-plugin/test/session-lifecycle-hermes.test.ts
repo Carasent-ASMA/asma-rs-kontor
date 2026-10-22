@@ -8,6 +8,41 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const row = (id: string, outcome: LifecycleRow["outcome"]) => ({ id, eligible: true, outcome, message: null }) as LifecycleRow;
 
 describe("session lifecycle under the iOS (Hermes) scoping of plugin bundles", () => {
+  function fixture(ids: string[], execute: (id: string) => Promise<LifecycleRow>) {
+    const review = { id: "fixture-review", action: "archive", scope: "filtered", rows: ids.map((id) => row(id, "pending")) } as LifecycleReview;
+    const calls: string[] = [], changed: LifecycleRow[] = [];
+    const { react, render } = deferredReact();
+    const { useSessionLifecycle } = loadHermesScoped<{ useSessionLifecycle: typeof Hook }>("../client/use-session-lifecycle.ts", { react,
+      "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => contract.name === "sessions.lifecycle-preview" ? async () => review : async (input: { agentId: string }) => { calls.push(input.agentId); return execute(input.agentId); } },
+      "../shared/session-lifecycle": lifecycle });
+    const draw = () => render(() => useSessionLifecycle("host", (rows) => changed.push(...rows)));
+    draw(); draw();
+    return { draw, calls, changed };
+  }
+  it("requires explicit confirmation even for one session selected in bulk mode", async () => {
+    const f = fixture(["a"], async (id) => row(id, "archived"));
+    await f.draw().prepare("archive", "filtered", ["a"], true);
+    expect(f.calls).toEqual([]);
+    expect(await f.draw().run()).toBe("Archived 1"); expect(f.calls).toEqual(["a"]);
+    expect(f.draw().batch?.summary).toBe("Archived 1");
+  });
+  it("stops before the next row while settling the in-flight row, with no optimistic archive", async () => {
+    let complete!: (row: LifecycleRow) => void;
+    const f = fixture(["a", "b"], () => new Promise((resolve) => { complete = resolve; }));
+    await f.draw().prepare("archive", "filtered", ["a", "b"], true);
+    const running = f.draw().run();
+    expect(f.draw().review?.rows.map((row) => row.outcome)).toEqual(["pending", "pending"]);
+    expect(f.draw().batch?.currentId).toBe("a"); f.draw().stop(); complete(row("a", "archived"));
+    expect(await running).toBe("Stopped before the next session. Archived 1 · 1 not attempted");
+    expect(f.calls).toEqual(["a"]); expect(f.draw().review?.rows[1]?.outcome).toBe("pending");
+  });
+  it("keeps a lost transport reply uncertain and stops without dispatching or hiding the next row", async () => {
+    const f = fixture(["a", "b"], async () => { throw new Error("Lost reply"); });
+    await f.draw().prepare("archive", "filtered", ["a", "b"], true);
+    expect(await f.draw().run()).toBe("Archived 0 · 1 not confirmed · 1 not attempted");
+    expect(f.calls).toEqual(["a"]); expect(f.draw().review?.rows.map((row) => row.outcome)).toEqual(["uncertain", "pending"]);
+    expect(f.changed.at(-1)).toMatchObject({ id: "a", outcome: "uncertain" });
+  });
   it.each([["archive", "archived"], ["resume", "submitted"]] as const)("shows each %s result on its own row when React renders between items", async (action, outcome) => {
     const ids = ["fixture-a", "fixture-b", "fixture-c"], executing: Array<() => void> = [];
     const review = { id: "fixture-review", action, scope: "filtered", rows: ids.map((id) => row(id, "pending")) } as LifecycleReview;
