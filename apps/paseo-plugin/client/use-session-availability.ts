@@ -53,6 +53,22 @@ export function useSessionAvailability(hostId: string, entries: readonly Directo
     setSettled((current) => ({ hostId, values: { ...(current.hostId === hostId ? current.values : {}), ...dispositions } }));
     setRevision((value) => value + 1);
   };
+  // Hermes evaluates plugin bundles with function-scoped let/const, so an updater made inside a read loop would
+  // see a later batch, or a `let` reset to undefined. Batches reach state updaters only as these calls' arguments.
+  const addEvidence = (values: Record<string, SessionAvailability>) => setEvidence((current) => ({ hostId, values: { ...(current.hostId === hostId ? current.values : {}), ...values } }));
+  const settleBatch = (batch: readonly DirectoryEntry[], result: Record<string, SessionAvailability>) => {
+    addEvidence(Object.fromEntries(batch.filter(entry => result[entry.id]).map(entry => [entry.id, bindAvailability(entry, result[entry.id])])));
+    setSettled((current) => {
+      const values = { ...(current.hostId === hostId ? current.values : {}) };
+      for (const entry of batch) {
+        const value = result[entry.id];
+        if (!value || value.agentId !== entry.id) continue;
+        if (value.localRemoval && value.state === "missing") values[entry.id] = bindAvailability(entry, value);
+        else delete values[entry.id];
+      }
+      return { hostId, values };
+    });
+  };
   useEffect(() => {
     let canceled = false;
     const snapshot = entriesRef.current;
@@ -63,18 +79,7 @@ export function useSessionAvailability(hostId: string, entries: readonly Directo
         try { result = await dispositionsRef.current({ agentIds: batch.map((entry) => entry.id) }); }
         catch { continue; } // No local removal is inferred when receipt/native reads fail.
         if (canceled || owner.current !== hostId) return;
-        const observations = Object.fromEntries(batch.filter(entry => result[entry.id]).map(entry => [entry.id, bindAvailability(entry, result[entry.id])]));
-        setEvidence((current) => ({ hostId, values: { ...(current.hostId === hostId ? current.values : {}), ...observations } }));
-        setSettled((current) => {
-          const values = { ...(current.hostId === hostId ? current.values : {}) };
-          for (const entry of batch) {
-            const value = result[entry.id];
-            if (!value || value.agentId !== entry.id) continue;
-            if (value.localRemoval && value.state === "missing") values[entry.id] = bindAvailability(entry, value);
-            else delete values[entry.id];
-          }
-          return { hostId, values };
-        });
+        settleBatch(batch, result);
       }
     })();
     return () => { canceled = true; };
@@ -98,8 +103,7 @@ export function useSessionAvailability(hostId: string, entries: readonly Directo
         try { result = await probeRef.current({ agentIds: batch.map((entry) => entry.id) }); }
         catch { result = {}; }
         if (canceled || owner.current !== hostId || epoch !== generation.current) return;
-        const normalized = Object.fromEntries(batch.map((entry) => [entry.id, bindAvailability(entry, result[entry.id])]));
-        setEvidence((current) => ({ hostId, values: { ...(current.hostId === hostId ? current.values : {}), ...normalized } }));
+        addEvidence(Object.fromEntries(batch.map((entry) => [entry.id, bindAvailability(entry, result[entry.id])])));
       }
     }
     void Promise.all([worker(), worker(), worker()]).finally(() => { if (!canceled && epoch === generation.current) setChecking(false); });
