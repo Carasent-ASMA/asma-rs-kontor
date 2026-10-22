@@ -6,12 +6,13 @@ import { confirmedEpic, nativeSummary, portfolioFilter, portfolioRows, readTime,
 import { inventoryReadLabel } from "./native-freshness";
 import { SourceDetails } from "./source-details";
 import { Action, Copy, Disclosure, type Colors } from "./page-controls";
+import { kontordSentence } from "./kontord-copy";
 
 type EpicTab = "Plan" | "Board" | "Graph" | "Sessions";
 type Props = {
   colors: Colors; compact?: boolean; contextLabel?: string; scoped?: boolean; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   reads: Readonly<Record<string, SourceRead>>; query: string; setQuery: (query: string) => void;
-  sourceError?: string | null;
+  sourceError?: string | null; kontord?: string;
   onSource: (id: string) => void; onEpicTab: (tab: EpicTab, epicKey: string | null, sourceId: string | null) => void;
 };
 const FILTERS: readonly PortfolioFilter[] = ["all", "active", "review", "decisions", "completed", "delivered"];
@@ -74,7 +75,7 @@ export function OverviewPage(props: Props) {
         {reads.filter((read) => read.source.kind !== "jira" && read.source.kind !== "teams").map((read) => <SourceDetails key={read.source.id} read={read} colors={colors} />)}
         <Copy colors={colors} muted small>Progress counts the captured Jira child records of each epic; Won’t Do records are excluded and full backlog coverage is not established. Decisions and delivery appear only where a configured source records them; delivery confirmation is never inferred.</Copy>
         <Copy colors={colors} muted small>Epic lifecycle, native activity, task status and delivery are separate observations.</Copy>
-        <Copy colors={colors} muted small>Governed scheduler and gates: kontord is not enabled.</Copy>
+        <Copy colors={colors} muted small>Governed scheduler and gates: not shown here. {props.kontord ?? kontordSentence(null)}</Copy>
       </View>
     </Disclosure>
     <View accessibilityLabel="Portfolio filters" style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>

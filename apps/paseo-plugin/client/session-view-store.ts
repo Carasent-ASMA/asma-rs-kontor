@@ -3,10 +3,16 @@ import {
   type SessionFilters,
 } from "./session-view";
 import type { SessionSort, SortDirection } from "./session-sort";
+import { loadWorkingAs, saveWorkingAs, type ProfileStorage, type RememberedWorkingAs } from "./viewer-profile";
 
 export type SessionGrouping = "hierarchy" | "placement" | "role" | "flat";
-/** My work follows the Working-as profile; a person scope names one exact account; Unknown lists what cannot be evaluated. */
-export type WorkScope = "mine" | "all" | "unknown" | `person:${string}`;
+/** My work is every native session on this host; All work also lists empty workspaces and plan-only choices. */
+export type WorkScope = "mine" | "all";
+/**
+ * An explicit filter by Jira responsibility, Any assignment by default: the Working-as person, one exact
+ * account, or sessions whose relation to the Working-as person is unknown. Never part of My work.
+ */
+export type AssignmentScope = "any" | "me" | "unknown" | `person:${string}`;
 
 export type SessionViewState = SessionFilters & {
   readonly scrollOffset: number;
@@ -26,8 +32,10 @@ export type SessionViewState = SessionFilters & {
   readonly treeOffset?: number;
   /** A result shown in its place in the tree; disclosure opened for it is never saved. */
   readonly peek?: { readonly sessionId: string; readonly resultsOffset: number } | null;
-  /** Responsibility scope; absent means My work. */
+  /** Work scope; absent means My work. */
   readonly work?: WorkScope;
+  /** Assignment filter; absent means Any assignment. */
+  readonly assignment?: AssignmentScope;
   /** Presentation order; absent means Current order. */
   readonly sort?: SessionSort;
   readonly sortDirection?: SortDirection;
@@ -37,6 +45,10 @@ export type SessionViewState = SessionFilters & {
 
 export function workScopeOf(view: SessionViewState): WorkScope {
   return view.work ?? "mine";
+}
+
+export function assignmentOf(view: SessionViewState): AssignmentScope {
+  return view.assignment ?? "any";
 }
 
 export type SessionTaskFilter = { readonly jira: string | null; readonly kontorId: string | null; readonly label: string };
@@ -50,22 +62,22 @@ export function isResultMode(view: SessionFilters & { readonly task?: SessionTas
 export function sessionFilterCount(view: SessionViewState): number {
   return [view.query.trim().length > 0, view.status !== "all", !!view.task,
     view.shortcut != null, view.streams != null, view.includeArchived !== DEFAULT_SESSION_FILTERS.includeArchived,
-    workScopeOf(view) !== "all"].filter(Boolean).length;
+    workScopeOf(view) !== "all", assignmentOf(view) !== "any"].filter(Boolean).length;
 }
 
-/** Clear all filtering choices, widening to All work; sort and grouping are presentation and stay. */
+/** Clear all filtering choices, widening to All work and Any assignment; sort, grouping and Working as stay. */
 export function clearSessionFilterPatch(view: SessionViewState): Partial<SessionViewState> {
   if (sessionFilterCount(view) === 0) return {};
   return { query: "", status: "all", task: null, shortcut: null, streams: null,
-    includeArchived: DEFAULT_SESSION_FILTERS.includeArchived, work: "all", scrollOffset: 0, peek: null };
+    includeArchived: DEFAULT_SESSION_FILTERS.includeArchived, work: "all", assignment: "any", scrollOffset: 0, peek: null };
 }
 
-/** What a new app session shows: filters cleared, My work, Current order and the saved grouping; nothing is saved. */
+/** What a new app session shows: filters cleared, My work, Any assignment, Current order and the saved grouping; Working as stays. */
 export function resetSessionViewPatch(view: SessionViewState): Partial<SessionViewState> {
-  return { ...clearSessionFilterPatch(view), work: "mine", sort: undefined, sortDirection: undefined, grouping: undefined, arranging: false, scrollOffset: 0, peek: null };
+  return { ...clearSessionFilterPatch(view), work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, arranging: false, scrollOffset: 0, peek: null };
 }
 
-const RESULT_KEYS = ["query", "status", "task", "includeArchived", "shortcut", "streams", "grouping", "work", "sort", "sortDirection"] as const;
+const RESULT_KEYS = ["query", "status", "task", "includeArchived", "shortcut", "streams", "grouping", "work", "assignment", "sort", "sortDirection"] as const;
 
 /**
  * The patch to apply for a view change. Entering results keeps the tree offset
@@ -84,8 +96,9 @@ export function sessionViewTransition(current: SessionViewState, patch: Partial<
 const views = new Map<string, SessionViewState>();
 const expansions = new Map<string, Readonly<Record<string, boolean>>>();
 const NO_EXPANSION: Readonly<Record<string, boolean>> = Object.freeze({});
-/** Working-as account per host and tracker realm; a presentation preference for this app session, never sign-in. */
-const workingAs = new Map<string, string>();
+/** Working as per host and tracker realm, read from the device store once per app session; a viewing preference, never sign-in. */
+const workingAs = new Map<string, RememberedWorkingAs>();
+let profileStorage: ProfileStorage | null = null;
 let initialView: Partial<SessionViewState> = {};
 
 function keyOf(hostId: string): string {
@@ -152,8 +165,24 @@ function profileKey(hostId: string, realm: string): string {
   return JSON.stringify([keyOf(hostId), realm]);
 }
 
+/** Where Working as is remembered: the screen sets this device's store, or none, before the first read. */
+export function configureWorkingAsStorage(storage: ProfileStorage | null): void {
+  profileStorage = storage;
+  workingAs.clear();
+}
+
+/** The choice and where it lives, read synchronously from the store the first time, so it is there before the first render. */
+export function readRememberedWorkingAs(hostId: string, realm: string): RememberedWorkingAs {
+  const key = profileKey(hostId, realm);
+  const known = workingAs.get(key);
+  if (known) return known;
+  const loaded = loadWorkingAs(profileStorage, hostId, realm);
+  workingAs.set(key, loaded);
+  return loaded;
+}
+
 export function readWorkingAs(hostId: string, realm: string | null): string | null {
-  return realm === null ? null : workingAs.get(profileKey(hostId, realm)) ?? null;
+  return realm === null ? null : readRememberedWorkingAs(hostId, realm).accountId;
 }
 
 /** The host a view belongs to: app scopes are `sessionScopeKey` JSON arrays led by the host ID; the default scope is the host ID. */
@@ -168,22 +197,24 @@ function viewHost(key: string): string {
 }
 
 /**
- * A changed profile ends the peeks it could have produced: this host's views in My work or Unknown
- * responsibility. Other hosts, person scopes and All work keep theirs, and choosing the same person changes nothing.
+ * Remember or, with null, forget Working as for this host and realm. A changed profile ends the peeks it could
+ * have produced: this host's views filtered to Assigned to me or Unknown assignment. Other hosts, a named person,
+ * Any assignment and My work keep theirs. The same person changes nothing, except retrying a store that failed.
  */
 export function writeWorkingAs(hostId: string, realm: string, accountId: string | null): void {
-  if (readWorkingAs(hostId, realm) === accountId) return;
-  if (accountId === null) workingAs.delete(profileKey(hostId, realm));
-  else workingAs.set(profileKey(hostId, realm), accountId);
+  const current = readRememberedWorkingAs(hostId, realm);
+  if (current.accountId === accountId && current.persistence !== "failed") return;
+  workingAs.set(profileKey(hostId, realm), saveWorkingAs(profileStorage, hostId, realm, accountId));
+  if (current.accountId === accountId) return;
   for (const [key, view] of views) {
-    const work = workScopeOf(view);
-    if (view.peek && viewHost(key) === keyOf(hostId) && (work === "mine" || work === "unknown")) views.set(key, { ...view, peek: null });
+    const assignment = assignmentOf(view);
+    if (view.peek && viewHost(key) === keyOf(hostId) && (assignment === "me" || assignment === "unknown")) views.set(key, { ...view, peek: null });
   }
 }
 
 /**
- * Test seam: the store lives only for this client session, never on disk. `initial` seeds views not
- * yet read, such as `{ work: "all" }` for suites that exercise the unscoped inventory.
+ * Test seam: views live only for this client session, never on disk; this forgets what the session read of
+ * Working as, never the device store. `initial` seeds views not yet read, such as `{ work: "all" }`.
  */
 export function clearSessionViews(initial: Partial<SessionViewState> = {}): void {
   views.clear();

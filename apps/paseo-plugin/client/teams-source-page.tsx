@@ -8,6 +8,7 @@ import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import { composeTeamsSourceView, type TeamsBindingMetadata, type TeamsFleetData, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { Action, Card, Copy, Disclosure, type Colors } from "./page-controls";
+import { kontordSentence } from "./kontord-copy";
 /** Per-source drill-down, keyed by configured source ID. Open bindings are keyed by binding reference. */
 export type TeamsSourceView = Readonly<{
   details: boolean; bindings: boolean; bindingPage: number; openBindings: readonly string[]; chains: boolean;
@@ -110,11 +111,11 @@ function sourceProblem(snapshot: TeamsSourceSnapshot | undefined, error: string 
  * fleet/template browsing as a separate, collapsed section. Configuration never assigns sessions.
  * Pass view/onView to keep the drill-down in a route store; without them the page keeps it locally.
  */
-export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingDiagnostics = [], available, reads, entries, observedAt, colors, children, view, onView }: {
+export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingDiagnostics = [], available, reads, entries, observedAt, colors, children, view, onView, kontord = kontordSentence(null) }: {
   sources: readonly ReadSourceSummary[]; snapshots?: Readonly<Record<string, TeamsSourceSnapshot>>;
   errors?: Readonly<Record<string, string>>; bindingDiagnostics?: readonly string[]; available: boolean;
   reads: Readonly<Record<string, SourceRead>>; entries: readonly DirectoryEntry[]; observedAt: string;
-  colors: Colors; children: ReactNode; view?: TeamsView; onView?: (view: TeamsView) => void;
+  colors: Colors; children: ReactNode; view?: TeamsView; onView?: (view: TeamsView) => void; kontord?: string;
 }) {
   const [local, setLocal] = useState<TeamsView>(DEFAULT_TEAMS_VIEW);
   const current = restoreTeamsView(view ?? local, sources, snapshots);
@@ -135,7 +136,7 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
   // How native sessions relate to configuration: inside the configuration disclosure when there is one, otherwise shown.
   const observations = <View testID="teams-observations" style={{ gap: 4 }}>
     <Copy colors={colors} muted small>{TEAMS_SESSIONS_NOTE}</Copy>
-    <Copy colors={colors} muted small>Native observations: {composed.observedSessions.length} sessions · observed {observedAt} · native effort: Not supplied. No configuration-to-session assignment is inferred. Governed fleet: kontord is not enabled.</Copy>
+    <Copy colors={colors} muted small>Native observations: {composed.observedSessions.length} sessions · observed {observedAt} · native effort: Not supplied. No configuration-to-session assignment is inferred. Governed fleet: not shown here. {kontord}</Copy>
   </View>;
   return <>
     {children}

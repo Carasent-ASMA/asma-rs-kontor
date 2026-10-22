@@ -62,6 +62,8 @@ const clientFiles = [
   "../client/teams-binding-detail.tsx",
   "../client/teams-role-cards.tsx",
   "../client/teams-source-page.tsx",
+  "../client/kontord-copy.ts",
+  "../client/use-kontor-status.ts",
   "../index.client.tsx",
   "../client/return-control.ts",
   "../client/session-actions.ts",
@@ -113,5 +115,33 @@ describe("floor switch", () => {
     const text = source("../server/floor.ts");
     expect(text).toContain("openSync(file, constants.O_RDONLY | constants.O_NONBLOCK)");
     expect(text).not.toMatch(/O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND|unlink|rename|rmSync|chmod|truncate|mkdir|copyFile/);
+  });
+});
+
+describe("kontord status probe", () => {
+  const text = source("../server/kontor-status.ts");
+
+  it("starts only the configured kontor-mcp with fixed arguments, and reads one observer tool", () => {
+    expect(text.match(/spawn\(/g)).toHaveLength(1);
+    expect(text).toContain(`["--state-root", config.stateRoot, "--credential-tier", DEFAULT_CREDENTIAL_TIER, ...(config.serveProfile ? ["--serve-profile", config.serveProfile] : [])]`);
+    expect(text).toContain("spawn(config.mcpCommand, args, {");
+    expect(text).not.toMatch(/shell:/);
+    expect([...new Set(text.match(/kontor_[a-z_]+/g))]).toEqual(["kontor_realm_get"]);
+  });
+
+  it("never handles a credential, writes or opens its own connection", () => {
+    expect(text).not.toMatch(/[\"'](?:admin|operator)[\"']|credentials\.json|KONTOR_AUTH|daemon-keypair/);
+    expect(text).not.toMatch(/node:fs|writeFile|appendFile|createWriteStream|execFile|exec\(|fetch\(|node:http|node:net/);
+    // The child sees PATH and HOME only, its standard error is never read, and it is killed outright.
+    expect(text).toContain(`env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }`);
+    expect(text).toContain(`stdio: ["pipe", "pipe", "ignore"]`);
+    expect(text).toContain(`child.kill("SIGKILL")`);
+  });
+
+  it("is registered whatever the floor, reports it, and is stopped with the worker", () => {
+    const entry = source("../index.server.ts");
+    expect(entry).toContain("const stopStatus = contributeKontorStatus(server, floor.enabled);");
+    expect(entry).toContain("const stopHooks = floor.enabled ? contribute(server) : () => {};");
+    expect(entry).toContain("return () => { stopSources(); stopStatus(); stopHooks(); };");
   });
 });

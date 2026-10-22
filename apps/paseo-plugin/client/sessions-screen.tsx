@@ -25,7 +25,9 @@ import {
   AccessibilityInfo,
   ActivityIndicator,
   Animated,
+  Platform,
   Pressable,
+  Settings,
   Text,
   View,
   type FlatList as NativeFlatList,
@@ -49,6 +51,8 @@ import {
   type StatusFilter,
 } from "./session-view";
 import {
+  assignmentOf,
+  configureWorkingAsStorage,
   isResultMode,
   clearSessionFilterPatch,
   resetSessionViewPatch,
@@ -56,16 +60,18 @@ import {
   patchLocalExpansion,
   patchSessionView,
   readLocalExpansion,
+  readRememberedWorkingAs,
   readSessionView,
-  readWorkingAs,
   sessionViewTransition,
   workScopeOf,
   writeScrollOffset,
   writeWorkingAs,
+  type AssignmentScope,
   type SessionGrouping,
   type SessionViewState,
   type WorkScope,
 } from "./session-view-store";
+import { deviceProfileStorage } from "./viewer-profile";
 import { defaultSortDirection, explicitLeafOrder, sessionComparator, SESSION_SORTS, sortDirectionLabel, sortLabel, type SessionSort, type SortDirection } from "./session-sort";
 import { indexResponsibility, MATCH_REASONS, responsibilityExpired, rosterChoices, sessionResponsibility, type MatchReason, type SessionResponsibility } from "./responsibility";
 import { WorkstreamSelector } from "./workstream-selector";
@@ -116,6 +122,9 @@ type ListRow = OrganizationRow | { readonly kind: "result"; readonly entry: Dire
 function listRowKey(row: ListRow): string {
   return row.kind === "result" ? `result:${row.entry.id}` : rowKey(row);
 }
+
+// Working as is remembered in this device's store where the runtime offers one, before the first read; otherwise for this app session.
+configureWorkingAsStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
 
 /** Status dot colour of a session: its highest-priority state, as on group badges. */
 export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
@@ -1991,34 +2000,37 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);
-  // Responsibility: an explicit Working-as profile or person scope, read against the host's projection.
+  // My work is every session on this host. Assignment is a separate filter, off until chosen, read against the host's projection.
   const work: WorkScope = workScopeOf(view);
+  const assignment: AssignmentScope = assignmentOf(view);
   // ponytail: expiry is checked on each render, which live native updates drive; subscribe to the minute clock if an idle screen must flip on time.
   const clock = { now: Date.now() };
   const projection = responsibility?.status === "ready" ? responsibility.projection : null;
   const responsibilityIndex = useMemo(() => projection ? indexResponsibility(projection) : null, [projection]);
   const roster = useMemo(() => responsibilityIndex ? rosterChoices(responsibilityIndex) : [], [responsibilityIndex]);
   const realm = projection?.realm ?? null;
-  const workingAs = readWorkingAs(host.id, realm);
+  // Remembered per host and realm; read before the first render, kept while the projection or roster is unavailable.
+  const remembered = realm === null ? null : readRememberedWorkingAs(host.id, realm);
+  const workingAs = remembered?.accountId ?? null;
   const workingAsLabel = roster.find(({ accountId }) => accountId === workingAs)?.label ?? null;
-  const subject = work === "all" ? null : work.startsWith("person:") ? work.slice("person:".length) : workingAs;
+  const subject = assignment === "any" ? null : assignment.startsWith("person:") ? assignment.slice("person:".length) : workingAs;
   const subjectLabel = roster.find(({ accountId }) => accountId === subject)?.label ?? null;
-  const workState = work === "all" ? "all" as const
+  const assignmentState = assignment === "any" ? "any" as const
     : responsibilityIndex === null ? "unavailable" as const
       : responsibilityExpired(responsibilityIndex, clock.now) ? "expired" as const
         : subject === null ? "no-profile" as const
           : !responsibilityIndex.people.has(subject) ? "unknown-person" as const : "ready" as const;
-  const workPart = work === "all" ? null : work === "mine" ? "My work" : work === "unknown" ? "Unknown responsibility" : subjectLabel ?? "Person unavailable";
-  const responsibilityById = useMemo(() => workState === "ready" ? new Map(scoped.map((entry) => [entry.id, sessionResponsibility(entry, responsibilityIndex!, subject!)])) : null,
-    [workState, scoped, responsibilityIndex, subject]);
-  const inWork = useCallback((entry: DirectoryEntry) => work === "all"
-    || responsibilityById?.get(entry.id)?.status === (work === "unknown" ? "unknown" : "match"), [work, responsibilityById]);
+  const assignmentPart = assignment === "any" ? null : assignment === "me" ? "Assigned to me" : assignment === "unknown" ? "Unknown assignment" : `Assigned to ${subjectLabel ?? "a person not in this projection"}`;
+  const responsibilityById = useMemo(() => assignmentState === "ready" ? new Map(scoped.map((entry) => [entry.id, sessionResponsibility(entry, responsibilityIndex!, subject!)])) : null,
+    [assignmentState, scoped, responsibilityIndex, subject]);
+  const inAssignment = useCallback((entry: DirectoryEntry) => assignment === "any"
+    || responsibilityById?.get(entry.id)?.status === (assignment === "unknown" ? "unknown" : "match"), [assignment, responsibilityById]);
   const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
-    && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))) && inWork(entry), [shortcut, streams, mappings, inWork]);
-  // Search and state never narrow the tree; with no workstream choice and All work, empty workspaces stay visible, a desk context's own included.
-  // A person scope keeps only groups holding its sessions.
+    && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))) && inAssignment(entry), [shortcut, streams, mappings, inAssignment]);
+  // Search and state never narrow the tree. All work with no workstream or assignment choice keeps empty workspaces, a desk context's own included;
+  // My work and an assignment filter keep only groups holding sessions.
   const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
-    (group) => streams === null && work === "all" && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, work, mappings]);
+    (group) => streams === null && work === "all" && assignment === "any" && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, work, assignment, mappings]);
   const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
@@ -2029,20 +2041,23 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const compare = sessionComparator(sort, sortDirection);
     return compare ? matching.sort(compare) : matching;
   }, [resultMode, candidates, view.status, favorites, sort, sortDirection]);
-  // Each scope's own count beside the inventory count of every association; it never replaces it.
-  const workCounts = useMemo(() => {
-    if (work === "all" || responsibilityById === null) return null;
+  // An assignment filter's own count beside the inventory count of every association; it never replaces it.
+  const assignmentCounts = useMemo(() => {
+    if (assignment === "any" || responsibilityById === null) return null;
     const counts = new Map<string, number>();
-    for (const entry of scoped) if (inWork(entry)) {
+    for (const entry of scoped) if (inAssignment(entry)) {
       const key = workstreamKey(organizationScope(entry, mappings).workstream);
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     return counts;
-  }, [work, responsibilityById, scoped, inWork, mappings]);
+  }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
   const statusCounts = useMemo(() => Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => [status, candidates.filter((entry) => matchesStatus(entry, status, favorites)).length])) as Record<StatusFilter, number>,
     [candidates, favorites]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
+  // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
+  const workstreamChoices = useMemo(() => work === "all" ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
+    [work, workstreamOptions, streams]);
   // Responsibility facts over this context's inventory, before the other filters.
   const workTally = useMemo(() => {
     if (responsibilityById === null) return null;
@@ -2086,8 +2101,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
   // The full count and read statement; Filters shows it, the visible count line only when it adds something.
-  const workBlocked = work !== "all" && workState !== "ready";
-  const sessionCount = workBlocked ? `${workPart} not evaluated · ${scoped.length} session${scoped.length === 1 ? "" : "s"} in All work`
+  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
+  const sessionCount = assignmentBlocked ? `${assignmentPart} not evaluated · ${scoped.length} session${scoped.length === 1 ? "" : "s"} on this host`
     : `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
   const inventoryRead = state.lastUpdatedAt === null
     ? "not read yet"
@@ -2121,6 +2136,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     setDetailsId(null);
     updateView({ work: next, scrollOffset: 0 });
   };
+  const chooseAssignment = (next: AssignmentScope) => {
+    pinFilterInteraction();
+    setDetailsId(null);
+    updateView({ assignment: next, scrollOffset: 0 });
+  };
   const chooseSort = (next: SessionSort) => {
     pinFilterInteraction();
     updateView({ sort: next, sortDirection: next === "current" ? undefined : defaultSortDirection(next), scrollOffset: 0 });
@@ -2152,7 +2172,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (row && row.kind !== "result") moveRow(row, distance);
   };
 
-  const narrowed = resultMode || shortcut !== null || streams !== null || work !== "all";
+  const narrowed = resultMode || shortcut !== null || streams !== null || work !== "all" || assignment !== "any";
   // Saved order is a Current-order arrangement; an explicit sort ignores it, so it cannot be arranged.
   const arrangeEnabled = arranging && !narrowed && !editsDisabled && sort === "current";
   const sortPart = sort === "current" ? null : `${sortLabel(sort)}, ${sortDirectionLabel(sort, sortDirection).toLocaleLowerCase()}`;
@@ -2165,14 +2185,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     view.includeArchived ? "Including archived" : null,
   ].filter((part): part is string => !!part);
   // One explanation of the inventory counts, under About these counts in the association selector.
-  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; the tree also lists empty native workspaces until workstream choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. Plan-only choices are included.${workstreamNote ? ` ${workstreamNote}` : ""} A person scope adds its own count to each choice and never changes these.`;
-  const responsibilitySource = responsibility === null ? "Responsibility projection not read yet; My work is not evaluated."
-    : responsibility.status !== "ready" || !projection ? `${responsibility.diagnostics.join(" ") || "Responsibility projection unavailable."} My work is not evaluated.`
-      : `Responsibility from ${projection.realm}, observed ${readTime(projection.generatedAt, clock.now)}, ${responsibilityExpired(responsibilityIndex!, clock.now) ? "expired" : "expires"} ${readTime(projection.expiresAt, clock.now)}${projection.provenance.complete ? "" : ", partial"} · ${projection.people.length} people · ${projection.issues.length} issues · workstream responsibility ${projection.provenance.workstreams ? "declared" : "not declared, so workstream relations are unknown"}. Working as is this app session's choice for this host and tracker, not sign-in or access control; choices are remembered during this app session.`;
+  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; in All work the tree also lists empty native workspaces until workstream or assignment choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. ${work === "all" ? "Plan-only choices are included." : "My work lists choices with sessions here; All work adds plan-only choices."}${workstreamNote ? ` ${workstreamNote}` : ""} An assignment filter adds its own count to each choice and never changes these.`;
+  const workingAsStore = remembered?.persistence === "device" ? "remembered on this device for this host and tracker"
+    : remembered?.persistence === "failed" ? "not remembered: this device's store failed, so a choice lasts this app session"
+      : "not remembered on this device, which offers Kontor no store, so a choice lasts this app session";
+  const responsibilitySource = responsibility === null ? "Responsibility projection not read yet; assignment filters cannot be evaluated. My work does not need it."
+    : responsibility.status !== "ready" || !projection ? `${responsibility.diagnostics.join(" ") || "Responsibility projection unavailable."} Assignment filters cannot be evaluated; My work does not need it.`
+      : `Responsibility from ${projection.realm}, observed ${readTime(projection.generatedAt, clock.now)}, ${responsibilityExpired(responsibilityIndex!, clock.now) ? "expired" : "expires"} ${readTime(projection.expiresAt, clock.now)}${projection.provenance.complete ? "" : ", partial"} · ${projection.people.length} people · ${projection.issues.length} issues · workstream responsibility ${projection.provenance.workstreams ? "declared" : "not declared, so workstream relations are unknown"}. Working as is a viewing choice for Assigned to me, not sign-in or access control; it is ${workingAsStore}.`;
   const activeCount = sessionFilterCount(view);
   const clearable = activeCount > 0;
   const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
-  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label, work: workPart });
+  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label, work: [work === "mine" ? "My work" : null, assignmentPart].filter(Boolean).join(" · ") || null });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = activeCount;
   // While the compact toolbar is open, a short list still has room for the small drag that closes it.
@@ -2479,10 +2502,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <OptionLine label="Work" colors={colors}>
               <FilterChip testID="sessions-work-mine" label="My work" compact={compact} active={work === "mine"} colors={colors} {...focusProps} onPress={() => chooseWork("mine")} />
               <FilterChip testID="sessions-work-all" label="All work" compact={compact} active={work === "all"} colors={colors} {...focusProps} onPress={() => chooseWork("all")} />
-              <FilterChip testID="sessions-work-unknown" label="Unknown responsibility" compact={compact} active={work === "unknown"} colors={colors} {...focusProps} onPress={() => chooseWork("unknown")} />
             </OptionLine>
-            <OptionSelect testID="sessions-person" label="Person" value={work.startsWith("person:") ? subjectLabel ?? "Person unavailable" : "Choose a person…"} expanded={optionMenu === "person"} anchor={personRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "person" ? null : "person")} />
-            <OptionSelect testID="sessions-working-as" label="Working as" value={workingAsLabel ?? (workingAs ? "Not in this projection" : "Not configured")} expanded={optionMenu === "workingAs"} anchor={workingAsRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "workingAs" ? null : "workingAs")} />
+            <OptionLine label="Assignment" colors={colors}>
+              <FilterChip testID="sessions-assignment-any" label="Any assignment" compact={compact} active={assignment === "any"} colors={colors} {...focusProps} onPress={() => chooseAssignment("any")} />
+              <FilterChip testID="sessions-assignment-me" label="Assigned to me" compact={compact} active={assignment === "me"} colors={colors} {...focusProps} onPress={() => chooseAssignment("me")} />
+              <FilterChip testID="sessions-assignment-unknown" label="Unknown assignment" compact={compact} active={assignment === "unknown"} colors={colors} {...focusProps} onPress={() => chooseAssignment("unknown")} />
+            </OptionLine>
+            <OptionSelect testID="sessions-person" label="Assigned to" value={assignment.startsWith("person:") ? subjectLabel ?? "Person not in this projection" : "Choose a person…"} expanded={optionMenu === "person"} anchor={personRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "person" ? null : "person")} />
+            {/* While the projection loads or is unavailable the remembered choice is not known to be unset, so it never reads "Not set". */}
+            <OptionSelect testID="sessions-working-as" label="Working as" value={realm === null ? (responsibility === null ? "Loading…" : "Unavailable") : workingAsLabel ?? (workingAs ? "Not in this projection" : "Not set")} expanded={optionMenu === "workingAs"} anchor={workingAsRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "workingAs" ? null : "workingAs")} />
             <Text testID="sessions-responsibility-source" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{responsibilitySource}</Text>
           </View>
           <OptionSelect testID="sessions-sort" label="Sort by" value={sortLabel(sort)} expanded={optionMenu === "sort"} anchor={sortRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "sort" ? null : "sort")} />
@@ -2491,8 +2519,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           </OptionLine> : null}
           <Text testID="sessions-sort-help" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{sort === "current" ? "Current order keeps state order, your saved arrangement and Role order." : "Sorted within each group and in results; groups keep their order. Missing times sort last. Choose Current order to arrange."}</Text>
           <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
-          <WorkstreamSelector options={workstreamOptions} selected={streams} open={view.associationsOpen ?? false} registryLoaded={!!workstreamRegistry?.revision} about={aboutCounts}
-            scopeCounts={workCounts ?? undefined} scopeLabel={work === "mine" ? "in My work" : work === "unknown" ? "unknown" : `for ${subjectLabel ?? "this person"}`}
+          <WorkstreamSelector options={workstreamChoices} selected={streams} open={view.associationsOpen ?? false} registryLoaded={!!workstreamRegistry?.revision} about={aboutCounts}
+            scopeCounts={assignmentCounts ?? undefined} scopeLabel={assignment === "me" ? "assigned to me" : assignment === "unknown" ? "unknown assignment" : `assigned to ${subjectLabel ?? "this person"}`}
             colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(associationsOpen) => updateView({ associationsOpen })} onChange={chooseStreams} />
           <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
@@ -2538,7 +2566,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const optionMenuLayer = optionMenu === null ? null : (
     <AnchoredMenu testID={`sessions-${optionMenu}-menu`} anchor={optionAnchor} root={rootRef} rootSize={rootSize} colors={colors}
-      label={{ grouping: "Group sessions by", scope: "Session workspace scope", sort: "Sort sessions by", person: "Show work for", workingAs: "Working as" }[optionMenu]} onClose={() => setOptionMenu(null)}
+      label={{ grouping: "Group sessions by", scope: "Session workspace scope", sort: "Sort sessions by", person: "Assigned to", workingAs: "Working as" }[optionMenu]} onClose={() => setOptionMenu(null)}
       placement={compact ? { align: "stretch", width: 0, maxHeight: Math.min(rootSize.height * 0.6, 360) } : { align: "start", width: 240 }}>
       {/* The frame is clamped to the screen, so a short screen scrolls the choices instead of cutting off the last ones. */}
       <ScrollView testID={`sessions-${optionMenu}-choices`} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
@@ -2547,9 +2575,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           : optionMenu === "sort"
           ? SESSION_SORTS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={sort === id} colors={colors} onPress={() => chooseOption(() => chooseSort(id))} />)
           : optionMenu === "person"
-          ? roster.map(({ accountId, label }) => <MenuItem key={accountId} label={label} tall={compact} selected={work === `person:${accountId}`} colors={colors} onPress={() => chooseOption(() => chooseWork(`person:${accountId}`))} />)
+          ? roster.map(({ accountId, label }) => <MenuItem key={accountId} label={label} tall={compact} selected={assignment === `person:${accountId}`} colors={colors} onPress={() => chooseOption(() => chooseAssignment(`person:${accountId}`))} />)
           : optionMenu === "workingAs"
-          ? [<MenuItem key="none" label="Not configured" tall={compact} selected={workingAs === null} colors={colors} onPress={() => chooseOption(() => chooseWorkingAs(null))} />,
+          ? [<MenuItem key="none" label={workingAs === null ? "Not set" : remembered?.persistence === "device" ? "Forget on this device" : "Forget"} tall={compact} selected={workingAs === null} colors={colors} onPress={() => chooseOption(() => chooseWorkingAs(null))} />,
             ...roster.map(({ accountId, label }) => <MenuItem key={accountId} label={label} tall={compact} selected={workingAs === accountId} colors={colors} onPress={() => chooseOption(() => chooseWorkingAs(accountId))} />)]
           : scopeChoices.map(({ id, label }) => <MenuItem key={id ?? "all"} label={label} detail={id?.startsWith("desk-project:") ? deskScopes.find((choice) => choice.id === id)?.projectId : undefined} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
       </ScrollView>
@@ -2596,8 +2624,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
         <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
-        {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Responsibility" colors={colors} values={[
-          { label: work === "mine" ? `My work, working as ${subjectLabel}` : work === "unknown" ? `Unknown responsibility for ${subjectLabel}` : `Work for ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
+        {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Assignment" colors={colors} values={[
+          { label: assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}` : `Assigned to ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
           { label: "Source", value: `${projection!.realm} responsibility projection, observed ${projection!.generatedAt}` },
         ]} /> : null}
         <SessionMetadataGuide key={detailsEntry.id} entry={detailsEntry} colors={colors} />
@@ -2768,13 +2796,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }
 
   const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner, timesLive };
-  const onlyWork = work !== "all" && activeCount === 1;
-  const emptyMessage = workBlocked
-    ? `No sessions shown: ${workPart} is not evaluated.`
+  // Only the work scope and assignment narrow this view: say which, and offer the one way back that widens it.
+  const scopeParts = [work === "mine" ? "My work" : null, assignmentPart].filter((part): part is string => part !== null);
+  const onlyScope = scopeParts.length > 0 && activeCount === scopeParts.length;
+  const emptyMessage = assignmentBlocked
+    ? `No sessions shown: ${assignmentPart} is not evaluated.`
     : task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
-    : onlyWork
-    ? `No sessions in ${workPart} in this view.`
+    : onlyScope
+    ? `No sessions in ${scopeParts.join(", ")} in this view.`
     : clearable
       ? "No sessions match the current search and filters."
       : state.status === "error"
@@ -2815,21 +2845,24 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const listLine = peek ? null : resultMode ? resultLine : countLine;
   const plural = (count: number) => `${count} session${count === 1 ? "" : "s"}`;
   const reasonText = workTally ? [...workTally.reasons].map(([reason, count]) => `${count} ${MATCH_REASONS[reason].toLocaleLowerCase()}`).join(", ") : "";
-  // Always reachable outside Filters: the scope, why it shows what it shows, and the way to All work.
-  const workMessage = work === "all" ? "All work"
-    : workState === "unavailable" ? `${workPart} cannot be evaluated on this host: ${responsibility === null ? "the responsibility projection is not read yet." : responsibility.diagnostics.join(" ") || "the responsibility projection is unavailable."}`
-    : workState === "expired" ? `${workPart} is not evaluated: the responsibility projection expired ${readTime(projection!.expiresAt, clock.now)}.`
-    : workState === "no-profile" ? `${workPart} needs Working as: choose who you are working as in Filters. It is not sign-in.`
-    : workState === "unknown-person" ? `${workPart} is not evaluated: that person is not in the current responsibility projection.`
-    : work === "unknown" ? `Unknown responsibility for ${subjectLabel}: ${plural(workTally!.unknown)} here cannot be evaluated.`
-    : `${work === "mine" ? `My work, working as ${subjectLabel}` : `Work for ${subjectLabel}`}: ${plural(workTally!.matched)} here${reasonText ? ` (${reasonText})` : ""} · ${workTally!.unknown} not evaluated.`;
+  // Always reachable outside Filters: the scope, any assignment filter and why it shows what it shows, and the ways back.
+  const scopeMessage = work === "mine" ? "My work: every session on this host" : "All work: every session on this host, with empty workspaces and plan-only choices";
+  const assignmentMessage = assignmentState === "any" ? null
+    : assignmentState === "unavailable" ? `${assignmentPart} cannot be evaluated on this host: ${responsibility === null ? "the responsibility projection is not read yet." : responsibility.diagnostics.join(" ") || "the responsibility projection is unavailable."}`
+    : assignmentState === "expired" ? `${assignmentPart} is not evaluated: the responsibility projection expired ${readTime(projection!.expiresAt, clock.now)}.`
+    : assignmentState === "no-profile" ? `${assignmentPart} needs Working as: choose who you are working as in Filters. It is not sign-in.`
+    : assignmentState === "unknown-person" ? `${assignmentPart} is not evaluated: that person is not in the current responsibility projection.`
+    : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}: ${plural(workTally!.unknown)} here with missing or unknown assignment data.`
+    : `${assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : `Assigned to ${subjectLabel}`}: ${plural(workTally!.matched)} here${reasonText ? ` (${reasonText})` : ""} · ${workTally!.unknown} with unknown assignment.`;
+  const workMessage = assignmentMessage === null ? `${scopeMessage}.` : `${work === "mine" ? "My work" : "All work"} · ${assignmentMessage}`;
   const workLine = (
     <View testID="sessions-work" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, paddingHorizontal: 4, paddingBottom: 6 }}>
-      <Text testID="sessions-work-message" accessibilityLiveRegion="polite" style={{ flexShrink: 1, color: workBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 11 }}>{workMessage}</Text>
+      <Text testID="sessions-work-message" accessibilityLiveRegion="polite" style={{ flexShrink: 1, color: assignmentBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 11 }}>{workMessage}</Text>
       {work === "all" ? <TextAction testID="sessions-work-show-mine" label="My work" accessibilityLabel="Show My work" colors={colors} compact={compact} onPress={() => chooseWork("mine")} />
         : <TextAction testID="sessions-work-show-all" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />}
-      {workState === "no-profile" ? <TextAction testID="sessions-work-choose" label="Choose Working as" colors={colors} compact={compact} onPress={handleRevealFilters} /> : null}
-      {workState === "ready" && work !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-work-show-unknown" label="Show not evaluated" accessibilityLabel="Show sessions whose responsibility is unknown" colors={colors} compact={compact} onPress={() => chooseWork("unknown")} /> : null}
+      {assignment !== "any" ? <TextAction testID="sessions-assignment-show-any" label="Any assignment" accessibilityLabel="Show any assignment" colors={colors} compact={compact} onPress={() => chooseAssignment("any")} /> : null}
+      {assignmentState === "no-profile" ? <TextAction testID="sessions-work-choose" label="Choose Working as" colors={colors} compact={compact} onPress={handleRevealFilters} /> : null}
+      {assignmentState === "ready" && assignment !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-assignment-show-unknown" label="Show unknown assignment" accessibilityLabel="Show sessions whose assignment is unknown" colors={colors} compact={compact} onPress={() => chooseAssignment("unknown")} /> : null}
     </View>
   );
   const listHeader = peek ? null : <>{workLine}{listLine}</>;
@@ -2924,7 +2957,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
             <Text style={{ color: colors.foreground, fontSize: 14, textAlign: "center" }}>{emptyMessage}</Text>
-            {workBlocked || onlyWork ? (
+            {assignmentBlocked || (onlyScope && assignment !== "any") ? (
+              <TextAction testID="sessions-empty-any-assignment" label="Any assignment" accessibilityLabel="Show any assignment" colors={colors} compact={compact} onPress={() => chooseAssignment("any")} />
+            ) : onlyScope ? (
               <TextAction testID="sessions-empty-all-work" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />
             ) : clearable ? (
               <Pressable

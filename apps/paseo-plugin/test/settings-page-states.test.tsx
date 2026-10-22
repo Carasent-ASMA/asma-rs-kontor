@@ -74,14 +74,14 @@ describe("Settings source catalog states", () => {
     expect(offline).toContain(OFFLINE);
     expect(offline).not.toContain("No sources are configured on this host."); expect(offline).not.toContain("Reading configured sources…");
     // The catalog statement and the kontord line are one short disclosure, visible once opened.
-    for (const overrides of [{ sourcesAvailable: false }, {}, { sourcesAvailable: false, sourceError: OFFLINE }]) {
+    for (const overrides of [{ sourcesAvailable: false }, {}, { sourcesAvailable: false, sourceError: OFFLINE }, { kontord: "kontord on this host: not answering." }] as Partial<Props>[]) {
       const screen = mount(overrides);
       const note = screen.nodes().find((node) => node.props.testID === "settings-catalog-note")!;
       expect(visible(note)).toBe("▸ Read-only · configured on the server");
       expect(screen.text()).not.toContain("kontord");
       screen.press("Read-only · configured on the server");
       expect(screen.text()).toContain("no path, title or renamed ID is inferred.");
-      expect(screen.text()).toContain("Governed scheduler, gates and team activation: kontord is not enabled. Console owns policy and administration.");
+      expect(screen.text()).toContain(`Governed scheduler, gates and team activation: not shown here. ${overrides.kontord ?? "kontord on this host: unknown."} Console owns policy and administration.`);
     }
   });
   it("groups sources by kind in compact rows and keeps provenance and diagnostics behind details", () => {

@@ -14,6 +14,7 @@ import { OverviewPage } from "./overview-page";
 import { PlanReader, type PlanView } from "./plan-reader";
 import { attentionLabel, earlierErrorLabel } from "./session-view";
 import { NO_LINKED_EPIC } from "./session-organization";
+import { kontordSentence } from "./kontord-copy";
 
 type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
@@ -23,6 +24,8 @@ type PageProps = {
   compact?: boolean; onChooseSource?: () => void; onDocumentLink?: (target: string) => void; onExternalLink?: (target: string) => void;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; query: string; setQuery: (query: string) => void;
+  /** What kontor.status observed on this host; unknown when absent. */
+  kontord?: string;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
   onEpicTab: (tab: "Plan" | "Board" | "Graph" | "Sessions", epicKey: string | null, sourceId: string | null) => void;
   onGraph?: () => void; onCopy?: (text: string, what: string) => void; planView?: PlanView; onPlanView?: (view: PlanView) => void;
@@ -81,7 +84,7 @@ function RecordPage(props: PageProps) {
     {extra}
   </View>;
   // The page explanation and the kontord line are in each source's Source details; with no source, in About this page.
-  const intro = `${kind === "delivery" ? "Pull requests, checks and releases recorded by configured sources. States are as captured, not live; delivery and acceptance are not inferred." : "Decisions recorded by configured sources. States are as captured, not live approval requests."} Governed ${noun} actions: kontord is not enabled.`;
+  const intro = `${kind === "delivery" ? "Pull requests, checks and releases recorded by configured sources. States are as captured, not live; delivery and acceptance are not inferred." : "Decisions recorded by configured sources. States are as captured, not live approval requests."} Governed ${noun} actions: not shown here. ${props.kontord ?? kontordSentence(null)}`;
   return <View style={{ gap: 14 }}>
     {!reads.length ? <View style={{ padding: 14, borderWidth: 1, borderStyle: "dashed", borderColor: colors.border, borderRadius: 10 }}>
       <Text selectable testID="record-empty" style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{kind === "delivery" ? "Delivery" : "Decision"} records not captured: no source connected.</Text>
@@ -180,7 +183,7 @@ export function ReadOnlyPage(props: PageProps) {
         {!inbox.length ? <Copy colors={colors}>Nothing needs input or attention in this read.</Copy> : null}
       </> : null}
       {props.tab === "Delivery" || props.tab === "Decisions" ? <RecordPage {...props} /> : null}
-      {props.tab === "AI teams & sessions" ? <TeamsSourcePage sources={props.teamsSources ?? props.sources.filter((source) => source.kind === "teams")} snapshots={props.teamsSnapshots} errors={props.teamsErrors} bindingDiagnostics={props.teamsBindingDiagnostics} available={props.teamsAvailable ?? false} reads={props.teamsJsonReads ?? props.reads} entries={props.entries} observedAt={props.directory.lastUpdatedAt === null ? "Unknown" : new Date(props.directory.lastUpdatedAt).toISOString()} colors={colors} view={props.teamsView} onView={props.onTeamsView}>
+      {props.tab === "AI teams & sessions" ? <TeamsSourcePage sources={props.teamsSources ?? props.sources.filter((source) => source.kind === "teams")} snapshots={props.teamsSnapshots} errors={props.teamsErrors} bindingDiagnostics={props.teamsBindingDiagnostics} available={props.teamsAvailable ?? false} reads={props.teamsJsonReads ?? props.reads} entries={props.entries} observedAt={props.directory.lastUpdatedAt === null ? "Unknown" : new Date(props.directory.lastUpdatedAt).toISOString()} colors={colors} view={props.teamsView} onView={props.onTeamsView} kontord={props.kontord}>
         {/* The context picker names the context; a zero count is left to the empty sentence. */}
         <Section title="Sessions in this context" titleLabel={`Native sessions in ${props.contextLabel ?? "All projects"}. ${TEAMS_SESSIONS_NOTE}`} detail={props.entries.length ? `${props.entries.length} session${props.entries.length === 1 ? "" : "s"}` : undefined} colors={colors}>
           <SessionRows entries={props.entries} colors={colors} onOpen={props.onOpen} detail={(entry) => [entry.labels.role ? `role ${entry.labels.role}` : "role Unknown", entry.status, entry.workspaceName ?? "Unassigned workspace"].join(" · ")} />

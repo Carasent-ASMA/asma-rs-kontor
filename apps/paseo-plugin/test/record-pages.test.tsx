@@ -39,6 +39,9 @@ function render(tab: Props["tab"], reads: readonly SourceRead[], extra: Partial<
   return { nodes, visible, links, open, labels };
 }
 describe("read-only recorded Delivery and Decisions", () => {
+  it("hands the kontord sentence on to AI teams & sessions", () => {
+    expect(render("AI teams & sessions", [], { teamsSources: [], kontord: "kontord on this host: answering." }).visible).toContain("Governed fleet: not shown here. kontord on this host: answering.");
+  });
   it.each(["Delivery", "Decisions"] as const)("keeps configured %s records/read time visible and activates only the explicit evidence link", (tab) => {
     const url = "https://example.com/record?capture=historical#source";
     const read = recordRead(tab, url); const page = render(tab, [read]);
@@ -53,8 +56,10 @@ describe("read-only recorded Delivery and Decisions", () => {
     expect(page.labels).toContain(tab === "Delivery" ? "recorded state: captured state · recorded 2026-10-18" : "Owner: Declared owner · recorded open");
     model.open = true;
     const opened = render(tab, [read]).visible;
+    const observed = render(tab, [read], { kontord: "kontord on this host: refused the observer read." }).visible;
     model.open = false;
-    expect(opened).toContain(`Governed ${tab === "Delivery" ? "delivery" : "decision"} actions: kontord is not enabled.`);
+    expect(opened).toContain(`Governed ${tab === "Delivery" ? "delivery" : "decision"} actions: not shown here. kontord on this host: unknown.`);
+    expect(observed).toContain(`Governed ${tab === "Delivery" ? "delivery" : "decision"} actions: not shown here. kontord on this host: refused the observer read.`);
     expect(opened).toContain(tab === "Delivery" ? "States are as captured, not live; delivery and acceptance are not inferred." : "States are as captured, not live approval requests.");
     expect(opened).toContain(`Read ${read.readAt}`); expect(opened).toContain(read.source.path);
     expect(page.visible).not.toContain("requires kontord"); expect(page.visible).not.toContain(read.source.path);
@@ -73,7 +78,7 @@ describe("read-only recorded Delivery and Decisions", () => {
     model.open = false;
     expect(opened.visible).toContain("not connected to a configured");
     expect(opened.visible).toContain("An empty page here means not captured, not that nothing exists.");
-    expect(opened.visible).toContain("actions: kontord is not enabled");
+    expect(opened.visible).toContain("actions: not shown here. kontord on this host: unknown.");
   });
   it.each(["Delivery", "Decisions"] as const)("distinguishes a successfully captured empty %s source from unavailable data", (tab) => {
     const read = recordRead(tab); read.records = { teams: [], decisions: [], delivery: [] };

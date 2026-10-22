@@ -2635,37 +2635,88 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     (item.props.onPress as () => void)(); harness.flush();
   }
 
-  it("starts in My work and says why it shows nothing until a projection and Working as are present", () => {
+  /** Every native state and every kind of Jira relation: missing labels, unassigned, other assignee, conflicting sources, not in the projection. */
+  const local = [
+    sessionEntry("running-mine", { status: "running", labels: { epic: "ASMA-100" }, workspaceId: "w1", workspaceName: "one" }),
+    sessionEntry("starting-other", { status: "initializing", labels: { epic: "ASMA-100", "asma.task": "ASMA-101" }, workspaceId: "w1", workspaceName: "one" }),
+    sessionEntry("idle-unassigned", { labels: { epic: "ASMA-300" }, workspaceId: "w2", workspaceName: "two" }),
+    sessionEntry("error-missing", { status: "error", workspaceId: "w2", workspaceName: "two" }),
+    sessionEntry("input-unread", { needsInput: true, labels: { epic: "ASMA-999" }, workspaceId: "w3", workspaceName: "three" }),
+    sessionEntry("idle-conflict", { labels: { epic: "ASMA-300", "asma.task": "ASMA-101" }, workspaceId: "w3", workspaceName: "three" }),
+  ];
+  const localIds = local.map((entry) => entry.id).sort();
+  function renderLocal(responsibility: ResponsibilityRead | null, hostId = "host-a") {
+    harness.render(() => SessionsScreen({ host: { id: hostId, label: "Host" }, layout: { compact: false, platform: "web" }, theme: { colors } as PluginTheme, params: {}, responsibility,
+      directory: { state: { ...emptyDirectoryState(), status: "ready" as const, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, entries: local }, refresh: vi.fn() },
+    } as Parameters<typeof SessionsScreen>[0]));
+  }
+
+  it("starts in My work with every local session on this host, whatever the projection or Working as", () => {
     patchSessionView("host-a", { grouping: "flat" });
-    render(null);
-    expect(message()).toBe("My work cannot be evaluated on this host: the responsibility projection is not read yet.");
-    expect(sessionRowIds()).toEqual([]);
-    expect(textOf(empty())).toContain("No sessions shown: My work is not evaluated.");
-    render({ status: "unavailable", projection: null, revision: null, readAt: "2026-10-21T12:59:00Z", diagnostics: ["No responsibility projection is installed on this host."] });
-    expect(message()).toBe("My work cannot be evaluated on this host: No responsibility projection is installed on this host.");
-    render(ready("2026-10-21T12:30:00Z"));
-    expect(message()).toMatch(/^My work is not evaluated: the responsibility projection expired /);
-    render(ready());
-    expect(message()).toBe("My work needs Working as: choose who you are working as in Filters. It is not sign-in.");
-    expect(findByTestID(harness.current(), "sessions-work-choose")).toBeDefined();
-    expect(walk(empty()).some((element) => element.props.testID === "sessions-empty-all-work")).toBe(true);
-    press("sessions-work-show-all");
-    expect(sessionRowIds().sort()).toEqual(["alpha-old", "alpha-task", "other", "unread"]);
-    expect(message()).toBe("All work");
+    const reads: (ResponsibilityRead | null)[] = [null,
+      { status: "unavailable", projection: null, revision: null, readAt: "2026-10-21T12:59:00Z", diagnostics: ["No responsibility projection is installed on this host."] },
+      ready("2026-10-21T12:30:00Z"), ready()];
+    for (const read of reads) {
+      renderLocal(read);
+      expect(sessionRowIds().sort()).toEqual(localIds);
+      expect(message()).toBe("My work: every session on this host.");
+      press("sessions-work-show-all");
+      expect(sessionRowIds().sort()).toEqual(localIds);
+      expect(message()).toBe("All work: every session on this host, with empty workspaces and plan-only choices.");
+      press("sessions-work-show-mine");
+    }
+    expect(walk(harness.current()).some((element) => element.props.testID === "sessions-work-choose")).toBe(false);
+    // Choosing who you are working as filters nothing by itself.
+    choose("workingAs", "Alex Example");
+    expect(sessionRowIds().sort()).toEqual(localIds);
+    expect(message()).toBe("My work: every session on this host.");
+    openFilters();
+    expect(textOf(findByTestID(harness.current(), "sessions-responsibility-source"))).toContain("not remembered on this device, which offers Kontor no store");
   });
 
-  it("shows the Working-as person's sessions with their reasons, and what could not be evaluated", () => {
+  it("narrows by assignment only when chosen, and says what is unknown without calling it someone else's", () => {
     patchSessionView("host-a", { grouping: "flat" });
     render(ready());
+    openFilters(); press("sessions-assignment-me");
+    expect(sessionRowIds()).toEqual([]);
+    expect(message()).toBe("My work · Assigned to me needs Working as: choose who you are working as in Filters. It is not sign-in.");
+    expect(findByTestID(harness.current(), "sessions-work-choose")).toBeDefined();
+    expect(walk(empty()).some((element) => element.props.testID === "sessions-empty-any-assignment")).toBe(true);
     choose("workingAs", "Alex Example");
     expect(sessionRowIds().sort()).toEqual(["alpha-old", "alpha-task"]);
-    expect(message()).toBe("My work, working as Alex Example: 2 sessions here (2 epic assignee) · 1 not evaluated.");
-    press("sessions-work-show-unknown");
+    expect(message()).toBe("My work · Assigned to me, working as Alex Example: 2 sessions here (2 epic assignee) · 1 with unknown assignment.");
+    press("sessions-assignment-show-unknown");
     expect(sessionRowIds()).toEqual(["unread"]);
-    // An explicit person replaces My work; the task assignee matches only the task's session.
+    expect(message()).toBe("My work · Unknown assignment for Alex Example: 1 session here with missing or unknown assignment data.");
+    // A named person replaces the Working-as person; the task assignee matches only the task's session.
     choose("person", "Blair Example");
     expect(sessionRowIds()).toEqual(["alpha-task"]);
-    expect(message()).toBe("Work for Blair Example: 1 session here (1 task assignee) · 1 not evaluated.");
+    expect(message()).toBe("My work · Assigned to Blair Example: 1 session here (1 task assignee) · 1 with unknown assignment.");
+    press("sessions-assignment-show-any");
+    expect(sessionRowIds().sort()).toEqual(["alpha-old", "alpha-task", "other", "unread"]);
+  });
+
+  it("keeps Working as per host: the same session IDs on another host stay unfiltered and unset", () => {
+    patchSessionView("host-a", { grouping: "flat", assignment: "me" });
+    patchSessionView("host-b", { grouping: "flat", assignment: "me" });
+    renderLocal(ready());
+    choose("workingAs", "Alex Example");
+    // The epic assignee owns both ASMA-100 sessions; the conflicting labels stay unknown, not someone else's.
+    expect(sessionRowIds().sort()).toEqual(["running-mine", "starting-other"]);
+    renderLocal(ready(), "host-b");
+    expect(message()).toBe("My work · Assigned to me needs Working as: choose who you are working as in Filters. It is not sign-in.");
+    press("sessions-assignment-show-any");
+    expect(sessionRowIds().sort()).toEqual(localIds);
+  });
+
+  it("never shows Not set while the projection is unread or unavailable", () => {
+    render(null);
+    openFilters();
+    expect(findByTestID(harness.current(), "sessions-working-as").props.value).toBe("Loading…");
+    render({ status: "unavailable", projection: null, revision: null, readAt: "2026-10-21T12:59:00Z", diagnostics: [] });
+    expect(findByTestID(harness.current(), "sessions-working-as").props.value).toBe("Unavailable");
+    render(ready());
+    expect(findByTestID(harness.current(), "sessions-working-as").props.value).toBe("Not set");
   });
 
   it("prunes groups with nothing in a person scope", () => {
@@ -2678,9 +2729,9 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     expect(scoped.every((row) => row.group.aggregate.total > 0)).toBe(true);
   });
 
-  it("ends a peek when Working as changes", () => {
+  it("ends an Assigned to me peek when Working as changes", () => {
     render(ready());
-    patchSessionView("host-a", { work: "mine", query: "alpha", peek: { sessionId: "alpha-old", resultsOffset: 0 } });
+    patchSessionView("host-a", { assignment: "me", query: "alpha", peek: { sessionId: "alpha-old", resultsOffset: 0 } });
     harness.flush();
     expect(readSessionView("host-a").peek).not.toBeNull();
     choose("workingAs", "Blair Example");
@@ -2705,14 +2756,20 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     expect(textOf(findByTestID(harness.current(), "sessions-sort-help"))).toBe("Current order keeps state order, your saved arrangement and Role order.");
   });
 
-  it("clears filters to All work keeping order and grouping; Reset view returns to My work, Current order and default grouping", () => {
-    patchSessionView("host-a", { grouping: "flat", work: "person:account-b", sort: "title", sortDirection: "desc" });
+  it("clears filters to All work and Any assignment keeping order, grouping and Working as; Reset view returns to My work and Any assignment", () => {
+    patchSessionView("host-a", { grouping: "flat", assignment: "person:account-b", sort: "title", sortDirection: "desc" });
     render(ready());
+    choose("workingAs", "Alex Example");
     (walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
-    expect(readSessionView("host-a")).toMatchObject({ work: "all", sort: "title", sortDirection: "desc", grouping: "flat" });
+    expect(readSessionView("host-a")).toMatchObject({ work: "all", assignment: "any", sort: "title", sortDirection: "desc", grouping: "flat" });
+    openFilters();
+    expect(findByTestID(harness.current(), "sessions-working-as").props.value).toBe("Alex Example");
     openFilters(); press("sessions-reset-view");
     const view = readSessionView("host-a");
     expect(workScopeOf(view)).toBe("mine");
+    expect(view.assignment).toBe("any");
+    openFilters();
+    expect(findByTestID(harness.current(), "sessions-working-as").props.value).toBe("Alex Example");
     expect([view.sort, view.sortDirection, view.grouping]).toEqual([undefined, undefined, undefined]);
   });
 });

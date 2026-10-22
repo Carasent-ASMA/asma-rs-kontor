@@ -273,7 +273,9 @@ sessions without answering or dismissing items. Activity is a partial snapshot
 of session update times. Search covers available names, configured plan text and
 canonical tasks, with no private transcript indexing. Delivery, Decisions and
 configured team definitions/chains show their own source and coverage, or an
-explicit unavailable state. Governed scheduler/gate data says **kontord is not enabled**. None of these direct reads requires `kontord`.
+explicit unavailable state. Governed scheduler/gate data is not shown here; the
+page states what `kontor.status` observed on this host instead. None of these
+direct reads requires `kontord`.
 
 ### Host-side source catalog
 
@@ -470,8 +472,9 @@ fleets are not merged. Exact template ID/slot candidates retain every version;
 no latest version or leadership roster identity is inferred. Activation,
 eligibility, running models and account availability remain unattested, and
 configured bindings are never joined to native sessions by title, role or model.
-Governed fleet controls remain unavailable: **kontord is not enabled**. Direct
-file reads and native sessions remain usable without it.
+Governed fleet controls are not shown here; the page states what
+`kontor.status` observed on this host. Direct file reads and native sessions
+remain usable without it.
 
 `test/teams-source-adapter.test.ts` pins the four reviewed source copies and the
 adapter contract. `test/teams-source-integration.test.tsx` covers the opt-in server
@@ -513,30 +516,47 @@ known-child count establishes complete Jira inventory, current completion,
 readiness, delivery or epic acceptance. The source's total captured epic count
 is provenance, not a completeness promise. Conflicting observations stay Unknown.
 
-### Responsibility projection (My work)
+### My work and assignment (responsibility projection)
 
-Sessions opens in **My work**: the sessions where the chosen person is the
-epic assignee, the exact task assignee, or a declared workstream responsible
-or participant, each shown with its reason. **All work** is always one press
-away, and an explicit person in Filters replaces My work. A person scope hides
-groups with none of its sessions. **Working as** is a choice from the
-projection's roster, held in this app session per host and tracker realm. It
-is not sign-in, and nothing infers it from the host's Jira credential, the
-session creator, cwd, titles, model or names. A change of Working as ends any
-**Show in tree**. **Clear filters** returns to All work and keeps the sort and
-grouping; **Reset view** returns to My work, Current order and the default
-grouping.
+Sessions opens in **My work**: every native session on the selected host,
+whatever its Jira assignee, epic, task or workstream, narrowed only by the
+usual search, state, archive and scope filters. It needs no person and no
+projection. My work lists only groups and association choices that hold
+sessions here; **All work** shows the same sessions and adds empty workspaces
+and plan-only choices.
+
+**Assignment** is a separate filter, **Any assignment** by default.
+**Assigned to me** keeps the sessions where the **Working as** person is the
+epic assignee, the exact task assignee, or a declared workstream responsible or
+participant, each shown with its reason; **Assigned to** names one person;
+**Unknown assignment** keeps the sessions whose relation could not be read. An
+assignment filter hides groups with none of its sessions.
+
+**Working as** is chosen once from the projection's roster per host and
+tracker realm and remembered on this device: in the app's user defaults on
+iOS, in the app's local storage on web and desktop. Where the device offers
+the plugin no store (Android), or the store fails, the choice lasts the app
+session and Filters says so. It holds only the tracker account ID. It is a
+viewing choice, not sign-in, and nothing infers it from the host's Jira
+credential, the session creator, cwd, titles, model or names. Choosing it
+never turns on a filter. While the projection is loading or unavailable it is
+kept, never shown as unset; **Forget on this device** removes it. A change of
+Working as ends an Assigned to me or Unknown assignment **Show in tree**.
+**Clear filters** returns to All work and Any assignment and keeps Working as,
+the sort and grouping; **Reset view** returns to My work, Any assignment,
+Current order and the default grouping, keeping Working as.
 
 The facts come from one operator-owned file,
 `$PASEO_HOME/plugin-config/kontor/responsibility.json`
 (`kontor/responsibility@1`, 2 MiB cap), read by the `responsibility.read`
 RPC. It is separate from `consumption/data@2` and from the source catalog.
 A missing, unreadable, invalid or expired file, an unset Working as and a
-person outside the roster all leave My work **not evaluated**, with the reason
-and a way to All work. They never mean "no work". A session whose relation was
-not read (an epic or task outside the selection, an assignee field not read,
-epic sources that disagree, or an undeclared workstream) is **Unknown
-responsibility** and is never counted as someone else's.
+person outside the roster leave an assignment filter **not evaluated**, with
+the reason and a way back to Any assignment; My work is unaffected. They never
+mean "no work". A session whose relation was not read (an epic or task outside
+the selection, an assignee field not read, epic sources that disagree, or an
+undeclared workstream) has **unknown assignment** and is never counted as
+someone else's.
 
 Collect it read-only from explicitly selected epics with asma-cli's Jira
 credential helper (importable, or under `$ASMA_ROOT`). Credentials never
@@ -561,8 +581,8 @@ every account in it is confirmed with a Jira user read:
 Each declared workstream names at least one account, as lists of account ID
 strings. Repeated members, empty rosters and an empty declaration are refused.
 Undecided workstreams are left out, so they stay unknown. Without a
-declaration, every workstream relation is unknown, and My work matches only
-epic and task assignees. `--self-check` runs the offline check on synthetic
+declaration, every workstream relation is unknown, and Assigned to me matches
+only epic and task assignees. `--self-check` runs the offline check on synthetic
 data.
 
 **Sort** in Filters keeps **Current order** by default (state order, the saved
@@ -806,6 +826,35 @@ The composed `kontor-mcp` server always runs at `--credential-tier observer`.
 The tier is not configurable. The plugin names the realm state root but never
 reads `credentials.json`, never receives `KONTOR_AUTH`, and never writes to
 `kontord`. `test/security.test.ts` pins that boundary.
+
+The `kontor.status` RPC reports two separate facts and the time it checked.
+`composition` is configuration: whether `agent.create` gives new agents the
+`kontor-observer` MCP (`composed`, `mcp-off`, or `floor-off`, which wins).
+`observation` is what the realm answered: `ready`, `unavailable` (no usable
+answer), `refused`, or `unknown`. A missing command, credential or realm, a
+start failure, a timeout or an unexpected answer is `unknown`, never "no realm"
+or "not enabled". Only `kontor_realm_get`'s own 2xx answer naming a realm is
+`ready`; a completed handshake is not, and `refused` is that tool's own non-2xx
+answer. The probe takes exactly one `initialize` response, then one
+`kontor_realm_get` response, in order. A frame that is not JSON-RPC, an error, a
+duplicate, an early or unrequested response, or another tool's document ends it
+as `unknown`, and nothing is sent after the answer. The child's own
+notifications are skipped.
+
+On request, at most once per 30 seconds for one configuration, the server starts
+the configured `kontor-mcp` with the arguments `agent.create` composes (state
+root, observer tier, serve profile) and no fallback, and calls the one observer
+tool `kontor_realm_get`. The child gets only `PATH` and `HOME`, its standard
+error is never read, and it is killed after the answer, 64 KiB of output
+(counted in bytes before decoding), 5 seconds or the worker's stop. With `KONTOR_PLUGIN_MCP=off` nothing is started.
+The RPC is registered whatever `floor.json` says, and nothing else waits for it:
+Sessions, Paseo-direct work and the hooks work the same without a realm.
+
+The Kontor screen shows the observation, the composition and the check time in
+one line on every view except Sessions. Each place that names a governed
+feature says it is not shown here and gives the same observation. An offline
+host, an unread status or a failed read shows `unknown`, with no composition or
+time. The native host status is never changed.
 
 ## Install and uninstall
 
