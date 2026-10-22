@@ -5,46 +5,39 @@ import { DEFAULT_CREDENTIAL_TIER, readConfig, type KontorPluginConfig } from "./
 
 export const STATUS_TTL_MS = 30_000;
 export const STATUS_BUDGET_MS = 5_000;
-const MAX_OUTPUT = 1 << 20;
+/** Everything the child may write, frames included; the one realm document is far smaller. */
+export const STATUS_OUTPUT_LIMIT = 64 * 1024;
 
-type Outcome = Omit<KontorStatus, "checkedAt">;
-
-const outcome = (status: KontorStatus["status"], extra: Partial<Outcome> = {}): Outcome =>
-  ({ status, realmId: null, realmLabel: null, httpStatus: null, ...extra });
+type Observation = KontorStatus["observation"];
 
 /** The tool result carries kontor-mcp's document in its one text block. */
-function classify(result: unknown): Outcome {
+function classify(result: unknown): Observation {
   const { isError, content } = (result ?? {}) as { isError?: boolean; content?: { text?: string }[] };
-  let document: { dispatched?: unknown; code?: unknown; status?: unknown; body?: { realm_id?: unknown; display_label?: unknown } };
+  let document: { dispatched?: unknown; code?: unknown; status?: unknown; body?: { realm_id?: unknown } };
   try {
     document = JSON.parse(content?.[0]?.text ?? "");
   } catch {
-    return outcome("unknown");
+    return "unknown";
   }
   if (isError) {
-    // Nothing answered on the realm's endpoint; kontor-mcp dispatched nothing.
-    if (document.dispatched === false && document.code === "unavailable") return outcome("not-answering");
-    return typeof document.status === "number" ? outcome("refused", { httpStatus: document.status }) : outcome("unknown");
+    // kontor-mcp dispatched the read and nothing usable answered.
+    if (document.dispatched === false && document.code === "unavailable") return "unavailable";
+    return typeof document.status === "number" ? "refused" : "unknown";
   }
-  const body = document.body;
-  return typeof body?.realm_id === "string"
-    ? outcome("ready", { realmId: body.realm_id, realmLabel: typeof body.display_label === "string" ? body.display_label : null })
-    : outcome("unknown");
+  return typeof document.body?.realm_id === "string" ? "ready" : "unknown";
 }
 
 /**
- * Ask the configured `kontor-mcp` for `kontor_realm_get` at the fixed observer tier, over stdio.
+ * Ask the configured `kontor-mcp` for `kontor_realm_get` at the fixed observer tier, over stdio, with the
+ * arguments agent.create composes for kontor-observer and no fallback to other arguments.
  *
- * Only an authenticated answer to that read is `ready`; a completed handshake alone is not readiness.
  * `kontor-mcp` reads its own credential from the state root; the plugin never opens, names or forwards it.
- * The child gets only PATH and HOME, its standard error is never read, and it is stopped after one answer
- * or the budget, or when `signal` aborts. Never rejects.
+ * The child gets only PATH and HOME, its standard error is never read, and it is killed after one answer,
+ * the output limit, the budget or `signal`. Never rejects.
  */
-export function probeKontorStatus(config: KontorPluginConfig, budgetMs = STATUS_BUDGET_MS, signal?: AbortSignal): Promise<Outcome> {
-  if (!config.mcpEnabled) return Promise.resolve(outcome("off"));
+export function observeKontord(config: KontorPluginConfig, budgetMs = STATUS_BUDGET_MS, signal?: AbortSignal): Promise<Observation> {
+  if (!config.mcpEnabled) return Promise.resolve("unknown");
   return new Promise((settle) => {
-    // The arguments agent.create composes for kontor-observer: the configured state root, the fixed tier and
-    // the configured serve profile, if any.
     const args = ["--state-root", config.stateRoot, "--credential-tier", DEFAULT_CREDENTIAL_TIER, ...(config.serveProfile ? ["--serve-profile", config.serveProfile] : [])];
     const child = spawn(config.mcpCommand, args, {
       env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
@@ -52,26 +45,27 @@ export function probeKontorStatus(config: KontorPluginConfig, budgetMs = STATUS_
       signal,
     });
     let done = false;
-    let served = false;
+    let received = 0;
     let output = "";
-    const finish = (result: Outcome) => {
+    const finish = (observation: Observation) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      child.kill();
-      settle(result);
+      child.kill("SIGKILL");
+      settle(observation);
     };
-    const timer = setTimeout(() => finish(outcome("unknown")), budgetMs);
+    const timer = setTimeout(() => finish("unknown"), budgetMs);
     const send = (message: object) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
-    child.on("error", (error: NodeJS.ErrnoException) => finish(outcome(error.code === "ENOENT" ? "mcp-missing" : "unknown")));
-    // kontor-mcp resolves the realm before it serves, so leaving before the handshake means no realm here.
-    // "close" comes after its output is drained, so an answer it wrote before leaving is still read.
-    child.on("close", () => finish(outcome(served ? "unknown" : "no-realm")));
-    // A child that leaves early closes the pipe; its exit is what reports it.
+    // A missing command, credential or realm all end here; none of them proves there is no realm.
+    child.on("error", () => finish("unknown"));
+    // "close" comes after the child's output is drained, so an answer written before it left is still read.
+    child.on("close", () => finish("unknown"));
+    // A child that leaves early closes the pipe; its close is what reports it.
     child.stdin.on("error", () => {});
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      received += chunk.length;
+      if (received > STATUS_OUTPUT_LIMIT) return finish("unknown");
       output += chunk;
-      if (output.length > MAX_OUTPUT) return finish(outcome("unknown"));
       for (let newline = output.indexOf("\n"); newline >= 0; newline = output.indexOf("\n")) {
         const line = output.slice(0, newline);
         output = output.slice(newline + 1);
@@ -82,11 +76,10 @@ export function probeKontorStatus(config: KontorPluginConfig, budgetMs = STATUS_
           continue;
         }
         if (message.id === 1) {
-          served = true;
           send({ method: "notifications/initialized" });
           send({ id: 2, method: "tools/call", params: { name: "kontor_realm_get", arguments: {} } });
         } else if (message.id === 2) {
-          finish(message.error ? outcome("unknown") : classify(message.result));
+          finish(message.error ? "unknown" : classify(message.result));
         }
       }
     });
@@ -94,21 +87,27 @@ export function probeKontorStatus(config: KontorPluginConfig, budgetMs = STATUS_
   });
 }
 
-/** At most one probe per 30 seconds; callers inside the window, concurrent ones included, share it. */
-export function kontorStatusReader(config: () => KontorPluginConfig = readConfig, now = Date.now, signal?: AbortSignal): () => Promise<KontorStatus> {
-  let cached: { at: number; read: Promise<KontorStatus> } | null = null;
+/**
+ * At most one probe per 30 seconds for one configuration; callers inside the window, concurrent ones and
+ * failures included, share it. A changed command, state root, profile or switch starts a new one.
+ */
+export function kontorStatusReader(floorEnabled: boolean, config: () => KontorPluginConfig = readConfig, now = Date.now, signal?: AbortSignal): () => Promise<KontorStatus> {
+  let cached: { key: string; at: number; read: Promise<KontorStatus> } | null = null;
   return () => {
+    const current = config();
+    const key = JSON.stringify([current.mcpEnabled, current.mcpCommand, current.stateRoot, current.serveProfile]);
     const at = now();
-    if (!cached || at - cached.at >= STATUS_TTL_MS) {
-      cached = { at, read: probeKontorStatus(config(), STATUS_BUDGET_MS, signal).then((result) => ({ ...result, checkedAt: new Date(now()).toISOString() })) };
+    if (!cached || cached.key !== key || at - cached.at >= STATUS_TTL_MS) {
+      const composition = !floorEnabled ? "floor-off" : current.mcpEnabled ? "composed" : "mcp-off";
+      cached = { key, at, read: observeKontord(current, STATUS_BUDGET_MS, signal).then((observation) => ({ observation, composition, checkedAt: new Date(now()).toISOString() })) };
     }
     return cached.read;
   };
 }
 
-/** Independent of the floor. The returned disposer stops a probe still in flight when the worker stops. */
-export function contributeKontorStatus(server: Pick<PluginServerContext, "handle">): () => void {
+/** Registered whatever the floor; it only reports it. The disposer kills a probe still in flight. */
+export function contributeKontorStatus(server: Pick<PluginServerContext, "handle">, floorEnabled: boolean): () => void {
   const stop = new AbortController();
-  server.handle(readKontorStatus, kontorStatusReader(readConfig, Date.now, stop.signal));
+  server.handle(readKontorStatus, kontorStatusReader(floorEnabled, readConfig, Date.now, stop.signal));
   return () => stop.abort();
 }

@@ -2,25 +2,23 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 /**
- * What this host can say about its Kontor realm, asked through the observer `kontor-mcp` only.
+ * The host's Kontor status, as two separate facts.
  *
- * - `ready`: the realm answered `kontor_realm_get`.
- * - `not-answering`: `kontor-mcp` found the realm but nothing answered on its endpoint.
- * - `refused`: the realm answered and refused the observer read (`httpStatus`).
- * - `no-realm`: `kontor-mcp` stopped before serving: no realm at the configured state root.
- * - `mcp-missing`: the configured `kontor-mcp` command could not be started.
- * - `off`: `KONTOR_PLUGIN_MCP=off`; nothing is asked.
- * - `unknown`: no usable answer within the budget. Never read as absent or healthy.
+ * `observation` is what the realm answered to the one observer read through `kontor-mcp`:
+ * - `ready`: an authenticated answer; a completed handshake alone is not readiness;
+ * - `unavailable`: `kontor-mcp` reached for the realm and got no usable answer;
+ * - `refused`: the realm answered and refused the read;
+ * - `unknown`: anything not proven, including a missing command, credential or realm, a start failure,
+ *   a timeout or an unexpected answer. It never means "no realm" or "not enabled".
  *
- * Native Sessions and Paseo-direct never depend on it.
+ * `composition` is configuration, not an observation: whether `agent.create` gives new agents the
+ * `kontor-observer` MCP (`floor-off` wins over `mcp-off`). With `mcp-off`, nothing is asked.
  */
 export const kontorStatusSchema = z.object({
-  status: z.enum(["ready", "not-answering", "refused", "no-realm", "mcp-missing", "off", "unknown"]),
-  realmId: z.string().nullable(),
-  realmLabel: z.string().nullable(),
-  httpStatus: z.number().int().nullable(),
+  observation: z.enum(["ready", "unavailable", "refused", "unknown"]),
+  composition: z.enum(["composed", "mcp-off", "floor-off"]),
   checkedAt: z.string(),
-});
+}).strict();
 
 export type KontorStatus = z.infer<typeof kontorStatusSchema>;
 

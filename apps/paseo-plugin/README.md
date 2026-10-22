@@ -807,16 +807,22 @@ The tier is not configurable. The plugin names the realm state root but never
 reads `credentials.json`, never receives `KONTOR_AUTH`, and never writes to
 `kontord`. `test/security.test.ts` pins that boundary.
 
-The `kontor.status` RPC reports the host's realm for the client: `ready` (with
-the realm ID and label), `not-answering`, `refused` (with the HTTP status),
-`no-realm`, `mcp-missing`, `off` or `unknown`. On request, at most once per 30
-seconds, the server starts the configured `kontor-mcp` with the same state
-root, observer tier and serve profile that `agent.create` composes, calls the
-one observer tool `kontor_realm_get` and stops the process after the answer or
-5 seconds. Only an authenticated answer is `ready`; a completed handshake is
-not. The child gets only `PATH` and `HOME`, and its standard error is never
-read. `KONTOR_PLUGIN_MCP=off` returns `off` without starting anything. The
-registration does not depend on `floor.json`, and nothing else waits for it:
+The `kontor.status` RPC reports two separate facts and the time it checked.
+`composition` is configuration: whether `agent.create` gives new agents the
+`kontor-observer` MCP (`composed`, `mcp-off`, or `floor-off`, which wins).
+`observation` is what the realm answered: `ready`, `unavailable` (no usable
+answer), `refused`, or `unknown`. A missing command, credential or realm, a
+start failure, a timeout or an unexpected answer is `unknown`, never "no realm"
+or "not enabled". Only an authenticated answer is `ready`; a completed handshake
+is not.
+
+On request, at most once per 30 seconds for one configuration, the server starts
+the configured `kontor-mcp` with the arguments `agent.create` composes (state
+root, observer tier, serve profile) and no fallback, and calls the one observer
+tool `kontor_realm_get`. The child gets only `PATH` and `HOME`, its standard
+error is never read, and it is killed after the answer, 64 KiB of output,
+5 seconds or the worker's stop. With `KONTOR_PLUGIN_MCP=off` nothing is started.
+The RPC is registered whatever `floor.json` says, and nothing else waits for it:
 Sessions, Paseo-direct work and the hooks work the same without a realm.
 
 ## Install and uninstall

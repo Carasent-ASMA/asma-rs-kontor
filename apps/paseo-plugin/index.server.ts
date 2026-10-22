@@ -22,10 +22,11 @@ export default function plugin(server: PluginServerContext): () => void {
   });
   const stopSources = contributeReadSources(server, settings, sourceCatalog);
   contributeResponsibility(server);
-  const stopStatus = contributeKontorStatus(server);
   // The operator's floor.json is read once per worker start; off registers none of the three hooks.
   const floor = readFloor();
   reportFloor(floor);
+  // Registered whatever the floor; the floor is only reported, as whether new agents get kontor-observer.
+  const stopStatus = contributeKontorStatus(server, floor.enabled);
   const stopHooks = floor.enabled ? contribute(server) : () => {};
   return () => { stopSources(); stopStatus(); stopHooks(); };
 }
