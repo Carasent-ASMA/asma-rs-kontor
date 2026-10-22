@@ -44,6 +44,7 @@ reqwest = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
+kontor-fleet = { path = "../kontor-fleet", version = "=0.2.1" }
 # The capability-aware shared contract, so this adapter is judged by the same
 # assertions as the scripted fake and the AO adapter rather than by a copy of
 # them. The dependency runs test-crate -> adapter only in this direction.

@@ -2246,3 +2246,37 @@ because it also proves that key against Kontor's confirmed Jira binding.
 
 Changing a prompt, duration, template or specification changes configuration.
 Changing a safety invariant requires an architectural decision and code review.
+
+### Fleet-origin consultation permission policy
+
+A schema-version-2 fleet policy may declare `consultation_permissions` as an
+ordered list of exact `{account, model, effort, mode}` records. `account` is an
+exact member of the model's domain, `model` is its symbolic `models` key,
+`effort` is one declared supported effort (explicit `null` only for a model
+without efforts), and `mode` is exactly `plan`. Each record applies only to a
+Cursor or OpenCode consultation route with a known vendor. Unknown, partial,
+wildcard and duplicate records fail fleet validation; omission grants no
+fleet-origin exception. This is behavioral risk acceptance, not filesystem
+containment, and does not relax other admission or readback gates.
+
+The existing fleet preview/publish/activate path governs these bytes. Admission
+freezes its existing fleet policy hash in the consultation context. Launch and
+retry verify the immutable `fleet-history/<policy-hash>.yml` artifact and match
+that exact hash, account, native model id and effort. Current authoring,
+unactivated publications, later activations and restart cannot add permissions
+to a frozen run. Missing or tampered artifacts refuse; they are never repaired
+from authoring. No new table, active pointer or editable projection is added.
+Ordinary Claude and Codex modes are unchanged.
+
+Historical exact recovery-profile exceptions remain recovery-only. Their profile
+hash is not a fleet permission-policy pin, and cannot admit a new consultation.
+Replacing those historical exceptions with fleet-owned recovery policy requires
+an explicit policy pin in the existing recovery intent/replay contract. The
+current policy is never substituted for a missing pin.
+
+Fleet-selected provider-outage recovery freezes `consultation_route_source:
+fleet_configuration` together with its existing `fleet_provenance` in the same
+canonical recovery document before native retirement. Retry and later generation
+readback use that document's policy hash. A mere fleet match does not relabel a
+credential-propagation or explicit profile recovery. Historical documents lacking
+this marker remain profile-only; no marker or policy hash is backfilled.

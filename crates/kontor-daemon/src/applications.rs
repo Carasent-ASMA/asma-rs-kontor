@@ -421,11 +421,15 @@ fn consultation_route_provenance(
             ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(evidence_hash),
         ),
         "materialization_recovery_profile" => Ok(ConsultationRouteProvenance {
+            fleet_permissions: None,
+            legacy_recovery: false,
             source: ConsultationRouteSource::MaterializationRecoveryProfile,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
         }),
         "seat_recovery_profile" => Ok(ConsultationRouteProvenance {
+            fleet_permissions: None,
+            legacy_recovery: false,
             source: ConsultationRouteSource::SeatRecoveryProfile,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
@@ -437,6 +441,40 @@ fn consultation_route_provenance(
             "consultation route provenance",
             "the frozen route source is not recognized by this build",
         )),
+    }
+}
+
+impl Services {
+    fn qualify_consultation_permissions(
+        &self,
+        mut provenance: ConsultationRouteProvenance,
+        rung: &ModelRung,
+    ) -> Result<ConsultationRouteProvenance, ApiError> {
+        if !provenance.is_fleet_configuration()
+            && !provenance.legacy_recovery
+            && matches!(provider_family(&rung.provider.0), "cursor" | "opencode")
+        {
+            return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                "consultation_permission_unpinned: historical recovery exceptions cannot admit a new consultation"));
+        }
+        if provenance.is_fleet_configuration()
+            && matches!(provider_family(&rung.provider.0), "cursor" | "opencode")
+        {
+            provenance.fleet_permissions = Some(
+                self.fleet
+                    .consultation_permissions(&provenance.evidence_hash)
+                    .map_err(|error| self.refuse_fleet_policy(&error))?,
+            );
+            if !provenance
+                .fleet_permissions
+                .as_ref()
+                .is_some_and(|permissions| permissions.permits(&provenance.evidence_hash, rung))
+            {
+                return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_unproven: the frozen fleet policy grants no exact plan allowance"));
+            }
+        }
+        Ok(provenance)
     }
 }
 
@@ -14876,6 +14914,13 @@ impl Services {
                 let provenance = candidate
                     .provenance()
                     .map_err(|error| self.refuse_domain(&error))?;
+                let provenance = match self
+                    .qualify_consultation_permissions(provenance, &candidate.model_rung)
+                {
+                    Ok(provenance) => provenance,
+                    Err(error) if error.code == ApiErrorCode::PlacementBlocked => continue,
+                    Err(error) => return Err(error),
+                };
                 match adapter.validate_consultation_model_rung(&candidate.model_rung, &provenance) {
                     Ok(()) => supported.push(candidate.clone()),
                     Err(
@@ -15163,6 +15208,8 @@ impl Services {
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
             .unwrap_or(now);
         if let Some(adapter) = state.runtimes().get(&self.node_runtime_kind()?) {
+            let route_provenance =
+                self.qualify_consultation_permissions(route_provenance, &model_rung)?;
             adapter
                 .validate_consultation_model_rung(&model_rung, &route_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -15259,6 +15306,39 @@ impl Services {
             })
     }
 
+    fn recovered_consultation_fleet_provenance(
+        &self,
+        run: &StoredConsultationRun,
+        seat: &StoredConsultationSeat,
+    ) -> Result<Option<kontor_runtime::FleetLaunchProvenance>, ApiError> {
+        let profile = self
+            .state()?
+            .with_store(|store| store.get_consultation_generation_profile(run.project_id, seat))
+            .map_err(|error| self.refuse(&error))?;
+        let Some((profile, _)) = profile else {
+            return Ok(None);
+        };
+        let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the frozen consultation generation profile is unreadable",
+            )
+        })?;
+        match value.get("consultation_route_source") {
+            None => return Ok(None), // Historical profile-only recovery: no implicit policy pin.
+            Some(source) if source.as_str() == Some("fleet_configuration") => {}
+            Some(_) => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_unpinned: the frozen recovery source is unsupported",
+                ));
+            }
+        }
+        self.frozen_fleet_provenance(Some(&value))?.ok_or_else(|| {
+            self.deny(ApiErrorCode::PlacementBlocked, "consultation_permission_unpinned: the frozen recovery source has no policy hash")
+        }).map(Some)
+    }
+
     /// The fleet launch provenance one Committee seat's launch requests: its
     /// admission's, while the seat still holds the admitted route. A rerouted
     /// seat's route was not the policy's choice and requests none.
@@ -15284,7 +15364,7 @@ impl Services {
                 })
             })
         else {
-            return Ok(None);
+            return self.recovered_consultation_fleet_provenance(run, seat);
         };
         let admitted = admission
             .get("model_route")
@@ -15293,11 +15373,9 @@ impl Services {
                 serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
                     .ok()
             })
-            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
-            .transpose()
-            .map_err(|error| self.refuse_domain(&error))?;
-        if admitted.as_ref() != Some(&seat.model_rung) {
-            return Ok(None);
+            .is_some_and(|route| frozen_runtime_route_matches(&route, &seat.model_rung));
+        if !admitted {
+            return self.recovered_consultation_fleet_provenance(run, seat);
         }
         self.frozen_fleet_provenance(Some(admission))
     }
@@ -15326,6 +15404,21 @@ impl Services {
                 "the runtime selected for Advisor placement is not configured",
             )
         })?;
+        let pending_seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        for seat in pending_seats
+            .iter()
+            .filter(|seat| seat.native_identity.is_none())
+        {
+            let provenance = self.qualify_consultation_permissions(
+                self.advisor_route_provenance(run)?.for_legacy_recovery(),
+                &seat.model_rung,
+            )?;
+            adapter
+                .validate_consultation_model_rung(&seat.model_rung, &provenance)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
         let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
@@ -15348,6 +15441,8 @@ impl Services {
             kontor_api::now(),
         )
         .map_err(|error| self.refuse_domain(&error))?;
+
+        // Refresh after awaited native preparation; preflight is not a dispatch snapshot.
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -15361,7 +15456,10 @@ impl Services {
             if seat.native_identity.is_some() {
                 continue;
             }
-            let route_provenance = self.advisor_route_provenance(run)?;
+            let route_provenance = self.qualify_consultation_permissions(
+                self.advisor_route_provenance(run)?.for_legacy_recovery(),
+                &seat.model_rung,
+            )?;
             let fleet_provenance = self.frozen_fleet_provenance(run.context.get("admission"))?;
             adapter
                 .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
@@ -15831,16 +15929,13 @@ impl Services {
                 serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
                     .ok()
             })
-            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
-            .transpose()
-            .map_err(|error| self.refuse_domain(&error))?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::Unavailable,
                     "the frozen Committee admission route is unreadable",
                 )
             })?;
-        if admitted_route == seat.model_rung {
+        if frozen_runtime_route_matches(&admitted_route, &seat.model_rung) {
             let source = admission
                 .get("source")
                 .and_then(serde_json::Value::as_str)
@@ -15864,6 +15959,12 @@ impl Services {
                 })?;
             return consultation_route_provenance(source, evidence_hash)
                 .map_err(|error| self.refuse_domain(&error));
+        }
+
+        if let Some(frozen) = self.recovered_consultation_fleet_provenance(run, seat)? {
+            return Ok(ConsultationRouteProvenance::fleet_configuration(
+                frozen.policy_hash,
+            ));
         }
 
         let materialization_reroute = self
@@ -16198,6 +16299,22 @@ impl Services {
                 "the runtime selected for Committee placement is not configured",
             )
         })?;
+        let pending_seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        for seat in pending_seats.iter().filter(|seat| {
+            seat.native_identity.is_none()
+                && (include_judge || seat.committee_role != Some(CommitteeRole::Judge))
+        }) {
+            let provenance = self.qualify_consultation_permissions(
+                self.committee_seat_route_provenance(run, seat)?
+                    .for_legacy_recovery(),
+                &seat.model_rung,
+            )?;
+            adapter
+                .validate_consultation_model_rung(&seat.model_rung, &provenance)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
         let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
@@ -16251,6 +16368,8 @@ impl Services {
                 )
             })?
             .unwrap_or_else(|| "not applicable".to_owned());
+
+        // Refresh after awaited native preparation; preflight is not a dispatch snapshot.
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -16270,7 +16389,11 @@ impl Services {
             {
                 continue;
             }
-            let route_provenance = self.committee_seat_route_provenance(run, seat)?;
+            let route_provenance = self.qualify_consultation_permissions(
+                self.committee_seat_route_provenance(run, seat)?
+                    .for_legacy_recovery(),
+                &seat.model_rung,
+            )?;
             let fleet_provenance = self.committee_seat_fleet_provenance(run, seat)?;
             adapter
                 .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
@@ -16482,6 +16605,10 @@ impl Services {
         } else {
             "[]".to_owned()
         };
+        let route_provenance = self.qualify_consultation_permissions(
+            route_provenance.for_legacy_recovery(),
+            &model_rung,
+        )?;
         adapter
             .validate_consultation_model_rung(&model_rung, &route_provenance)
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -18186,6 +18313,13 @@ fn freeze_seat_model_rung(
             });
         }
     })
+}
+
+// Stored admission is compared to its frozen seat, never reinterpreted by today's catalog.
+fn frozen_runtime_route_matches(route: &RuntimeModelRouteRequest, rung: &ModelRung) -> bool {
+    route.provider == rung.provider.0
+        && route.model == rung.model.0
+        && route.effort.as_deref() == rung.effort.map(EffortLevel::as_str)
 }
 
 fn parse_runtime_model_route(
@@ -31658,6 +31792,13 @@ impl ApplicationOperations for Services {
             if let Some(provenance) = &chosen_route {
                 recovery_profile["fleet_provenance"] = serde_json::json!(provenance);
             }
+            if chosen_route.is_some()
+                && request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
+                && request.recovery_profile.is_empty()
+            {
+                recovery_profile["consultation_route_source"] =
+                    serde_json::json!("fleet_configuration");
+            }
             let recovery_profile = self.intent(&recovery_profile)?;
             (desired_rung, recovery_profile, None)
         };
@@ -31691,24 +31832,44 @@ impl ApplicationOperations for Services {
             )?;
         }
         let successor_fleet_provenance = chosen_route;
-        let successor_route_provenance = match fleet_routes.as_ref() {
-            Some((fleet, _))
-                if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
-                    && request.recovery_profile.is_empty() =>
-            {
-                ConsultationRouteProvenance::fleet_configuration(fleet.hash().clone())
-            }
-            _ => consultation_route_provenance(
-                "seat_recovery_profile",
-                recovery_profile.hash().clone(),
-            )
-            .map_err(|error| self.refuse_domain(&error))?,
+        let frozen_profile: serde_json::Value = serde_json::from_str(recovery_profile.json())
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen recovery profile is unreadable",
+                )
+            })?;
+        if frozen_profile
+            .get("consultation_route_source")
+            .is_some_and(|source| source.as_str() != Some("fleet_configuration"))
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "consultation_permission_unpinned: the frozen recovery source is unsupported",
+            ));
+        }
+        let successor_route_provenance = if frozen_profile
+            .get("consultation_route_source")
+            .and_then(serde_json::Value::as_str)
+            == Some("fleet_configuration")
+        {
+            let frozen = successor_fleet_provenance.as_ref().ok_or_else(|| {
+                self.deny(ApiErrorCode::PlacementBlocked, "consultation_permission_unpinned: the frozen recovery source has no policy hash")
+            })?;
+            ConsultationRouteProvenance::fleet_configuration(frozen.policy_hash.clone())
+        } else {
+            consultation_route_provenance("seat_recovery_profile", recovery_profile.hash().clone())
+                .map_err(|error| self.refuse_domain(&error))?
         };
         // Validate the exact successor policy before fencing the logical seat or
         // touching its native predecessor. In particular, a same-rung
         // credential-propagation retry must not turn an already-running
         // operator-accepted OpenCode filler into a prepared recovery attempt
         // when SeatRecoveryProfile is not an accepted source for that route.
+        let successor_route_provenance = self.qualify_consultation_permissions(
+            successor_route_provenance.for_legacy_recovery(),
+            &desired_rung,
+        )?;
         adapter
             .validate_consultation_model_rung(&desired_rung, &successor_route_provenance)
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -31716,8 +31877,11 @@ impl ApplicationOperations for Services {
         if let Some(attempt) = &pending_attempt {
             provenance_basis.occupancy_generation = attempt.predecessor_occupancy_generation;
         }
-        let predecessor_route_provenance =
-            self.committee_seat_route_provenance(&run, &provenance_basis)?;
+        let predecessor_route_provenance = self.qualify_consultation_permissions(
+            self.committee_seat_route_provenance(&run, &provenance_basis)?
+                .for_legacy_recovery(),
+            &provenance_basis.model_rung,
+        )?;
         let attempt = if let Some(attempt) = pending_attempt {
             attempt
         } else {
@@ -32077,6 +32241,7 @@ impl ApplicationOperations for Services {
                 return Err(self.deny(ApiErrorCode::InvalidRequest,
                     "a materialization recovery profile must name exact catalogued governed aliases"));
             }
+            let recovery_provenance = recovery_provenance.clone().for_legacy_recovery();
             adapter
                 .validate_consultation_model_rung(&rung, &recovery_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;

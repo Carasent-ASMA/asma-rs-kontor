@@ -344,7 +344,7 @@ pub enum ConsultationRouteSource {
     MaterializationRecoveryProfile,
     /// Route selected while replacing an already-materialized native filler.
     SeatRecoveryProfile,
-    /// Route listed by the live `fleet.yml` read at placement time.
+    /// Route selected by fleet policy, whose hash admission freezes.
     FleetConfiguration,
 }
 
@@ -380,9 +380,21 @@ pub struct ConsultationRouteProvenance {
     pub evidence_hash: ContentHash,
     /// Operator disposition when this is a fallback rather than template data.
     pub fallback_disposition: Option<ConsultationFallbackDisposition>,
+    /// Validated permissions from immutable history at `evidence_hash`.
+    /// This is an internal projection, never caller-authored API input.
+    pub fleet_permissions: Option<kontor_fleet::ConsultationPermissions>,
+    /// Only restoration or explicit recovery of an already durable run may set
+    /// this. Historical profile exceptions cannot admit a new consultation.
+    pub legacy_recovery: bool,
 }
 
 impl ConsultationRouteProvenance {
+    /// Mark provenance reconstructed for an existing durable consultation.
+    #[must_use]
+    pub fn for_legacy_recovery(mut self) -> Self {
+        self.legacy_recovery = true;
+        self
+    }
     /// Provenance for a published profile/template route.
     #[must_use]
     pub fn template(evidence_hash: ContentHash) -> Self {
@@ -390,6 +402,8 @@ impl ConsultationRouteProvenance {
             source: ConsultationRouteSource::Template,
             evidence_hash,
             fallback_disposition: None,
+            fleet_permissions: None,
+            legacy_recovery: false,
         }
     }
 
@@ -400,6 +414,8 @@ impl ConsultationRouteProvenance {
             source: ConsultationRouteSource::InitialRecoveryProfile,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+            fleet_permissions: None,
+            legacy_recovery: false,
         }
     }
 
@@ -410,6 +426,8 @@ impl ConsultationRouteProvenance {
             source: ConsultationRouteSource::FleetConfiguration,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+            fleet_permissions: None,
+            legacy_recovery: false,
         }
     }
 

@@ -884,3 +884,6 @@ async fn public_task_materialization_creates_from_host_source_before_native_bind
 
 #[path = "consultation_checkout_tests.rs"]
 mod consultation;
+
+#[path = "consultation_permission_tests.rs"]
+mod permissions;

@@ -32,7 +32,7 @@ async fn refresh_committee_fixture_quota(world: &World, project: &str) {
 
 #[tokio::test]
 async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_without_peer_leakage() {
-    let (world, seed, tpm) = reopened_completion_fixture("committee-subject-evidence").await;
+    let (world, seed, tpm) = reopened_native_completion_fixture("committee-subject-evidence").await;
     let project = ProjectId::parse(&seed.project).unwrap();
     let epic = MiniProjectId::parse(&seed.epic).unwrap();
     let task = TaskId::parse(&seed.task).unwrap();
@@ -50,7 +50,23 @@ async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_with
             })
             .unwrap();
     });
-    confirm_test_epic_identity(&world, &seed.project, &seed.epic);
+    // The native composer already confirmed the original epic/task before the sibling existed.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.confirmed_jira_epic_key(project, epic))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.confirmed_jira_task_key(project, task))
+            .unwrap()
+            .is_some()
+    );
     let (commit, hash) = artifact_git_fixture(&world, &seed);
     let root = world
         .daemon
@@ -551,14 +567,16 @@ async fn formal_committee_recovery_counts_the_deferred_judge_before_attempts_and
     let realm =
         consultation_realm("/tmp/kontor-formal-recovery-cap", &[("Cursor", "cursor")]).await;
     let world = &realm.world;
-    write_fleet(
+    activate_through_the_registry(
         world,
-        &committee_fleet_yaml(&[
+        &permitted_committee_fleet_yaml(&[
             (&committee_fleet_key("reviewer-a"), "codex-sol"),
             (&committee_fleet_key("reviewer-b"), "cursor-grok"),
             (&committee_fleet_key("judge"), "claude-then-codex"),
         ]),
-    );
+        "formal-permission-1",
+    )
+    .await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Recovery cap including Judge",
@@ -579,14 +597,16 @@ async fn formal_committee_recovery_counts_the_deferred_judge_before_attempts_and
     );
     assert!(formal_seat(&read, "judge")["observed_binding"].is_null());
     // An activated chain change applies only to the proposed replacement.
-    write_fleet(
+    activate_through_the_registry(
         world,
-        &committee_fleet_yaml(&[
+        &permitted_committee_fleet_yaml(&[
             (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
             (&committee_fleet_key("reviewer-b"), "cursor-grok"),
             (&committee_fleet_key("judge"), "codex-sol"),
         ]),
-    );
+        "formal-permission-2",
+    )
+    .await;
     let before = world.fake.calls();
     let refused = formal_recover(
         &realm,
@@ -670,12 +690,12 @@ async fn formal_committee_recovery_counts_the_deferred_judge_before_attempts_and
 async fn formal_committee_pending_recovery_refuses_peer_budget_and_resumes_exactly() {
     let realm = consultation_realm("/tmp/kontor-formal-pending-cap", &[("Cursor", "cursor")]).await;
     let world = &realm.world;
-    let policy = committee_fleet_yaml(&[
+    let policy = permitted_committee_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "codex-sol"),
         (&committee_fleet_key("reviewer-b"), "cursor-grok"),
         (&committee_fleet_key("judge"), "codex-sol"),
     ]);
-    write_fleet(world, &policy);
+    activate_through_the_registry(world, &policy, "formal-permission-3").await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Pending recovery reservation",
@@ -697,7 +717,7 @@ async fn formal_committee_pending_recovery_refuses_peer_budget_and_resumes_exact
             "  cursor-grok:\n    - [grok]",
             "  cursor-grok:\n    - [grok]\n    - [opus]",
         );
-    write_fleet(world, &replacement_policy);
+    activate_through_the_registry(world, &replacement_policy, "formal-permission-4").await;
     let route = serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]);
     world
         .fake
@@ -773,12 +793,12 @@ async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() 
     let realm =
         consultation_realm("/tmp/kontor-formal-concurrent-cap", &[("Cursor", "cursor")]).await;
     let world = &realm.world;
-    let policy = committee_fleet_yaml(&[
+    let policy = permitted_committee_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "codex-sol"),
         (&committee_fleet_key("reviewer-b"), "cursor-grok"),
         (&committee_fleet_key("judge"), "codex-sol"),
     ]);
-    write_fleet(world, &policy);
+    activate_through_the_registry(world, &policy, "formal-permission-5").await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Concurrent recovery proposals",
@@ -791,7 +811,7 @@ async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() 
         .unwrap()
         .to_owned();
     let read = committee_readback(world, &realm.project, &run).await;
-    write_fleet(
+    activate_through_the_registry(
         world,
         &policy
             .replace(
@@ -802,7 +822,9 @@ async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() 
                 "  cursor-grok:\n    - [grok]",
                 "  cursor-grok:\n    - [grok]\n    - [opus]",
             ),
-    );
+        "formal-permission-6",
+    )
+    .await;
     let route = serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]);
     let (a, b) = tokio::join!(
         formal_recover(

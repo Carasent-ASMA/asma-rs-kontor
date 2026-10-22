@@ -37,6 +37,8 @@ use harness::tracker_fixtures;
 #[allow(dead_code)]
 mod harness;
 
+#[path = "loopback/consultation_permissions.rs"]
+mod consultation_permissions;
 #[path = "loopback/consultation_placement.rs"]
 mod consultation_placement;
 
@@ -345,9 +347,50 @@ struct ScriptedUsageReporter {
 
 /// Build an epic with unfinished ticket work and a materialized TPM seat.
 async fn reopened_completion_fixture(slug: &'static str) -> (World, Bootstrapped, SeatBindingId) {
-    let world = World::open_empty_with_a_plane().await;
-    world.daemon.reconcile().await;
-    let seed = bootstrap(&world, slug).await;
+    completion_fixture(slug, false).await
+}
+
+async fn reopened_native_completion_fixture(
+    slug: &'static str,
+) -> (World, Bootstrapped, SeatBindingId) {
+    completion_fixture(slug, true).await
+}
+
+async fn completion_fixture(
+    slug: &'static str,
+    native: bool,
+) -> (World, Bootstrapped, SeatBindingId) {
+    let (world, seed) = if native {
+        let Composed {
+            world,
+            project,
+            project_revision,
+            account,
+            epic,
+        } = compose_native_consultation_realm(slug, false).await;
+        let task = world
+            .daemon
+            .state()
+            .with_store(|store| store.list_tasks(project_id_of(&project)))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.mini_project_id == Some(MiniProjectId::parse(&epic).unwrap()))
+            .unwrap();
+        let seed = Bootstrapped {
+            project,
+            project_revision,
+            epic,
+            task: task.id.to_string(),
+            task_revision: task.revision.get(),
+            account,
+        };
+        (world, seed)
+    } else {
+        let world = World::open_empty_with_a_plane().await;
+        world.daemon.reconcile().await;
+        let seed = bootstrap(&world, slug).await;
+        (world, seed)
+    };
     let project_read = Call::get(format!("/v1/projects/{}", seed.project))
         .signed_as(&world, "observer")
         .send(&world)
@@ -388,7 +431,8 @@ async fn reopened_completion_fixture(slug: &'static str) -> (World, Bootstrapped
 
     let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("presets load");
     let base = presets.committee_templates[0].clone();
-    for version in 1_u32..=4 {
+    // The opt-in native composer has explicitly installed version 1 already.
+    for version in (if native { 2_u32 } else { 1_u32 })..=4 {
         let mut template = base.clone();
         if version != 4
             && let Some(rung) = template
@@ -15165,6 +15209,17 @@ fn artifact_git_fixture(world: &World, seed: &Bootstrapped) -> (String, String) 
         .success();
     if !repository_exists {
         git(&["init", "--quiet"]);
+    }
+    // Native placement fixtures already have a repository, but not this evidence blob.
+    let evidence_exists = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "-e", "HEAD:evidence.md"])
+        .output()
+        .expect("inspect fixture artifact")
+        .status
+        .success();
+    if !evidence_exists {
         std::fs::write(
             root.join("evidence.md"),
             b"Verified fixture implementation and independent review evidence.\n",
@@ -36743,7 +36798,7 @@ fn activate_fleet_policy(world: &World, yaml: &str) -> String {
     let body = serde_json::json!({
         "schema_version": 1,
         "policy_hash": hash,
-        "policy_schema_version": 1,
+        "policy_schema_version": kontor_fleet::FleetSnapshot::parse_policy(yaml).unwrap().schema_version(),
         "activated_at": "2026-09-27T00:00:00Z",
     });
     std::fs::write(&record, body.to_string()).expect("the activation record is written");
@@ -37066,6 +37121,21 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     )
 }
 
+/// Explicit fixture risk acceptance, delivered through existing activation writers.
+fn permitted_committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
+    format!(
+        "{}\nconsultation_permissions:\n  - {{account: cursor, model: grok, effort: null, mode: plan}}\n",
+        committee_fleet_yaml(bindings).replacen("schema_version: 1", "schema_version: 2", 1)
+    )
+}
+
+fn permitted_family_fleet_yaml(bindings: &[(&str, &str)]) -> String {
+    format!(
+        "{}\nconsultation_permissions:\n  - {{account: opencode-a, model: glm, effort: null, mode: plan}}\n  - {{account: opencode-b, model: deepseek, effort: null, mode: plan}}\n",
+        committee_family_fleet_yaml(bindings).replacen("schema_version: 1", "schema_version: 2", 1)
+    )
+}
+
 /// The explicit selected fleet a formal Independent Review fixture is admitted
 /// under, now that the pinned template's own routes seat two Claude seats and
 /// the formal protocol allows one (ASMA-8280).
@@ -37298,12 +37368,12 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     let world = &realm.world;
     // The judge is bound to Sol: the pinned template's judge route is Claude,
     // and the formal review seats one Claude seat (ASMA-8280).
-    let fleet = committee_fleet_yaml(&[
+    let fleet = permitted_committee_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
         (&committee_fleet_key("reviewer-b"), "claude-then-grok"),
         (&committee_fleet_key("judge"), "codex-sol"),
     ]);
-    write_fleet(world, &fleet);
+    activate_through_the_registry(world, &fleet, "permission-fixture").await;
     let fleet_hash = ContentHash::of(fleet.as_bytes());
 
     let invoked = invoke_fleet_committee(
@@ -37442,11 +37512,11 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     // vendors (`zhipu` for GLM, `deepseek` for DeepSeek). Independence must be
     // decided by the vendor the fleet lists; a key that collapses to the family
     // seats the second reviewer on its step 2 instead of letting it keep step 1.
-    let fleet = committee_family_fleet_yaml(&[
+    let fleet = permitted_family_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "opencode-a-then-codex"),
         (&committee_fleet_key("reviewer-b"), "opencode-b-then-claude"),
     ]);
-    write_fleet(world, &fleet);
+    activate_through_the_registry(world, &fleet, "permission-family-fixture").await;
     let fleet_hash = ContentHash::of(fleet.as_bytes());
     let invoked = invoke_fleet_committee(
         &realm,
@@ -37533,8 +37603,9 @@ async fn a_fleet_committee_route_launches_cursor_in_plan_mode() {
     let realm =
         consultation_realm("/tmp/kontor-lf04-committee-cursor", &[("Cursor", "cursor")]).await;
     let world = &realm.world;
-    let fleet = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
-    write_fleet(world, &fleet);
+    let fleet =
+        permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    activate_through_the_registry(world, &fleet, "permission-fixture").await;
     let fleet_hash = ContentHash::of(fleet.as_bytes());
 
     let invoked =
@@ -37645,8 +37716,8 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
 
-    let fleet = committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
-    write_fleet(world, &fleet);
+    let fleet = permitted_committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
+    activate_through_the_registry(world, &fleet, "permission-fixture").await;
     let fleet_hash = ContentHash::of(fleet.as_bytes());
     let epic_read = Call::get(format!(
         "/v1/projects/{}/epics/{}",
@@ -37777,10 +37848,13 @@ async fn a_committee_allocates_from_the_activated_policy_and_fails_closed() {
     )
     .await;
     let world = &realm.world;
-    let unactivated =
-        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    let unactivated = permitted_committee_fleet_yaml(&[(
+        &committee_fleet_key("reviewer-a"),
+        "claude-then-codex",
+    )]);
     write_fleet(world, &unactivated);
-    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let activated =
+        permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
     let hash = activate_fleet_policy(world, &activated);
 
     tamper_published_policy(world, &hash, &unactivated);
@@ -37903,9 +37977,10 @@ async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
 
-    let unactivated = committee_fleet_yaml(&[(&advisor_fleet_key(), "claude-then-codex")]);
+    let unactivated =
+        permitted_committee_fleet_yaml(&[(&advisor_fleet_key(), "claude-then-codex")]);
     write_fleet(world, &unactivated);
-    let activated = committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
+    let activated = permitted_committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
     let hash = activate_fleet_policy(world, &activated);
     tamper_published_policy(world, &hash, &unactivated);
     let refused = invoke_activated_advisor(&realm, "asma8280-advisor-refused").await;
@@ -37965,7 +38040,7 @@ async fn activate_through_the_registry(world: &World, yaml: &str, key: &str) -> 
         "/v1/fleet/policy:activate",
         &serde_json::json!({
             "policy_hash": hash,
-            "expected_active_policy_hash": standing.json()["active_policy_hash"],
+            "expected_active_policy_hash": standing.json()["activation"]["policy_hash"],
         }),
     )
     .signed_as(world, "admin")
@@ -39725,10 +39800,13 @@ async fn a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation() 
     .expect("a SeatBinding");
     let predecessor = reviewer_a["observed_binding"]["native_id"].clone();
 
-    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let activated =
+        permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
     let hash = activate_fleet_policy(world, &activated);
-    let unactivated =
-        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    let unactivated = permitted_committee_fleet_yaml(&[(
+        &committee_fleet_key("reviewer-a"),
+        "claude-then-codex",
+    )]);
     write_fleet(world, &unactivated);
     tamper_published_policy(world, &hash, &unactivated);
     let calls_before = world.fake.calls();
@@ -39822,10 +39900,13 @@ async fn a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_acti
         .clone();
     assert!(stuck_seat.get("observed_binding").is_none(), "{stuck_seat}");
 
-    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let activated =
+        permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
     let hash = activate_fleet_policy(world, &activated);
-    let unactivated =
-        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    let unactivated = permitted_committee_fleet_yaml(&[(
+        &committee_fleet_key("reviewer-a"),
+        "claude-then-codex",
+    )]);
     write_fleet(world, &unactivated);
     tamper_published_policy(world, &hash, &unactivated);
     let before = world.daemon.state().with_store(|store| {
@@ -39926,8 +40007,9 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
     )
     .expect("a native id");
 
-    let fleet = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
-    write_fleet(world, &fleet);
+    let fleet =
+        permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    activate_through_the_registry(world, &fleet, "permission-recovery-fixture").await;
     let recovered = Call::post(
         format!(
             "/v1/projects/{}/committee-runs/{run}/seats/{binding}/recover",
@@ -39993,6 +40075,11 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
         recorded["ordered_rungs"][0]["model"], "grok-4.7",
         "{}",
         recorded
+    );
+    assert_eq!(recorded["consultation_route_source"], "fleet_configuration");
+    assert_eq!(
+        recorded["fleet_provenance"]["policy_hash"],
+        ContentHash::of(fleet.as_bytes()).as_str()
     );
     // ASMA-8280 G-4: the fleet-routed recovery records the explicit
     // eligibility the shared resolver chose its successor under.
@@ -49923,7 +50010,9 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
 
 #[tokio::test]
 async fn an_archived_rename_pending_advisor_can_retire_and_complete_the_same_migration() {
-    let composed = compose_realm("/tmp/kontor-archived-advisor-naming-migration").await;
+    let composed =
+        compose_native_consultation_realm("/tmp/kontor-archived-advisor-naming-migration", false)
+            .await;
     let world = &composed.world;
     let project = &composed.project;
     let epic = &composed.epic;
@@ -55174,14 +55263,12 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     // below and binds no Committee slot, so the accepted recovery routes keep
     // their own ordinals: reviewer A takes OpenCode DeepSeek and the judge
     // Codex Sol, both at recovery rung 1, while Claude is exhausted.
-    write_fleet(
-        world,
-        "schema_version: 1\n\
+    let recovery_fleet = "schema_version: 1\n\
          domains:\n  claude: { provider: claude, accounts: [claude-work, claude-personal] }\n  codex: { provider: codex, accounts: [codex-work, codex-personal] }\n  opencode: { provider: opencode, accounts: [opencode] }\n\
          models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek }\n\
          chains: {}\n\
-         bindings: {}\n",
-    );
+         bindings: {}\n";
+    write_fleet(world, recovery_fleet);
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
         .send(world)
@@ -55247,8 +55334,55 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         "admission must fail before creating a native-less Committee run"
     );
 
-    // An operator-accepted OpenCode initial fallback is not automatically an
-    // accepted SeatRecoveryProfile. Prove that credential-propagation recovery
+    // Historical profile-only OpenCode permissions cannot create new work.
+    let before_missing_pin = world.fake.calls().len();
+    let missing_pin = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &invoke_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("committee-initial-permission-unpinned")
+    .send(world)
+    .await;
+    assert_eq!(
+        missing_pin.code(),
+        "placement_blocked",
+        "{}",
+        missing_pin.body
+    );
+    assert_eq!(world.fake.calls().len(), before_missing_pin);
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_consultation_runs(
+                ProjectId::parse(project).unwrap(),
+                MiniProjectId::parse(&epic).unwrap(),
+                ConsultationFamily::Committee
+            ))
+            .unwrap()
+            .is_empty()
+    );
+    // Preserve all fencing/recovery assertions with the supported explicitly activated route.
+    let mut permitted: serde_yaml_ng::Value = serde_yaml_ng::from_str(recovery_fleet).unwrap();
+    permitted["schema_version"] = 2.into();
+    permitted["models"]["deepseek"]["efforts"] = serde_yaml_ng::to_value(["max"]).unwrap();
+    permitted["models"]["opus"]["efforts"] = serde_yaml_ng::to_value(["xhigh"]).unwrap();
+    permitted["chains"]["pinned-recovery"] =
+        serde_yaml_ng::to_value([vec!["deepseek@max"], vec!["opus@xhigh"]]).unwrap();
+    permitted["bindings"][committee_fleet_key("reviewer-a")] = "pinned-recovery".into();
+    permitted["consultation_permissions"] =
+        serde_yaml_ng::from_str("- {account: opencode, model: deepseek, effort: max, mode: plan}")
+            .unwrap();
+    activate_through_the_registry(
+        world,
+        &serde_yaml_ng::to_string(&permitted).unwrap(),
+        "initial-exact-permission",
+    )
+    .await;
+
+    // A fleet-permitted OpenCode filler is not automatically an accepted
+    // SeatRecoveryProfile. Prove that credential-propagation recovery
     // validates that new provenance before it fences the logical generation or
     // archives the already-running filler.
     let mut active_invoke_body = invoke_body.clone();
@@ -56393,18 +56527,19 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .await;
     prepare_fake_provider_headroom(world, project).await;
     let compliant_fleet =
-        committee_fleet_yaml(&[(&committee_fleet_key("judge"), "judge-recovery")]).replace(
-            "bindings:\n",
-            "  judge-recovery:\n    - [grok]\n    - [sol@xhigh]\n\nbindings:\n",
-        );
+        permitted_committee_fleet_yaml(&[(&committee_fleet_key("judge"), "judge-recovery")])
+            .replace(
+                "bindings:\n",
+                "  judge-recovery:\n    - [grok]\n    - [sol@xhigh]\n\nbindings:\n",
+            );
     let compliant_fleet = compliant_fleet
         .replace(
             "id: gpt-5.6-sol, vendor: openai",
             "id: gpt-5.6-sol, vendor: openai, efforts: [xhigh]",
         )
         .replace("[sol]", "[sol@xhigh]");
-    assert!(kontor_fleet::FleetSnapshot::parse(&compliant_fleet).is_ok());
-    write_fleet(world, &compliant_fleet);
+    assert!(kontor_fleet::FleetSnapshot::parse_policy(&compliant_fleet).is_ok());
+    activate_through_the_registry(world, &compliant_fleet, "seeded-committee-permission").await;
     let mut legacy_template = kontor_profiles::seeds::bundled_consultation_presets()
         .expect("the bundled presets load")
         .committee_templates
