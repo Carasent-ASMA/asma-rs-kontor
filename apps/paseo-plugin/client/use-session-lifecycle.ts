@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRpc } from "@getpaseo/plugin/client";
-import { DEFAULT_RECOVERY_TARGET, executeLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, type LifecycleReview, type RecoveryTarget } from "../shared/session-lifecycle";
+import { DEFAULT_RECOVERY_TARGET, executeLifecycleItem, reconcileLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, type LifecycleReview, type RecoveryTarget } from "../shared/session-lifecycle";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
 export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
   const preview = useRpc(previewLifecycle), execute = useRpc(executeLifecycleItem), read = useRpc(readLifecycleReview), discover = useRpc(lifecycleCapabilities);
+  const check = useRpc(reconcileLifecycleItem);
   const [review, setReview] = useState<LifecycleReview | null>(null);
   const [action, setAction] = useState<LifecycleReview["action"]>("resume");
   const [error, setError] = useState<string | null>(null);
@@ -22,14 +23,22 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
   const fail = (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure));
   const prepare = async (action: LifecycleReview["action"], scope: LifecycleReview["scope"], ids: string[]) => {
     if (active.current) return;
-    active.current = true; setBusy(true); setError(null); setAction(action);
+    active.current = true; cancel.current = false; setBusy(true); setError(null); setAction(action);
     const host = hostId;
     try {
       const result = await preview({ action, scope, agentIds: ids, target });
       if (owner.current !== host) return;
       onChanged(result.rows); setReview(result); setSelected(result.rows.filter((row) => row.eligible).map((row) => row.id));
+      // X is the operator's explicit, single-target Archive action. Resume still
+      // requires batch review. Child/identity/availability checks remain server-side.
+      if (action === "archive" && result.rows.length === 1 && result.rows[0]?.eligible && !cancel.current) {
+        setRunning(true);
+        const row = await execute({ reviewId: result.id, agentId: result.rows[0].id });
+        if (owner.current !== host) return;
+        setReview({ ...result, rows: [row] }); onChanged([row]);
+      }
     } catch (failure) { if (owner.current === host) fail(failure); }
-    finally { active.current = false; setBusy(false); }
+    finally { active.current = false; if (owner.current === host) { setBusy(false); setRunning(false); } }
   };
   const restore = async () => {
     if (active.current) return;
@@ -57,6 +66,18 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
     finally { active.current = false; setRunning(false); }
   };
   const stop = useCallback(() => { cancel.current = true; }, []);
-  return { review, action, error, busy, running, target, setTarget, capabilities, loadCapabilities, selected, setSelected, prepare, restore, run, stop,
-    clear: () => { cancel.current = true; setReview(null); setSelected([]); setAction("resume"); } };
+  const reconcile = async (id: string) => {
+    if (!review || active.current) return;
+    const row = review.rows.find((entry) => entry.id === id); if (!row) return;
+    active.current = true; setBusy(true); setError(null); const host = hostId, batch = review;
+    try {
+      const result = await check({ reviewId: row.reconcileReviewId ?? batch.id, agentId: id });
+      if (owner.current !== host) return;
+      setReview((current) => current?.id === batch.id ? { ...current, rows: current.rows.map((entry) => entry.id === id ? result : entry) } : current);
+      onChanged([result]);
+    } catch (failure) { if (owner.current === host) fail(failure); }
+    finally { active.current = false; if (owner.current === host) setBusy(false); }
+  };
+  return { review, action, error, busy, running, target, setTarget, capabilities, loadCapabilities, selected, setSelected, prepare, restore, run, stop, reconcile,
+    clear: () => { if (active.current) return; cancel.current = true; setReview(null); setSelected([]); setAction("resume"); } };
 }

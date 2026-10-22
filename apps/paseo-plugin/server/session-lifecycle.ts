@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import type { PaseoApi, PaseoAgentListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readConfig } from "./config";
 import {
   TAKEOVER_LIMIT, RESUME_PROMPT, lifecycleReviewSchema, lifecycleRowSchema, lifecycleCapabilities,
-  previewLifecycle, executeLifecycleItem, readLifecycleReview, probeSessionAvailability,
+  previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability,
 } from "../shared/session-lifecycle";
 
@@ -19,6 +20,7 @@ export type LifecycleClient = {
 };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const archiveIntentReferenceSchema = z.object({ agentId: z.string(), action: z.literal("archive"), reviewId: z.string().uuid() });
 export function lifecycleRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.status, agent.archivedAt, agent.updatedAt, agent.provider, agent.model,
     agent.cwd, agent.workspaceId, agent.currentModeId, agent.effectiveThinkingOptionId, agent.activeTurn,
@@ -26,6 +28,14 @@ export function lifecycleRevision(agent: Agent): string {
     agent.runtimeInfo, agent.capabilities.supportsSessionPersistence, agent.attentionReason, parent(agent)]));
 }
 function parent(agent: Agent) { return ("parentAgentId" in agent && typeof agent.parentAgentId === "string" ? agent.parentAgentId : null) ?? agent.labels?.["paseo.parent-agent-id"] ?? null; }
+// Archive deliberately stops current activity. Token/status/permission changes must not
+// make a running session impossible to stop; identity and placement must still match.
+function archiveRevision(agent: Agent): string {
+  return hash(JSON.stringify([agent.id, agent.createdAt, agent.provider, agent.cwd, agent.workspaceId, agent.persistence, parent(agent)]));
+}
+function terminalArchive(agent?: Agent): boolean {
+  return !!agent?.archivedAt && agent.status === "closed" && !agent.activeTurn;
+}
 function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
   // Block every managed child, even one the native cascade would detach today.
   return inventory.filter((child) => child.archivedAt == null && parent(child) === agent.id);
@@ -36,12 +46,11 @@ export function lifecycleRow(agent: Agent, inventory: Agent[], action: Lifecycle
     provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model ?? null,
     effort: agent.effectiveThinkingOptionId ?? agent.runtimeInfo?.thinkingOptionId ?? null,
     mode: agent.currentModeId ?? agent.runtimeInfo?.modeId ?? null, nativeStatus: agent.status,
-    fingerprint: lifecycleRevision(agent), category: "excluded", eligible: false, reason: "", children, outcome: "pending", message: null };
+    fingerprint: action === "archive" ? archiveRevision(agent) : lifecycleRevision(agent), category: "excluded", eligible: false, reason: "", children, outcome: "pending", message: null };
   const labels = agent.labels ?? {};
   if (agent.archivedAt != null) row.reason = "Already archived. This action never revives an archived session.";
   else if (action === "archive" && children.length) row.reason = "Archive blocked: native archive can cascade to these children. Preserve or finish them through the owning workflow first.";
-  else if (action === "archive" && (agent.activeTurn || agent.status === "running" || agent.status === "initializing")) row.reason = "Archive blocked while executing: provider-native children cannot be safely preserved by this screen. Stop/checkpoint through the native session first.";
-  else if (action === "archive") { row.category = "candidate"; row.eligible = true; row.reason = "Native archive closes the runtime and keeps durable history and files. No undo is exposed by this SDK."; }
+  else if (action === "archive") { row.category = "candidate"; row.eligible = true; row.reason = "Archive stops this session and its provider tools, closes its runtime, and keeps durable history and files. No undo is exposed by this SDK."; }
   else if (labels["takeover.successor"] || labels["takeover.replaced-by"] || labels["recovery.successor"]) row.reason = "Already replaced. Follow the recorded successor; do not resume this predecessor.";
   else if (labels["task.status"] === "completed" || labels["task.status"] === "stopped" || agent.status === "closed") row.reason = "Closed, completed or intentionally stopped. No automatic failure is inferred.";
   else if (agent.pendingPermissions.length || agent.attentionReason === "permission") row.reason = "Waiting for permission/input. Resolve that wait in the native session.";
@@ -73,6 +82,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   const ready = () => mkdir(root, { recursive: true, mode: 0o700 });
   const reviewPath = (id: string) => join(root, `${id}.json`);
   const resultPath = (reviewId: string, agentId: string) => join(root, `result-${reviewId}-${hash(agentId)}.json`);
+  const removedPath = (agentId: string) => join(root, `local-absence-${hash(agentId)}.json`);
   async function saveRow(reviewId: string, row: LifecycleRow) {
     const file = resultPath(reviewId, row.id), temporary = `${file}.${randomUUID()}.tmp`;
     const output = await open(temporary, "wx", 0o600);
@@ -122,7 +132,8 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         nativeStatus: "missing", fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
       };
       row.availability = observed.availability;
-      if (!observed.agent) { row.eligible = false; row.category = "unknown"; row.reason = observed.availability.reason; }
+      if (!observed.agent) { row.eligible = input.action === "archive" && observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
+      if (input.action === "archive" && terminalArchive(observed.agent)) row.eligible = true;
       rows.push(row);
     }
     const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows, limitation: TAKEOVER_LIMIT };
@@ -145,11 +156,25 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     for (const id of new Set(ids)) result[id] = (await observe(id)).availability;
     return result;
   }
+  async function dispositions(ids: string[]): Promise<Record<string, SessionAvailability>> {
+    const result: Record<string, SessionAvailability> = {};
+    for (const id of new Set(ids)) {
+      let receipt: { agentId: string };
+      try { receipt = JSON.parse(await readFile(removedPath(id), "utf8")); }
+      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") continue; throw error; }
+      if (receipt.agentId !== id) continue;
+      // A persisted local dismissal is not proof of ongoing absence. Recheck only
+      // these operator-selected IDs. Unknown reads stay visible; readable IDs return.
+      const observed = await observe(id);
+      result[id] = { ...observed.availability, localRemoval: observed.availability.state === "missing" };
+    }
+    return result;
+  }
   async function execute(reviewId: string, agentId: string): Promise<LifecycleRow> {
     const review = await read(reviewId);
     const row = review?.rows.find((entry) => entry.id === agentId);
     if (!review || !row) throw new Error("Exact session ID is not in this review.");
-    if (row.outcome !== "pending") return row;
+    if (row.outcome !== "pending") return review.action === "archive" && ["intent", "uncertain"].includes(row.outcome) ? reconcile(reviewId, agentId) : row;
     if (!row.eligible) { const blocked = { ...row, outcome: "blocked" as const, message: row.reason }; await saveRow(reviewId, blocked); return blocked; }
     // A per-session lock covers competing reviews/actions and survives worker reload/crash.
     const lockPath = join(root, `intent-${hash(agentId)}.json`);
@@ -157,10 +182,20 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     try { lock = await open(lockPath, "wx", 0o600); }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-      return { ...row, outcome: "blocked", message: "An earlier action owns this session. Read its durable receipt and reconcile native state; no second dispatch was made." };
+      // EEXIST is the ownership decision. The owner may still be publishing or
+      // rewriting metadata, or may release the lock before this optional read.
+      let reconcileReviewId: string | undefined;
+      try {
+        const prior = archiveIntentReferenceSchema.safeParse(JSON.parse(await readFile(lockPath, "utf8")));
+        if (prior.success && prior.data.agentId === agentId) reconcileReviewId = prior.data.reviewId;
+      } catch { /* Optional metadata cannot grant ownership or release the fence. */ }
+      return { ...row, outcome: "blocked", ...(reconcileReviewId ? { reconcileReviewId } : {}),
+        message: reconcileReviewId
+          ? "An earlier archive owns this session. Check its native outcome; no second dispatch was made."
+          : "An earlier action blocked this request. Its archive reconciliation reference is unavailable; no second dispatch was made. No retry or lock removal was attempted." };
     }
     await lock.writeFile(JSON.stringify({ reviewId, agentId, action: review.action, phase: "preflight", fingerprint: row.fingerprint })); await lock.sync(); await lock.close();
-    let dispatchStarted = false;
+    let dispatchStarted = false, alreadyArchived = false;
     try {
       // Another click may have read pending before the first owner saved its result and released.
       const settled = (await read(reviewId))?.rows.find((entry) => entry.id === agentId);
@@ -172,8 +207,9 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const observed = await observe(agentId); row.availability = observed.availability;
       if (!observed.agent) throw new Error(observed.availability.reason);
       const found = { agent: observed.agent };
-      if (found.agent.archivedAt != null) throw new Error("Already archived on this host. No archive request was sent.");
-      if (lifecycleRevision(found.agent) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
+      alreadyArchived = terminalArchive(found.agent);
+      if (found.agent.archivedAt != null) throw new Error(terminalArchive(found.agent) ? "Already archived and closed on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
+      if ((review.action === "archive" ? archiveRevision(found.agent) : lifecycleRevision(found.agent)) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
       const all = await inventory(client);
       const current = lifecycleRow(found.agent, all, review.action, review.target);
       if (!current.eligible || (review.action === "archive" && current.children.length)) throw new Error(current.reason);
@@ -188,12 +224,14 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         if (history.error || !history.entries.length) throw new Error(`Native history is unavailable; no continuation prompt sent. ${history.error ?? "No retained conversation entries."}`);
       }
       // Final read after all potentially slow preflight calls. Never prompt an archived predecessor.
+      const finalInventory = review.action === "archive" ? await inventory(client) : all;
       const latest = await observe(agentId); row.availability = latest.availability;
       if (!latest.agent) throw new Error(latest.availability.reason);
       const final = { agent: latest.agent };
-      if (final.agent.archivedAt != null) throw new Error("Already archived on this host. No archive request was sent.");
-      if (lifecycleRevision(final.agent) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
-      const finalDecision = lifecycleRow(final.agent, review.action === "archive" ? await inventory(client) : all, review.action, review.target);
+      alreadyArchived = terminalArchive(final.agent);
+      if (final.agent.archivedAt != null) throw new Error(terminalArchive(final.agent) ? "Already archived and closed on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
+      if ((review.action === "archive" ? archiveRevision(final.agent) : lifecycleRevision(final.agent)) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
+      const finalDecision = lifecycleRow(final.agent, finalInventory, review.action, review.target);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry."; await saveRow(reviewId, row);
       await writeFile(lockPath, JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint }), { mode: 0o600 });
@@ -202,14 +240,22 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         await agent.send(RESUME_PROMPT, { messageId: `kontor-resume-${review.id}-${hash(agentId).slice(0, 12)}`, activeTurnBehavior: "steer" });
         row.outcome = "submitted"; row.message = "Resume prompt accepted in the same session. Completion and resolution of the original failure are not verified.";
       } else {
-        await agent.archive();
+        const receipt = await agent.archive();
+        if ("agentId" in receipt && receipt.agentId !== agentId) throw new Error("Archive acknowledgement identified another session. Check native outcome; no retry was made.");
         const observedAfter = await observe(agentId); row.availability = observedAfter.availability;
         const after = observedAfter.agent;
-        if (!after || !after.archivedAt || after.status !== "closed" || after.activeTurn) throw new Error("Archive returned but exact-ID terminal retirement readback is unavailable. Do not retry automatically.");
+        if (!terminalArchive(after)) throw new Error("Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request.");
+        row.nativeStatus = after!.status;
         row.outcome = "archived"; row.message = "Native archive succeeded and closed state was verified. Durable history and files remain with the host.";
       }
     } catch (error) {
-      row.outcome = dispatchStarted ? "uncertain" : row.availability?.state === "missing" ? "absent" : review.action === "archive" && row.availability?.archivedAt ? "already_archived" : "blocked"; row.message = errorText(error);
+      row.outcome = dispatchStarted ? "uncertain" : row.availability?.state === "missing" ? "absent" : review.action === "archive" && alreadyArchived ? "already_archived" : "blocked";
+      row.message = errorText(error);
+      if (review.action === "archive" && row.outcome === "absent") {
+        await writeFile(removedPath(agentId), JSON.stringify({ agentId, reviewId, observedAt: row.availability!.checkedAt }), { mode: 0o600 });
+        row.availability = { ...row.availability!, localRemoval: true };
+        row.message = "No native record exists for this exact ID on this host. A local stale-row removal was recorded; no daemon archive was performed.";
+      }
     }
     await saveRow(reviewId, row);
     await writeFile(lockPath, JSON.stringify({ reviewId, agentId, action: review.action, phase: row.outcome, fingerprint: row.fingerprint, message: row.message }), { mode: 0o600 });
@@ -218,7 +264,26 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (row.outcome !== "uncertain") await unlink(lockPath);
     return row;
   }
-  return { capabilities, preview, read, execute, probe };
+  /** Metadata-only settlement of a dispatched archive. Never resend or delete its fence. */
+  async function reconcile(reviewId: string, agentId: string): Promise<LifecycleRow> {
+    const review = await read(reviewId), row = review?.rows.find((entry) => entry.id === agentId);
+    if (!review || !row || review.action !== "archive") throw new Error("Exact archive ID is not in this review.");
+    if (row.outcome === "pending") {
+      let intent: { reviewId: string; agentId: string; action: string };
+      try { intent = JSON.parse(await readFile(join(root, `intent-${hash(agentId)}.json`), "utf8")); }
+      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return row; throw error; }
+      if (intent.reviewId !== reviewId || intent.agentId !== agentId || intent.action !== "archive") throw new Error("This review does not own the pending archive intent.");
+    } else if (!["intent", "uncertain"].includes(row.outcome)) return row;
+    const observed = await observe(agentId);
+    const result: LifecycleRow = { ...row, availability: observed.availability,
+      nativeStatus: observed.agent?.status ?? row.nativeStatus,
+      outcome: terminalArchive(observed.agent) ? "archived" : "uncertain",
+      message: terminalArchive(observed.agent) ? "Native archive and closed runtime verified by an exact-ID read. No additional archive request was sent."
+        : "Archive outcome remains uncertain. The original no-replay fence is preserved. " + observed.availability.reason };
+    await saveRow(reviewId, result);
+    return result;
+  }
+  return { capabilities, preview, read, execute, reconcile, probe, dispositions };
 }
 
 export function contributeSessionLifecycle(server: PluginServerContext) {
@@ -227,5 +292,7 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(previewLifecycle, (input, { paseo }) => createLifecycleService(paseo, root).preview(input));
   server.handle(readLifecycleReview, (input, { paseo }) => createLifecycleService(paseo, root).read(input.reviewId));
   server.handle(executeLifecycleItem, (input, { paseo }) => createLifecycleService(paseo, root).execute(input.reviewId, input.agentId));
+  server.handle(reconcileLifecycleItem, (input, { paseo }) => createLifecycleService(paseo, root).reconcile(input.reviewId, input.agentId));
   server.handle(probeSessionAvailability, (input, { paseo }) => createLifecycleService(paseo, root).probe(input.agentIds));
+  server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
 }

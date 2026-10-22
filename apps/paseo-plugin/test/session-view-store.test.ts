@@ -73,7 +73,7 @@ describe("filtered results and the tree position", () => {
     { query: "missing" }, { status: "favorites" as const }, { task },
     { shortcut: "desk-project:example" }, { streams: [] }, { includeArchived: true },
   ])("counts and clears a single visible or advanced-only criterion %j", (patch) => {
-    const view = { ...readSessionView("host-a"), grouping: "flat" as const, advancedOpen: true, ...patch };
+    const view = { ...readSessionView("host-a"), status: "all" as const, grouping: "flat" as const, advancedOpen: true, ...patch };
     expect(sessionFilterCount(view)).toBe(1);
     const cleared = { ...view, ...sessionViewTransition(view, clearSessionFilterPatch(view)) };
     expect(sessionFilterCount(cleared)).toBe(0);
@@ -131,17 +131,20 @@ describe("work scope, order and reset", () => {
     clearSessionViews();
   });
 
-  it("starts in My work and Current order, counting My work as one active filter", () => {
+  it("starts in My work and Current order, counting native Current visibility separately", () => {
     const view = readSessionView("host-a");
     expect(view.work).toBeUndefined();
     expect(view.sort).toBeUndefined();
-    expect(sessionFilterCount(view)).toBe(1);
-    expect(sessionFilterCount({ ...view, work: "all", sort: "title" })).toBe(0);
+    expect(sessionFilterCount(view)).toBe(2);
+    expect(sessionFilterCount({ ...view, status: "all" })).toBe(1);
+    expect(sessionFilterCount({ ...view, status: "all", work: "all", sort: "title" })).toBe(0);
   });
 
   it("counts an assignment filter as its own choice", () => {
-    expect(sessionFilterCount({ ...readSessionView("host-a"), work: "all", assignment: "me" })).toBe(1);
-    expect(sessionFilterCount({ ...readSessionView("host-a"), assignment: "person:account-b" })).toBe(2);
+    const all = { ...readSessionView("host-a"), status: "all" as const };
+    expect(sessionFilterCount({ ...all, work: "all", assignment: "me" })).toBe(1);
+    expect(sessionFilterCount({ ...all, assignment: "person:account-b" })).toBe(2);
+    expect(sessionFilterCount({ ...all, status: "current", work: "all", assignment: "me" })).toBe(2);
   });
 
   it("clears to All work and Any assignment and keeps sort, grouping and Working as", () => {

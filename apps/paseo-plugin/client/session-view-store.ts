@@ -55,7 +55,7 @@ export type SessionTaskFilter = { readonly jira: string | null; readonly kontorI
 
 /** A search, a state filter or a task lists matching sessions flat; scope, desks and workstreams keep the tree. */
 export function isResultMode(view: SessionFilters & { readonly task?: SessionTaskFilter | null }): boolean {
-  return view.query.trim().length > 0 || view.status !== "all" || !!view.task;
+  return view.query.trim().length > 0 || (view.status !== "all" && view.status !== "current") || !!view.task;
 }
 
 /** Count narrowing choices only. Presentation and explicit route context are separate. */
@@ -74,7 +74,7 @@ export function clearSessionFilterPatch(view: SessionViewState): Partial<Session
 
 /** What a new app session shows: filters cleared, My work, Any assignment, Current order and the saved grouping; Working as stays. */
 export function resetSessionViewPatch(view: SessionViewState): Partial<SessionViewState> {
-  return { ...clearSessionFilterPatch(view), work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, arranging: false, scrollOffset: 0, peek: null };
+  return { ...clearSessionFilterPatch(view), status: DEFAULT_SESSION_FILTERS.status, work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, arranging: false, scrollOffset: 0, peek: null };
 }
 
 const RESULT_KEYS = ["query", "status", "task", "includeArchived", "shortcut", "streams", "grouping", "work", "assignment", "sort", "sortDirection"] as const;
