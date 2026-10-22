@@ -111,7 +111,8 @@ describe("compact Overview source evidence", () => {
     expect(opened).toContain("Project overview, available without kontord.");
     expect(opened).toContain("Sessions in this scope: 1 session · 0 running");
     expect(opened).toContain("Epic lifecycle, native activity, task status and delivery are separate observations.");
-    expect(opened).toContain("Governed scheduler and gates: kontord is not enabled.");
+    expect(opened).toContain("Governed scheduler and gates: not shown here. kontord on this host: unknown.");
+    expect(text(overview({ plan, jira: read }, { scoped: true, kontord: "kontord on this host: answering." }))).toContain("Governed scheduler and gates: not shown here. kontord on this host: answering.");
     expect(opened).toContain("full backlog coverage is not established");
     expect(opened).toContain("Historical Jira · ready · Historical Jira snapshot");
   });

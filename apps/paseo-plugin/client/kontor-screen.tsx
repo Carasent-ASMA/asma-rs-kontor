@@ -13,13 +13,15 @@ import { useBackShortcut } from "./keyboard-shortcuts";
 import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
 import { useResponsibility } from "./use-responsibility";
+import { useKontorStatus } from "./use-kontor-status";
+import { kontordLine, kontordSentence } from "./kontord-copy";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import type { DirectoryEntry } from "./session-directory";
 import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, IconButton, type Colors } from "./page-controls";
+import { Action, Copy, IconButton, type Colors } from "./page-controls";
 import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
@@ -67,6 +69,9 @@ function HostScreen(props: PluginScreenProps) {
   const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
   const responsibility = useResponsibility(host.id, hostStatus);
+  // kontord is optional: its line never changes the native host status, and Sessions never waits for it.
+  const kontorStatus = useKontorStatus(host.id, hostStatus);
+  const kontord = kontordSentence(kontorStatus);
   // Every page reads one epic per session: the Jira capture rides on the entries, never written to native.
   // Reads refresh every 30 s with a new read time; rebuild only when a ready capture's content changes, so rows keep their identity.
   const captureRevisions = Object.values(sourceState.reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" ? [`${read.source.id}@${read.revision}`] : []).sort().join(" ");
@@ -243,7 +248,7 @@ function HostScreen(props: PluginScreenProps) {
     projects={projects.map(([id, name]) => ({ id, name, root: projectRoots.get(id) }))}
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}
     workspaceNote={[workspaces.error ?? (workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"), workspaces.projectError ?? (workspaces.projectsReadAt ? `Projects read ${new Date(workspaces.projectsReadAt).toLocaleTimeString()}` : "Reading the project list…")].join(" · ")} />;
-  else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} refresh={() => { void sourceState.refresh(); }}
+  else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} kontord={kontord} refresh={() => { void sourceState.refresh(); }}
     onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))}
     keyboard={<KeyboardSettingsCard state={keyboard.state} save={keyboard.save} colors={colors} web={layout.platform === "web"} root={rootRef} copy={copy} />} />;
   else if (route.tab === "Board" || route.tab === "Graph") page = <GraphPage key={routeViewKey(route)} mode={route.tab} hostId={host.id} theme={{ ...props.theme, colors }} compact={layout.compact} sources={sources} selectedId={route.sourceId} reads={reads} available={sourceState.available} error={sourceState.error} epicKey={scopedEpic} onBoard={() => visit({ tab: "Board" })}
@@ -265,7 +270,7 @@ function HostScreen(props: PluginScreenProps) {
   else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => toggle("context")} onDocumentLink={openDocumentLink} onCopy={copy} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     teamsSources={sourceState.sources.filter((source) => source.kind === "teams")} teamsJsonReads={Object.fromEntries(Object.entries(sourceState.reads).filter(([, read]) => read.source.kind === "teams"))}
     teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available}
-    sourceError={sourceState.error} query={query} setQuery={setSearch} onSource={(sourceId) => selectSource(sourceId, "Plan")} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
+    sourceError={sourceState.error} kontord={kontord} query={query} setQuery={setSearch} onSource={(sourceId) => selectSource(sourceId, "Plan")} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
     onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     scoped={!unscoped} onGraph={() => visit({ tab: "Graph" })}
     planView={readPageView(host.id, route, DEFAULT_PLAN_VIEW)} onPlanView={(view) => writePageView(host.id, route, view)}
@@ -292,6 +297,7 @@ function HostScreen(props: PluginScreenProps) {
       </View>
     </View>}
     {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}
+    {route.tab === "Sessions" ? null : <View testID="kontor-kontord-line" style={{ paddingHorizontal: layout.compact ? 8 : 12, paddingVertical: 3 }}><Copy colors={colors} muted small>{kontordLine(kontorStatus)}</Copy></View>}
     <View style={{ flex: 1 }}>{page}</View>
     {layout.compact ? navigation : null}
     {menus}

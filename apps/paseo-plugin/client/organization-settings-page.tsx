@@ -10,13 +10,14 @@ import type { OrganizationSettingsState } from "./use-organization-settings";
 import { SourceDetails } from "./source-details";
 import { TeamsSnapshotDetails } from "./teams-source-page";
 import { Action, Card, Copy, Disclosure, type Colors } from "./page-controls";
+import { kontordSentence } from "./kontord-copy";
 import { rebaseOrganizationDraft, setDisplayMappingField } from "./organization-draft";
 import { captureDay } from "./graph-page";
 import type { OrganizationWorkspace } from "./session-organization";
 
 const SOURCE_GROUPS: ReadonlyArray<readonly [ReadSourceSummary["kind"], string]> = [["plan", "Plans"], ["jira", "Jira history"], ["delivery", "Delivery records"], ["decisions", "Decision records"], ["teams", "Teams configuration"]];
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-const CATALOG_NOTE = "Read-only. Sources are configured on the server; no path, title or renamed ID is inferred. Governed scheduler, gates and team activation: kontord is not enabled. Console owns policy and administration.";
+const catalogNote = (kontord: string) => `Read-only. Sources are configured on the server; no path, title or renamed ID is inferred. Governed scheduler, gates and team activation: not shown here. ${kontord} Console owns policy and administration.`;
 /** One visible line per configured source: its exact title, status only when not ready, and a capture cue for Jira unless the title names that day. */
 function sourceSummary(read: SourceRead, colors: Colors) {
   const title = read.source.title;
@@ -26,7 +27,7 @@ function sourceSummary(read: SourceRead, colors: Colors) {
   const full = `${read.source.title} · ${read.status} · ${read.source.kind === "jira" ? "Historical Jira snapshot" : read.source.revisionKind}. ${read.source.kind === "jira" ? `Observed ${read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}`;
   return <Text selectable accessibilityLabel={full} style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{parts.filter(Boolean).join(" · ")}</Text>;
 }
-export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, teamsSnapshots = {}, teamsErrors = {}, sourcesAvailable = false, refresh, onOpenTeams, keyboard }: {
+export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, teamsSnapshots = {}, teamsErrors = {}, sourcesAvailable = false, refresh, onOpenTeams, keyboard, kontord = kontordSentence(null) }: {
   state: OrganizationSettingsState; colors: Colors; entries: readonly DirectoryEntry[];
   sources: readonly ReadSourceSummary[]; sourceError: string | null; refresh: () => void;
   workspaces: readonly OrganizationWorkspace[];
@@ -38,6 +39,8 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
   onOpenTeams?: () => void;
   /** The Keyboard card, kept in its own settings document. */
   keyboard?: ReactNode;
+  /** What kontor.status observed on this host; unknown when absent. */
+  kontord?: string;
 }) {
   // A draft holds its opening revision across incoming saves from another device.
   const [draft, setDraft] = useState<{ values: OrganizationSettings; base: OrganizationSettings; revision: string } | null>(null);
@@ -108,7 +111,7 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
     </Card>
     {keyboard}
     <Card title="Configured sources" colors={colors}>
-      <View testID="settings-catalog-note"><Disclosure small label="Read-only · configured on the server" colors={colors}><Copy colors={colors} muted small>{CATALOG_NOTE}</Copy></Disclosure></View>
+      <View testID="settings-catalog-note"><Disclosure small label="Read-only · configured on the server" colors={colors}><Copy colors={colors} muted small>{catalogNote(kontord)}</Copy></Disclosure></View>
       {sourceError || reading ? <Copy colors={colors}>{sourceError ?? "Reading configured sources…"}</Copy> : null}
       {!sources.length && sourcesAvailable ? <Copy colors={colors}>No sources are configured on this host.</Copy> : null}
       {SOURCE_GROUPS.filter(([kind]) => sources.some((source) => source.kind === kind)).map(([kind, heading]) => <View key={kind} style={{ gap: 6 }}>

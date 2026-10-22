@@ -273,7 +273,9 @@ sessions without answering or dismissing items. Activity is a partial snapshot
 of session update times. Search covers available names, configured plan text and
 canonical tasks, with no private transcript indexing. Delivery, Decisions and
 configured team definitions/chains show their own source and coverage, or an
-explicit unavailable state. Governed scheduler/gate data says **kontord is not enabled**. None of these direct reads requires `kontord`.
+explicit unavailable state. Governed scheduler/gate data is not shown here; the
+page states what `kontor.status` observed on this host instead. None of these
+direct reads requires `kontord`.
 
 ### Host-side source catalog
 
@@ -470,8 +472,9 @@ fleets are not merged. Exact template ID/slot candidates retain every version;
 no latest version or leadership roster identity is inferred. Activation,
 eligibility, running models and account availability remain unattested, and
 configured bindings are never joined to native sessions by title, role or model.
-Governed fleet controls remain unavailable: **kontord is not enabled**. Direct
-file reads and native sessions remain usable without it.
+Governed fleet controls are not shown here; the page states what
+`kontor.status` observed on this host. Direct file reads and native sessions
+remain usable without it.
 
 `test/teams-source-adapter.test.ts` pins the four reviewed source copies and the
 adapter contract. `test/teams-source-integration.test.tsx` covers the opt-in server
@@ -829,6 +832,12 @@ error is never read, and it is killed after the answer, 64 KiB of output
 (counted in bytes before decoding), 5 seconds or the worker's stop. With `KONTOR_PLUGIN_MCP=off` nothing is started.
 The RPC is registered whatever `floor.json` says, and nothing else waits for it:
 Sessions, Paseo-direct work and the hooks work the same without a realm.
+
+The Kontor screen shows the observation, the composition and the check time in
+one line on every view except Sessions. Each place that names a governed
+feature says it is not shown here and gives the same observation. An offline
+host, an unread status or a failed read shows `unknown`, with no composition or
+time. The native host status is never changed.
 
 ## Install and uninstall
 

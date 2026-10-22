@@ -125,7 +125,8 @@ describe("A-owned Teams source integration", () => {
     expect(text).toContain(" v1"); expect(text).toContain(" v2");
     expect(text).toContain("Native observations: 1 sessions · observed 2026-10-18T10:00:00Z");
     expect(text).toContain("No configuration-to-session assignment is inferred"); expect(text).toContain("Native rows retained");
-    expect(text).toContain("kontord is not enabled"); expect(text).not.toContain("Connect");
+    expect(text).toContain("Governed fleet: not shown here. kontord on this host: unknown."); expect(text).not.toContain("Connect");
+    expect(visible(page({ kontord: "kontord on this host: answering." }))).toContain("Governed fleet: not shown here. kontord on this host: answering.");
   });
   it("keeps partial/unavailable/stale configurations independent and native rows usable", () => {
     const partial = { ...snapshots.authoring!, status: "partial" as const, diagnostics: [{ code: "probe", pointer: "/models/missing", message: "Unknown definition" }] };

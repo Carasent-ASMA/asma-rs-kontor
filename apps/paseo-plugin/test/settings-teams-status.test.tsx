@@ -14,6 +14,7 @@ vi.mock('react-native', () => ({ ScrollView: 'ScrollView', SafeAreaView: 'SafeAr
 vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-settings-host', status: 'online' }] }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', ScrollView: 'ScrollView', FlatList: 'FlatList', Icon: 'Icon', Modal: Object.assign(() => null, { Content: () => null }), useToast: () => ({ error() {} }) }));
 vi.mock('../client/use-responsibility', () => ({ useResponsibility: () => null }));
+vi.mock('../client/use-kontor-status', () => ({ useKontorStatus: () => null }));
 vi.mock('../client/use-read-sources', () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: model.snapshots, teamsErrors: model.errors, teamsBindingDiagnostics: [], error: model.sourceError, available: model.available, loading: false, refresh: async () => {} }) }));
 vi.mock('../client/use-session-directory', () => ({ useSessionDirectory: () => ({ state: { entries: [], status: 'ready', live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false } }) }));
 vi.mock('../client/use-workspace-directory', () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
@@ -97,10 +98,10 @@ describe('QA Settings must display actual Teams source state', () => {
       expect(actual).not.toContain(`${id} · Not read`); expect(actual).not.toContain(snapshot.readAt);
       expect(actual).not.toContain(snapshot.source.path); expect(actual).not.toContain(snapshot.sha256);
     }
-    expect(actual).not.toContain('retained snapshot stale'); expect(actual).not.toContain('kontord is not enabled');
+    expect(actual).not.toContain('retained snapshot stale'); expect(actual).not.toContain('kontord on this host');
     model.details = true;
     const expanded = settingsText();
-    expect(expanded).toContain('kontord is not enabled');
+    expect(expanded).toContain('team activation: not shown here. kontord on this host: unknown.');
     for (const [id, snapshot] of Object.entries(snapshots)) {
       expect(expanded).toContain(`${id} · ready · ${snapshot.configurationState}`); expect(expanded).toContain(snapshot.readAt);
     }

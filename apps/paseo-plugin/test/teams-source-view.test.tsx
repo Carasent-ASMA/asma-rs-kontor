@@ -83,7 +83,7 @@ describe("AI teams & sessions leads with the project context (TEAMS-01)", () => 
     const opened = screen.text();
     expect(opened.indexOf(configured())).toBeLessThan(opened.indexOf("Native observations: 1 sessions · observed 2026-10-18T10:00:00Z"));
     expect(opened.indexOf("Native sessions and labels are observations, not activated configured teams. Planned or governed assignment: Unknown.")).toBeLessThan(opened.indexOf("Host configuration snapshots"));
-    expect(opened).toContain("Governed fleet: kontord is not enabled.");
+    expect(opened).toContain("Governed fleet: not shown here. kontord on this host: unknown.");
   });
   it("keeps the observation statements visible when no configured source gives them a disclosure", () => {
     const text = mount({ sources: [] }).text();

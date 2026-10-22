@@ -62,6 +62,8 @@ const clientFiles = [
   "../client/teams-binding-detail.tsx",
   "../client/teams-role-cards.tsx",
   "../client/teams-source-page.tsx",
+  "../client/kontord-copy.ts",
+  "../client/use-kontor-status.ts",
   "../index.client.tsx",
   "../client/return-control.ts",
   "../client/session-actions.ts",

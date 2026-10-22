@@ -16,6 +16,7 @@ const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
   keyboardSave: vi.fn(async () => true),
+  kontorStatus: null as import("../shared/kontor-status").KontorStatus | null,
   keyboard: { status: "loading" } as { status: "loading" } | { status: "ready"; values: { backShortcut: "off" | "cmd-backquote" } },
   shortcut: null as null | { shortcut: string; web: boolean; root: { readonly current: unknown }; canGoBack: () => boolean; back: () => void },
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
@@ -42,6 +43,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
+vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
 vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: model.workspaces, error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
@@ -61,6 +63,7 @@ import { historicalPlanProgress } from "../client/page-data";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { SessionsScreen } from "../client/sessions-screen";
 import { NativeFreshnessPill } from "../client/native-freshness";
+import { Copy } from "../client/page-controls";
 import { DEFAULT_PLAN_VIEW, type PlanView } from "../client/plan-reader";
 import { ReadOnlyPage } from "../client/read-only-pages";
 import { TeamsSourcePage } from "../client/teams-source-page";
@@ -75,7 +78,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; });
+beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -186,6 +189,26 @@ describe("Kontor shell native actions", () => {
       model.hosts = [{ serverId: screen.props.host.id, label: "Host", status }]; screen.render();
       expect(screen.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostStatus).toBe(status);
     }
+  });
+  it("shows kontord in one line off Sessions and gives the pages its sentence, apart from the native host status", () => {
+    const line = (screen: ReturnType<typeof mount>) => {
+      const row = screen.elements().find((node) => node.props.testID === "kontor-kontord-line");
+      return row ? elements(row).find((node) => node.type === Copy)?.props.children : undefined;
+    };
+    // Each screen gets its own hook state.
+    const fresh = (compact: boolean, route: Partial<KontorRoute>) => { model.slots = []; return mount(compact, route); };
+    const unknown = fresh(false, { tab: "Overview" });
+    expect(line(unknown)).toBe("kontord on this host: unknown.");
+    model.kontorStatus = { observation: "ready", composition: "composed", checkedAt: new Date(0).toISOString() };
+    const ready = fresh(false, { tab: "Overview" });
+    model.hosts = [{ serverId: ready.props.host.id, label: "Host", status: "online" }]; ready.render();
+    expect(line(ready)).toBe(`kontord on this host: answering. Kontor adds its observer MCP to eligible new agents. Checked ${new Date(0).toLocaleTimeString()}.`);
+    expect(ready.elements().find((node) => node.type === ReadOnlyPage)?.props.kontord).toBe("kontord on this host: answering.");
+    expect(ready.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostStatus).toBe("online");
+    expect(fresh(true, { tab: "Settings" }).elements().find((node) => node.type === OrganizationSettingsPage)?.props.kontord).toBe("kontord on this host: answering.");
+    const sessions = fresh(false, { tab: "Sessions" });
+    expect(line(sessions)).toBeUndefined();
+    expect(sessions.elements().find((node) => node.type === SessionsScreen)?.props).not.toHaveProperty("kontord");
   });
   it("keeps desktop Back available in place and enables it only when navigation has history", () => {
     const screen = mount(false);
