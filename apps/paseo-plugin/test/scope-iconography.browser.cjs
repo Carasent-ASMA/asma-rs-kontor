@@ -50,8 +50,8 @@ async function checkContextual(page, touch, theme, name, filter) {
   if (!touch) assert.ok((await kontor().innerText()).includes('Idle 1/1'));
   await activate(page.getByRole('button', { name: 'Legend', exact: true }), touch);
   assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('matching the current search and filters'));
-  await activate(page.getByTestId('sessions-layout-flat'), touch);
   if (touch) await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
+  await activate(page.getByTestId('sessions-layout-flat'), touch);
   assert.equal(await page.getByTestId('sessions-result-context-quiet').count(), 1);
   assert.equal(await page.getByTestId('sessions-result-context-busy').count(), 0);
   const before = await state(page);

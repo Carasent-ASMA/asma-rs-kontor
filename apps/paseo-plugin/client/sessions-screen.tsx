@@ -1,4 +1,5 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import { SessionLayoutControl } from "./session-layout-control";
 import { useHosts } from "@getpaseo/plugin/client";
 import {
   FlatList,
@@ -2582,9 +2583,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <OptionSelect testID="sessions-working-as" label="Working as" value={realm === null ? (responsibility === null ? "Loading…" : "Unavailable") : workingAsLabel ?? (workingAs ? "Not in this projection" : "Not set")} expanded={optionMenu === "workingAs"} anchor={workingAsRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "workingAs" ? null : "workingAs")} />
             <Text testID="sessions-responsibility-source" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{responsibilitySource}</Text>
           </View>
-          <OptionLine label="Layout" colors={colors}>
-            {(["grouped", "flat"] as const).map((layout) => <FilterChip key={layout} testID={`sessions-layout-${layout}`} label={layout === "flat" ? "Flat" : "Grouped"} compact={compact} active={sessionLayout === layout} colors={colors} {...focusProps} onPress={() => chooseLayout(layout)} />)}
-          </OptionLine>
           {sessionLayout === "grouped" ? <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} /> : null}
           <OptionSelect testID="sessions-sort" label="Sort by" value={sortLabel(sort)} expanded={optionMenu === "sort"} anchor={sortRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "sort" ? null : "sort")} />
           {sort !== "current" ? <OptionLine label="Direction" colors={colors}>
@@ -2908,7 +2906,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </Text>
   ) : null;
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
-  const shortPeek = peek !== null && compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const shortPeek = peek !== null && shortScreen;
   const peekDescription = peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`;
   let peekText = peekDescription;
   if (shortPeek) peekText = peekAncestors ? "In the tree · not saved" : "Not in this tree";
@@ -2947,7 +2946,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {assignmentState === "ready" && assignment !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-assignment-show-unknown" label="Show unknown assignment" accessibilityLabel="Show sessions whose assignment is unknown" colors={colors} compact={compact} onPress={() => chooseAssignment("unknown")} /> : null}
     </View>
   );
-  const listHeader = peek ? null : <>{workLine}{listLine}</>;
+  // On short screens the utility row must scroll, so it cannot consume the list's last usable pixels.
+  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+    <View style={{ flex: 1, minWidth: 80 }}>
+      {listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
+    </View>
+    <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+  </View>;
+  const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
 
   return (
     <View
@@ -2968,6 +2974,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {activeScopeSummary}
       {compact ? null : fullToolbarSlot}
       {peekBar}
+      {shortScreen ? null : layoutBar}
       <FlatList
         ref={listRef}
         testID="sessions-list"
