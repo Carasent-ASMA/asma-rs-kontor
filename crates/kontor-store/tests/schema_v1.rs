@@ -820,7 +820,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v138 freezes task checkout intents and their first Git readback.
     // v139 adds nullable domain context to existing selection/epic wrappers, without backfill.
     // v141 admits epic creation to the existing exact local-result ledger.
-    assert_eq!(SCHEMA_VERSION, 141);
+    assert_eq!(SCHEMA_VERSION, 142);
 }
 
 #[test]
@@ -7085,6 +7085,12 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     let connection = Connection::open(&database).unwrap();
     // v137 adds a column too; the simulated v119 fixture must remove it before
     // replaying the chain, just as it removes every later additive table.
+    let consultation_pins:i64=connection.query_row("SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert_eq!(
+        consultation_pins, 0,
+        "historical fixture must not erase consultation placement evidence"
+    );
+    connection.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback;").unwrap();
     let checkout_rows: i64 = connection
         .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
             row.get(0)

@@ -2189,6 +2189,12 @@ exported_tables! {
         created_at: String,
         updated_at: String,
         task_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consultation_intent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consultation_intent_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consultation_git_readback: Option<String>,
     }
     seat_bindings: SeatBindingsRow from "seat_bindings" key(id) {
         id: String,

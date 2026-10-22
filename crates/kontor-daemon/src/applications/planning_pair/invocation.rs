@@ -347,11 +347,12 @@ impl<'a> InvokeOwner for InvokePorts<'a> {
 
     fn consultation_root(
         &self,
-        project_root: &str,
-        epic_key: Option<&TrackerKey>,
+        project_id: ProjectId,
+        _project_root: &str,
+        _epic_key: Option<&TrackerKey>,
         node_id: TopologyNodeId,
     ) -> Result<kontor_runtime::workspace::WorkspaceRoot, ApiError> {
-        self.0.consultation_root(project_root, epic_key, node_id)
+        self.0.consultation_root(project_id, node_id)
     }
 
     fn seat_binding(
@@ -384,6 +385,15 @@ impl<'a> InvokeOwner for InvokePorts<'a> {
         self.0
             .ensure_container(project_id, node, cwd, adapter)
             .await
+    }
+
+    fn consultation_scope(
+        &self,
+        project: ProjectId,
+        node: TopologyNodeId,
+        scope: kontor_runtime::scope::ExecutionScope,
+    ) -> Result<kontor_runtime::scope::ExecutionScope, ApiError> {
+        self.0.consultation_scope(project, node, scope)
     }
 
     fn execution_scope(

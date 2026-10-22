@@ -39,7 +39,12 @@ pub(super) async fn materialize<O: InvokeOwner>(
     let adapter = owner.runtime()?;
     owner.require_member_routes(adapter.as_ref(), pair.pair.members().members())?;
     let epic_key = owner.epic_tracker_key(run.project_id, run.mini_project_id)?;
-    let cwd = owner.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+    let cwd = owner.consultation_root(
+        run.project_id,
+        project.root_path.as_str(),
+        epic_key.as_ref(),
+        node.id,
+    )?;
     let mut seats = pair.seats.clone();
     if seats.iter().all(|seat| seat.native_identity.is_some()) {
         return Ok(());
@@ -66,6 +71,7 @@ pub(super) async fn materialize<O: InvokeOwner>(
         node.task_id,
         adapter.as_ref(),
     )?;
+    let scope = owner.consultation_scope(run.project_id, node.id, scope)?;
     let capabilities = adapter
         .discover_capabilities()
         .await

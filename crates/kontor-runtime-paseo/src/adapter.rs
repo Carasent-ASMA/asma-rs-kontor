@@ -3419,7 +3419,24 @@ impl PaseoAdapter {
         let binding = crate::checkout::ManagedBranchBinding::from_scopes(
             request.scope.iter().chain(effective.iter()),
         );
-        if let Some(selected) = request
+        if let Some(pin) = request
+            .scope
+            .as_ref()
+            .and_then(ExecutionScope::consultation_checkout)
+        {
+            crate::checkout::verify_selected_consultation(
+                &self.config.scope.project_root_cwd,
+                cwd,
+                pin,
+                request.topology_node_id,
+                request.container_binding_id,
+                request
+                    .scope
+                    .as_ref()
+                    .expect("the consultation pin belongs to its scope"),
+            )
+            .await?;
+        } else if let Some(selected) = request
             .scope
             .as_ref()
             .and_then(ExecutionScope::task_checkout)
@@ -5700,6 +5717,17 @@ impl PaseoAdapter {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "this is not the consultation container this runtime prepared",
             });
+        }
+        if let Some(pin) = request.scope.consultation_checkout() {
+            crate::checkout::verify_selected_consultation(
+                &self.config.scope.project_root_cwd,
+                &request.cwd,
+                pin,
+                request.container.topology_node_id(),
+                request.container.binding.id,
+                &request.scope,
+            )
+            .await?;
         }
         let workspace_id = prepared.binding.identity.native_id.as_str().to_owned();
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
@@ -8024,6 +8052,27 @@ impl RuntimeAdapter for PaseoAdapter {
         request: &ContainerInspectRequest,
     ) -> RuntimeResult<ContainerInspection> {
         request.validate()?;
+        if let Some(scope) = request.scope.as_ref()
+            && let Some(pin) = scope.consultation_checkout()
+        {
+            let target =
+                request
+                    .binding
+                    .root
+                    .as_ref()
+                    .ok_or(RuntimeError::WorkspacePreparationFailed {
+                        rule: "consultation.runtime_root_missing",
+                    })?;
+            crate::checkout::verify_selected_consultation(
+                &self.config.scope.project_root_cwd,
+                target,
+                pin,
+                request.binding.topology_node_id,
+                request.binding.id,
+                scope,
+            )
+            .await?;
+        }
         let declared = self.declared().await?;
         if !declared.supports(RuntimeCapability::Inspect) {
             return Err(self.refuse(RuntimeCapability::Inspect, &declared));

@@ -11868,6 +11868,38 @@ impl TopologyRepository for SqliteStore {
         request: &NewNativeContainerBinding,
     ) -> RepositoryResult<NativeContainerBinding> {
         let transaction = self.begin()?;
+        if let Some(pin) =
+            self.consultation_placement(request.project_id, request.topology_node_id)?
+        {
+            if request.readback.is_none() {
+                return Err(conflict(
+                    "consultation placement",
+                    "consultation.native_readback_incomplete",
+                ));
+            }
+            self.guard_consultation_placement(request.project_id, request.topology_node_id)?;
+            let value: serde_json::Value = from_json(pin.intent.json())?;
+            if pin.readback.is_none()
+                || value["container_binding_id"].as_str()
+                    != Some(request.container_binding_id.as_str())
+                || request.canonical_cwd.as_ref().map(ExternalName::as_str)
+                    != value["checkout"]["destination"].as_str()
+            {
+                return Err(conflict(
+                    "consultation placement",
+                    "consultation.native_readback_requires_checkout",
+                ));
+            }
+            self.guard_consultation_destination(
+                request.project_id,
+                request.topology_node_id,
+                request
+                    .canonical_cwd
+                    .as_ref()
+                    .expect("the destination was checked")
+                    .as_str(),
+            )?;
+        }
         let readback = request.readback.as_ref();
         let parent = readback.and_then(|readback| readback.native_parent.as_ref());
         let owning_project: Option<String> = transaction
@@ -15883,6 +15915,32 @@ impl SqliteStore {
                 existing.id,
             )?;
             return Ok((evidence, existing, crate::graph::Applied::Unchanged));
+        }
+        if let Some(pin) = self.consultation_placement(
+            recovery.expected.project_id,
+            recovery.expected.topology_node_id,
+        )? {
+            self.guard_consultation_placement(
+                recovery.expected.project_id,
+                recovery.expected.topology_node_id,
+            )?;
+            let value: serde_json::Value = from_json(pin.intent.json())?;
+            if pin.readback.is_none()
+                || recovery.replacement.readback.is_none()
+                || value["container_binding_id"].as_str()
+                    != Some(recovery.replacement.container_binding_id.as_str())
+                || value["checkout"]["destination"].as_str()
+                    != recovery
+                        .replacement
+                        .canonical_cwd
+                        .as_ref()
+                        .map(ExternalName::as_str)
+            {
+                return Err(conflict(
+                    "consultation placement",
+                    "consultation.recovery_binding_mismatch",
+                ));
+            }
         }
         if recovery.replacement.project_id != recovery.expected.project_id
             || recovery.replacement.topology_node_id != recovery.expected.topology_node_id

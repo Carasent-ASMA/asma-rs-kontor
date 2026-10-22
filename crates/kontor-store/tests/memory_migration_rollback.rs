@@ -93,6 +93,12 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
         .unwrap();
     drop(store);
     let connection = Connection::open(&database).unwrap();
+    let later_pins:i64=connection.query_row("SELECT (SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL) + (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL) + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",[],|row|row.get(0)).unwrap();
+    assert_eq!(
+        later_pins, 0,
+        "historical fixture must not erase domain or consultation evidence"
+    );
+    connection.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback; ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash; ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
     // Remove the current-only v137 column before replaying the historical chain.
     let checkout_rows: i64 = connection
         .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {

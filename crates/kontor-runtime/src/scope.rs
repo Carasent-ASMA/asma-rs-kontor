@@ -91,6 +91,7 @@ pub struct ExecutionScope {
     /// The ticket, when the operation is about one.
     pub task: Option<TaskScope>,
     checkout: Option<TaskCheckoutBinding>,
+    consultation: Option<Box<crate::consultation_checkout::ConsultationCheckout>>,
 }
 
 /// Selected-folder task checkout mode. Missing source never means legacy inference.
@@ -108,6 +109,7 @@ impl ExecutionScope {
             epic,
             task: None,
             checkout: None,
+            consultation: None,
         }
     }
 
@@ -118,6 +120,7 @@ impl ExecutionScope {
             epic,
             task: Some(task),
             checkout: None,
+            consultation: None,
         }
     }
 
@@ -141,6 +144,24 @@ impl ExecutionScope {
     pub fn without_task_checkout(mut self) -> Self {
         self.checkout = None;
         self
+    }
+
+    /// Attach the exact persisted consultation intent to its native effects.
+    #[must_use]
+    pub fn with_consultation_checkout(
+        mut self,
+        pin: crate::consultation_checkout::ConsultationCheckout,
+    ) -> Self {
+        self.consultation = Some(Box::new(pin));
+        self
+    }
+
+    /// Consultation checkout proof; independent of the optional subject ticket.
+    #[must_use]
+    pub fn consultation_checkout(
+        &self,
+    ) -> Option<&crate::consultation_checkout::ConsultationCheckout> {
+        self.consultation.as_deref()
     }
 
     /// The ticket this operation serves, or a refusal that names what is missing.

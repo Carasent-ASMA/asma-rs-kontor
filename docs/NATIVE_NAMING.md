@@ -102,9 +102,13 @@ Rules, in the order they apply:
    one claimant per tree; publication to the default branch still goes from
    the epic branch through the ASMA CLI. Derivation never overrides a declared
    worktree, including on a re-apply that omits the field.
-3. **Consultations.** An Advisor or Committee checkout is
-   `.worktrees/chore/<EPIC-KEY>-consultation-<node id>`. A consultation that
-   already owns a pre-ASMA-8101 `consultation-<node id>` checkout keeps it.
+3. **Consultations.** New Advisor, Committee and planning-pair checkouts use
+   the epic's pinned `project.consultation_layout` beneath the literal managed
+   root from its pinned task layout. Their branch remains
+   `chore/<EPIC-KEY>-consultation-<node id>` under the selected grammar. The
+   explicit root source, target and native binding ID are frozen before effects.
+   A durably bound legacy checkout keeps its exact path and identity; directory
+   existence never authorizes adoption. See [Configuration](CONFIGURATION.md).
 4. **Creation.** When the Paseo adapter must *mint* a branch (no local or
    remote ref exists), the branch must parse and carry the epic key or the task
    key of the durable execution scope (or of the plane's compatibility

@@ -556,6 +556,12 @@ fn legacy_domain_context_stays_absent_and_upgrade_preserves_original_record_byte
     assert!(!String::from_utf8_lossy(&records).contains("operational_domain_bundle_hash"));
     // Reconstruct the previous column shape in this disposable store only.
     let connection = rusqlite::Connection::open(f.home.path().join("kontor.db")).unwrap();
+    let placements:i64=connection.query_row("SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL",[],|row|row.get(0)).unwrap();
+    assert_eq!(
+        placements, 0,
+        "historical fixture must not erase consultation evidence"
+    );
+    connection.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback;").unwrap();
     connection.execute_batch("ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash;
         ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;
         PRAGMA user_version = 138;").unwrap();

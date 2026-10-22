@@ -29,14 +29,16 @@
 //! * a secret, a runtime endpoint or a transcript reaching the database, the
 //!   contract document, a response or a stored event row.
 
-#[path = "support/config.rs"]
-mod config_support;
+use harness::native_config_fixture as config_support;
 
 use harness::tracker_fixtures;
 
 // This binary uses part of the shared harness; the rest is not dead code.
 #[allow(dead_code)]
 mod harness;
+
+#[path = "loopback/consultation_placement.rs"]
+mod consultation_placement;
 
 #[path = "loopback/domain_runtime.rs"]
 mod domain_runtime;
@@ -898,7 +900,7 @@ struct VerdictBoundary {
 /// store. Only the completion's own standing phase is seeded, exactly as the
 /// neighbouring verdict-intake journeys do.
 async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
-    let composed = compose_realm(root).await;
+    let composed = compose_native_consultation_realm(root, false).await;
     let project = composed.project.clone();
     {
         let world = &composed.world;
@@ -36185,7 +36187,15 @@ async fn an_admin_fills_an_owed_slot_on_a_named_route_and_an_operator_cannot() {
 /// write (F-02), so a test that skipped this would silently fall back to the
 /// frozen template chain.
 fn write_fleet(world: &World, yaml: &str) {
-    let path = world.directory.path().join("fleet.yml");
+    let selected = world
+        .directory
+        .path()
+        .join("selected config with spaces/orchestration/fleet.yml");
+    let path = if selected.exists() {
+        selected
+    } else {
+        world.directory.path().join("fleet.yml")
+    };
     std::fs::write(&path, yaml).expect("the fleet configuration is written");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .expect("the fleet configuration is owner-only");
@@ -37145,7 +37155,7 @@ async fn pinned_runtime_epic(world: &World, project: &str, label: &str) -> Strin
 }
 
 async fn consultation_realm(root: &str, extra_providers: &[(&str, &str)]) -> ConsultationRealm {
-    let composed = compose_realm(root).await;
+    let composed = compose_native_consultation_realm(root, false).await;
     let world = &composed.world;
     let project = &composed.project;
     adopt_session_base(world, project, composed.project_revision).await;
@@ -45351,7 +45361,29 @@ async fn compose_jira_key_realm(root: &str) -> Composed {
     compose_realm_with_history(root, false, true).await
 }
 async fn compose_realm_with_history(root: &str, historical: bool, jira_keys: bool) -> Composed {
-    let mut world = World::open_empty_with_a_plane().await;
+    compose_realm_options(root, historical, jira_keys, false).await
+}
+async fn compose_native_consultation_realm(root: &str, jira_keys: bool) -> Composed {
+    compose_realm_options(root, false, jira_keys, true).await
+}
+async fn compose_realm_options(
+    root: &str,
+    historical: bool,
+    jira_keys: bool,
+    native: bool,
+) -> Composed {
+    let mut world = if native {
+        World::open_native_consultations().await
+    } else {
+        World::open_empty_with_a_plane().await
+    };
+    let selected_root = world.directory.path().join("checkout");
+    let selected_root = selected_root.canonicalize().ok();
+    let root = if native {
+        selected_root.as_ref().unwrap().to_str().unwrap()
+    } else {
+        root
+    };
     world.historical_epics = historical;
     world.daemon.reconcile().await;
 
@@ -45392,6 +45424,27 @@ async fn compose_realm_with_history(root: &str, historical: bool, jira_keys: boo
         });
         harness::DomainSelectionFixture::bind(&world, project_id_of(&project));
     }
+    if native {
+        // Selected packs offer candidates; this historical test preset is explicitly installed.
+        let template = kontor_profiles::seeds::bundled_consultation_presets()
+            .unwrap()
+            .committee_templates
+            .into_iter()
+            .find(|template| template.template_id.to_string() == COMMITTEE_PRESET)
+            .unwrap();
+        let definition: serde_json::Value =
+            serde_json::from_str(template.canonicalize().unwrap().json()).unwrap();
+        let preview = Call::post(
+            format!("/v1/projects/{project}/committee-templates:preview"),
+            &serde_json::json!({"definition":definition}),
+        )
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        let installed=Call::post(format!("/v1/projects/{project}/committee-templates:apply"),&serde_json::json!({"definition":definition,"preview_hash":preview.json()["preview_hash"],"expected_revision":current_project_revision(&world,&project).await})).signed_as(&world,"admin").with_key("native-fixture-committee-preset").send(&world).await;
+        assert_eq!(installed.status, 200, "{}", installed.body);
+    }
     let account = Call::post(
         format!("/v1/projects/{project}/provider-account-profiles:ensure"),
         &serde_json::json!({
@@ -45419,7 +45472,7 @@ async fn compose_realm_with_history(root: &str, historical: bool, jira_keys: boo
             project_revision,
             "Composed epic",
             &category,
-            serde_json::json!([{"title": "Do the thing"}]),
+            if native {serde_json::json!([{"title":"Do the thing","worktree":format!("{root}/declared-task")}])} else {serde_json::json!([{"title":"Do the thing"}])},
         ),
         "compose-epic",
     )
@@ -55035,7 +55088,8 @@ async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
 /// recompute the conjunction, settle, and replay without another native launch.
 #[tokio::test]
 async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayable() {
-    let composed = compose_realm("/tmp/kontor-committee-initial-recovery").await;
+    let composed =
+        compose_native_consultation_realm("/tmp/kontor-committee-initial-recovery", false).await;
     let world = &composed.world;
     let project = &composed.project;
     adopt_session_base(world, project, composed.project_revision).await;
@@ -55418,12 +55472,19 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
             .canonical_cwd
             .expect("the recovered container has a canonical directory")
     });
-    // The stable consultation directory is keyed by the node and, since
-    // ASMA-8101, carries the epic's confirmed Jira key as a canonical branch.
+    // The selected managed root, confirmed epic key and durable node own this path.
+    let source_root = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(ProjectId::parse(project).unwrap()))
+        .unwrap()
+        .unwrap()
+        .root_path;
     assert_eq!(
         recovered_cwd.as_str(),
         format!(
-            "/tmp/kontor-committee-initial-recovery/.worktrees/chore/ASMA-9001-consultation-{stuck_node}"
+            "{}/managed/trees/consultations/asma-9001/{stuck_node}",
+            source_root.as_str()
         ),
         "generic topology recovery placed the Committee outside its stable consultation directory"
     );
@@ -56004,7 +56065,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
 
 #[tokio::test]
 async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
-    let composed = compose_realm("/tmp/kontor-op05-committee").await;
+    let composed = compose_native_consultation_realm("/tmp/kontor-op05-committee", false).await;
     let world = &composed.world;
     let project = &composed.project;
     adopt_session_base(world, project, composed.project_revision).await;
@@ -65378,7 +65439,7 @@ struct ConsultationFixture {
 }
 
 async fn jira_key_consultation_fixture(root: &str) -> ConsultationFixture {
-    let composed = compose_jira_key_realm(root).await;
+    let composed = compose_native_consultation_realm(root, true).await;
     let world = &composed.world;
     let project = &composed.project;
     let epic = &composed.epic;
@@ -65523,25 +65584,22 @@ async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
     let (task_id, epic_key, task_key, caller) =
         (*task_id, epic_key.clone(), task_key.clone(), caller.clone());
 
-    // The preset is published through the store because this suite does not
-    // exercise the Committee authoring routes.
+    // Read back the exact preset explicitly installed by the selected fixture.
     let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
     let template = presets.committee_templates[0].clone();
     let document = template.canonicalize().expect("the template canonicalizes");
     let committee_profile = template.template_id.to_string();
     world.daemon.state().with_store(|store| {
-        store
-            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
-                project_id,
-                family: ConsultationFamily::Committee,
-                profile_id: committee_profile.clone(),
-                version: template.version,
-                name: template.name.clone(),
-                definition: document.json().to_owned(),
-                definition_hash: document.hash().clone(),
-                published_at: kontor_api::now(),
+        let stored = store
+            .list_consultation_profile_revisions(project_id, ConsultationFamily::Committee)
+            .unwrap()
+            .into_iter()
+            .find(|stored| {
+                stored.profile_id == committee_profile && stored.version == template.version
             })
-            .expect("the Committee preset publishes");
+            .expect("the fixture explicitly published its Committee preset");
+        assert_eq!(&stored.definition_hash, document.hash());
+        assert_eq!(stored.definition, document.json());
     });
     write_fleet(world, &formal_review_fleet_yaml());
 
@@ -65770,25 +65828,22 @@ async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_
     );
     let bad_topic = format!("{item_code} operational completion");
 
-    // The Committee preset is published through the store because this suite
-    // does not exercise the Committee authoring routes.
+    // Read back the exact preset explicitly installed by the selected fixture.
     let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
     let template = presets.committee_templates[0].clone();
     let document = template.canonicalize().expect("the template canonicalizes");
     let committee_profile = template.template_id.to_string();
     world.daemon.state().with_store(|store| {
-        store
-            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
-                project_id,
-                family: ConsultationFamily::Committee,
-                profile_id: committee_profile.clone(),
-                version: template.version,
-                name: template.name.clone(),
-                definition: document.json().to_owned(),
-                definition_hash: document.hash().clone(),
-                published_at: kontor_api::now(),
+        let stored = store
+            .list_consultation_profile_revisions(project_id, ConsultationFamily::Committee)
+            .unwrap()
+            .into_iter()
+            .find(|stored| {
+                stored.profile_id == committee_profile && stored.version == template.version
             })
-            .expect("the Committee preset publishes");
+            .expect("the fixture explicitly published its Committee preset");
+        assert_eq!(&stored.definition_hash, document.hash());
+        assert_eq!(stored.definition, document.json());
     });
     // Match the supported formal-review admission used by the subject fixture.
     write_fleet(world, &formal_review_fleet_yaml());
@@ -65936,18 +65991,16 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
     let document = template.canonicalize().expect("the template canonicalizes");
     let committee_profile = template.template_id.to_string();
     world.daemon.state().with_store(|store| {
-        store
-            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
-                project_id,
-                family: ConsultationFamily::Committee,
-                profile_id: committee_profile.clone(),
-                version: template.version,
-                name: template.name.clone(),
-                definition: document.json().to_owned(),
-                definition_hash: document.hash().clone(),
-                published_at: kontor_api::now(),
+        let stored = store
+            .list_consultation_profile_revisions(project_id, ConsultationFamily::Committee)
+            .unwrap()
+            .into_iter()
+            .find(|stored| {
+                stored.profile_id == committee_profile && stored.version == template.version
             })
-            .expect("the Committee preset publishes");
+            .expect("the fixture explicitly published its Committee preset");
+        assert_eq!(&stored.definition_hash, document.hash());
+        assert_eq!(stored.definition, document.json());
     });
     // Match the supported formal-review admission used by the subject fixture.
     write_fleet(world, &formal_review_fleet_yaml());
@@ -66099,18 +66152,16 @@ async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() 
     let document = template.canonicalize().expect("the template canonicalizes");
     let committee_profile = template.template_id.to_string();
     world.daemon.state().with_store(|store| {
-        store
-            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
-                project_id,
-                family: ConsultationFamily::Committee,
-                profile_id: committee_profile.clone(),
-                version: template.version,
-                name: template.name.clone(),
-                definition: document.json().to_owned(),
-                definition_hash: document.hash().clone(),
-                published_at: kontor_api::now(),
+        let stored = store
+            .list_consultation_profile_revisions(project_id, ConsultationFamily::Committee)
+            .unwrap()
+            .into_iter()
+            .find(|stored| {
+                stored.profile_id == committee_profile && stored.version == template.version
             })
-            .expect("the Committee preset publishes");
+            .expect("the fixture explicitly published its Committee preset");
+        assert_eq!(&stored.definition_hash, document.hash());
+        assert_eq!(stored.definition, document.json());
     });
 
     let (epic_node, topology) = world.daemon.state().with_store(|store| {
