@@ -8,13 +8,25 @@ const origin = process.env.PREVIEW_ORIGIN;
 const output = process.env.EVIDENCE_DIR;
 assert.ok(origin && output, 'Supply the isolated fixture origin and an evidence directory');
 fs.mkdirSync(output, { recursive: true });
-const report = { cases: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
+const report = { cases: [], tooltipChecks: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 let browser;
 const counts = [679, 93, 48, 538];
 const labels = ['All sessions', 'PR Review', 'Adam desk', 'Outside desks'];
 const state = page => page.evaluate(() => window.readSessionView());
 const chip = (page, index) => page.getByTestId(`sessions-shortcut-${index}`);
 const snap = (page, name) => page.screenshot({ path: path.join(output, `${name}.png`) });
+async function visibleTooltip(page, expectedText) {
+  const tooltip = page.getByRole('tooltip');
+  await tooltip.waitFor();
+  await page.waitForFunction(text => {
+    const node = document.querySelector('[role="tooltip"]');
+    return node && getComputedStyle(node).opacity === '1' && node.textContent.includes(text);
+  }, expectedText);
+  const opacity = await tooltip.evaluate(node => getComputedStyle(node).opacity);
+  assert.equal(opacity, '1', 'intended tooltip is fully opaque');
+  assert.ok((await tooltip.innerText()).includes(expectedText));
+  report.tooltipChecks.push({ width: page.viewportSize().width, theme: new URL(page.url()).searchParams.get('theme'), expectedText, opacity });
+}
 async function scopeControls(page, touch) {
   if (touch) await page.getByRole('button', { name: 'Filters and view', exact: true }).tap();
   await chip(page, 0).waitFor();
@@ -57,9 +69,9 @@ async function checkContextual(page, touch, theme, name, filter) {
     await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
   } else {
     await page.keyboard.press('Tab');
+    await kontor().scrollIntoViewIfNeeded();
     await kontor().focus();
-    await page.getByRole('tooltip').waitFor();
-    assert.ok((await page.getByRole('tooltip').innerText()).includes('retained surrounding context'));
+    await visibleTooltip(page, 'retained surrounding context');
     await snap(page, `${name}-${filter}-context-help`);
     await page.keyboard.press('Escape');
   }
@@ -123,21 +135,19 @@ async function check(width, theme) {
       await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
     } else {
       await chip(page, 1).hover();
-      await page.getByRole('tooltip').waitFor();
-      assert.ok((await page.getByRole('tooltip').innerText()).includes('Counts are before search and other filters'));
+      await visibleTooltip(page, 'Counts are before search and other filters');
       await snap(page, `${name}-hover-help`);
       await page.keyboard.press('Escape');
       await page.keyboard.press('Tab');
       await chip(page, 2).focus();
-      await page.getByRole('tooltip').waitFor();
+      await visibleTooltip(page, 'Adam desk');
       await snap(page, `${name}-keyboard-focus`);
       await page.keyboard.press('Enter');
       assert.equal((await state(page)).shortcut, 'Adam');
       await chip(page, 0).click();
       await page.keyboard.press('Tab');
       await kontor().focus();
-      await page.getByRole('tooltip').waitFor();
-      assert.ok((await page.getByRole('tooltip').innerText()).includes('Native lifecycle and attention signals can overlap'));
+      await visibleTooltip(page, 'Native lifecycle and attention signals can overlap');
       await snap(page, `${name}-group-help`);
       await page.keyboard.press('Escape');
     }
@@ -151,7 +161,13 @@ async function check(width, theme) {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     assert.equal(overflow, false, 'no horizontal document overflow');
     const contextualPeeks = [];
-    for (const filter of ['search', 'state']) contextualPeeks.push(await checkContextual(page, touch, theme, name, filter));
+    for (const filter of ['search', 'state']) {
+      const contextualPage = await context.newPage();
+      contextualPage.on('pageerror', error => errors.push(error.message));
+      try { contextualPeeks.push(await checkContextual(contextualPage, touch, theme, name, filter)); }
+      catch (error) { await snap(contextualPage, `${name}-${filter}-failure`); throw error; }
+      finally { await contextualPage.close(); }
+    }
     assert.equal(errors.length, 0, errors.join('\n'));
     report.cases.push({ name, status: 'PASS', counts, nestedBadges: badges, contextualPeeks, noOverflow: true, pageErrors: errors });
   } catch (error) {

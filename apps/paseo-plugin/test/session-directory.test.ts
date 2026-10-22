@@ -430,12 +430,12 @@ describe("SessionDirectory", () => {
     const upsert = { kind: "upsert", agent: native } as const;
     fake.emitUpdate(upsert);
     fake.emitUpdate(upsert);
-    expect(usagePresentation(latest.entries[0]!).label).toBe("Report: 100 in · 20 out");
+    expect(usagePresentation(latest.entries[0]!).label).toBe("Last report 100 ↓ · 20 ↑");
     fake.emitUpdate({ kind: "upsert", agent: { ...native, model: "other-model", lastUsage: { inputTokens: 5, outputTokens: 0 } } });
     expect(latest.entries[0]!.model).toBe("other-model");
-    expect(usagePresentation(latest.entries[0]!).label).toBe("Report: 5 in · 0 out");
+    expect(usagePresentation(latest.entries[0]!).label).toBe("Last report 5 ↓ · 0 ↑");
     fake.emitUpdate({ kind: "upsert", agent: { ...native, provider: "other-route", lastUsage: undefined, runtimeInfo: undefined } });
-    expect(usagePresentation(latest.entries[0]!).label).toBe("Usage not reported");
+    expect(usagePresentation(latest.entries[0]!).label).toBe("—");
     directory.markHostOffline("Disconnected");
     expect(latest.status).toBe("stale");
     await directory.dispose();
