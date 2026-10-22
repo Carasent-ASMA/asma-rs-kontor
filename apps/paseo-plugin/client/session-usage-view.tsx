@@ -46,7 +46,7 @@ export function SessionMetadataGuide({ entry, colors }: { entry: SessionUsageEnt
         { icon: "SlidersHorizontal", text: "Selected model configuration; execution is not confirmed." },
         { icon: "Radio", text: "Last reported runtime model; it may precede a switch." },
         { icon: "CircleHelp", text: "No model supplied." },
-        { icon: "ReceiptText", text: "Reported input ↓ and output ↑ counters, not session totals." },
+        { icon: "ReceiptText", text: "Last provider report, not a session total: input ↓ and output ↑. Separately reported cache reads count as input; ≥ marks a lower bound." },
       ].map(({ icon, text }) => <View key={icon} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
         <View importantForAccessibility="no" accessibilityElementsHidden><Icon name={icon} size={16} color={colors.foregroundMuted} /></View>
         <Text style={{ flex: 1, color: colors.foreground, fontSize: 12, lineHeight: 18 }}>{text}</Text>

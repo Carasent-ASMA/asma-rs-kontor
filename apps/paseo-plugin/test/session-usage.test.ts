@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelPresentation, shortModel, formatTokens, validTokenCount, usagePresentation, sessionUsageLabel, sessionUsageLines, type SessionUsageEntry } from "../client/session-usage";
+import { modelPresentation, shortModel, formatTokens, validTokenCount, latestReport, usagePresentation, sessionUsageLabel, sessionUsageLines, type SessionUsageEntry } from "../client/session-usage";
 import { sessionEntry } from "./session-fixtures";
 
 const configured: SessionUsageEntry = { provider: "codex", model: "gpt-6.1-sol" };
@@ -48,25 +48,63 @@ describe("native model presentation", () => {
   });
 });
 
-describe("reported tokens, without invented consumed totals", () => {
-  it("keeps input/output separate and never adds overlapping cache input", () => {
-    expect(usagePresentation(report, "en").label).toBe("Report: 12.4K in · 320 out");
+describe("latest report, without invented session totals", () => {
+  const routed = (provider: string, lastUsage: NonNullable<SessionUsageEntry["telemetry"]>["lastUsage"]): SessionUsageEntry =>
+    ({ provider, model: null, telemetry: { runtimeInfo: { sessionId: null, provider }, lastUsage } });
+
+  it("labels a days-long Claude turn report as the last report and counts its separate cache reads", () => {
+    // Synthetic copy of an observed aliased Claude route: 4 uncached input tokens, ~200K cache reads.
+    const claude = routed("claude-team-route", { inputTokens: 4, cachedInputTokens: 200_611, outputTokens: 429, contextWindowUsedTokens: 101_500 });
+    expect(latestReport(claude)).toEqual({ input: 200_615, addedCacheReads: 200_611, lowerBound: true, output: 429 });
+    expect(usagePresentation(claude, "en").label).toBe("Last report ≥200.6K ↓ · 429 ↑");
+    expect(usagePresentation(claude, "en").spoken).toBe("Last usage report, not a session total. Input tokens: at least 200,615, including 200,611 cache reads. Output tokens: 429.");
+  });
+
+  it("never adds cache reads that Codex input already includes", () => {
+    expect(usagePresentation(report, "en").label).toBe("Last report 12.4K ↓ · 320 ↑");
+    expect(latestReport(report).addedCacheReads).toBeNull();
     expect(lines(report)["Reported input tokens"]).toBe("12,400");
     expect(lines(report)["Reported cache-read tokens"]).toContain("10,000");
     expect(lines(report)["Report source and scope"]).toContain("included in input");
   });
 
+  it("keeps an unidentified route's ambiguous cache count out of input and marks the lower bound", () => {
+    const aliased = routed("codex-team-route", { inputTokens: 276_814, cachedInputTokens: 275_072, outputTokens: 19 });
+    expect(latestReport(aliased)).toEqual({ input: 276_814, addedCacheReads: null, lowerBound: true, output: 19 });
+    expect(usagePresentation(aliased, "en").label).toBe("Last report ≥276.8K ↓ · 19 ↑");
+  });
+
+  it.each([
+    ["claude", { inputTokens: 3_000, cachedInputTokens: 2_000, outputTokens: 5 }, 5_000],
+    ["opencode", { inputTokens: 100, cachedInputTokens: 50, outputTokens: 7 }, 150],
+    ["claude", { inputTokens: 3_000, outputTokens: 5 }, 3_000],
+    ["claude", { inputTokens: 3_000, cachedInputTokens: -1, outputTokens: 5 }, 3_000],
+  ])("follows %s cache semantics once", (provider, lastUsage, input) => {
+    expect(latestReport(routed(provider, lastUsage))).toMatchObject({ input, lowerBound: true, output: lastUsage.outputTokens });
+  });
+
+  it("replaces rather than accumulates repeated, streamed or lower reports", () => {
+    const turn = routed("claude", { inputTokens: 4, cachedInputTokens: 100_000, outputTokens: 16 });
+    const first = usagePresentation(turn, "en");
+    expect(usagePresentation({ ...turn }, "en")).toEqual(first);
+    // A Claude streaming update carries context size only: unknown, not zero and not the previous turn.
+    expect(usagePresentation(routed("claude", { contextWindowUsedTokens: 100_020 })).label).toBe("—");
+    expect(usagePresentation(routed("claude", { inputTokens: 2, cachedInputTokens: 10, outputTokens: 1 }), "en").label).toBe("Last report ≥12 ↓ · 1 ↑");
+  });
+
   it("distinguishes explicit zero from missing or context-only usage", () => {
-    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { inputTokens: 0, outputTokens: 0 } } }).label).toBe("Report: 0 in · 0 out");
-    expect(usagePresentation(configured).label).toBe("Usage not reported");
-    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { contextWindowUsedTokens: 123_456 } } }).label).toBe("Usage not reported");
-    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { outputTokens: 0 } } }).label).toBe("Report: — in · 0 out");
+    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { inputTokens: 0, outputTokens: 0 } } }).label).toBe("Last report 0 ↓ · 0 ↑");
+    expect(usagePresentation(configured).label).toBe("—");
+    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { contextWindowUsedTokens: 123_456 } } }).label).toBe("—");
+    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { outputTokens: 0 } } }).label).toBe("Last report — ↓ · 0 ↑");
+    expect(usagePresentation({ ...configured, telemetry: { lastUsage: { cachedInputTokens: 9, outputTokens: 0 } } }).spoken).toContain("Input tokens: Not reported.");
   });
 
   it.each([-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects invalid counters %s", (inputTokens) => {
     const entry = { ...configured, telemetry: { lastUsage: { inputTokens, outputTokens: 2 } } };
     expect(validTokenCount(inputTokens)).toBe(false);
-    expect(usagePresentation(entry).label).toBe("Report: — in · 2 out");
+    expect(usagePresentation(entry).label).toBe("Last report — ↓ · 2 ↑");
+    expect(usagePresentation(entry).spoken).toContain("Input tokens: Invalid report (not shown).");
     expect(lines(entry)["Reported input tokens"]).toBe("Invalid report (not shown)");
   });
 

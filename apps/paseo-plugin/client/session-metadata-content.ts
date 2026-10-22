@@ -1,4 +1,4 @@
-import { exactTokens, modelPresentation, usageScope, validTokenCount, type SessionUsageEntry } from "./session-usage";
+import { exactTokens, latestReport, modelPresentation, usageScope, validTokenCount, type SessionUsageEntry } from "./session-usage";
 
 export type DetailValue = { readonly label: string; readonly value: string };
 export type DetailSection = { readonly title: string; readonly values: readonly DetailValue[] };
@@ -16,13 +16,16 @@ export function modelSourceHelp(entry: SessionUsageEntry): string {
 /** Explain applicable counters and missing/invalid fields without a repeated symbol legend. */
 export function reportedUsageHelp(entry: SessionUsageEntry): string {
   const usage = entry.telemetry?.lastUsage;
-  const input = validTokenCount(usage?.inputTokens);
-  const output = validTokenCount(usage?.outputTokens);
-  if (input && output) return "Reported input and output counters; no session total or report time is supplied.";
+  const report = latestReport(entry);
   const unavailable = (value: unknown) => value == null ? "not reported" : "invalid";
-  if (input) return `Output count ${unavailable(usage?.outputTokens)}; input is a reported counter, not a session total.`;
-  if (output) return `Input count ${unavailable(usage?.inputTokens)}; output is a reported counter, not a session total.`;
-  return `Input count ${unavailable(usage?.inputTokens)}; output count ${unavailable(usage?.outputTokens)}.`;
+  if (report.input === null && report.output === null) return `Input count ${unavailable(usage?.inputTokens)}; output count ${unavailable(usage?.outputTokens)}.`;
+  return [
+    "Last provider report, not a session total; Paseo supplies no session total or report time.",
+    report.addedCacheReads === null ? null : "Input includes cache reads the provider reports separately.",
+    report.lowerBound ? "≥ marks a lower bound: cache writes or cache inclusion are not reported." : null,
+    report.input === null ? `Input count ${unavailable(usage?.inputTokens)}.` : null,
+    report.output === null ? `Output count ${unavailable(usage?.outputTokens)}.` : null,
+  ].filter(Boolean).join(" ");
 }
 
 /** Exact facts grouped for reading; no source selection, accumulation or freshness inference. */
@@ -45,18 +48,21 @@ export function sessionMetadataSections(entry: SessionUsageEntry, stale = false,
     if (effort) modelValues.push({ label, value: effort });
   }
   const usage = native?.lastUsage;
+  const report = latestReport(entry);
   const values: DetailValue[] = [
     { label: "Input tokens", value: exactTokens(usage?.inputTokens, locale) },
     { label: "Output tokens", value: exactTokens(usage?.outputTokens, locale) },
     { label: "Cache-read tokens", value: exactTokens(usage?.cachedInputTokens, locale) },
   ];
+  if (report.addedCacheReads !== null) values.push({ label: "Input with cache reads", value: `${exactTokens(report.input, locale)}${report.lowerBound ? " or more" : ""}` });
   if ([usage?.inputTokens, usage?.outputTokens, usage?.cachedInputTokens].some(validTokenCount)) values.push(
-    { label: "Scope", value: "Reported counters; session total unavailable" },
+    { label: "Scope", value: "Latest provider report; each report replaces it" },
+    { label: "Session total", value: "Unknown; Paseo supplies only the latest report" },
     { label: "Report time", value: "Unknown" },
     { label: "Model attribution", value: "Unknown" },
   );
   if (stale) values.push({ label: "Inventory", value: "Last known fields; host is stale or offline" });
-  return [{ title: "Model", values: modelValues }, { title: "Reported usage", values }];
+  return [{ title: "Model", values: modelValues }, { title: "Last usage report", values }];
 }
 
 /** Optional explanations apply to this snapshot, rather than every provider and every row. */
@@ -68,6 +74,6 @@ export function sessionReportNotes(entry: SessionUsageEntry): readonly string[] 
   return [
     usageScope(entry),
     "Session Updated time is not the usage observation time. These counters cannot be attributed to the displayed model, including after model or provider switches.",
-    "Each report replaces the snapshot. Counts can decrease or reset; no history is reconstructed. Cache reads are never added to the row's input/output counts.",
+    "Each report replaces the snapshot, so this is not a session total. Counts can decrease or reset; no history is reconstructed or summed. Cache reads are added to input only where the report keeps them separate.",
   ];
 }

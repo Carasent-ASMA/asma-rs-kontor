@@ -28,12 +28,20 @@ describe("contextual metadata help", () => {
     expect(reportedUsageHelp(configured)).not.toContain("session total");
   });
 
+  it("names the last-report scope, separate cache reads and the lower bound in the counter help", () => {
+    const claude = { provider: "claude-team-route", model: null, telemetry: { lastUsage: { inputTokens: 4, cachedInputTokens: 200_611, outputTokens: 16 } } };
+    expect(reportedUsageHelp(claude)).toBe("Last provider report, not a session total; Paseo supplies no session total or report time. Input includes cache reads the provider reports separately. ≥ marks a lower bound: cache writes or cache inclusion are not reported.");
+    expect(reportedUsageHelp({ ...configured, telemetry: { lastUsage: { inputTokens: 12, cachedInputTokens: 10, outputTokens: 4 } } })).toBe("Last provider report, not a session total; Paseo supplies no session total or report time.");
+    expect(values(claude)["Input with cache reads"]).toBe("200,615 or more");
+    expect(values({ ...configured, telemetry: { lastUsage: { inputTokens: 12, cachedInputTokens: 10 } } })["Input with cache reads"]).toBeUndefined();
+  });
+
   it("keeps exact custom IDs/counts and uncertainty among visible facts", () => {
     const model = `custom/${"very-long-version-".repeat(12)}`;
     const entry = { provider: "private-route", model, telemetry: { runtimeInfo: { sessionId: null, provider: "claude", model }, lastUsage: { inputTokens: 1_234_567, outputTokens: 0, cachedInputTokens: 123 } } };
-    expect(sessionMetadataSections(entry).map(section => section.title)).toEqual(["Model", "Reported usage"]);
+    expect(sessionMetadataSections(entry).map(section => section.title)).toEqual(["Model", "Last usage report"]);
     expect(values(entry, true)).toMatchObject({ "Model ID": model, "Input tokens": "1,234,567", "Output tokens": "0", "Cache-read tokens": "123", "Report time": "Unknown", "Model attribution": "Unknown", "Active execution": "Not confirmed", "Runtime provider": "claude" });
-    expect(values(entry)["Scope"]).toContain("session total unavailable");
+    expect(values(entry)).toMatchObject({ "Scope": "Latest provider report; each report replaces it", "Session total": "Unknown; Paseo supplies only the latest report", "Input with cache reads": "1,234,690 or more" });
     expect(values(entry, true)["Inventory"]).toContain("Last known");
     expect(values(entry)["Configured model"]).toBeUndefined();
   });
@@ -50,7 +58,8 @@ describe("contextual metadata help", () => {
   it("row announcements contain the session facts without repeated static instructions", () => {
     const label = sessionUsageLabel({ ...configured, telemetry: { lastUsage: { outputTokens: 0 } } });
     expect(label).toContain("gpt-6.1-sol");
-    expect(label).toContain("Reported output tokens: 0");
+    expect(label).toContain("Output tokens: 0.");
+    expect(label).toContain("not a session total");
     expect(label).not.toMatch(/Details|sliders|attribution|Report age/);
   });
 });

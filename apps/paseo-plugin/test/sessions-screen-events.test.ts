@@ -2083,8 +2083,8 @@ describe("SessionsScreen mobile filter page", () => {
       .map((child) => child.type === SessionStateMarker ? "state" : child.type === SessionUsage ? "usage" : child.props.testID)).toEqual(["state", "sessions-row-age", "usage"]);
     expect(walk(content)).toContain(age);
     expect(walk(content).some((element) => element.type === SessionUsage && (element.props.entry as { id: string }).id === "0123456789abcdef")).toBe(true);
-    expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
-    expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
+    expect(leaf.props.accessibilityLabel).toContain("Last usage report, not a session total. Input tokens: 100.");
+    expect(leaf.props.accessibilityLabel).toContain("Output tokens: 20.");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
     expect(walk(leaf).some((element) => (element as { type?: unknown }).type === SessionStateMarker && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.

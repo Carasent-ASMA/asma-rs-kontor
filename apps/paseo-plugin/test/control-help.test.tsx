@@ -176,7 +176,7 @@ describe("compact metadata", () => {
   it("preserves explicit zeros, missing counters, and custom IDs without pretending a selection ran", () => {
     const missing = compactUsage({ provider: "opaque", model: null }); expect(missing.model).toBe("—"); expect(missing.modelIcon).toBe("CircleHelp"); expect(missing.tokens).toBe("—");
     const selected = compactUsage({ provider: "codex", model: "gpt-6.1-sol", telemetry: { lastUsage: { inputTokens: 0 } } });
-    expect(selected.model).toBe("sol"); expect(selected.modelIcon).toBe("SlidersHorizontal"); expect(selected.tokens).toBe("0 ↓ · — ↑"); expect(selected.usageHelp).toContain("Output count not reported");
+    expect(selected.model).toBe("sol"); expect(selected.modelIcon).toBe("SlidersHorizontal"); expect(selected.tokens).toBe("Last report 0 ↓ · — ↑"); expect(selected.usageHelp).toContain("Output count not reported");
     expect(compactUsage({ provider: "custom", model: "my-custom-id" }).model).toBe("my-custom-id");
   });
   it("distinguishes the last runtime report and keeps the stale-switch and attribution caveats", () => {
