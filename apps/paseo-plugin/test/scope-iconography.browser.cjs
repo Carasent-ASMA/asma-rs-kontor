@@ -71,7 +71,7 @@ async function checkContextual(page, touch, theme, name, filter) {
     await page.keyboard.press('Tab');
     await kontor().scrollIntoViewIfNeeded();
     await kontor().focus();
-    await visibleTooltip(page, 'retained surrounding context');
+    await visibleTooltip(page, 'Running: 1 of 2 sessions. Idle: 1 of 2 sessions. The denominator counts every descendant session in the retained surrounding context');
     await snap(page, `${name}-${filter}-context-help`);
     await page.keyboard.press('Escape');
   }
@@ -182,4 +182,5 @@ async function check(width, theme) {
   finally { await browser.close(); fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n'); }
   console.log(JSON.stringify(report.cases.map(({ name, status, error }) => ({ name, status, error })), null, 2));
   if (report.cases.some(entry => entry.status === 'FAIL')) process.exitCode = 1;
+  else assert.equal(report.tooltipChecks.length, 10, 'all ten intended tooltips have strict visibility proof');
 })().catch(error => { console.error(error); process.exitCode = 1; });
