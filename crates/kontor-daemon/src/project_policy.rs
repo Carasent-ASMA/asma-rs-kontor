@@ -75,6 +75,7 @@ pub(crate) fn parse(text: &str) -> Result<Option<PublicationPolicy>, &'static st
         .get("forge")
         .and_then(|forge| forge.get("base_branch"))
         .and_then(Value::as_str)
+        .filter(|branch| kontor_core::branch::valid_base_branch(branch))
         .and_then(|branch| ExternalName::parse(branch).ok())
         .ok_or("invalid project.forge.base_branch")?;
     Ok(Some(PublicationPolicy {
@@ -83,6 +84,7 @@ pub(crate) fn parse(text: &str) -> Result<Option<PublicationPolicy>, &'static st
         root_repository,
         module_repositories,
         base_branch,
+        branch_rules: crate::project_branch::parse(text)?,
     }))
 }
 

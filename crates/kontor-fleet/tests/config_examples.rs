@@ -617,6 +617,7 @@ fn publication_is_an_optional_explicit_project_policy_in_the_same_schema() {
         .unwrap(),
         base_branch: ExternalName::parse(project["forge"]["base_branch"].as_str().unwrap())
             .unwrap(),
+        branch_rules: None,
     };
     policy.validate().unwrap();
     assert!(
