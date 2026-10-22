@@ -16,9 +16,10 @@ const toolResult = (document: object, isError = false) => ({ content: [{ type: "
 
 /**
  * A disposable stand-in for kontor-mcp. It logs each start (arguments and environment names), then
- * answers the handshake and `kontor_realm_get` with `answer`, leaves at once ("exit") or never answers ("silent").
+ * answers the handshake and `kontor_realm_get` with `answer` (then leaves, if asked), leaves at once ("exit") or
+ * never answers ("silent").
  */
-async function fakeMcp(answer: object | "exit" | "silent") {
+async function fakeMcp(answer: object | "exit" | "silent", leaveAfterAnswer = false) {
   const directory = await mkdtemp(join(tmpdir(), "kontor-mcp-fake-"));
   temporary.push(directory);
   const command = join(directory, "kontor-mcp");
@@ -39,6 +40,7 @@ process.stdin.setEncoding("utf8").on("data", (chunk) => {
       ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake", version: "0" } }
       : message.params.name === "kontor_realm_get" ? answer : null;
     process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");
+    if (${leaveAfterAnswer} && message.method === "tools/call") process.exit(0);
   }
 });
 `);
@@ -68,6 +70,11 @@ describe("kontord status through the observer kontor-mcp", () => {
     expect(start.env).toEqual(expect.arrayContaining(["PATH", "HOME"]));
     await probeKontorStatus(configFor(fake.command, { KONTOR_PLUGIN_SERVE_PROFILE: "observer-narrow" }));
     expect((await fake.starts())[1]?.args).toEqual(["--state-root", STATE_ROOT, "--credential-tier", "observer", "--serve-profile", "observer-narrow"]);
+  });
+
+  it("reads an answer written just before kontor-mcp leaves", async () => {
+    const fake = await fakeMcp(toolResult({ tool: "kontor_realm_get", status: 200, body: { realm_id: "realm-1" } }), true);
+    expect(await probeKontorStatus(configFor(fake.command))).toEqual({ status: "ready", ...none, realmId: "realm-1" });
   });
 
   it("tells a realm nobody answers for from one that refused the observer read", async () => {

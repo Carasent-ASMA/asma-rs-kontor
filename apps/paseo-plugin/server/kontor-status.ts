@@ -65,7 +65,8 @@ export function probeKontorStatus(config: KontorPluginConfig, budgetMs = STATUS_
     const send = (message: object) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
     child.on("error", (error: NodeJS.ErrnoException) => finish(outcome(error.code === "ENOENT" ? "mcp-missing" : "unknown")));
     // kontor-mcp resolves the realm before it serves, so leaving before the handshake means no realm here.
-    child.on("exit", () => finish(outcome(served ? "unknown" : "no-realm")));
+    // "close" comes after its output is drained, so an answer it wrote before leaving is still read.
+    child.on("close", () => finish(outcome(served ? "unknown" : "no-realm")));
     // A child that leaves early closes the pipe; its exit is what reports it.
     child.stdin.on("error", () => {});
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
