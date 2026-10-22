@@ -978,7 +978,8 @@ async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
         .await;
     assert_eq!(epic_read.status, 200, "{}", epic_read.body);
     prepare_fake_provider_headroom(world, &project.to_string()).await;
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &serde_json::json!({
@@ -4216,6 +4217,12 @@ async fn a_session_whose_family_is_not_configured_answers_unavailable() {
 #[tokio::test]
 async fn teams_catalog_drafts_and_immutable_revisions_share_one_realm_projection() {
     let world = World::open().await;
+    activate_through_the_registry(
+        &world,
+        include_str!("../../../tests/fixtures/config/consultation-permissions.yml"),
+        "catalog-team-fixture",
+    )
+    .await;
     let catalog = Call::get("/v1/catalog")
         .signed_as(&world, "observer")
         .send(&world)
@@ -36207,6 +36214,20 @@ async fn an_admin_fills_an_owed_slot_on_a_named_route_and_an_operator_cannot() {
         "a refused route launches nothing"
     );
 
+    let unpinned = Call::post(url.clone(), &body)
+        .signed_as(&fixture.world, "admin")
+        .with_key("fill-named-unpinned")
+        .send(&fixture.world)
+        .await;
+    assert_eq!(unpinned.status, 400, "{}", unpinned.body);
+    assert_eq!(unpinned.json()["subject"], "model_catalog");
+    assert_eq!(fixture.world.fake.calls(), calls);
+    activate_through_the_registry(
+        &fixture.world,
+        &delivery_fixture_catalog("cursor", body["model_route"]["provider"].as_str().unwrap()),
+        "fill-selected-catalog",
+    )
+    .await;
     let filled = Call::post(url, &body)
         .signed_as(&fixture.world, "admin")
         .with_key("fill-named-route-admin")
@@ -37115,24 +37136,61 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     format!(
         "schema_version: 1\n\
          domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
-         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai }}\n\
-         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n  codex-sol:\n    - [sol]\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh] }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai, efforts: [xhigh] }}\n\
+         chains:\n  claude-then-codex:\n    - [opus@xhigh]\n    - [sol@xhigh]\n  claude-then-grok:\n    - [opus@xhigh]\n    - [grok@xhigh]\n  cursor-grok:\n    - [grok@xhigh]\n  codex-sol:\n    - [sol@xhigh]\n\
          bindings:\n{bindings}"
     )
+}
+
+/// Explicit model capabilities for native fixtures; no production bootstrap policy.
+fn native_fixture_catalog() -> String {
+    let mut policy: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&committee_fleet_yaml(&[])).unwrap();
+    policy["domains"]["codex"]["accounts"]
+        .as_sequence_mut()
+        .unwrap()
+        .push("codex".into());
+    policy["bindings"] = serde_yaml_ng::Value::Mapping(Default::default());
+    let yaml = serde_yaml_ng::to_string(&policy).unwrap();
+    assert!(
+        kontor_fleet::FleetSnapshot::parse_policy(&yaml).is_ok(),
+        "{yaml}"
+    );
+    yaml
+}
+
+fn delivery_fixture_catalog(family: &str, account: &str) -> String {
+    serde_yaml_ng::to_string(&serde_json::json!({
+        "schema_version":2,
+        "domains":{"delivery":{"provider":family,"accounts":[account]}},
+        "models":{"delivery":{"domain":"delivery","id":"gpt-5.6-sol","vendor":"openai","efforts":["xhigh"]}},
+        "chains":{},"bindings":{}
+    })).unwrap()
 }
 
 /// Explicit fixture risk acceptance, delivered through existing activation writers.
 fn permitted_committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     format!(
-        "{}\nconsultation_permissions:\n  - {{account: cursor, model: grok, effort: null, mode: plan}}\n",
-        committee_fleet_yaml(bindings).replacen("schema_version: 1", "schema_version: 2", 1)
+        "{}\nconsultation_permissions:\n  - {{account: cursor, model: grok, effort: xhigh, mode: plan}}\n",
+        committee_fleet_yaml(bindings)
+            .replacen("schema_version: 1", "schema_version: 2", 1)
+            .replace("vendor: xai,", "vendor: xai, permission_eligible: true,")
     )
 }
 
 fn permitted_family_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     format!(
         "{}\nconsultation_permissions:\n  - {{account: opencode-a, model: glm, effort: null, mode: plan}}\n  - {{account: opencode-b, model: deepseek, effort: null, mode: plan}}\n",
-        committee_family_fleet_yaml(bindings).replacen("schema_version: 1", "schema_version: 2", 1)
+        committee_family_fleet_yaml(bindings)
+            .replacen("schema_version: 1", "schema_version: 2", 1)
+            .replace(
+                "vendor: zhipu }",
+                "vendor: zhipu, permission_eligible: true }"
+            )
+            .replace(
+                "vendor: deepseek }",
+                "vendor: deepseek, permission_eligible: true }"
+            )
     )
 }
 
@@ -37163,8 +37221,8 @@ fn committee_family_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     format!(
         "schema_version: 1\n\
          domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  opencode-a: {{ provider: opencode, accounts: [opencode-a] }}\n  opencode-b: {{ provider: opencode, accounts: [opencode-b] }}\n\
-         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  glm: {{ domain: opencode-a, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu }}\n  deepseek: {{ domain: opencode-b, id: deepseek/deepseek-flash, vendor: deepseek }}\n\
-         chains:\n  opencode-a-then-codex:\n    - [glm]\n    - [sol]\n  opencode-b-then-claude:\n    - [deepseek]\n    - [opus]\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh] }}\n  glm: {{ domain: opencode-a, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu }}\n  deepseek: {{ domain: opencode-b, id: deepseek/deepseek-flash, vendor: deepseek }}\n\
+         chains:\n  opencode-a-then-codex:\n    - [glm]\n    - [sol@xhigh]\n  opencode-b-then-claude:\n    - [deepseek]\n    - [opus@xhigh]\n\
          bindings:\n{bindings}"
     )
 }
@@ -38120,7 +38178,7 @@ fn leadership_policy(lsa: &str, lsa_chain: &str, tpm: &str, tpm_chain: &str) -> 
     format!(
         "schema_version: 2\n\
          domains:\n  codex: {{ provider: codex, accounts: [codex] }}\n\
-         models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }}\n\
+         models:\n  terra: {{ domain: codex, id: gpt-5.6-terra, vendor: openai, efforts: [xhigh] }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }}\n\
          chains:\n  lsa-chain:\n    - [{lsa_chain}]\n  tpm-chain:\n    - [{tpm_chain}]\n\
          bindings:\n  {lsa}: lsa-chain\n  {tpm}: tpm-chain\n"
     )
@@ -39772,7 +39830,8 @@ async fn a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation() 
     )
     .await;
     let world = &realm.world;
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Activated seat recovery",
@@ -39866,7 +39925,8 @@ async fn a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_acti
     )
     .await;
     let world = &realm.world;
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let reviewer_a = RoleSlotId::parse("reviewer-a").expect("a role slot");
     world.fake.refusing_launch_of(&reviewer_a);
     let invoked = invoke_fleet_committee(
@@ -39970,7 +40030,8 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
     // fixture fleet binds only the judge (ASMA-8280). The reviewer-a binding
     // arrives only for the recovery, which is what makes the successor route
     // evidence of the chain the recovery consulted.
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Fleet seat recovery provenance",
@@ -40113,6 +40174,13 @@ async fn without_a_compliant_fleet_the_formal_committee_is_refused_before_any_ef
         .clone();
     let calls_before = world.fake.calls().len();
 
+    std::fs::remove_file(
+        world
+            .directory
+            .path()
+            .join(kontor_fleet_activation::FLEET_ACTIVATION_FILE),
+    )
+    .unwrap();
     let unlisted =
         invoke_fleet_committee(&realm, "Pinned template allocation", "lf04-no-fleet-invoke").await;
     assert_eq!(unlisted.status, 409, "{}", unlisted.body);
@@ -40123,10 +40191,12 @@ async fn without_a_compliant_fleet_the_formal_committee_is_refused_before_any_ef
     );
 
     // Lists the template's routes and their makers; binds only the Advisor.
-    write_fleet(
+    activate_through_the_registry(
         world,
         &committee_fleet_yaml(&[(&advisor_fleet_key(), "codex-sol")]),
-    );
+        "listing-policy",
+    )
+    .await;
     let capped = invoke_fleet_committee(
         &realm,
         "Pinned template allocation",
@@ -40178,7 +40248,8 @@ async fn without_a_compliant_fleet_the_formal_committee_is_refused_before_any_ef
         "the refusal changed the immutable v1 revision"
     );
 
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let admitted = invoke_fleet_committee(
         &realm,
         "Pinned template allocation",
@@ -41751,6 +41822,12 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
             "effort": "xhigh"
         }
     });
+    activate_through_the_registry(
+        world,
+        &delivery_fixture_catalog("codex", body["model_route"]["provider"].as_str().unwrap()),
+        "reroute-selected-catalog",
+    )
+    .await;
     let native_before = world.fake.calls().len();
     let rows_before = world.daemon.state().with_store(|store| {
         store
@@ -42212,6 +42289,12 @@ async fn an_admin_reroutes_a_never_bound_seat_whose_handoff_recorded_no_target()
         .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
     let task_revision = alpha_revision(world, project, epic).await;
     let body = reroute_request(abandoned_revision, task_revision);
+    activate_through_the_registry(
+        world,
+        &delivery_fixture_catalog("codex", body["model_route"]["provider"].as_str().unwrap()),
+        "targetless-selected-catalog",
+    )
+    .await;
     prepare_fake_provider_headroom(world, project).await;
     let replaced = Call::post(
         format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
@@ -45512,6 +45595,8 @@ async fn compose_realm_options(
         harness::DomainSelectionFixture::bind(&world, project_id_of(&project));
     }
     if native {
+        activate_through_the_registry(&world, &native_fixture_catalog(), "native-fixture-catalog")
+            .await;
         // Selected packs offer candidates; this historical test preset is explicitly installed.
         let template = kontor_profiles::seeds::bundled_consultation_presets()
             .unwrap()
@@ -55265,10 +55350,10 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     // Codex Sol, both at recovery rung 1, while Claude is exhausted.
     let recovery_fleet = "schema_version: 1\n\
          domains:\n  claude: { provider: claude, accounts: [claude-work, claude-personal] }\n  codex: { provider: codex, accounts: [codex-work, codex-personal] }\n  opencode: { provider: opencode, accounts: [opencode] }\n\
-         models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek }\n\
+         models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek, efforts: [max] }\n\
          chains: {}\n\
          bindings: {}\n";
-    write_fleet(world, recovery_fleet);
+    activate_through_the_registry(world, recovery_fleet, "initial-recovery-catalog").await;
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
         .send(world)
@@ -55371,10 +55456,11 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     permitted["chains"]["pinned-recovery"] =
         serde_yaml_ng::to_value([vec!["deepseek@max"], vec!["opus@xhigh"]]).unwrap();
     permitted["bindings"][committee_fleet_key("reviewer-a")] = "pinned-recovery".into();
+    permitted["models"]["deepseek"]["permission_eligible"] = true.into();
     permitted["consultation_permissions"] =
         serde_yaml_ng::from_str("- {account: opencode, model: deepseek, effort: max, mode: plan}")
             .unwrap();
-    activate_through_the_registry(
+    let permitted_hash = activate_through_the_registry(
         world,
         &serde_yaml_ng::to_string(&permitted).unwrap(),
         "initial-exact-permission",
@@ -55985,6 +56071,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
                 recovery_profile: CanonicalDocument::from_value(&serde_json::json!({
                     "schema_version": 1,
                     "ordered_routes": reroute_body["recovery_profile"],
+                    "consultation_permission_policy": {"source":"fleet_configuration", "policy_hash":permitted_hash},
                 }))
                 .expect("the recovery profile canonicalizes"),
                 request_intent_hash: reroute_intent.hash().clone(),
@@ -56528,16 +56615,11 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     prepare_fake_provider_headroom(world, project).await;
     let compliant_fleet =
         permitted_committee_fleet_yaml(&[(&committee_fleet_key("judge"), "judge-recovery")])
+            .replace("models:\n", "models:\n  fable: {domain: claude, id: claude-fable-5, vendor: anthropic, efforts: [xhigh]}\n")
             .replace(
                 "bindings:\n",
-                "  judge-recovery:\n    - [grok]\n    - [sol@xhigh]\n\nbindings:\n",
+                "  judge-recovery:\n    - [grok@xhigh]\n    - [sol@xhigh]\n\nbindings:\n",
             );
-    let compliant_fleet = compliant_fleet
-        .replace(
-            "id: gpt-5.6-sol, vendor: openai",
-            "id: gpt-5.6-sol, vendor: openai, efforts: [xhigh]",
-        )
-        .replace("[sol]", "[sol@xhigh]");
     assert!(kontor_fleet::FleetSnapshot::parse_policy(&compliant_fleet).is_ok());
     activate_through_the_registry(world, &compliant_fleet, "seeded-committee-permission").await;
     let mut legacy_template = kontor_profiles::seeds::bundled_consultation_presets()
@@ -60053,175 +60135,118 @@ async fn an_account_profile_freezes_its_declared_provider_aliases_at_ensure() {
     assert_eq!(blank.status, 400, "{}", blank.body);
 }
 
-/// A route can only be described and validated against an account if the alias
-/// is a provider the catalog advertises.
+/// The catalog describes exact declared account/native-model pairs, never a
+/// compiled family's account aliases, friendly labels or invented defaults.
 #[tokio::test]
-async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
+async fn the_model_catalog_advertises_every_route_in_the_selected_fleet() {
     let world = World::open().await;
+    let yaml = include_str!("../../../tests/fixtures/config/consultation-permissions.yml");
+    let hash = activate_through_the_registry(&world, yaml, "catalog-selected").await;
     let catalog = Call::get("/v1/catalog")
         .signed_as(&world, "observer")
         .send(&world)
         .await;
     assert_eq!(catalog.status, 200, "{}", catalog.body);
     let body = catalog.json();
-    let providers: Vec<&str> = body["providers"]
-        .as_array()
-        .expect("providers")
-        .iter()
-        .map(|entry| entry["id"].as_str().expect("an id"))
-        .collect();
-    for alias in ["codex-work", "codex-personal"] {
-        assert!(providers.contains(&alias), "{}", catalog.body);
-        assert!(
-            body["models"]
-                .as_array()
-                .expect("models")
+    let providers = body["providers"].as_array().unwrap();
+    let models = body["models"].as_array().unwrap();
+    assert_eq!(providers.len(), 4);
+    assert_eq!(models.len(), 6);
+    for (account, family, ids) in [
+        ("cursor", "cursor", vec!["review-model"]),
+        ("cursor-secondary", "cursor", vec!["review-model"]),
+        (
+            "opencode",
+            "opencode",
+            vec!["example/review", "example/default"],
+        ),
+        (
+            "opencode-secondary",
+            "opencode",
+            vec!["example/review", "example/default"],
+        ),
+    ] {
+        assert_eq!(providers.iter().filter(|p| p["id"] == account).count(), 1);
+        for id in ids {
+            let rows: Vec<_> = models
                 .iter()
-                .any(|model| model["provider"] == alias && model["id"] == "gpt-5.6-sol"),
-            "the alias serves the same routes as its family: {}",
-            catalog.body
-        );
+                .filter(|m| m["provider"] == account && m["id"] == id)
+                .collect();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["providerFamily"], family);
+            assert_eq!(rows[0]["policyHash"], hash);
+            assert_eq!(
+                rows[0]["isDefault"], false,
+                "the policy declares no default"
+            );
+            assert!(
+                rows[0]["contextWindow"]["value"].is_null(),
+                "no invented context limit"
+            );
+        }
     }
-    for alias in ["claude-work", "claude-personal"] {
-        assert!(providers.contains(&alias), "{}", catalog.body);
-        assert!(
-            body["models"]
-                .as_array()
-                .expect("models")
-                .iter()
-                .any(|model| model["provider"] == alias
-                    && model["id"] == "claude-opus-5"
-                    && model["isDefault"] == true),
-            "the Claude account alias advertises its governed default: {}",
-            catalog.body
-        );
-        assert!(
-            body["models"]
-                .as_array()
-                .expect("models")
-                .iter()
-                .any(|model| model["provider"] == alias && model["id"] == "claude-fable-5-1"),
-            "the Claude account alias advertises Fable 5.1: {}",
-            catalog.body
-        );
-    }
-    assert!(
-        body["models"]
-            .as_array()
-            .expect("models")
-            .iter()
-            .any(|model| model["provider"] == "claude"
-                && model["id"] == "claude-fable-5-1"
-                && model["label"] == "Claude Fable 5.1"),
-        "the Claude catalog advertises Fable 5.1: {}",
-        catalog.body
-    );
-    assert!(
-        !body["models"]
-            .as_array()
-            .expect("models")
-            .iter()
-            .any(|model| model["id"] == "claude-fable-5"),
-        "the previous Fable release is removed from active routing: {}",
-        catalog.body
-    );
-    assert!(providers.contains(&"opencode"), "{}", catalog.body);
-    assert!(
-        body["models"]
-            .as_array()
-            .expect("models")
-            .iter()
-            .any(
-                |model| model["provider"] == "opencode" && model["id"] == "deepseek/deepseek-flash"
-            ),
-        "the catalog describes the route used by OpenCode seats: {}",
-        catalog.body
-    );
+    assert!(!providers.iter().any(|p| p["id"] == "cursor-guessed"));
+    assert!(!models.iter().any(|m| m["id"] == "auto-smart"));
 }
 
-/// ASMA-8237: advertise the exact verified provider-native routes. In particular,
-/// "highest reasoning" must not become an invented Nemotron `max` option.
+/// Efforts and capabilities come from exact immutable fleet bytes. Authoring or
+/// publishing another policy does not replace the selected catalog.
 #[tokio::test]
-async fn the_model_catalog_preserves_watchdog_route_and_effort_boundaries() {
+async fn the_model_catalog_preserves_selected_route_and_effort_boundaries() {
     let world = World::open().await;
+    let absent = Call::get("/v1/catalog")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_ne!(absent.status, 200);
+    assert!(
+        absent.body.contains("fleet_catalog_unpinned"),
+        "{}",
+        absent.body
+    );
+    let yaml = include_str!("../../../tests/fixtures/config/consultation-permissions.yml");
+    let hash = activate_through_the_registry(&world, yaml, "catalog-efforts").await;
+    let altered = yaml.replace("review-model", "next-review-model");
+    write_fleet(&world, &altered);
+    publish_through_the_registry(&world, &altered, "catalog-unactivated").await;
     let catalog = Call::get("/v1/catalog")
         .signed_as(&world, "observer")
         .send(&world)
         .await;
     assert_eq!(catalog.status, 200, "{}", catalog.body);
     let body = catalog.json();
-    let providers = body["providers"].as_array().expect("providers");
-    let models = body["models"].as_array().expect("models");
-    for (provider, id, efforts) in [
-        (
-            "codex",
-            "gpt-5.6-luna",
-            vec!["low", "medium", "high", "xhigh", "max"],
-        ),
-        (
-            "codex-work",
-            "gpt-5.6-luna",
-            vec!["low", "medium", "high", "xhigh", "max"],
-        ),
-        (
-            "codex-personal",
-            "gpt-5.6-luna",
-            vec!["low", "medium", "high", "xhigh", "max"],
-        ),
-        (
-            "opencode",
-            "openrouter/z-ai/glm-5.3-flash",
-            vec!["low", "high", "max"],
-        ),
-        (
-            "cursor",
-            "auto-smart",
-            vec!["low", "medium", "high", "xhigh"],
-        ),
-        (
-            "opencode",
-            "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-            vec!["medium", "high"],
-        ),
+    let models = body["models"].as_array().unwrap();
+    for (account, id, efforts) in [
+        ("cursor-secondary", "review-model", vec!["high", "xhigh"]),
+        ("opencode", "example/review", vec!["max"]),
+        ("opencode-secondary", "example/default", vec![]),
     ] {
-        assert_eq!(providers.iter().filter(|p| p["id"] == provider).count(), 1);
-        let matches: Vec<_> = models
+        let row = models
             .iter()
-            .filter(|m| m["provider"] == provider && m["id"] == id)
-            .collect();
-        assert_eq!(matches.len(), 1, "one exact {provider}/{id} route");
-        assert_eq!(matches[0]["efforts"]["value"], serde_json::json!(efforts));
-        assert_eq!(
-            matches[0]["efforts"]["provenance"]["reviewRef"],
-            "ASMA-8237"
-        );
-        assert!(
-            matches[0]["contextWindow"]["value"].is_null(),
-            "no invented context limit"
-        );
+            .find(|m| m["provider"] == account && m["id"] == id)
+            .unwrap();
+        assert_eq!(row["efforts"]["value"], serde_json::json!(efforts));
+        assert_eq!(row["efforts"]["provenance"]["policyHash"], hash);
+        assert_eq!(row["efforts"]["provenance"]["state"], "configured");
+        assert_eq!(row["permissionEligible"], true);
+        assert_eq!(row["vision"], false);
+        assert_eq!(row["calibrated"], false);
     }
-    for guessed in ["glm-5.3-flash", "nemotron-3-ultra:free", "cursor-auto"] {
-        assert!(
-            !models.iter().any(|m| m["id"] == guessed),
-            "no guessed alias {guessed}"
-        );
-    }
-    for provider in [
-        "codex",
-        "codex-work",
-        "codex-personal",
-        "opencode",
-        "cursor",
-    ] {
-        assert_eq!(
-            models
-                .iter()
-                .filter(|m| m["provider"] == provider && m["isDefault"] == true)
-                .count(),
-            1,
-            "additions preserve one default for {provider}"
-        );
-    }
+    assert!(!models.iter().any(|m| m["id"] == "next-review-model"));
+    let next = activate_through_the_registry(&world, &altered, "catalog-next").await;
+    let catalog = Call::get("/v1/catalog")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_ne!(next, hash);
+    assert!(
+        catalog.json()["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "next-review-model" && m["policyHash"] == next)
+    );
 }
 
 /// A seat launched on an evidenced account loses its provider, and its
@@ -65736,7 +65761,8 @@ async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
         assert_eq!(&stored.definition_hash, document.hash());
         assert_eq!(stored.definition, document.json());
     });
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
 
     let invoke_committee = |topic: &'static str, task: Option<String>, key: &'static str| {
         let caller = caller.clone();
@@ -65981,7 +66007,8 @@ async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_
         assert_eq!(stored.definition, document.json());
     });
     // Match the supported formal-review admission used by the subject fixture.
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     prepare_fake_provider_headroom(world, project).await;
 
     let read_epic_revision = || async {
@@ -66138,7 +66165,8 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
         assert_eq!(stored.definition, document.json());
     });
     // Match the supported formal-review admission used by the subject fixture.
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
 
     for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
         let family_label = match family {
@@ -67016,6 +67044,12 @@ async fn hosted_tpm_seat(root: &str, key: &str) -> (Composed, String, ExternalId
     .await;
     let project = composed.project.clone();
     let epic = composed.epic.clone();
+    activate_through_the_registry(
+        &composed.world,
+        &native_fixture_catalog(),
+        "hosted-fixture-catalog",
+    )
+    .await;
     let control = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
         &serde_json::json!({

@@ -15613,7 +15613,7 @@ fn consultation_permission_policy(provider: &str, rung: &ModelRung) -> kontor_fl
     let document = serde_json::json!({
         "schema_version":2,
         "domains":{"review":{"provider":provider,"accounts":[rung.provider.0]}},
-        "models":{"review":{"domain":"review","id":rung.model.0,"vendor":"example","efforts":efforts}},
+        "models":{"review":{"domain":"review","id":rung.model.0,"vendor":"example","efforts":efforts,"permission_eligible":true}},
         "chains":{"review":[[model]]},"bindings":{},
         "consultation_permissions":[{"account":rung.provider.0,"model":"review","effort":rung.effort.map(|effort| effort.as_str()),"mode":"plan"}],
     });

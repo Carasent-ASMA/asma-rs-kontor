@@ -148,7 +148,12 @@ async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_with
         })
     };
     refresh_committee_fixture_quota(&world, &seed.project).await;
-    write_fleet(&world, &formal_review_fleet_yaml());
+    activate_through_the_registry(
+        &world,
+        &formal_review_fleet_yaml(),
+        "subject-fixture-policy",
+    )
+    .await;
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke(None, "Subject evidence"),
@@ -365,7 +370,8 @@ async fn simulated_formal_committee_provenance_loss_refuses_recovery_and_finding
     let realm = consultation_realm("/tmp/kontor-formal-provenance-loss", &[]).await;
     let world = &realm.world;
     let project = &realm.project;
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Simulated provenance loss",
@@ -614,7 +620,7 @@ async fn formal_committee_recovery_counts_the_deferred_judge_before_attempts_and
         &read,
         "reviewer-a",
         "provider_unavailable",
-        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]),
+        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]),
         "formal-recovery-cap-refused",
     )
     .await;
@@ -710,15 +716,16 @@ async fn formal_committee_pending_recovery_refuses_peer_budget_and_resumes_exact
     let read = committee_readback(world, &realm.project, &run).await;
     let replacement_policy = policy
         .replace(
-            "  codex-sol:\n    - [sol]",
-            "  codex-sol:\n    - [sol]\n    - [opus]",
+            "  codex-sol:\n    - [sol@xhigh]",
+            "  codex-sol:\n    - [sol@xhigh]\n    - [opus@xhigh]",
         )
         .replace(
-            "  cursor-grok:\n    - [grok]",
-            "  cursor-grok:\n    - [grok]\n    - [opus]",
+            "  cursor-grok:\n    - [grok@xhigh]",
+            "  cursor-grok:\n    - [grok@xhigh]\n    - [opus@xhigh]",
         );
     activate_through_the_registry(world, &replacement_policy, "formal-permission-4").await;
-    let route = serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]);
+    let route =
+        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]);
     world
         .fake
         .refusing_launch_of(&RoleSlotId::parse("reviewer-a").unwrap());
@@ -815,17 +822,18 @@ async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() 
         world,
         &policy
             .replace(
-                "  codex-sol:\n    - [sol]",
-                "  codex-sol:\n    - [sol]\n    - [opus]",
+                "  codex-sol:\n    - [sol@xhigh]",
+                "  codex-sol:\n    - [sol@xhigh]\n    - [opus@xhigh]",
             )
             .replace(
-                "  cursor-grok:\n    - [grok]",
-                "  cursor-grok:\n    - [grok]\n    - [opus]",
+                "  cursor-grok:\n    - [grok@xhigh]",
+                "  cursor-grok:\n    - [grok@xhigh]\n    - [opus@xhigh]",
             ),
         "formal-permission-6",
     )
     .await;
-    let route = serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]);
+    let route =
+        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]);
     let (a, b) = tokio::join!(
         formal_recover(
             &realm,
@@ -874,7 +882,8 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
     let realm =
         consultation_realm("/tmp/kontor-formal-judge-reroute", &[("Cursor", "cursor")]).await;
     let world = &realm.world;
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     world
         .fake
         .refusing_launch_of(&RoleSlotId::parse("reviewer-a").unwrap());
@@ -898,10 +907,12 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
     let read = committee_readback(world, &realm.project, &run).await;
     let judge = formal_seat(&read, "judge");
     refresh_committee_fixture_quota(world, &realm.project).await;
-    write_fleet(
+    activate_through_the_registry(
         world,
         &committee_fleet_yaml(&[(&committee_fleet_key("judge"), "claude-then-codex")]),
-    );
+        "judge-reroute-policy",
+    )
+    .await;
     let reroute_body = |route: serde_json::Value| {
         serde_json::json!({
             "expected_revision": read["revision"], "expected_occupancy_generation": judge["occupancy_generation"],
@@ -916,7 +927,9 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
     let before = world.fake.calls();
     let refused = Call::post(
         &endpoint,
-        &reroute_body(serde_json::json!({"provider":"claude-work","model":"claude-opus-5"})),
+        &reroute_body(
+            serde_json::json!({"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}),
+        ),
     )
     .signed_as(world, "admin")
     .with_key("formal-judge-reroute-refused")
@@ -956,7 +969,7 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
         )
         .replace("bindings:\n", "  terra-only:\n    - [terra]\n\nbindings:\n");
     assert!(kontor_fleet::FleetSnapshot::parse(&lawful_policy).is_ok());
-    write_fleet(world, &lawful_policy);
+    activate_through_the_registry(world, &lawful_policy, "lawful-judge-policy").await;
     let body = reroute_body(serde_json::json!({"provider":"codex-work","model":"gpt-5.6-terra"}));
     let lawful = Call::post(&endpoint, &body)
         .signed_as(world, "admin")
@@ -1004,7 +1017,8 @@ async fn formal_committee_recovery_unknown_rank_or_vendor_refuses_before_fencing
     )
     .await;
     let world = &realm.world;
-    write_fleet(world, &formal_review_fleet_yaml());
+    activate_through_the_registry(world, &formal_review_fleet_yaml(), "formal-fixture-policy")
+        .await;
     let invoked = invoke_fleet_committee(
         &realm,
         "Unknown recovery authority",
@@ -1027,7 +1041,7 @@ async fn formal_committee_recovery_unknown_rank_or_vendor_refuses_before_fencing
         (
             "formal-unknown-vendor",
             formal_review_fleet_yaml().replace("vendor: anthropic", "vendor: unknown"),
-            serde_json::json!({"provider":"claude-work", "model":"claude-opus-5"}),
+            serde_json::json!({"provider":"claude-work", "model":"claude-opus-5","effort":"xhigh"}),
         ),
     ] {
         let parsed = kontor_fleet::FleetSnapshot::parse(&yaml)
@@ -1458,7 +1472,7 @@ async fn formal_committee_materialization_profile_freezes_permission_policy() {
         seat["seat_binding_id"].as_str().unwrap()
     );
     let body = serde_json::json!({"expected_revision":read["revision"],"expected_occupancy_generation":seat["occupancy_generation"],
-        "expected_model_route":seat["model_route"],"reason":"permission_mode_unsupported","recovery_profile":[{"provider":"opencode-recovery","model":"example/recovery"}]});
+        "expected_model_route":seat["model_route"],"reason":"permission_mode_unsupported","recovery_profile":[{"provider":"opencode-recovery","model":"example/recovery","effort":"xhigh"}]});
     let before = realm.world.fake.calls();
     let rerouted = Call::post(&endpoint, &body)
         .signed_as(&realm.world, "admin")

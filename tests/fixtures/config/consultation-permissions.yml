@@ -10,16 +10,19 @@ domains:
 models:
   cursor-review:
     domain: cursor
+    permission_eligible: true
     id: review-model
     vendor: example
     efforts: [high, xhigh]
   open-review:
     domain: open
+    permission_eligible: true
     id: example/review
     vendor: alternate
     efforts: [max]
   open-default:
     domain: open
+    permission_eligible: true
     id: example/default
     vendor: alternate
 chains:

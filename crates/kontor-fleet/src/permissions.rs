@@ -1,7 +1,7 @@
 //! Exact behavioral consultation exceptions; never a containment claim.
 use super::*;
 
-const FIELD: &str = "consultation_permissions must name an exact declared account, symbolic model, supported effort and plan mode in schema_version 2, without duplicates";
+const FIELD: &str = "consultation_permissions must name an exact declared account, symbolic model, supported effort and plan mode on a permission_eligible model in schema_version 2, without duplicates";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,8 +41,24 @@ pub(super) fn validate(document: &FleetDocument, schema: Schema) -> Result<(), F
             .get(&permission.model)
             .ok_or(invalid(FIELD))?;
         let domain = document.domains.get(&model.domain).ok_or(invalid(FIELD))?;
+        let matches = document
+            .models
+            .values()
+            .filter(|candidate| {
+                candidate.id == model.id
+                    && document.domains[&candidate.domain]
+                        .accounts
+                        .contains(&permission.account)
+            })
+            .count();
         if permission.mode != "plan"
-            || !matches!(domain.provider.as_str(), "cursor" | "opencode")
+            || matches != 1
+            || !model.permission_eligible
+            || !matches!(
+                normalize_provider(&permission.account),
+                Some("cursor" | "opencode")
+            )
+            || normalize_provider(&permission.account) != Some(domain.provider.as_str())
             || !domain.accounts.contains(&permission.account)
             || permission.account.contains(['*', '?', '[', ']'])
             || model.id.contains(['*', '?', '[', ']'])
@@ -175,5 +191,50 @@ mod tests {
             policy.hash(),
             &rung("cursor", "review-model", Some(EffortLevel::High))
         ));
+    }
+}
+
+#[cfg(test)]
+mod eligibility_tests {
+    use super::*;
+    const POLICY: &str =
+        include_str!("../../../tests/fixtures/config/consultation-permissions.yml");
+
+    #[test]
+    fn permission_eligible_is_explicit_required_and_hash_bound() {
+        let policy = FleetSnapshot::parse_policy(POLICY).unwrap();
+        let route = ModelRung {
+            provider: ProviderRef("cursor".into()),
+            model: ModelRef("review-model".into()),
+            effort: Some(EffortLevel::Xhigh),
+        };
+        assert!(
+            policy
+                .consultation_permissions()
+                .permits(policy.hash(), &route)
+        );
+        for text in [
+            POLICY.replacen("permission_eligible: true", "permission_eligible: false", 1),
+            POLICY.replace("    permission_eligible: true\n", ""),
+        ] {
+            assert!(matches!(
+                FleetSnapshot::parse_policy(&text),
+                Err(FleetError::Invalid { rule: FIELD })
+            ));
+        }
+        let plain = POLICY.split("consultation_permissions:").next().unwrap();
+        let eligible = FleetSnapshot::parse_policy(plain).unwrap();
+        let ineligible = plain.replace("    permission_eligible: true\n", "");
+        let old = FleetSnapshot::parse_policy(&ineligible).unwrap();
+        assert_ne!(eligible.hash(), old.hash());
+        assert!(FleetSnapshot::published(eligible.hash(), &ineligible).is_err());
+        assert!(
+            FleetSnapshot::parse(&ineligible.replace("schema_version: 2", "schema_version: 1"))
+                .is_ok()
+        );
+        let automatic = POLICY
+            .replace("id: review-model", "id: auto-smart")
+            .replacen("permission_eligible: true", "permission_eligible: false", 1);
+        assert!(FleetSnapshot::parse_policy(&automatic).is_err());
     }
 }

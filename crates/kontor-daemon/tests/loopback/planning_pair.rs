@@ -502,6 +502,7 @@ async fn pair_realm_with(
     };
     let epic = pinned_runtime_epic(world, &project, "Planning pair epic").await;
     confirm_promoted_epic_identity(world, &project, &epic, "PROMO", "ASMA-9001");
+    activate_through_the_registry(world, &native_fixture_catalog(), "pair-fixture-catalog").await;
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
         &control_seat_routes(1),

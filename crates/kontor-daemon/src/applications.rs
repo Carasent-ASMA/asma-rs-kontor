@@ -447,6 +447,30 @@ fn consultation_route_provenance(
 }
 
 impl Services {
+    fn parse_pinned_model_route(
+        &self,
+        route: &RuntimeModelRouteRequest,
+    ) -> kontor_core::DomainResult<ModelRung> {
+        let snapshot = self.fleet_policy()?;
+        parse_catalogued_model_route(route, CatalogAuthority::PinnedFleet(snapshot.as_deref()))
+    }
+
+    fn frozen_consultation_catalog(
+        &self,
+        run: &StoredConsultationRun,
+        seat: &StoredConsultationSeat,
+    ) -> Result<Option<crate::fleet::FleetSnapshot>, ApiError> {
+        let provenance = self.committee_seat_route_provenance(run, seat)?;
+        let hash = provenance.permission_policy_hash.as_ref().or_else(|| {
+            provenance
+                .is_fleet_configuration()
+                .then_some(&provenance.evidence_hash)
+        });
+        hash.map(|hash| self.fleet.verify_published(hash))
+            .transpose()
+            .map_err(|error| self.refuse_fleet_policy(&error))
+    }
+
     fn qualify_consultation_permissions(
         &self,
         mut provenance: ConsultationRouteProvenance,
@@ -10301,11 +10325,9 @@ impl Services {
                     "the logical Core Team seat has no exact native session to reroute",
                 )
             })?;
-        let desired = parse_runtime_model_route(
-            &request.desired_model_route,
-            self.fleet.current().as_deref(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
+        let desired = self
+            .parse_pinned_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
         // Asked before anything is adopted, retired or probed: a leadership
         // seat the activated policy binds may only move to a route its chain
         // offers, and the answer is part of what the preview hash pins.
@@ -14719,6 +14741,7 @@ impl Services {
         &self,
         project_id: ProjectId,
         rungs: &[ModelRung],
+        fleet: Option<&kontor_fleet::FleetSnapshot>,
         now: Timestamp,
         missing: &'static str,
     ) -> Result<ModelRung, ApiError> {
@@ -14735,7 +14758,10 @@ impl Services {
         })?;
         let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
-        let effective_rungs = consultation_account_rungs(rungs, &accounts);
+        let effective_rungs: Vec<_> = consultation_account_rungs(rungs, &accounts)
+            .into_iter()
+            .filter(|rung| model_route_is_catalogued(rung, CatalogAuthority::PinnedFleet(fleet)))
+            .collect();
         let placement = resolve_chain_placement(
             adapter.as_ref(),
             &effective_rungs,
@@ -14915,11 +14941,19 @@ impl Services {
             let routes = profile
                 .ordered_routes
                 .iter()
-                .map(|route| parse_runtime_model_route(route, fleet.as_deref()))
+                .map(|route| {
+                    parse_catalogued_model_route(
+                        route,
+                        CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                    )
+                })
                 .collect::<kontor_core::DomainResult<Vec<_>>>()
                 .map_err(|error| self.refuse_domain(&error))?;
             for route in &routes {
-                if !model_route_is_catalogued(route, fleet.as_deref()) {
+                if !model_route_is_catalogued(
+                    route,
+                    CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                ) {
                     return Err(self.deny(
                         ApiErrorCode::InvalidRequest,
                         "an initial Committee recovery route is absent from the governed model catalog",
@@ -15002,6 +15036,12 @@ impl Services {
             }
             let mut supported = Vec::new();
             for candidate in &effective {
+                if !model_route_is_catalogued(
+                    &candidate.model_rung,
+                    CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                ) {
+                    continue;
+                }
                 let provenance = candidate
                     .provenance()
                     .map_err(|error| self.refuse_domain(&error))?;
@@ -15199,6 +15239,7 @@ impl Services {
                 self.freeze_consultation_model_rung(
                     project_id,
                     &profile.models.rungs,
+                    fleet.as_deref(),
                     now,
                     "the Advisor profile has no model route",
                 )?,
@@ -16236,6 +16277,8 @@ impl Services {
     ) -> Result<kontor_fleet::AllocationCandidate, ApiError> {
         self.committee_seat_route_provenance(run, seat)?;
         if let Some(profile) = profile {
+            let pinned_policy = self.frozen_consultation_catalog(run, seat)?;
+            let fleet = pinned_policy.as_ref();
             let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -16273,8 +16316,17 @@ impl Services {
                                 "the frozen accepted recovery route is unreadable",
                             )
                         })?;
-                    let rung = parse_runtime_model_route(&route, fleet)
-                        .map_err(|error| self.refuse_domain(&error))?;
+                    if !frozen_runtime_route_matches(&route, &seat.model_rung) {
+                        continue;
+                    }
+                    let rung = parse_catalogued_model_route(
+                        &route,
+                        CatalogAuthority::FrozenRecovery {
+                            snapshot: fleet,
+                            route: &seat.model_rung,
+                        },
+                    )
+                    .map_err(|error| self.refuse_domain(&error))?;
                     if rung == seat.model_rung {
                         let vendor = fleet
                             .and_then(|fleet| fleet.vendor_of(&rung))
@@ -17985,20 +18037,32 @@ fn formal_committee_replacement_candidates(
         .collect()
 }
 
-/// Whether one route is exposed by the governed Teams model catalog or by the
-/// live fleet configuration.
-///
-/// A route is catalogued when the compiled list accepts it or the current
-/// `fleet.yml` snapshot lists its account alias, model and effort. Explicit
-/// routes — initial-admission recovery profiles, the bridge's named-route
-/// moves, Committee seat recovery — pass through this same predicate, so a
-/// fleet-only model such as Opus 5.5 is nameable without a rebuild.
-/// `/v1/catalog` still advertises only the compiled list (DEF-004).
-pub(crate) fn model_route_is_catalogued(
-    rung: &ModelRung,
-    fleet: Option<&crate::fleet::FleetSnapshot>,
-) -> bool {
-    compiled_route_is_catalogued(rung) || fleet.is_some_and(|fleet| fleet.lists(rung))
+/// The source that may recognize a route. Recognition never supplies placement authority.
+#[derive(Clone, Copy)]
+pub(crate) enum CatalogAuthority<'a> {
+    /// Historical/bootstrap consumers with no fleet policy context.
+    CompiledOnly,
+    /// Exact selected/activated snapshot; absence never falls back.
+    PinnedFleet(Option<&'a crate::fleet::FleetSnapshot>),
+    /// Compatibility only for this exact already-persisted historical route.
+    FrozenRecovery {
+        snapshot: Option<&'a crate::fleet::FleetSnapshot>,
+        route: &'a ModelRung,
+    },
+}
+
+pub(crate) fn model_route_is_catalogued(rung: &ModelRung, authority: CatalogAuthority<'_>) -> bool {
+    match authority {
+        CatalogAuthority::CompiledOnly => compiled_route_is_catalogued(rung),
+        CatalogAuthority::PinnedFleet(snapshot) => {
+            snapshot.is_some_and(|snapshot| snapshot.lists(rung))
+        }
+        CatalogAuthority::FrozenRecovery { snapshot, route } => {
+            rung == route
+                && (snapshot.is_some_and(|snapshot| snapshot.lists(rung))
+                    || compiled_route_is_catalogued(rung))
+        }
+    }
 }
 
 /// Whether the compiled model list accepts one route, ignoring the live fleet.
@@ -18421,10 +18485,37 @@ fn frozen_runtime_route_matches(route: &RuntimeModelRouteRequest, rung: &ModelRu
         && route.effort.as_deref() == rung.effort.map(EffortLevel::as_str)
 }
 
+/// Legacy/bootstrap adapter retained for byte-identical protected project consumers.
+/// The supplied current fleet is deliberately not an authority for these operations.
 fn parse_runtime_model_route(
     route: &RuntimeModelRouteRequest,
-    fleet: Option<&crate::fleet::FleetSnapshot>,
+    _legacy_fleet: Option<&crate::fleet::FleetSnapshot>,
 ) -> kontor_core::DomainResult<ModelRung> {
+    parse_catalogued_model_route(route, CatalogAuthority::CompiledOnly)
+}
+
+fn parse_catalogued_model_route(
+    route: &RuntimeModelRouteRequest,
+    authority: CatalogAuthority<'_>,
+) -> kontor_core::DomainResult<ModelRung> {
+    let rung = parse_model_route(route)?;
+    if matches!(authority, CatalogAuthority::PinnedFleet(None)) {
+        return Err(kontor_core::DomainError::MissingEvidence {
+            subject: "model_catalog",
+            rule: "fleet_catalog_unpinned: an exact fleet snapshot is required",
+        });
+    }
+    if !model_route_is_catalogued(&rung, authority) {
+        return Err(kontor_core::DomainError::invalid(
+            "RuntimeModelRouteRequest",
+            "the model route is not in the governed catalog",
+        ));
+    }
+    Ok(rung)
+}
+
+/// Parse a compare-and-swap witness; this supplies no route authorization.
+fn parse_model_route(route: &RuntimeModelRouteRequest) -> kontor_core::DomainResult<ModelRung> {
     if route.provider.trim().is_empty() || route.model.trim().is_empty() {
         return Err(kontor_core::DomainError::invalid(
             "RuntimeModelRouteRequest",
@@ -18438,12 +18529,6 @@ fn parse_runtime_model_route(
         effort,
     };
     rung.validate()?;
-    if !model_route_is_catalogued(&rung, fleet) {
-        return Err(kontor_core::DomainError::invalid(
-            "RuntimeModelRouteRequest",
-            "the model route is not in the governed catalog",
-        ));
-    }
     Ok(rung)
 }
 
@@ -18595,7 +18680,7 @@ fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::Domain
                 model: ModelRef(model.to_owned()),
                 effort,
             };
-            if !model_route_is_catalogued(&rung, None) {
+            if !model_route_is_catalogued(&rung, CatalogAuthority::CompiledOnly) {
                 return Err(kontor_core::DomainError::invalid(
                     "TeamDraftRequest",
                     "a model rung must use a route in the governed catalog",
@@ -20788,10 +20873,9 @@ impl Services {
                     |spec| {
                         spec.validate().is_ok()
                             && spec.slots.iter().all(|slot| {
-                                slot.models
-                                    .rungs
-                                    .iter()
-                                    .all(|rung| model_route_is_catalogued(rung, None))
+                                slot.models.rungs.iter().all(|rung| {
+                                    model_route_is_catalogued(rung, CatalogAuthority::CompiledOnly)
+                                })
                             })
                     },
                 )
@@ -23178,200 +23262,30 @@ impl ApplicationOperations for Services {
 
     fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError> {
         let state = self.state()?;
-        // ASMA-8237: exact provider-native routes and thinking options read from
-        // Paseo on 2026-09-19. Catalog presence does not attest account headroom
-        // or authorize a route for a role; those remain separate admission checks.
-        let watchdog_provenance = serde_json::json!({
-            "state": "live",
-            "reviewRef": "ASMA-8237",
-            "citation": "Paseo list_models: codex, cursor and opencode",
-            "observedAt": "2026-09-19"
-        });
-        let provenance = serde_json::json!({
-            "state": "live",
-            "reviewRef": "KON-MVP-25-GATE-2026-08-14-02",
-            "citation": "kontord /v1/catalog realm discovery projection",
-            "observedAt": "2026-08-14"
-        });
-        let unverified = serde_json::json!({
-            "state": "fixture/needs-verification",
-            "reviewRef": null,
-            "citation": null,
-            "observedAt": null
-        });
-        let providers = vec![
-            serde_json::json!({
-                "id": "codex", "label": "Codex",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": false
-            }),
-            // One provider alias per Codex login. The alias is the account
-            // selector on this runtime — `--provider codex-work` launches in
-            // that account's own credential home — so a route can only be
-            // described and validated against an account if the alias is a
-            // provider row here. `reachedVia` stays null: unlike a vendor
-            // served through another provider, each alias is itself enabled in
-            // the runtime. Pooling is definitional for an alias: it is one
-            // account, and every route on it draws one allowance.
-            serde_json::json!({
-                "id": "codex-work", "label": "Codex · Work (Carasent)",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "codex-personal", "label": "Codex · Personal",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "claude", "label": "Claude",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "claude-work", "label": "Claude · Work",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "claude-personal", "label": "Claude · Personal",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "opencode", "label": "OpenCode",
-                "basis": { "value": "provider_account", "provenance": provenance },
-                "reachedVia": null, "pooledUsage": false
-            }),
-            serde_json::json!({
-                "id": "cursor", "label": "Cursor",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-        ];
-        let mut models = vec![
-            serde_json::json!({
-                "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "provider": "codex",
-                "isDefault": true,
-                "contextWindow": { "value": null, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "provider": "codex",
-                "isDefault": false,
-                "contextWindow": { "value": null, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "claude-opus-5", "label": "Claude Opus 5", "provider": "claude",
-                "isDefault": true,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["off", "low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": "claude",
-                "isDefault": false,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "deepseek/deepseek-flash", "label": "DeepSeek V4.1 Flash", "provider": "opencode",
-                "isDefault": true,
-                "contextWindow": { "value": null, "provenance": provenance },
-                "efforts": { "value": ["low", "high", "max"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-        ];
-        for provider in ["codex", "codex-work", "codex-personal"] {
-            models.push(serde_json::json!({
-                "id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "provider": provider,
-                "isDefault": false,
-                "contextWindow": { "value": null, "provenance": unverified },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max"], "provenance": watchdog_provenance },
-                "pricing": [], "degradedLane": false
-            }));
-        }
-        for (provider, id, label, efforts) in [
-            (
-                "cursor",
-                "auto-smart",
-                "Cursor Auto",
-                vec!["low", "medium", "high", "xhigh"],
-            ),
-            (
-                "opencode",
-                "openrouter/z-ai/glm-5.3-flash",
-                "GLM 5.3 Flash",
-                vec!["low", "high", "max"],
-            ),
-            (
-                "opencode",
-                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-                "Nemotron 3 Ultra Free",
-                vec!["medium", "high"],
-            ),
-        ] {
-            models.push(serde_json::json!({
-                "id": id, "label": label, "provider": provider,
-                "isDefault": provider == "cursor",
-                "contextWindow": { "value": null, "provenance": unverified },
-                "efforts": { "value": efforts, "provenance": watchdog_provenance },
-                "pricing": [], "degradedLane": false
-            }));
-        }
-        models.push(serde_json::json!({
-            "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol via Cursor", "provider": "cursor",
-            "isDefault": false,
-            "contextWindow": { "value": null, "provenance": unverified },
-            "efforts": {
-                "value": ["low", "medium", "high", "xhigh", "max"],
-                "provenance": {
-                    "state": "live",
-                    "reviewRef": "operator-exception-2026-09-23",
-                    "citation": "Paseo list_models: cursor",
-                    "observedAt": "2026-09-23"
-                }
-            },
-            "pricing": [], "degradedLane": false
-        }));
-        // Each Codex account alias serves the same routes as the family
-        // provider: the alias changes the credential home, never the model.
-        for alias in ["codex-work", "codex-personal"] {
-            for (id, label, default) in [
-                ("gpt-5.6-sol", "GPT-5.6 Sol", true),
-                ("gpt-5.6-terra", "GPT-5.6 Terra", false),
-            ] {
-                models.push(serde_json::json!({
-                    "id": id, "label": label, "provider": alias,
-                    "isDefault": default,
-                    "contextWindow": { "value": null, "provenance": provenance },
-                    "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
-                    "pricing": [], "degradedLane": false
-                }));
-            }
-        }
-        // Claude account aliases select credential homes in exactly the same
-        // way and expose the family catalog unchanged.
-        for alias in ["claude-work", "claude-personal"] {
-            models.push(serde_json::json!({
-                "id": "claude-opus-5", "label": "Claude Opus 5", "provider": alias,
-                "isDefault": true,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["off", "low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }));
-            models.push(serde_json::json!({
-                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": alias,
-                "isDefault": false,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }));
-        }
+        let policy = self.fleet_policy().map_err(|error| self.refuse_domain(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::PlacementBlocked,
+                "fleet_catalog_unpinned: the model catalog requires an exact selected fleet snapshot"))?;
+        let entries = policy.model_catalog();
+        let declared = serde_json::json!({"state":"configured","policyHash":policy.hash()});
+        let unknown = serde_json::json!({"state":"unknown","policyHash":policy.hash()});
+        let accounts: BTreeSet<_> = entries.iter().map(|entry| entry.account.clone()).collect();
+        let providers = accounts
+            .into_iter()
+            .map(|account| {
+                serde_json::json!({
+                    "id":account,"label":account,"basis":{"value":"unknown","provenance":unknown},
+                    "reachedVia":null,"pooledUsage":false,
+                })
+            })
+            .collect();
+        let models = entries.iter().map(|entry| serde_json::json!({
+            "id":entry.id,"label":entry.id,"provider":entry.account,"providerFamily":entry.provider,
+            "modelKey":entry.model,"vendor":entry.vendor,"isDefault":false,
+            "contextWindow":{"value":null,"provenance":unknown},
+            "efforts":{"value":entry.efforts,"provenance":declared},
+            "vision":entry.vision,"calibrated":entry.calibrated,"permissionEligible":entry.permission_eligible,
+            "pricing":[],"degradedLane":false,"policyHash":policy.hash(),
+        })).collect();
         let cursor = state
             .with_store(SqliteStore::teams_projection)
             .map_err(|error| self.refuse(&error))?
@@ -28384,9 +28298,9 @@ impl ApplicationOperations for Services {
             };
             match (&route.model_route, &route.eligibility) {
                 (Some(model_route), None) => {
-                    let model_rung =
-                        parse_runtime_model_route(model_route, self.fleet.current().as_deref())
-                            .map_err(|error| self.refuse_domain(&error))?;
+                    let model_rung = self
+                        .parse_pinned_model_route(model_route)
+                        .map_err(|error| self.refuse_domain(&error))?;
                     if let Some(placed) =
                         self.leadership_route(&roster.revision, frozen_seat, &model_rung)?
                     {
@@ -28853,16 +28767,13 @@ impl ApplicationOperations for Services {
                 "the SeatBinding is not one of this epic's frozen Core Team roles",
             ));
         };
-        let superseded = parse_runtime_model_route(
-            &request.expected_model_route,
-            self.fleet.current().as_deref(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
-        let replacement = parse_runtime_model_route(
-            &request.desired_model_route,
-            self.fleet.current().as_deref(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
+        // This is the inert intent's CAS witness, never a requested launch.
+        // The store proves the exact old route; only the replacement needs catalog authority.
+        let superseded = parse_model_route(&request.expected_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let replacement = self
+            .parse_pinned_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
         // Never attempted, by contract rather than by configuration. The wedge
         // this repair exists for is an OpenCode route nothing can launch, and a
         // replacement that reached for it again would recreate the wedge under
@@ -31720,10 +31631,7 @@ impl ApplicationOperations for Services {
                             .recovery_profile
                             .iter()
                             .map(|route| {
-                                let rung = parse_runtime_model_route(
-                                    route,
-                                    fleet.as_deref(),
-                                )?;
+                                let rung = parse_catalogued_model_route(route, CatalogAuthority::PinnedFleet(fleet.as_deref()))?;
                                 if provider_family(&rung.provider.0) == rung.provider.0.as_str() {
                                     return Err(kontor_core::DomainError::invalid(
                                         "RecoverConsultationSeatRequest",
@@ -31754,6 +31662,12 @@ impl ApplicationOperations for Services {
                             !occupied_families.contains(provider_family(&rung.provider.0))
                         });
                     }
+                    rungs.retain(|rung| {
+                        model_route_is_catalogued(
+                            rung,
+                            CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                        )
+                    });
                     rungs
                 }
             };
@@ -31809,6 +31723,9 @@ impl ApplicationOperations for Services {
                                 &frozen,
                                 fleet.as_deref(),
                             )
+                            .into_iter()
+                            .filter(|candidate| effective_rungs.contains(&candidate.rung))
+                            .collect()
                         } else {
                             formal_committee_replacement_candidates(
                                 &run.profile_id,
@@ -32244,9 +32161,15 @@ impl ApplicationOperations for Services {
         let fleet = self
             .fleet_policy()
             .map_err(|error| self.refuse_domain(&error))?;
-        let expected_rung =
-            parse_runtime_model_route(&request.expected_model_route, fleet.as_deref())
-                .map_err(|error| self.refuse_domain(&error))?;
+        let frozen_policy = self.frozen_consultation_catalog(&run, &seat)?;
+        let expected_rung = parse_catalogued_model_route(
+            &request.expected_model_route,
+            CatalogAuthority::FrozenRecovery {
+                snapshot: frozen_policy.as_ref(),
+                route: &seat.model_rung,
+            },
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         if seat.occupancy_generation != request.expected_occupancy_generation
             || seat.model_rung != expected_rung
         {
@@ -32342,10 +32265,16 @@ impl ApplicationOperations for Services {
         let mut proposal_rungs = Vec::new();
         let mut candidates = Vec::new();
         for route in &request.recovery_profile {
-            let rung = parse_runtime_model_route(route, fleet.as_deref())
-                .map_err(|error| self.refuse_domain(&error))?;
+            let rung = parse_catalogued_model_route(
+                route,
+                CatalogAuthority::PinnedFleet(fleet.as_deref()),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
             if provider_family(&rung.provider.0) == rung.provider.0.as_str()
-                || !model_route_is_catalogued(&rung, fleet.as_deref())
+                || !model_route_is_catalogued(
+                    &rung,
+                    CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                )
             {
                 return Err(self.deny(ApiErrorCode::InvalidRequest,
                     "a materialization recovery profile must name exact catalogued governed aliases"));
@@ -35603,7 +35532,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
+            .map(|route| self.parse_pinned_model_route(route))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         // As with exact admission recovery, the scheduling receipt witnesses
@@ -38440,7 +38369,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
+            .map(|route| self.parse_pinned_model_route(route))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         if let (Some(evidence), Some(route)) = (
@@ -41065,7 +40994,8 @@ impl Services {
             now,
         };
         let (placement, fleet_declared) = if let Some(route) = requested_route {
-            let route = parse_runtime_model_route(route, self.fleet.current().as_deref())
+            let route = self
+                .parse_pinned_model_route(route)
                 .map_err(|error| self.refuse_domain(&error))?;
             (
                 resolve_chain_placement(
@@ -48802,13 +48732,14 @@ mod tests {
         assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
     }
     use super::{
-        AdmissionScanKey, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook,
+        AdmissionScanKey, CatalogAuthority, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook,
         RuntimeModelRouteRequest, Services, account_for_explicit_provider_alias,
         allocate_committee, committee_route_candidates, consultation_account_rungs,
         counts_towards_completion, eligible_roots, ensure_unambiguous_generic_consultation_routes,
         freeze_hosted_seat_autonomy, freeze_seat_autonomy, kickoff_is_ready,
-        parse_runtime_model_route, re_review_remediation_identity, render_legacy_container_name,
-        scan_reached_the_end, scan_resume_point, seat_block, slot_prompt,
+        parse_catalogued_model_route, parse_runtime_model_route, re_review_remediation_identity,
+        render_legacy_container_name, scan_reached_the_end, scan_resume_point, seat_block,
+        slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -50140,7 +50071,7 @@ mod tests {
         let snapshot =
             crate::fleet::FleetSnapshot::parse(document).expect("the shipped example parses");
         assert_eq!(
-            parse_runtime_model_route(&request, Some(&snapshot)),
+            parse_catalogued_model_route(&request, CatalogAuthority::PinnedFleet(Some(&snapshot))),
             Ok(ModelRung {
                 provider: ProviderRef("claude-a".to_owned()),
                 model: ModelRef("claude-opus-5-5".to_owned()),
@@ -50193,7 +50124,8 @@ mod tests {
 
         // An activated schema_version 2 policy binding a delivery seat, a
         // reviewer and a leadership slot on Cursor lists what it lists and no
-        // more: every route off its own list keeps its compiled answer.
+        // more: compiled-only consumers retain their historical answer, while
+        // governed consumers require exact membership in the selected policy.
         let leadership = format!("leadership/{}/lsa", ContentHash::of(b"pinned roster"));
         let policy = crate::fleet::FleetSnapshot::parse_policy(&format!(
             "\
@@ -50215,8 +50147,12 @@ bindings:
         for effort in efforts {
             for alias in ["cursor", "cursor-work", "cursor-personal"] {
                 let rung = route(alias, "gpt-5.6-sol", effort);
+                assert!(!super::model_route_is_catalogued(
+                    &rung,
+                    super::CatalogAuthority::PinnedFleet(Some(&policy))
+                ));
                 assert_eq!(
-                    super::model_route_is_catalogued(&rung, Some(&policy)),
+                    super::model_route_is_catalogued(&rung, super::CatalogAuthority::CompiledOnly),
                     super::compiled_route_is_catalogued(&rung),
                     "{alias} {effort:?}"
                 );
