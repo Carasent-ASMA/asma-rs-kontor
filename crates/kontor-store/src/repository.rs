@@ -98,7 +98,7 @@ use kontor_core::repository::{
     TopologyContainerRecoveryDisposition,
 };
 use kontor_core::spec::{
-    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
+    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
     ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, SeatAutonomy,
     Shareability, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
@@ -4339,6 +4339,17 @@ impl SqliteStore {
                 rule: "a native readback is required before binding",
             })?;
         let transaction = self.begin()?;
+        let frozen = self
+            .get_consultation_seat_by_binding(project_id, seat.seat_binding_id)?
+            .ok_or_else(|| conflict("consultation seat", "the frozen launch intent is absent"))?;
+        if frozen.model_rung != seat.model_rung
+            || frozen.occupancy_generation != seat.occupancy_generation
+        {
+            return Err(conflict(
+                "consultation seat",
+                "host_route_substitution_refused",
+            ));
+        }
         let existing: Option<(String, String, i64, String)> = transaction
             .query_row(
                 "SELECT runtime_kind, host, generation, native_id
@@ -4586,6 +4597,8 @@ impl SqliteStore {
         let recovery_reason = request.recovery_reason.as_str();
         let recovery_profile = &request.recovery_profile;
         let selected_model_rung = &request.selected_model_rung;
+        selected_model_rung.validate()?;
+        predecessor.model_rung.validate()?;
         let prepared_at = request.prepared_at;
         let predecessor_identity =
             predecessor
@@ -4627,26 +4640,32 @@ impl SqliteStore {
             }
         })?;
         let transaction = self.begin()?;
-        let active: Option<(String, i64)> = transaction
+        let active: Option<(String, i64, String)> = transaction
             .query_row(
-                "SELECT native_id, occupancy_generation FROM consultation_seats
+                "SELECT native_id, occupancy_generation, model_rung FROM consultation_seats
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3",
                 params![
                     project_id.to_string(),
                     predecessor.run_id.as_text(),
                     predecessor.role_slot_id.as_str(),
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
         if active
             .as_ref()
-            .map(|(native, generation)| (native.as_str(), u64::try_from(*generation).ok()))
+            .map(|(native, generation, _)| (native.as_str(), u64::try_from(*generation).ok()))
             != Some((
                 predecessor_identity.native_id.as_str(),
                 Some(predecessor.occupancy_generation),
             ))
+            || active.as_ref().is_none_or(|(_, _, model)| {
+                serde_json::from_str::<kontor_core::launch_route::StoredLaunchRoute>(model)
+                    .ok()
+                    .as_ref()
+                    != Some(&predecessor.model_rung)
+            })
         {
             return Err(RepositoryError::Conflict {
                 subject: "consultation recovery attempt",
@@ -4760,6 +4779,14 @@ impl SqliteStore {
         attempt: &StoredConsultationRecoveryAttempt,
         successor: &StoredConsultationSeat,
     ) -> RepositoryResult<()> {
+        if successor.model_rung != attempt.selected_model_rung
+            || successor.occupancy_generation != attempt.successor_occupancy_generation
+        {
+            return Err(conflict(
+                "consultation recovery attempt",
+                "host_route_substitution_refused",
+            ));
+        }
         let identity = successor
             .native_identity
             .as_ref()
@@ -4856,7 +4883,7 @@ impl SqliteStore {
         run_id: ConsultationRunId,
         role_slot_id: &RoleSlotId,
         successor_generation: u64,
-    ) -> RepositoryResult<Option<(kontor_core::spec::ModelRung, ContentHash)>> {
+    ) -> RepositoryResult<Option<(kontor_core::launch_route::StoredLaunchRoute, ContentHash)>> {
         let generation = i64::try_from(successor_generation).map_err(|_| {
             conflict(
                 "materialization reroute",
@@ -4897,7 +4924,7 @@ impl SqliteStore {
         run_id: ConsultationRunId,
         role_slot_id: &RoleSlotId,
         successor_occupancy_generation: u64,
-    ) -> RepositoryResult<Option<(kontor_core::spec::ModelRung, ContentHash)>> {
+    ) -> RepositoryResult<Option<(kontor_core::launch_route::StoredLaunchRoute, ContentHash)>> {
         let generation = i64::try_from(successor_occupancy_generation).map_err(|_| {
             conflict(
                 "consultation seat recovery",
@@ -5133,6 +5160,8 @@ impl SqliteStore {
         &self,
         request: &NewConsultationMaterializationReroute,
     ) -> RepositoryResult<StoredConsultationMaterializationReroute> {
+        request.predecessor.model_rung.validate()?;
+        request.successor_model_rung.validate()?;
         if request.reason != "permission_mode_unsupported" {
             return Err(conflict(
                 "materialization reroute",
@@ -5143,7 +5172,13 @@ impl SqliteStore {
             request.project_id,
             &request.request_intent_hash,
         )? {
-            if existing.idempotency_key != request.idempotency_key {
+            if existing.idempotency_key != request.idempotency_key
+                || existing.predecessor_model_rung != request.predecessor.model_rung
+                || existing.successor_model_rung != request.successor_model_rung
+                || existing.recovery_profile_hash != *request.recovery_profile.hash()
+                || existing.predecessor_occupancy_generation
+                    != request.predecessor.occupancy_generation
+            {
                 return Err(conflict(
                     "materialization reroute",
                     "the committed reroute belongs to another idempotency key",
@@ -5189,7 +5224,12 @@ impl SqliteStore {
                     request.headroom_observation.id.to_string(),
                     request.project_id.to_string(),
                     request.headroom_observation.account_profile_id.to_string(),
-                    request.successor_model_rung.provider.0.as_str(),
+                    request
+                        .successor_model_rung
+                        .canonical_rung()
+                        .provider
+                        .0
+                        .as_str(),
                 ],
                 |row| {
                     read_provider_usage_observation(row)
@@ -5450,24 +5490,32 @@ impl SqliteStore {
             }
         })?;
         let transaction = self.begin()?;
-        let active_native: Option<String> = transaction
+        let active: Option<(String, String, i64)> = transaction
             .query_row(
-                "SELECT native_id FROM consultation_seats
+                "SELECT native_id, model_rung, occupancy_generation FROM consultation_seats
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3",
                 params![
                     project_id.to_string(),
                     predecessor.run_id.as_text(),
                     predecessor.role_slot_id.as_str(),
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
-        if active_native.as_deref() == Some(successor_identity.native_id.as_str()) {
+        if active.as_ref().is_some_and(|(native, model, generation)| {
+            native == successor_identity.native_id.as_str()
+                && model == &successor_model
+                && u64::try_from(*generation).ok() == Some(successor.occupancy_generation)
+        }) {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if active_native.as_deref() != Some(predecessor_identity.native_id.as_str()) {
+        if !active.as_ref().is_some_and(|(native, model, generation)| {
+            native == predecessor_identity.native_id.as_str()
+                && model == &predecessor_model
+                && u64::try_from(*generation).ok() == Some(successor.occupancy_generation)
+        }) {
             return Err(RepositoryError::Conflict {
                 subject: "consultation seat recovery",
                 rule: "the active native predecessor differs from the recovery request",
@@ -5529,7 +5577,7 @@ impl SqliteStore {
                      generation = ?8, native_id = ?9,
                      provider_session_id = ?10, observed_at = ?11
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
-                   AND native_id = ?12 AND occupancy_generation = ?5",
+                   AND native_id = ?12 AND occupancy_generation = ?5 AND model_rung = ?13",
                 params![
                     project_id.to_string(),
                     successor.run_id.as_text(),
@@ -5552,6 +5600,7 @@ impl SqliteStore {
                         .map(ExternalId::as_str),
                     text(successor_observed_at),
                     predecessor_identity.native_id.as_str(),
+                    predecessor_model,
                 ],
             )
             .map_err(backend)?;
@@ -6175,6 +6224,33 @@ impl SqliteStore {
             .transpose()
     }
 
+    /// Exact private CAS values from the immutable supersession ledger.
+    pub fn hosted_seat_launch_intent_supersession_routes(
+        &self,
+        key: &kontor_core::id::IdempotencyKey,
+    ) -> RepositoryResult<
+        Option<(
+            kontor_core::launch_route::StoredLaunchRoute,
+            kontor_core::launch_route::StoredLaunchRoute,
+        )>,
+    > {
+        let row: Option<(String, String)> = self.connection.query_row(
+            "SELECT superseded_model_rung, replacement_model_rung FROM hosted_seat_launch_intent_supersessions WHERE idempotency_key = ?1",
+            params![key.as_str()], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(backend)?;
+        row.map(|(expected, replacement)| {
+            Ok((
+                serde_json::from_str(&expected).map_err(|_| RepositoryError::Backend {
+                    detail: "host_route_snapshot_invalid".to_owned(),
+                })?,
+                serde_json::from_str(&replacement).map_err(|_| RepositoryError::Backend {
+                    detail: "host_route_snapshot_invalid".to_owned(),
+                })?,
+            ))
+        })
+        .transpose()
+    }
+
     /// Reconcile one prepared intent against the native its launch produced.
     ///
     /// Repeating this after a crash with the same native is unchanged. Naming a
@@ -6468,6 +6544,7 @@ impl SqliteStore {
         occupancy_generation: u64,
         observed_native_id: &ExternalId,
         installed_at: Timestamp,
+        expected_route: &kontor_core::launch_route::StoredLaunchRoute,
     ) -> RepositoryResult<Applied> {
         let Some(existing) =
             self.get_hosted_seat_launch_intent(project_id, seat_binding_id, occupancy_generation)?
@@ -6476,6 +6553,12 @@ impl SqliteStore {
                 subject: "hosted seat launch intent",
             });
         };
+        if &existing.model_rung != expected_route {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent",
+                rule: "the frozen launch route changed before installation",
+            });
+        }
         if existing.state == HostedSeatLaunchIntentState::Installed {
             if existing.observed_native_id.as_ref() == Some(observed_native_id) {
                 return Ok(Applied::Unchanged);
@@ -6489,21 +6572,37 @@ impl SqliteStore {
             i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
                 detail: "a hosted-seat launch intent generation is invalid".to_owned(),
             })?;
-        self.connection
+        let changed = self
+            .connection
             .execute(
                 "UPDATE hosted_topology_seat_launch_intents
                     SET state = 'installed', observed_native_id = ?4, installed_at = ?5
                   WHERE project_id = ?1 AND seat_binding_id = ?2
-                    AND occupancy_generation = ?3",
+                    AND occupancy_generation = ?3
+                    AND state = 'prepared' AND observed_native_id IS NULL
+                    AND installed_at IS NULL AND model_rung = ?6 AND prepared_at = ?7",
                 params![
                     project_id.to_string(),
                     seat_binding_id.to_string(),
                     generation,
                     observed_native_id.as_str(),
                     text(installed_at),
+                    serde_json::to_string(expected_route).map_err(|_| {
+                        RepositoryError::Conflict {
+                            subject: "hosted seat launch intent",
+                            rule: "the frozen route is invalid",
+                        }
+                    })?,
+                    text(existing.prepared_at),
                 ],
             )
             .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent",
+                rule: "the prepared launch intent changed before installation",
+            });
+        }
         Ok(Applied::Updated)
     }
 
@@ -6835,34 +6934,52 @@ impl SqliteStore {
         // say whether the seat holds *this* native or a later one wearing the
         // same name; the runtime generation is what tells them apart
         // (ASMA-8187 P1).
-        let active: Option<(String, i64, String, String)> = transaction
+        let active: Option<(String, i64, String, String, String)> = transaction
             .query_row(
-                "SELECT native_id, generation, runtime_kind, host
+                "SELECT native_id, generation, runtime_kind, host, model_rung
                    FROM hosted_topology_seats
                   WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
                     predecessor.project_id.to_string(),
                     predecessor.seat_binding_id.to_string(),
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
             .map_err(backend)?;
         let names = |identity: &NativeRuntimeIdentity| {
             active
                 .as_ref()
-                .is_some_and(|(native, generation, kind, host)| {
+                .is_some_and(|(native, generation, kind, host, _)| {
                     native == identity.native_id.as_str()
                         && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
                         && kind == identity.runtime_kind.as_str()
                         && host == identity.host.as_str()
                 })
         };
-        if names(&successor.native_identity) {
+        let matches_model = |seat: &StoredHostedTopologySeat| -> RepositoryResult<bool> {
+            let expected =
+                serde_json::to_string(&seat.model_rung).map_err(|_| RepositoryError::Conflict {
+                    subject: "hosted topology seat route",
+                    rule: "the route is invalid",
+                })?;
+            Ok(active
+                .as_ref()
+                .is_some_and(|(_, _, _, _, model)| model == &expected))
+        };
+        if names(&successor.native_identity) && matches_model(successor)? {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if !names(&predecessor.native_identity) {
+        if !names(&predecessor.native_identity) || !matches_model(predecessor)? {
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
@@ -18988,7 +19105,7 @@ const SUCCESSION_ATTEMPT_COLUMNS: &str = "id, project_id, task_id, team_run_id, 
 #[serde(deny_unknown_fields)]
 struct StoredSuccessionModelRung {
     schema_version: u32,
-    model_rung: ModelRung,
+    model_rung: kontor_core::launch_route::StoredLaunchRoute,
 }
 
 struct StoredSuccessionQuotaEvidence {
@@ -19004,7 +19121,9 @@ struct StoredSuccessionQuotaEvidence {
     resets_at: Option<String>,
 }
 
-fn succession_model_rung_document(model_rung: &ModelRung) -> RepositoryResult<CanonicalDocument> {
+fn succession_model_rung_document(
+    model_rung: &kontor_core::launch_route::StoredLaunchRoute,
+) -> RepositoryResult<CanonicalDocument> {
     model_rung.validate()?;
     Ok(CanonicalDocument::from_serializable(
         &StoredSuccessionModelRung {

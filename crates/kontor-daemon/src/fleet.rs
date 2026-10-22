@@ -297,6 +297,8 @@ struct Cache {
 /// One placement decision, written to the decision log and the `info` log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FleetDecision {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) launch_route: Option<kontor_core::launch_route::StoredLaunchRoute>,
     pub(crate) team_run_id: String,
     pub(crate) agent_run_id: String,
     pub(crate) binding_key: String,
@@ -324,6 +326,27 @@ pub(crate) struct FleetDecision {
     pub(crate) eligibility: Option<kontor_fleet::Eligibility>,
 }
 
+impl FleetDecision {
+    fn same_launch_authority(&self, other: &Self) -> bool {
+        self.launch_route == other.launch_route
+            && self.account_profile_id == other.account_profile_id
+            && self.team_run_id == other.team_run_id
+            && self.agent_run_id == other.agent_run_id
+            && self.binding_key == other.binding_key
+            && self.role_slot == other.role_slot
+            && self.fleet_hash == other.fleet_hash
+            && self.source_bundle_hash == other.source_bundle_hash
+            && self.chain == other.chain
+            && self.step == other.step
+            && self.sub_step == other.sub_step
+            && self.provider == other.provider
+            && self.model == other.model
+            && self.effort == other.effort
+            && self.vendor == other.vendor
+            && self.eligibility == other.eligibility
+    }
+}
+
 #[derive(Serialize)]
 struct StatusFile<'a> {
     active_hash: Option<&'a str>,
@@ -348,6 +371,97 @@ pub struct FleetSource {
 }
 
 impl FleetSource {
+    pub(crate) fn host_candidates(
+        &self,
+        host: &kontor_fleet::host_routes::HostRoutes,
+        policy: &FleetSnapshot,
+        resolution: &kontor_fleet::FleetResolution,
+        source_bundle_hash: Option<&ContentHash>,
+        now: Timestamp,
+    ) -> Result<
+        Vec<(
+            kontor_fleet::FleetRoute,
+            kontor_core::launch_route::ResolvedRoute,
+        )>,
+        FleetError,
+    > {
+        if source_bundle_hash.is_none() {
+            return Err(FleetError::Invalid {
+                rule: "host_route_source_unpinned",
+            });
+        }
+        let activated = kontor_fleet_activation::load(&self.state_root)?;
+        if activated.policy.hash() != policy.hash()
+            || source_bundle_hash
+                .is_some_and(|hash| activated.record.source_bundle_hash.as_ref() != Some(hash))
+        {
+            return Err(FleetError::Invalid {
+                rule: "host_route_policy_mismatch",
+            });
+        }
+        let bundle = activated.bundle.as_ref().ok_or(FleetError::Invalid {
+            rule: "host_route_source_unpinned",
+        })?;
+        let matrix =
+            kontor_fleet_activation::routes::read_matrix(&self.state_root, &bundle.manifest)?;
+        let qualifications = kontor_fleet_activation::routes::read_qualifications(
+            &self.state_root,
+            &bundle.manifest,
+            policy,
+            &activated.record,
+        )?;
+        host.candidates(
+            policy,
+            resolution,
+            &matrix,
+            qualifications.as_ref(),
+            &std::collections::BTreeSet::new(),
+            now,
+        )
+    }
+
+    pub(crate) fn freeze_host_route(
+        &self,
+        host: &kontor_fleet::host_routes::HostRoutes,
+        rung: &ModelRung,
+        policy_hash: Option<&ContentHash>,
+        source_bundle_hash: Option<&ContentHash>,
+        now: Timestamp,
+    ) -> Result<kontor_core::launch_route::ResolvedRoute, FleetError> {
+        if policy_hash.is_some() && source_bundle_hash.is_none() {
+            return Err(FleetError::Invalid {
+                rule: "host_route_source_unpinned",
+            });
+        }
+        let activated = kontor_fleet_activation::load(&self.state_root)?;
+        if policy_hash.is_some_and(|hash| hash != activated.policy.hash())
+            || source_bundle_hash
+                .is_some_and(|hash| activated.record.source_bundle_hash.as_ref() != Some(hash))
+        {
+            return Err(FleetError::Invalid {
+                rule: "host_route_policy_mismatch",
+            });
+        }
+        let bundle = activated.bundle.as_ref().ok_or(FleetError::Invalid {
+            rule: "host_route_source_unpinned",
+        })?;
+        let matrix =
+            kontor_fleet_activation::routes::read_matrix(&self.state_root, &bundle.manifest)?;
+        let qualifications = kontor_fleet_activation::routes::read_qualifications(
+            &self.state_root,
+            &bundle.manifest,
+            &activated.policy,
+            &activated.record,
+        )?;
+        host.resolve(
+            &activated.policy,
+            rung,
+            &matrix,
+            qualifications.as_ref(),
+            now,
+        )
+    }
+
     /// A source rooted at `state_root`; nothing is read until first use.
     pub fn at(state_root: &Path) -> Self {
         Self {
@@ -894,6 +1008,33 @@ impl FleetSource {
         }
     }
 
+    /// Read the original generation's decision without consulting activation.
+    pub(crate) fn leadership_decision(
+        &self,
+        seat: &str,
+        generation: u64,
+    ) -> std::io::Result<Option<LeadershipDecision>> {
+        let path = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(LEADERSHIP_DECISIONS_DIR)
+            .join(format!("{seat}.jsonl"));
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut result = None;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let row: LeadershipDecision =
+                serde_json::from_str(line).map_err(std::io::Error::other)?;
+            if row.seat_binding_id == seat && row.occupancy_generation == generation {
+                result = Some(row);
+            }
+        }
+        Ok(result)
+    }
+
     /// Append one leadership placement the activated policy authorised.
     ///
     /// Written before the effect it authorises, per SeatBinding, so an auditor
@@ -947,6 +1088,16 @@ impl FleetSource {
     /// Returns the I/O failure so the caller can fail the placement: an
     /// unrecorded route would silently break `independent_of`.
     pub(crate) fn record_decision(&self, decision: &FleetDecision) -> std::io::Result<()> {
+        let _guard = self.lock();
+        if decision.launch_route.is_some()
+            && let Some(existing) =
+                self.private_launch_decision(&decision.team_run_id, &decision.agent_run_id)?
+        {
+            if !existing.same_launch_authority(decision) {
+                return Err(std::io::Error::other("host_route_substitution_refused"));
+            }
+            return Ok(());
+        }
         let directory = self.state_root.join(FLEET_DECISIONS_DIR);
         create_private_dir(&directory)?;
         let path = directory.join(format!("{}.jsonl", decision.team_run_id));
@@ -996,6 +1147,37 @@ impl FleetSource {
             .filter(|line| !line.trim().is_empty())
             .filter_map(|line| serde_json::from_str::<FleetDecision>(line).ok())
             .rfind(|decision| decision.agent_run_id == agent_run_id)
+    }
+
+    pub(crate) fn private_launch_decision(
+        &self,
+        team_run_id: &str,
+        agent_run_id: &str,
+    ) -> std::io::Result<Option<FleetDecision>> {
+        let path = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(format!("{team_run_id}.jsonl"));
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut frozen: Option<FleetDecision> = None;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let decision: FleetDecision = serde_json::from_str(line)
+                .map_err(|_| std::io::Error::other("host_route_decision_unreadable"))?;
+            if decision.agent_run_id == agent_run_id && decision.launch_route.is_some() {
+                if frozen
+                    .as_ref()
+                    .is_some_and(|old| !old.same_launch_authority(&decision))
+                {
+                    return Err(std::io::Error::other("host_route_substitution_refused"));
+                }
+                frozen = Some(decision);
+            }
+        }
+        Ok(frozen)
     }
 
     /// Append what one launch requested and what its runtime observed.
@@ -1296,6 +1478,7 @@ mod tests {
 
     fn decision(binding_key: &str, vendor: &str) -> FleetDecision {
         FleetDecision {
+            launch_route: None,
             team_run_id: "run-1".to_owned(),
             agent_run_id: "agent-1".to_owned(),
             binding_key: binding_key.to_owned(),

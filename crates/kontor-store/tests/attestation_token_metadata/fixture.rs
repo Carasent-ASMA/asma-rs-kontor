@@ -349,7 +349,7 @@ impl Fixture {
                 .then_some(kontor_core::consultation::CommitteeRole::Judge),
             logical_role: kontor_core::id::RoleKey::parse("sa").expect("role"),
             seat_binding_id: seat,
-            model_rung: rung(),
+            model_rung: rung().into(),
             occupancy_generation: 7,
             native_identity: None,
             provider_session_id: None,

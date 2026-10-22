@@ -2285,7 +2285,7 @@ async fn member_launches_carry_the_seats_current_generation_and_frozen_pins() {
         );
         assert_eq!(context.run_id, run_id);
         assert_eq!(context.slot.as_str(), seat.role_slot_id.as_str());
-        assert_eq!(context.route, seat.model_rung);
+        assert_eq!(context.route, seat.model_rung.canonical_rung());
         assert_eq!(context.profile.definition_hash, run.definition_hash);
         assert_eq!(context.placement_hash, *placement.placement.hash());
         assert_eq!(context.role_catalog.canonical_hash.as_str(), roster_pin);

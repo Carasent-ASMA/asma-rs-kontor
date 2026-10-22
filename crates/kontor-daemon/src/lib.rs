@@ -1585,6 +1585,47 @@ impl Daemon {
                     continue;
                 }
             };
+            // Frozen native selectors are re-attested before any restored claim
+            // enters the daemon registry. Activation and host files are irrelevant.
+            let mut routes_attested = true;
+            for snapshot in &held {
+                let Some(owner) = family_bindings
+                    .iter()
+                    .find(|owner| owner.binding.id == snapshot.binding_id())
+                else {
+                    routes_attested = false;
+                    break;
+                };
+                let route = match self
+                    .applications
+                    .delivery_private_route(owner.project_id, owner.agent_run_id)
+                {
+                    Ok(route) => route,
+                    Err(_) => {
+                        routes_attested = false;
+                        break;
+                    }
+                };
+                if let Some(route) = route
+                    && adapter
+                        .inspect(&kontor_runtime::request::InspectRequest {
+                            binding: snapshot.clone(),
+                            requested_at: kontor_api::now(),
+                            resolved_route: Some(route),
+                        })
+                        .await
+                        .is_err()
+                {
+                    routes_attested = false;
+                    break;
+                }
+            }
+            if !routes_attested {
+                warn!(realm_id = %self.realm_id(), runtime = %family,
+                    "frozen route readback failed; scheduling stays shut");
+                settled = BarrierState::Failed;
+                continue;
+            }
             // Only what the runtime vouched for enters this process's registry.
             // A claim it did not restore is a binding nothing may operate, which
             // is the honest answer for a session that did not survive.

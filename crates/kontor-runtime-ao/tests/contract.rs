@@ -872,6 +872,7 @@ async fn codex_launch_restore_and_resume_agent_all_run_the_same_guard() {
 
         let error = ao
             .resume(&ResumeRequest {
+                resolved_route: None,
                 binding: launched.snapshot,
                 requested_at: at("2026-08-10T09:20:00Z"),
             })
@@ -1175,6 +1176,7 @@ async fn no_uncertain_observation_can_close_a_run() {
             .expect("the lane launches");
         let observed = ao
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: launched.snapshot.clone(),
                 requested_at: at("2026-08-10T09:30:00Z"),
             })
@@ -1218,6 +1220,7 @@ async fn only_a_fresh_inspect_of_an_explicit_termination_confirms_cancellation()
     // The fresh inspect is the evidence.
     let confirmed = ao
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: launched.snapshot.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -1249,6 +1252,7 @@ async fn a_forged_or_foreign_binding_closes_nothing_through_the_registry() {
     let genuine = launched.snapshot;
     let terminated = ao
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: genuine.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -1334,6 +1338,7 @@ async fn a_forged_binding_is_refused_before_any_effect_on_every_bound_operation(
                     .err(),
                 "resume" => ao
                     .resume(&ResumeRequest {
+                        resolved_route: None,
                         binding: forged.clone(),
                         requested_at: at("2026-08-10T09:41:00Z"),
                     })
@@ -1348,6 +1353,7 @@ async fn a_forged_binding_is_refused_before_any_effect_on_every_bound_operation(
                     .err(),
                 _ => ao
                     .inspect(&InspectRequest {
+                        resolved_route: None,
                         binding: forged.clone(),
                         requested_at: at("2026-08-10T09:43:00Z"),
                     })
@@ -1374,6 +1380,7 @@ async fn a_forged_binding_is_refused_before_any_effect_on_every_bound_operation(
         "a forged binding must leave no trace in the message ledger"
     );
     ao.inspect(&InspectRequest {
+        resolved_route: None,
         binding: genuine.clone(),
         requested_at: at("2026-08-10T09:44:00Z"),
     })
@@ -1503,6 +1510,7 @@ async fn a_restore_or_resume_response_from_another_lane_is_refused() {
         .expect("the lane launches");
     assert_eq!(
         ao.resume(&ResumeRequest {
+            resolved_route: None,
             binding: launched.snapshot,
             requested_at: at("2026-08-10T09:50:00Z"),
         })
@@ -1539,6 +1547,7 @@ async fn a_live_session_from_another_lane_is_refused_on_every_route_that_reads_o
         let refused = match route {
             "resume" => {
                 ao.resume(&ResumeRequest {
+                    resolved_route: None,
                     binding: launched.snapshot.clone(),
                     requested_at: at("2026-08-10T09:52:00Z"),
                 })
@@ -1546,6 +1555,7 @@ async fn a_live_session_from_another_lane_is_refused_on_every_route_that_reads_o
             }
             _ => {
                 ao.inspect(&InspectRequest {
+                    resolved_route: None,
                     binding: launched.snapshot.clone(),
                     requested_at: at("2026-08-10T09:52:00Z"),
                 })
@@ -1574,6 +1584,7 @@ async fn a_live_session_from_another_lane_is_refused_on_every_route_that_reads_o
     ao.take_calls();
     let observed = ao
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: launched.snapshot,
             requested_at: at("2026-08-10T09:53:00Z"),
         })
@@ -2409,6 +2420,7 @@ async fn resume_restores_only_a_terminated_session_and_never_relaunches_a_live_o
         .expect("the lane launches");
     let observed = ao
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: launched.snapshot.clone(),
             requested_at: at("2026-08-10T09:50:00Z"),
         })
@@ -2433,6 +2445,7 @@ async fn resume_restores_only_a_terminated_session_and_never_relaunches_a_live_o
         .await
         .expect("the lane launches");
     ao.resume(&ResumeRequest {
+        resolved_route: None,
         binding: launched.snapshot.clone(),
         requested_at: at("2026-08-10T09:51:00Z"),
     })
@@ -2452,6 +2465,7 @@ async fn resume_restores_only_a_terminated_session_and_never_relaunches_a_live_o
         .await
         .expect("the lane launches");
     ao.resume(&ResumeRequest {
+        resolved_route: None,
         binding: launched.snapshot,
         requested_at: at("2026-08-10T09:52:00Z"),
     })
@@ -2561,6 +2575,7 @@ async fn every_replay_break_blocks_scheduling_by_invalidating_the_bindings() {
         assert!(
             matches!(
                 ao.inspect(&InspectRequest {
+                    resolved_route: None,
                     binding: launched.snapshot,
                     requested_at: at("2026-08-10T10:00:00Z"),
                 })
@@ -2616,6 +2631,7 @@ async fn a_reset_change_log_starts_a_new_generation_and_invalidates_every_bindin
     // And the stale binding can no longer drive anything.
     assert!(matches!(
         ao.inspect(&InspectRequest {
+            resolved_route: None,
             binding: launched.snapshot,
             requested_at: at("2026-08-10T10:00:00Z"),
         })

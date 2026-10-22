@@ -510,7 +510,7 @@ pub struct StoredConsultationSeat {
     /// Exact persistent topology seat.
     pub seat_binding_id: SeatBindingId,
     /// Exact selected provider/model/effort rung.
-    pub model_rung: crate::spec::ModelRung,
+    pub model_rung: crate::launch_route::StoredLaunchRoute,
     /// Monotonic native-filler occupancy generation. A scoped credential is
     /// valid only while this exact generation remains active.
     pub occupancy_generation: u64,
@@ -670,7 +670,7 @@ pub struct StoredConsultationRecoveryAttempt {
     /// Digest of the canonical recovery profile.
     pub recovery_profile_hash: ContentHash,
     /// First admissible route selected from the profile.
-    pub selected_model_rung: crate::spec::ModelRung,
+    pub selected_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Forward-only saga state.
     pub state: String,
     /// Exact observed successor, once launched/adopted.
@@ -703,7 +703,7 @@ pub struct NewConsultationRecoveryAttempt {
     /// Canonical ordered recovery profile.
     pub recovery_profile: CanonicalDocument,
     /// First admissible route selected from that profile.
-    pub selected_model_rung: crate::spec::ModelRung,
+    pub selected_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Preparation instant.
     pub prepared_at: Timestamp,
 }
@@ -724,9 +724,9 @@ pub struct StoredConsultationMaterializationReroute {
     /// New active credential generation.
     pub successor_occupancy_generation: u64,
     /// Route that failed before native launch.
-    pub predecessor_model_rung: crate::spec::ModelRung,
+    pub predecessor_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Exact governed replacement route.
-    pub successor_model_rung: crate::spec::ModelRung,
+    pub successor_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Typed recovery reason.
     pub reason: String,
     /// Canonical ordered recovery policy.
@@ -761,7 +761,7 @@ pub struct NewConsultationMaterializationReroute {
     /// Committee revision read by the caller.
     pub expected_revision: AggregateRevision,
     /// Selected governed successor route.
-    pub successor_model_rung: crate::spec::ModelRung,
+    pub successor_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Typed recovery reason.
     pub reason: String,
     /// Canonical ordered recovery policy.

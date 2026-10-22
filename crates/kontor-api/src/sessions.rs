@@ -414,6 +414,9 @@ pub async fn observe_current_turn(
     let observation = session
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: state
+                .applications()
+                .session_launch_route(session.project_id, session.agent_run_id)?,
             binding: session.snapshot.clone(),
             requested_at: now(),
         })
@@ -1046,6 +1049,9 @@ pub async fn send_message(
     session
         .adapter
         .resume(&ResumeRequest {
+            resolved_route: state
+                .applications()
+                .session_launch_route(session.project_id, session.agent_run_id)?,
             binding: session.snapshot.clone(),
             requested_at: now(),
         })
@@ -1116,6 +1122,9 @@ pub async fn send_message(
     let observation = session
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: state
+                .applications()
+                .session_launch_route(session.project_id, session.agent_run_id)?,
             binding: session.snapshot.clone(),
             requested_at: reduced_at,
         })
