@@ -120,6 +120,7 @@ import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
+import { notifyArchive, useArchiveRecovery } from "./archive-feedback";
 import { useSessionAvailability } from "./use-session-availability";
 
 type ThemeColors = PluginTheme["colors"];
@@ -1463,14 +1464,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const availability = useSessionAvailability(host.id, rawState.entries, hostOnline && rawState.status === "ready" && view.status === "attention");
   const state = useMemo(() => ({ ...rawState, entries: availability.entries.filter((entry) => matchesMembership(entry, view.membership)) }), [rawState, availability.entries, view.membership]);
   const lifecycleHelp = useControlHelp("");
-  const lifecycle = useSessionLifecycle(host.id, (rows) => {
+  const lifecycleChanged = (rows: Parameters<Parameters<typeof useSessionLifecycle>[1]>[0]) => {
     // A fresh absence/archive can remove the row before the review measures its trigger.
     // Keep the cover dialog anchored to a mounted control and return focus there.
     if (rows.some((row) => row.availability?.state === "missing" || row.availability?.archivedAt)) {
       lifecycleAnchor.current = recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current;
     }
     availability.reconcile(rows); refresh();
-  });
+  };
+  const lifecycle = useSessionLifecycle(host.id, lifecycleChanged);
+  // Archives whose fence is still held stay checkable after their rows leave, a later review and a reload.
+  const recovery = useArchiveRecovery(host.id, lifecycle, lifecycleChanged);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const lifecycleAnchor = useRef<View | null>(null);
   const recoveryButton = useRef<View | null>(null);
@@ -2362,7 +2367,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const noticeProps = compact ? {} : focusProps;
   const settingsUnavailable = organization !== undefined && organization.state.status !== "ready";
   const settingsAlert = saveMessage ?? organization?.state.saveError ?? null;
-  const hasNotices = (showBanner && !!staleMessage) || navigationMissing || settingsUnavailable || !!settingsAlert;
+  const hasNotices = (showBanner && !!staleMessage) || navigationMissing || settingsUnavailable || !!settingsAlert || !!recovery.line;
+  // One lifecycle action at a time: every Resume, Details, the X and Check again wait while another runs.
+  const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
+  const canStart = hostOnline && lifecycleIdle && state.status === "ready";
+  // One placement per layout: compact notices, the wide full toolbar, or the wide slim row.
+  const recoveryLine = recovery.line ? <View testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+    <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, flexShrink: 1 }}>{recovery.line}</Text>
+    {recovery.unresolved.length ? <Action small colors={colors} label={recovery.checking ? "Checking…" : "Check again"} accessibilityLabel="Check unconfirmed archives again" disabled={!lifecycleIdle} onPress={() => { if (lifecycleIdle) void recovery.check(); }} />
+      : <Action small colors={colors} label="Retry" accessibilityLabel="Read archive checks again" disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
+    {/* ponytail: Details opens the first unconfirmed archive's own review and Check covers every ref; add a per-ref picker if each one needs its own view. */}
+    {recovery.unresolved.length ? <Action small colors={colors} label="Details" accessibilityLabel="Archive details" disabled={!lifecycleIdle}
+      onPress={() => { if (!lifecycleIdle) return; lifecycleAnchor.current = recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; void lifecycle.restore(recovery.unresolved[0]!).then((result) => {
+        // Only the exact owner review opens; a failed read never shows another review.
+        if (typeof result === "string") toast.error(`Archive details could not be read: ${result}`); else if (result) setLifecycleOpen(true); }); }} /> : null}
+  </View> : null;
   const notices = (
     <>
       {showBanner && staleMessage ? (
@@ -2396,6 +2415,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const compactNotices = compact && hasNotices ? (
     <View testID="sessions-notices" style={{ gap: 8 }}>
       {notices}
+      {recoveryLine}
     </View>
   ) : null;
   const OptionsContainer = compact ? View : ScrollView;
@@ -2418,9 +2438,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       style={{ gap: 8 }}
     >
       {compact ? null : notices}
+      {compact || toolbar.showSlimRow ? null : recoveryLine}
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-        {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
-          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
+        {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
+          onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
         {view.status === "attention" ? <>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{availability.checking ? "Checking exact session IDs…" : "Attention includes unread results. Native record checks do not verify provider history."}</Text>
           <Action small={!compact} colors={colors} label="Check availability" onPress={() => { availability.refresh(); refresh(); }} />
@@ -2708,8 +2729,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
     <View style={{ width: 80, alignItems: "flex-end" }}>
-      <Action ref={slimRecoveryButton} colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
-        onPress={() => { quickHelpDismissRef.current?.(); setQuickChooserScope(null); lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />
+      <Action ref={slimRecoveryButton} colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
+        onPress={() => { if (!canStart) return; quickHelpDismissRef.current?.(); setQuickChooserScope(null); lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />
       {view.status === "attention" ? <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} /> : null}
     </View>
   </View>;
@@ -2745,8 +2766,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     >
       <SlimToolbar
-        action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
-          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
+        action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
+          onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
         hostLabel={host.label}
         activeCount={slimActiveCount}
         colors={colors}
@@ -2766,6 +2787,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           onClearScope={onClearScope}
         />
       ) : null}
+      {toolbar.showSlimRow ? recoveryLine : null}
     </View>
   );
   // Desktop keeps its existing inline toolbar; compact mounts these controls only on the filter page.
@@ -2982,9 +3004,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
-          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
-                onPress={() => { lifecycle.clear(); lifecycleAnchor.current = archiveButtons.current.get(item.entry.id) ?? slimRecoveryButton.current; setLifecycleOpen(true); void lifecycle.prepare("archive", "filtered", [item.entry.id]); }} /> : null;
+                // One X, one status line: no sheet and no focus move. Details on the recovery line opens the review.
+                onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
           if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;

@@ -23,11 +23,21 @@ export const lifecycleRowSchema = z.object({
   availability: availabilitySchema.optional(),
   reconcileReviewId: z.string().uuid().optional(),
   outcome: z.enum(["pending", "intent", "submitted", "archived", "blocked", "uncertain", "absent", "already_archived"]), message: z.string().nullable(),
+  // Archive membership and runtime retirement are separate facts: "closed" only from an exact-ID read after the
+  // archive, "not-observed" when the archive returned but the read is not closed, "unconfirmed" when the reply failed.
+  runtime: z.enum(["closed", "not-observed", "unconfirmed"]).optional(),
 });
 export type LifecycleRow = z.infer<typeof lifecycleRowSchema>;
+/** An archive whose fence stays held until an exact-ID read settles it. */
+export const unresolvedArchive = (row: Pick<LifecycleRow, "outcome" | "runtime">) =>
+  row.outcome === "intent" || row.outcome === "uncertain" || (row.outcome === "archived" && row.runtime === "unconfirmed");
+export const unresolvedRefSchema = z.object({ reviewId: z.string().uuid(), agentId: id }).strict();
+export type UnresolvedRef = z.infer<typeof unresolvedRefSchema>;
 export const lifecycleReviewSchema = z.object({
   id: z.string().uuid(), createdAt: z.string(), action: z.enum(["resume", "archive"]), scope: z.enum(["filtered", "host"]),
   target: recoveryTargetSchema, rows: z.array(lifecycleRowSchema), limitation: z.string(),
+  // Derived only by the latest read; never saved. A latest.json pointer alone would lose an earlier unresolved archive.
+  unresolved: z.array(unresolvedRefSchema).max(100).optional(),
 });
 export type LifecycleReview = z.infer<typeof lifecycleReviewSchema>;
 export const lifecycleCapabilities = defineRpc({ name: "sessions.lifecycle-capabilities", input: z.object({}).strict(), output: z.object({
