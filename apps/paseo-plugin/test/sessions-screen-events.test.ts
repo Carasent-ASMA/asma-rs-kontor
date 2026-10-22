@@ -1,4 +1,5 @@
 import { SessionScopeSelector } from "../client/session-scope-selector";
+import { SessionScopeChip } from "../client/session-scope-chip";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type {
@@ -968,7 +969,8 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("session-a", { labels: { desk: "Adam" } })] };
     renderScreen(organization);
     const chip = (testID: string) => findByTestID(harness.current(), testID);
-    expect([chip("sessions-filter-favorites").props.label, chip("sessions-shortcut-2").props.label]).toEqual(["★ Favorites", "Adam desk"]);
+    expect([chip("sessions-filter-favorites").props.label, (chip("sessions-shortcut-2").props.choice as { label: string }).label]).toEqual(["★ Favorites", "Adam desk"]);
+    expect(chip("sessions-shortcut-2").type).toBe(SessionScopeChip);
     expect([chip("sessions-filter-favorites").props.count, chip("sessions-shortcut-2").props.count]).toEqual([1, 1]);
     (chip("sessions-filter-favorites").props.onPress as () => void)(); harness.flush();
     (chip("sessions-shortcut-2").props.onPress as () => void)(); harness.flush();
@@ -1047,6 +1049,63 @@ describe("SessionsScreen toolbar events", () => {
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
     expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · Epic unknown · Workspace", "Kontor · Epic unknown · Workspace"]);
+  });
+
+  it.each([
+    { compact: false, filter: "search" }, { compact: true, filter: "search" },
+    { compact: false, filter: "state" }, { compact: true, filter: "state" },
+  ])("keeps denominator help truthful during contextual peek, compact=$compact filter=$filter", ({ compact, filter }) => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("quiet", { title: "Unique quiet session", status: "idle", labels: { workstream: "alpha", epic: "ASMA-1" } }),
+      sessionEntry("busy", { status: "running", labels: { workstream: "alpha", epic: "ASMA-1" } }),
+      sessionEntry("outside", { status: "idle", labels: { workstream: "beta", epic: "ASMA-2" } }),
+    ] };
+    const query = filter === "search" ? "Unique quiet" : "";
+    const status = filter === "state" ? "idle" : "all";
+    patchSessionView("host-a", { layout: "grouped", query, status, streams: ["alpha"], legendOpen: true });
+    renderScreen(undefined, compact);
+    const renderItem = (item: ListRow) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item });
+    const header = (row: GroupRow) => {
+      const element = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+      return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props;
+    };
+    const legendText = () => {
+      if (compact) openMobileFilters();
+      const element = walk(harness.current()).find((node) => node.type === SessionsLegend)!;
+      const text = textOf(SessionsLegend(element.props as Parameters<typeof SessionsLegend>[0]));
+      if (compact) closeMobileFilters();
+      return text;
+    };
+    const filteredKeys = groupRows().map((row) => row.group.key);
+    expect(groupRows().every((row) => row.group.aggregate.total === 1)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityLabel)).toContain("Idle: 1 of 1 session");
+    chooseLayout("flat");
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    const result = listRows()[0] as Extract<ListRow, { kind: "result" }>;
+    (renderItem(result).props.onShowInTree as (entry: typeof result.entry) => void)(result.entry); harness.flush();
+    expect(sessionRowIds().sort()).toEqual(["busy", "quiet"]);
+    expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
+    for (const row of groupRows()) {
+      expect(String(header(row).accessibilityLabel)).toContain("Running: 1 of 2 sessions. Idle: 1 of 2 sessions");
+      expect(String(header(row).accessibilityHint)).toContain("retained surrounding context");
+      expect(String(header(row).accessibilityHint)).toContain("outside the results' search, task or explicit state filter");
+      expect(String(header(row).accessibilityHint)).toContain("Current still applies when selected");
+    }
+    expect(legendText()).toContain("retained surrounding context");
+    toggle("workspace");
+    expect(sessionRowIds()).toEqual([]);
+    expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityHint)).toContain("including collapsed branches");
+    const back = walk(findByTestID(harness.current(), "sessions-peek")).find((node) => node.props.label === "Back to 1 result")!;
+    (back.props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    expect(readSessionView("host-a")).toMatchObject({ query, status, streams: ["alpha"], peek: null });
+    chooseLayout("grouped");
+    expect(groupRows().map((row) => row.group.key)).toEqual(filteredKeys);
+    expect(groupRows().every((row) => row.group.aggregate.total === 1)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityHint)).toContain("matching the current search and filters");
+    expect(legendText()).toContain("matching the current search and filters");
+    expect(legendText()).not.toContain("retained surrounding context");
   });
 
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
@@ -1716,24 +1775,24 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it.each([true, false])("draws the same leading Role icons and counts with a separate total and stale cue, compact=%s", compact => {
+  it.each([true, false])("draws the primary Role state as count/total with a separate total and stale cue, compact=%s", compact => {
     const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(compact ? [1, 1] : [1, "needs input", 1, "error"]);
-    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input", "failed"]);
+    expect(words).toEqual(["Needs input 1/5"]);
+    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input"]);
     expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
-    expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
+    expect(label()).toContain("Role QA, 5 sessions. Needs input: 1 of 5 sessions. Error: 1 of 5 sessions. Running: 3 of 5 sessions.");
     directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Host offline" };
     harness.flush();
-    expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
+    expect(label()).toContain("5 sessions. Last known: Needs input: 1 of 5 sessions.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
+      .toEqual(["Last known", "Needs input 1/5"]);
   });
 
   it("shows a Role row's conflict cue and place, giving the compact title its whole line above the place and age", () => {
@@ -1744,7 +1803,7 @@ describe("SessionsScreen toolbar events", () => {
     ]);
     expect(groupRows().map((row) => row.group.label)).toEqual(["AUD", "No role"]);
     const headerOf = (label: string) => walk(drawn(groupRows().find((row) => row.group.label === label)));
-    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 sessions\. 1 idle\./);
+    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 session\. Idle: 1 of 1 session\./);
     expect(["AUD", "No role"].map((label) => (headerOf(label).find((element) => element.props.children === label)!.props.style as { fontFamily?: string }).fontFamily)).toEqual(["monospace", undefined]);
     expandAll();
     const props = (id: string) => walk(renderItem(listRows().find((row) => row.kind === "session" && row.entry.id === id))).find((element) => "displayContext" in element.props)!.props;
@@ -2519,7 +2578,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     if (compact) closeMobileFilters();
     if (!compact) {
       const shortcut = findByTestID(harness.current(), "sessions-shortcut-3").props;
-      expect([shortcut.label, shortcut.count]).toEqual(["Outside desks", 2]);
+      expect([(shortcut.choice as { label: string }).label, shortcut.count]).toEqual(["Outside desks", 2]);
     }
     // A partial read keeps the same association counts, and Filters says beside them that the read is partial.
     directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: false, inventoryComplete: false, lastUpdatedAt: 0 };

@@ -81,6 +81,8 @@ import { defaultSortDirection, explicitLeafOrder, sessionComparator, SESSION_SOR
 import { indexResponsibility, MATCH_REASONS, responsibilityExpired, rosterChoices, sessionResponsibility, type MatchReason, type SessionResponsibility } from "./responsibility";
 import { WorkstreamSelector } from "./workstream-selector";
 import { SessionScopeSelector } from "./session-scope-selector";
+import { SESSION_SHORTCUTS, SessionScopeChip } from "./session-scope-chip";
+export { SESSION_SHORTCUTS } from "./session-scope-chip";
 import { epicScopeChoice, epicScopeChoices, epicScopeKey, epicScopeLabel, matchesEpicScope } from "./session-scope";
 import type { ResponsibilityRead } from "../shared/responsibility";
 import { inWorkspace, labelledRole, matchesResultSearch, sessionAncestors, sessionProvenance, taskSessions, TASK_JIRA_LABELS, TASK_TICKET_LABEL, type SessionProvenance } from "./session-results";
@@ -139,16 +141,6 @@ export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): stri
   return sessionStateColor(sessionState(entry), colors);
 }
 
-/**
- * Desk shortcuts. Outside desks is every session no desk holds; its ID stays "Other work" for saved
- * views, while the Other work group and choice hold only sessions with no workstream association.
- */
-export const SESSION_SHORTCUTS: readonly { readonly id: string | null; readonly label: string }[] = [
-  { id: null, label: "All sessions" },
-  { id: "PR Review", label: "PR Review" },
-  { id: "Adam", label: "Adam desk" },
-  { id: "Other work", label: "Outside desks" },
-];
 /** Workspace scope, a menu in Filters & view; the shortcuts above repeat all but Durable desks. */
 const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: string }[] = [
   { id: null, label: "All Paseo workspaces" },
@@ -2460,7 +2452,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           {onClearScope ? <Action small={!compact} colors={colors} label="All sessions" accessibilityLabel={`Show all sessions instead of ${scopeLabel}`} disabled={!compact && toolbarCollapsed} onPress={onClearScope} /> : null}
         </View> : <Text testID="sessions-heading" accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 16 : 17, fontWeight: "600" }}>All sessions</Text>}
         <View accessibilityRole="toolbar" accessibilityLabel="Desk shortcuts" style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, ...(compact ? { width: "100%" } : { marginLeft: "auto" }) }}>
-          {SESSION_SHORTCUTS.map(({ id, label }, index) => <FilterChip key={label} testID={`sessions-shortcut-${index}`} label={label} count={shortcutCounts[index]} compact={compact} active={shortcut === id} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); }} />)}
+          {SESSION_SHORTCUTS.map((choice, index) => <SessionScopeChip key={choice.label} testID={`sessions-shortcut-${index}`} choice={choice} count={shortcutCounts[index]!} active={shortcut === choice.id} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ shortcut: choice.id, scrollOffset: 0 }); }} />)}
         </View>
       </View>
 
@@ -2635,7 +2627,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
           <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
-          <SessionsLegend colors={colors} compact={compact} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
+          <SessionsLegend colors={colors} compact={compact} contextual={peek !== null} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
         </OptionsContainer>
       ) : null}
     </View>
@@ -3028,7 +3020,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
-          return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
+          return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             details={details}
             lifecycleAction={lifecycleAction}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}

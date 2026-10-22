@@ -58,11 +58,13 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         place({ ...value, text });
       },
       fit(help, size) {
-        if (current.current !== help || !size.width || !size.height) return;
+        const value = current.current;
+        // Focus scrolling can replace the help object before its first panel layout arrives.
+        if (!value || value.anchor !== help.anchor || value.text !== help.text || !size.width || !size.height) return;
         const previous = fitted.current;
         if (previous?.text === help.text && Math.abs(previous.size.width - size.width) < 0.5 && Math.abs(previous.size.height - size.height) < 0.5) return;
         fitted.current = { text: help.text, size };
-        place(help);
+        place(value);
       },
       press(touch, target) {
         input.current = touch ? "touch" : "pointer";
