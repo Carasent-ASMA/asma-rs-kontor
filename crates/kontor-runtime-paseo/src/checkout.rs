@@ -58,6 +58,44 @@ pub(crate) async fn verify_selected_task(
         .map_err(|error| RuntimeError::WorkspacePreparationFailed { rule: error.0 })
 }
 
+/// The adapter verifies a persisted consultation intent and never creates its checkout.
+pub(crate) async fn verify_selected_consultation(
+    project_root: &WorkspaceRoot,
+    target: &WorkspaceRoot,
+    pin: &kontor_runtime::consultation_checkout::ConsultationCheckout,
+    node: kontor_core::id::TopologyNodeId,
+    binding_id: kontor_runtime::container::ContainerBindingId,
+    scope: &ExecutionScope,
+) -> RuntimeResult<()> {
+    if pin.node_id != node
+        || pin.container_binding_id != binding_id.to_string()
+        || pin.epic_id != scope.epic.mini_project_id
+        || pin.key != scope.epic.external_epic_key.as_str()
+        || pin.checkout.destination != target.as_str()
+    {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "consultation.runtime_binding_mismatch",
+        });
+    }
+    let canonical = fs::canonicalize(project_root.as_str()).map_err(|_| {
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "checkout.runtime_project_root_unreadable",
+        }
+    })?;
+    if canonical.to_str() != Some(pin.checkout.project_root.as_str()) {
+        return Err(RuntimeError::WorkspacePreparationFailed {
+            rule: "checkout.runtime_project_root_mismatch",
+        });
+    }
+    let pin = pin.clone();
+    tokio::task::spawn_blocking(move || pin.verify())
+        .await
+        .map_err(|_| RuntimeError::WorkspacePreparationFailed {
+            rule: "consultation.verification_incomplete",
+        })?
+        .map_err(|error| RuntimeError::WorkspacePreparationFailed { rule: error.0 })
+}
+
 /// The confirmed tracker keys a newly created managed branch may carry, and
 /// the confirmed task keys an ASMA CLI catalog checkout must bind to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -761,5 +799,165 @@ mod tests {
                 .is_err(),
             "an epic-level binding cannot adopt a task slug it never carried"
         );
+    }
+}
+
+#[cfg(test)]
+mod consultation_tests {
+    use super::*;
+    use kontor_core::branch::{BranchType, ProjectBranchRules};
+    use kontor_core::id::{
+        AggregateRevision, ContentHash, ExternalId, ExternalName, MiniProjectId, ProjectId,
+        SpecVersion, TopologyNodeId, TopologySpecId,
+    };
+    use kontor_runtime::checkout::{CheckoutSource, TaskCheckout};
+    use kontor_runtime::consultation_checkout::ConsultationCheckout;
+    use kontor_runtime::container::ContainerBindingId;
+    use kontor_runtime::scope::EpicScope;
+
+    #[tokio::test]
+    async fn selected_consultation_verifies_exact_root_node_epic_binding_and_git_without_creation()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let run = |args: &[&str]| {
+            let output = git(&root)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-b", "delivery-next"]);
+        run(&[
+            "-c",
+            "user.name=Example",
+            "-c",
+            "user.email=developer@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
+        let policy = kontor_core::placement::ConsultationLayout {
+            worktree_layout: "managed/trees/<key-slug>/<module>".into(),
+            template: "consultations/<key-slug>/<node>".into(),
+            base_branch: "delivery-next".into(),
+            branch_rules: ProjectBranchRules {
+                project_key: "EXM".into(),
+                types: vec![BranchType::Chore],
+                pattern: "^(chore)/<KEY>-<number>-<slug>$".into(),
+                commit_pattern: "^<KEY>-<number> <summary>$".into(),
+            },
+        };
+        let node = TopologyNodeId::generate();
+        let key = TrackerKey::parse("EXM-1").unwrap();
+        let (target, managed, branch) = policy.render(&key, node).unwrap();
+        let target = root.join(target).to_str().unwrap().to_owned();
+        let binding = ContainerBindingId::generate();
+        let epic = MiniProjectId::generate();
+        let source = CheckoutSource {
+            repository: kontor_core::pull_request::ForgeRepository::parse("example-org/root")
+                .unwrap(),
+            path: root.to_str().unwrap().into(),
+            base_ref: "refs/heads/delivery-next".into(),
+        };
+        let pin = ConsultationCheckout {
+            schema_version: 1,
+            project_id: ProjectId::generate(),
+            epic_id: epic,
+            node_id: node,
+            node_revision: AggregateRevision::INITIAL,
+            container_binding_id: binding.to_string(),
+            bundle_hash: ContentHash::of(b"pinned bundle"),
+            topology: kontor_core::spec::TopologySnapshot {
+                spec_id: TopologySpecId::generate(),
+                version: SpecVersion::FIRST,
+                canonical_hash: ContentHash::of(b"topology"),
+            },
+            policy,
+            key: key.to_string(),
+            checkout: TaskCheckout {
+                schema_version: 1,
+                source: kontor_runtime::checkout::resolve_source(&source, "delivery-next").unwrap(),
+                project_root: source.path.clone(),
+                claim: target.clone(),
+                destination: target.clone(),
+                branch: branch.to_string(),
+                confirmed_keys: vec![key.to_string()],
+                module: None,
+                managed_root: Some(root.join(managed).to_str().unwrap().into()),
+            },
+        };
+        let project = WorkspaceRoot::parse(root.to_str().unwrap()).unwrap();
+        let target = WorkspaceRoot::parse(&target).unwrap();
+        let scope = ExecutionScope::for_epic(EpicScope {
+            mini_project_id: epic,
+            external_epic_key: ExternalId::parse("EXM-1").unwrap(),
+            short_title: ExternalName::parse("Epic").unwrap(),
+        });
+        assert!(
+            verify_selected_consultation(&project, &target, &pin, node, binding, &scope)
+                .await
+                .is_err()
+        );
+        assert!(
+            !Path::new(target.as_str()).exists(),
+            "adapter verification never creates a checkout"
+        );
+        kontor_runtime::checkout::prepare(&pin.checkout).unwrap();
+        verify_selected_consultation(&project, &target, &pin, node, binding, &scope)
+            .await
+            .unwrap();
+        assert!(
+            verify_selected_consultation(
+                &project,
+                &target,
+                &pin,
+                TopologyNodeId::generate(),
+                binding,
+                &scope
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            verify_selected_consultation(
+                &project,
+                &target,
+                &pin,
+                node,
+                ContainerBindingId::generate(),
+                &scope
+            )
+            .await
+            .is_err()
+        );
+        let foreign = WorkspaceRoot::parse(root.parent().unwrap().to_str().unwrap()).unwrap();
+        assert!(
+            verify_selected_consultation(&foreign, &target, &pin, node, binding, &scope)
+                .await
+                .is_err()
+        );
+        let mut altered = pin.clone();
+        altered.checkout.source.common_dir.push_str("-foreign");
+        assert!(
+            verify_selected_consultation(&project, &target, &altered, node, binding, &scope)
+                .await
+                .is_err()
+        );
+        run(&["worktree", "remove", target.as_str()]);
+        assert!(
+            verify_selected_consultation(&project, &target, &pin, node, binding, &scope)
+                .await
+                .is_err()
+        );
+        assert!(!Path::new(target.as_str()).exists());
     }
 }

@@ -27,6 +27,7 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod consultation_checkouts;
 mod desk_adams;
 mod domain_context;
 mod durable_seats;
@@ -12131,7 +12132,25 @@ impl Services {
         let mut cwd = old_cwd.clone();
         let mut task_proof = serde_json::Value::Null;
         let mut predecessors = Vec::new();
-        if let Some(task_id) = node.task_id {
+        let consultation = self.consultation_checkout(node.project_id, node.id)?;
+        let is_consultation = consultation.is_some()
+            || self
+                .state()?
+                .with_store(|s| s.get_consultation_run_by_topology_node(node.project_id, node.id))
+                .map_err(|e| self.refuse(&e))?
+                .is_some();
+        if is_consultation {
+            let root = self.consultation_root(node.project_id, node.id)?;
+            if root.as_str() != old_cwd.as_str() {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation.recovery_binding_mismatch",
+                ));
+            }
+            self.prepare_consultation_checkout(node.project_id, node.id)
+                .await?;
+        }
+        if !is_consultation && let Some(task_id) = node.task_id {
             let state = self.state()?;
             let task = self.task_row(node.project_id, task_id)?;
             let claim = state
@@ -12211,11 +12230,15 @@ impl Services {
                 }
             }
         }
-        let proof = self.preview_hash(&serde_json::json!({
+        let mut proof = serde_json::json!({
             "schema_version":1,
             "node":node,"old_binding":expected,"task":task_proof,
             "canonical_cwd":cwd,"archived_predecessors":predecessors,
-        }))?;
+        });
+        if let Some(pin) = consultation {
+            proof["consultation"] = serde_json::json!(pin);
+        }
+        let proof = self.preview_hash(&proof)?;
         Ok((cwd, proof))
     }
 
@@ -12270,7 +12293,16 @@ impl Services {
             stale_identity: expected.identity.clone(),
             bound_project_native_id: parent_native_id.clone(),
             canonical_cwd: canonical_root,
-            task_container: recovery_node.task_id.is_some(),
+            task_container: recovery_node.task_id.is_some()
+                || self
+                    .consultation_checkout(project_id, topology_node_id)?
+                    .is_some()
+                || state
+                    .with_store(|s| {
+                        s.get_consultation_run_by_topology_node(project_id, topology_node_id)
+                    })
+                    .map_err(|e| self.refuse(&e))?
+                    .is_some(),
             expected_title: retitle.desired_title,
             requested_at: kontor_api::now(),
         };
@@ -15374,7 +15406,6 @@ impl Services {
     ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -15391,8 +15422,7 @@ impl Services {
                 "the runtime selected for Advisor placement is not configured",
             )
         })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -15402,6 +15432,7 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
+        let scope = self.consultation_scope(run.project_id, node.id, scope)?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -16247,7 +16278,6 @@ impl Services {
             self.formal_committee_placement(run, template, None, fleet.as_deref(), false)?;
         }
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -16264,8 +16294,7 @@ impl Services {
                 "the runtime selected for Committee placement is not configured",
             )
         })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -16275,6 +16304,7 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
+        let scope = self.consultation_scope(run.project_id, node.id, scope)?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -16482,7 +16512,6 @@ impl Services {
                     "the consultation seat is absent from its pinned Committee template",
                 )
             })?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -16499,8 +16528,7 @@ impl Services {
                 "the runtime selected for Committee recovery is not configured",
             )
         })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -16510,6 +16538,7 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
+        let scope = self.consultation_scope(run.project_id, node.id, scope)?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -25079,26 +25108,22 @@ impl ApplicationOperations for Services {
                     })?;
                     self.prepare_task_checkout(project_id, task_id).await?;
                 }
-                adapter
-                    .prepare_plane()
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
                 let cwd = if matches!(
                     leaf.kind.as_str(),
                     kind if kind == context.domain.delivery.advisor_kind.as_str()
                         || kind == context.domain.delivery.committee_kind.as_str()
                 ) {
-                    self.consultation_root(
-                        project.root_path.as_str(),
-                        self.epic_tracker_key(project_id, epic_id)?.as_ref(),
-                        leaf.id,
-                    )?
+                    self.consultation_root(project_id, leaf.id)?
                 } else {
                     match leaf.task_id {
                         Some(task_id) => self.task_root(project_id, task_id)?,
                         None => self.runtime_root(project_id, leaf.mini_project_id)?,
                     }
                 };
+                adapter
+                    .prepare_plane()
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
                 self.ensure_container(project_id, &leaf, &cwd, adapter.as_ref())
                     .await?;
             }
@@ -46071,6 +46096,14 @@ impl Services {
             ),
             ContainerSubject::Desk { definition, .. } => (None, Some(definition)),
         };
+        let scope = scope
+            .map(|scope| self.consultation_scope(project_id, node.id, scope))
+            .transpose()?;
+        if self.consultation_checkout(project_id, node.id)?.is_some() {
+            self.consultation_root(project_id, node.id)?;
+            self.prepare_consultation_checkout(project_id, node.id)
+                .await?;
+        }
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
@@ -46373,6 +46406,8 @@ impl Services {
             }
         }
 
+        self.prepare_consultation_checkout(project_id, node.id)
+            .await?;
         let mut parent: Option<ContainerBinding> = None;
         let mut prepared = None;
         for level in &lineage {
@@ -46408,11 +46443,17 @@ impl Services {
             let bound = state
                 .with_store(|store| store.get_topology_node_container(project_id, level.id))
                 .map_err(|error| self.refuse(&error))?;
-            let container_binding_id = bound
+            let frozen_consultation = self.consultation_checkout(project_id, level.id)?;
+            let container_binding_id = frozen_consultation
                 .as_ref()
-                .map(|binding| ContainerBindingId::parse(binding.container_binding_id.as_str()))
+                .map(|pin| ContainerBindingId::parse(&pin.container_binding_id))
                 .transpose()
-                .map_err(|error| self.refuse_domain(&error))?
+                .map_err(|e| self.refuse_domain(&e))?
+                .or(bound
+                    .as_ref()
+                    .map(|binding| ContainerBindingId::parse(binding.container_binding_id.as_str()))
+                    .transpose()
+                    .map_err(|error| self.refuse_domain(&error))?)
                 .unwrap_or_else(ContainerBindingId::generate);
             let bound_native_id = bound
                 .as_ref()
@@ -46443,6 +46484,8 @@ impl Services {
                         // Anything else below a desk (a PR review room) takes
                         // the directory its caller names, as a leaf does.
                         Some(self.desk_root(desk)?)
+                    } else if leaf && self.consultation_checkout(project_id, level.id)?.is_some() {
+                        Some(cwd.clone())
                     } else if level.task_id.is_some() {
                         let worktree = level_scope
                             .as_ref()
@@ -46475,6 +46518,9 @@ impl Services {
                     }
                 }
             };
+            if leaf && let Some(scope) = level_scope.take() {
+                level_scope = Some(self.consultation_scope(project_id, level.id, scope)?);
+            }
             let request = ContainerRequest {
                 container_binding_id,
                 topology_node_id: level.id,
@@ -46618,67 +46664,6 @@ impl Services {
             )
         })?;
         WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
-    }
-
-    /// The directory one consultation's container works in.
-    ///
-    /// A consultation leaf takes the cwd its caller names, and naming the project
-    /// root put every Advisor and Committee of a project on one directory. The
-    /// runtime admits at most one workspace per canonical path, so the second
-    /// consultation an epic ever ran was refused `several Paseo workspaces claim
-    /// this canonical container path` — and an epic that had hosted two was
-    /// refused before it could spawn a single reviewer.
-    ///
-    /// Keyed by the topology node rather than the run: the node is the durable
-    /// identity a re-materialization of the same consultation resolves to, so a
-    /// retry adopts the worktree it already made instead of stranding one per
-    /// attempt.
-    ///
-    /// Under the project's `.worktrees/` deliberately, and not beside the ECP in
-    /// `runtime-roots/`. A consultation seat is verified as a ticket role, which
-    /// refuses "a root or plain local workspace", and the runtime only provisions
-    /// a managed git worktree for a path under `.worktrees/` — anywhere else it
-    /// assumes an externally provisioned root and leaves a plain directory the
-    /// check then rejects. The ECP may sit in `runtime-roots/` because it is a
-    /// session host rather than a ticket role.
-    ///
-    /// The branch that checkout carries is the deterministic one the ASMA CLI
-    /// would derive — `chore/<EPIC-KEY>-consultation-<node id>` — so a
-    /// consultation is never published as a keyless `consultation-<uuid>`
-    /// (ASMA-8101). A consultation that already has its pre-ASMA-8101 checkout
-    /// keeps it: the node is the durable identity, and moving a live
-    /// consultation's tree would strand the one it made.
-    fn consultation_root(
-        &self,
-        project_root: &str,
-        epic_key: Option<&TrackerKey>,
-        node_id: TopologyNodeId,
-    ) -> Result<WorkspaceRoot, ApiError> {
-        let mut legacy = PathBuf::from(project_root);
-        legacy.push(MANAGED_WORKTREES_DIR);
-        legacy.push(format!("consultation-{node_id}"));
-        let root = if legacy.exists() {
-            legacy
-                .to_str()
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the consultation worktree path is not valid UTF-8",
-                    )
-                })?
-                .to_owned()
-        } else {
-            let key = epic_key.ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    BranchRefusal::BindingUnconfirmed.rule(),
-                )
-            })?;
-            let branch =
-                BranchName::derive(BranchType::Chore, key, &format!("consultation {node_id}"));
-            managed_worktree_path(project_root, &branch)
-        };
-        WorkspaceRoot::parse(&root).map_err(|error| self.refuse_domain(&error))
     }
 
     /// The confirmed tracker key an epic's branches carry: the declared

@@ -93,6 +93,15 @@ impl World {
         declared: bool,
         pinned: bool,
     ) -> Self {
+        Self::with_layout(module, confirmed, declared, pinned, None)
+    }
+    fn with_layout(
+        module: Option<&str>,
+        confirmed: bool,
+        declared: bool,
+        pinned: bool,
+        layout: Option<&str>,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let project_root = fixture::repository(&root.join("checkout"));
@@ -100,6 +109,9 @@ impl World {
         let entry = folder.join(crate::config_folder::ENTRY);
         let mut value: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        if let Some(layout) = layout {
+            value["project"]["worktree_layout"] = layout.into();
+        }
         value["project"]["forge"]["base_branch"] = fixture::BASE.into();
         std::fs::write(entry, serde_yaml_ng::to_string(&value).unwrap()).unwrap();
         config::write_runtime_planes(
@@ -869,3 +881,6 @@ async fn public_task_materialization_creates_from_host_source_before_native_bind
         );
     }
 }
+
+#[path = "consultation_checkout_tests.rs"]
+mod consultation;

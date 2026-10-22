@@ -380,6 +380,7 @@ pub trait InvokeOwner: Sync {
     /// The members' working directory.
     fn consultation_root(
         &self,
+        project_id: ProjectId,
         project_root: &str,
         epic_key: Option<&kontor_core::branch::TrackerKey>,
         node_id: TopologyNodeId,
@@ -406,6 +407,15 @@ pub trait InvokeOwner: Sync {
         cwd: &WorkspaceRoot,
         adapter: &dyn RuntimeAdapter,
     ) -> Result<ContainerBindingSnapshot, Self::Error>;
+    /// Attach the owner's exact persisted consultation placement proof.
+    fn consultation_scope(
+        &self,
+        _project: ProjectId,
+        _node: TopologyNodeId,
+        scope: crate::scope::ExecutionScope,
+    ) -> Result<crate::scope::ExecutionScope, Self::Error> {
+        Ok(scope)
+    }
     /// The execution scope the members run in.
     fn execution_scope(
         &self,

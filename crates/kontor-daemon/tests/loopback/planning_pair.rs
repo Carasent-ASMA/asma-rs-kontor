@@ -416,13 +416,20 @@ async fn pair_realm(root: &str) -> PairRealm {
 /// catalog revision persisted beside the bundled one — when it is given, and
 /// the fixture document's members under `role_code`.
 async fn pair_realm_with(
-    root: &str,
+    _root: &str,
     selected: Option<&RoleCatalogRevision>,
     role_code: &str,
 ) -> PairRealm {
-    let owned_world = World::open_empty_with_a_plane().await;
+    let owned_world = World::open_native_consultations().await;
     let world = &owned_world;
     world.daemon.reconcile().await;
+    let checkout = world
+        .directory
+        .path()
+        .join("checkout")
+        .canonicalize()
+        .unwrap();
+    let root = checkout.to_str().unwrap();
     let created = ensure_project(world, "planning-pair-project", "Kontor", root).await;
     assert_eq!(created.status, 200, "{}", created.body);
     let project = created.json()["project_id"]
@@ -1559,7 +1566,9 @@ async fn a_reopened_realm_restores_a_sealed_planning_pair_and_continues_it() {
     let state_root = directory.path().to_owned();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_config_dir(state_root.join("selected config with spaces"))
+            .with_port(0),
         RuntimeRegistry::new(),
     )
     .expect("the same state root reopens");
@@ -4096,7 +4105,9 @@ async fn a_durable_unqualified_member_survives_a_restart_without_a_second_create
     let state_root = directory.path().to_owned();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_config_dir(state_root.join("selected config with spaces"))
+            .with_port(0),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,

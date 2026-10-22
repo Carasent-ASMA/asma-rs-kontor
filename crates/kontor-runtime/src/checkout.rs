@@ -425,7 +425,9 @@ fn git(root: &Path) -> Command {
     command
         .arg("--no-replace-objects")
         .current_dir(root)
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
     for key in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -466,4 +468,48 @@ fn git_status(root: &Path, args: &[&str]) -> Result<bool> {
         Some(1) => Ok(false),
         _ => Err(CheckoutError("checkout.git_read_refused")),
     }
+}
+
+/// Verify a durably bound historical consultation without creating or adopting it.
+///
+/// # Errors
+/// Refuses missing/non-root checkouts, foreign repositories or a changed branch.
+pub fn verify_legacy_consultation(project: &str, target: &str, branch: &str) -> Result<()> {
+    canonical_root(project)?;
+    if canonical_root(target)? != target
+        || common_dir(Path::new(project))? != common_dir(Path::new(target))?
+    {
+        return Err(CheckoutError("consultation.legacy_source_mismatch"));
+    }
+    if observed_branch(target)? != branch {
+        return Err(CheckoutError("consultation.legacy_branch_mismatch"));
+    }
+    Ok(())
+}
+
+/// Refuse a previously unbound consultation branch before freezing its first intent.
+///
+/// # Errors
+/// Existing local/remote refs require durable placement authority, never name adoption.
+pub fn require_new_consultation_branch(snapshot: &TaskCheckout) -> Result<()> {
+    let refs = git_text(
+        Path::new(&snapshot.source.declaration.path),
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    if refs.lines().any(|name| {
+        name == format!("refs/heads/{}", snapshot.branch)
+            || name.strip_prefix("refs/remotes/").is_some_and(|remote| {
+                remote
+                    .split_once('/')
+                    .is_some_and(|(_, branch)| branch == snapshot.branch)
+            })
+    }) {
+        return Err(CheckoutError("consultation.branch_unbound"));
+    }
+    Ok(())
 }

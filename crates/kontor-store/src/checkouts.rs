@@ -57,7 +57,7 @@ fn guard(connection: &Connection, pin: &TaskCheckoutPlacement) -> RepositoryResu
         "SELECT EXISTS (SELECT 1 FROM task_worktrees WHERE (worktree = ?1 OR worktree = ?2)
           AND (project_id <> ?3 OR task_id <> ?4)) OR EXISTS (
           SELECT 1 FROM topology_node_containers binding JOIN topology_nodes node ON node.id = binding.topology_node_id
-          WHERE binding.canonical_cwd = ?2 AND (binding.project_id <> ?3 OR node.task_id IS NOT ?4))",
+          WHERE binding.canonical_cwd = ?2 AND (binding.project_id <> ?3 OR node.task_id IS NOT ?4)) OR EXISTS (SELECT 1 FROM topology_nodes WHERE consultation_intent IS NOT NULL AND json_extract(consultation_intent,'$.checkout.destination')=?2)",
         params![pin.worktree.as_str(), pin.destination.as_str(), pin.project_id.to_string(), pin.task_id.to_string()],
         |row| row.get(0),
     ).map_err(backend)?;

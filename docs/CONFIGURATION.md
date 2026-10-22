@@ -318,14 +318,26 @@ The key is the confirmed canonical epic key; the node is the durable
 TopologyNodeId belonging to that epic/project. No task module is substituted.
 
 The existing bundle manifest pins the layout, managed-root pattern, base
-branch and shared branch rules together. An omitted layout keeps empty/direct
-startup possible and supplies no consultation placement policy. Publishing
-another bundle or editing YAML does not change the activated layout. The
-native consumer must freeze the root checkout source, branch and exact target
-through the existing consultation intent before Git, and preserve existing
-durably bound legacy placements. This checkpoint validates and pins the
-policy; native intent/readback consumption remains WP-08 work, so it does not
-claim selected consultation placement is complete.
+branch and shared branch rules together. Each epic uses its frozen bundle;
+activation or YAML edits do not relocate existing placements. Omission keeps
+empty/direct startup possible and refuses new consultation placement by name.
+
+Before Git or runtime effects, the existing topology node freezes a canonical
+intent with its project/epic/key/node, bundle and layout, explicit
+`host.checkouts.root` declaration, common directory, resolved base commit,
+branch, exact destination and native binding ID. The existing checkout engine
+prepares that source and records correlated Git readback before a native
+binding can commit. A pending retry uses those exact bytes; a confirmed
+placement verifies its existing checkout and refuses a missing destination.
+There is no source search, clone/fetch, new registry or request-time YAML read.
+
+Legacy consultations retain their durably bound path and native identity only
+when their exact Git root, common directory, branch and ownership still agree.
+They are not backfilled or re-rendered. A directory or branch without a durable
+intent/binding is refused, including legacy `consultation-<node>` candidates.
+Recovery retains the same placement proof; containment alone grants nothing.
+The API retains its existing native binding/readback and receipt contracts;
+source/layout intents are internal generated evidence, not authored inputs.
 
 **Route join (Q-04).** The fleet owns the canonical policy; the host owns the
 working route. They meet on two keys: the logical slot and the canonical model.

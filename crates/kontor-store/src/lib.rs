@@ -37,6 +37,7 @@ pub mod authority;
 pub mod backup;
 pub mod checkouts;
 mod commands;
+pub mod consultation_checkouts;
 mod consultation_permissions;
 mod consultation_releases;
 mod events;

@@ -249,11 +249,20 @@ fn additive_upgrade_preserves_existing_graph_without_inventing_checkout_sources(
     drop(store);
     // Exact pre-138 shape of a disposable product fixture; no installation restore.
     let sql = Connection::open(&path).unwrap();
+    let later_evidence:i64=sql.query_row("SELECT (SELECT count(*) FROM task_checkout_placements) + (SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL) + (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL) + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",[],|r|r.get(0)).unwrap();
+    assert_eq!(
+        later_evidence, 0,
+        "historical fixture must not erase checkout or domain evidence"
+    );
+    sql.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback; ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash; ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
     sql.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements; PRAGMA user_version=137;").unwrap();
     drop(sql);
     let store = SqliteStore::open(&path).unwrap();
     assert_eq!(store.realm_id(), realm);
-    assert_eq!(store.schema_version().unwrap(), 138);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        kontor_store::SCHEMA_VERSION
+    );
     let claim = store.task_worktree(project, task).unwrap().unwrap();
     assert_eq!(claim.as_str(), "/fixture/existing");
     assert!(

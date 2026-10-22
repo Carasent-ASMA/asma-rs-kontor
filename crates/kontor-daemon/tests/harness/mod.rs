@@ -235,6 +235,7 @@ struct WorldComposition {
     created_realm: bool,
     /// A test-owned `attention.yml` written before the daemon starts.
     attention: Option<String>,
+    native_consultations: bool,
 }
 
 impl World {
@@ -504,6 +505,61 @@ impl World {
         Self::compose_with(every_capability(), true, false, true, DEFAULT_CAPACITY).await
     }
 
+    /// Explicit selected-folder source/layout for new consultation effects.
+    pub(crate) async fn open_native_consultations() -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            true,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                native_consultations: true,
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Restart only this disposable test Realm, retaining the supported runtime transport.
+    pub(crate) async fn restart_native_consultations(self) -> Self {
+        let Self {
+            historical_epics,
+            directory,
+            daemon,
+            router,
+            fake,
+            project,
+            task,
+            team_run,
+        } = self;
+        drop(router);
+        drop(daemon);
+        let registry = RuntimeRegistry::new()
+            .with(fake_family(), Arc::clone(&fake) as Arc<dyn RuntimeAdapter>);
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path())
+                .with_config_dir(directory.path().join("selected config with spaces"))
+                .with_port(0)
+                .with_derived_read_deadline_seconds(1),
+            registry,
+        )
+        .expect("disposable selected Realm restarts");
+        let router = daemon.router();
+        let world = Self {
+            historical_epics,
+            directory,
+            daemon,
+            router,
+            fake,
+            project,
+            task,
+            team_run,
+        };
+        world.daemon.reconcile().await;
+        world
+    }
+
     /// The same Realm, admitting work under ceilings the operator configured.
     ///
     /// The only way to observe that the ceilings are *configuration* and not a
@@ -636,7 +692,6 @@ impl World {
             RuntimeRegistry::new()
         };
         let mut config = DaemonConfig::at(directory.path())
-            .with_connector_specs(tracker_fixtures::catalog().expect("test catalog"))
             .with_port(0)
             .with_capacity(capacity)
             // The production deadline is twenty seconds, which is the right
@@ -644,6 +699,12 @@ impl World {
             // proves an unanswerable session is refused *by the deadline* has
             // to wait it out, and the property is identical at one second.
             .with_derived_read_deadline_seconds(1);
+        if composition.native_consultations {
+            config = config.with_config_dir(native_consultation_config(directory.path()));
+        } else {
+            config =
+                config.with_connector_specs(tracker_fixtures::catalog().expect("test catalog"));
+        }
         if let Some(connectors) = composition.jira_connectors {
             config = config.with_jira_connectors(connectors);
         }
@@ -1569,7 +1630,15 @@ impl DomainSelectionFixture {
         let catalog = &domain.role_catalogs[0];
         let core_team = kontor_daemon::orchestration::propose_core_team(catalog, &domain)
             .expect("explicit fixture roster");
-        let orchestration = kontor_daemon::orchestration::propose_orchestration().unwrap();
+        let selected = world
+            .directory
+            .path()
+            .join("selected config with spaces/orchestration/orchestration.yml");
+        let orchestration = if selected.exists() {
+            std::fs::read_to_string(selected).unwrap()
+        } else {
+            kontor_daemon::orchestration::propose_orchestration().unwrap()
+        };
         let fleet = include_str!("../../../../config/examples/orchestration/fleet.yml");
         let mut bundle = kontor_daemon::orchestration::resolve_bundle(
             &kontor_daemon::orchestration::BundleSources {
@@ -1605,3 +1674,28 @@ impl Drop for DomainSelectionFixture {
         }
     }
 }
+
+/// Authored test inputs and a real source checkout, all under one disposable owner.
+fn native_consultation_config(root: &Path) -> std::path::PathBuf {
+    let checkout = native_checkout_fixture::repository(&root.join("checkout"));
+    let folder = native_config_fixture::write_config_folder(root);
+    let entry = folder.join("orchestration/orchestration.yml");
+    let mut yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+    yaml["project"]["key"] = "ASMA".into();
+    yaml["project"]["tracker"]["project_key"] = "ASMA".into();
+    yaml["project"]["forge"]["base_branch"] = native_checkout_fixture::BASE.into();
+    yaml["project"]["worktree_layout"] = "managed/trees/<key-slug>/<module>".into();
+    std::fs::write(entry, serde_yaml_ng::to_string(&yaml).unwrap()).unwrap();
+    let tracker = folder.join("tracker/jira.yml");
+    let mut yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&tracker).unwrap()).unwrap();
+    yaml["project_key"] = "ASMA".into();
+    std::fs::write(tracker, serde_yaml_ng::to_string(&yaml).unwrap()).unwrap();
+    std::fs::write(folder.join("host.yml"),serde_yaml_ng::to_string(&serde_json::json!({"schema_version":1,"runtime":{"planes":{"schema_version":5,"runtimes":[]}},"checkouts":{"root":native_checkout_fixture::source(&checkout),"modules":{}}})).unwrap()).unwrap();
+    folder
+}
+#[path = "../support/checkouts.rs"]
+mod native_checkout_fixture;
+#[path = "../support/config.rs"]
+pub(crate) mod native_config_fixture;

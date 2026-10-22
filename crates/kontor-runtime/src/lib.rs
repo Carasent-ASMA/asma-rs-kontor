@@ -41,6 +41,7 @@ pub mod admission;
 pub mod binding_timeline;
 pub mod capability;
 pub mod checkout;
+pub mod consultation_checkout;
 pub mod container;
 pub mod durable_seat;
 pub mod fake;
