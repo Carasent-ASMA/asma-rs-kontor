@@ -1109,8 +1109,8 @@ reported separately from daemon archive. Its durable receipt is rechecked on
 reload; a readable, unknown, timeout, authentication or wrong-ID reply cannot
 hide a present session. Availability evidence still expires after one minute;
 a settled action reconciles its exact stale list snapshot until it changes.
-The action outcome remains visible when its row disappears. The Current-default
-filter proposal is a separate integration patch, not part of this contribution.
+The action outcome remains visible when its row disappears.
+The Current default is part of the combined Sessions view.
 
 Archive does not require provider history. Resume requires its separate history
 and route preflight. Provider-history
