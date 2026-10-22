@@ -46,7 +46,11 @@ impl Realm {
             .role_catalogs
             .remove(0);
         let orchestration = propose_orchestration().expect("selector");
-        let core_team = propose_core_team(&catalog).expect("proposal");
+        let core_team = propose_core_team(
+            &catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("proposal");
         // The roster hash the policy's leadership keys name comes from the
         // proposal itself, resolved once with a policy binding no leadership.
         let roster = resolve_bundle(
@@ -56,6 +60,7 @@ impl Realm {
                 core_team: &core_team,
             },
             &catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
         )
         .expect("the proposal resolves")
         .roster
@@ -69,6 +74,7 @@ impl Realm {
                 core_team: &core_team,
             },
             &catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
         )
         .expect("the bundle resolves");
         assert_eq!(bundle.roster.hash().as_str(), roster);

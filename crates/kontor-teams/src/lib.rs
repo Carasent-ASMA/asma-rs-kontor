@@ -74,8 +74,8 @@ pub mod run;
 pub mod spec;
 
 pub use operational::{
-    CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, EpicPresence, MANDATORY_LEAD_ROLE,
-    MANDATORY_PROGRAM_ROLE, OperationalEffects, OperationalKinds, OperationalWorkflow,
+    CoreTeamPurposeRoles, CoreTeamRevision, CoreTeamSeat, CoreTeamSeatPurpose,
+    CoreTeamSeatSelection, EpicPresence, OperationalEffects, OperationalKinds, OperationalWorkflow,
     PinnedConfiguration, ProjectSessionBaseBinding, PromotionNode, PromotionOutcome, PromotionPlan,
     PromotionPreview, PromotionSeat, PromotionTarget, QuickSession, QuickSessionRequest,
     QuickSourceEvidence, RosterUpgradeOutcome, RosterUpgradePlan, RosterUpgradePreview,

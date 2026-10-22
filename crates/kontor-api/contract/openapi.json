@@ -19229,6 +19229,19 @@
             "type": "string",
             "description": "When a concrete epic materializes it."
           },
+          "purposes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "architecture_closer",
+                "process_closer",
+                "control"
+              ]
+            },
+            "description": "Frozen purposes derived by the server; legacy empty is non-granting. Never accepted as authored seat selections.",
+            "uniqueItems": true
+          },
           "role": {
             "$ref": "#/components/schemas/ResolvedRoleRefDto",
             "description": "The role, as the server resolved it."

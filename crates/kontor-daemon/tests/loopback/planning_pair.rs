@@ -462,19 +462,29 @@ async fn pair_realm_with(
                     .expect("the selected catalog revision is persisted")
             });
             let version = catalog.version.get();
-            publish_core_team(
-                world,
-                &project,
-                serde_json::json!([{
-                    "role": {
-                        "catalog_revision": {"id": SEEDED_CATALOG, "version": version},
-                        "role_code": "LSA",
-                    },
-                    "presence": "required",
-                    "ad_hoc_allowed": true,
-                }]),
+            // Explicit fixture snapshot, not an API grant from an unselected catalog.
+            let domain = kontor_profiles::bundled_operational_domain().unwrap();
+            let roster = kontor_teams::CoreTeamRevision::resolve(
+                SpecVersion::FIRST,
+                catalog,
+                &[],
+                domain.delivery.purpose_roles(),
             )
-            .await;
+            .unwrap();
+            world.daemon.state().with_store(|store| {
+                store
+                    .publish_core_team_revision(
+                        &kontor_core::repository::StoredCoreTeamRevision {
+                            project_id: project_id_of(&project),
+                            version: roster.version,
+                            catalog_hash: roster.catalog_hash,
+                            seats: serde_json::to_value(roster.seats).unwrap(),
+                            published_at: kontor_api::now(),
+                        },
+                        catalog,
+                    )
+                    .expect("the explicit catalog/domain fixture roster is frozen");
+            });
             quick_session_selecting(world, &project, version, "LSA").await
         }
     };

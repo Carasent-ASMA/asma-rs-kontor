@@ -22,22 +22,6 @@ use kontor_core::spec::{CatalogRoleRef, CodeLifecycle, RoleCatalogRevision, Topo
 // `kontor_teams::EpicPresence` callers keep one path to it.
 pub use kontor_core::spec::EpicPresence;
 
-/// The role code every epic must seat as its lead architect.
-///
-/// Exported because two layers need the same spelling: this module inserts the
-/// seat, and the composition root has to find it again to hand the promotion's
-/// work to. Two literals would agree until the day one of them was corrected.
-///
-/// It is still a literal, which is a compromise. Topology kinds and the control
-/// seat's role are read from `OperationalDelivery` so a deployment can correct
-/// them without a code change, and these two belong there for the same reason —
-/// a catalog that spells its lead architect differently currently gets a
-/// refusal naming a role it never had. Moving them is a change to the profile
-/// pack specification, which OP-01 owns.
-pub const MANDATORY_LEAD_ROLE: &str = "LSA";
-
-/// The role code every epic must seat as its technical program manager.
-pub const MANDATORY_PROGRAM_ROLE: &str = "TPM";
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +35,42 @@ kontor_core::closed_enum! {
         /// Archive the source after the handoff is delivered.
         Archive => "archive",
     }
+}
+
+pub use kontor_core::spec::CoreTeamSeatPurpose;
+
+/// Resolver inputs borrowed from the same authorized delivery/catalog snapshot.
+/// Deliberately not an authored or deserializable policy map.
+#[derive(Debug, Clone, Copy)]
+pub struct CoreTeamPurposeRoles<'a> {
+    /// Architecture selector.
+    pub architecture_closer: &'a RoleCode,
+    /// Process selector.
+    pub process_closer: &'a RoleCode,
+    /// Control selector.
+    pub control: &'a RoleCode,
+}
+
+impl<'a> CoreTeamPurposeRoles<'a> {
+    fn role(self, purpose: CoreTeamSeatPurpose) -> &'a RoleCode {
+        match purpose {
+            CoreTeamSeatPurpose::ArchitectureCloser => self.architecture_closer,
+            CoreTeamSeatPurpose::ProcessCloser => self.process_closer,
+            CoreTeamSeatPurpose::Control => self.control,
+        }
+    }
+}
+
+fn read_purposes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<CoreTeamSeatPurpose>, D::Error> {
+    let purposes = Vec::<CoreTeamSeatPurpose>::deserialize(deserializer)?;
+    if purposes.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(serde::de::Error::custom(
+            "purposes must be a unique set in enum order",
+        ));
+    }
+    Ok(purposes)
 }
 
 /// One requested Core Team role before the server resolves its catalog facts.
@@ -79,6 +99,13 @@ pub struct CoreTeamSeat {
     pub presence: EpicPresence,
     /// Whether this role may start a Quick session.
     pub ad_hoc_allowed: bool,
+    /// Derived frozen authority, never caller-authored privilege. Empty legacy rows grant none.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_purposes"
+    )]
+    pub purposes: Vec<CoreTeamSeatPurpose>,
 }
 
 /// One immutable Project Core Team revision.
@@ -96,9 +123,8 @@ pub struct CoreTeamRevision {
 impl CoreTeamRevision {
     /// Resolve a new revision against one immutable role catalog.
     ///
-    /// Missing mandatory `LSA` and `TPM` entries are inserted as required
-    /// seats. Supplying either mandatory role as anything but required is
-    /// rejected instead of silently weakening it.
+    /// The three delivery selectors resolve by exact catalog RoleCode equality.
+    /// Missing purpose owners are inserted as required seats, coalescing equal codes.
     ///
     /// # Errors
     /// Rejects an invalid catalog, unknown/non-current/duplicate role, or a
@@ -107,7 +133,14 @@ impl CoreTeamRevision {
         version: SpecVersion,
         catalog: &RoleCatalogRevision,
         selections: &[CoreTeamSeatSelection],
+        purposes: CoreTeamPurposeRoles<'_>,
     ) -> DomainResult<Self> {
+        if purposes.architecture_closer == purposes.process_closer {
+            return Err(DomainError::invalid(
+                "CoreTeamRevision",
+                "architecture/process purpose owners must be separate",
+            ));
+        }
         let catalog_hash = catalog.canonicalize()?.hash().clone();
         let mut codes = BTreeSet::new();
         let mut seats = Vec::with_capacity(selections.len() + 2);
@@ -121,8 +154,9 @@ impl CoreTeamRevision {
             seats.push(resolve_seat(catalog, selection)?);
         }
 
-        for (code, quick) in [(MANDATORY_PROGRAM_ROLE, false), (MANDATORY_LEAD_ROLE, true)] {
-            let role_code = RoleCode::parse(code)?;
+        for purpose in CoreTeamSeatPurpose::ALL.iter().rev() {
+            let role_code = purposes.role(*purpose).clone();
+            let quick = &role_code == purposes.architecture_closer;
             match seats.iter().find(|seat| seat.role.role_code == role_code) {
                 Some(seat) if seat.presence != EpicPresence::Required => {
                     return Err(DomainError::invalid(
@@ -146,11 +180,20 @@ impl CoreTeamRevision {
             }
         }
 
-        Ok(Self {
+        for seat in &mut seats {
+            seat.purposes = CoreTeamSeatPurpose::ALL
+                .iter()
+                .copied()
+                .filter(|purpose| purposes.role(*purpose) == &seat.role.role_code)
+                .collect();
+        }
+        let revision = Self {
             version,
             catalog_hash,
             seats,
-        })
+        };
+        revision.validate_purposes()?;
+        Ok(revision)
     }
 
     /// The canonical document of this complete immutable revision.
@@ -163,7 +206,81 @@ impl CoreTeamRevision {
     /// # Errors
     /// Canonical-document limits.
     pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        self.validate_purposes()?;
         canonical_document(self)
+    }
+
+    /// Validate marker ordering, unique owners and required presence. Untagged legacy rows remain readable.
+    ///
+    /// # Errors
+    /// Partial, duplicate, ambiguous or conflicting resolved purpose metadata.
+    pub fn validate_purposes(&self) -> DomainResult<()> {
+        for seat in &self.seats {
+            if seat.purposes.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(DomainError::invalid(
+                    "CoreTeamRevision",
+                    "invalid or duplicate purposes",
+                ));
+            }
+        }
+        if self.seats.iter().all(|seat| seat.purposes.is_empty()) {
+            return Ok(());
+        }
+        let mut slots = BTreeSet::new();
+        let mut roles = BTreeSet::new();
+        for seat in &self.seats {
+            if !slots.insert(&seat.role_slot_id) || !roles.insert(&seat.role.role_code) {
+                return Err(DomainError::invalid(
+                    "CoreTeamRevision",
+                    "duplicate or ambiguous role-slot binding",
+                ));
+            }
+        }
+        let mut owners = Vec::new();
+        for purpose in CoreTeamSeatPurpose::ALL {
+            let found: Vec<_> = self
+                .seats
+                .iter()
+                .filter(|seat| seat.purposes.contains(purpose))
+                .collect();
+            let [owner] = found.as_slice() else {
+                return Err(DomainError::invalid(
+                    "CoreTeamRevision",
+                    "missing or ambiguous purpose ownership",
+                ));
+            };
+            if owner.presence != EpicPresence::Required {
+                return Err(DomainError::invalid(
+                    "CoreTeamRevision",
+                    "purpose owner must be required",
+                ));
+            }
+            owners.push(*owner);
+        }
+        if owners[0].role_slot_id == owners[1].role_slot_id
+            || owners[0].role.role_code == owners[1].role.role_code
+        {
+            return Err(DomainError::invalid(
+                "CoreTeamRevision",
+                "conflicting architecture/process purpose ownership",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Find the exact frozen owner; no role-name, order or current-policy inference.
+    ///
+    /// # Errors
+    /// Invalid markers or `role_purpose_unpinned` for legacy/missing authority.
+    pub fn seat_for_purpose(&self, purpose: CoreTeamSeatPurpose) -> DomainResult<&CoreTeamSeat> {
+        self.validate_purposes()?;
+        self.seats
+            .iter()
+            .find(|seat| seat.purposes.contains(&purpose))
+            .ok_or(DomainError::MissingAuthority {
+                subject: "CoreTeamRevision",
+                rule: "role_purpose_unpinned",
+            })
     }
 
     /// Roles visible in the Quick-session picker.
@@ -572,6 +689,9 @@ impl OperationalWorkflow {
         project_id: ProjectId,
         revision: CoreTeamRevision,
     ) -> DomainResult<(CoreTeamRevision, ContentHash)> {
+        for purpose in CoreTeamSeatPurpose::ALL {
+            revision.seat_for_purpose(*purpose)?;
+        }
         let hash = canonical_hash(&(&project_id, &revision))?;
         Ok((revision, hash))
     }
@@ -587,6 +707,9 @@ impl OperationalWorkflow {
         revision: CoreTeamRevision,
         preview_hash: &ContentHash,
     ) -> DomainResult<CoreTeamRevision> {
+        for purpose in CoreTeamSeatPurpose::ALL {
+            revision.seat_for_purpose(*purpose)?;
+        }
         let intent_hash = canonical_hash(&(&project_id, &revision, preview_hash))?;
         let key_text = key.to_string();
         if let Some(bound) = self.core_team_keys.get(&key_text) {
@@ -780,6 +903,9 @@ impl OperationalWorkflow {
                     subject: "Promotion",
                     rule: "the project has no Core Team revision",
                 })?;
+        for purpose in CoreTeamSeatPurpose::ALL {
+            roster.seat_for_purpose(*purpose)?;
+        }
         let mini_project_id = MiniProjectId::generate();
         let epic_node_id = TopologyNodeId::generate();
         let control_node_id = TopologyNodeId::generate();
@@ -839,7 +965,7 @@ impl OperationalWorkflow {
     ///
     /// # Errors
     /// Rejects a stale source revision, changed/reused key, unknown preview,
-    /// missing LSA, or semantic effect refusal.
+    /// an unpinned architecture owner, or semantic effect refusal.
     pub async fn apply_promotion<E: OperationalEffects>(
         &mut self,
         key: &IdempotencyKey,
@@ -893,21 +1019,31 @@ impl OperationalWorkflow {
             self.promotion_keys.insert(key_text, quick_text.clone());
         }
 
-        effects.materialize_epic(&draft.preview.plan).await?;
+        let architecture = draft
+            .preview
+            .plan
+            .core_team
+            .seat_for_purpose(CoreTeamSeatPurpose::ArchitectureCloser)?;
         let lsa = draft
             .preview
             .plan
             .seats
             .iter()
-            .find(|seat| seat.role.role_code.as_str() == "LSA")
+            .find(|seat| {
+                architecture.role_slot_id == seat.role_slot_id && architecture.role == seat.role
+            })
             .ok_or_else(|| {
-                DomainError::invalid("Promotion", "the frozen roster has no LSA seat")
+                DomainError::invalid(
+                    "Promotion",
+                    "role_slot_binding_mismatch: frozen architecture owner",
+                )
             })?;
         let handoff = draft
             .preview
             .plan
             .handoff
             .canonical(draft.preview.plan.handoff.realm_id)?;
+        effects.materialize_epic(&draft.preview.plan).await?;
         effects.deliver_handoff(lsa.id, &handoff).await?;
         if draft.preview.plan.source_disposition == SourceDisposition::Archive {
             let quick = self.quick(quick_session_id)?.clone();
@@ -968,6 +1104,9 @@ impl OperationalWorkflow {
                 "the project roster is not the next epic revision",
             ));
         }
+        for purpose in CoreTeamSeatPurpose::ALL {
+            target.seat_for_purpose(*purpose)?;
+        }
         let draft_key = roster_draft_key(quick_session_id, target.version);
         if let Some(preview) = self.roster_drafts.get(&draft_key) {
             return Ok(preview.clone());
@@ -1001,7 +1140,7 @@ impl OperationalWorkflow {
             new_seats,
         };
         let preview = RosterUpgradePreview {
-            preview_hash: canonical_hash(&plan)?,
+            preview_hash: canonical_hash(&(&current, &plan))?,
             plan,
         };
         self.roster_drafts.insert(draft_key, preview.clone());
@@ -1053,6 +1192,16 @@ impl OperationalWorkflow {
         }
 
         let quick_text = preview.plan.quick_session_id.to_string();
+        let current = &self.epic_rosters[&quick_text];
+        if canonical_hash(&(current, &preview.plan))? != preview.preview_hash {
+            return Err(DomainError::invalid(
+                "RosterUpgrade",
+                "the frozen source roster moved since preview",
+            ));
+        }
+        for purpose in CoreTeamSeatPurpose::ALL {
+            preview.plan.target.seat_for_purpose(*purpose)?;
+        }
         let mini_project_id = self.promotions[&quick_text]
             .outcome
             .as_ref()
@@ -1127,6 +1276,7 @@ fn resolve_seat(
         },
         presence: selection.presence,
         ad_hoc_allowed: selection.ad_hoc_allowed,
+        purposes: Vec::new(),
     })
 }
 

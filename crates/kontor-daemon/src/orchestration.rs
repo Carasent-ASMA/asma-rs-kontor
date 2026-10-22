@@ -151,7 +151,15 @@ pub fn catalog_pin_of(core_team: &str) -> Result<RoleCatalogPin, FleetError> {
 pub fn resolve_bundle(
     sources: &BundleSources<'_>,
     catalog: &RoleCatalogRevision,
+    domain: &kontor_profiles::OperationalDomainPack,
 ) -> Result<ResolvedBundle, FleetError> {
+    if !domain
+        .role_catalogs
+        .iter()
+        .any(|candidate| candidate == catalog)
+    {
+        return Err(invalid(O04));
+    }
     crate::project_branch::parse(sources.orchestration).map_err(invalid)?;
     let publication_policy =
         crate::project_policy::parse(sources.orchestration).map_err(invalid)?;
@@ -189,8 +197,13 @@ pub fn resolve_bundle(
             ad_hoc_allowed: seat.ad_hoc_allowed,
         })
         .collect();
-    let revision = CoreTeamRevision::resolve(source.version, catalog, &selections)
-        .map_err(|_| invalid(O05))?;
+    let revision = CoreTeamRevision::resolve(
+        source.version,
+        catalog,
+        &selections,
+        domain.delivery.purpose_roles(),
+    )
+    .map_err(|_| invalid(O05))?;
     let declared = source
         .seats
         .iter()
@@ -241,9 +254,17 @@ pub fn resolve_bundle(
 ///
 /// # Errors
 /// O-05 when the catalog cannot seat the mandatory roles.
-pub fn propose_core_team(catalog: &RoleCatalogRevision) -> Result<String, FleetError> {
-    let revision =
-        CoreTeamRevision::resolve(SpecVersion::FIRST, catalog, &[]).map_err(|_| invalid(O05))?;
+pub fn propose_core_team(
+    catalog: &RoleCatalogRevision,
+    domain: &kontor_profiles::OperationalDomainPack,
+) -> Result<String, FleetError> {
+    let revision = CoreTeamRevision::resolve(
+        SpecVersion::FIRST,
+        catalog,
+        &[],
+        domain.delivery.purpose_roles(),
+    )
+    .map_err(|_| invalid(O05))?;
     let source = CoreTeamSource {
         schema_version: SOURCE_SCHEMA_VERSION,
         version: revision.version,
@@ -360,14 +381,26 @@ bindings:
 
     pub(crate) fn authoring() -> Authoring {
         let catalog = catalog();
-        let roster = CoreTeamRevision::resolve(kontor_core::id::SpecVersion::FIRST, &catalog, &[])
-            .expect("LSA and TPM")
-            .canonicalize()
-            .expect("canonical roster");
+        let roster = CoreTeamRevision::resolve(
+            kontor_core::id::SpecVersion::FIRST,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM")
+        .canonicalize()
+        .expect("canonical roster");
         Authoring {
             orchestration: propose_orchestration().expect("selector"),
             fleet: policy(roster.hash().as_str()),
-            core_team: propose_core_team(&catalog).expect("proposal"),
+            core_team: propose_core_team(
+                &catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap(),
+            )
+            .expect("proposal"),
             catalog,
         }
     }
@@ -395,9 +428,22 @@ mod tests {
     #[test]
     fn the_explicit_proposal_resolves_to_the_exact_mandatory_revision() {
         let authoring = authoring();
-        let bundle = resolve_bundle(&authoring.sources(), &authoring.catalog).expect("resolves");
-        let expected = CoreTeamRevision::resolve(SpecVersion::FIRST, &authoring.catalog, &[])
-            .expect("LSA and TPM");
+        let bundle = resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("resolves");
+        let expected = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &authoring.catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM");
         assert_eq!(bundle.revision, expected);
         assert_eq!(bundle.roster, expected.canonicalize().expect("canonical"));
         assert_eq!(
@@ -443,7 +489,12 @@ mod tests {
             ])
         );
         // Deterministic: the same bytes are the same bundle.
-        let again = resolve_bundle(&authoring.sources(), &authoring.catalog).expect("resolves");
+        let again = resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("resolves");
         assert_eq!(
             again.manifest.canonicalize().expect("canonical").hash(),
             manifest.canonicalize().expect("canonical").hash()
@@ -479,7 +530,11 @@ mod tests {
                 ..authoring.sources()
             };
             assert_eq!(
-                refused(resolve_bundle(&sources, &authoring.catalog)),
+                refused(resolve_bundle(
+                    &sources,
+                    &authoring.catalog,
+                    &kontor_profiles::bundled_operational_domain().unwrap()
+                )),
                 O06,
                 "{core_team}"
             );
@@ -497,6 +552,7 @@ mod tests {
                     ..authoring.sources()
                 },
                 &authoring.catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap(),
             ))
         };
         let selector = |edit: fn(&mut serde_yaml_ng::Value)| edited(&authoring.orchestration, edit);
@@ -565,7 +621,14 @@ mod tests {
             fleet: "schema_version: 3\n",
             ..authoring.sources()
         };
-        assert!(resolve_bundle(&sources, &authoring.catalog).is_err());
+        assert!(
+            resolve_bundle(
+                &sources,
+                &authoring.catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap()
+            )
+            .is_err()
+        );
     }
 
     #[test]

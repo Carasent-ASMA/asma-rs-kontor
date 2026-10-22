@@ -2578,6 +2578,36 @@ const TOPOLOGY_SPEC_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
 /// A published role catalog is project configuration on the same footing.
 const ROLE_CATALOG_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
 
+fn insert_role_catalog(
+    transaction: &rusqlite::Transaction<'_>,
+    catalog: &RoleCatalogRevision,
+    shareability: &Shareability,
+    published_at: Timestamp,
+) -> RepositoryResult<ContentHash> {
+    let document = catalog.canonicalize()?;
+    shareability.validate_for(ROLE_CATALOG_TIER)?;
+    transaction
+        .execute(
+            "INSERT INTO role_catalog_revisions
+                     (catalog_id, version, name, definition, definition_hash, published_at,
+                      shareability_class, shareability_classifier, shareability_provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                catalog.catalog_id.to_string(),
+                version_column(catalog.version),
+                catalog.name.as_str(),
+                document.json(),
+                document.hash().as_str(),
+                text(published_at),
+                shareability.class.as_str(),
+                shareability.classifier.identity().map(ExternalName::as_str),
+                shareability.provenance.as_str(),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(document.hash().clone())
+}
+
 /// Rebuild one stamp from its three stored columns.
 ///
 /// The pairing is re-proved on the way out as well as on the way in, so a row
@@ -3085,8 +3115,65 @@ impl SqliteStore {
     pub fn publish_core_team_revision(
         &self,
         revision: &StoredCoreTeamRevision,
+        catalog: &RoleCatalogRevision,
     ) -> RepositoryResult<()> {
+        let document = catalog.canonicalize()?;
+        if document.hash() != &revision.catalog_hash {
+            return Err(RepositoryError::Conflict {
+                subject: "core team catalog",
+                rule: "role_purpose_catalog_hash_mismatch",
+            });
+        }
+        let resolved = kontor_teams::CoreTeamRevision {
+            version: revision.version,
+            catalog_hash: revision.catalog_hash.clone(),
+            seats: serde_json::from_value(revision.seats.clone()).map_err(|_| {
+                RepositoryError::Conflict {
+                    subject: "core team purposes",
+                    rule: "invalid resolved seats",
+                }
+            })?,
+        };
+        for purpose in kontor_teams::CoreTeamSeatPurpose::ALL {
+            resolved.seat_for_purpose(*purpose)?;
+        }
+        for seat in &resolved.seats {
+            if seat.role.catalog_id != catalog.catalog_id
+                || seat.role.catalog_revision != catalog.version
+                || catalog.role(&seat.role.role_code).is_none_or(|role| {
+                    role.lifecycle != kontor_core::spec::CodeLifecycle::Current
+                        || role.standard_title != seat.role.standard_title
+                })
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team purposes",
+                    rule: "role_purpose_catalog_role_mismatch",
+                });
+            }
+        }
         let transaction = self.begin()?;
+        let held: Option<String> = transaction.query_row(
+            "SELECT definition_hash FROM role_catalog_revisions WHERE catalog_id = ?1 AND version = ?2",
+            params![catalog.catalog_id.to_string(), version_column(catalog.version)], |row| row.get(0),
+        ).optional().map_err(backend)?;
+        match held {
+            Some(hash) if hash != document.hash().as_str() => {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team catalog",
+                    rule: "role_purpose_catalog_hash_mismatch",
+                });
+            }
+            Some(_) => {}
+            None => {
+                insert_role_catalog(
+                    &transaction,
+                    catalog,
+                    &Shareability::default_for(ROLE_CATALOG_TIER)?,
+                    revision.published_at,
+                )?;
+            }
+        }
+
         let current: Option<i64> = transaction
             .query_row(
                 "SELECT MAX(version) FROM core_team_revisions WHERE project_id = ?1",
@@ -11122,30 +11209,10 @@ impl TopologyRepository for SqliteStore {
         shareability: &Shareability,
         published_at: Timestamp,
     ) -> RepositoryResult<ContentHash> {
-        let document = catalog.canonicalize()?;
-        shareability.validate_for(ROLE_CATALOG_TIER)?;
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO role_catalog_revisions
-                     (catalog_id, version, name, definition, definition_hash, published_at,
-                      shareability_class, shareability_classifier, shareability_provenance)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    catalog.catalog_id.to_string(),
-                    version_column(catalog.version),
-                    catalog.name.as_str(),
-                    document.json(),
-                    document.hash().as_str(),
-                    text(published_at),
-                    shareability.class.as_str(),
-                    shareability.classifier.identity().map(ExternalName::as_str),
-                    shareability.provenance.as_str(),
-                ],
-            )
-            .map_err(backend)?;
+        let hash = insert_role_catalog(&transaction, catalog, shareability, published_at)?;
         transaction.commit().map_err(backend)?;
-        Ok(document.hash().clone())
+        Ok(hash)
     }
 
     fn get_role_catalog_shareability(

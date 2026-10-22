@@ -17,7 +17,16 @@ fn roster() -> CoreTeamRevision {
         .unwrap()
         .role_catalogs
         .remove(0);
-    CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).unwrap()
+    CoreTeamRevision::resolve(
+        SpecVersion::FIRST,
+        &catalog,
+        &[],
+        kontor_profiles::bundled_operational_domain()
+            .unwrap()
+            .delivery
+            .purpose_roles(),
+    )
+    .unwrap()
 }
 
 fn frozen(revision: CoreTeamRevision) -> FrozenRoster {
