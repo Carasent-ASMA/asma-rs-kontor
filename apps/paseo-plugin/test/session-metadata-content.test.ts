@@ -49,6 +49,10 @@ describe("contextual metadata help", () => {
     expect(reportedUsageHelp(huge)).toContain("Input is unknown: input plus cache reads exceeds the exact integer range.");
     expect(reportedUsageHelp(huge)).not.toContain("Input count");
     expect(values(huge)["Input with cache reads"]).toBe("Unknown; the sum exceeds the exact integer range");
+    // With no output the input is still a valid count whose sum is unknown, not an invalid report.
+    const inputOnly = { ...huge, telemetry: { lastUsage: { inputTokens: Number.MAX_SAFE_INTEGER, cachedInputTokens: 10 } } };
+    expect(reportedUsageHelp(inputOnly)).toBe("Last provider report, not a session total; Paseo supplies no session total or report time. Input includes cache reads, which this adapter reports apart from input. ≥ marks a lower bound: cache writes or cache inclusion are not reported. Input is unknown: input plus cache reads exceeds the exact integer range. Output count not reported.");
+    expect(reportedUsageHelp(inputOnly)).not.toContain("invalid");
   });
 
   it("keeps exact custom IDs/counts and uncertainty among visible facts", () => {

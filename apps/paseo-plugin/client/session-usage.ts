@@ -105,7 +105,7 @@ export function usagePresentation(entry: SessionUsageEntry, locale?: string) {
       : `${report.lowerBound ? "at least " : ""}${exactTokens(report.input, locale)}${report.addedCacheReads === null ? "" : `, including ${exactTokens(report.addedCacheReads, locale)} cache reads`}`;
   const spokenCache = report.unplacedCacheReads === null ? "" : ` Cache reads: ${exactTokens(report.unplacedCacheReads, locale)}; whether input includes them is unknown for this route.`;
   return {
-    label: report.input === null && report.output === null ? "—" : `Last report ${input} ↓ · ${output} ↑${unplaced}`,
+    label: report.input === null && report.output === null && report.unplacedCacheReads === null ? "—" : `Last report ${input} ↓ · ${output} ↑${unplaced}`,
     spoken: `Last usage report, not a session total. Input tokens: ${spokenInput}. Output tokens: ${exactTokens(usage?.outputTokens, locale)}.${spokenCache}`,
   };
 }

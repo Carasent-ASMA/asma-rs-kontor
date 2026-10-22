@@ -88,6 +88,15 @@ describe("latest report, without invented session totals", () => {
     expect(lines(aliased)["Report source and scope"]).toContain("never added to input");
   });
 
+  it("shows an unidentified route's cache reads when it reports no input or output", () => {
+    const cacheOnly = routed("opaque-route", { cachedInputTokens: 9 });
+    expect(usagePresentation(cacheOnly, "en").label).toBe("Last report — ↓ · — ↑ · 9 cached");
+    expect(usagePresentation(cacheOnly, "en").spoken).toContain("Cache reads: 9; whether input includes them is unknown for this route.");
+    // Identified adapters place cache reads by contract, so cache alone is still no consumption counter.
+    expect(usagePresentation(routed("codex", { cachedInputTokens: 9 })).label).toBe("—");
+    expect(usagePresentation(routed("claude", { cachedInputTokens: 9 })).label).toBe("—");
+  });
+
   it.each(["claude", "opencode"])("turns an unsafe %s input sum into unknown, never a false exact total", (provider) => {
     const huge = routed(provider, { inputTokens: Number.MAX_SAFE_INTEGER, cachedInputTokens: 10, outputTokens: 1 });
     expect(latestReport(huge)).toMatchObject({ input: null, inputOverflow: true, addedCacheReads: 10, output: 1 });

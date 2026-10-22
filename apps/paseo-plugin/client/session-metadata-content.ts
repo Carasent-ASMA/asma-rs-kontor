@@ -18,7 +18,7 @@ export function reportedUsageHelp(entry: SessionUsageEntry): string {
   const usage = entry.telemetry?.lastUsage;
   const report = latestReport(entry);
   const unavailable = (value: unknown) => value == null ? "not reported" : "invalid";
-  if (report.input === null && report.output === null) return `Input count ${unavailable(usage?.inputTokens)}; output count ${unavailable(usage?.outputTokens)}.`;
+  if (report.input === null && report.output === null && !report.inputOverflow) return `Input count ${unavailable(usage?.inputTokens)}; output count ${unavailable(usage?.outputTokens)}.`;
   return [
     "Last provider report, not a session total; Paseo supplies no session total or report time.",
     report.addedCacheReads === null ? null : "Input includes cache reads, which this adapter reports apart from input.",
