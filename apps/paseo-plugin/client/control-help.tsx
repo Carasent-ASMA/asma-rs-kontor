@@ -1,13 +1,13 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
 import { BackHandler, Platform, ScrollView, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { anchoredPanelOpen, menuFrame, type MenuFrame } from "./anchored-menu";
+import { anchoredPanelOpen, menuFrame, type MenuFrame, type MenuSize } from "./anchored-menu";
 
 type Anchor = RefObject<View | null>;
 type Help = { anchor: Anchor; text: string; focused: boolean };
-type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean): void; refresh(anchor: Anchor, text: string): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
 const HelpContext = createContext<Controller | null>(null);
-type KeyEvent = { key: string; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
+type KeyEvent = { key?: string; pointerType?: string; clientX?: number; clientY?: number; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
 type Contains = { contains?(target: unknown): boolean };
 
@@ -19,27 +19,34 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const helpId = `kontor-help-${useId()}`;
   const root = useRef<View | null>(null), panel = useRef<View | null>(null);
   const current = useRef<Help | null>(null);
+  const input = useRef<"keyboard" | "pointer" | "touch">("keyboard");
+  const pressedAt = useRef<{ x?: number; y?: number } | null>(null);
+  const fitted = useRef<{ text: string; size: MenuSize } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revision = useRef(0);
   const [help, setHelp] = useState<Help | null>(null);
   const [frame, setFrame] = useState<MenuFrame | null>(null);
   const controller = useMemo<Controller>(() => {
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
-    const dismiss = () => { cancel(); revision.current++; current.current = null; setHelp(null); setFrame(null); };
+    const dismiss = () => { cancel(); revision.current++; current.current = null; fitted.current = null; setHelp(null); setFrame(null); };
     const place = (next: Help) => {
       const token = ++revision.current;
       current.current = next;
       root.current?.measureInWindow((rootX, rootY, width, height) => next.anchor.current?.measureInWindow((x, y, w, h) => {
         if (token !== revision.current || !w || !h || !width || !height) return;
         if (x + w < rootX || x > rootX + width || y + h < rootY || y > rootY + height) { setHelp(null); setFrame(null); return; }
-        setFrame(menuFrame({ x: x - rootX, y: y - rootY, width: w, height: h }, { width, height }, { align: "start", width: 360, gap: 0, margin: 6, maxHeight: Math.min(220, height - 12) }));
+        const size = fitted.current?.text === next.text ? fitted.current.size : null;
+        // Native/web layout measurements can round down a fractional text width.
+        setFrame(menuFrame({ x: x - rootX, y: y - rootY, width: w, height: h }, { width, height }, { align: "start", width: Math.min(size ? size.width + 1 : 360, 360), gap: 0, margin: 6, maxHeight: Math.min(size?.height ?? 220, 220, height - 12) }));
         setHelp(next);
       }));
     };
     return {
       id: helpId, dismiss, enter: cancel,
       show(anchor, text, focused = false) {
-        if (!text || (current.current?.focused && !focused)) return;
+        // Native keyboard/accessibility focus has no document keydown to reset touch mode.
+        if (focused && Platform.OS !== "web") input.current = "keyboard";
+        if (!text || input.current === "touch" || (focused && input.current === "pointer") || (!focused && pressedAt.current) || (current.current?.focused && !focused)) return;
         cancel();
         place({ anchor, text, focused });
       },
@@ -49,6 +56,17 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         if (!text) { dismiss(); return; }
         // Preserve focus ownership and any pending pointer-leave dismissal.
         place({ ...value, text });
+      },
+      fit(help, size) {
+        if (current.current !== help || !size.width || !size.height) return;
+        const previous = fitted.current;
+        if (previous?.text === help.text && Math.abs(previous.size.width - size.width) < 0.5 && Math.abs(previous.size.height - size.height) < 0.5) return;
+        fitted.current = { text: help.text, size };
+        place(help);
+      },
+      press(touch, target) {
+        input.current = touch ? "touch" : "pointer";
+        if (!(panel.current as Contains | null)?.contains?.(target)) dismiss();
       },
       leave(anchor, blur = false) {
         if (current.current?.anchor !== anchor) return;
@@ -62,11 +80,24 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     const document = Platform.OS === "web" ? (globalThis as { document?: EventTarget }).document : undefined;
     const window = Platform.OS === "web" ? (globalThis as { window?: EventTarget }).window : undefined;
     const key = (event: KeyEvent) => {
+      if (event.key && !["Shift", "Control", "Alt", "Meta"].includes(event.key)) input.current = "keyboard";
       if (event.key !== "Escape" || !current.current) return;
       controller.dismiss();
       // A menu/dialog keeps its existing one-press Escape and focus return.
       if (anchoredPanelOpen()) return;
       event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.();
+    };
+    const press = (event: KeyEvent) => {
+      pressedAt.current = { x: event.clientX, y: event.clientY };
+      controller.press(event.pointerType === "touch", event.target);
+    };
+    const pointer = (event: KeyEvent) => {
+      if (event.pointerType === "touch") input.current = "touch";
+      else if (event.pointerType && input.current === "touch") input.current = "pointer";
+      // A closing panel can reveal another control under a stationary pointer.
+      // Resume hover help only after the pointer actually moves.
+      const point = pressedAt.current;
+      if (point && (point.x !== event.clientX || point.y !== event.clientY)) pressedAt.current = null;
     };
     // Focus can scroll a row into view after its focus event. Re-measure its help;
     // hover-only help closes when its source moves. Scrolling help itself stays usable.
@@ -78,16 +109,19 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     };
     const moved = () => controller.dismiss();
     document?.addEventListener("keydown", key, true); document?.addEventListener("scroll", scroll, true);
+    document?.addEventListener("pointerdown", press, true); document?.addEventListener("pointerover", pointer, true);
+    document?.addEventListener("pointermove", pointer, true);
     window?.addEventListener("resize", moved);
     const back = BackHandler.addEventListener("hardwareBackPress", () => { if (!current.current) return false; controller.dismiss(); return true; });
-    return () => { controller.dismiss(); document?.removeEventListener("keydown", key, true); document?.removeEventListener("scroll", scroll, true); window?.removeEventListener("resize", moved); back.remove(); };
+    return () => { controller.dismiss(); document?.removeEventListener("keydown", key, true); document?.removeEventListener("scroll", scroll, true); document?.removeEventListener("pointerdown", press, true); document?.removeEventListener("pointerover", pointer, true); document?.removeEventListener("pointermove", pointer, true); window?.removeEventListener("resize", moved); back.remove(); };
   }, [controller]);
   return <HelpContext.Provider value={controller}>
-    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss}>
+    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss} onTouchStart={() => controller.press(true)}>
       {children}
       {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
-        <View ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={controller.enter} onPointerLeave={() => controller.leave(help.anchor)}
-          style={{ position: "absolute", left: frame.left, width: frame.width, ...(frame.bottom === null ? { top: frame.top ?? 0 } : { bottom: frame.bottom }), maxHeight: frame.maxHeight,
+        <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={controller.enter} onPointerLeave={() => controller.leave(help.anchor)}
+          onLayout={({ nativeEvent }) => controller.fit(help, nativeEvent.layout)}
+          style={{ position: "absolute", left: frame.left, maxWidth: frame.width, opacity: fitted.current?.text === help.text ? 1 : 0, ...(frame.bottom === null ? { top: frame.top ?? 0 } : { bottom: frame.bottom }), maxHeight: frame.maxHeight,
             padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 7, backgroundColor: colors.surface2, elevation: 12, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8 }}>
           <ScrollView style={{ flexShrink: 1 }}><Text selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 18 }}>{help.text}</Text></ScrollView>
         </View>

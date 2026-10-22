@@ -45,6 +45,16 @@ function mount(width = 390, height = 320) {
   return { control, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
 }
 describe("hover and focus help", () => {
+  it.each(["ios", "android"])("shows help on later %s keyboard/accessibility focus after a root touch without a DOM key event", (platform) => {
+    hooks.platform = platform;
+    vi.stubGlobal("document", undefined);
+    vi.stubGlobal("window", globalThis);
+    const screen = mount();
+    (screen.root.props.onTouchStart as (() => void) | undefined)?.();
+    screen.render(); expect(screen.tooltip()).toBeUndefined();
+    screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
+    expect(handlers.size).toBe(0);
+  });
   it.each(["ios", "android"])("mounts and cleans up on %s when native window aliases the global without DOM listeners", (platform) => {
     hooks.platform = platform;
     vi.stubGlobal("document", undefined);
@@ -79,8 +89,8 @@ describe("hover and focus help", () => {
   });
   it.each([[320, 240], [390, 320], [1400, 800]])("clamps help inside a %s by %s viewport and opens upward at the bottom", (width, height) => {
     const screen = mount(width, height); screen.control.bindings.onFocus(); screen.render();
-    const style = screen.tooltip()!.props.style as { left: number; width: number; bottom: number; maxHeight: number };
-    expect(style.left).toBeGreaterThanOrEqual(6); expect(style.left + style.width).toBeLessThanOrEqual(width - 6); expect(style.bottom).toBeGreaterThan(0); expect(style.maxHeight).toBeLessThanOrEqual(height - 12);
+    const style = screen.tooltip()!.props.style as { left: number; maxWidth: number; bottom: number; maxHeight: number };
+    expect(style.left).toBeGreaterThanOrEqual(6); expect(style.left + style.maxWidth).toBeLessThanOrEqual(width - 6); expect(style.bottom).toBeGreaterThan(0); expect(style.maxHeight).toBeLessThanOrEqual(height - 12);
     expect(all(screen.tooltip()).some(e => e.props.accessibilityRole === "button")).toBe(false);
   });
   it("keeps focus help through source scrolling; hover help closes and tooltip scrolling stays usable", () => {
