@@ -2322,7 +2322,13 @@ ordered list of exact `{account, model, effort, mode}` records. `account` is an
 exact member of the model's domain, `model` is its symbolic `models` key,
 `effort` is one declared supported effort (explicit `null` only for a model
 without efforts), and `mode` is exactly `plan`. Each record applies only to a
-Cursor or OpenCode consultation route with a known vendor. Unknown, partial,
+Cursor or OpenCode consultation route with a known vendor. Its model must
+explicitly declare `permission_eligible: true`; the optional boolean defaults to
+false, including automatic selectors such as `auto-smart`. Eligibility alone
+grants no permission. A permission-bearing historical policy without this field
+refuses validation; policies without permissions remain readable. These exact
+bytes, including eligibility, participate in the existing policy hash.
+Unknown, partial,
 wildcard and duplicate records fail fleet validation; omission grants no
 fleet-origin exception. This is behavioral risk acceptance, not filesystem
 containment, and does not relax other admission or readback gates.
@@ -2361,3 +2367,27 @@ canonical recovery document before native retirement. Retry and later generation
 readback use that document's policy hash. A mere fleet match does not relabel a
 credential-propagation or explicit profile recovery. Historical documents lacking
 this marker remain profile-only; no marker or policy hash is backfilled.
+
+### Fleet model catalog and route recognition
+
+`/v1/catalog` projects the exact verified selected fleet snapshot. Each row is
+keyed by a declared account and native model id and reports the symbolic model,
+normalized provider family, vendor, efforts, vision, calibration and permission
+eligibility with its policy hash. It invents no defaults, context limits,
+pricing or account labels. Missing selection refuses as `fleet_catalog_unpinned`;
+unactivated authoring does not replace the selected catalog.
+
+Governed route validation uses only that snapshot's exact account/model/effort
+membership. Known provider normalization is shared with the runtime, including
+Cursor account suffixes; normalization alone grants no account or route. Unknown
+providers refuse, duplicate native ids within a domain are invalid, and ambiguous
+account/native-model matches across domains cannot resolve or appear in the
+catalog. Fleet domain support remains Claude, Codex, Cursor and OpenCode.
+
+Compiled-only bootstrap, pre-policy draft validation, historical Committee
+successor selection and existing project Desk/PR consumers retain their compiled
+catalog. Frozen recovery may use compiled compatibility only for the exact route
+already persisted in its profile; fleet metadata comes from its immutable pinned
+policy, never current policy. Neither mode widens governed selection. Core
+`ModelRung::validate` still independently denies DeepSeek V4 Pro; moving that
+remaining exclusion into policy is outside this capability checkpoint.

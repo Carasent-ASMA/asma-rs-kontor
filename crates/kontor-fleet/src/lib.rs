@@ -23,6 +23,7 @@
 mod allocation;
 mod leadership;
 mod permissions;
+mod providers;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,6 +41,7 @@ pub use allocation::{
 };
 pub use leadership::LeadershipKey;
 pub use permissions::ConsultationPermissions;
+pub use providers::{normalize_provider, provider_family};
 
 /// Largest fleet document this build accepts, in bytes.
 pub const MAX_FILE_BYTES: u64 = 256 * 1024;
@@ -228,6 +230,8 @@ struct ModelSpec {
     vision: bool,
     #[serde(default)]
     calibrated: bool,
+    #[serde(default)]
+    permission_eligible: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -574,6 +578,29 @@ impl FleetResolution {
     }
 }
 
+/// One exact account/model entry; catalog recognition grants no placement or permission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FleetModel {
+    /// Exact declared account slot.
+    pub account: String,
+    /// Normalized provider declared by the model domain.
+    pub provider: String,
+    /// Symbolic policy model key.
+    pub model: String,
+    /// Native model id.
+    pub id: String,
+    /// Model maker, independent of its serving account.
+    pub vendor: String,
+    /// Explicit supported effort vocabulary.
+    pub efforts: Vec<String>,
+    /// Model supports vision.
+    pub vision: bool,
+    /// Model has been calibrated.
+    pub calibrated: bool,
+    /// Model is eligible for an explicit consultation permission allowance.
+    pub permission_eligible: bool,
+}
+
 /// A validated, hashed view of one fleet document.
 #[derive(Debug)]
 pub struct FleetSnapshot {
@@ -664,10 +691,11 @@ impl FleetSnapshot {
             (_, Reader::Policy) => return Err(invalid(V31)),
             (_, Reader::Fleet) => return Err(invalid(V01)),
         };
-        parsed.validate(schema)?;
         if reader == Reader::Policy {
+            // Keep credential refusal ahead of stricter account-id normalization.
             parsed.validate_publishable()?;
         }
+        parsed.validate(schema)?;
         Ok(Self {
             document: parsed,
             raw: document.to_owned(),
@@ -847,25 +875,59 @@ impl FleetSnapshot {
     }
 
     fn model_of(&self, rung: &ModelRung) -> Option<&ModelSpec> {
-        self.document.models.values().find(|model| {
+        let mut matches = self.document.models.values().filter(|model| {
             model.id == rung.model.0
                 && self
                     .document
                     .domains
                     .get(&model.domain)
                     .is_some_and(|domain| {
-                        domain
-                            .accounts
-                            .iter()
-                            .any(|account| account == &rung.provider.0)
+                        normalize_provider(&rung.provider.0) == Some(domain.provider.as_str())
+                            && domain.accounts.contains(&rung.provider.0)
                     })
-        })
+        });
+        let model = matches.next()?;
+        matches.next().is_none().then_some(model)
+    }
+
+    /// Account-keyed model metadata from these exact validated policy bytes.
+    #[must_use]
+    pub fn model_catalog(&self) -> Vec<FleetModel> {
+        self.document
+            .models
+            .iter()
+            .flat_map(|(name, model)| {
+                let domain = &self.document.domains[&model.domain];
+                domain
+                    .accounts
+                    .iter()
+                    .filter(move |account| {
+                        self.model_of(&ModelRung {
+                            provider: ProviderRef((*account).clone()),
+                            model: ModelRef(model.id.clone()),
+                            effort: None,
+                        })
+                        .is_some()
+                    })
+                    .map(move |account| FleetModel {
+                        account: account.clone(),
+                        provider: domain.provider.clone(),
+                        model: name.clone(),
+                        id: model.id.clone(),
+                        vendor: model.vendor.clone(),
+                        efforts: model.efforts.clone(),
+                        vision: model.vision,
+                        calibrated: model.calibrated,
+                        permission_eligible: model.permission_eligible,
+                    })
+            })
+            .collect()
     }
 }
 
 impl FleetDocument {
     fn validate(&self, schema: Schema) -> Result<(), FleetError> {
-        self.validate_domains()?;
+        self.validate_domains(schema)?;
         self.validate_models()?;
         self.validate_chains()?;
         self.validate_bindings(schema)?;
@@ -874,17 +936,14 @@ impl FleetDocument {
         permissions::validate(self, schema)
     }
 
-    fn validate_domains(&self) -> Result<(), FleetError> {
+    fn validate_domains(&self, schema: Schema) -> Result<(), FleetError> {
         for name in self.domains.keys() {
             if !is_generic_slug(name) {
                 return Err(invalid(V02));
             }
         }
         for domain in self.domains.values() {
-            if !matches!(
-                domain.provider.as_str(),
-                "claude" | "codex" | "cursor" | "opencode"
-            ) {
+            if !providers::fleet_domain_provider(&domain.provider) {
                 return Err(invalid(V03));
             }
         }
@@ -895,10 +954,16 @@ impl FleetDocument {
         }
         for domain in self.domains.values() {
             for account in &domain.accounts {
-                let named = account == &domain.provider
-                    || account
-                        .strip_prefix(domain.provider.as_str())
-                        .is_some_and(|suffix| suffix.starts_with('-'));
+                let named = if schema == Schema::V1 {
+                    // Preserve the historical reader's data shape; route lookup still
+                    // requires normalized identity and publication rejects sensitive values.
+                    account == &domain.provider
+                        || account
+                            .strip_prefix(domain.provider.as_str())
+                            .is_some_and(|suffix| suffix.starts_with('-'))
+                } else {
+                    normalize_provider(account) == Some(domain.provider.as_str())
+                };
                 if !named {
                     return Err(invalid(V05));
                 }
@@ -933,6 +998,14 @@ impl FleetDocument {
     }
 
     fn validate_models(&self) -> Result<(), FleetError> {
+        let mut native_ids = BTreeSet::new();
+        for model in self.models.values() {
+            if !native_ids.insert((&model.domain, &model.id)) {
+                return Err(invalid(
+                    "models contain a duplicate native model id within one domain",
+                ));
+            }
+        }
         for name in self.models.keys() {
             if !is_model_slug(name) {
                 return Err(invalid(V08));
@@ -1256,26 +1329,11 @@ pub fn independence_key(rung: &ModelRung, fleet: Option<&FleetSnapshot>) -> Opti
             Some(vendor.to_owned())
         };
     }
-    match provider_family(&rung.provider.0) {
+    match normalize_provider(&rung.provider.0)? {
         "claude" => Some("anthropic".to_owned()),
         "codex" => Some("openai".to_owned()),
         other => Some(other.to_owned()),
     }
-}
-
-/// The built-in family behind a selectable Paseo account alias.
-#[must_use]
-pub fn provider_family(provider: &str) -> &str {
-    for family in ["claude", "codex", "copilot", "opencode", "pi", "omp"] {
-        if provider == family
-            || provider
-                .strip_prefix(family)
-                .is_some_and(|suffix| suffix.starts_with('-'))
-        {
-            return family;
-        }
-    }
-    provider
 }
 
 /// Parse one effort in the runtime effort vocabulary.

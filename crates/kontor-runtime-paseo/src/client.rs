@@ -200,7 +200,6 @@ pub(crate) fn consultation_route_permission_mode(
             || (provenance.legacy_recovery && provenance.is_operator_accepted_recovery());
         let pinned = provenance.permission_policy_hash.as_ref();
         if authorized_source
-            && !(provider == "cursor" && rung.model.0 == "auto-smart")
             && (!provenance.is_fleet_configuration() || pinned == Some(&provenance.evidence_hash))
             && pinned.is_some_and(|hash| {
                 provenance
@@ -236,22 +235,8 @@ pub(crate) fn consultation_route_permission_mode(
 /// A Paseo provider id matches `^[a-z][a-z0-9-]*$`, so a colon cannot appear in
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
-pub(crate) fn built_in_provider(provider: &str) -> &str {
-    const BUILT_INS: [&str; 7] = [
-        "claude", "codex", "copilot", "cursor", "opencode", "pi", "omp",
-    ];
-    for built_in in BUILT_INS {
-        if provider == built_in {
-            return built_in;
-        }
-        if let Some(account) = provider.strip_prefix(built_in)
-            && account.starts_with('-')
-        {
-            return built_in;
-        }
-    }
-    provider
-}
+// One normalization vocabulary; account/route authority remains exact policy data.
+pub(crate) use kontor_fleet::provider_family as built_in_provider;
 
 // ---------------------------------------------------------------------------
 // CLI commands
@@ -2941,6 +2926,38 @@ mod tests {
             assert_eq!(request.message["config"]["modeId"], "plan", "{case}");
             assert!(request.message.get("env").is_none());
         }
+        // A suffix identifies the same harness, but only an explicit exact
+        // allowance admits that account; the neighboring unlisted suffix refuses.
+        let text = include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+            .replacen("account: cursor,", "account: cursor-secondary,", 1);
+        let suffixed = kontor_fleet::FleetSnapshot::parse_policy(&text).unwrap();
+        let mut provenance =
+            ConsultationRouteProvenance::fleet_configuration(suffixed.hash().clone());
+        provenance.fleet_permissions = Some(suffixed.consultation_permissions());
+        let request = create(
+            &route("cursor-secondary", "review-model", Some(EffortLevel::Xhigh)),
+            &provenance,
+        )
+        .unwrap();
+        assert_eq!(request.message["config"]["modeId"], "plan");
+        assert!(
+            create(
+                &route("cursor-guessed", "review-model", Some(EffortLevel::Xhigh)),
+                &provenance
+            )
+            .is_err()
+        );
+        assert!(
+            create(
+                &route(
+                    "unknown-secondary",
+                    "review-model",
+                    Some(EffortLevel::Xhigh)
+                ),
+                &provenance
+            )
+            .is_err()
+        );
         for (rung, provenance, case) in [
             (
                 route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
@@ -3014,16 +3031,12 @@ mod tests {
     #[test]
     fn fleet_permission_cannot_override_the_existing_automatic_model_exclusion() {
         let text = include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
-            .replace("id: review-model", "id: auto-smart");
-        let policy = kontor_fleet::FleetSnapshot::parse_policy(&text).unwrap();
-        let mut provenance =
-            ConsultationRouteProvenance::fleet_configuration(policy.hash().clone());
-        provenance.fleet_permissions = Some(policy.consultation_permissions());
-        let rung = route("cursor", "auto-smart", Some(EffortLevel::Xhigh));
-        assert!(matches!(
-            consultation_route_permission_mode(&rung, &provenance),
-            Err(RuntimeError::PermissionModeUnsupported { .. })
-        ));
+            .replace("id: review-model", "id: auto-smart")
+            .replacen("permission_eligible: true", "permission_eligible: false", 1);
+        assert!(
+            kontor_fleet::FleetSnapshot::parse_policy(&text).is_err(),
+            "the model data excludes automatic selection before a permission projection exists"
+        );
     }
 
     #[test]

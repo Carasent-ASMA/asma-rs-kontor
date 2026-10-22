@@ -1732,3 +1732,66 @@ fn a_governed_slot_cannot_take_a_route_whose_rung_is_unstated() {
     // A generic allocation reads no rung at all.
     assert!(allocate(diversity, &slots).is_complete());
 }
+
+#[test]
+fn catalog_uses_exact_accounts_and_preserves_model_capabilities_without_ambiguity() {
+    let policy = FleetSnapshot::parse_policy(include_str!(
+        "../../../tests/fixtures/config/consultation-permissions.yml"
+    ))
+    .unwrap();
+    let entries = policy.model_catalog();
+    let cursor = entries
+        .iter()
+        .find(|entry| entry.account == "cursor-secondary")
+        .unwrap();
+    assert_eq!(cursor.provider, "cursor");
+    assert_eq!(cursor.id, "review-model");
+    assert_eq!(cursor.efforts, ["high", "xhigh"]);
+    assert!(cursor.permission_eligible);
+    let rung = |account: &str| ModelRung {
+        provider: ProviderRef(account.into()),
+        model: ModelRef("review-model".into()),
+        effort: Some(EffortLevel::Xhigh),
+    };
+    assert!(policy.lists(&rung("cursor-secondary")));
+    assert!(!policy.lists(&rung("cursor-guessed")));
+    assert!(!policy.lists(&rung("unknown-secondary")));
+    assert!(
+        FleetSnapshot::parse_policy(
+            &policy
+                .raw
+                .replace("provider: cursor", "provider: cursor-secondary")
+        )
+        .is_err()
+    );
+    let duplicate = policy.raw.replace(
+        "  open-review:
+",
+        "  duplicate:
+    domain: cursor
+    id: review-model
+    vendor: example
+  open-review:
+",
+    );
+    assert!(FleetSnapshot::parse_policy(&duplicate).is_err());
+    let ambiguous = "schema_version: 2
+domains:
+  one: {provider: cursor, accounts: [cursor-secondary], model_prefix: example/}
+  two: {provider: cursor, accounts: [cursor-secondary], model_prefix: example/r}
+models:
+  one: {domain: one, id: example/review, vendor: first}
+  two: {domain: two, id: example/review, vendor: second}
+chains: {}
+bindings: {}
+";
+    let ambiguous = FleetSnapshot::parse_policy(ambiguous).unwrap();
+    let route = ModelRung {
+        provider: ProviderRef("cursor-secondary".into()),
+        model: ModelRef("example/review".into()),
+        effort: None,
+    };
+    assert!(!ambiguous.lists(&route));
+    assert_eq!(ambiguous.vendor_of(&route), None);
+    assert!(ambiguous.model_catalog().is_empty());
+}

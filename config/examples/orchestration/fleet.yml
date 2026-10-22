@@ -45,6 +45,7 @@ models:
     vision: true
     calibrated: true
   grok-example:
+    permission_eligible: true # Eligibility alone grants no permission.
     domain: cursor
     id: grok-example
     vendor: xai

@@ -244,3 +244,59 @@ fn recovery_permission_rejects_conflicting_frozen_route_policy() {
         assert!(error.rule.contains("consultation_permission_mismatch"));
     }
 }
+
+#[test]
+fn catalog_authority_is_explicit_and_frozen_compatibility_cannot_authorize_a_new_route() {
+    let policy = kontor_fleet::FleetSnapshot::parse_policy(POLICY).unwrap();
+    let declared = selected_route();
+    let compiled = ModelRung {
+        provider: ProviderRef("codex".into()),
+        model: ModelRef("gpt-5.6-sol".into()),
+        effort: None,
+    };
+    assert!(model_route_is_catalogued(
+        &compiled,
+        CatalogAuthority::CompiledOnly
+    ));
+    assert!(!model_route_is_catalogued(
+        &compiled,
+        CatalogAuthority::PinnedFleet(Some(&policy))
+    ));
+    assert!(!model_route_is_catalogued(
+        &compiled,
+        CatalogAuthority::PinnedFleet(None)
+    ));
+    assert!(model_route_is_catalogued(
+        &declared,
+        CatalogAuthority::PinnedFleet(Some(&policy))
+    ));
+    assert!(model_route_is_catalogued(
+        &compiled,
+        CatalogAuthority::FrozenRecovery {
+            snapshot: Some(&policy),
+            route: &compiled
+        }
+    ));
+    assert!(!model_route_is_catalogued(
+        &declared,
+        CatalogAuthority::FrozenRecovery {
+            snapshot: Some(&policy),
+            route: &compiled
+        }
+    ));
+    assert!(!model_route_is_catalogued(
+        &declared,
+        CatalogAuthority::CompiledOnly
+    ));
+    assert_eq!(
+        parse_runtime_model_route(&runtime_model_route_dto(&compiled), Some(&policy)).unwrap(),
+        compiled
+    );
+    assert!(
+        parse_catalogued_model_route(
+            &runtime_model_route_dto(&compiled),
+            CatalogAuthority::PinnedFleet(None)
+        )
+        .is_err()
+    );
+}
