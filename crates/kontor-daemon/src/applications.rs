@@ -33,6 +33,8 @@ mod memory_projection;
 mod open_questions;
 mod planning_pair;
 mod pr_reviews;
+#[cfg(test)]
+mod task_checkout_tests;
 pub use memory_projection::ProjectionQualifier;
 #[doc(hidden)]
 pub use planning_pair::PlanningPairReceiptHold;
@@ -516,6 +518,7 @@ struct PreparedWorktreeClaimCorrection {
     module: ModuleKey,
     branch: ExternalName,
     preview_hash: ContentHash,
+    checkout: Option<kontor_runtime::checkout::TaskCheckout>,
 }
 
 /// The complete, externally observed plan one reconcile response names.
@@ -1097,6 +1100,10 @@ pub struct Services {
     github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
     /// Bootstrap integration IDs may refuse a mismatched activated policy, never grant access.
     publication_consumers: Vec<ProjectId>,
+    /// Frozen selected project/host inputs. None is the portable embedding seam.
+    selected_config: Option<crate::config_folder::ConfigFolder>,
+    /// Serializes freezing and proving task Git checkout intents in this realm.
+    checkout_guard: tokio::sync::Mutex<()>,
     /// Serializes explicit provider probes so concurrent first use of one
     /// global idempotency key cannot contact the vendor twice.
     provider_probe_guard: tokio::sync::Mutex<()>,
@@ -1210,11 +1217,14 @@ impl Services {
         fleet: Arc<crate::fleet::FleetSource>,
         succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
         publication_consumers: Vec<ProjectId>,
+        selected_config: Option<crate::config_folder::ConfigFolder>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
             github,
             publication_consumers,
+            selected_config,
+            checkout_guard: tokio::sync::Mutex::new(()),
             state: Mutex::new(None),
             pack: kontor_profiles::seeds::bundled_pack()?,
             domain: kontor_profiles::bundled_operational_domain()?,
@@ -1600,7 +1610,8 @@ impl Services {
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
         let has_declared_execution_scope = stored.is_some();
-        if stored.is_none()
+        if self.selected_config.is_none()
+            && stored.is_none()
             && let Some(configured) = adapter.configured_execution_scope(epic_id, task_id)
         {
             return Ok(configured);
@@ -1658,6 +1669,7 @@ impl Services {
                     "the task has no declared canonical worktree",
                 )
             })?;
+        let claim = worktree.clone();
         let worktree =
             WorkspaceRoot::parse(worktree.as_str()).map_err(|error| self.refuse_domain(&error))?;
         let mut jira = state
@@ -1687,7 +1699,7 @@ impl Services {
                 "the task has no durable short code; preview and apply an explicit epic task mapping before materialization or retitle",
             ));
         }
-        Ok(ExecutionScope::for_task(
+        let mut scope = ExecutionScope::for_task(
             epic,
             TaskScope {
                 task_id,
@@ -1695,7 +1707,23 @@ impl Services {
                 external_issue_key,
                 worktree,
             },
-        ))
+        );
+        if self.selected_config.is_none() {
+            return Ok(scope);
+        }
+        let pin = state
+            .with_store(|store| store.task_checkout_placement(project_id, task_id, &claim))
+            .map_err(|error| self.refuse(&error))?;
+        let checkout: Option<kontor_runtime::checkout::TaskCheckout> = pin
+            .map(|pin| serde_json::from_str(pin.intent.json()))
+            .transpose()
+            .map_err(|_| self.deny(ApiErrorCode::PlacementBlocked, "checkout.intent_invalid"))?;
+        if let Some(snapshot) = &checkout {
+            scope.task.as_mut().expect("a task scope").worktree =
+                WorkspaceRoot::parse(&snapshot.destination)
+                    .map_err(|error| self.refuse_domain(&error))?;
+        }
+        Ok(scope.with_task_checkout(checkout))
     }
 
     /// Recover the runtime identity of an imported epic that predates the typed
@@ -2595,6 +2623,28 @@ impl Services {
         // The tracker identity every managed worktree in this epic must carry
         // and, for a task that declares no placement, may be derived from.
         let (epic_key, epic_title) = self.epic_branch_identity(project_id, request)?;
+        let mut retained = BTreeSet::new();
+        if self.selected_config.is_some() {
+            retained = self
+                .state()?
+                .with_store(|store| {
+                    let Some(epic) = store
+                        .list_mini_projects(project_id)?
+                        .into_iter()
+                        .find(|epic| epic.name == request.name)
+                    else {
+                        return Ok::<_, RepositoryError>(BTreeSet::new());
+                    };
+                    let mut titles = BTreeSet::new();
+                    for task in store.list_epic_tasks(project_id, epic.id)? {
+                        if store.task_worktree(project_id, task.id)?.is_some() {
+                            titles.insert(task.title.as_str().to_owned());
+                        }
+                    }
+                    Ok(titles)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         let mut tasks = Vec::with_capacity(request.tasks.len());
         for task in &request.tasks {
             let module = task
@@ -2639,14 +2689,20 @@ impl Services {
                 .transpose()?
                 .transpose()
                 .map_err(|error| self.refuse_domain(&error))?;
-            let (worktree, derived_worktree) = self.place_task_branch(
-                project.root_path.as_str(),
-                epic_key.as_ref(),
-                &epic_title,
-                &task.title,
-                &links,
-                worktree,
-            )?;
+            let (worktree, derived_worktree) =
+                if worktree.is_none() && retained.contains(task.title.as_str()) {
+                    (None, None)
+                } else {
+                    self.place_task_branch(
+                        project.root_path.as_str(),
+                        epic_key.as_ref(),
+                        &epic_title,
+                        &task.title,
+                        &links,
+                        worktree,
+                        module.as_ref(),
+                    )?
+                };
             let imported_state = match task.import_state {
                 EpicImportStateDto::Ready => ImportedTaskState::Ready,
                 EpicImportStateDto::Completed => ImportedTaskState::Completed,
@@ -6028,6 +6084,164 @@ impl Services {
         }
     }
 
+    /// Freeze the selected source and first confirmed claim before native preflight.
+    fn freeze_task_checkout(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<
+        (
+            kontor_store::checkouts::TaskCheckoutPlacement,
+            kontor_runtime::checkout::TaskCheckout,
+        ),
+        ApiError,
+    > {
+        let folder = self.selected_config.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "host.checkouts.not_configured",
+            )
+        })?;
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let project = self.project_row(project_id)?;
+        let key = state
+            .with_store(|store| store.confirmed_jira_task_key(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|key| TrackerKey::from_external(&key).ok())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "checkout.binding_unconfirmed_or_ambiguous",
+                )
+            })?;
+        let claim = match state
+            .with_store(|store| store.task_worktree(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(claim) => claim,
+            None => {
+                let module = task.module.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "worktree_module_missing: root-only task requires an explicit worktree",
+                    )
+                })?;
+                crate::task_checkouts::derived_claim(
+                    folder,
+                    project.root_path.as_str(),
+                    module,
+                    &key,
+                )
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?
+            }
+        };
+        let mut confirmed = vec![key];
+        if let Some(epic_id) = task.mini_project_id
+            && let Some(key) = self.epic_tracker_key(project_id, epic_id)?
+            && !confirmed.contains(&key)
+        {
+            confirmed.push(key);
+        }
+        let existing = state
+            .with_store(|store| store.task_checkout_placement(project_id, task_id, &claim))
+            .map_err(|error| self.refuse(&error))?;
+        let (pin, snapshot) = if let Some(pin) = existing {
+            let snapshot: kontor_runtime::checkout::TaskCheckout =
+                serde_json::from_str(pin.intent.json()).map_err(|_| {
+                    self.deny(ApiErrorCode::PlacementBlocked, "checkout.intent_invalid")
+                })?;
+            (pin, snapshot)
+        } else {
+            let snapshot = crate::task_checkouts::plan(folder, &project, &task, &claim, &confirmed)
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?;
+            let pin = kontor_store::checkouts::TaskCheckoutPlacement {
+                project_id,
+                task_id,
+                worktree: claim.clone(),
+                destination: ExternalName::parse(&snapshot.destination)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                task_revision: task.revision,
+                module: task.module.clone(),
+                intent: CanonicalDocument::from_serializable(&snapshot)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                readback: None,
+            };
+            let pin = state
+                .with_store(|store| store.freeze_task_checkout(&pin, kontor_api::now()))
+                .map_err(|error| self.refuse(&error))?;
+            (pin, snapshot)
+        };
+        if snapshot.claim != claim.as_str()
+            || snapshot.destination != pin.destination.as_str()
+            || snapshot.project_root != project.root_path.as_str()
+            || snapshot.module != task.module
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "checkout.stale_claim_or_intent",
+            ));
+        }
+        BranchName::parse(&snapshot.branch)
+            .and_then(|branch| branch.ensure_bound_to(&confirmed))
+            .map_err(|reason| self.deny(ApiErrorCode::PlacementBlocked, reason.rule()))?;
+        for (other_project, other_task, other_claim) in state
+            .with_store(|store| store.checkout_claims())
+            .map_err(|error| self.refuse(&error))?
+        {
+            if other_project == project_id && other_task == task_id {
+                continue;
+            }
+            let other = kontor_runtime::checkout::destination(other_claim.as_str())
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?;
+            if other == snapshot.destination {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "checkout.destination_ownership_conflict",
+                ));
+            }
+        }
+        state
+            .with_store(|store| store.guard_task_checkout(&pin))
+            .map_err(|error| self.refuse(&error))?;
+        Ok((pin, snapshot))
+    }
+
+    /// Execute the frozen intent only after identity/topology preflight, then confirm Git.
+    async fn prepare_task_checkout(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<(), ApiError> {
+        if self.selected_config.is_none() {
+            return Ok(());
+        }
+        let _checkout = self.checkout_guard.lock().await;
+        let state = self.state()?;
+        let (pin, snapshot) = self.freeze_task_checkout(project_id, task_id)?;
+        let frozen = snapshot.clone();
+        let confirmed_before = pin.readback.is_some();
+        let observed = tokio::task::spawn_blocking(move || {
+            if confirmed_before {
+                kontor_runtime::checkout::verify(&frozen)?;
+            } else {
+                kontor_runtime::checkout::prepare(&frozen)?;
+            }
+            kontor_runtime::checkout::readback(&frozen)
+        })
+        .await
+        .map_err(|_| self.deny(ApiErrorCode::Unavailable, "checkout.worker_incomplete"))?
+        .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?;
+        let readback = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1, "intent_hash": pin.intent.hash(), "observed": observed,
+        }))
+        .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| store.confirm_task_checkout(&pin, &readback))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
     /// The root a task's workspace is prepared at.
     ///
     /// It is read from the task's declared worktree and from nowhere else.
@@ -6085,9 +6299,8 @@ impl Services {
 
     /// Derive and validate the sole supported replacement for one task claim.
     ///
-    /// The target is not accepted as an arbitrary path. It must be exactly the
-    /// ASMA catalog-module layout derived from the stored project root, the
-    /// task's confirmed Jira key and the basename of its stored module key.
+    /// Selected folders render the exact durable module through their layout.
+    /// The portable embedding retains its historical catalog correction shape.
     fn prepare_worktree_claim_correction(
         &self,
         project_id: ProjectId,
@@ -6135,15 +6348,13 @@ impl Services {
         let module = task.module.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "the task has no catalog module from which a deterministic worktree can be derived",
+                if self.selected_config.is_some() {
+                    "worktree_module_missing: deterministic correction requires Task.module"
+                } else {
+                    "the task has no catalog module from which a deterministic worktree can be derived"
+                },
             )
         })?;
-        let module_directory = module
-            .as_str()
-            .rsplit('/')
-            .next()
-            .filter(|segment| !segment.is_empty())
-            .expect("ModuleKey validation leaves one non-empty final segment");
         let jira = state
             .with_store(|store| store.confirmed_jira_task_key(project_id, task_id))
             .map_err(|error| self.refuse(&error))?
@@ -6155,26 +6366,38 @@ impl Services {
             })?;
         let tracker = TrackerKey::from_external(&jira)
             .map_err(|refusal| self.deny(ApiErrorCode::PlacementBlocked, refusal.rule()))?;
-        let expected_slug = tracker.as_str().to_ascii_lowercase();
-        let expected_target = ExternalName::parse(&format!(
-            "{}/{MANAGED_WORKTREES_DIR}/{}/{}",
-            project_root.as_str().trim_end_matches('/'),
-            expected_slug,
-            module_directory,
-        ))
-        .map_err(|error| self.refuse_domain(&error))?;
+        let expected_target = if let Some(folder) = &self.selected_config {
+            let (target, _) = crate::project_paths::render_layout(
+                &folder.project.worktree_layout,
+                project_root.as_str(),
+                &tracker,
+                &module,
+            )
+            .map_err(|reason| self.deny(ApiErrorCode::PlacementBlocked, reason))?;
+            ExternalName::parse(&target).map_err(|error| self.refuse_domain(&error))?
+        } else {
+            let module_directory = module
+                .as_str()
+                .rsplit('/')
+                .next()
+                .expect("a canonical module segment");
+            let expected_slug = tracker.as_str().to_ascii_lowercase();
+            let target = ExternalName::parse(&format!(
+                "{}/{MANAGED_WORKTREES_DIR}/{expected_slug}/{module_directory}",
+                project_root.as_str().trim_end_matches('/')
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            if managed_catalog_worktree_parts(project_root.as_str(), target.as_str())
+                != Some((expected_slug.as_str(), module_directory))
+            {
+                return Err(self.deny(ApiErrorCode::InvalidRequest, "worktree_target_invalid: the replacement does not encode one task slug and one catalog module"));
+            }
+            target
+        };
         if new_root.as_str() != expected_target.as_str() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
-                "worktree_target_invalid: the replacement is not the task's deterministic ASMA catalog-module path",
-            ));
-        }
-        let expected_parts =
-            managed_catalog_worktree_parts(project_root.as_str(), expected_target.as_str());
-        if expected_parts != Some((expected_slug.as_str(), module_directory)) {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "worktree_target_invalid: the replacement does not encode one task slug and one catalog module",
+                "worktree_target_invalid: the replacement is not the task's deterministic worktree path",
             ));
         }
         if state
@@ -6188,25 +6411,42 @@ impl Services {
             ));
         }
 
-        let branch = ExternalName::parse(
-            BranchName::derive(BranchType::Feat, &tracker, task.title.as_str()).as_str(),
-        )
+        let checkout = self
+            .selected_config
+            .as_ref()
+            .map(|folder| {
+                crate::task_checkouts::plan(
+                    folder,
+                    &project,
+                    &task,
+                    &expected_target,
+                    std::slice::from_ref(&tracker),
+                )
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))
+            })
+            .transpose()?;
+        let branch = ExternalName::parse(&checkout.as_ref().map_or_else(
+            || BranchName::derive(BranchType::Feat, &tracker, task.title.as_str()).to_string(),
+            |snapshot| snapshot.branch.clone(),
+        ))
         .map_err(|error| self.refuse_domain(&error))?;
-        let preview_hash = self
-            .intent(&serde_json::json!({
-                "schema_version": 1,
-                "operation": "correct_task_worktree",
-                "project_id": project_id.to_string(),
-                "task_id": task_id.to_string(),
-                "task_revision": task.revision.get(),
-                "old_worktree": old_worktree.as_str(),
-                "new_worktree": expected_target.as_str(),
-                "jira_key": tracker.as_str(),
-                "module": module.as_str(),
-                "branch": branch.as_str(),
-            }))?
-            .hash()
-            .clone();
+        let mut preview = serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_task_worktree",
+            "project_id": project_id.to_string(),
+            "task_id": task_id.to_string(),
+            "task_revision": task.revision.get(),
+            "old_worktree": old_worktree.as_str(),
+            "new_worktree": expected_target.as_str(),
+            "jira_key": tracker.as_str(),
+            "module": module.as_str(),
+            "branch": branch.as_str(),
+        });
+        if let Some(snapshot) = &checkout {
+            preview["checkout"] = serde_json::to_value(snapshot)
+                .map_err(|_| self.deny(ApiErrorCode::InvalidRequest, "checkout.intent_invalid"))?;
+        }
+        let preview_hash = self.intent(&preview)?.hash().clone();
         Ok(PreparedWorktreeClaimCorrection {
             task_revision: task.revision,
             old_worktree: old_worktree.clone(),
@@ -6214,6 +6454,7 @@ impl Services {
             module,
             branch,
             preview_hash,
+            checkout,
         })
     }
 
@@ -24104,6 +24345,29 @@ impl ApplicationOperations for Services {
         // `ensure_task_node` is store-only and idempotent: the runtime remains
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
+            if self.selected_config.is_some()
+                && scope.kind.as_ref() == Some(&self.domain.delivery.task_kind)
+            {
+                let confirmed = state
+                    .with_store(|store| {
+                        let Some(claim) = store.task_worktree(project_id, task_id)? else {
+                            return Ok(false);
+                        };
+                        Ok::<_, kontor_core::repository::RepositoryError>(
+                            store
+                                .task_checkout_placement(project_id, task_id, &claim)?
+                                .is_some_and(|pin| pin.readback.is_some()),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                if !confirmed {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "checkout.confirmed_placement_missing",
+                    ));
+                }
+                self.prepare_task_checkout(project_id, task_id).await?;
+            }
             let leaf = self.ensure_task_node(project_id, task_id)?;
             // A replay repairs seats, and a seat repair is a write, so it earns
             // the same prerequisite the first pass does: the container those
@@ -24153,6 +24417,12 @@ impl ApplicationOperations for Services {
                             "the node's configured runtime family is unavailable",
                         )
                     })?;
+                    if self.selected_config.is_some()
+                        && scope.kind.as_ref() == Some(&self.domain.delivery.task_kind)
+                        && let Some(task_id) = scope.task_id
+                    {
+                        self.freeze_task_checkout(project_id, task_id)?;
+                    }
                     let execution_scope =
                         self.execution_scope(project_id, epic_id, scope.task_id, adapter.as_ref())?;
                     if requires_item_code {
@@ -24199,6 +24469,15 @@ impl ApplicationOperations for Services {
                         "the node's configured runtime family is unavailable",
                     )
                 })?;
+                if leaf.kind == self.domain.delivery.task_kind {
+                    let task_id = leaf.task_id.ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "checkout.task_identity_missing",
+                        )
+                    })?;
+                    self.prepare_task_checkout(project_id, task_id).await?;
+                }
                 adapter
                     .prepare_plane()
                     .await
@@ -36055,6 +36334,24 @@ impl ApplicationOperations for Services {
             intent,
             created_at: now,
         };
+        let checkout = prepared
+            .checkout
+            .as_ref()
+            .map(|snapshot| {
+                Ok::<_, ApiError>(kontor_store::checkouts::TaskCheckoutPlacement {
+                    project_id,
+                    task_id,
+                    worktree: prepared.new_worktree.clone(),
+                    destination: ExternalName::parse(&snapshot.destination)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    task_revision: prepared.task_revision,
+                    module: Some(prepared.module.clone()),
+                    intent: CanonicalDocument::from_serializable(snapshot)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    readback: None,
+                })
+            })
+            .transpose()?;
         let correction = TaskWorktreeCorrection {
             command: &command,
             task_id,
@@ -36063,6 +36360,7 @@ impl ApplicationOperations for Services {
             module: &prepared.module,
             branch: &prepared.branch,
             preview_hash: &prepared.preview_hash,
+            checkout: checkout.as_ref(),
         };
         let (stored, applied) = state
             .with_store(|store| store.apply_task_worktree_correction(&correction))
@@ -44907,13 +45205,16 @@ impl Services {
         let mut parent: Option<ContainerBinding> = None;
         let mut prepared = None;
         for level in &lineage {
-            let level_scope = match (&subject, level.task_id) {
+            let mut level_scope = match (&subject, level.task_id) {
                 (ContainerSubject::Epic(epic_id), Some(task_id)) => {
                     Some(self.execution_scope(project_id, *epic_id, Some(task_id), adapter)?)
                 }
                 (ContainerSubject::Epic(_), None) => epic_scope.clone(),
                 (ContainerSubject::Desk { .. }, _) => None,
             };
+            if level.kind != self.domain.delivery.task_kind {
+                level_scope = level_scope.map(ExecutionScope::without_task_checkout);
+            }
             let capabilities = if let Some(definition) = team_definition.as_ref() {
                 definition
                     .container(&level.kind)
@@ -45311,16 +45612,11 @@ impl Services {
     /// and the keys this task may carry, or derive the deterministic placement
     /// for a task that declares none (ASMA-8101).
     ///
-    /// A declared path outside `<project root>/.worktrees/` implies no branch
-    /// and is left to its runtime. A declared managed path must encode a
-    /// canonical branch; when a key is known here it must also be bound to the
-    /// task's link or the epic, and when none is known yet the binding is
-    /// proven at preparation, where the confirmed scope exists.
-    ///
-    /// Derivation prefers the task's own linked key — a task worktree is the
-    /// unit of parallel isolation, and the scheduler admits one claimant per
-    /// tree — and falls back to the epic key. Publication to the default branch
-    /// still happens from the epic branch through the ASMA CLI.
+    /// Selected tasks keep explicit durable claims or render the configured
+    /// layout from their full module and canonical tracker binding. Reapplication
+    /// preserves existing placement. The embedding's legacy branch convention
+    /// remains below for callers without a selected folder.
+    #[allow(clippy::too_many_arguments)]
     fn place_task_branch(
         &self,
         project_root: &str,
@@ -45329,7 +45625,22 @@ impl Services {
         task_title: &ExternalName,
         links: &[EpicTicketLink],
         declared: Option<ExternalName>,
+        module: Option<&ModuleKey>,
     ) -> Result<(Option<ExternalName>, Option<ExternalName>), ApiError> {
+        if self.selected_config.is_some() {
+            if let Some(worktree) = declared {
+                return Ok((Some(worktree), None));
+            }
+            if module.is_none() {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "worktree_module_missing: root-only task requires an explicit worktree",
+                ));
+            }
+            // Authoring links are requests, not confirmed identity. Render and
+            // atomically freeze the claim only at the confirmed native boundary.
+            return Ok((None, None));
+        }
         let task_key = links
             .iter()
             .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
@@ -47594,6 +47905,7 @@ mod tests {
             std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
             Vec::new(),
+            None,
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -47656,6 +47968,7 @@ mod tests {
             std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
             Vec::new(),
+            None,
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -49696,6 +50009,7 @@ mod coherence {
             std::sync::Arc::new(crate::fleet::FleetSource::at(home.path())),
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
             Vec::new(),
+            None,
         )
         .expect("services compose");
         let state = kontor_api::state::ApiState::new(kontor_api::state::ApiParts {

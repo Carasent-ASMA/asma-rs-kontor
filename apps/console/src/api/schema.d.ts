@@ -13031,7 +13031,7 @@ export interface components {
              * @description Commit instant recorded in the immutable audit row.
              */
             corrected_at: string;
-            /** @description Catalog module whose repository the target names. */
+            /** @description Exact durable task module used to render the target. */
             module: string;
             /** @description Exact replacement claim read from immutable evidence. */
             new_worktree: string;
@@ -13071,7 +13071,7 @@ export interface components {
         WorktreeClaimCorrectionPreviewDto: {
             /** @description Jira-key publication branch the supported materializer must create. */
             branch: string;
-            /** @description Catalog module whose repository the target names. */
+            /** @description Exact durable task module used to render the target. */
             module: string;
             /** @description Exact derived replacement. */
             new_worktree: string;
@@ -13100,7 +13100,7 @@ export interface components {
              * @description Exact task revision the caller inspected.
              */
             expected_revision: number;
-            /** @description Exact deterministic ASMA catalog-module target. */
+            /** @description Exact deterministic target rendered from the selected layout and durable module. */
             new_worktree: string;
             /** @description Exact currently stored claim; a mismatch refuses rather than overwrites. */
             old_worktree: string;

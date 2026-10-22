@@ -3419,12 +3419,26 @@ impl PaseoAdapter {
         let binding = crate::checkout::ManagedBranchBinding::from_scopes(
             request.scope.iter().chain(effective.iter()),
         );
-        crate::checkout::prepare_managed_worktree(
-            &self.config.scope.project_root_cwd,
-            cwd,
-            &binding,
-        )
-        .await?;
+        if let Some(selected) = request
+            .scope
+            .as_ref()
+            .and_then(ExecutionScope::task_checkout)
+        {
+            crate::checkout::verify_selected_task(
+                &self.config.scope.project_root_cwd,
+                cwd,
+                selected,
+                &binding,
+            )
+            .await?;
+        } else {
+            crate::checkout::prepare_managed_worktree(
+                &self.config.scope.project_root_cwd,
+                cwd,
+                &binding,
+            )
+            .await?;
+        }
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let same_path = existing
             .iter()
@@ -8501,12 +8515,24 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "the requested root is not the task's durable canonical worktree",
             });
         }
-        crate::checkout::prepare_managed_worktree(
-            &self.config.scope.project_root_cwd,
-            &request.root,
-            &crate::checkout::ManagedBranchBinding::from_scopes([&request.scope, &effective_scope]),
-        )
-        .await?;
+        let binding =
+            crate::checkout::ManagedBranchBinding::from_scopes([&request.scope, &effective_scope]);
+        if let Some(selected) = request.scope.task_checkout() {
+            crate::checkout::verify_selected_task(
+                &self.config.scope.project_root_cwd,
+                &request.root,
+                selected,
+                &binding,
+            )
+            .await?;
+        } else {
+            crate::checkout::prepare_managed_worktree(
+                &self.config.scope.project_root_cwd,
+                &request.root,
+                &binding,
+            )
+            .await?;
+        }
         let project = self.require_project_for(&effective_scope)?;
 
         let workspace_title = request.display_name.as_str();

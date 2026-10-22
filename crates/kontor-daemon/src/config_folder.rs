@@ -78,6 +78,8 @@ pub struct ConfigFolder {
     pub fleet: PathBuf,
     /// Explicit integration bindings constrain publication; they never authorize it.
     pub(crate) publication_consumers: Vec<kontor_core::id::ProjectId>,
+    /// Optional explicit Git sources, snapshotted from this folder's host.yml.
+    pub checkouts: Option<kontor_runtime::checkout::CheckoutInputs>,
 }
 
 impl ConfigFolder {
@@ -154,6 +156,7 @@ impl ConfigFolder {
             project: entry.project,
             fleet: PathBuf::new(),
             publication_consumers: Vec::new(),
+            checkouts: None,
         };
         let fleet = folder.reference(&entry.fleet)?;
         folder.reference(&entry.core_team)?;
@@ -170,6 +173,7 @@ impl ConfigFolder {
         folder.validate_tree(&folder.root)?;
         let mut folder = Self { fleet, ..folder };
         folder.publication_consumers = folder.publication_consumer_projects(&raw)?;
+        folder.checkouts = crate::task_checkouts::read(&folder)?;
         Ok(folder)
     }
 

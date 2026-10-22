@@ -32838,7 +32838,7 @@
           },
           "module": {
             "type": "string",
-            "description": "Catalog module whose repository the target names."
+            "description": "Exact durable task module used to render the target."
           },
           "new_worktree": {
             "type": "string",
@@ -32929,7 +32929,7 @@
           },
           "module": {
             "type": "string",
-            "description": "Catalog module whose repository the target names."
+            "description": "Exact durable task module used to render the target."
           },
           "new_worktree": {
             "type": "string",
@@ -32984,7 +32984,7 @@
           },
           "new_worktree": {
             "type": "string",
-            "description": "Exact deterministic ASMA catalog-module target."
+            "description": "Exact deterministic target rendered from the selected layout and durable module."
           },
           "old_worktree": {
             "type": "string",

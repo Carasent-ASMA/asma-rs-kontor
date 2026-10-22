@@ -94,6 +94,16 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
     drop(store);
     let connection = Connection::open(&database).unwrap();
     // Remove the current-only v137 column before replaying the historical chain.
+    let checkout_rows: i64 = connection
+        .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        checkout_rows, 0,
+        "historical fixture must not erase checkout evidence"
+    );
+    connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
     connection
         .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
         .unwrap();

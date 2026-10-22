@@ -65,6 +65,7 @@ pub mod succession;
 pub mod succession_summarizer;
 pub mod succession_supervision;
 pub mod supervision;
+mod task_checkouts;
 pub mod usage;
 
 use std::collections::BTreeMap;
@@ -688,6 +689,7 @@ impl Daemon {
             selected
                 .map(|folder| folder.publication_consumers.clone())
                 .unwrap_or_default(),
+            selected.cloned(),
         )
         .map_err(|source| StartupError::Applications { source })?;
 

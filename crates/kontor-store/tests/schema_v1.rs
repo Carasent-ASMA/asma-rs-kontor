@@ -232,6 +232,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_short_codes",
     "task_worktree_corrections",
     "task_worktrees",
+    "task_checkout_placements",
     "tasks",
     "team_command_replays",
     "team_definitions",
@@ -816,7 +817,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v136 makes every hold state its terms and gives an overdue review one
     // typed attention record (ASMA-8517 / REQ-008).
     // v137 retains the activated publication policy's immutable source hash.
-    assert_eq!(SCHEMA_VERSION, 137);
+    // v138 freezes task checkout intents and their first Git readback.
+    assert_eq!(SCHEMA_VERSION, 138);
 }
 
 #[test]
@@ -7081,6 +7083,16 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     let connection = Connection::open(&database).unwrap();
     // v137 adds a column too; the simulated v119 fixture must remove it before
     // replaying the chain, just as it removes every later additive table.
+    let checkout_rows: i64 = connection
+        .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        checkout_rows, 0,
+        "historical fixture must not erase checkout evidence"
+    );
+    connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
     connection
         .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
         .unwrap();
