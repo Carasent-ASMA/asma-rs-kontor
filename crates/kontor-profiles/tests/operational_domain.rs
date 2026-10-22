@@ -622,3 +622,100 @@ fn mutate_bundled_domain(
         &serde_json::to_string(&document).expect("the edited document serializes"),
     )
 }
+
+#[test]
+fn delivery_selectors_use_synthetic_codes_and_keep_the_overlay_as_data() {
+    let overlay = bundled_operational_domain().unwrap();
+    assert_eq!(overlay.delivery.architecture_closer_code.as_str(), "LSA");
+    assert_eq!(overlay.delivery.control_role_code.as_str(), "TPM");
+    let text = serde_json::to_string(&overlay)
+        .unwrap()
+        .replace("\"LSA\"", "\"ARCHX\"")
+        .replace("\"TPM\"", "\"COORDX\"");
+    let domain = kontor_profiles::pack::parse_operational_domain_pack(&text).unwrap();
+    let roles = domain.delivery.purpose_roles();
+    assert_eq!(roles.architecture_closer.as_str(), "ARCHX");
+    assert_eq!(roles.control.as_str(), "COORDX");
+    let roster = kontor_teams::CoreTeamRevision::resolve(
+        domain.role_catalogs[0].version,
+        &domain.role_catalogs[0],
+        &[],
+        roles,
+    )
+    .unwrap();
+    assert_eq!(
+        roster
+            .seat_for_purpose(kontor_core::spec::CoreTeamSeatPurpose::ArchitectureCloser)
+            .unwrap()
+            .role
+            .role_code
+            .as_str(),
+        "ARCHX"
+    );
+    assert_eq!(
+        roster
+            .seat_for_purpose(kontor_core::spec::CoreTeamSeatPurpose::Control)
+            .unwrap()
+            .role
+            .role_code
+            .as_str(),
+        "COORDX"
+    );
+}
+
+#[test]
+fn delivery_selector_refusals_name_missing_ambiguous_and_non_current_fields() {
+    use kontor_profiles::pack::parse_operational_domain_pack;
+    for (key, field) in [
+        (
+            "architecture_closer_code",
+            "delivery.architecture_closer_code",
+        ),
+        ("control_role_code", "delivery.control_role_code"),
+    ] {
+        let pack = bundled_operational_domain().unwrap();
+        let value = serde_json::to_value(&pack).unwrap();
+        for replacement in [
+            None,
+            Some(serde_json::json!("UNKNOWN")),
+            Some(serde_json::json!(false)),
+        ] {
+            let mut changed = value.clone();
+            if let Some(replacement) = replacement {
+                changed["delivery"][key] = replacement;
+            } else {
+                changed["delivery"].as_object_mut().unwrap().remove(key);
+            }
+            let error = parse_operational_domain_pack(&changed.to_string()).unwrap_err();
+            assert!(error.to_string().contains(field), "{error}");
+        }
+        let code = value["delivery"][key].as_str().unwrap();
+        let mut changed = pack.clone();
+        let role = changed.role_catalogs[0]
+            .roles
+            .iter_mut()
+            .find(|role| role.role_code.as_str() == code)
+            .unwrap();
+        role.lifecycle = CodeLifecycle::Compatibility;
+        assert!(changed.validate().unwrap_err().to_string().contains(field));
+        let mut changed = pack.clone();
+        let role = changed.role_catalogs[0]
+            .roles
+            .iter()
+            .find(|role| role.role_code.as_str() == code)
+            .unwrap()
+            .clone();
+        changed.role_catalogs[0].roles.push(role);
+        assert!(changed.validate().unwrap_err().to_string().contains(field));
+        let text = value.to_string();
+        let declaration = format!("\"{key}\":\"{code}\"");
+        let duplicate = text.replace(&declaration, &format!("{declaration},{declaration}"));
+        assert_ne!(text, duplicate);
+        assert!(
+            parse_operational_domain_pack(&duplicate)
+                .unwrap_err()
+                .to_string()
+                .contains(field)
+        );
+    }
+}

@@ -367,6 +367,37 @@ impl OperationalDomainPack {
                 })?;
             definition.validate_against(topology)?;
         }
+        for (field, code) in [
+            (
+                "delivery.architecture_closer_code",
+                &self.delivery.architecture_closer_code,
+            ),
+            (
+                "delivery.control_role_code",
+                &self.delivery.control_role_code,
+            ),
+            (
+                "delivery.process_closer_code",
+                &self.delivery.process_closer_code,
+            ),
+        ] {
+            let mut roles = self
+                .role_catalogs
+                .first()
+                .into_iter()
+                .flat_map(|catalog| &catalog.roles)
+                .filter(|role| &role.role_code == code);
+            if roles
+                .next()
+                .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
+                || roles.next().is_some()
+            {
+                return Err(DomainError::invalid(
+                    field,
+                    "requires exactly one current catalog role",
+                ));
+            }
+        }
         let mut catalogs = BTreeSet::new();
         for catalog in &self.role_catalogs {
             catalog.validate()?;
@@ -409,24 +440,9 @@ impl OperationalDomainPack {
         let catalog = &self.role_catalogs[0];
         if self.delivery.architecture_closer_code == self.delivery.process_closer_code {
             return Err(DomainError::invalid(
-                "OperationalDomainPack",
-                "architecture/process purpose selectors must be separate",
+                "delivery.architecture_closer_code",
+                "must differ from delivery.process_closer_code",
             ));
-        }
-        for code in [
-            &self.delivery.architecture_closer_code,
-            &self.delivery.process_closer_code,
-            &self.delivery.control_role_code,
-        ] {
-            if catalog
-                .role(code)
-                .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
-            {
-                return Err(DomainError::invalid(
-                    "OperationalDomainPack",
-                    "purpose selector requires a current catalog role",
-                ));
-            }
         }
 
         let mut bound_roles = BTreeSet::new();
@@ -499,7 +515,37 @@ impl OperationalDomainPack {
 /// Returns [`DomainError`] when the document shape or any contained revision is
 /// invalid.
 pub fn parse_operational_domain_pack(json: &str) -> DomainResult<OperationalDomainPack> {
-    let pack: OperationalDomainPack = serde_json::from_str(json).map_err(|_| {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|_| {
+        DomainError::invalid(
+            "OperationalDomainPack",
+            "is not a valid Operational domain document",
+        )
+    })?;
+    for (key, field) in [
+        (
+            "architecture_closer_code",
+            "delivery.architecture_closer_code",
+        ),
+        ("process_closer_code", "delivery.process_closer_code"),
+        ("control_role_code", "delivery.control_role_code"),
+    ] {
+        serde_json::from_value::<RoleCode>(value["delivery"][key].clone())
+            .map_err(|_| DomainError::invalid(field, "requires a role code"))?;
+    }
+    let pack: OperationalDomainPack = serde_json::from_str(json).map_err(|error| {
+        let message = error.to_string();
+        for (key, field) in [
+            (
+                "architecture_closer_code",
+                "delivery.architecture_closer_code",
+            ),
+            ("process_closer_code", "delivery.process_closer_code"),
+            ("control_role_code", "delivery.control_role_code"),
+        ] {
+            if message.contains(&format!("duplicate field `{key}`")) {
+                return DomainError::invalid(field, "must be unambiguous");
+            }
+        }
         DomainError::invalid(
             "OperationalDomainPack",
             "is not a valid Operational domain document",

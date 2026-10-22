@@ -153,7 +153,8 @@ fn apply(
     key: &str,
     applied_at: &str,
 ) -> Result<usize, RepositoryError> {
-    let preview = preview(&request(), raw).expect("the document parses");
+    let preview = preview(&request(), raw, &[CountryCode::parse("NO").unwrap()])
+        .expect("the document parses");
     let applied = fixture
         .store
         .applied_exceptions(fixture.project, fixture.assignment.id)
@@ -285,7 +286,12 @@ fn an_import_applies_its_revision_provenance_and_exceptions_together() {
 #[test]
 fn a_preview_alone_changes_no_row() {
     let fixture = fixture();
-    let preview = preview(&request(), FIRST_IMPORT).expect("the document parses");
+    let preview = preview(
+        &request(),
+        FIRST_IMPORT,
+        &[CountryCode::parse("NO").unwrap()],
+    )
+    .expect("the document parses");
     assert_eq!(preview.holidays.len(), 2);
 
     assert_eq!(rows(&fixture, "SELECT count(*) FROM holiday_sources"), 0);
@@ -355,7 +361,12 @@ fn a_second_import_must_supersede_the_one_already_applied() {
     .expect("the import applies");
 
     // A plan built as though nothing were applied yet.
-    let preview = preview(&request(), REFRESHED_IMPORT).expect("the document parses");
+    let preview = preview(
+        &request(),
+        REFRESHED_IMPORT,
+        &[CountryCode::parse("NO").unwrap()],
+    )
+    .expect("the document parses");
     let application = plan(
         &preview,
         &ImportTarget {
@@ -534,7 +545,12 @@ fn an_imported_exception_must_name_a_holiday_source_that_exists() {
 #[test]
 fn an_import_whose_exceptions_belong_elsewhere_is_refused_before_any_write() {
     let fixture = fixture();
-    let preview = preview(&request(), FIRST_IMPORT).expect("the document parses");
+    let preview = preview(
+        &request(),
+        FIRST_IMPORT,
+        &[CountryCode::parse("NO").unwrap()],
+    )
+    .expect("the document parses");
     let mut application = plan(
         &preview,
         &ImportTarget {

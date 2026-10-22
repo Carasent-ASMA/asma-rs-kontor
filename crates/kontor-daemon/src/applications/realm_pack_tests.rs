@@ -376,3 +376,66 @@ fn asma_yaml_overlay_preserves_the_authored_pack_domain_and_committee_bytes() {
         state_root.path().display()
     );
 }
+
+#[test]
+fn selected_domain_selector_refusals_preserve_the_field_name() {
+    for key in ["architecture_closer_code", "control_role_code"] {
+        for missing in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let folder = config::write_config_folder(root.path());
+            let path = folder.join("packs/operational-domain.yml");
+            let mut domain = read(&path);
+            if missing {
+                domain["delivery"].as_object_mut().unwrap().remove(key);
+            } else {
+                domain["delivery"][key] = "UNKNOWN".into();
+            }
+            write(&path, &domain);
+            let error =
+                crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap_err();
+            assert_eq!(error.problem, format!("delivery.{key}"));
+            assert!(error.path.ends_with("packs/operational-domain.yml"));
+        }
+    }
+}
+
+#[test]
+fn selected_project_holiday_countries_are_explicit_and_have_no_default() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = config::write_config_folder(root.path());
+    let path = folder.join(crate::config_folder::ENTRY);
+    let original = read(&path);
+    let mut entry = original.clone();
+    entry["project"]["holiday_countries"] = serde_json::json!(["DE"]);
+    write(&path, &entry);
+    let selected = crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap();
+    assert_eq!(
+        selected
+            .project
+            .holiday_countries
+            .iter()
+            .map(|country| country.as_str())
+            .collect::<Vec<_>>(),
+        ["DE"]
+    );
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!([]),
+        serde_json::json!([false]),
+        serde_json::json!(["unknown"]),
+    ] {
+        let mut entry = original.clone();
+        if value.is_null() {
+            entry["project"]
+                .as_object_mut()
+                .unwrap()
+                .remove("holiday_countries");
+        } else {
+            entry["project"]["holiday_countries"] = value;
+        }
+        write(&path, &entry);
+        let error = crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap_err();
+        assert!(error.problem.contains("project.holiday_countries"));
+        assert!(error.path.ends_with(crate::config_folder::ENTRY));
+    }
+}

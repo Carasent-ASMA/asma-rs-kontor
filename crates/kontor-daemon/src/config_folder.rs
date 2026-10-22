@@ -38,6 +38,9 @@ pub struct ProjectSettings {
     pub consultation_layout: Option<String>,
     /// Configured check-run names.
     pub check_runs: Vec<String>,
+    /// Explicit project countries available to holiday imports; no built-in default.
+    #[serde(skip)]
+    pub holiday_countries: Vec<kontor_core::calendar::CountryCode>,
     /// Validated authoring projection; publication reads only its activated bundle.
     #[serde(skip)]
     pub publication_policy: Option<kontor_core::publication::PublicationPolicy>,
@@ -131,6 +134,19 @@ impl ConfigFolder {
                 "invalid YAML configuration or unsupported document shape",
             )
         })?;
+        let countries = raw["project"]["holiday_countries"]
+            .as_sequence()
+            .filter(|countries| !countries.is_empty())
+            .ok_or_else(|| refusal(&entry_path, "missing or empty project.holiday_countries"))?;
+        entry.project.holiday_countries = countries
+            .iter()
+            .map(|country| {
+                country
+                    .as_str()
+                    .and_then(|code| kontor_core::calendar::CountryCode::parse(code).ok())
+                    .ok_or_else(|| refusal(&entry_path, "invalid project.holiday_countries"))
+            })
+            .collect::<Result<_, _>>()?;
         entry.project.branch_rules = Some(branch_rules);
         entry.project.publication_policy =
             crate::project_policy::parse(&text).map_err(|problem| refusal(&entry_path, problem))?;
