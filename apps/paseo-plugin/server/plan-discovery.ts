@@ -69,7 +69,9 @@ export async function discoverPlanCatalog(checkouts: readonly string[], existing
     if (match >= 0) {
       const previous = catalog[match]!;
       if (previous.workstream && candidate.workstream && previous.workstream !== candidate.workstream) diagnostics.push(`${previous.id}: retained explicit catalog workstream; declaration conflicts.`);
-      catalog[match] = { ...candidate, id: previous.id, projectId: previous.projectId, revisionKind: previous.revisionKind, workstream: previous.workstream ?? candidate.workstream };
+      if (previous.epic && candidate.epic && previous.epic !== candidate.epic) diagnostics.push(`${previous.id}: retained explicit catalog epic; declaration conflicts.`);
+      catalog[match] = { ...candidate, id: previous.id, projectId: previous.projectId, revisionKind: previous.revisionKind,
+        workstream: previous.workstream ?? candidate.workstream, epic: previous.epic ?? candidate.epic };
       seen.set(identity, catalog[match]!); continue;
     }
     if (seen.has(identity) || catalog.some((source) => (source.logicalPlanId === candidate.logicalPlanId || source.path === candidate.path) && source.expectedSha256 === revision)) continue;

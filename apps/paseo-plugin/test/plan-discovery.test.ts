@@ -119,3 +119,12 @@ it("appends new plans while retaining existing source IDs, order, explicit mappi
   expect(report.catalog[2]).toMatchObject({ workstream: null, epic: null, projectId: null });
   expect(report.diagnostics.join()).toContain("retained explicit catalog workstream");
 });
+
+it.each([null, "ASMA-1", "ASMA-2"])("retains an explicit catalog epic when discovery declares %s", async (epic) => {
+  const root = await checkout({ "plans/current.md": epic ? `---\nepic: ${epic}\n---\n# Current` : "# Current" });
+  const discovered = await discoverPlanSources(root, exporter);
+  const current = { ...discovered.catalog[0]!, epic: "ASMA-1" };
+  const report = await discoverPlanCatalog([root], [current], exporter);
+  expect(report.catalog[0]).toEqual(current);
+  expect(report.diagnostics.some(message => message.includes("retained explicit catalog epic"))).toBe(epic === "ASMA-2");
+});
