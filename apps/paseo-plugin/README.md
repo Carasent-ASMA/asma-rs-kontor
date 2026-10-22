@@ -1094,15 +1094,25 @@ record is absent. Exact-ID metadata reads distinguish a readable native record,
 a null record on the selected host, and an unknown/error reply. They do not load
 provider history or verify that a provider conversation can continue.
 
-Archive review reads the exact native ID again, even when it appears in the
-inventory. Missing or invalid replies cannot authorize an effect. Review and
-execution observations reconcile the list and counts; missing evidence expires
-after one minute and can be refreshed explicitly. A timeout, authentication error
-or different-ID reply stays unknown. Already archived and already absent outcomes
-mean no archive request was dispatched. An uncertain dispatched action retains
-its durable no-replay barrier.
+The per-session X performs one exact-session Archive after native preflight.
+Native archive requests cancellation and closes the runtime, including an active
+turn and its provider tools. Managed child sessions block this action to prevent
+an unseen cascade. Native identity/placement and child impact are rechecked;
+activity updates alone do not make a running session impossible to stop.
+History and files are retained. Success requires exact-ID archived and closed
+readback with no active turn. A lost acknowledgement stays uncertain until
+**Check native outcome** verifies retirement using metadata only. It never
+resends the archive or removes the original no-replay fence.
 
-Archive remains usable for a readable, non-running native record without provider
-history. Resume requires its separate history and route preflight. Provider-history
+A confirmed null native record permits only a host-local stale-row disposition,
+reported separately from daemon archive. Its durable receipt is rechecked on
+reload; a readable, unknown, timeout, authentication or wrong-ID reply cannot
+hide a present session. Availability evidence still expires after one minute;
+a settled action reconciles its exact stale list snapshot until it changes.
+The action outcome remains visible when its row disappears.
+The Current default is part of the combined Sessions view.
+
+Archive does not require provider history. Resume requires its separate history
+and route preflight. Provider-history
 existence is unverified unless an authorized operation supplies that evidence;
 no bulk provider launch or permanent-death inference is performed.

@@ -45,7 +45,7 @@ function contrast(a: string, b: string): number {
 describe("compact session status markers", () => {
   it("uses the agreed session icons and keeps history and filter choices distinct", () => {
     expect(QUICK_FILTER_ICONS).toEqual({
-      all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
+      current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
       needs_input: "MessageCircleQuestion", attention: "Bell", favorites: "Star",
       initializing: "Loader", closed: "Square", earlier_error: "History",
     });

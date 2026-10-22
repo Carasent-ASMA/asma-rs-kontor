@@ -10,7 +10,7 @@ import type { useSessionLifecycle } from "./use-session-lifecycle";
 export function ArchiveSessionButton({ session, onPress, colors, disabled = false, compact = false, buttonRef }: { session: { id: string; title: string }; onPress: () => void; colors: Colors; disabled?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
   const help = useControlHelp("Archive session", buttonRef);
   return <>
-    <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={`Archive session: ${session.title} (${session.id})`} accessibilityHint="Review this exact session before native archive. History and files remain."
+    <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={`Archive session: ${session.title} (${session.id})`} accessibilityHint="Stop and archive this exact session. History and files remain. Sessions with managed children are protected."
       disabled={disabled} accessibilityState={{ disabled }} onPress={() => { help.dismiss(); onPress(); }}
       style={{ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
       <Icon name="X" size={14} color={colors.foregroundMuted} />
@@ -32,11 +32,13 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
   const efforts = models.find((model) => model.id === target.model)?.efforts ?? [];
   const text = (value: string, muted = false) => <Text style={{ color: muted ? colors.foregroundMuted : colors.foreground, fontSize: 12, lineHeight: 18 }}>{value}</Text>;
   const close = () => { lifecycle.stop(); onClose(); };
-  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={archive ? "Archive session review" : "Resume sessions"} dialog testID="session-lifecycle-dialog"
+  // This covers the screen; a row can disappear as soon as archive succeeds.
+  // Measure the stable screen root, never the disappearing row's touch target.
+  return <AnchoredMenu anchor={root} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={archive ? "Archive session outcome" : "Resume sessions"} dialog testID="session-lifecycle-dialog"
     header={<View style={{ gap: 6 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 16 }}>{archive ? "Archive session" : "Resume sessions"}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>
-      {review ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}><Action colors={colors} label={running ? "Executing one session at a time…" : archive ? "Archive selected session" : `Resume ${eligibleSelected} eligible · ${selected.length} selected`} disabled={running || eligibleSelected === 0} onPress={() => { void lifecycle.run(); }} />
+      {review ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{!archive ? <Action colors={colors} label={running ? "Executing one session at a time…" : `Resume ${eligibleSelected} eligible · ${selected.length} selected`} disabled={running || eligibleSelected === 0} onPress={() => { void lifecycle.run(); }} /> : null}
         {running ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}
-        {archive && !running ? <Action colors={colors} label="Check again" disabled={busy} onPress={() => { void lifecycle.prepare("archive", "filtered", review.rows.map((row) => row.id)); }} /> : null}</View> : null}
+        {archive && !running && review.rows.some((row) => row.outcome === "blocked" && !row.reconcileReviewId || row.outcome === "pending") ? <Action colors={colors} label="Retry Archive" disabled={busy} onPress={() => { void lifecycle.prepare("archive", "filtered", review.rows.map((row) => row.id)); }} /> : null}</View> : null}
     </View>}>
     <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 10, padding: 12 }}>
       {!archive ? text(TAKEOVER_LIMIT, true) : null}
@@ -55,16 +57,16 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
         <Action colors={colors} label={busy ? "Reading native sessions…" : "Review sessions"} disabled={busy} onPress={() => { void lifecycle.prepare("resume", scope, scope === "filtered" ? scopeIds : []); }} />
         <Action colors={colors} label="Read last action receipt" disabled={busy} onPress={() => { void lifecycle.restore(); }} />
       </> : <>
-        {text(`${review.scope === "host" ? "Whole selected host" : "Filtered scope"} · ${review.rows.length} session(s) · ${review.rows.filter((row) => row.eligible).length} eligible · Review ${review.id}`)}
-        {text(review.action === "resume" ? "Selected sessions receive this continuation instruction:" : "This exact session will be archived. Running sessions and sessions with children are blocked. Durable history/files are preserved; this screen has no undo.", true)}
+        {!archive ? text(`${review.scope === "host" ? "Whole selected host" : "Filtered scope"} · ${review.rows.length} session(s) · ${review.rows.filter((row) => row.eligible).length} eligible · Review ${review.id}`) : text(running || busy ? "Stopping and archiving the selected session…" : "Exact session outcome")}
+        {text(review.action === "resume" ? "Selected sessions receive this continuation instruction:" : "History and files are preserved. Managed child sessions are protected from cascade.", true)}
         {review.action === "resume" ? text(RESUME_PROMPT, true) : null}
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+        {!archive ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
           <Action colors={colors} label="Select eligible" disabled={running} onPress={() => lifecycle.setSelected(review.rows.filter((row) => row.eligible && row.outcome === "pending").map((row) => row.id))} />
           <Action colors={colors} label="Clear selection" disabled={running} onPress={() => lifecycle.setSelected([])} />
           {review.action === "resume" ? <Action colors={colors} label="New review" disabled={running} onPress={lifecycle.clear} /> : null}
-        </View>
+        </View> : null}
         {review.rows.map((row) => <View key={row.id} style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 7, padding: 8, gap: 4 }}>
-          <Pressable accessibilityRole="checkbox" accessibilityLabel={`Select ${row.title} (${row.id}). ${row.reason}`} accessibilityState={{ checked: selected.includes(row.id), disabled: running || row.outcome !== "pending" }} aria-checked={selected.includes(row.id)} aria-disabled={running || row.outcome !== "pending"} disabled={running || row.outcome !== "pending"}
+          {archive ? text(row.title) : <Pressable accessibilityRole="checkbox" accessibilityLabel={`Select ${row.title} (${row.id}). ${row.reason}`} accessibilityState={{ checked: selected.includes(row.id), disabled: running || row.outcome !== "pending" }} aria-checked={selected.includes(row.id)} aria-disabled={running || row.outcome !== "pending"} disabled={running || row.outcome !== "pending"}
             {...(Platform.OS === "web" ? { onKeyDown: (event: { key: string; repeat?: boolean; preventDefault(): void; stopPropagation(): void }) => {
               // React Native Web's Pressable only handles Space for button-like roles.
               if (event.key !== " " && event.key !== "Spacebar") return;
@@ -73,14 +75,18 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
             } } : {})}
             onPress={() => lifecycle.setSelected(selected.includes(row.id) ? selected.filter((id) => id !== row.id) : [...selected, row.id])} style={{ minHeight: 44, justifyContent: "center" }}>
             {text(`${selected.includes(row.id) ? "☑" : "☐"} ${row.title}`)}
-          </Pressable>
-          {text(`${row.id} · ${row.nativeStatus} · ${row.provider}/${row.model ?? "unknown"}/${row.effort ?? "unknown"}`, true)}
-          {text(`${row.category === "unknown" ? "Unknown" : row.eligible ? "Eligible" : "Unavailable for this action"}: ${row.reason}`)}
-          {text(`Workspace: ${row.workspaceId ?? "No workspace"} · ${row.cwd || "No checkout evidence"} · permissions ${row.mode ?? "unknown"}`, true)}
+          </Pressable>}
+          {text(`${row.id} · ${row.nativeStatus}`, true)}
+          {!archive || row.outcome === "pending" || row.outcome === "blocked" ? text(`${row.category === "unknown" ? "Unknown" : row.eligible ? "Eligible" : "Unavailable for this action"}: ${row.reason}`) : null}
+          <Disclosure colors={colors} label="Session details">
+            {text(`${row.provider}/${row.model ?? "unknown"}/${row.effort ?? "unknown"}`, true)}
+            {text(`Workspace: ${row.workspaceId ?? "No workspace"} · ${row.cwd || "No checkout evidence"} · permissions ${row.mode ?? "unknown"}`, true)}
+          </Disclosure>
           {row.children.map((child) => text(`Protected child: ${child.title} · ${child.id} · ${child.status} · ${child.workspaceId ?? "no workspace"}`, true))}
           {row.outcome !== "pending" ? <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{`${row.outcome}: ${row.message ?? "Read receipt before retry."}`}</Text> : null}
+          {archive && (["uncertain", "intent"].includes(row.outcome) || row.reconcileReviewId || lifecycle.error) ? <Action colors={colors} label="Check native outcome" disabled={busy || running} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
         </View>)}
-        {text("Unselected and blocked sessions remain unchanged. Preflight blocks can be reviewed again; an uncertain dispatch is held for native reconciliation. Close/cancel does not undo a request already sent.", true)}
+        {!archive ? text("Unselected and blocked sessions remain unchanged. Preflight blocks can be reviewed again; an uncertain dispatch is held for native reconciliation. Close/cancel does not undo a request already sent.", true) : null}
       </>}
       {lifecycle.error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{lifecycle.error}</Text> : null}
     </ScrollView>

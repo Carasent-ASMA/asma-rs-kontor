@@ -2027,10 +2027,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     || responsibilityById?.get(entry.id)?.status === (assignment === "unknown" ? "unknown" : "match"), [assignment, responsibilityById]);
   const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
     && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))) && inAssignment(entry), [shortcut, streams, mappings, inAssignment]);
-  // Search and state never narrow the tree. All work with no workstream or assignment choice keeps empty workspaces, a desk context's own included;
-  // My work and an assignment filter keep only groups holding sessions.
-  const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
-    (group) => streams === null && work === "all" && assignment === "any" && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, work, assignment, mappings]);
+  // Current narrows native-state visibility; explicit result filters keep their tree for Show in tree.
+  // All work with no workstream or assignment choice keeps empty workspaces; other scopes keep only groups holding sessions.
+  const treeEligible = useCallback((entry: DirectoryEntry) => eligible(entry)
+    && (view.status !== "current" || matchesStatus(entry, "current", favorites)), [eligible, view.status, favorites]);
+  const filtered = useMemo(() => filterOrganizationTree(tree, treeEligible,
+    (group) => streams === null && work === "all" && assignment === "any" && scopeKeepsGroup(group, shortcut, mappings), treeEligible), [tree, treeEligible, shortcut, streams, work, assignment, mappings]);
   const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
@@ -2918,7 +2920,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
-          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready" || item.entry.availability?.state === "missing"}
+          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
                 onPress={() => { lifecycle.clear(); lifecycleAnchor.current = archiveButtons.current.get(item.entry.id) ?? slimRecoveryButton.current; setLifecycleOpen(true); void lifecycle.prepare("archive", "filtered", [item.entry.id]); }} /> : null;
           if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} />;

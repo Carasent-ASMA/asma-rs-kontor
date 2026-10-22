@@ -8,7 +8,7 @@ vi.mock("react", () => ({
   useMemo: (fn: () => unknown) => fn(), useCallback: (fn: unknown) => fn,
   useEffect: (fn: () => (() => void) | undefined, deps: unknown[]) => { const s = hooks.slot(); hooks.cursor++; if (s.deps && deps.every((d, i) => Object.is(d, s.deps![i]))) return; s.deps = deps; hooks.queue.push(() => { s.cleanup?.(); s.cleanup = fn(); }); },
 }));
-vi.mock("@getpaseo/plugin/client", () => ({ useRpc: () => hooks.rpc }));
+vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (rpc: { name: string }) => rpc.name === "sessions.lifecycle-dispositions" ? async () => ({}) : hooks.rpc }));
 import { useSessionAvailability } from "../client/use-session-availability";
 import { useSessionLifecycle } from "../client/use-session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
@@ -52,5 +52,30 @@ describe("P1 host/cache/action hook races", () => {
     hooks.rpc.mockResolvedValue({ id: "fixture-review", action: "archive", rows }); const changed = vi.fn();
     const state = render(() => useSessionLifecycle("host", changed)); await state.prepare("archive", "filtered", [entry.id]);
     expect(changed).toHaveBeenCalledExactlyOnceWith(rows); expect(hooks.rpc).toHaveBeenCalledTimes(1);
+  });
+  it("one Archive activation preflights then executes the exact eligible ID once; Resume only reviews", async () => {
+    const rows = [{ id: entry.id, eligible: true, outcome: "pending", availability: evidence("readable") }];
+    const result = { ...rows[0], outcome: "archived" };
+    hooks.rpc.mockResolvedValueOnce({ id: "fixture-review", action: "archive", rows }).mockResolvedValueOnce(result);
+    const changed = vi.fn(), state = render(() => useSessionLifecycle("host", changed));
+    const first = state.prepare("archive", "filtered", [entry.id]); state.clear();
+    await Promise.all([first, state.prepare("archive", "filtered", [entry.id])]);
+    expect(hooks.rpc).toHaveBeenCalledTimes(2); expect(hooks.rpc.mock.calls[1]).toEqual([{ reviewId: "fixture-review", agentId: entry.id }]);
+    expect(changed).toHaveBeenLastCalledWith([result]);
+    hooks.rpc.mockReset().mockResolvedValue({ id: "resume-review", action: "resume", rows });
+    await state.prepare("resume", "filtered", [entry.id]); expect(hooks.rpc).toHaveBeenCalledTimes(1);
+  });
+  it("settled archive does not reappear when availability expires over a stale directory", async () => {
+    const draw = () => render(() => useSessionAvailability("host", [entry], false));
+    draw().reconcile([{ id: entry.id, outcome: "archived", availability: { ...evidence("readable"), archivedAt: "2026-10-21" } } as LifecycleRow]);
+    draw(); vi.advanceTimersByTime(AVAILABILITY_TTL_MS + 1);
+    expect(draw().entries[0]?.archivedAt).toBe("2026-10-21");
+  });
+  it("settled exact-ID local removal persists across expiry but never hides the same ID on another host", async () => {
+    let host = "host-a";
+    const draw = () => render(() => useSessionAvailability(host, [entry], false));
+    draw().reconcile([{ id: entry.id, outcome: "absent", availability: { ...evidence("missing"), localRemoval: true } } as LifecycleRow]);
+    draw(); vi.advanceTimersByTime(AVAILABILITY_TTL_MS + 1); expect(draw().entries).toEqual([]);
+    host = "host-b"; expect(draw().entries).toHaveLength(1);
   });
 });

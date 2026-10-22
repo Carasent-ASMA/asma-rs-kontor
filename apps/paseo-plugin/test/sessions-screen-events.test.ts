@@ -1983,12 +1983,25 @@ describe("SessionsScreen mobile filter page", () => {
     const star = (id: string) => walk(drawn({ kind: "session", entry: sessionEntry(id, {}), depth: 1, parentKey: group.group.key })).find((element) => /^(Un)?favorite /i.test(String(element.props.accessibilityLabel)))!.props["aria-pressed"];
     expect([star("session-a"), star("session-b")]).toEqual([true, false]);
   });
+  it("Current filters actual tree rows while All restores closed/error rows without discarding old idle records", () => {
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("old", {status:"idle",updatedAt:"2001-01-01"}), sessionEntry("error",{status:"error"}),sessionEntry("closed",{status:"closed"})] };
+    patchSessionView("host-a", { grouping: "flat", status: "current" }); renderCompact();
+    expect(sessionRowIds()).toEqual(["old"]);
+    (walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.onStatus as (status: string) => void)("all");harness.flush();
+    expect(sessionRowIds().sort()).toEqual(["closed","error","old"]);
+    (walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.onStatus as (status: string) => void)("current");harness.flush();
+    const toolbar=walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!;
+    expect(toolbar.props.activeCount).toBe(1);
+    (toolbar.props.onClear as () => void)();harness.flush();
+    expect(readSessionView("host-a").status).toBe("all");
+    expect(sessionRowIds().sort()).toEqual(["closed","error","old"]);
+  });
   it("keeps a compact title and context together, with its Updated time, wrapped report metadata and state badge", () => {
     directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
       status: "running", pendingPermissionCount: 1, archivedAt: "2026-10-18T11:00:00.000Z", workspaceName: "RSW • review",
     }), provider: "codex", model: "gpt-6.1-sol", telemetry: { lastUsage: { inputTokens: 100, outputTokens: 20 } } }] };
-    patchSessionView("host-a", { grouping: "flat", includeArchived: true });
+    patchSessionView("host-a", { grouping: "flat", includeArchived: true, status: "all" });
     renderCompact();
     const leaf = renderSessionLeaf();
     expect((leaf.props.style as (state: { pressed: boolean }) => { minHeight: number })({ pressed: false }).minHeight).toBe(44);
@@ -2389,7 +2402,7 @@ describe("SessionsScreen mobile filter page", () => {
     compact = true; harness.flush(); openMobileFilters();
     scope = "project:b"; harness.flush();
     expect(walk(harness.current()).some((node) => node.type === MobileFiltersPage)).toBe(false);
-    expect(readSessionView(scope).status).toBe("all");
+    expect(readSessionView(scope).status).toBe("current");
     expect(readSessionView("project:a").status).toBe("idle");
   });
 });
@@ -2651,8 +2664,20 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     } as Parameters<typeof SessionsScreen>[0]));
   }
 
-  it("starts in My work with every local session on this host, whatever the projection or Working as", () => {
+  it("defaults to Current within My work and restores the error session through All visibility", () => {
     patchSessionView("host-a", { grouping: "flat" });
+    renderLocal(ready());
+    expect(readSessionView("host-a").status).toBe("current");
+    expect(sessionRowIds().sort()).toEqual(localIds.filter((id) => id !== "error-missing"));
+    const all = walk(harness.current()).find((element) => element.type === FilterChip && element.props.status === "all")!;
+    (all.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").status).toBe("all");
+    expect(sessionRowIds().sort()).toEqual(localIds);
+    expect(message()).toBe("My work: every session on this host.");
+  });
+
+  it("shows every local session in My work with All visibility, whatever the projection or Working as", () => {
+    patchSessionView("host-a", { grouping: "flat", status: "all" });
     const reads: (ResponsibilityRead | null)[] = [null,
       { status: "unavailable", projection: null, revision: null, readAt: "2026-10-21T12:59:00Z", diagnostics: ["No responsibility projection is installed on this host."] },
       ready("2026-10-21T12:30:00Z"), ready()];
@@ -2697,8 +2722,8 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
   });
 
   it("keeps Working as per host: the same session IDs on another host stay unfiltered and unset", () => {
-    patchSessionView("host-a", { grouping: "flat", assignment: "me" });
-    patchSessionView("host-b", { grouping: "flat", assignment: "me" });
+    patchSessionView("host-a", { grouping: "flat", status: "all", assignment: "me" });
+    patchSessionView("host-b", { grouping: "flat", status: "all", assignment: "me" });
     renderLocal(ready());
     choose("workingAs", "Alex Example");
     // The epic assignee owns both ASMA-100 sessions; the conflicting labels stay unknown, not someone else's.

@@ -7,7 +7,7 @@ const id = z.string().min(1).max(200);
 export const recoveryTargetSchema = z.object({ provider: id, model: id, effort: id }).strict();
 export type RecoveryTarget = z.infer<typeof recoveryTargetSchema>;
 export const DEFAULT_RECOVERY_TARGET: RecoveryTarget = { provider: "codex", model: "gpt-6.1-sol", effort: "xhigh" };
-export const availabilitySchema = z.object({ agentId: id, nativeStatus: z.string().optional(), archivedAt: z.string().nullable().optional(), providerHistory: z.enum(["unverified", "not-reported"]).optional(), state: z.enum(["readable", "missing", "unknown"]), reason: z.string(), checkedAt: z.string(), revision: z.string() });
+export const availabilitySchema = z.object({ agentId: id, nativeStatus: z.string().optional(), archivedAt: z.string().nullable().optional(), providerHistory: z.enum(["unverified", "not-reported"]).optional(), localRemoval: z.boolean().optional(), state: z.enum(["readable", "missing", "unknown"]), reason: z.string(), checkedAt: z.string(), revision: z.string() });
 export type SessionAvailability = z.infer<typeof availabilitySchema>;
 export const AVAILABILITY_TTL_MS = 60_000;
 /** Exact native read evidence expires; neither a timestamp nor provider failure proves absence. */
@@ -21,6 +21,7 @@ export const lifecycleRowSchema = z.object({
   category: z.enum(["candidate", "unknown", "excluded"]), eligible: z.boolean(), reason: z.string(),
   children: z.array(z.object({ id, title: z.string(), status: z.string(), workspaceId: z.string().nullable() })),
   availability: availabilitySchema.optional(),
+  reconcileReviewId: z.string().uuid().optional(),
   outcome: z.enum(["pending", "intent", "submitted", "archived", "blocked", "uncertain", "absent", "already_archived"]), message: z.string().nullable(),
 });
 export type LifecycleRow = z.infer<typeof lifecycleRowSchema>;
@@ -37,6 +38,8 @@ export const previewLifecycle = defineRpc({ name: "sessions.lifecycle-preview", 
   action: z.enum(["resume", "archive"]), scope: z.enum(["filtered", "host"]), agentIds: z.array(id).max(10_000), target: recoveryTargetSchema,
 }).strict(), output: lifecycleReviewSchema });
 export const executeLifecycleItem = defineRpc({ name: "sessions.lifecycle-execute-item", input: z.object({ reviewId: z.string().uuid(), agentId: id }).strict(), output: lifecycleRowSchema });
+export const reconcileLifecycleItem = defineRpc({ name: "sessions.lifecycle-reconcile-item", input: z.object({ reviewId: z.string().uuid(), agentId: id }).strict(), output: lifecycleRowSchema });
 export const readLifecycleReview = defineRpc({ name: "sessions.lifecycle-review", input: z.object({ reviewId: z.string().uuid().optional() }).strict(), output: lifecycleReviewSchema.nullable() });
 export const probeSessionAvailability = defineRpc({ name: "sessions.availability", input: z.object({ agentIds: z.array(id).max(100) }).strict(),
   output: z.record(z.string(), availabilitySchema) });
+export const readSessionDispositions = defineRpc({ name: "sessions.lifecycle-dispositions", input: z.object({ agentIds: z.array(id).max(100) }).strict(), output: z.record(z.string(), availabilitySchema) });

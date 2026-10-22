@@ -74,7 +74,8 @@ describe("session search and filters", () => {
     };
     expect(activeFilterCount(filters)).toBe(2);
     expect(hasActiveView(filters)).toBe(true);
-    expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, query: "  " })).toBe(false);
+    expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, query: "  " })).toBe(true);
+    expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, status: "all", query: "  " })).toBe(false);
     expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, query: "x" })).toBe(true);
   });
 

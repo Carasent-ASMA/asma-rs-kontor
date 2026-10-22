@@ -10,6 +10,7 @@ export const ALL_STATUS_FILTER = "all" as const;
 
 /** One exclusive state choice; runtime and attention choices may overlap on the same session. */
 export type StatusFilter =
+  | "current"
   | typeof ALL_STATUS_FILTER
   | SessionStatus
   | "needs_input"
@@ -19,6 +20,7 @@ export type StatusFilter =
 
 /** Frequent choices; runtime history and less common states sit under More states. */
 export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
+  "current",
   ALL_STATUS_FILTER,
   "running",
   "idle",
@@ -38,12 +40,13 @@ export type SessionFilters = {
 
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
-  status: ALL_STATUS_FILTER,
+  status: "current",
   includeArchived: false,
   advancedOpen: false,
 };
 
 const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  current: "Current",
   all: "All",
   running: "Running",
   idle: "Idle",
@@ -87,6 +90,9 @@ export function matchesStatus(
   favorites: readonly string[] = [],
 ): boolean {
   switch (status) {
+    case "current":
+      // Age and provider-history uncertainty never prove a session broken.
+      return entry.archivedAt === null && freshAvailability(entry)?.state !== "missing" && !freshAvailability(entry)?.archivedAt && (entry.needsInput || entry.status !== "closed" && entry.status !== "error");
     case ALL_STATUS_FILTER:
       return true;
     case "favorites":

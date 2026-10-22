@@ -73,7 +73,7 @@ export function MobileQuickToolbar(props: ToolbarProps) {
           label={`${quickFilterLabel(choice)}, ${counts[choice]} sessions`} help={quickFilterHelp(choice, counts[choice])} count={counts[choice]} selected={status === choice} onPress={() => props.onStatus(choice)} />)}
       </>}
       <View style={{ flex: searchOpen ? 0 : 1 }} />
-      <QuickToolbarButton ref={chooserRef} testID="sessions-mobile-quick-chooser-trigger" label={`All 7 quick filters and icon meanings, current: ${quickFilterLabel(status)}`}
+      <QuickToolbarButton ref={chooserRef} testID="sessions-mobile-quick-chooser-trigger" label={`All 8 quick filters and icon meanings, current: ${quickFilterLabel(status)}`}
         icon="ListFilter" caption="More" expanded={props.chooserOpen} colors={colors} target={target} onPress={props.onChooser} />
       <QuickToolbarButton ref={filtersTriggerRef} testID="sessions-mobile-filters-trigger"
         label={props.activeCount ? `Filters and view, ${props.activeCount} active filters or view choices` : "Filters and view"}

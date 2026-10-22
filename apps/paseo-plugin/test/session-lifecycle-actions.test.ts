@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,11 @@ import { DEFAULT_RECOVERY_TARGET as target, previewLifecycle, executeLifecycleIt
 import { hasSessionAttention, toDirectoryEntry } from "../client/session-directory";
 import { matchesStatus } from "../client/session-view";
 import { openSessionById } from "../client/session-actions";
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: vi.fn(actual.open), readFile: vi.fn(actual.readFile) };
+});
+const nativeFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 function agent(id: string, patch: Partial<Agent> = {}): Agent {
   return { id, provider: "codex", model: "gpt-6.1-sol", effectiveThinkingOptionId: "xhigh", cwd: "/fixtures/checkout", workspaceId: "workspace-a",
@@ -17,7 +23,10 @@ function agent(id: string, patch: Partial<Agent> = {}): Agent {
     requiresAttention: true, attentionReason: "error", attentionTimestamp: "2001-01-01", archivedAt: null, ...patch };
 }
 const dirs: string[] = [];
-afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.mocked(open).mockReset(); vi.mocked(readFile).mockReset();
+  for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true });
+});
 async function setup(initial: Agent[] = [agent("a"), agent("b")]) {
   const root = await mkdtemp(join(tmpdir(), "kontor-lifecycle-test-")); dirs.push(root);
   const records = new Map(initial.map((value) => [value.id, value]));
@@ -41,10 +50,96 @@ describe("native recovery classification", () => {
     const cases: Partial<Agent>[] = [{ lastError: "Usage limit reached" }, { lastError: "401 Unauthorized" }, { attentionReason: "permission" }, { labels: { "takeover.successor": "new" } }, { persistence: null }, { provider: "claude" }, { model: "other" }, { effectiveThinkingOptionId: "low" }];
     for (const patch of cases) { const row = lifecycleRow(agent("a", patch), [], "resume", target); expect(row.eligible).toBe(false); expect(row.reason.length).toBeGreaterThan(15); }
   });
-  it("blocks every managed child and active/provider-native worker risk before archive", () => {
+  it("blocks every managed child while allowing explicit native stop/archive of active sessions", () => {
     const a = agent("a"), child = agent("child", { status: "running", workspaceId: "different-workspace", labels: { "paseo.parent-agent-id": "a" } });
     expect(lifecycleRow(a, [a, child], "archive", target)).toMatchObject({ eligible: false, children: [{ id: "child" }] });
-    expect(lifecycleRow(agent("a", { status: "running" }), [], "archive", target).eligible).toBe(false);
+    expect(lifecycleRow(agent("a", { status: "running" }), [], "archive", target).eligible).toBe(true);
+  });
+});
+describe("durable lock metadata contention", () => {
+  const lockPath = (root: string) => join(root, `intent-${createHash("sha256").update("a").digest("hex")}.json`);
+  const priorReviewId = "00000000-0000-4000-8000-000000000001";
+  it.each([
+    ["empty", ""], ["partial", '{"reviewId":'], ["invalid JSON", "not json"],
+    ["null", "null"], ["array", "[]"], ["scalar", '"metadata"'],
+    ["missing fields", "{}"],
+    ["wrong target", JSON.stringify({ reviewId: priorReviewId, agentId: "b", action: "archive" })],
+    ["Resume owner", JSON.stringify({ reviewId: priorReviewId, agentId: "a", action: "resume" })],
+    ["invalid review ID", JSON.stringify({ reviewId: "../other", agentId: "a", action: "archive" })],
+    ["malformed UUID", JSON.stringify({ reviewId: "-".repeat(36), agentId: "a", action: "archive" })],
+    ["invalid UUID version", JSON.stringify({ reviewId: "00000000-0000-f000-8000-000000000001", agentId: "a", action: "archive" })],
+    ["invalid UUID variant", JSON.stringify({ reviewId: "00000000-0000-4000-0000-000000000001", agentId: "a", action: "archive" })],
+    ["non-string review ID", JSON.stringify({ reviewId: 42, agentId: "a", action: "archive" })],
+  ])("holds %s metadata without an effect, hint or lock removal", async (_label, contents) => {
+    const s = await setup(), review = await s.preview(), file = lockPath(s.root);
+    await writeFile(file, contents);
+    const result = await s.service.execute(review.id, "a");
+    expect(result).toMatchObject({ outcome: "blocked", message: expect.stringContaining("no second dispatch") });
+    expect(result).not.toHaveProperty("reconcileReviewId");
+    expect(await nativeFs.readFile(file, "utf8")).toBe(contents);
+    expect(vi.mocked(open).mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+    expect((await s.service.read(review.id))?.rows[0]?.outcome).toBe("pending");
+  });
+  it("offers only the exact Archive owner's valid reconciliation reference", async () => {
+    const s = await setup(), owner = await s.preview("archive"), contender = await s.preview(), file = lockPath(s.root);
+    const contents = JSON.stringify({ reviewId: owner.id, agentId: "a", action: "archive", phase: "intent" });
+    await writeFile(file, contents);
+    expect(await s.service.execute(contender.id, "a")).toMatchObject({ outcome: "blocked", reconcileReviewId: owner.id });
+    expect(await nativeFs.readFile(file, "utf8")).toBe(contents);
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each(["EACCES", "EIO", "ENOENT"])("holds an optional metadata read failure %s without reacquiring", async (code) => {
+    const s = await setup(), review = await s.preview(), file = lockPath(s.root), contents = "owner is still publishing";
+    await writeFile(file, contents);
+    vi.mocked(readFile).mockImplementation(async (...args) => {
+      if (args[0] === file) throw Object.assign(new Error("fixture read fault"), { code });
+      return nativeFs.readFile(...args);
+    });
+    const result = await s.service.execute(review.id, "a");
+    expect(result.outcome).toBe("blocked"); expect(result).not.toHaveProperty("reconcileReviewId");
+    expect(await nativeFs.readFile(file, "utf8")).toBe(contents);
+    expect(vi.mocked(open).mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("does not reacquire when the owner removes its lock between EEXIST and metadata read", async () => {
+    const s = await setup(), review = await s.preview(), file = lockPath(s.root);
+    await writeFile(file, "owner metadata");
+    vi.mocked(readFile).mockImplementation(async (...args) => {
+      if (args[0] === file) await nativeFs.unlink(file);
+      return nativeFs.readFile(...args);
+    });
+    const result = await s.service.execute(review.id, "a");
+    expect(result.outcome).toBe("blocked"); expect(result).not.toHaveProperty("reconcileReviewId");
+    await expect(nativeFs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(vi.mocked(open).mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("blocks a contender during the winner's create-before-write window and preserves one effect across reload", async () => {
+    const s = await setup(), owner = await s.preview(), contender = await s.preview(), file = lockPath(s.root);
+    let created!: () => void, release!: () => void, held = false;
+    const entered = new Promise<void>((resolve) => { created = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await nativeFs.open(...args);
+      if (args[0] === file && args[1] === "wx" && !held) { held = true; created(); await released; }
+      return handle;
+    });
+    const winner = s.service.execute(owner.id, "a");
+    try {
+      await Promise.race([entered, winner.then(() => { throw new Error("Winner did not reach the publication barrier"); })]);
+      expect(await nativeFs.readFile(file, "utf8")).toBe("");
+      const result = await createLifecycleService(s.client, s.root).execute(contender.id, "a");
+      expect(result.outcome).toBe("blocked"); expect(result).not.toHaveProperty("reconcileReviewId");
+      expect(await nativeFs.readFile(file, "utf8")).toBe("");
+      expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+    } finally { release(); await winner; }
+    expect((await winner).outcome).toBe("submitted"); expect(s.send).toHaveBeenCalledTimes(1);
+    const reloaded = createLifecycleService(s.client, s.root);
+    expect((await reloaded.execute(owner.id, "a")).outcome).toBe("submitted");
+    const fresh = await s.preview();
+    expect((await reloaded.execute(fresh.id, "a")).outcome).toBe("blocked");
+    expect(s.send).toHaveBeenCalledTimes(1); expect(s.archive).not.toHaveBeenCalled();
   });
 });
 describe("reviewed exact-ID effects and durable replay", () => {
@@ -185,11 +280,11 @@ describe("Attention availability evidence", () => {
 
 
 describe("P1 fresh native record reconciliation", () => {
-  it("does not offer stale inventory as an archiveable record", async () => {
-    const s = await setup(); s.refresh.mockResolvedValueOnce(null);
+  it("revalidates a missing record and records local removal without claiming daemon archive", async () => {
+    const s = await setup(); s.refresh.mockResolvedValue(null);
     const review = await s.preview("archive");
-    expect(review.rows[0]).toMatchObject({ id: "a", eligible: false, availability: { agentId: "a", state: "missing" } });
-    expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
+    expect(review.rows[0]).toMatchObject({ id: "a", eligible: true, availability: { agentId: "a", state: "missing" } });
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "absent", availability: { localRemoval: true }, message: expect.stringContaining("no daemon archive") }); expect(s.archive).not.toHaveBeenCalled();
   });
   it.each(["401 Unauthorized", "Timeout", "API not responding"])("keeps %s unknown without a false absence claim", async (message) => {
     const s = await setup(); s.refresh.mockRejectedValueOnce(new Error(message));
@@ -219,5 +314,56 @@ describe("P1 fresh native record reconciliation", () => {
     const review = await s.preview("archive");
     expect(review.rows[0]).toMatchObject({ eligible: true, availability: { state: "readable", providerHistory: "not-reported" } });
     expect((await s.service.execute(review.id, "a")).outcome).toBe("archived"); expect(history).not.toHaveBeenCalled();
+  });
+});
+
+describe("force-close archive and read-only settlement", () => {
+  it("rechecks exact placement after the final slow child inventory", async () => {
+    const s = await setup(), original = s.client.agents.list; let lists = 0;
+    s.client.agents.list = async options => { const result = await original(options); if (++lists === 3) s.records.set("a", agent("a", { workspaceId: "moved" })); return result; };
+    const review = await s.preview("archive");
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each(["running", "initializing", "idle", "error", "closed"] as const)("archives exact %s even when activity updates during preflight", async (status) => {
+    const s = await setup([agent("a", { status }), agent("b")]); const review = await s.preview("archive");
+    s.records.set("a", agent("a", { status, updatedAt: "new-token-time", lastError: "401 Unauthorized" }));
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("archived");
+    expect(s.archive).toHaveBeenCalledExactlyOnceWith("a"); expect(s.records.get("b")?.archivedAt).toBeNull(); expect(s.send).not.toHaveBeenCalled();
+  });
+  it("settles a lost archive acknowledgement after reload by metadata only while retaining its fence", async () => {
+    const s = await setup(), review = await s.preview("archive");
+    s.archive.mockImplementationOnce(async (id) => { s.records.set(id, agent(id, { status: "closed", archivedAt: "now" })); throw new Error("Lost acknowledgement"); });
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("uncertain");
+    const reloaded = createLifecycleService(s.client, s.root);
+    expect(await reloaded.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", message: expect.stringContaining("No additional") });
+    expect((await reloaded.execute(review.id, "a")).outcome).toBe("archived");
+    expect(s.archive).toHaveBeenCalledTimes(1); expect((await readdir(s.root)).some((name) => name.startsWith("intent-"))).toBe(true);
+  });
+  it.each(["missing", "mismatch", "timeout", "still-running"])("never settles %s as archived or resends", async (state) => {
+    const s = await setup(), review = await s.preview("archive"); s.archive.mockRejectedValueOnce(new Error("Lost transport"));
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("uncertain");
+    if (state === "missing") s.refresh.mockResolvedValue(null);
+    else if (state === "mismatch") s.refresh.mockResolvedValue({ agent: agent("other", { status: "closed", archivedAt: "now" }), project: null });
+    else if (state === "timeout") s.refresh.mockRejectedValue(new Error("Timeout"));
+    else s.records.set("a", agent("a", { status: "running", archivedAt: "now" }));
+    expect((await createLifecycleService(s.client, s.root).reconcile(review.id, "a")).outcome).toBe("uncertain");
+    expect(s.archive).toHaveBeenCalledTimes(1); expect((await readdir(s.root)).some((name) => name.startsWith("intent-"))).toBe(true);
+  });
+  it("does not call an archived-but-still-running record successfully retired", async () => {
+    const s = await setup(), review = await s.preview("archive");
+    s.records.set("a", agent("a", { status: "running", archivedAt: "now" }));
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("retains local absence intent across reload, rechecks it, and restores readable or unknown IDs", async () => {
+    const s = await setup(), review = await s.preview("archive"); s.records.delete("a");
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("absent");
+    const reloaded = createLifecycleService(s.client, s.root);
+    expect(await reloaded.dispositions(["a", "b"])).toMatchObject({ a: { state: "missing", localRemoval: true } });
+    expect((await reloaded.dispositions(["a", "b"])).b).toBeUndefined();
+    s.refresh.mockRejectedValueOnce(new Error("401 Unauthorized"));
+    expect(await reloaded.dispositions(["a"])).toMatchObject({ a: { state: "unknown", localRemoval: false } });
+    s.records.set("a", agent("a"));
+    expect(await reloaded.dispositions(["a"])).toMatchObject({ a: { state: "readable", localRemoval: false } });
+    expect(s.archive).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled();
   });
 });
