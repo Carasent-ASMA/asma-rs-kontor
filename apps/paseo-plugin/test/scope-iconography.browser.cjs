@@ -1,0 +1,121 @@
+// Offline 679-session fixture: use PREVIEW_ORIGIN, PLAYWRIGHT_MODULE and EVIDENCE_DIR.
+// The fixture renders the candidate's real client modules through react-native-web.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const origin = process.env.PREVIEW_ORIGIN;
+const output = process.env.EVIDENCE_DIR;
+assert.ok(origin && output, 'Supply the isolated fixture origin and an evidence directory');
+fs.mkdirSync(output, { recursive: true });
+const report = { cases: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
+let browser;
+const counts = [679, 93, 48, 538];
+const labels = ['All sessions', 'PR Review', 'Adam desk', 'Outside desks'];
+const state = page => page.evaluate(() => window.readSessionView());
+const chip = (page, index) => page.getByTestId(`sessions-shortcut-${index}`);
+const snap = (page, name) => page.screenshot({ path: path.join(output, `${name}.png`) });
+async function scopeControls(page, touch) {
+  if (touch) await page.getByRole('button', { name: 'Filters and view', exact: true }).tap();
+  await chip(page, 0).waitFor();
+  for (let i = 0; i < 4; i++) {
+    const button = chip(page, i);
+    assert.equal(await button.getAttribute('aria-label'), `${labels[i]}, ${counts[i]} sessions`);
+    const box = await button.boundingBox();
+    assert.ok(box.width >= 44 && box.height >= 44, '44pt scope targets');
+    assert.ok(box.x >= 0 && box.x + box.width <= page.viewportSize().width, 'scope fits viewport');
+    assert.ok(await button.locator('svg').count(), 'SDK glyph rendered');
+    assert.ok((await button.innerText()).includes(String(counts[i])));
+  }
+}
+async function activate(button, touch) { if (touch) await button.tap(); else await button.click(); }
+async function check(width, theme) {
+  const touch = width < 600;
+  const context = await browser.newContext({ viewport: { width, height: width === 1440 ? 1000 : 844 }, hasTouch: touch, isMobile: touch });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const name = `${width}-${theme}`;
+  try {
+    await page.goto(`${origin}/?theme=${theme}`);
+    const kontor = () => page.getByRole('button', { name: /^Workstream Kontor,/ });
+    await kontor().waitFor();
+    assert.ok((await kontor().innerText()).includes('Running 2/538'));
+    assert.ok((await kontor().getAttribute('aria-label')).includes('Running: 2 of 538 sessions'));
+    const qsw = page.getByRole('button', { name: /^Native project DESK • QSW,/ });
+    assert.ok((await qsw.innerText()).includes('No sessions'));
+    assert.ok(await qsw.locator('svg.lucide-zap').count());
+    const unknown = page.getByRole('button', { name: /^Native project DESK • FUTURE,/ });
+    assert.ok(await unknown.locator('svg.lucide-armchair').count());
+    for (const row of [kontor(), qsw, unknown]) assert.ok((await row.boundingBox()).height >= 44);
+    await snap(page, `${name}-tree`);
+    // Reveal deeper descendants and verify the badge never escapes a narrow viewport.
+    await activate(page.getByRole('button', { name: /^Epic ASMA-99100,/ }), touch);
+    const badges = await page.getByTestId('organization-state-counts').evaluateAll(nodes => nodes.map(node => {
+      const box = node.getBoundingClientRect(); return { text: node.textContent, left: box.left, right: box.right };
+    }));
+    assert.ok(badges.every(box => box.left >= 0 && box.right <= width), 'nested state ratios fit');
+    await scopeControls(page, touch);
+    await snap(page, `${name}-scopes`);
+    await activate(chip(page, 1), touch);
+    assert.equal((await state(page)).shortcut, 'PR Review');
+    assert.equal(await chip(page, 1).getAttribute('aria-pressed'), 'true');
+    await page.getByTestId('sessions-search').fill('Synthetic session 0');
+    assert.equal(await chip(page, 1).getAttribute('aria-label'), 'PR Review, 93 sessions');
+    await activate(chip(page, 2), touch);
+    assert.equal((await state(page)).query, 'Synthetic session 0', 'scope keeps search');
+    assert.equal((await state(page)).shortcut, 'Adam');
+    await page.getByTestId('sessions-search').fill('');
+    await activate(chip(page, 3), touch);
+    assert.equal((await state(page)).shortcut, 'Other work', 'legacy saved ID retained');
+    await activate(chip(page, 0), touch);
+    if (touch) {
+      assert.equal(await page.getByRole('tooltip').count(), 0, 'touch does not depend on hover');
+      await page.getByRole('button', { name: 'Legend', exact: true }).tap();
+      assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('Scope filters'));
+      assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('QSW · Quick Session Workspace'));
+      await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
+    } else {
+      await chip(page, 1).hover();
+      await page.getByRole('tooltip').waitFor();
+      assert.ok((await page.getByRole('tooltip').innerText()).includes('Counts are before search and other filters'));
+      await snap(page, `${name}-hover-help`);
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Tab');
+      await chip(page, 2).focus();
+      await page.getByRole('tooltip').waitFor();
+      await snap(page, `${name}-keyboard-focus`);
+      await page.keyboard.press('Enter');
+      assert.equal((await state(page)).shortcut, 'Adam');
+      await chip(page, 0).click();
+      await page.keyboard.press('Tab');
+      await kontor().focus();
+      await page.getByRole('tooltip').waitFor();
+      assert.ok((await page.getByRole('tooltip').innerText()).includes('Native lifecycle and attention signals can overlap'));
+      await snap(page, `${name}-group-help`);
+      await page.keyboard.press('Escape');
+    }
+    // A search changes group denominators but leaves the scope counts intact.
+    if (touch) await scopeControls(page, true);
+    await page.getByTestId('sessions-search').fill('Synthetic session 141');
+    if (touch) await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
+    await kontor().waitFor();
+    assert.ok((await kontor().innerText()).includes('Running 1/1'));
+    assert.ok((await kontor().getAttribute('aria-label')).includes('Running: 1 of 1 session'));
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+    assert.equal(overflow, false, 'no horizontal document overflow');
+    assert.equal(errors.length, 0, errors.join('\n'));
+    report.cases.push({ name, status: 'PASS', counts, nestedBadges: badges, noOverflow: true, pageErrors: errors });
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.message, pageErrors: errors });
+    await snap(page, `${name}-failure`);
+  } finally { await context.close(); }
+}
+(async () => {
+  browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
+  report.browser = browser.version();
+  try { for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) await check(width, theme); }
+  finally { await browser.close(); fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n'); }
+  console.log(JSON.stringify(report.cases.map(({ name, status, error }) => ({ name, status, error })), null, 2));
+  if (report.cases.some(entry => entry.status === 'FAIL')) process.exitCode = 1;
+})().catch(error => { console.error(error); process.exitCode = 1; });

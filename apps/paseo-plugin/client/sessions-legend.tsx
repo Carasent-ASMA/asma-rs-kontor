@@ -2,6 +2,8 @@ import { Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { KIND_ICONS, KIND_NAMES, WORKSPACE_KINDS } from "./organization-row";
 import { Disclosure, type Colors } from "./page-controls";
+import { deskIcon } from "./desk-icon";
+import { SESSION_SHORTCUTS } from "./session-scope-chip";
 
 /** Static reference: the same icons and workspace definitions as the tree. */
 export function SessionsLegend({ colors, compact, open, onToggle }: {
@@ -21,6 +23,26 @@ export function SessionsLegend({ colors, compact, open, onToggle }: {
           </View>
           <Text style={text}>{KIND_NAMES[kind]}</Text>
         </View>)}
+      </View>
+      <View style={section}>
+        <Text accessibilityRole="header" style={heading}>Scope filters</Text>
+        {SESSION_SHORTCUTS.map((choice) => <View key={choice.label} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+          <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden style={{ paddingTop: 2 }}>
+            <Icon name={choice.icon} size={16} color={colors.foregroundMuted} />
+          </View>
+          <Text style={text}>{choice.label}: {choice.help}</Text>
+        </View>)}
+        <Text style={text}>Scope counts are before search and other filters. Group state ratios count the sessions remaining after those filters. Each session has one displayed state; native lifecycle and attention signals can overlap.</Text>
+      </View>
+      <View style={section}>
+        <Text accessibilityRole="header" style={heading}>Desk icons</Text>
+        {([['pr-review', 'PR Review'], ['adam', 'Adam'], ['qa', 'QA'], ['qsw', 'QSW · Quick Session Workspace'], ['', 'Other desk']] as const).map(([key, label]) => <View key={key} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+          <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden style={{ paddingTop: 2 }}>
+            <Icon name={deskIcon(key)} size={16} color={colors.foregroundMuted} />
+          </View>
+          <Text style={text}>{label}</Text>
+        </View>)}
+        <Text style={text}>Icons describe desks by name; they do not confirm durable configuration. Zero workspaces means none in the native inventory.</Text>
       </View>
       <View style={section}>
         <Text accessibilityRole="header" style={heading}>Workspace codes</Text>

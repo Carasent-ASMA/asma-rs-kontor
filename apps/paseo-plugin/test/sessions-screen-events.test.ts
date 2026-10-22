@@ -1,4 +1,5 @@
 import { SessionScopeSelector } from "../client/session-scope-selector";
+import { SessionScopeChip } from "../client/session-scope-chip";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type {
@@ -962,7 +963,8 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("session-a", { labels: { desk: "Adam" } })] };
     renderScreen(organization);
     const chip = (testID: string) => findByTestID(harness.current(), testID);
-    expect([chip("sessions-filter-favorites").props.label, chip("sessions-shortcut-2").props.label]).toEqual(["★ Favorites", "Adam desk"]);
+    expect([chip("sessions-filter-favorites").props.label, (chip("sessions-shortcut-2").props.choice as { label: string }).label]).toEqual(["★ Favorites", "Adam desk"]);
+    expect(chip("sessions-shortcut-2").type).toBe(SessionScopeChip);
     expect([chip("sessions-filter-favorites").props.count, chip("sessions-shortcut-2").props.count]).toEqual([1, 1]);
     (chip("sessions-filter-favorites").props.onPress as () => void)(); harness.flush();
     (chip("sessions-shortcut-2").props.onPress as () => void)(); harness.flush();
@@ -1710,24 +1712,24 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it.each([true, false])("draws the same leading Role icons and counts with a separate total and stale cue, compact=%s", compact => {
+  it.each([true, false])("draws the primary Role state as count/total with a separate total and stale cue, compact=%s", compact => {
     const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(compact ? [1, 1] : [1, "needs input", 1, "error"]);
-    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input", "failed"]);
+    expect(words).toEqual(["Needs input 1/5"]);
+    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input"]);
     expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
-    expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
+    expect(label()).toContain("Role QA, 5 sessions. Needs input: 1 of 5 sessions. Error: 1 of 5 sessions. Running: 3 of 5 sessions.");
     directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Host offline" };
     harness.flush();
-    expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
+    expect(label()).toContain("5 sessions. Last known: Needs input: 1 of 5 sessions.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
+      .toEqual(["Last known", "Needs input 1/5"]);
   });
 
   it("shows a Role row's conflict cue and place, giving the compact title its whole line above the place and age", () => {
@@ -1738,7 +1740,7 @@ describe("SessionsScreen toolbar events", () => {
     ]);
     expect(groupRows().map((row) => row.group.label)).toEqual(["AUD", "No role"]);
     const headerOf = (label: string) => walk(drawn(groupRows().find((row) => row.group.label === label)));
-    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 sessions\. 1 idle\./);
+    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 session\. Idle: 1 of 1 session\./);
     expect(["AUD", "No role"].map((label) => (headerOf(label).find((element) => element.props.children === label)!.props.style as { fontFamily?: string }).fontFamily)).toEqual(["monospace", undefined]);
     expandAll();
     const props = (id: string) => walk(renderItem(listRows().find((row) => row.kind === "session" && row.entry.id === id))).find((element) => "displayContext" in element.props)!.props;
@@ -2511,7 +2513,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     if (compact) closeMobileFilters();
     if (!compact) {
       const shortcut = findByTestID(harness.current(), "sessions-shortcut-3").props;
-      expect([shortcut.label, shortcut.count]).toEqual(["Outside desks", 2]);
+      expect([(shortcut.choice as { label: string }).label, shortcut.count]).toEqual(["Outside desks", 2]);
     }
     // A partial read keeps the same association counts, and Filters says beside them that the read is partial.
     directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: false, inventoryComplete: false, lastUpdatedAt: 0 };
