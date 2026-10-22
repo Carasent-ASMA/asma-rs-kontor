@@ -701,8 +701,15 @@ mod tests {
             &serde_json::json!({"schema_version":5,"runtimes":[]}),
         );
         let legacy_path = root.path().join("jira.json");
-        let legacy: serde_json::Value =
+        let mut legacy: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&legacy_path).unwrap()).unwrap();
+        let project = kontor_daemon::config_folder::ConfigFolder::select(Some(&folder), None)
+            .unwrap()
+            .project
+            .publication_policy
+            .unwrap()
+            .project_id;
+        legacy["projects"][0]["project_id"] = serde_json::json!(project);
         std::fs::write(
             folder.join("tracker/connectors.yml"),
             serde_yaml_ng::to_string(&legacy).unwrap(),
