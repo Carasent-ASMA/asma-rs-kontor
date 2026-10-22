@@ -18,7 +18,7 @@ const realm = toolResult({ tool: "kontor_realm_get", status: 200, body: { realm_
 /**
  * A disposable stand-in for kontor-mcp that ignores SIGTERM. It logs each start (arguments, environment
  * names, process ID), then answers the handshake and `kontor_realm_get` with `answer` (and leaves, if
- * asked), leaves at once ("exit"), never answers ("silent") or floods its output ("flood").
+ * asked), leaves at once ("exit"), never answers ("silent") or floods its output with notifications ("flood").
  */
 async function fakeMcp(answer: object | "exit" | "silent" | "flood", leaveAfterAnswer = false) {
   const directory = await mkdtemp(join(tmpdir(), "kontor-mcp-fake-"));
@@ -31,7 +31,7 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.sl
 process.on("SIGTERM", () => {});
 const answer = ${JSON.stringify(answer)};
 if (answer === "exit") { process.stderr.write("kontor-mcp: no realm here\\n"); process.exit(1); }
-if (answer === "flood") { const junk = "x".repeat(1023) + "\\n"; const pump = () => { while (process.stdout.write(junk)); process.stdout.once("drain", pump); }; pump(); }
+if (answer === "flood") { const junk = JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { data: "x".repeat(960) } }) + "\\n"; const pump = () => { while (process.stdout.write(junk)); process.stdout.once("drain", pump); }; pump(); }
 let buffer = "";
 process.stdin.setEncoding("utf8").on("data", (chunk) => {
   buffer += chunk;

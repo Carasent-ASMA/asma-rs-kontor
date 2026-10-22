@@ -10,21 +10,38 @@ export const STATUS_OUTPUT_LIMIT = 64 * 1024;
 
 type Observation = KontorStatus["observation"];
 
-/** The tool result carries kontor-mcp's document in its one text block. */
-function classify(result: unknown): Observation {
-  const { isError, content } = (result ?? {}) as { isError?: boolean; content?: { text?: string }[] };
-  let document: { dispatched?: unknown; code?: unknown; status?: unknown; body?: { realm_id?: unknown } };
+const TOOL = "kontor_realm_get";
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+function parse(text: string): unknown {
   try {
-    document = JSON.parse(content?.[0]?.text ?? "");
+    return JSON.parse(text);
   } catch {
-    return "unknown";
+    return undefined;
   }
+}
+
+/**
+ * kontor-mcp's tool result: one text block holding either the daemon's envelope ({tool, status, body}, an
+ * error exactly when the status is not 2xx) or its own refusal ({tool, code, dispatched: false}). Anything
+ * else, another tool's document included, is unknown.
+ */
+function classify(result: Record<string, unknown>): Observation {
+  const { isError = false, content } = result;
+  const block: unknown = Array.isArray(content) && content.length === 1 ? content[0] : undefined;
+  if (typeof isError !== "boolean" || !isRecord(block) || block.type !== "text" || typeof block.text !== "string") return "unknown";
+  const document = parse(block.text);
+  if (!isRecord(document) || document.tool !== TOOL) return "unknown";
+  const { status, body } = document;
+  const answered = typeof status === "number" && Number.isInteger(status);
+  const success = answered && status >= 200 && status < 300;
   if (isError) {
-    // kontor-mcp dispatched the read and nothing usable answered.
+    // kontor-mcp reached nothing that answered, so nothing was dispatched.
     if (document.dispatched === false && document.code === "unavailable") return "unavailable";
-    return typeof document.status === "number" ? "refused" : "unknown";
+    return answered && !success ? "refused" : "unknown";
   }
-  return typeof document.body?.realm_id === "string" ? "ready" : "unknown";
+  return success && isRecord(body) && typeof body.realm_id === "string" && body.realm_id !== "" ? "ready" : "unknown";
 }
 
 /**
@@ -45,8 +62,10 @@ export function observeKontord(config: KontorPluginConfig, budgetMs = STATUS_BUD
       signal,
     });
     let done = false;
+    // The one request whose response may come next: initialize (1), then kontor_realm_get (2).
+    let awaiting = 1;
     let received = 0;
-    let output = "";
+    let output = Buffer.alloc(0);
     const finish = (observation: Observation) => {
       if (done) return;
       done = true;
@@ -62,25 +81,34 @@ export function observeKontord(config: KontorPluginConfig, budgetMs = STATUS_BUD
     child.on("close", () => finish("unknown"));
     // A child that leaves early closes the pipe; its close is what reports it.
     child.stdin.on("error", () => {});
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-      received += chunk.length;
+    /** One frame. Its own notifications and requests are skipped; any other frame but the awaited response ends the probe. */
+    const take = (message: unknown) => {
+      if (isRecord(message) && message.jsonrpc === "2.0" && typeof message.method === "string") return;
+      if (!isRecord(message) || message.jsonrpc !== "2.0" || message.id !== awaiting || "error" in message || !isRecord(message.result)) return finish("unknown");
+      if (awaiting === 2) return finish(classify(message.result));
+      if (typeof message.result.protocolVersion !== "string") return finish("unknown");
+      awaiting = 2;
+      send({ method: "notifications/initialized" });
+      send({ id: 2, method: "tools/call", params: { name: TOOL, arguments: {} } });
+    };
+    const read = (chunk: Buffer) => {
+      // Bytes as the child wrote them, counted before anything is decoded or kept.
+      received += chunk.byteLength;
       if (received > STATUS_OUTPUT_LIMIT) return finish("unknown");
-      output += chunk;
-      for (let newline = output.indexOf("\n"); newline >= 0; newline = output.indexOf("\n")) {
-        const line = output.slice(0, newline);
-        output = output.slice(newline + 1);
-        let message: { id?: unknown; result?: unknown; error?: unknown };
-        try {
-          message = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (message.id === 1) {
-          send({ method: "notifications/initialized" });
-          send({ id: 2, method: "tools/call", params: { name: "kontor_realm_get", arguments: {} } });
-        } else if (message.id === 2) {
-          finish(message.error ? "unknown" : classify(message.result));
-        }
+      output = Buffer.concat([output, chunk]);
+      // A newline byte never occurs inside a UTF-8 character, so each line decodes whole.
+      for (let newline = output.indexOf(10); newline >= 0 && !done; newline = output.indexOf(10)) {
+        const line = output.subarray(0, newline).toString("utf8");
+        output = output.subarray(newline + 1);
+        take(parse(line));
+      }
+    };
+    // Nothing the child writes may throw out of this handler: it runs in the shared plugin worker.
+    child.stdout.on("data", (chunk: Buffer) => {
+      try {
+        read(chunk);
+      } catch {
+        finish("unknown");
       }
     });
     send({ id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "kontor-paseo-plugin", version: "0.1.0" } } });

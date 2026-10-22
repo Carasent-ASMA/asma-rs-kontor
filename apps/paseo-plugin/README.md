@@ -813,15 +813,20 @@ The `kontor.status` RPC reports two separate facts and the time it checked.
 `observation` is what the realm answered: `ready`, `unavailable` (no usable
 answer), `refused`, or `unknown`. A missing command, credential or realm, a
 start failure, a timeout or an unexpected answer is `unknown`, never "no realm"
-or "not enabled". Only an authenticated answer is `ready`; a completed handshake
-is not.
+or "not enabled". Only `kontor_realm_get`'s own 2xx answer naming a realm is
+`ready`; a completed handshake is not, and `refused` is that tool's own non-2xx
+answer. The probe takes exactly one `initialize` response, then one
+`kontor_realm_get` response, in order. A frame that is not JSON-RPC, an error, a
+duplicate, an early or unrequested response, or another tool's document ends it
+as `unknown`, and nothing is sent after the answer. The child's own
+notifications are skipped.
 
 On request, at most once per 30 seconds for one configuration, the server starts
 the configured `kontor-mcp` with the arguments `agent.create` composes (state
 root, observer tier, serve profile) and no fallback, and calls the one observer
 tool `kontor_realm_get`. The child gets only `PATH` and `HOME`, its standard
-error is never read, and it is killed after the answer, 64 KiB of output,
-5 seconds or the worker's stop. With `KONTOR_PLUGIN_MCP=off` nothing is started.
+error is never read, and it is killed after the answer, 64 KiB of output
+(counted in bytes before decoding), 5 seconds or the worker's stop. With `KONTOR_PLUGIN_MCP=off` nothing is started.
 The RPC is registered whatever `floor.json` says, and nothing else waits for it:
 Sessions, Paseo-direct work and the hooks work the same without a realm.
 
