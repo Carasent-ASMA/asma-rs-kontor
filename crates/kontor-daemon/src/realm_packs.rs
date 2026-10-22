@@ -71,11 +71,21 @@ pub(crate) fn read(folder: &ConfigFolder, source: &str) -> Result<RealmPack, Con
             })?;
     let (domain_value, domain_yaml) = document(&manifest.operational_domain)?;
     let domain = kontor_profiles::pack::parse_operational_domain_pack(&domain_value.to_string())
-        .map_err(|_| {
-            invalid(
-                &manifest.operational_domain,
-                "invalid operational domain pack",
-            )
+        .map_err(|error| {
+            let problem = match error {
+                kontor_core::DomainError::Invalid { subject, .. }
+                    if matches!(
+                        subject,
+                        "delivery.architecture_closer_code"
+                            | "delivery.process_closer_code"
+                            | "delivery.control_role_code"
+                    ) =>
+                {
+                    subject
+                }
+                _ => "invalid operational domain pack",
+            };
+            invalid(&manifest.operational_domain, problem)
         })?;
     let presets = kontor_profiles::pack::parse_consultation_presets(
         &document(&manifest.committee_presets)?.0.to_string(),

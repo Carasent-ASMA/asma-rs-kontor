@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 
 use jiff::civil;
-use kontor_calendar::import::{ImportRequest, ImportTarget, diff, plan, preview};
+use kontor_calendar::import::{ImportRequest, ImportTarget, diff, plan};
 use kontor_core::calendar::{
     CalendarExceptionRevision, CountryCode, ExceptionKind, ExceptionProvenance, HolidayCategory,
     HolidayImportKind, HolidayProviderKind, ImportWarningCode,
@@ -60,6 +60,15 @@ fn request(kind: HolidayImportKind, country: &str, subdivision: Option<&str>) ->
         categories: categories(HolidayCategory::DEFAULT_SELECTION),
         reference: name("fixture"),
     }
+}
+
+// Explicit project selection for these national and regional fixtures.
+fn preview(
+    request: &ImportRequest,
+    raw: &str,
+) -> kontor_calendar::CalendarResult<kontor_calendar::ImportPreview> {
+    let countries = ["US", "MD", "NO", "GB"].map(|code| CountryCode::parse(code).unwrap());
+    kontor_calendar::import::preview(request, raw, &countries)
 }
 
 /// Every date one preview closed, in order.
@@ -431,7 +440,7 @@ fn a_document_of_the_wrong_shape_is_refused_whole() {
 #[test]
 fn provider_scope_and_nager_payload_country_are_bound_to_the_request() {
     let mut unsupported = request(HolidayImportKind::NagerV4, "GB", Some("GB-ENG"));
-    assert!(preview(&unsupported, "[]").is_err());
+    assert!(preview(&unsupported, "[]").is_ok());
 
     unsupported = request(HolidayImportKind::GovUkJson, "NO", Some("GB-ENG"));
     assert!(
@@ -706,4 +715,24 @@ fn a_preview_writes_nothing_and_a_plan_is_still_only_a_value() {
         first.revision.id, second.revision.id,
         "each apply is its own revision until one of them is committed"
     );
+}
+
+#[test]
+fn nager_import_requires_the_selected_countries_and_has_no_compiled_default() {
+    let germany = request(HolidayImportKind::NagerV4, "DE", None);
+    let configured = [CountryCode::parse("DE").unwrap()];
+    let raw = r#"[{"date":"2026-01-01","name":"Holiday","countryCode":"DE","global":true,"types":["Public"]}]"#;
+    let imported = kontor_calendar::import::preview(&germany, raw, &configured).unwrap();
+    assert_eq!(dates(&imported), ["2026-01-01"]);
+    assert_eq!(
+        imported.raw_hash,
+        kontor_core::id::ContentHash::of(raw.as_bytes())
+    );
+    for country in ["US", "MD", "NO", "ZZ"] {
+        let unconfigured = request(HolidayImportKind::NagerV4, country, None);
+        let error = kontor_calendar::import::preview(&unconfigured, "[]", &configured).unwrap_err();
+        assert!(error.to_string().contains("project.holiday_countries"));
+    }
+    let error = kontor_calendar::import::preview(&germany, raw, &[]).unwrap_err();
+    assert!(error.to_string().contains("project.holiday_countries"));
 }

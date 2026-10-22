@@ -569,7 +569,7 @@ and ASMA's concrete values are the test case in
 | `check_runs` | list | Required check-run names. |
 | `capacity` | mapping | `max_delivery_seats`, `max_parallel_tasks`, `start_admission`; see the capacity rules below. |
 | `time_zone` | IANA zone | Project default. |
-| `holiday_countries` | list | ISO country codes for the holiday import. |
+| `holiday_countries` | list | Required, nonempty uppercase two-letter ISO country codes available to holiday import. Imports refuse countries outside this selection; Nager has no compiled country default. The provider validates its own support. |
 | `currency` | string | ISO 4217 code for budgets and costs. |
 
 `max_parallel_tasks` and `start_admission` are the Paseo-direct placement
@@ -612,6 +612,8 @@ order without duplicates. They are not authored seat fields or caller privileges
 Exact `RoleCode` equality assigns them; labels, ordering and `ad_hoc_allowed`
 grant nothing. Each purpose has one required owner, architecture and process
 remain separate, and process plus control can occupy the same seat.
+Missing, ambiguous or non-current role selectors refuse by their delivery field
+name; lead and program role codes have no compiled fallback.
 
 Published and epic-pinned rosters retain these markers with their exact
 catalog/version/role/slot bindings. Later delivery edits, restart or publication
