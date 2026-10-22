@@ -1379,6 +1379,9 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
         "config/examples/quota-signals.yml",
         "config/examples/tracker/jira.yml",
         "config/examples/packs/team.yml",
+        "config/examples/packs/profiles.yml",
+        "config/examples/packs/operational-domain.yml",
+        "config/examples/packs/committee-presets.yml",
         "config/examples/orchestration/teams/core-team.yml",
         "config/examples/orchestration/route-qualifications.yml",
         "config/examples/orchestration/tpm-supervision.yml",
@@ -1409,11 +1412,10 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
     );
 
     let pack = read("config/examples/packs/team.yml");
-    for key in ["teams", "profiles", "committee_presets", "role_prompts"] {
-        assert!(
-            pack.get(key).and_then(Value::as_sequence).is_some(),
-            "packs/team.yml {key} is a sequence"
-        );
+    for key in ["profile_pack", "operational_domain", "committee_presets"] {
+        let reference = required_string(&pack, key, "packs/team.yml");
+        assert!(is_safe_relative_path(&reference));
+        assert!(read(&format!("config/examples/{reference}")).is_mapping());
     }
 }
 

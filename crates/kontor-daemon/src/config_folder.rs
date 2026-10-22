@@ -82,6 +82,8 @@ pub struct ConfigFolder {
     pub checkouts: Option<kontor_runtime::checkout::CheckoutInputs>,
     /// Validated selected tracker authoring, cached without installing any revision.
     pub tracker_specs: kontor_jira::jira::SpecCatalog,
+    /// Selected profile/domain/preset candidates; loading activates nothing.
+    pub realm_pack: Option<crate::realm_packs::RealmPack>,
 }
 
 impl ConfigFolder {
@@ -160,6 +162,7 @@ impl ConfigFolder {
             publication_consumers: Vec::new(),
             checkouts: None,
             tracker_specs: kontor_jira::jira::SpecCatalog::empty(),
+            realm_pack: None,
         };
         let fleet = folder.reference(&entry.fleet)?;
         folder.reference(&entry.core_team)?;
@@ -184,6 +187,13 @@ impl ConfigFolder {
         }
         folder.tracker_specs =
             crate::realm_specs::read(&folder, raw["project"]["tracker"]["spec"].as_str())?;
+        let team_pack = &raw["project"]["team_pack"];
+        if !team_pack.is_null() {
+            let source = team_pack
+                .as_str()
+                .ok_or_else(|| refusal(&entry_path, "invalid project.team_pack"))?;
+            folder.realm_pack = Some(crate::realm_packs::read(&folder, source)?);
+        }
         Ok(folder)
     }
 

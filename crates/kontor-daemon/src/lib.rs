@@ -60,6 +60,7 @@ mod project_policy;
 pub mod provider_config;
 pub mod provider_marker;
 pub mod quota_observation;
+pub mod realm_packs;
 mod realm_specs;
 pub mod recovery;
 pub mod runtimes;

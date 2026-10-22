@@ -493,7 +493,7 @@ and ASMA's concrete values are the test case in
 | `forge` | mapping | `kind`, `organization`, `repositories`, `base_branch`. |
 | `runtime` | mapping | `matrix` of `{name, harness, provider}` launch combinations. |
 | `cli` | mapping | `command` and `verbs` for text and checks that must not hard-code one tool; `host.project_cli.<command>` binds the executable. |
-| `team_pack` | path | Folder-relative team/profile overlay. |
+| `team_pack` | path | Folder-relative YAML manifest selecting profile/team, operational-domain and committee candidates; see the selected-pack contract below. |
 | `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
 | `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
 | `pr_desk` | mapping | `command` (the desk invocation line), `settings` (folder-relative `orchestration/pr-desk.yml`), `history_root` (relative to `host.paths.data_root`); see the PR desk contract below. |
@@ -515,6 +515,31 @@ less than or equal to `max_parallel_tasks`. `max_delivery_seats` is an
 owner-set project value scoped per team run (ASMA 2); the placement rule does
 not supply it, it is not a global team-run ceiling, and kontord has no such
 field.
+
+### Selected team, profile, domain and committee authoring
+
+`project.team_pack` names a schema-version-1 manifest. Its required keys are
+`profile_pack`, `operational_domain` and `committee_presets`, each a contained,
+existing YAML reference relative to the selected folder root. The owning typed
+parsers validate the complete documents and exact revision references; logical
+roles used by teams and committees must have operational delivery bindings.
+Manifest additions are refused rather than ignored. The four raw source hashes
+are captured at startup, without publishing, activating or creating a Project.
+
+Only selected and explicitly registered profiles/teams are advertised on the
+selected-folder surface. Omission in an empty/direct-only daemon setup has no
+compiled profile or preset fallback. Selection supplies candidates for existing
+preview/apply paths, not permission to rewrite an installed revision. Selected
+teams use registered-input authority, so the compiled-seed reconciliation path
+cannot overwrite them. Committee candidates require explicit preview/apply;
+catalog reads and restart retain installed bytes and do not publish edits.
+The neutral example has generic roles, no accounts, no clinical scenarios and
+no project prompt. Worker model routes come from activated fleet bindings.
+
+Operational-domain candidates are validated and cached in this checkpoint;
+runtime selection and authority-bearing lead/program/control purposes require
+the separately pinned Core Team resolution contract. Legacy compiled fixtures
+remain available to explicit embedding/tests until that cleanup is complete.
 
 ### The PR desk contract
 
