@@ -436,13 +436,12 @@ record is separate from the fleet, so a new qualified route does not require a
 fleet policy edit.
 
 **Successor and migration contract.** The current `schema_version: 2` parser
-still validates `domains.accounts` with the provider-prefix rule and has no
-host-route layer. That is a current parser constraint, not the Q-04 contract.
-WP-08 adopts this successor contract without changing the daemon before KR-14:
-existing `accounts` values are read as logical slots; each legacy native alias
-is mapped to a host route with the provider and harness that served it; active
-run snapshots are preserved; and a host route change never requires a fleet
-policy edit.
+still validates `domains.accounts` with the provider-prefix rule. That remains
+a parser constraint. Governed native placement joins the admitted logical slot
+to the activated bundle's runtime matrix and qualifications, then freezes its
+host route before a launch or retirement effect. Native readback, retries and
+restart recovery use that saved binding. A host route edit affects new
+placements without rewriting an active run's snapshot or the fleet policy.
 
 The bundle base also changes. The current reader resolves selectors from
 `<config folder>/orchestration/` and requires the manifest names `fleet.yml` and
@@ -499,7 +498,22 @@ The private carrier has `schema_version: 1` and is stored in existing launch
 route columns as `{schema_version: 1, resolved_route: {...}}`. Canonical seat
 bindings and public provenance remain canonical. Historical bare model rungs
 remain readable without rewriting them or inventing host/policy pins. An
-invalid envelope cannot be interpreted as a legacy rung.
+invalid envelope cannot be interpreted as a legacy rung. Under a selected
+config, historical bare rungs do not authorize new launches or permission
+effects. A policy-bound freeze requires its exact source bundle pin; an unbound
+placement may freeze against one activated bundle before effects.
+
+Hosted launches and governed claims retain it in their generation's launch
+intent before changing native state. Claims verify the observed native route
+against that snapshot and keep the canonical route in the seat row. Consultation
+initial launches use `consultation_seats.model_rung`; recovery and reroute use
+their existing private route columns. Delivery launches retain the binding with
+the existing fleet decision; replacement command intents and quota succession
+intents freeze it before retiring a predecessor. Replay and compare-and-swap
+compare the complete stored binding, including private route identity.
+Consultation contexts, receipts, seat policy and public provenance project only
+canonical routes. The working provider determines the native permission mode;
+any required permission grant remains bound to the exact logical slot.
 
 `host_route_hash` is SHA-256 of compact UTF-8 JSON with keys in exactly this
 order: `host_sha256`, `domain`, `slots`. `host_sha256` hashes the exact `host.yml`

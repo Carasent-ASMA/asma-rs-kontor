@@ -41,6 +41,8 @@ mod harness;
 mod consultation_permissions;
 #[path = "loopback/consultation_placement.rs"]
 mod consultation_placement;
+#[path = "loopback/host_routes.rs"]
+mod host_routes;
 
 #[path = "loopback/domain_runtime.rs"]
 mod domain_runtime;
@@ -26723,6 +26725,7 @@ async fn record_runtime_quota_refusal(
     let observation = world
         .fake
         .inspect(&kontor_runtime::request::InspectRequest {
+            resolved_route: None,
             binding: held,
             requested_at: now,
         })
@@ -28114,11 +28117,14 @@ async fn a_pinned_task_never_summarizes_on_an_unpinned_account_alias() {
                 quota_state_revision: quota.revision,
                 quota_evidence_hash: quota.evidence_hash.clone(),
                 quota_provider: quota.provider.clone(),
-                successor_model_rung: Some(ModelRung {
-                    provider: ProviderRef("codex-work".to_owned()),
-                    model: ModelRef("gpt-5.6-sol".to_owned()),
-                    effort: Some(EffortLevel::High),
-                }),
+                successor_model_rung: Some(
+                    ModelRung {
+                        provider: ProviderRef("codex-work".to_owned()),
+                        model: ModelRef("gpt-5.6-sol".to_owned()),
+                        effort: Some(EffortLevel::High),
+                    }
+                    .into(),
+                ),
                 successor_account_profile_id: Some(work_account),
                 idempotency_key: key.clone(),
                 intent_hash: ContentHash::of(b"pinned-summary-intent"),
@@ -28290,6 +28296,7 @@ async fn automatic_quota_supervision_recovers_once_and_repeated_scan_is_inert() 
     let observation = world
         .fake
         .inspect(&kontor_runtime::request::InspectRequest {
+            resolved_route: None,
             binding: held,
             requested_at: observed_at,
         })
@@ -28448,11 +28455,14 @@ async fn initially_planned_succession_cannot_retire_after_its_quota_row_expires(
                 quota_state_revision: quota.revision,
                 quota_evidence_hash: quota.evidence_hash.clone(),
                 quota_provider: quota.provider.clone(),
-                successor_model_rung: Some(ModelRung {
-                    provider: ProviderRef("codex-personal".to_owned()),
-                    model: ModelRef("gpt-5.6-sol".to_owned()),
-                    effort: Some(EffortLevel::High),
-                }),
+                successor_model_rung: Some(
+                    ModelRung {
+                        provider: ProviderRef("codex-personal".to_owned()),
+                        model: ModelRef("gpt-5.6-sol".to_owned()),
+                        effort: Some(EffortLevel::High),
+                    }
+                    .into(),
+                ),
                 successor_account_profile_id: Some(
                     AccountProfileId::parse(&personal).expect("personal account"),
                 ),
@@ -37141,7 +37151,7 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
         .collect();
     format!(
         "schema_version: 1\n\
-         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
          models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh] }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai, efforts: [xhigh] }}\n\
          chains:\n  claude-then-codex:\n    - [opus@xhigh]\n    - [sol@xhigh]\n  claude-then-grok:\n    - [opus@xhigh]\n    - [grok@xhigh]\n  cursor-grok:\n    - [grok@xhigh]\n  codex-sol:\n    - [sol@xhigh]\n\
          bindings:\n{bindings}"
@@ -37152,10 +37162,6 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
 fn native_fixture_catalog() -> String {
     let mut policy: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&committee_fleet_yaml(&[])).unwrap();
-    policy["domains"]["codex"]["accounts"]
-        .as_sequence_mut()
-        .unwrap()
-        .push("codex".into());
     policy["bindings"] = serde_yaml_ng::Value::Mapping(Default::default());
     let yaml = serde_yaml_ng::to_string(&policy).unwrap();
     assert!(
@@ -37226,7 +37232,7 @@ fn committee_family_fleet_yaml(bindings: &[(&str, &str)]) -> String {
         .collect();
     format!(
         "schema_version: 1\n\
-         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  opencode-a: {{ provider: opencode, accounts: [opencode-a] }}\n  opencode-b: {{ provider: opencode, accounts: [opencode-b] }}\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex] }}\n  opencode-a: {{ provider: opencode, accounts: [opencode-a] }}\n  opencode-b: {{ provider: opencode, accounts: [opencode-b] }}\n\
          models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh] }}\n  glm: {{ domain: opencode-a, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu }}\n  deepseek: {{ domain: opencode-b, id: deepseek/deepseek-flash, vendor: deepseek }}\n\
          chains:\n  opencode-a-then-codex:\n    - [glm]\n    - [sol@xhigh]\n  opencode-b-then-claude:\n    - [deepseek]\n    - [opus@xhigh]\n\
          bindings:\n{bindings}"
@@ -37289,7 +37295,21 @@ async fn pinned_runtime_epic(world: &World, project: &str, label: &str) -> Strin
 }
 
 async fn consultation_realm(root: &str, extra_providers: &[(&str, &str)]) -> ConsultationRealm {
-    let composed = compose_native_consultation_realm(root, false).await;
+    let mut catalog: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&native_fixture_catalog()).unwrap();
+    let family: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&committee_family_fleet_yaml(&[])).unwrap();
+    for section in ["domains", "models"] {
+        for (key, value) in family[section].as_mapping().unwrap() {
+            catalog[section]
+                .as_mapping_mut()
+                .unwrap()
+                .entry(key.clone())
+                .or_insert(value.clone());
+        }
+    }
+    let catalog = serde_yaml_ng::to_string(&catalog).unwrap();
+    let composed = compose_realm_options(root, false, false, true, Some(&catalog)).await;
     let world = &composed.world;
     let project = &composed.project;
     adopt_session_base(world, project, composed.project_revision).await;
@@ -37301,6 +37321,20 @@ async fn consultation_realm(root: &str, extra_providers: &[(&str, &str)]) -> Con
     .await;
     let epic = pinned_runtime_epic(world, project, "Fleet consultation").await;
     confirm_promoted_epic_identity(world, project, &epic, "PROMO", "ASMA-9001");
+    let version = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_epic_roster(project_id_of(project), epic_id_of(&epic)))
+        .unwrap()
+        .unwrap()
+        .core_team_version;
+    activate_through_the_registry_with_roster(
+        world,
+        &catalog,
+        "lf04-pinned-roster",
+        Some(core_team_source_for(world, project, &epic, version)),
+    )
+    .await;
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
         &serde_json::json!({
@@ -37439,6 +37473,11 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     ]);
     activate_through_the_registry(world, &fleet, "permission-fixture").await;
     let fleet_hash = ContentHash::of(fleet.as_bytes());
+    let source_bundle_hash = kontor_fleet_activation::load(world.directory.path())
+        .unwrap()
+        .record
+        .source_bundle_hash
+        .unwrap();
 
     let invoked = invoke_fleet_committee(
         &realm,
@@ -37550,6 +37589,7 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
             route["fleet_provenance"],
             serde_json::json!({
                 "policy_hash": fleet_hash.as_str(),
+                "source_bundle_hash": source_bundle_hash.as_str(),
                 "binding_key": committee_fleet_key(slot),
                 "chain": chain,
                 "step": step,
@@ -37783,6 +37823,11 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
     let fleet = permitted_committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
     activate_through_the_registry(world, &fleet, "permission-fixture").await;
     let fleet_hash = ContentHash::of(fleet.as_bytes());
+    let source_bundle_hash = kontor_fleet_activation::load(world.directory.path())
+        .unwrap()
+        .record
+        .source_bundle_hash
+        .unwrap();
     let epic_read = Call::get(format!(
         "/v1/projects/{}/epics/{}",
         realm.project, realm.epic
@@ -37876,6 +37921,7 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
         *frozen,
         serde_json::json!({
             "policy_hash": fleet_hash.as_str(),
+                "source_bundle_hash": source_bundle_hash.as_str(),
             "binding_key": advisor_fleet_key(),
             "chain": "cursor-grok",
             "step": 1,
@@ -37919,7 +37965,7 @@ async fn a_committee_allocates_from_the_activated_policy_and_fails_closed() {
     write_fleet(world, &unactivated);
     let activated =
         permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
-    let hash = activate_fleet_policy(world, &activated);
+    let hash = activate_through_the_registry(world, &activated, "qualified-native-policy").await;
 
     tamper_published_policy(world, &hash, &unactivated);
     let refused = invoke_fleet_committee(
@@ -38045,7 +38091,7 @@ async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
         permitted_committee_fleet_yaml(&[(&advisor_fleet_key(), "claude-then-codex")]);
     write_fleet(world, &unactivated);
     let activated = permitted_committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
-    let hash = activate_fleet_policy(world, &activated);
+    let hash = activate_through_the_registry(world, &activated, "qualified-native-policy").await;
     tamper_published_policy(world, &hash, &unactivated);
     let refused = invoke_activated_advisor(&realm, "asma8280-advisor-refused").await;
     assert_ne!(refused.status, 200, "{}", refused.body);
@@ -38094,11 +38140,71 @@ async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
 /// Preview, publish and activate one policy through the registered operations,
 /// fenced on whatever the Realm reports as active. Returns its content hash.
 async fn activate_through_the_registry(world: &World, yaml: &str, key: &str) -> String {
+    activate_through_the_registry_with_roster(world, yaml, key, None).await
+}
+
+async fn activate_through_the_registry_with_roster(
+    world: &World,
+    yaml: &str,
+    key: &str,
+    core_team: Option<String>,
+) -> String {
     let standing = Call::get("/v1/fleet/policy")
         .signed_as(world, "admin")
         .send(world)
         .await;
     assert_eq!(standing.status, 200, "{}", standing.body);
+    let folder = world.directory.path().join("selected config with spaces");
+    if let Ok(host) = std::fs::read_to_string(folder.join("host.yml"))
+        && serde_yaml_ng::from_str::<serde_json::Value>(&host)
+            .unwrap()
+            .get("provider_accounts")
+            .is_some()
+    {
+        let proposal = Call::post("/v1/fleet/bundle:propose", &serde_json::json!({}))
+            .signed_as(world, "admin")
+            .send(world)
+            .await;
+        assert_eq!(proposal.status, 200, "{}", proposal.body);
+        let core_team = core_team.unwrap_or_else(|| {
+            if standing.json()["activation"]["source_bundle_hash"]
+                .as_str()
+                .is_some()
+            {
+                let active = kontor_fleet_activation::load(world.directory.path()).unwrap();
+                let bundle = active.bundle.as_ref().unwrap();
+                let value: serde_json::Value = bundle.roster.deserialize().unwrap();
+                let revision: kontor_teams::CoreTeamRevision =
+                    serde_json::from_value(value["value"].clone()).unwrap();
+                core_team_source_for_revision(
+                    revision.version,
+                    bundle.manifest.role_catalog.clone(),
+                    &revision.seats,
+                )
+            } else {
+                proposal.json()["core_team"].as_str().unwrap().to_owned()
+            }
+        });
+        let mut sources = serde_json::json!({"orchestration":std::fs::read_to_string(folder.join("orchestration/orchestration.yml")).unwrap(),"fleet":yaml,"core_team":core_team});
+        let preview = Call::post("/v1/fleet/bundle:preview", &sources)
+            .signed_as(world, "admin")
+            .send(world)
+            .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        sources["preview_hash"] = preview.json()["preview_hash"].clone();
+        let published = Call::post("/v1/fleet/bundle:publish", &sources)
+            .signed_as(world, "admin")
+            .with_key(format!("{key}-publish-bundle"))
+            .send(world)
+            .await;
+        assert_eq!(published.status, 200, "{}", published.body);
+        let standing = standing.json();
+        let expected = standing["activation"]["policy_hash"].as_str().map(|hash| serde_json::json!({"policy_hash":hash,"source_bundle_hash":standing["activation"]["source_bundle_hash"]}));
+        let activated = Call::post("/v1/fleet/bundle:activate", &serde_json::json!({"source_bundle_hash":preview.json()["manifest"]["source_bundle_hash"],"expected_active":expected}))
+            .signed_as(world,"admin").with_key(format!("{key}-activate-bundle")).send(world).await;
+        assert_eq!(activated.status, 200, "{}", activated.body);
+        return ContentHash::of(yaml.as_bytes()).to_string();
+    }
     let hash = publish_through_the_registry(world, yaml, key).await;
     let activated = Call::post(
         "/v1/fleet/policy:activate",
@@ -38707,14 +38813,26 @@ fn core_team_source_for(world: &World, project: &str, epic: &str, version: SpecV
         stored.catalog_hash, catalog_hash,
         "the epic froze the bundled catalog"
     );
-    serde_yaml_ng::to_string(&kontor_daemon::orchestration::CoreTeamSource {
-        schema_version: kontor_daemon::orchestration::SOURCE_SCHEMA_VERSION,
+    core_team_source_for_revision(
         version,
-        role_catalog: kontor_fleet_activation::RoleCatalogPin {
+        kontor_fleet_activation::RoleCatalogPin {
             catalog_id: catalog.catalog_id,
             version: catalog.version,
             content_hash: catalog_hash,
         },
+        &seats,
+    )
+}
+
+fn core_team_source_for_revision(
+    version: SpecVersion,
+    role_catalog: kontor_fleet_activation::RoleCatalogPin,
+    seats: &[kontor_teams::CoreTeamSeat],
+) -> String {
+    serde_yaml_ng::to_string(&kontor_daemon::orchestration::CoreTeamSource {
+        schema_version: kontor_daemon::orchestration::SOURCE_SCHEMA_VERSION,
+        version,
+        role_catalog,
         seats: seats
             .iter()
             .map(|seat| kontor_daemon::orchestration::CoreTeamSourceSeat {
@@ -39870,7 +39988,7 @@ async fn a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation() 
 
     let activated =
         permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
-    let hash = activate_fleet_policy(world, &activated);
+    let hash = activate_through_the_registry(world, &activated, "qualified-native-policy").await;
     let unactivated = permitted_committee_fleet_yaml(&[(
         &committee_fleet_key("reviewer-a"),
         "claude-then-codex",
@@ -39971,7 +40089,7 @@ async fn a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_acti
 
     let activated =
         permitted_committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
-    let hash = activate_fleet_policy(world, &activated);
+    let hash = activate_through_the_registry(world, &activated, "qualified-native-policy").await;
     let unactivated = permitted_committee_fleet_yaml(&[(
         &committee_fleet_key("reviewer-a"),
         "claude-then-codex",
@@ -42717,11 +42835,14 @@ async fn succeeding_one_slot_preserves_an_abandoned_parent_in_another_slot() {
                 quota_state_revision: quota.revision,
                 quota_evidence_hash: quota.evidence_hash.clone(),
                 quota_provider: quota.provider.clone(),
-                successor_model_rung: Some(ModelRung {
-                    provider: ProviderRef("test".to_owned()),
-                    model: ModelRef("test".to_owned()),
-                    effort: None,
-                }),
+                successor_model_rung: Some(
+                    ModelRung {
+                        provider: ProviderRef("test".to_owned()),
+                        model: ModelRef("test".to_owned()),
+                        effort: None,
+                    }
+                    .into(),
+                ),
                 successor_account_profile_id: Some(relief_id),
                 idempotency_key: key.clone(),
                 intent_hash: ContentHash::of(b"succeed-with-recovered-sibling-intent"),
@@ -45540,19 +45661,23 @@ async fn compose_jira_key_realm(root: &str) -> Composed {
     compose_realm_with_history(root, false, true).await
 }
 async fn compose_realm_with_history(root: &str, historical: bool, jira_keys: bool) -> Composed {
-    compose_realm_options(root, historical, jira_keys, false).await
+    compose_realm_options(root, historical, jira_keys, false, None).await
 }
 async fn compose_native_consultation_realm(root: &str, jira_keys: bool) -> Composed {
-    compose_realm_options(root, false, jira_keys, true).await
+    compose_realm_options(root, false, jira_keys, true, None).await
 }
 async fn compose_realm_options(
     root: &str,
     historical: bool,
     jira_keys: bool,
     native: bool,
+    route_policy: Option<&str>,
 ) -> Composed {
+    let catalog = route_policy
+        .map(str::to_owned)
+        .unwrap_or_else(native_fixture_catalog);
     let mut world = if native {
-        World::open_native_consultations().await
+        World::open_native_consultations_with_routes(&catalog).await
     } else {
         World::open_empty_with_a_plane().await
     };
@@ -45604,8 +45729,7 @@ async fn compose_realm_options(
         harness::DomainSelectionFixture::bind(&world, project_id_of(&project));
     }
     if native {
-        activate_through_the_registry(&world, &native_fixture_catalog(), "native-fixture-catalog")
-            .await;
+        activate_through_the_registry(&world, &catalog, "native-fixture-catalog").await;
         // Selected packs offer candidates; this historical test preset is explicitly installed.
         let template = kontor_profiles::seeds::bundled_consultation_presets()
             .unwrap()
@@ -55883,10 +56007,25 @@ async fn remediate_with_a_foreign_seat_refuses_without_a_receipt() {
 /// The outage regression: the seeded Committee service must create real
 /// read-only seats, hold the Judge until both independent findings are durable,
 /// recompute the conjunction, settle, and replay without another native launch.
+fn initial_recovery_fixture_catalog() -> &'static str {
+    "schema_version: 1\n\
+         domains:\n  claude: { provider: claude, accounts: [claude-work, claude-personal] }\n  codex: { provider: codex, accounts: [codex-work, codex-personal, codex] }\n  opencode: { provider: opencode, accounts: [opencode] }\n\
+         models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek, efforts: [max] }\n\
+         chains: {}\n\
+         bindings: {}\n"
+}
+
 #[tokio::test]
 async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayable() {
-    let composed =
-        compose_native_consultation_realm("/tmp/kontor-committee-initial-recovery", false).await;
+    let recovery_fleet = initial_recovery_fixture_catalog();
+    let composed = compose_realm_options(
+        "/tmp/kontor-committee-initial-recovery",
+        false,
+        false,
+        true,
+        Some(recovery_fleet),
+    )
+    .await;
     let world = &composed.world;
     let project = &composed.project;
     adopt_session_base(world, project, composed.project_revision).await;
@@ -55971,11 +56110,6 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     // below and binds no Committee slot, so the accepted recovery routes keep
     // their own ordinals: reviewer A takes OpenCode DeepSeek and the judge
     // Codex Sol, both at recovery rung 1, while Claude is exhausted.
-    let recovery_fleet = "schema_version: 1\n\
-         domains:\n  claude: { provider: claude, accounts: [claude-work, claude-personal] }\n  codex: { provider: codex, accounts: [codex-work, codex-personal] }\n  opencode: { provider: opencode, accounts: [opencode] }\n\
-         models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [high, xhigh] }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek, efforts: [max] }\n\
-         chains: {}\n\
-         bindings: {}\n";
     activate_through_the_registry(world, recovery_fleet, "initial-recovery-catalog").await;
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
@@ -56568,7 +56702,8 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
                 provider: ProviderRef("claude-work".to_owned()),
                 model: ModelRef("claude-opus-5".to_owned()),
                 effort: Some(EffortLevel::Xhigh),
-            },
+            }
+            .into(),
             reason: "permission_mode_unsupported".to_owned(),
             recovery_profile: CanonicalDocument::from_value(&serde_json::json!({
                 "schema_version": 1,
@@ -56679,17 +56814,50 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     // never perform a second generation swap.
     let reroute_key =
         IdempotencyKey::parse("committee-native-less-reroute").expect("the reroute key");
+    let successor_rung = ModelRung {
+        provider: ProviderRef("claude-work".to_owned()),
+        model: ModelRef("claude-opus-5".to_owned()),
+        effort: Some(EffortLevel::Xhigh),
+    };
+    let activated = kontor_fleet_activation::load(world.directory.path()).unwrap();
+    let manifest = &activated.bundle.as_ref().unwrap().manifest;
+    let matrix =
+        kontor_fleet_activation::routes::read_matrix(world.directory.path(), manifest).unwrap();
+    let qualifications = kontor_fleet_activation::routes::read_qualifications(
+        world.directory.path(),
+        manifest,
+        &activated.policy,
+        &activated.record,
+    )
+    .unwrap();
+    let host = kontor_fleet::host_routes::HostRoutes::parse(
+        &std::fs::read_to_string(
+            world
+                .directory
+                .path()
+                .join("selected config with spaces/host.yml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let successor_route = kontor_core::launch_route::StoredLaunchRoute::resolved(
+        host.resolve(
+            &activated.policy,
+            &successor_rung,
+            &matrix,
+            qualifications.as_ref(),
+            kontor_api::now(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let crash_boundary_lineage = world.daemon.state().with_store(|store| {
         store
             .reroute_unmaterialized_consultation_seat(&NewConsultationMaterializationReroute {
                 project_id: ProjectId::parse(project).expect("the project"),
                 predecessor: unchanged_seat,
                 expected_revision: stuck.revision,
-                successor_model_rung: ModelRung {
-                    provider: ProviderRef("claude-work".to_owned()),
-                    model: ModelRef("claude-opus-5".to_owned()),
-                    effort: Some(EffortLevel::Xhigh),
-                },
+                successor_model_rung: successor_route.clone(),
                 reason: "permission_mode_unsupported".to_owned(),
                 recovery_profile: CanonicalDocument::from_value(&serde_json::json!({
                     "schema_version": 1,
@@ -73079,6 +73247,7 @@ async fn materializing_a_replaced_seat_reuses_its_current_occupancy() {
 async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona() {
     let composed = compose_realm("/tmp/kontor-claim-persona-truth").await;
     let world = &composed.world;
+    activate_through_the_registry(world, &native_fixture_catalog(), "claim-persona-catalog").await;
     let project = ProjectId::parse(&composed.project).expect("project");
     let epic = MiniProjectId::parse(&composed.epic).expect("epic");
     let materialized = Call::post(

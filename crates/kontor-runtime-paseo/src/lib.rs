@@ -35,6 +35,7 @@ pub mod adapter;
 mod checkout;
 pub mod client;
 pub mod fixture;
+mod launch_route;
 pub mod mcp;
 pub mod posture;
 pub mod seat_mcp;

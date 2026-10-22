@@ -236,6 +236,7 @@ struct WorldComposition {
     /// A test-owned `attention.yml` written before the daemon starts.
     attention: Option<String>,
     native_consultations: bool,
+    native_route_policy: Option<String>,
 }
 
 impl World {
@@ -521,6 +522,22 @@ impl World {
         .await
     }
 
+    pub(crate) async fn open_native_consultations_with_routes(policy: &str) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            true,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                native_consultations: true,
+                native_route_policy: Some(policy.to_owned()),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
     /// Restart only this disposable test Realm, retaining the supported runtime transport.
     pub(crate) async fn restart_native_consultations(self) -> Self {
         let Self {
@@ -700,7 +717,10 @@ impl World {
             // to wait it out, and the property is identical at one second.
             .with_derived_read_deadline_seconds(1);
         if composition.native_consultations {
-            config = config.with_config_dir(native_consultation_config(directory.path()));
+            config = config.with_config_dir(native_consultation_config(
+                directory.path(),
+                composition.native_route_policy.as_deref(),
+            ));
         } else {
             config =
                 config.with_connector_specs(tracker_fixtures::catalog().expect("test catalog"));
@@ -1676,7 +1696,7 @@ impl Drop for DomainSelectionFixture {
 }
 
 /// Authored test inputs and a real source checkout, all under one disposable owner.
-fn native_consultation_config(root: &Path) -> std::path::PathBuf {
+fn native_consultation_config(root: &Path, route_policy: Option<&str>) -> std::path::PathBuf {
     let checkout = native_checkout_fixture::repository(&root.join("checkout"));
     let folder = native_config_fixture::write_config_folder(root);
     let entry = folder.join("orchestration/orchestration.yml");
@@ -1693,6 +1713,51 @@ fn native_consultation_config(root: &Path) -> std::path::PathBuf {
     yaml["project_key"] = "ASMA".into();
     std::fs::write(tracker, serde_yaml_ng::to_string(&yaml).unwrap()).unwrap();
     std::fs::write(folder.join("host.yml"),serde_yaml_ng::to_string(&serde_json::json!({"schema_version":1,"runtime":{"planes":{"schema_version":5,"runtimes":[]}},"checkouts":{"root":native_checkout_fixture::source(&checkout),"modules":{}}})).unwrap()).unwrap();
+    if let Some(policy) = route_policy {
+        // This same-provider fixture has no cross-provider qualification; the
+        // copied example record names a different synthetic fleet model.
+        std::fs::remove_file(folder.join("orchestration/route-qualifications.yml")).unwrap();
+        let policy: serde_json::Value = serde_yaml_ng::from_str(policy).unwrap();
+        let mut pairs = std::collections::BTreeSet::new();
+        let matrix: Vec<_> = policy["domains"]
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(|domain| {
+                let provider = domain["provider"].as_str().unwrap();
+                pairs
+                    .insert(provider.to_owned())
+                    .then(|| serde_json::json!({"provider":provider,"harness":"paseo"}))
+            })
+            .collect();
+        let entry = folder.join("orchestration/orchestration.yml");
+        let mut source: serde_json::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        source["project"]["runtime"]["matrix"] = matrix.into();
+        std::fs::write(entry, serde_yaml_ng::to_string(&source).unwrap()).unwrap();
+        let path = folder.join("host.yml");
+        let mut host: serde_json::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut accounts = serde_json::Map::new();
+        let mut routes = serde_json::Map::new();
+        for (domain, definition) in policy["domains"].as_object().unwrap() {
+            routes.insert(domain.clone(), definition["accounts"].clone());
+            let serves: serde_json::Map<String, serde_json::Value> = policy["models"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, model)| model["domain"].as_str() == Some(domain.as_str()))
+                .map(|(symbolic, model)| (symbolic.clone(), model["id"].clone()))
+                .collect();
+            for slot in definition["accounts"].as_array().unwrap() {
+                let slot = slot.as_str().unwrap();
+                accounts.insert(slot.to_owned(), serde_json::json!({"provider":definition["provider"],"harness":"paseo","native_alias":format!("synthetic-{slot}"),"credential":"env:SYNTHETIC_REFERENCE","serves":serves}));
+            }
+        }
+        host["provider_accounts"] = accounts.into();
+        host["routes"] = routes.into();
+        std::fs::write(path, serde_yaml_ng::to_string(&host).unwrap()).unwrap();
+    }
     folder
 }
 #[path = "../support/checkouts.rs"]

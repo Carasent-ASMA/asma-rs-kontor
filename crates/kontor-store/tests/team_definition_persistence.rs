@@ -2526,3 +2526,6 @@ fn a_stale_selection_preview_cannot_overwrite_a_newer_choice() {
         second.version
     );
 }
+
+#[path = "team_definition_persistence/launch_routes.rs"]
+mod launch_routes;

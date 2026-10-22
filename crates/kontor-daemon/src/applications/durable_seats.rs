@@ -592,6 +592,7 @@ impl Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .launch_hosted_seat(&HostedSeatLaunchRequest {
+                resolved_route: None,
                 seat_binding_id,
                 role_slot_id: RoleSlotId::parse(declaration.seat_key.as_str())
                     .map_err(|error| self.refuse_domain(&error))?,
@@ -651,6 +652,7 @@ impl Services {
                     generation,
                     &hosted.native_identity.native_id,
                     hosted.observed_at,
+                    &hosted.model_rung.clone().into(),
                 )
             })
             .map_err(|error| self.refuse(&error))?;

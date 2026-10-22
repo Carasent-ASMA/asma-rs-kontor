@@ -679,11 +679,24 @@ fn private_envelope_supersession_compares_the_exact_frozen_host_route() {
             .supersede_hosted_seat_launch_intent(&replacement)
             .is_err()
     );
-    replacement.expected_model_rung = frozen.model_rung;
+    replacement.expected_model_rung = frozen.model_rung.clone();
     fixture
         .store
         .supersede_hosted_seat_launch_intent(&replacement)
         .unwrap();
+    assert!(
+        fixture
+            .store
+            .install_hosted_seat_launch_intent(
+                fixture.project_id,
+                seat,
+                1,
+                &ExternalId::parse("stale-native").unwrap(),
+                replacement.recorded_at,
+                &frozen.model_rung
+            )
+            .is_err()
+    );
     assert_eq!(
         fixture
             .store
@@ -881,6 +894,12 @@ fn binding_an_occupancy_reconciles_its_intent() {
             1,
             &native,
             at("2026-09-17T01:02:00Z"),
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect("the intent is reconciled");
 
@@ -905,6 +924,12 @@ fn binding_an_occupancy_reconciles_its_intent() {
             1,
             &native,
             at("2026-09-17T01:03:00Z"),
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect("repeating the same reconciliation is unchanged");
 }
@@ -927,6 +952,12 @@ fn an_installed_intent_refuses_a_second_native() {
             1,
             &ExternalId::parse("lsa-first").expect("a native id"),
             at("2026-09-17T01:02:00Z"),
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect("the intent is reconciled");
 
@@ -938,6 +969,12 @@ fn an_installed_intent_refuses_a_second_native() {
             1,
             &ExternalId::parse("lsa-duplicate").expect("a native id"),
             at("2026-09-17T01:04:00Z"),
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect_err("a duplicate native is refused");
     assert!(
@@ -1057,6 +1094,12 @@ fn seat_launch_intents_read_back_across_every_generation() {
             1,
             &ExternalId::parse("lsa-first").expect("a native id"),
             at("2026-09-17T01:02:00Z"),
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect("the first intent installs");
     fixture
@@ -1324,6 +1367,12 @@ fn succession_effects_and_readback_are_proved_before_a_receipt_binds() {
             2,
             &successor.native_identity.native_id,
             successor.observed_at,
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, 2)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect("the intent installs");
     assert!(
@@ -1602,6 +1651,12 @@ fn land_effects(
             occupancy,
             &successor.native_identity.native_id,
             successor.observed_at,
+            &fixture
+                .store
+                .get_hosted_seat_launch_intent(fixture.project_id, seat, occupancy)
+                .unwrap()
+                .unwrap()
+                .model_rung,
         )
         .expect("the intent installs");
     fixture
@@ -3607,5 +3662,35 @@ fn launch_persona_is_atomic_with_intent_and_replay_preserves_frozen_absence() {
             .prepare_hosted_seat_launch_persona(&sparse, Some(&persona))
             .unwrap()
             .is_none()
+    );
+}
+
+#[test]
+fn a_hosted_replacement_cas_refuses_a_changed_predecessor_route() {
+    let fixture = Fixture::build();
+    let (_, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let mut successor = predecessor.clone();
+    successor.native_identity = identity("successor-native", 1);
+    let mut stale = predecessor.clone();
+    stale.model_rung.model = ModelRef("another-canonical-model".into());
+    assert!(
+        fixture
+            .store
+            .replace_hosted_topology_seat_route(
+                &stale,
+                &successor,
+                at("2026-09-17T02:00:00Z"),
+                "synthetic correction",
+                None
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_topology_seat(fixture.project_id, predecessor.seat_binding_id)
+            .unwrap()
+            .unwrap(),
+        predecessor
     );
 }

@@ -883,6 +883,7 @@ impl Services {
         };
         let (retired_at, reason) = match adapter
             .retire_hosted_seat(&HostedSeatRetireRequest {
+                resolved_route: None,
                 placement: Some(placement),
                 seat_binding_id: predecessor.seat_binding_id,
                 identity: predecessor.native_identity.clone(),
@@ -1366,6 +1367,7 @@ impl Services {
         }
         let outcome = adapter
             .launch_hosted_seat(&HostedSeatLaunchRequest {
+                resolved_route: None,
                 seat_binding_id: seat.id,
                 role_slot_id: seat.role_slot_id.clone(),
                 display_name: title.clone(),
@@ -1408,6 +1410,7 @@ impl Services {
                     FIRST_HOSTED_OCCUPANCY,
                     &hosted.native_identity.native_id,
                     hosted.observed_at,
+                    &hosted.model_rung.clone().into(),
                 )
             })
             .map_err(|error| self.refuse(&error))?;

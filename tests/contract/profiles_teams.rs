@@ -272,6 +272,7 @@ impl World {
 
     fn launch_input(&self) -> SlotLaunch {
         SlotLaunch {
+            resolved_route: None,
             display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
                 .expect("display name"),
             scope: execution_scope(self.task, self.workspace.root().clone()),

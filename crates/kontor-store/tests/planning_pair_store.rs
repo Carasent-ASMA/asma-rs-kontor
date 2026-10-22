@@ -357,7 +357,7 @@ fn freeze_as(
             committee_role: None,
             logical_role: RoleKey::parse("planning_pair_member").expect("a logical role"),
             seat_binding_id: id,
-            model_rung: rung.clone(),
+            model_rung: rung.clone().into(),
             occupancy_generation: 1,
             native_identity: None,
             provider_session_id: None,

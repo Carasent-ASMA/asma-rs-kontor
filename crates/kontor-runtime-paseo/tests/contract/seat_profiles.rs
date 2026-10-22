@@ -87,6 +87,7 @@ fn every_admitted_delivery_seat_composes_the_worker_profile() {
         let rung = rung(provider, model);
         let labels = BTreeMap::new();
         let create = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            resolved_route: None,
             request_id: "req-delivery-profile",
             workspace_id: WORKSPACE_ID,
             canonical_cwd: CWD,
@@ -262,6 +263,7 @@ async fn frame_delivered_delivery_launches_compose_the_worker_profile() {
         let binding_id = request.binding_id().to_string();
         let agent_run_id = request.agent_run_id().to_string();
         let intent = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            resolved_route: None,
             request_id: "req-frame-intent",
             workspace_id: WORKSPACE_ID,
             canonical_cwd: CWD,

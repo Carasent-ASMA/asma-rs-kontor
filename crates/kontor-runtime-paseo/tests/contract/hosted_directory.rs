@@ -395,6 +395,7 @@ async fn enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope
         .plane
         .adapter
         .claim_hosted_seat(&HostedSeatClaimRequest {
+            resolved_route: None,
             seat_binding_id: f.request.seat_binding_id,
             role_slot_id: f.request.role_slot_id.clone(),
             display_name: f.request.display_name.clone(),

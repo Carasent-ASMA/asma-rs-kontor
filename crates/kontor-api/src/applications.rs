@@ -7953,6 +7953,15 @@ pub trait ApplicationOperations: Send + Sync {
     /// missing key is a successful no-op.
     fn complete_local_command(&self, key: &IdempotencyKey) -> Result<(), ApiError>;
 
+    /// Read the private launch authority for an issued session without resolving policy.
+    fn session_launch_route(
+        &self,
+        _project_id: ProjectId,
+        _agent_run_id: AgentRunId,
+    ) -> Result<Option<kontor_core::launch_route::ResolvedRoute>, ApiError> {
+        Ok(None)
+    }
+
     /// Persist one exact post-message runtime observation through the shared
     /// AgentRun/TeamRun reducer.
     fn persist_session_observation(

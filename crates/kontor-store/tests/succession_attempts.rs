@@ -545,11 +545,14 @@ fn new_attempt(fixture: &Fixture, key: &str) -> NewSuccessionAttempt {
         quota_state_revision: AggregateRevision::INITIAL,
         quota_evidence_hash: fixture.quota_hash.clone(),
         quota_provider: "openai".to_owned(),
-        successor_model_rung: Some(ModelRung {
-            provider: ProviderRef("anthropic".to_owned()),
-            model: ModelRef("claude-sonnet".to_owned()),
-            effort: None,
-        }),
+        successor_model_rung: Some(
+            ModelRung {
+                provider: ProviderRef("anthropic".to_owned()),
+                model: ModelRef("claude-sonnet".to_owned()),
+                effort: None,
+            }
+            .into(),
+        ),
         successor_account_profile_id: Some(fixture.successor_account),
         idempotency_key: IdempotencyKey::parse(key).expect("idempotency key"),
         intent_hash: ContentHash::of(key.as_bytes()),
@@ -603,12 +606,14 @@ fn due_deferred_refresh_admits_at_the_elapsed_exhausted_reset_boundary() {
         quota_state_revision: evidence.quota_revision,
         quota_evidence_hash: evidence.quota_hash,
         quota_provider: "openai".to_owned(),
-        successor_model_rung: ModelRung {
-            provider: ProviderRef("anthropic".to_owned()),
-            model: ModelRef("claude-sonnet".to_owned()),
-            effort: None,
-        }
-        .into(),
+        successor_model_rung: Some(
+            ModelRung {
+                provider: ProviderRef("anthropic".to_owned()),
+                model: ModelRef("claude-sonnet".to_owned()),
+                effort: None,
+            }
+            .into(),
+        ),
         successor_account_profile_id: Some(fixture.successor_account),
         deferred_until: None,
         refreshed_at: at("2026-09-04T09:00:00Z"),

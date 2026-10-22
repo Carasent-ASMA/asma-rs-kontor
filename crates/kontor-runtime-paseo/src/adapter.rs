@@ -1229,6 +1229,28 @@ impl PaseoAdapter {
         Ok(())
     }
 
+    fn ensure_frozen_provider_available(
+        &self,
+        canonical: &ModelRung,
+        route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<()> {
+        crate::launch_route::validate(canonical, route)?;
+        if route.is_some_and(|route| {
+            self.config
+                .unavailable_providers
+                .contains(&route.native_alias)
+                || self
+                    .config
+                    .unavailable_providers
+                    .contains(&route.route_provider)
+        }) {
+            return Err(RuntimeError::ProviderUnavailable {
+                provider: canonical.provider.0.clone(),
+            });
+        }
+        self.ensure_provider_available(&canonical.provider.0)
+    }
+
     /// Build an adapter for `config` over `transport`, rehydrated from
     /// `checkpoint`.
     ///
@@ -2243,7 +2265,13 @@ impl PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         if !agent.is_archived() {
-            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+            Self::verify_frozen_agent_route(
+                &agent,
+                &request.model_rung,
+                None,
+                request.autonomy,
+                request.resolved_route.as_ref(),
+            )?;
         }
         Ok(Some(agent))
     }
@@ -2795,13 +2823,25 @@ impl PaseoAdapter {
         Ok(())
     }
 
-    fn verify_agent_route_with_mode(
+    fn verify_frozen_agent_route(
         agent: &PaseoAgent,
         requested: &ModelRung,
         consultation_provenance: Option<&ConsultationRouteProvenance>,
         autonomy: SeatAutonomy,
+        resolved_route: Option<&kontor_core::launch_route::ResolvedRoute>,
     ) -> RuntimeResult<()> {
-        if agent.provider != requested.provider.0 || agent.model != requested.model.0 {
+        crate::launch_route::validate(requested, resolved_route)?;
+        if let Some(route) = resolved_route
+            && (agent.label(label::HOSTED_SEAT) == Some("true")
+                || agent.label(label::CONSULTATION_RUN).is_some())
+            && agent.label(label::LAUNCH_INTENT)
+                != Some(crate::launch_route::digest(route)?.as_str())
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let native = crate::launch_route::native_rung(requested, resolved_route);
+        let family = crate::launch_route::family(requested, resolved_route);
+        if agent.provider != native.provider.0 || agent.model != native.model.0 {
             return Err(RuntimeError::CorrelationFailed);
         }
         if let Some(effort) = requested.effort
@@ -2810,9 +2850,11 @@ impl PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         let expected_mode = if let Some(provenance) = consultation_provenance {
-            super::client::consultation_route_permission_mode(requested, provenance)?
+            super::client::consultation_route_permission_for_provider(
+                requested, provenance, family,
+            )?
         } else {
-            paseo_mode(&requested.provider.0, autonomy)?
+            paseo_mode(family, autonomy)?
         };
         if agent.current_mode_id.as_deref() != expected_mode {
             return Err(RuntimeError::PermissionModeMismatch {
@@ -2822,14 +2864,6 @@ impl PaseoAdapter {
             });
         }
         Ok(())
-    }
-
-    fn verify_agent_route(
-        agent: &PaseoAgent,
-        requested: &ModelRung,
-        autonomy: SeatAutonomy,
-    ) -> RuntimeResult<()> {
-        Self::verify_agent_route_with_mode(agent, requested, None, autonomy)
     }
 
     // -- Evidence -----------------------------------------------------------
@@ -4721,7 +4755,7 @@ impl PaseoAdapter {
     ) -> RuntimeResult<LaunchOutcome> {
         let expected_existing_native_id = request.expected_existing_native_id();
         let adoption_only = expected_existing_native_id.is_some();
-        self.ensure_provider_available(request.model_rung().provider.0.as_str())?;
+        self.ensure_frozen_provider_available(request.model_rung(), request.resolved_route())?;
         // The posture arrives already resolved, from `launch` — see there for why
         // it has to be decided before this function is reachable at all.
         let effective_scope = self.effective_scope(request.scope())?;
@@ -4778,6 +4812,7 @@ impl PaseoAdapter {
                 .map(|configured| configured.permission_overrides)
                 .unwrap_or_default();
             let created = PaseoRpc::delivery_agent_create(crate::client::DeliveryCreate {
+                resolved_route: request.resolved_route(),
                 request_id: &self.next_request_id(),
                 workspace_id: &workspace_id,
                 canonical_cwd: task_scope.worktree.as_str(),
@@ -4906,7 +4941,7 @@ impl PaseoAdapter {
         if !adoption_only {
             crate::seat_mcp::compose_for_delivery_seat(
                 self.config.seat_mcp.as_ref(),
-                request.model_rung().provider.0.as_str(),
+                crate::launch_route::family(request.model_rung(), request.resolved_route()),
                 posture,
                 std::path::Path::new(task_scope.worktree.as_str()),
             )
@@ -4925,7 +4960,7 @@ impl PaseoAdapter {
         let command = PaseoCommand::agent_run(
             &workspace_id,
             task_scope.worktree.as_str(),
-            request.model_rung(),
+            &crate::launch_route::family_rung(request.model_rung(), request.resolved_route()),
             request.autonomy(),
             request.display_name().as_str(),
             &labels,
@@ -4984,7 +5019,7 @@ impl PaseoAdapter {
         let verdict = self
             .verify_agent_placement(&agent, &workspace_id, &labels)
             .and_then(|()| {
-                Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())
+                Self::verify_frozen_agent_route(&agent, request.model_rung(), None, request.autonomy(), request.resolved_route())
             })
             .and_then(|()| {
                 if !frame_delivery.requires_applied_posture || agent.provider_options_applied() {
@@ -5120,7 +5155,7 @@ impl PaseoAdapter {
     /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise the
     /// feature, or when the provider cannot express the declared posture.
     fn frame_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<FrameDelivery> {
-        let provider = request.model_rung().provider.0.as_str();
+        let provider = crate::launch_route::family(request.model_rung(), request.resolved_route());
         match crate::client::built_in_provider(provider) {
             "codex" | "cursor" => {
                 // The frame carries the worker MCP and the provider-native mode.
@@ -5154,7 +5189,7 @@ impl PaseoAdapter {
                 })
             }
             _ => Ok(FrameDelivery {
-                create: false,
+                create: request.resolved_route().is_some(),
                 requires_applied_posture: false,
             }),
         }
@@ -5631,7 +5666,11 @@ impl PaseoAdapter {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect();
-        if crate::client::built_in_provider(&request.model_rung.provider.0) == "opencode" {
+        if crate::client::built_in_provider(crate::launch_route::family(
+            &request.model_rung,
+            request.resolved_route.as_ref(),
+        )) == "opencode"
+        {
             labels.insert(
                 label::OPERATOR_ACCEPTED_FALLBACK.to_owned(),
                 request.route_provenance.evidence_hash.as_str().to_owned(),
@@ -5642,6 +5681,7 @@ impl PaseoAdapter {
         if let Some(provenance) = &request.fleet_provenance {
             labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
         }
+        crate::launch_route::bind_labels(&mut labels, request.resolved_route.as_ref())?;
         Ok(labels)
     }
 
@@ -5700,13 +5740,20 @@ impl PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        self.validate_consultation_launch_route(
+            &request.model_rung,
+            &request.route_provenance,
+            request.resolved_route.as_ref(),
+        )?;
         self.require_session_permissions(
             &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
             RuntimeCapability::Inspect,
         )
         .await?;
-        self.validate_consultation_model_rung(&request.model_rung, &request.route_provenance)?;
-        self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
+        self.ensure_frozen_provider_available(
+            &request.model_rung,
+            request.resolved_route.as_ref(),
+        )?;
         let declared = self.declared().await?;
         let effective_scope = self.effective_scope(&request.scope)?;
         let project = self.require_project_for(&effective_scope)?;
@@ -5790,7 +5837,11 @@ impl PaseoAdapter {
                 // its `kontor-mcp` child inherits this consultation seat's
                 // already-scoped KONTOR_AUTH instead of the operator console's
                 // ambient MCP authority. The config contains no credential.
-                if crate::client::built_in_provider(&request.model_rung.provider.0) == "claude" {
+                if crate::client::built_in_provider(crate::launch_route::family(
+                    &request.model_rung,
+                    request.resolved_route.as_ref(),
+                )) == "claude"
+                {
                     let seat_mcp =
                         self.config
                             .seat_mcp
@@ -5810,7 +5861,7 @@ impl PaseoAdapter {
                         rule: "seat MCP composition failed in the consultation worktree",
                     }
                 })?;
-                let mut creation = PaseoRpc::consultation_agent_create(
+                let mut creation = PaseoRpc::consultation_agent_create_bound(
                     self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
@@ -5820,6 +5871,7 @@ impl PaseoAdapter {
                     &labels,
                     request.prompt.as_str(),
                     request.credential.expose_secret(),
+                    request.resolved_route.as_ref(),
                 )?;
                 if let Some(seat_mcp) = self.config.seat_mcp.as_ref() {
                     creation.with_consultation_mcp(seat_mcp);
@@ -5854,11 +5906,12 @@ impl PaseoAdapter {
         };
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route_with_mode(
+        Self::verify_frozen_agent_route(
             &agent,
             &request.model_rung,
             Some(&request.route_provenance),
             SeatAutonomy::Advisory,
+            request.resolved_route.as_ref(),
         )?;
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
@@ -5932,6 +5985,7 @@ impl PaseoAdapter {
         if let Some(provenance) = &request.fleet_provenance {
             labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
         }
+        crate::launch_route::bind_labels(&mut labels, request.resolved_route.as_ref())?;
         Ok(labels)
     }
 
@@ -6133,7 +6187,19 @@ impl PaseoAdapter {
             });
         }
         self.verify_agent_location(&claimant, workspace_id, &request.cwd)?;
-        self.ensure_provider_available(&claimant.provider)?;
+        if let Some(route) = &request.resolved_route {
+            crate::launch_route::validate(&route.canonical_rung(), Some(route))?;
+            if claimant.provider != route.native_alias
+                || claimant.model != route.route_model_id
+                || route.canonical_effort.is_some_and(|effort| {
+                    claimant.effective_thinking_option_id.as_deref() != Some(effort.as_str())
+                })
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        } else {
+            self.ensure_provider_available(&claimant.provider)?;
+        }
         if claimant.provider.is_empty() || claimant.model.is_empty() {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -6165,7 +6231,11 @@ impl PaseoAdapter {
                 })
                 .transpose()?,
         };
-        let claimant_labels = match &scope {
+        let model_rung = request
+            .resolved_route
+            .as_ref()
+            .map_or(model_rung, |route| route.canonical_rung());
+        let mut claimant_labels = match &scope {
             Some(scope) => self.hosted_labels(
                 request.seat_binding_id,
                 &request.role_slot_id,
@@ -6181,6 +6251,7 @@ impl PaseoAdapter {
                 &request.cwd,
             ),
         };
+        crate::launch_route::bind_labels(&mut claimant_labels, request.resolved_route.as_ref())?;
         if Self::claimant_has_foreign_ownership(&claimant, &claimant_labels) {
             return Err(RuntimeError::SlotAlreadyAdmitted {
                 rule: "the claimant already belongs to another Kontor or native seat",
@@ -6322,12 +6393,16 @@ impl PaseoAdapter {
         &self,
         request: &HostedSeatLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        crate::launch_route::validate(&request.model_rung, request.resolved_route.as_ref())?;
         self.require_session_permissions(
             &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
             RuntimeCapability::Inspect,
         )
         .await?;
-        self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
+        self.ensure_frozen_provider_available(
+            &request.model_rung,
+            request.resolved_route.as_ref(),
+        )?;
         let declared = self.declared().await?;
         let project = match &request.scope {
             HostedSeatScope::Epic(scope) => {
@@ -6425,7 +6500,13 @@ impl PaseoAdapter {
             Some(native_id) => {
                 let agent = self.fetch_agent(native_id).await?;
                 self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-                Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+                Self::verify_frozen_agent_route(
+                    &agent,
+                    &request.model_rung,
+                    None,
+                    request.autonomy,
+                    request.resolved_route.as_ref(),
+                )?;
                 Some(agent)
             }
             None => None,
@@ -6447,7 +6528,7 @@ impl PaseoAdapter {
                 )) {
             crate::seat_mcp::compose_for_hosted_seat(
                 self.config.seat_mcp.as_ref(),
-                request.model_rung.provider.0.as_str(),
+                crate::launch_route::family(&request.model_rung, request.resolved_route.as_ref()),
                 std::path::Path::new(request.cwd.as_str()),
                 composition_mode,
             )
@@ -6457,7 +6538,7 @@ impl PaseoAdapter {
         ) {
             crate::seat_mcp::validate_recovered_hosted_directory(
                 self.config.seat_mcp.as_ref(),
-                request.model_rung.provider.0.as_str(),
+                crate::launch_route::family(&request.model_rung, request.resolved_route.as_ref()),
                 std::path::Path::new(request.cwd.as_str()),
             )
         } else {
@@ -6472,7 +6553,7 @@ impl PaseoAdapter {
         let (native_id, created) = match recovered_id {
             Some(native_id) => (native_id, false),
             None => {
-                let mut creation = PaseoRpc::hosted_seat_agent_create(
+                let mut creation = PaseoRpc::hosted_seat_agent_create_bound(
                     self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
@@ -6483,6 +6564,7 @@ impl PaseoAdapter {
                     request.role_prompt.as_ref().map(BoundedText::as_str),
                     request.credential.expose_secret(),
                     request.autonomy,
+                    request.resolved_route.as_ref(),
                 )?;
                 if let Some(seat_mcp) = self.config.seat_mcp.as_ref() {
                     creation.with_leadership_mcp(seat_mcp);
@@ -6518,7 +6600,13 @@ impl PaseoAdapter {
         // The readback asserts the autonomy the launch asked for, which is what
         // makes the pair evidence: a seat that came back in another mode fails
         // correlation instead of quietly running under it.
-        Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        Self::verify_frozen_agent_route(
+            &agent,
+            &request.model_rung,
+            None,
+            request.autonomy,
+            request.resolved_route.as_ref(),
+        )?;
         // A lost create acknowledgement can leave the exact SeatBinding agent
         // attached while its provider thread never initialized. Re-enter that
         // same native identity and reload only the failed pre-thread state;
@@ -6539,7 +6627,13 @@ impl PaseoAdapter {
             }
             agent = self.fetch_agent(&native_id).await?;
             self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+            Self::verify_frozen_agent_route(
+                &agent,
+                &request.model_rung,
+                None,
+                request.autonomy,
+                request.resolved_route.as_ref(),
+            )?;
         }
         if agent.provider_session_id().is_none() {
             return Err(RuntimeError::LaunchNotAdmitted {
@@ -6565,12 +6659,34 @@ impl PaseoAdapter {
 
 #[async_trait]
 impl RuntimeAdapter for PaseoAdapter {
+    fn validate_launch_route(
+        &self,
+        route: &kontor_core::launch_route::ResolvedRoute,
+    ) -> RuntimeResult<()> {
+        self.ensure_frozen_provider_available(&route.canonical_rung(), Some(route))
+    }
+
     fn validate_consultation_model_rung(
         &self,
         rung: &ModelRung,
         provenance: &ConsultationRouteProvenance,
     ) -> RuntimeResult<()> {
         super::client::consultation_route_permission_mode(rung, provenance).map(|_| ())
+    }
+
+    fn validate_consultation_launch_route(
+        &self,
+        rung: &ModelRung,
+        provenance: &ConsultationRouteProvenance,
+        route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<()> {
+        self.ensure_frozen_provider_available(rung, route)?;
+        super::client::consultation_route_permission_for_provider(
+            rung,
+            provenance,
+            crate::launch_route::family(rung, route),
+        )
+        .map(|_| ())
     }
 
     fn validate_planning_pair_member_surface(
@@ -7104,14 +7220,17 @@ impl RuntimeAdapter for PaseoAdapter {
         let before = self.fetch_agent_including_archived(native_id).await?;
         let expected_seat = request.seat_binding_id.to_string();
         let fallback_hash = request.route_provenance.evidence_hash.as_str();
-        let restriction_matches =
-            if crate::client::built_in_provider(&request.model_rung.provider.0) == "opencode" {
-                before.label(label::READ_ONLY).is_none()
-                    && before.label(label::OPERATOR_ACCEPTED_FALLBACK) == Some(fallback_hash)
-            } else {
-                before.label(label::READ_ONLY) == Some("true")
-                    && before.label(label::OPERATOR_ACCEPTED_FALLBACK).is_none()
-            };
+        let restriction_matches = if crate::client::built_in_provider(crate::launch_route::family(
+            &request.model_rung,
+            request.resolved_route.as_ref(),
+        )) == "opencode"
+        {
+            before.label(label::READ_ONLY).is_none()
+                && before.label(label::OPERATOR_ACCEPTED_FALLBACK) == Some(fallback_hash)
+        } else {
+            before.label(label::READ_ONLY) == Some("true")
+                && before.label(label::OPERATOR_ACCEPTED_FALLBACK).is_none()
+        };
         if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
             || before.label(label::CONSULTATION_RUN).is_none()
             || !restriction_matches
@@ -7130,8 +7249,11 @@ impl RuntimeAdapter for PaseoAdapter {
         // Recovery retires an exact idle predecessor; its obsolete permission
         // mode must not prevent replacing it with the current guarded posture.
         // Route identity still has to match the frozen predecessor.
-        if before.provider != request.model_rung.provider.0
-            || before.model != request.model_rung.model.0
+        crate::launch_route::validate(&request.model_rung, request.resolved_route.as_ref())?;
+        let native_route =
+            crate::launch_route::native_rung(&request.model_rung, request.resolved_route.as_ref());
+        if before.provider != native_route.provider.0
+            || before.model != native_route.model.0
             || request.model_rung.effort.is_some_and(|effort| {
                 before.effective_thinking_option_id.as_deref() != Some(effort.as_str())
             })
@@ -7424,6 +7546,7 @@ impl RuntimeAdapter for PaseoAdapter {
             .ok_or(RuntimeError::CorrelationFailed)?;
         let agent = self
             .hosted_seat_agent(&HostedSeatInspectRequest {
+                resolved_route: request.resolved_route.clone(),
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
@@ -7502,6 +7625,7 @@ impl RuntimeAdapter for PaseoAdapter {
         preflight(&declared, &OperationContext::new(RuntimeCapability::Retire))?;
         let native_id = request.identity.native_id.as_str();
         let inspect = HostedSeatInspectRequest {
+            resolved_route: request.resolved_route.clone(),
             seat_binding_id: request.seat_binding_id,
             identity: request.identity.clone(),
             model_rung: request.model_rung.clone(),
@@ -7509,9 +7633,8 @@ impl RuntimeAdapter for PaseoAdapter {
             requested_at: request.requested_at,
         };
         let Some(before) = self.hosted_seat_agent(&inspect).await? else {
-            return Ok(HostedSeatRetireOutcome {
-                identity: request.identity.clone(),
-                archived_at: request.requested_at,
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the missing hosted native has no archive confirmation",
             });
         };
         if let Some(placement) = &request.placement
@@ -7606,6 +7729,7 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        crate::launch_route::verify_agent(&agent, request.resolved_route.as_ref())?;
         // Hosted seats are deliberately absent from the ordinary issued-binding
         // registry, so their delivery evidence cannot live in that registry's
         // in-memory message ledger. Always settle the stable clientMessageId
@@ -7622,7 +7746,9 @@ impl RuntimeAdapter for PaseoAdapter {
                 position,
             });
         }
-        self.ensure_provider_available(&agent.provider)?;
+        if request.resolved_route.is_none() {
+            self.ensure_provider_available(&agent.provider)?;
+        }
         let declared = self.declared().await?;
         preflight(
             &declared,
@@ -7701,6 +7827,7 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        crate::launch_route::verify_agent(&agent, request.resolved_route.as_ref())?;
         let rpc = PaseoRpc::send_message(
             self.next_request_id(),
             native_id,
@@ -7747,6 +7874,7 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        crate::launch_route::verify_agent(&agent, request.resolved_route.as_ref())?;
         let mut pending_permissions = agent
             .pending_permissions
             .iter()
@@ -7780,6 +7908,7 @@ impl RuntimeAdapter for PaseoAdapter {
         )?;
         let inspection = self
             .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                resolved_route: request.resolved_route.clone(),
                 run_id: request.run_id,
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
@@ -7811,6 +7940,7 @@ impl RuntimeAdapter for PaseoAdapter {
         }
         let after = self
             .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                resolved_route: request.resolved_route.clone(),
                 run_id: request.run_id,
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
@@ -8725,7 +8855,7 @@ impl RuntimeAdapter for PaseoAdapter {
             .map(|configured| configured.permission_overrides)
             .unwrap_or_default();
         let posture = crate::posture::seat_posture(
-            request.model_rung().provider.0.as_str(),
+            crate::launch_route::family(request.model_rung(), request.resolved_route()),
             request.autonomy(),
             &allowances,
         )?;
@@ -8805,8 +8935,21 @@ impl RuntimeAdapter for PaseoAdapter {
 
         let native_id = binding.identity().native_id.as_str().to_owned();
         let fresh = self.fetch_agent(&native_id).await?;
+        if let Some(route) = &request.resolved_route {
+            crate::launch_route::validate(&route.canonical_rung(), Some(route))?;
+            if fresh.provider != route.native_alias
+                || fresh.model != route.route_model_id
+                || route.canonical_effort.is_some_and(|effort| {
+                    fresh.effective_thinking_option_id.as_deref() != Some(effort.as_str())
+                })
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
         self.verify_seat_placement(&binding, &fresh).await?;
-        self.ensure_provider_available(&fresh.provider)?;
+        if request.resolved_route.is_none() {
+            self.ensure_provider_available(&fresh.provider)?;
+        }
         self.observe_permissions(binding.binding_id(), &fresh);
 
         if fresh.is_archived() {
@@ -9625,6 +9768,17 @@ impl RuntimeAdapter for PaseoAdapter {
         let agent = self
             .fetch_agent_with_archive(&native_id, &correlation)
             .await?;
+        if let Some(route) = &request.resolved_route {
+            crate::launch_route::validate(&route.canonical_rung(), Some(route))?;
+            if agent.provider != route.native_alias
+                || agent.model != route.route_model_id
+                || route.canonical_effort.is_some_and(|effort| {
+                    agent.effective_thinking_option_id.as_deref() != Some(effort.as_str())
+                })
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
         // An inspect is also the cheapest honest look at the permission
         // lifecycle, which on this wire lives in the agent snapshot rather than
         // in the transcript.
@@ -11340,7 +11494,14 @@ mod governed_pin_tests {
         };
         let mut agent = agent_on_route("codex-work", "gpt-5.6-sol");
         assert!(
-            PaseoAdapter::verify_agent_route(&agent, &requested, SeatAutonomy::standard()).is_ok(),
+            PaseoAdapter::verify_frozen_agent_route(
+                &agent,
+                &requested,
+                None,
+                SeatAutonomy::standard(),
+                None
+            )
+            .is_ok(),
             "the alias that was asked for is the alias that must be reported"
         );
         // The other Codex login. Same provider family — `built_in_provider`
@@ -11350,7 +11511,13 @@ mod governed_pin_tests {
         agent.provider = "codex-personal".to_owned();
         assert!(
             matches!(
-                PaseoAdapter::verify_agent_route(&agent, &requested, SeatAutonomy::standard()),
+                PaseoAdapter::verify_frozen_agent_route(
+                    &agent,
+                    &requested,
+                    None,
+                    SeatAutonomy::standard(),
+                    None
+                ),
                 Err(RuntimeError::CorrelationFailed)
             ),
             "a launch on another account's alias is not this account's launch"

@@ -442,6 +442,7 @@ async fn live_smoke_launches_two_clients_concurrently() {
     for (ao, outcome) in &launched {
         let observed = ao
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: outcome.snapshot.clone(),
                 requested_at: parse_utc_timestamp("2026-08-10T09:06:00Z").expect("canonical UTC"),
             })

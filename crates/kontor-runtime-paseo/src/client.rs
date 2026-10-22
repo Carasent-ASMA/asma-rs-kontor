@@ -194,8 +194,18 @@ pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
-    let provider = built_in_provider(&rung.provider.0);
-    if matches!(provider, "cursor" | "opencode") {
+    consultation_route_permission_for_provider(rung, provenance, &rung.provider.0)
+}
+
+pub(crate) fn consultation_route_permission_for_provider(
+    rung: &ModelRung,
+    provenance: &ConsultationRouteProvenance,
+    working_provider: &str,
+) -> RuntimeResult<Option<&'static str>> {
+    let provider = built_in_provider(working_provider);
+    if matches!(provider, "cursor" | "opencode")
+        || matches!(built_in_provider(&rung.provider.0), "cursor" | "opencode")
+    {
         let authorized_source = provenance.is_fleet_configuration()
             || (provenance.legacy_recovery && provenance.is_operator_accepted_recovery());
         let pinned = provenance.permission_policy_hash.as_ref();
@@ -208,13 +218,17 @@ pub(crate) fn consultation_route_permission_mode(
                     .is_some_and(|permissions| permissions.permits(hash, rung))
             })
         {
-            return Ok(Some("plan"));
+            return if matches!(provider, "cursor" | "opencode") {
+                Ok(Some("plan"))
+            } else {
+                consultation_permission_mode(working_provider)
+            };
         }
         return Err(RuntimeError::PermissionModeUnsupported {
             provider: rung.provider.0.clone(),
         });
     }
-    consultation_permission_mode(&rung.provider.0)
+    consultation_permission_mode(working_provider)
 }
 
 /// The built-in Paseo provider an id resolves to.
@@ -259,6 +273,8 @@ pub struct DeliveryCreate<'a> {
     pub canonical_cwd: &'a str,
     /// The frozen route.
     pub model_rung: &'a ModelRung,
+    /// Private binding from Kontor's durable launch intent.
+    pub resolved_route: Option<&'a kontor_core::launch_route::ResolvedRoute>,
     /// The declared posture.
     pub autonomy: SeatAutonomy,
     /// The visible seat title.
@@ -1077,7 +1093,9 @@ impl PaseoRpc {
     pub fn delivery_agent_create(
         parts: DeliveryCreate<'_>,
     ) -> RuntimeResult<DeliveryCreateRequest> {
-        let provider = parts.model_rung.provider.0.as_str();
+        crate::launch_route::validate(parts.model_rung, parts.resolved_route)?;
+        let native = crate::launch_route::native_rung(parts.model_rung, parts.resolved_route);
+        let provider = crate::launch_route::family(parts.model_rung, parts.resolved_route);
         let posture = crate::posture::render_posture(provider, parts.autonomy, parts.allowances)?;
 
         // Derived from the launch, never generated: a retry must ask about the
@@ -1092,9 +1110,9 @@ impl PaseoRpc {
         // session config carries what belongs to the session — route, title,
         // mode, provider options, MCP surface.
         let mut config = serde_json::json!({
-            "provider": parts.model_rung.provider.0,
+            "provider": native.provider.0,
             "cwd": parts.canonical_cwd,
-            "model": parts.model_rung.model.0,
+            "model": native.model.0,
             "title": parts.title,
         });
         if let Some(mode) = posture.mode {
@@ -1122,12 +1140,17 @@ impl PaseoRpc {
             "clientMessageId": client_message_id,
         });
 
+        let digest_input = parts.resolved_route.map(|route| {
+            serde_json::json!({
+                "launch": message, "resolved_route": route,
+            })
+        });
         let digest = crate::posture::LaunchIntent {
             binding_id: parts.binding_id,
             agent_run_id: parts.agent_run_id,
             workspace_id: parts.workspace_id,
             role_slot_id: parts.role_slot_id,
-            config: &message,
+            config: digest_input.as_ref().unwrap_or(&message),
             prompt: parts.prompt,
             client_message_id: &client_message_id,
         }
@@ -1244,7 +1267,41 @@ impl PaseoRpc {
         prompt: &str,
         credential: &str,
     ) -> RuntimeResult<Self> {
-        let mode = consultation_route_permission_mode(model_rung, route_provenance)?;
+        Self::consultation_agent_create_bound(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            route_provenance,
+            title,
+            labels,
+            prompt,
+            credential,
+            None,
+        )
+    }
+
+    /// Create from a private frozen binding while checking permissions on the logical slot.
+    ///
+    /// # Errors
+    /// A mismatched binding or unsupported permission mode refuses before transport.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consultation_agent_create_bound(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        route_provenance: &ConsultationRouteProvenance,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+        resolved_route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<Self> {
+        crate::launch_route::validate(model_rung, resolved_route)?;
+        let family = crate::launch_route::family(model_rung, resolved_route);
+        let mode =
+            consultation_route_permission_for_provider(model_rung, route_provenance, family)?;
         let prompt = format!(
             "{prompt}\nThis is a consultation, not an implementation planning session. Use file-reading tools to inspect evidence. Discover the injected Kontor tools with ToolSearch when necessary, read your consultation aggregate, and submit your own finding through its scoped MCP tool. The MCP process receives your credential automatically; do not read or print it. Do not request plan approval or delegate the review."
         );
@@ -1259,7 +1316,7 @@ impl PaseoRpc {
             credential,
             mode,
         )?;
-        let provider = built_in_provider(&model_rung.provider.0);
+        let provider = built_in_provider(family);
         if provider == "claude" {
             request.message["config"]["providerOptions"] = claude_contained_tools();
         } else if provider == "codex" {
@@ -1267,6 +1324,7 @@ impl PaseoRpc {
                 "sandbox_mode": "read-only", "approval_policy": "never"
             });
         }
+        crate::launch_route::bind_rpc(&mut request, resolved_route);
         Ok(request)
     }
 
@@ -1406,6 +1464,42 @@ impl PaseoRpc {
         if let Some(role_prompt) = role_prompt {
             request.message["config"]["systemPrompt"] = serde_json::json!(role_prompt);
         }
+        Ok(request)
+    }
+
+    /// Create from the exact private route retained by the hosted launch intent.
+    ///
+    /// # Errors
+    /// Unsupported or contradictory bindings and permission modes refuse.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hosted_seat_agent_create_bound(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        role_prompt: Option<&str>,
+        credential: &str,
+        autonomy: SeatAutonomy,
+        resolved_route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<Self> {
+        crate::launch_route::validate(model_rung, resolved_route)?;
+        let family = crate::launch_route::family_rung(model_rung, resolved_route);
+        let mut request = Self::hosted_seat_agent_create(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            &family,
+            title,
+            labels,
+            prompt,
+            role_prompt,
+            credential,
+            autonomy,
+        )?;
+        crate::launch_route::bind_rpc(&mut request, resolved_route);
         Ok(request)
     }
 
@@ -3896,6 +3990,7 @@ mod tests {
         .expect("the evidenced create builds");
 
         let delivery = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            resolved_route: None,
             request_id: "req-1",
             workspace_id: "wks_1",
             canonical_cwd: "/w/task-1",
