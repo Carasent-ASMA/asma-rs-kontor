@@ -112,7 +112,10 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
     setBatch({ currentId: null, completed, total: ids.length, announcement: summary, summary });
     return summary;
   };
-  const stop = useCallback(() => { cancel.current = true; }, []);
+  const stop = useCallback(() => {
+    cancel.current = true;
+    if (active.current) setBatch((current) => current && !current.summary ? { ...current, announcement: "Stopping after the current session. No next session will be started." } : current);
+  }, []);
   const reconcile = async (id: string) => {
     if (!review || active.current) return;
     const row = review.rows.find((entry) => entry.id === id); if (!row) return;

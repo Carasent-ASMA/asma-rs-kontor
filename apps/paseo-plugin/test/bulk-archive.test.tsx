@@ -33,7 +33,7 @@ describe("bulk archive selection accessibility", () => {
     const shown = Array.from({ length: 51 }, (_, n) => `fixture-${n}`);
     let scope = shown, host = "host-a";
     const draw = () => harness.render(() => useArchiveSelection(host, scope));
-    draw(); draw().start(); draw().selectShown(); expect(draw().selected).toEqual([]);
+    draw(); draw().start(); draw().selectShown(); draw().toggle("outside-filtered-scope"); expect(draw().selected).toEqual([]);
     for (const id of shown) draw().toggle(id);
     expect(draw().selected).toHaveLength(50); draw().toggle(shown[0]!); expect(draw().selected).toHaveLength(49);
     scope = [shown[1]!]; draw(); expect(draw().selected).toEqual([shown[1]]);
@@ -52,7 +52,8 @@ describe("bulk archive selection accessibility", () => {
     const tree = harness.render(() => BulkArchiveDialog({ lifecycle, root: { current: null }, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: vi.fn(), onRun }));
     const list = walk(tree).find((element) => element.type === Disclosure)!;
     expect(list.props).toMatchObject({ label: "Selected sessions (1)" }); expect(list.props.open).toBeUndefined();
-    const confirm = walk(tree).filter((element) => element.type === Action && element.props.label === "Archive 1 sessions");
+    expect((list.props.colors as PluginTheme["colors"]).accent).toBe(colors.foreground);
+    const confirm = walk(tree).filter((element) => element.type === Action && element.props.label === "Archive 1 session");
     expect(confirm).toHaveLength(1); expect(onRun).not.toHaveBeenCalled(); (confirm[0]!.props.onPress as () => void)(); expect(onRun).toHaveBeenCalledTimes(1);
     expect(walk(tree).some((element) => element.props.label === "Retry Archive")).toBe(false);
   });

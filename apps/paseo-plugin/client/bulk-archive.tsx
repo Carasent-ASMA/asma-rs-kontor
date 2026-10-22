@@ -14,6 +14,7 @@ export function useArchiveSelection(hostId: string, shown: readonly string[]) {
   const scope = JSON.stringify(shown);
   useEffect(() => { setSelected((ids) => { const kept = ids.filter((id) => shown.includes(id)); return kept.length === ids.length ? ids : kept; }); }, [scope]);
   const toggle = (id: string) => {
+    if (!shown.includes(id)) return;
     setSelecting(true);
     setSelected((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : ids.length < ARCHIVE_BATCH_LIMIT ? [...ids, id] : ids);
   };
@@ -43,12 +44,12 @@ export function ArchiveRowFeedback({ row, colors }: { row: LifecycleRow | undefi
   return <Text style={{ color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>{`${row.outcome === "blocked" ? "Blocked" : "Archive not confirmed"}: ${row.message ?? row.reason}`}</Text>;
 }
 
-export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview }: {
-  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void;
+export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview, toggleRef }: {
+  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void; toggleRef?: RefObject<View | null>;
 }) {
   return <View testID="sessions-bulk-archive" style={{ gap: 4 }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-      <Action colors={colors} label={selection.selecting ? "Cancel selection" : "Select"} disabled={disabled}
+      <Action ref={toggleRef} colors={colors} label={selection.selecting ? "Cancel selection" : "Select"} disabled={disabled}
         accessibilityLabel={selection.selecting ? "Cancel archive selection" : "Select sessions for archive"} onPress={selection.selecting ? selection.clear : selection.start} />
       {selection.selecting ? <>
         <Action colors={colors} label={`Select all shown (${shownCount})`} disabled={disabled || shownCount > ARCHIVE_BATCH_LIMIT} onPress={selection.selectShown} />
@@ -78,7 +79,7 @@ export function BulkArchiveDialog({ lifecycle, root, rootSize, colors, compact, 
       {busy ? text("Reading selected sessions and managed children…") : review ? <>
         {text(`${review.rows.length} selected session${review.rows.length === 1 ? "" : "s"}. History and files are kept. Archive stops active work. There is no undo here.`)}
         {text("A parent can archive only when every active managed child is selected. Children archive first; a blocked or unconfirmed child keeps its parent blocked. Unselected sessions are never archived.")}
-        <Disclosure colors={colors} label={`Selected sessions (${review.rows.length})`}>
+        <Disclosure colors={{ ...colors, accent: colors.foreground }} label={`Selected sessions (${review.rows.length})`}>
           {review.rows.map((row) => <View key={row.id} style={{ gap: 4, paddingVertical: 6 }}>
             {text(`${row.title} (${row.id})`)}
             {text(row.message ?? row.reason)}
@@ -86,7 +87,7 @@ export function BulkArchiveDialog({ lifecycle, root, rootSize, colors, compact, 
             {(unresolvedArchive(row) || row.reconcileReviewId) && !running ? <Action colors={colors} label={`Check outcome: ${row.title}`} disabled={busy} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
           </View>)}
         </Disclosure>
-        {!batch ? <Action colors={colors} label={`Archive ${review.rows.length} sessions`} disabled={busy || running || !review.rows.length} onPress={onRun} /> : null}
+        {!batch ? <Action colors={colors} label={`Archive ${review.rows.length} session${review.rows.length === 1 ? "" : "s"}`} disabled={busy || running || !review.rows.length} onPress={onRun} /> : null}
         {running ? <>{text(`Archiving ${Math.min((batch?.completed ?? 0) + 1, batch?.total ?? review.rows.length)} of ${batch?.total ?? review.rows.length}`)}<Action colors={colors} label="Stop before next session" onPress={lifecycle.stop} /></> : null}
         {batch?.summary ? text(batch.summary) : null}
       </> : null}
