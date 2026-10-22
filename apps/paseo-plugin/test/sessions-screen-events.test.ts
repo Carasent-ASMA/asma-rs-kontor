@@ -282,7 +282,7 @@ import { SessionsLegend } from "../client/sessions-legend";
 import { MobileFiltersPage } from "../client/mobile-filters";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
-import { StateBadge } from "../client/organization-row";
+import { indentOf, StateBadge } from "../client/organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
 import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
 import type { StatusFilter } from "../client/session-view";
@@ -1993,15 +1993,20 @@ describe("SessionsScreen mobile filter page", () => {
     const leaf = renderSessionLeaf();
     expect((leaf.props.style as (state: { pressed: boolean }) => { minHeight: number })({ pressed: false }).minHeight).toBe(44);
     const title = findByTestID(leaf, "sessions-row-title");
-    expect(title.props.numberOfLines).toBe(1);
-    // The context is nested inside the title's single truncating line, not a second line.
+    expect(title.props.numberOfLines).toBe(3);
+    // The context is nested inside the title's text, which wraps to three lines, not a line of its own.
     expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
     expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · RSW • review · Project · Archived");
     const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
     // The Updated value stays untruncated; model/report metadata can wrap beneath the title.
     const age = findByTestID(leaf, "sessions-row-age");
-    expect(lines.filter((line) => !walk(title).includes(line) || line === title)).toEqual([title, age]);
-    const content = ((leaf.props.children as ElementLike).props.children as ElementLike[])[0]!;
+    expect(lines.filter((line) => !walk(title).includes(line))).toEqual([age]);
+    // The title has the first line to itself; the state and the age lead the usage line beneath it.
+    const content = leaf.props.children as ElementLike;
+    const [first, usageLine] = [content.props.children].flat().filter(Boolean) as ElementLike[];
+    expect(first).toBe(title);
+    expect(([usageLine!.props.children].flat(2).filter(Boolean) as (ElementLike & { type: unknown })[])
+      .map((child) => child.type === SessionStateMarker ? "state" : child.type === SessionUsage ? "usage" : child.props.testID)).toEqual(["state", "sessions-row-age", "usage"]);
     expect(walk(content)).toContain(age);
     expect(walk(content).some((element) => element.type === SessionUsage && (element.props.entry as { id: string }).id === "0123456789abcdef")).toBe(true);
     expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
@@ -2011,6 +2016,37 @@ describe("SessionsScreen mobile filter page", () => {
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");
     expect(leaf.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
+  });
+  it.each([320, 390])("lets a depth-4 compact tree row wrap its title to where titles that share a role and task differ at %ipx", (viewport) => {
+    // Synthetic titles that differ only after the shared role and task.
+    const titles = ["SWE • ASMA-1234 • first subject", "SWE • ASMA-1234 • second subject"];
+    const entries = titles.map((title, n) => sessionEntry(`nested-${n}`, { title }));
+    directory.state = { ...(directory.state as object), entries };
+    patchSessionView("host-a", { grouping: "hierarchy" });
+    renderCompact();
+    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { type: (props: unknown) => ElementLike };
+    // The title's room: page padding 12 + 12, the depth-4 indent, Details, Archive and Favorite at 44 each, and the row's padding 8 + 4.
+    const room = viewport - 24 - indentOf(4, true) - 3 * 44 - 12;
+    // What the title's lines show at 7.41 px a character, the measured 78d mean at 14 px; a model, not a render. Lines break at spaces only.
+    const perLine = Math.floor(room / 7.41);
+    const visible = (text: string, count: number) => {
+      const words = text.split(" "), lines: string[] = [];
+      while (words.length > 0 && lines.length < count - 1) {
+        let line = words.shift()!;
+        while (words.length > 0 && `${line} ${words[0]}`.length <= perLine) line += ` ${words.shift()}`;
+        lines.push(line);
+      }
+      return [...lines, words.join(" ").slice(0, perLine)].filter(Boolean).join(" / ");
+    };
+    const shown = entries.map((entry) => {
+      const row = renderItem({ item: { kind: "session", entry, depth: 4, parentKey: "project:prj_1/workspace:wks_1" } });
+      expect(row.type(row.props).props.style).toMatchObject({ paddingLeft: indentOf(4, true) });
+      const leaf = row.props.children as ElementLike & { type: (props: unknown) => ElementLike };
+      const title = findByTestID(leaf.type(leaf.props), "sessions-row-title");
+      expect(title.props.numberOfLines).toBe(3);
+      return visible(textOf(title), title.props.numberOfLines as number);
+    });
+    expect(shown[0]).not.toBe(shown[1]);
   });
   it("leaves wide layouts unchanged, including after a compact session", () => {
     patchSessionView("host-a", { query: "", grouping: "flat", ...toolbarOpenPatch(false) });
