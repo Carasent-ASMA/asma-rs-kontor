@@ -578,6 +578,38 @@ impl FleetSource {
         &self,
         bundle: &crate::orchestration::ResolvedBundle,
     ) -> Result<PublishedBundle, FleetError> {
+        let manifest = bundle.manifest.canonicalize()?;
+        match (
+            &bundle.manifest.operational_domain,
+            &bundle.operational_domain,
+        ) {
+            (Some(_), Some(text)) => {
+                kontor_fleet_activation::domain::validate_domain(
+                    &bundle.manifest,
+                    &bundle.roster,
+                    text,
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(FleetError::Invalid {
+                    rule: "operational_domain_source_missing_or_unbound",
+                });
+            }
+        }
+        let manifest_path =
+            kontor_fleet_activation::manifest_path(&self.state_root, manifest.hash());
+        if std::fs::symlink_metadata(&manifest_path).is_ok() {
+            // A published identity is verified in place. Re-publication must not
+            // repair missing artifacts from the current authoring candidates.
+            let verified =
+                kontor_fleet_activation::verify_bundle(&self.state_root, manifest.hash())?;
+            return Ok(PublishedBundle {
+                bundle_hash: manifest.hash().clone(),
+                manifest: verified.manifest,
+                created: false,
+            });
+        }
         let policy = self.publish(bundle.policy.raw())?;
         let roster_path =
             kontor_fleet_activation::roster_path(&self.state_root, bundle.roster.hash());
@@ -593,7 +625,35 @@ impl FleetSource {
             .map_err(|source| FleetError::Write { source })?;
             true
         };
-        let manifest = bundle.manifest.canonicalize()?;
+        let domain_created = if let (Some(pin), Some(text)) = (
+            &bundle.manifest.operational_domain,
+            &bundle.operational_domain,
+        ) {
+            let path =
+                kontor_fleet_activation::domain::domain_path(&self.state_root, &pin.source_hash);
+            let created = if std::fs::symlink_metadata(&path).is_ok() {
+                false
+            } else {
+                store_immutable(
+                    &self
+                        .state_root
+                        .join(kontor_fleet_activation::domain::DOMAIN_HISTORY_DIR),
+                    &path,
+                    text.as_bytes(),
+                )
+                .map_err(|source| FleetError::Write { source })?;
+                true
+            };
+            // Verify even a pre-existing artifact before making the manifest visible.
+            kontor_fleet_activation::domain::read_domain(
+                &self.state_root,
+                &bundle.manifest,
+                &bundle.roster,
+            )?;
+            created
+        } else {
+            false
+        };
         let manifest_path =
             kontor_fleet_activation::manifest_path(&self.state_root, manifest.hash());
         let manifest_created = if std::fs::symlink_metadata(&manifest_path).is_ok() {
@@ -611,7 +671,7 @@ impl FleetSource {
         Ok(PublishedBundle {
             bundle_hash: manifest.hash().clone(),
             manifest: verified.manifest,
-            created: policy.created || roster_created || manifest_created,
+            created: policy.created || roster_created || domain_created || manifest_created,
         })
     }
 

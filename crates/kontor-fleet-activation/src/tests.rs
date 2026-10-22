@@ -8,6 +8,9 @@ use kontor_fleet::rule::{A09, L01, L02, P07, V32};
 use super::rule::*;
 use super::*;
 
+#[path = "domain_tests.rs"]
+mod domains;
+
 const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
 const COMMITTEE: &str = "committee/01991c00-0000-7000-8000-000000000001/reviewer-a";
 const ADVISOR: &str = "advisor/01a02d00-0000-7000-8000-00000000ad01";
@@ -137,6 +140,7 @@ fn published_bundle() -> Bundle {
         resolver: "kontor-fleet 0.2.1".to_owned(),
         publication_policy: None,
         consultation_layout: None,
+        operational_domain: None,
         sources: BTreeMap::from([
             (
                 "orchestration.yml".to_owned(),

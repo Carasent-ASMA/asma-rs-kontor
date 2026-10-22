@@ -68,6 +68,40 @@ fn neutral_pack_is_complete_without_accounts_clinical_roles_or_project_prompt() 
 }
 
 #[test]
+fn selected_pack_captures_exact_domain_bytes_and_refuses_unsafe_sources() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let folder = config::write_config_folder(root.path());
+    let path = folder.join("packs/operational-domain.yml");
+    let bytes = std::fs::read_to_string(&path).unwrap();
+    let selected = crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap();
+    let pack = selected.realm_pack.as_ref().unwrap();
+    assert_eq!(pack.domain_source, "packs/operational-domain.yml");
+    assert_eq!(pack.domain_yaml, bytes);
+    assert_eq!(
+        pack.sources[&pack.domain_source],
+        ContentHash::of(bytes.as_bytes())
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let error = crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap_err();
+    assert!(error.path.ends_with("packs/operational-domain.yml"));
+    assert_eq!(error.problem, "pack source is group or world writable");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "# {}\n{bytes}",
+            "x".repeat(kontor_fleet_activation::domain::MAX_DOMAIN_BYTES as usize)
+        ),
+    )
+    .unwrap();
+    let error = crate::config_folder::ConfigFolder::select(Some(&folder), None).unwrap_err();
+    assert!(error.path.ends_with("packs/operational-domain.yml"));
+    assert_eq!(error.problem, "pack source exceeds the size limit");
+    assert_eq!(pack.domain_yaml, bytes);
+}
+
+#[test]
 fn two_realms_offer_their_own_cached_profiles_without_seeding_work_or_presets() {
     for name in ["alpha", "beta"] {
         let root = tempfile::tempdir().unwrap();

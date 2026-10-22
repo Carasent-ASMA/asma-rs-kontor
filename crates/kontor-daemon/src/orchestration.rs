@@ -123,6 +123,8 @@ pub struct ResolvedBundle {
     pub roster: CanonicalDocument,
     /// The manifest recording what was read and what was produced.
     pub manifest: BundleManifest,
+    /// Exact selected domain bytes, retained with the manifest's source descriptor.
+    pub operational_domain: Option<String>,
 }
 
 /// The role catalog pin a Core Team source declares, read before any catalog
@@ -237,12 +239,14 @@ pub fn resolve_bundle(
         publication_policy,
         consultation_layout: crate::project_paths::consultation_policy(sources.orchestration)
             .map_err(invalid)?,
+        operational_domain: None,
     };
     Ok(ResolvedBundle {
         policy,
         revision,
         roster,
         manifest,
+        operational_domain: None,
     })
 }
 
