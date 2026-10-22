@@ -55,6 +55,7 @@ pub mod lock;
 pub mod logging;
 pub mod orchestration;
 mod project_branch;
+mod project_paths;
 mod project_policy;
 pub mod provider_config;
 pub mod quota_observation;
