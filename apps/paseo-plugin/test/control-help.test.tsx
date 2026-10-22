@@ -54,6 +54,51 @@ function mount(width = 390, height = 320) {
   return { control, update, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
 }
 describe("hover and focus help", () => {
+  it.each(["mouse", "touch"])("does not open focus help during an ordinary %s press, but keeps keyboard help", (pointerType) => {
+    const screen = mount();
+    handlers.get("pointerdown")?.({ pointerType, target: {} } as never);
+    screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    screen.control.bindings.onBlur();
+    handlers.get("keydown")!({ key: "Tab" } as never);
+    screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
+  });
+  it("dismisses focused help immediately on an outside press", () => {
+    const screen = mount(); screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
+    handlers.get("pointerdown")?.({ pointerType: "mouse", target: {} } as never);
+    screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it("does not reopen help revealed under a stationary pointer when a panel closes", () => {
+    const screen = mount();
+    handlers.get("pointerdown")!({ pointerType: "mouse", clientX: 100, clientY: 80 } as never);
+    handlers.get("pointerover")!({ pointerType: "mouse", clientX: 100, clientY: 80 } as never);
+    screen.control.bindings.onHoverIn(); screen.control.bindings.onFocus(); screen.render();
+    expect(screen.tooltip()).toBeUndefined();
+    screen.control.bindings.onBlur();
+    handlers.get("pointerover")!({ pointerType: "mouse", clientX: 101, clientY: 80 } as never);
+    screen.control.bindings.onHoverIn(); screen.render(); expect(screen.tooltip()).toBeDefined();
+  });
+  it("keeps help readable when a pointer presses inside its own panel", () => {
+    const screen = mount(); screen.control.bindings.onFocus(); screen.render();
+    const child = {};
+    (screen.tooltip()!.props.ref as { current: unknown }).current = { contains: (target: unknown) => target === child };
+    handlers.get("pointerdown")?.({ pointerType: "mouse", target: child } as never);
+    screen.render(); expect(screen.tooltip()).toBeDefined();
+  });
+  it("keeps touch-generated web focus on the action instead of opening supplemental help", () => {
+    const screen = mount();
+    (screen.root.props.onTouchStart as (() => void) | undefined)?.();
+    screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it("fits a short status to measured content and keeps it beside a right-edge anchor", () => {
+    const screen = mount(1400, 800); screen.update("Idle").bindings.onFocus(); screen.render();
+    (screen.tooltip()!.props.onLayout as ((event: unknown) => void) | undefined)?.({ nativeEvent: { layout: { width: 46, height: 40 } } });
+    screen.render();
+    const style = screen.tooltip()!.props.style as { maxWidth: number; left: number };
+    expect(style.maxWidth).toBe(47); // Leave room for a rounded-down text measurement.
+    expect(style.left).toBe(1400 - 47 - 6);
+    screen.update("A longer explanation that still needs the available reading width."); screen.render();
+    expect((screen.tooltip()!.props.style as { maxWidth: number }).maxWidth).toBe(360);
+  });
   it.each(["hover", "focus"])("refreshes changed text during stationary %s without another input event", (mode) => {
     const screen = mount();
     const control = screen.update("Idle");
@@ -107,8 +152,8 @@ describe("hover and focus help", () => {
   });
   it.each([[320, 240], [390, 320], [1400, 800]])("clamps help inside a %s by %s viewport and opens upward at the bottom", (width, height) => {
     const screen = mount(width, height); screen.control.bindings.onFocus(); screen.render();
-    const style = screen.tooltip()!.props.style as { left: number; width: number; bottom: number; maxHeight: number };
-    expect(style.left).toBeGreaterThanOrEqual(6); expect(style.left + style.width).toBeLessThanOrEqual(width - 6); expect(style.bottom).toBeGreaterThan(0); expect(style.maxHeight).toBeLessThanOrEqual(height - 12);
+    const style = screen.tooltip()!.props.style as { left: number; maxWidth: number; bottom: number; maxHeight: number };
+    expect(style.left).toBeGreaterThanOrEqual(6); expect(style.left + style.maxWidth).toBeLessThanOrEqual(width - 6); expect(style.bottom).toBeGreaterThan(0); expect(style.maxHeight).toBeLessThanOrEqual(height - 12);
     expect(all(screen.tooltip()).some(e => e.props.accessibilityRole === "button")).toBe(false);
   });
   it("keeps focus help through source scrolling; hover help closes and tooltip scrolling stays usable", () => {
