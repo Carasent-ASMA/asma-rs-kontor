@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
-import type { OrganizationSettings } from "../shared/organization";
+import { organizationPresentation, type OrganizationSettings } from "../shared/organization";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
@@ -48,6 +48,7 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
   const [mappingId, setMappingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const values = draft?.values;
+  const presentation = values ? organizationPresentation(values) : null;
   const teamsFormats = teamsSourceBindings(sources).formats;
   // The source hook reports an error whenever it is offline or failed; without data or error it is still reading.
   const reading = !sourcesAvailable && sourceError === null;
@@ -61,11 +62,12 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
       {/* Saved and not editing: the revision is in the summary's label; any other state is shown. */}
       {state.status === "ready" && !draft && !state.saving ? null : <Copy colors={colors}>{state.status === "loading" ? "Reading saved preferences…" : state.status === "ready" ? `Saved revision ${state.revision.length > 16 ? `${state.revision.slice(0, 12)}…` : state.revision}` : state.status === "invalid" ? `Saved preferences are invalid and not applied: ${state.error}` : `Preferences unavailable: ${state.error}`}{state.saving ? " · Saving…" : ""}</Copy>}
       {state.status === "ready" && !draft ? (() => {
+        const savedPresentation = organizationPresentation(state.values);
         const linked = Object.values(state.values.planAssociations).filter((ids) => ids.length).length;
         const mapped = Object.keys(state.values.displayMappings).length;
         const counts = [linked ? `${plural(linked, "conversation")} with explicit plan links` : null, mapped ? plural(mapped, "display mapping") : null].filter(Boolean).join(" · ");
-        return <View testID="settings-saved-summary" accessible accessibilityLabel={`Saved revision ${state.revision.length > 16 ? `${state.revision.slice(0, 12)}…` : state.revision}. Grouping ${state.values.grouping} · appearance ${state.values.appearance} · ${plural(linked, "conversation")} with explicit plan links · ${plural(mapped, "display mapping")}`} style={{ gap: 2 }}>
-          <Copy colors={colors} muted small>Grouping {state.values.grouping} · appearance {state.values.appearance}</Copy>
+        return <View testID="settings-saved-summary" accessible accessibilityLabel={`Saved revision ${state.revision.length > 16 ? `${state.revision.slice(0, 12)}…` : state.revision}. Layout ${savedPresentation.layout} · grouping ${savedPresentation.grouping} · appearance ${state.values.appearance} · ${plural(linked, "conversation")} with explicit plan links · ${plural(mapped, "display mapping")}`} style={{ gap: 2 }}>
+          <Copy colors={colors} muted small>Layout {savedPresentation.layout} · grouping {savedPresentation.grouping} · appearance {state.values.appearance}</Copy>
           {counts ? <Copy colors={colors} muted small>{counts}</Copy> : null}
         </View>;
       })() : null}
@@ -78,8 +80,12 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
       </View>
       {draft && values ? <>
         <Copy colors={colors}>Editing revision {draft.revision}{state.status === "ready" && state.revision !== draft.revision ? " · newer saved values exist; this draft must be reviewed" : ""}</Copy>
-        <Copy colors={colors} muted small>Grouping</Copy>
-        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{(["hierarchy", "role", "flat"] as const).map((grouping) => <Action key={grouping} colors={colors} label={grouping} selected={values.grouping === grouping} onPress={() => update({ grouping })} />)}</View>
+        <Copy colors={colors} muted small>Layout</Copy>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{(["grouped", "flat"] as const).map((layout) => <Action key={layout} colors={colors} label={layout === "flat" ? "Flat" : "Grouped"} selected={presentation?.layout === layout} onPress={() => update({ layout, grouping: presentation?.grouping ?? "hierarchy" })} />)}</View>
+        {presentation?.layout === "grouped" ? <>
+          <Copy colors={colors} muted small>Group by</Copy>
+          <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{(["hierarchy", "role"] as const).map((grouping) => <Action key={grouping} colors={colors} label={grouping === "role" ? "Role" : "Desks & workstreams"} selected={presentation.grouping === grouping} onPress={() => update({ grouping })} />)}</View>
+        </> : null}
         <Copy colors={colors} muted small>Appearance</Copy>
         <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{(["system", "light", "dark"] as const).map((appearance) => <Action key={appearance} colors={colors} label={appearance} selected={values.appearance === appearance} onPress={() => update({ appearance })} />)}</View>
         <Copy colors={colors} muted small>Explicit conversation → configured plan association</Copy>

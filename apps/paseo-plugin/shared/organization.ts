@@ -26,6 +26,7 @@ const mappingKeySchema = z
 
 export const organizationSettingsSchema = z.object({
   grouping: z.enum(["hierarchy", "role", "flat"]).default("hierarchy"),
+  layout: z.enum(["grouped", "flat"]).optional(),
   appearance: z.enum(["system", "light", "dark"]).default("system"),
   favorites: z.array(z.string().trim().min(1)).default([]),
   expandedGroups: z.record(z.string(), z.boolean()).default({}),
@@ -36,6 +37,17 @@ export const organizationSettingsSchema = z.object({
 }).strict();
 
 export type OrganizationSettings = z.infer<typeof organizationSettingsSchema>;
+
+/** Resolve legacy Flat without rewriting the saved document or losing the grouped choice. */
+export function organizationPresentation(settings: Pick<OrganizationSettings, "grouping" | "layout">): {
+  readonly layout: NonNullable<OrganizationSettings["layout"]>;
+  readonly grouping: Exclude<OrganizationGrouping, "flat">;
+} {
+  return {
+    layout: settings.layout ?? (settings.grouping === "flat" ? "flat" : "grouped"),
+    grouping: settings.grouping === "flat" ? "hierarchy" : settings.grouping,
+  };
+}
 
 export const DEFAULT_ORGANIZATION_SETTINGS: OrganizationSettings =
   organizationSettingsSchema.parse({});

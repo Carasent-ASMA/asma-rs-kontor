@@ -36,7 +36,7 @@ export function rebaseOrganizationDraft(base: OrganizationSettings, local: Organ
   for (const [id, values] of Object.entries(local.planAssociations)) if (!equal(base.planAssociations[id], values)) {
     associations[id] = mergeSet(base.planAssociations[id] ?? [], values, current.planAssociations[id] ?? []);
   }
-  return { ...current,
+  const merged = { ...current,
     grouping: local.grouping === base.grouping ? current.grouping : local.grouping,
     appearance: local.appearance === base.appearance ? current.appearance : local.appearance,
     favorites: mergeSet(base.favorites, local.favorites, current.favorites),
@@ -44,4 +44,7 @@ export function rebaseOrganizationDraft(base: OrganizationSettings, local: Organ
     siblingOrder: mergeMap(base.siblingOrder, local.siblingOrder, current.siblingOrder),
     displayMappings: mappings, planAssociations: associations,
   };
+  const layout = local.layout === base.layout ? current.layout : local.layout;
+  if (layout === undefined) delete merged.layout; else merged.layout = layout;
+  return merged;
 }

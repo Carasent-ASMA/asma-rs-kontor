@@ -5,6 +5,7 @@ import {
   ORGANIZATION_SETTINGS_VERSION,
   organizationSettings,
   organizationSettingsSchema,
+  organizationPresentation,
 } from "../shared/organization";
 import { saveOrganizationPatch } from "../client/use-organization-settings";
 
@@ -13,6 +14,7 @@ describe("organization settings contract", () => {
     expect(organizationSettings.id).toBe(ORGANIZATION_SETTINGS_ID);
     expect(organizationSettings.scope).toBe("host");
     expect(organizationSettings.version).toBe(ORGANIZATION_SETTINGS_VERSION);
+    expect(ORGANIZATION_SETTINGS_VERSION).toBe(1);
     expect(organizationSettingsSchema.parse({})).toEqual(
       DEFAULT_ORGANIZATION_SETTINGS,
     );
@@ -25,6 +27,33 @@ describe("organization settings contract", () => {
       displayMappings: {},
       planAssociations: {},
     });
+  });
+
+  it.each([
+    ["hierarchy", "grouped", "hierarchy"],
+    ["role", "grouped", "role"],
+    ["flat", "flat", "hierarchy"],
+  ] as const)("resolves legacy %s without adding a persisted layout", (grouping, layout, remembered) => {
+    const parsed = organizationSettingsSchema.parse({ grouping });
+    expect(parsed).not.toHaveProperty("layout");
+    expect(organizationPresentation(parsed)).toEqual({ layout, grouping: remembered });
+    expect(organizationSettingsSchema.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+    expect(parsed).toEqual({ ...DEFAULT_ORGANIZATION_SETTINGS, grouping });
+  });
+
+  it.each(["grouped", "flat"] as const)("keeps explicit %s separate from the remembered grouping", (layout) => {
+    const parsed = organizationSettingsSchema.parse({ grouping: "role", layout });
+    expect(organizationPresentation(parsed)).toEqual({ layout, grouping: "role" });
+    expect(organizationSettingsSchema.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+    expect(organizationPresentation({ grouping: "flat", layout })).toEqual({ layout, grouping: "hierarchy" });
+  });
+
+  it("rejects invalid layouts and unknown settings fields instead of falling back", () => {
+    for (const layout of ["role", "", null, true]) {
+      expect(organizationSettingsSchema.safeParse({ layout }).success).toBe(false);
+    }
+    expect(organizationSettingsSchema.safeParse({ layout: "flat", extra: true }).success).toBe(false);
+    expect(organizationSettingsSchema.safeParse({ grouping: "placement" }).success).toBe(false);
   });
 
   it("accepts only explicit session/workspace display mappings", () => {
@@ -70,7 +99,7 @@ describe("organization settings contract", () => {
     const result = await saveOrganizationPatch(
       {
         status: "ready",
-        values: { ...DEFAULT_ORGANIZATION_SETTINGS, favorites: ["agent-1"] },
+        values: { ...DEFAULT_ORGANIZATION_SETTINGS, grouping: "role", favorites: ["agent-1"] },
         revision: "rev-7",
         saving: false,
         saveError: null,
@@ -78,14 +107,16 @@ describe("organization settings contract", () => {
         reset: async () => false,
         reload: async () => undefined,
       },
-      { appearance: "dark" },
+      { appearance: "dark", layout: "flat" },
     );
     expect(result).toBe(false);
     expect(save).toHaveBeenCalledWith(
       {
         ...DEFAULT_ORGANIZATION_SETTINGS,
+        grouping: "role",
         favorites: ["agent-1"],
         appearance: "dark",
+        layout: "flat",
       },
       "rev-7",
     );

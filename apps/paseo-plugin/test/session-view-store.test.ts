@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearSessionViews,
   isResultMode,
+  sessionPresentation,
+  clearSessionScopePatch,
   patchSessionView,
   readSessionView,
   resetSessionView,
@@ -16,6 +18,7 @@ import {
 } from "../client/session-view-store";
 import type { ProfileStorage } from "../client/viewer-profile";
 import { DEFAULT_SESSION_FILTERS } from "../client/session-view";
+import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 
 describe("host-scoped session view state", () => {
   beforeEach(() => {
@@ -59,6 +62,25 @@ describe("host-scoped session view state", () => {
     });
     expect(readSessionView("host-b").query).toBe("other");
   });
+
+  it("resolves legacy Flat and keeps the last grouping independently of saved layout", () => {
+    const saved = { ...DEFAULT_ORGANIZATION_SETTINGS, layout: "flat" as const, grouping: "role" as const };
+    expect(sessionPresentation({}, saved)).toEqual({ layout: "flat", grouping: "role" });
+    expect(sessionPresentation({ grouping: "flat" })).toEqual({ layout: "flat", grouping: "hierarchy" });
+    expect(sessionPresentation({ layout: "grouped" }, { ...saved, grouping: "flat" })).toEqual({ layout: "grouped", grouping: "hierarchy" });
+    expect(sessionPresentation({ layout: "flat", grouping: "role" })).toEqual({ layout: "flat", grouping: "role" });
+    expect(sessionPresentation({ grouping: "placement" }, saved)).toEqual({ layout: "grouped", grouping: "placement" });
+  });
+
+  it("clears only scope, preserving layout, sort, search, task and assignment; isolates hosts", () => {
+    patchSessionView("host-a", { layout: "flat", grouping: "role", epic: { kind: "unknown" }, shortcut: "desk-project:prj_a", streams: [],
+      sort: "updated", sortDirection: "asc", query: "keep", status: "idle", assignment: "me" });
+    patchSessionView("host-a", clearSessionScopePatch());
+    expect(readSessionView("host-a")).toMatchObject({ shortcut: null, streams: null, epic: null, layout: "flat", grouping: "role", sort: "updated", sortDirection: "asc", query: "keep", status: "idle", assignment: "me" });
+    expect(readSessionView("host-b").layout).toBeUndefined();
+    const reset = { ...readSessionView("host-a"), ...resetSessionViewPatch(readSessionView("host-a")) };
+    expect(sessionPresentation(reset, { ...DEFAULT_ORGANIZATION_SETTINGS, layout: "grouped", grouping: "role" })).toEqual({ layout: "grouped", grouping: "role" });
+  });
 });
 
 describe("filtered results and the tree position", () => {
@@ -71,7 +93,7 @@ describe("filtered results and the tree position", () => {
 
   it.each([
     { query: "missing" }, { status: "favorites" as const }, { task },
-    { shortcut: "desk-project:example" }, { streams: [] }, { membership: "archived" as const },
+    { shortcut: "desk-project:example" }, { streams: [] }, { epic: { kind: "unknown" as const } }, { membership: "archived" as const },
   ])("counts and clears a single visible or advanced-only criterion %j", (patch) => {
     const view = { ...readSessionView("host-a"), status: "all" as const, grouping: "flat" as const, advancedOpen: true, ...patch };
     expect(sessionFilterCount(view)).toBe(1);
@@ -80,41 +102,42 @@ describe("filtered results and the tree position", () => {
     expect(cleared).toMatchObject({ grouping: "flat", advancedOpen: true });
   });
 
-  it("clears every filter idempotently while keeping view preferences and the existing tree anchor", () => {
+  it("clears every filter idempotently while keeping Flat and its remembered tree anchor", () => {
     const current = { ...readSessionView("host-a"), query: "missing", status: "favorites" as const, task, shortcut: "Adam", streams: [], includeArchived: true, membership: "archived" as const,
       grouping: "flat" as const, advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 40, treeOffset: 600 };
     expect(sessionFilterCount(current)).toBe(6);
     const cleared = { ...current, ...sessionViewTransition(current, clearSessionFilterPatch(current)) };
     expect(cleared).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false, membership: "sessions",
-      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 600, peek: null });
+      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 0, treeOffset: 600, peek: null });
     expect(sessionFilterCount(cleared)).toBe(0);
     const twice = { ...cleared, ...sessionViewTransition(cleared, clearSessionFilterPatch(cleared)) };
     expect(sessionFilterCount(twice)).toBe(0);
     expect(twice).toEqual(cleared);
   });
 
-  it("treats a query, a state filter or a task as results; a shortcut alone keeps the tree", () => {
+  it("keeps layout independent from query, state, task and scope", () => {
     const base = readSessionView("host-a");
     expect(isResultMode(base)).toBe(false);
     expect(isResultMode({ ...base, query: "  " })).toBe(false);
     patchSessionView("host-a", { shortcut: "Adam" });
     expect(isResultMode(readSessionView("host-a"))).toBe(false);
-    expect(isResultMode({ ...base, query: "qa" })).toBe(true);
-    expect(isResultMode({ ...base, status: "idle" })).toBe(true);
-    expect(isResultMode({ ...base, task })).toBe(true);
+    expect(isResultMode({ ...base, query: "qa" })).toBe(false);
+    expect(isResultMode({ ...base, status: "idle" })).toBe(false);
+    expect(isResultMode({ ...base, task })).toBe(false);
+    expect(isResultMode({ ...base, layout: "flat", query: "qa", task })).toBe(true);
   });
 
   it("remembers the tree position on entering results and restores it on leaving", () => {
     patchSessionView("host-a", { scrollOffset: 640 });
-    const enter = sessionViewTransition(readSessionView("host-a"), { query: "qa" }, 600);
-    expect(enter).toEqual({ query: "qa", treeOffset: 600, peek: null, scrollOffset: 0 });
+    const enter = sessionViewTransition(readSessionView("host-a"), { layout: "flat", query: "qa" }, 600);
+    expect(enter).toEqual({ layout: "flat", query: "qa", treeOffset: 600, peek: null, scrollOffset: 0 });
     patchSessionView("host-a", { ...enter, scrollOffset: 90 });
     // Narrowing within results keeps the remembered tree position.
     const narrow = sessionViewTransition(readSessionView("host-a"), { status: "running" });
     expect(narrow).toEqual({ status: "running", peek: null });
     patchSessionView("host-a", narrow);
-    const leave = sessionViewTransition(readSessionView("host-a"), { query: "", status: "all" });
-    expect(leave).toEqual({ query: "", status: "all", treeOffset: undefined, peek: null, scrollOffset: 600 });
+    const leave = sessionViewTransition(readSessionView("host-a"), { layout: "grouped", query: "", status: "all" });
+    expect(leave).toEqual({ layout: "grouped", query: "", status: "all", treeOffset: undefined, peek: null, scrollOffset: 600 });
   });
 
   it("ends a tree peek when the results change, but not on a scroll", () => {

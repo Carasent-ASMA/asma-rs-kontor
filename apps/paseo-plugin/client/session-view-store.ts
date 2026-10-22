@@ -4,8 +4,11 @@ import {
 } from "./session-view";
 import type { SessionSort, SortDirection } from "./session-sort";
 import { loadWorkingAs, saveWorkingAs, type ProfileStorage, type RememberedWorkingAs } from "./viewer-profile";
+import { DEFAULT_ORGANIZATION_SETTINGS, organizationPresentation, type OrganizationSettings } from "../shared/organization";
+import type { EpicScope } from "./session-scope";
 
 export type SessionGrouping = "hierarchy" | "placement" | "role" | "flat";
+export type SessionLayout = NonNullable<OrganizationSettings["layout"]>;
 /** My work is every native session on this host; All work also lists empty workspaces and plan-only choices. */
 export type WorkScope = "mine" | "all";
 /**
@@ -17,8 +20,11 @@ export type AssignmentScope = "any" | "me" | "unknown" | `person:${string}`;
 export type SessionViewState = SessionFilters & {
   readonly scrollOffset: number;
   readonly shortcut?: string | null;
-  /** Local choice; Workstreams, Role and Flat are also saved when settings are writable. */
+  /** Last grouping, retained while Flat is visible; saved when settings are writable. */
   readonly grouping?: SessionGrouping;
+  readonly layout?: SessionLayout;
+  readonly epic?: EpicScope | null;
+  readonly scopeOpen?: "desk" | "epic" | null;
   /** Selected workstreams by normalized label; absent means all. */
   readonly streams?: readonly string[] | null;
   readonly arranging?: boolean;
@@ -28,7 +34,7 @@ export type SessionViewState = SessionFilters & {
   readonly legendOpen?: boolean;
   /** Sessions whose task labels equal a Board task's keys exactly; set from Board, cleared like a filter. */
   readonly task?: SessionTaskFilter | null;
-  /** Tree offset kept while results show, restored when the last result filter clears. */
+  /** Grouped offset kept while Flat shows, restored when Grouped returns. */
   readonly treeOffset?: number;
   /** A result shown in its place in the tree; disclosure opened for it is never saved. */
   readonly peek?: { readonly sessionId: string; readonly resultsOffset: number } | null;
@@ -53,41 +59,53 @@ export function assignmentOf(view: SessionViewState): AssignmentScope {
 
 export type SessionTaskFilter = { readonly jira: string | null; readonly kontorId: string | null; readonly label: string };
 
-/** A search, a state filter or a task lists matching sessions flat; scope, desks and workstreams keep the tree. */
-export function isResultMode(view: SessionFilters & { readonly task?: SessionTaskFilter | null }): boolean {
-  return view.query.trim().length > 0 || (view.status !== "all" && view.status !== "current") || !!view.task;
+export function sessionPresentation(view: Pick<SessionViewState, "layout" | "grouping">, preferences: Pick<OrganizationSettings, "layout" | "grouping"> = DEFAULT_ORGANIZATION_SETTINGS) {
+  const saved = organizationPresentation(preferences);
+  return {
+    layout: view.layout ?? (view.grouping === undefined ? saved.layout : view.grouping === "flat" ? "flat" : "grouped"),
+    grouping: view.grouping === "flat" ? "hierarchy" : view.grouping ?? saved.grouping,
+  };
+}
+
+/** Layout alone chooses the flat list; filtering never changes presentation. */
+export function isResultMode(view: Pick<SessionViewState, "query" | "status" | "task" | "layout" | "grouping">, preferences: Pick<OrganizationSettings, "layout" | "grouping"> = DEFAULT_ORGANIZATION_SETTINGS): boolean {
+  return sessionPresentation(view, preferences).layout === "flat";
 }
 
 /** Count narrowing choices only. Presentation and explicit route context are separate. */
 export function sessionFilterCount(view: SessionViewState): number {
   return [view.query.trim().length > 0, view.status !== "all", !!view.task,
-    view.shortcut != null, view.streams != null, view.membership === "archived",
+    view.shortcut != null, view.streams != null, view.epic != null, view.membership === "archived",
     workScopeOf(view) !== "all", assignmentOf(view) !== "any"].filter(Boolean).length;
 }
 
 /** Clear all filtering choices, widening to All work and Any assignment; sort, grouping and Working as stay. */
 export function clearSessionFilterPatch(view: SessionViewState): Partial<SessionViewState> {
   if (sessionFilterCount(view) === 0) return {};
-  return { query: "", status: "all", task: null, shortcut: null, streams: null,
+  return { query: "", status: "all", task: null, shortcut: null, streams: null, epic: null,
     includeArchived: DEFAULT_SESSION_FILTERS.includeArchived, membership: DEFAULT_SESSION_FILTERS.membership, work: "all", assignment: "any", scrollOffset: 0, peek: null };
 }
 
 /** What a new app session shows: filters cleared, My work, Any assignment, Current order and the saved grouping; Working as stays. */
 export function resetSessionViewPatch(view: SessionViewState): Partial<SessionViewState> {
-  return { ...clearSessionFilterPatch(view), status: DEFAULT_SESSION_FILTERS.status, work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, arranging: false, scrollOffset: 0, peek: null };
+  return { ...clearSessionFilterPatch(view), status: DEFAULT_SESSION_FILTERS.status, work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, layout: undefined, scopeOpen: null, arranging: false, scrollOffset: 0, peek: null };
 }
 
-const RESULT_KEYS = ["query", "status", "task", "includeArchived", "membership", "shortcut", "streams", "grouping", "work", "assignment", "sort", "sortDirection"] as const;
+export function clearSessionScopePatch(): Partial<SessionViewState> {
+  return { shortcut: null, streams: null, epic: null, scrollOffset: 0, peek: null };
+}
+
+const RESULT_KEYS = ["query", "status", "task", "includeArchived", "membership", "shortcut", "streams", "epic", "grouping", "layout", "work", "assignment", "sort", "sortDirection"] as const;
 
 /**
  * The patch to apply for a view change. Entering results keeps the tree offset
  * (the screen passes it measured below its own toolbar); leaving them restores
  * it; changing what the results contain ends a peek.
  */
-export function sessionViewTransition(current: SessionViewState, patch: Partial<SessionViewState>, treeAnchor = current.scrollOffset): Partial<SessionViewState> {
+export function sessionViewTransition(current: SessionViewState, patch: Partial<SessionViewState>, treeAnchor = current.scrollOffset, preferences: Pick<OrganizationSettings, "layout" | "grouping"> = DEFAULT_ORGANIZATION_SETTINGS): Partial<SessionViewState> {
   const next = { ...current, ...patch };
-  const was = isResultMode(current);
-  const is = isResultMode(next);
+  const was = isResultMode(current, preferences);
+  const is = isResultMode(next, preferences);
   if (!was && is) return { ...patch, treeOffset: Math.max(0, treeAnchor), peek: null, scrollOffset: patch.scrollOffset ?? 0 };
   if (was && !is) return { ...patch, treeOffset: undefined, peek: null, scrollOffset: current.treeOffset ?? patch.scrollOffset ?? 0 };
   return RESULT_KEYS.some((key) => key in patch && patch[key] !== current[key]) ? { ...patch, peek: null } : patch;
