@@ -29,11 +29,26 @@ describe("contextual metadata help", () => {
   });
 
   it("names the last-report scope, separate cache reads and the lower bound in the counter help", () => {
-    const claude = { provider: "claude-team-route", model: null, telemetry: { lastUsage: { inputTokens: 4, cachedInputTokens: 200_611, outputTokens: 16 } } };
-    expect(reportedUsageHelp(claude)).toBe("Last provider report, not a session total; Paseo supplies no session total or report time. Input includes cache reads the provider reports separately. ≥ marks a lower bound: cache writes or cache inclusion are not reported.");
+    const lastUsage = { inputTokens: 4, cachedInputTokens: 200_611, outputTokens: 16 };
+    const claude = { provider: "claude", model: null, telemetry: { lastUsage } };
+    expect(reportedUsageHelp(claude)).toBe("Last provider report, not a session total; Paseo supplies no session total or report time. Input includes cache reads, which this adapter reports apart from input. ≥ marks a lower bound: cache writes or cache inclusion are not reported.");
     expect(reportedUsageHelp({ ...configured, telemetry: { lastUsage: { inputTokens: 12, cachedInputTokens: 10, outputTokens: 4 } } })).toBe("Last provider report, not a session total; Paseo supplies no session total or report time.");
     expect(values(claude)["Input with cache reads"]).toBe("200,615 or more");
+    expect(values(claude)["Cache composition"]).toBeUndefined();
     expect(values({ ...configured, telemetry: { lastUsage: { inputTokens: 12, cachedInputTokens: 10 } } })["Input with cache reads"]).toBeUndefined();
+    // The same counters on an unidentified route: shown apart, with no claim about how the provider reports them.
+    const aliased = { provider: "claude-team-route", model: null, telemetry: { lastUsage } };
+    expect(reportedUsageHelp(aliased)).toBe("Last provider report, not a session total; Paseo supplies no session total or report time. Cache reads are shown apart: this route does not establish whether input includes them. ≥ marks a lower bound: cache writes or cache inclusion are not reported.");
+    expect(values(aliased)).toMatchObject({ "Input tokens": "4", "Cache-read tokens": "200,611", "Cache composition": "Unknown for this route; cache reads are not added to input" });
+    expect(values(aliased)["Input with cache reads"]).toBeUndefined();
+    expect(sessionReportNotes(aliased).join(" ")).toContain("Cache reads are shown apart and never added to input");
+  });
+
+  it("reports an unsafe input sum as unknown in help and Details", () => {
+    const huge = { provider: "claude", model: null, telemetry: { lastUsage: { inputTokens: Number.MAX_SAFE_INTEGER, cachedInputTokens: 10, outputTokens: 1 } } };
+    expect(reportedUsageHelp(huge)).toContain("Input is unknown: input plus cache reads exceeds the exact integer range.");
+    expect(reportedUsageHelp(huge)).not.toContain("Input count");
+    expect(values(huge)["Input with cache reads"]).toBe("Unknown; the sum exceeds the exact integer range");
   });
 
   it("keeps exact custom IDs/counts and uncertainty among visible facts", () => {

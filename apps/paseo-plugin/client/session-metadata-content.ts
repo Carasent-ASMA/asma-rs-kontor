@@ -21,9 +21,11 @@ export function reportedUsageHelp(entry: SessionUsageEntry): string {
   if (report.input === null && report.output === null) return `Input count ${unavailable(usage?.inputTokens)}; output count ${unavailable(usage?.outputTokens)}.`;
   return [
     "Last provider report, not a session total; Paseo supplies no session total or report time.",
-    report.addedCacheReads === null ? null : "Input includes cache reads the provider reports separately.",
+    report.addedCacheReads === null ? null : "Input includes cache reads, which this adapter reports apart from input.",
+    report.unplacedCacheReads === null ? null : "Cache reads are shown apart: this route does not establish whether input includes them.",
     report.lowerBound ? "≥ marks a lower bound: cache writes or cache inclusion are not reported." : null,
-    report.input === null ? `Input count ${unavailable(usage?.inputTokens)}.` : null,
+    report.inputOverflow ? "Input is unknown: input plus cache reads exceeds the exact integer range." : null,
+    report.input === null && !report.inputOverflow ? `Input count ${unavailable(usage?.inputTokens)}.` : null,
     report.output === null ? `Output count ${unavailable(usage?.outputTokens)}.` : null,
   ].filter(Boolean).join(" ");
 }
@@ -54,7 +56,8 @@ export function sessionMetadataSections(entry: SessionUsageEntry, stale = false,
     { label: "Output tokens", value: exactTokens(usage?.outputTokens, locale) },
     { label: "Cache-read tokens", value: exactTokens(usage?.cachedInputTokens, locale) },
   ];
-  if (report.addedCacheReads !== null) values.push({ label: "Input with cache reads", value: `${exactTokens(report.input, locale)}${report.lowerBound ? " or more" : ""}` });
+  if (report.addedCacheReads !== null) values.push({ label: "Input with cache reads", value: report.inputOverflow ? "Unknown; the sum exceeds the exact integer range" : `${exactTokens(report.input, locale)}${report.lowerBound ? " or more" : ""}` });
+  if (report.unplacedCacheReads !== null) values.push({ label: "Cache composition", value: "Unknown for this route; cache reads are not added to input" });
   if ([usage?.inputTokens, usage?.outputTokens, usage?.cachedInputTokens].some(validTokenCount)) values.push(
     { label: "Scope", value: "Latest provider report; each report replaces it" },
     { label: "Session total", value: "Unknown; Paseo supplies only the latest report" },
@@ -74,6 +77,6 @@ export function sessionReportNotes(entry: SessionUsageEntry): readonly string[] 
   return [
     usageScope(entry),
     "Session Updated time is not the usage observation time. These counters cannot be attributed to the displayed model, including after model or provider switches.",
-    "Each report replaces the snapshot, so this is not a session total. Counts can decrease or reset; no history is reconstructed or summed. Cache reads are added to input only where the report keeps them separate.",
+    "Each report replaces the snapshot, so this is not a session total. Counts can decrease or reset; no history is reconstructed or summed. Cache reads are added to input only where the identified adapter reports them apart from input.",
   ];
 }

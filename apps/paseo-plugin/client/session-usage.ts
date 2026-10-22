@@ -68,19 +68,25 @@ const adapterOf = (entry: SessionUsageEntry) => entry.telemetry?.runtimeInfo?.pr
 
 /**
  * The one reading of Paseo's lastUsage: the latest provider report, which each report replaces.
- * Paseo supplies no session total, so none is derived here. Input adds cache reads only where
- * the report keeps them separate, so nothing is counted twice.
+ * Paseo supplies no session total, so none is derived here. Only the adapter contract decides
+ * whether cache reads overlap input; counter values never do, so nothing is counted twice.
  */
 export function latestReport(entry: SessionUsageEntry) {
   const usage = entry.telemetry?.lastUsage;
   const reported = validTokenCount(usage?.inputTokens) ? usage.inputTokens : null;
   const cached = validTokenCount(usage?.cachedInputTokens) ? usage.cachedInputTokens : null;
   const adapter = adapterOf(entry);
-  // Claude and OpenCode report cache reads beside input; an input smaller than its cache reads cannot include them.
-  const separate = reported !== null && cached !== null && (adapter === "claude" || adapter === "opencode" || cached > reported);
+  // Claude and OpenCode report cache reads apart from input. Codex input includes them.
+  const separate = adapter === "claude" || adapter === "opencode";
+  const added = separate && reported !== null && cached !== null;
+  const sum = added ? reported + cached : reported;
+  const inputOverflow = sum !== null && !Number.isSafeInteger(sum);
   return {
-    input: separate ? reported + cached : reported,
-    addedCacheReads: separate ? cached : null,
+    input: inputOverflow ? null : sum,
+    inputOverflow,
+    addedCacheReads: added ? cached : null,
+    // An unidentified route does not say whether input includes cache reads, so they stay apart.
+    unplacedCacheReads: separate || adapter === "codex" ? null : cached,
     // Only Codex input is complete (cache reads included, no cache writes); elsewhere it is a lower bound.
     lowerBound: reported !== null && adapter !== "codex",
     output: validTokenCount(usage?.outputTokens) ? usage.outputTokens : null,
@@ -93,11 +99,14 @@ export function usagePresentation(entry: SessionUsageEntry, locale?: string) {
   const report = latestReport(entry);
   const input = report.input === null ? "—" : `${report.lowerBound ? "≥" : ""}${formatTokens(report.input, locale)}`;
   const output = report.output === null ? "—" : formatTokens(report.output, locale);
-  const spokenInput = report.input === null ? exactTokens(usage?.inputTokens, locale)
-    : `${report.lowerBound ? "at least " : ""}${exactTokens(report.input, locale)}${report.addedCacheReads === null ? "" : `, including ${exactTokens(report.addedCacheReads, locale)} cache reads`}`;
+  const unplaced = report.unplacedCacheReads === null ? "" : ` · ${formatTokens(report.unplacedCacheReads, locale)} cached`;
+  const spokenInput = report.inputOverflow ? "unknown; input plus cache reads exceeds the exact integer range"
+    : report.input === null ? exactTokens(usage?.inputTokens, locale)
+      : `${report.lowerBound ? "at least " : ""}${exactTokens(report.input, locale)}${report.addedCacheReads === null ? "" : `, including ${exactTokens(report.addedCacheReads, locale)} cache reads`}`;
+  const spokenCache = report.unplacedCacheReads === null ? "" : ` Cache reads: ${exactTokens(report.unplacedCacheReads, locale)}; whether input includes them is unknown for this route.`;
   return {
-    label: report.input === null && report.output === null ? "—" : `Last report ${input} ↓ · ${output} ↑`,
-    spoken: `Last usage report, not a session total. Input tokens: ${spokenInput}. Output tokens: ${exactTokens(usage?.outputTokens, locale)}.`,
+    label: report.input === null && report.output === null ? "—" : `Last report ${input} ↓ · ${output} ↑${unplaced}`,
+    spoken: `Last usage report, not a session total. Input tokens: ${spokenInput}. Output tokens: ${exactTokens(usage?.outputTokens, locale)}.${spokenCache}`,
   };
 }
 
@@ -112,7 +121,7 @@ export function usageScope(entry: SessionUsageEntry): string {
   if (provider === "codex") return "Codex tokenUsage.last: the latest model request, not the turn or the session. Cached input is included in input; it is not added again. Output includes reasoning. Paseo does not pass on the thread total.";
   if (provider === "claude") return "Claude result for the latest turn. Input excludes cache reads and cache writes; the row adds cache reads. Cache-write tokens are not exposed, so input is a lower bound. Output includes thinking. Streaming reports may contain context only.";
   if (provider === "opencode") return "OpenCode report. v1 reports the latest step; v2 projects session counters. This snapshot does not identify the adapter version. Input excludes cache reads; the row adds them. Cache-write and reasoning counts are not exposed, so counts are lower bounds.";
-  return "Provider-specific latest report; the reporting window and cache inclusion are not established for this route. Cache reads are added to input only when they exceed it, which proves they were reported separately. No session total can be calculated.";
+  return "Provider-specific latest report; the reporting window and cache inclusion are not established for this route. Cache reads are shown apart and never added to input. No session total can be calculated.";
 }
 
 export function sessionUsageLines(entry: SessionUsageEntry, stale = false, locale?: string): { label: string; value: string }[] {
@@ -128,7 +137,7 @@ export function sessionUsageLines(entry: SessionUsageEntry, stale = false, local
     { label: "Effort", value: `Effective: ${text(native?.effectiveThinkingOptionId) ?? "not reported"}; configured: ${text(native?.thinkingOptionId) ?? "not reported"}; runtime selection: ${text(native?.runtimeInfo?.thinkingOptionId) ?? "not reported"}` },
     { label: "Reported input tokens", value: exactTokens(native?.lastUsage?.inputTokens, locale) },
     { label: "Reported output tokens", value: exactTokens(native?.lastUsage?.outputTokens, locale) },
-    { label: "Reported cache-read tokens", value: `${exactTokens(native?.lastUsage?.cachedInputTokens, locale)}. Inclusion depends on the adapter (see report scope). Added to the row's input only when reported separately.` },
+    { label: "Reported cache-read tokens", value: `${exactTokens(native?.lastUsage?.cachedInputTokens, locale)}. Inclusion depends on the adapter (see report scope). Added to the row's input only for adapters that report them apart (Claude, OpenCode).` },
     { label: "Report source and scope", value: `Native lastUsage. ${usageScope(entry)}` },
     { label: "Report freshness", value: `${stale ? "Host inventory is stale/offline; showing last known fields. " : ""}No usage observation timestamp is supplied. Session last activity is not the usage time; age is unknown, even on a live connection.` },
     { label: "Report limits", value: "Input and output are separate reported counters, not a whole-session consumed total or context occupancy. Model attribution is unknown, including after model/provider switches. Repeated reports replace the snapshot; decreases/resets are not negative consumption. Missing counters stay unknown; explicit zero stays zero. No history is reconstructed." },
