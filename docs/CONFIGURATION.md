@@ -139,6 +139,18 @@ one project can span several repositories. ASMA, for example, declares
 declared, whose root is not one of the project's forge repositories, or that is
 absolute or contains `..` is refused by name rather than guessed.
 
+Selected-folder startup validates these resource paths without probing for them
+inside the config folder. Paths use exact relative segments: empty, `.` and
+`..` segments, backslashes, drive/URI prefixes, wildcards and unresolved
+placeholders refuse by field and source. A resource directory may retain one
+trailing slash. Repository entries must be valid, unique owner/name values;
+each resource root must refer to one of them.
+
+The worktree convention must start with a literal managed placement root and
+contain exactly one whole `<key-slug>` segment and one whole `<module>`
+segment. Unknown or repeated placeholders, absolute paths and traversal refuse
+at startup. Validation creates no worktree and changes no existing claim.
+
 An external config folder therefore cannot capture a project's documentation,
 gap ledger, glossary or worktree paths: those resolve from the project roots the
 consumer supplies. The checked-in neutral example is

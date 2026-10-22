@@ -107,7 +107,16 @@ impl ConfigFolder {
         let branch_rules = crate::project_branch::parse(&text)
             .map_err(|problem| refusal(&entry_path, problem))?
             .ok_or_else(|| refusal(&entry_path, "missing project.branch"))?;
-        let mut entry: Entry = read_yaml(&entry_path)?;
+        let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
+            .map_err(|_| refusal(&entry_path, "invalid YAML configuration"))?;
+        crate::project_paths::validate(&raw["project"])
+            .map_err(|problem| refusal(&entry_path, problem))?;
+        let mut entry: Entry = serde_yaml_ng::from_str(&text).map_err(|_| {
+            refusal(
+                &entry_path,
+                "invalid YAML configuration or unsupported document shape",
+            )
+        })?;
         entry.project.branch_rules = Some(branch_rules);
         entry.project.publication_policy =
             crate::project_policy::parse(&text).map_err(|problem| refusal(&entry_path, problem))?;
@@ -129,20 +138,8 @@ impl ConfigFolder {
                 .bytes()
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
             || project.name.trim().is_empty()
-            || project.forge.repositories.is_empty()
-            || project.resource_roots.is_empty()
             || project.check_runs.is_empty()
             || project.check_runs.iter().any(|v| v.trim().is_empty())
-            || project.worktree_layout.trim().is_empty()
-            || project
-                .forge
-                .repositories
-                .iter()
-                .any(|v| v.split('/').count() != 2 || v.split('/').any(str::is_empty))
-            || project
-                .resource_roots
-                .values()
-                .any(|v| !project.forge.repositories.contains(v))
         {
             return Err(refusal(
                 &entry_path,
@@ -160,7 +157,6 @@ impl ConfigFolder {
         };
         let fleet = folder.reference(&entry.fleet)?;
         folder.reference(&entry.core_team)?;
-        let raw: serde_yaml_ng::Value = read_yaml(&entry_path)?;
         for key in ["team_pack", "fleet", "supervision"] {
             if let Some(value) = raw["project"][key].as_str() {
                 folder.reference(value)?;

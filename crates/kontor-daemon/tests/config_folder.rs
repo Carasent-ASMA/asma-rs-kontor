@@ -91,6 +91,140 @@ fn selected_branch_templates_refuse_invalid_or_cross_project_fields_by_source() 
 }
 
 #[test]
+fn selected_resource_paths_and_worktree_layout_refuse_invalid_sources_without_guessing() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let path = folder.join(ENTRY);
+    let original: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let cases = [
+        (
+            vec!["worktree_layout"],
+            serde_json::Value::Null,
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("/trees/<key-slug>/<module>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("trees/../<key-slug>/<module>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("trees//<key-slug>/<module>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("trees/<key-slug>/<slot>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("trees/<key-slug>/<module>/<module>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("<key-slug>/<module>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["worktree_layout"],
+            serde_json::json!("trees/{unresolved}/<key-slug>/<module>"),
+            "project.worktree_layout",
+        ),
+        (
+            vec!["forge", "repositories"],
+            serde_json::json!(["example-org/root/../other"]),
+            "project.forge.repositories",
+        ),
+        (
+            vec!["forge", "repositories"],
+            serde_json::json!(["example-org/example-project", "example-org/example-project"]),
+            "project.forge.repositories",
+        ),
+        (
+            vec!["resource_roots"],
+            serde_json::json!({"project": "foreign-org/unlisted"}),
+            "project.resource_roots",
+        ),
+        (
+            vec!["resource_roots"],
+            serde_json::json!({"../project": "example-org/example-project"}),
+            "project.resource_roots",
+        ),
+        (
+            vec!["documentation_roots"],
+            serde_json::json!(["foreign/docs"]),
+            "project.documentation_roots",
+        ),
+        (
+            vec!["documentation_roots"],
+            serde_json::json!(["/project/docs"]),
+            "project.documentation_roots",
+        ),
+        (
+            vec!["gap_ledger"],
+            serde_json::json!("project/../GAPS.md"),
+            "project.gap_ledger",
+        ),
+        (
+            vec!["glossary"],
+            serde_json::json!("project//GLOSSARY.md"),
+            "project.glossary",
+        ),
+        (
+            vec!["glossary"],
+            serde_json::Value::Null,
+            "project.glossary",
+        ),
+        (
+            vec!["decision_authorities", "decision_records_root"],
+            serde_json::json!("project/./decisions"),
+            "project.decision_authorities.decision_records_root",
+        ),
+    ];
+    for (keys, value, field) in cases {
+        let mut entry = original.clone();
+        let mut target = &mut entry["project"];
+        for key in keys {
+            target = &mut target[key];
+        }
+        *target = serde_yaml_ng::to_value(value).unwrap();
+        std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+        let error = ConfigFolder::select(Some(&folder), None).unwrap_err();
+        assert_eq!(error.path, path.canonicalize().unwrap());
+        assert!(error.problem.contains(field), "{field}: {error}");
+        assert!(
+            !error.problem.contains("foreign-org") && !error.problem.contains("unresolved"),
+            "{error}"
+        );
+    }
+    let mut entry = original;
+    entry["project"]["worktree_layout"] = "checkouts/tickets/<key-slug>/<module>".into();
+    std::fs::write(&path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+    let selected = ConfigFolder::select(Some(&folder), None).unwrap();
+    assert_eq!(selected.project.key, "EXM");
+    assert_eq!(
+        selected.project.worktree_layout,
+        "checkouts/tickets/<key-slug>/<module>"
+    );
+    assert!(
+        !folder.join("project/docs").exists(),
+        "project resources are never config references"
+    );
+    assert!(
+        !folder.join("checkouts").exists(),
+        "loading a convention creates no worktree"
+    );
+}
+
+#[test]
 fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
     let root = tempfile::tempdir().unwrap();
     let folder = support::write_config_folder(root.path());

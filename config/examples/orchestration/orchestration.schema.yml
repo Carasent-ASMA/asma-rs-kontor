@@ -148,7 +148,7 @@ paths:
       - host.binaries.*
       - host.project_cli.*
   conventions:
-    project.worktree_layout: a pattern with <key-slug> and <module>, not a resolved path
+    project.worktree_layout: an exact relative pattern with a literal managed root and exactly one whole <key-slug> and <module> segment; no unknown placeholders, absolute paths or traversal; not a resolved path
 
 # The fleet/host join. The fleet owns canonical model/vendor/effort policy; the
 # host owns the working provider/harness/account route. The logical slot is the
