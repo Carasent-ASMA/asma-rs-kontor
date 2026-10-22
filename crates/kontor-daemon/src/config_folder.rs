@@ -80,6 +80,8 @@ pub struct ConfigFolder {
     pub(crate) publication_consumers: Vec<kontor_core::id::ProjectId>,
     /// Optional explicit Git sources, snapshotted from this folder's host.yml.
     pub checkouts: Option<kontor_runtime::checkout::CheckoutInputs>,
+    /// Validated selected tracker authoring, cached without installing any revision.
+    pub tracker_specs: kontor_jira::jira::SpecCatalog,
 }
 
 impl ConfigFolder {
@@ -157,6 +159,7 @@ impl ConfigFolder {
             fleet: PathBuf::new(),
             publication_consumers: Vec::new(),
             checkouts: None,
+            tracker_specs: kontor_jira::jira::SpecCatalog::empty(),
         };
         let fleet = folder.reference(&entry.fleet)?;
         folder.reference(&entry.core_team)?;
@@ -174,6 +177,13 @@ impl ConfigFolder {
         let mut folder = Self { fleet, ..folder };
         folder.publication_consumers = folder.publication_consumer_projects(&raw)?;
         folder.checkouts = crate::task_checkouts::read(&folder)?;
+        if !raw["project"]["tracker"]["spec"].is_null()
+            && raw["project"]["tracker"]["spec"].as_str().is_none()
+        {
+            return Err(refusal(&entry_path, "invalid project.tracker.spec"));
+        }
+        folder.tracker_specs =
+            crate::realm_specs::read(&folder, raw["project"]["tracker"]["spec"].as_str())?;
         Ok(folder)
     }
 

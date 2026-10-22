@@ -305,7 +305,12 @@ fn selected_tracker_and_app_bindings_constrain_the_explicit_project() {
             (other.as_str(), Some("conflicts")),
             ("invalid-id-canary", Some("invalid")),
         ] {
-            let document = if source == "tracker/connectors.yml" {
+            let document = if source == "tracker/jira.yml" {
+                let mut document: serde_json::Value =
+                    serde_yaml_ng::from_slice(original.as_ref().unwrap()).unwrap();
+                document["project_id"] = serde_json::json!(binding);
+                document
+            } else if source == "tracker/connectors.yml" {
                 serde_json::json!({"projects": [{"project_id": binding}]})
             } else {
                 serde_json::json!({"project_id": binding})
@@ -534,6 +539,11 @@ async fn two_selected_folders_start_independent_realms_and_report_their_own_iden
         )
         .replace("base_branch: main", "base_branch: develop");
     std::fs::write(&entry, changed).unwrap();
+    let tracker = folder_b.join("tracker/jira.yml");
+    let changed = std::fs::read_to_string(&tracker)
+        .unwrap()
+        .replace("EXM", "ALT");
+    std::fs::write(tracker, changed).unwrap();
     let project_a = kontor_core::id::ProjectId::generate();
     let project_b = kontor_core::id::ProjectId::generate();
     for (folder, project, repository) in [

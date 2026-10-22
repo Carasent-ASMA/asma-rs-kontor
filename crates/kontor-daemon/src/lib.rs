@@ -59,6 +59,7 @@ mod project_paths;
 mod project_policy;
 pub mod provider_config;
 pub mod quota_observation;
+mod realm_specs;
 pub mod recovery;
 pub mod runtimes;
 pub mod succession;
@@ -328,6 +329,7 @@ pub struct DaemonConfig {
     /// An explicitly composed connector set for embeddings and tests. Ordinary
     /// daemon startup reads strict `jira.json` from the state root instead.
     jira_connectors: Option<kontor_jira::JiraConnectors>,
+    connector_specs: Option<kontor_jira::jira::SpecCatalog>,
     /// Explicitly composed synthetic/embedding transport. No secret resolver is
     /// installed by ordinary startup in this source-only qualification phase.
     memory_cognee: Option<kontor_memory_cognee::Client>,
@@ -347,6 +349,7 @@ impl DaemonConfig {
             derived_read_deadline_seconds: DEFAULT_DERIVED_READ_DEADLINE_SECONDS,
             capacity: DEFAULT_CAPACITY,
             jira_connectors: None,
+            connector_specs: None,
             memory_cognee: None,
         }
     }
@@ -380,6 +383,14 @@ impl DaemonConfig {
     #[must_use]
     pub fn with_jira_connectors(mut self, connectors: kontor_jira::JiraConnectors) -> Self {
         self.jira_connectors = Some(connectors);
+        self
+    }
+
+    /// Supply a validated catalog for an embedding without a selected folder.
+    /// Ordinary startup takes specs only from `project.tracker.spec`.
+    #[must_use]
+    pub fn with_connector_specs(mut self, specs: kontor_jira::jira::SpecCatalog) -> Self {
+        self.connector_specs = Some(specs);
         self
     }
 
@@ -573,6 +584,16 @@ impl Daemon {
             config.selected_config = Some(folder);
         }
         let selected = config.selected_config.as_ref();
+        let connector_specs =
+            match (selected, config.connector_specs.as_ref()) {
+                (Some(folder), None) => folder.tracker_specs.clone(),
+                (None, specs) => specs.cloned().unwrap_or_default(),
+                (Some(folder), Some(_)) => return Err(config_folder::ConfigError {
+                    path: folder.root().join(config_folder::ENTRY),
+                    problem: "composed connector specs conflict with selected project.tracker.spec",
+                }
+                .into()),
+            };
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
@@ -690,6 +711,7 @@ impl Daemon {
                 .map(|folder| folder.publication_consumers.clone())
                 .unwrap_or_default(),
             selected.cloned(),
+            connector_specs,
         )
         .map_err(|source| StartupError::Applications { source })?;
 

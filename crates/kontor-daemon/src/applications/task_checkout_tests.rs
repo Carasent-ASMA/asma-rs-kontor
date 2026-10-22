@@ -6,8 +6,7 @@ use kontor_store::{
 };
 use std::path::Path;
 
-#[path = "../../tests/support/config.rs"]
-mod config;
+use super::config_fixture as config;
 #[path = "../../tests/support/checkouts.rs"]
 mod fixture;
 
@@ -39,6 +38,7 @@ fn compose(
         Arc::new(crate::succession::UnavailableSuccessionSummarizer),
         Vec::new(),
         Some(folder),
+        SpecCatalog::empty(),
     )
     .unwrap();
     let state = ApiState::new(kontor_api::state::ApiParts {
@@ -256,6 +256,7 @@ async fn root_only_explicit_task_is_prepared_and_replay_ignores_host_edits() {
         Arc::new(crate::succession::UnavailableSuccessionSummarizer),
         Vec::new(),
         Some(world.folder.clone()),
+        SpecCatalog::empty(),
     )
     .unwrap();
     services.attach(world.state.clone());

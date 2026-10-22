@@ -95,6 +95,11 @@ impl Realm {
             kontor_daemon::orchestration::propose_core_team(&catalog).unwrap(),
         )
         .unwrap();
+        let tracker = folder.join("tracker/jira.yml");
+        let mut manifest: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&tracker).unwrap()).unwrap();
+        manifest["project_key"] = key.into();
+        std::fs::write(tracker, serde_yaml_ng::to_string(&manifest).unwrap()).unwrap();
         let selected = ConfigFolder::select(Some(&folder), None).unwrap();
         assert_eq!(selected.project.publication_policy.is_some(), configured);
         let daemon = Daemon::start_configured(
