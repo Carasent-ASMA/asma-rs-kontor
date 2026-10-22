@@ -34,6 +34,59 @@ fn selection_is_explicit_and_the_flag_wins_over_the_environment() {
 }
 
 #[test]
+fn selected_forge_checks_refuse_missing_ambiguous_or_conflicting_names() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let entry_path = folder.join(ENTRY);
+    let mut entry: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
+    std::fs::create_dir_all(folder.join("forge")).unwrap();
+    let cases = [
+        (vec!["publication-branch-title"], None),
+        (
+            vec!["first/publication-identity", "second/publication-identity"],
+            None,
+        ),
+        (vec!["publication-identity", "publication-identity"], None),
+        (
+            vec!["example/publication-identity"],
+            Some("conflicting-check-canary"),
+        ),
+    ];
+    for (index, (checks, override_name)) in cases.into_iter().enumerate() {
+        entry["project"]["check_runs"] = serde_yaml_ng::to_value(checks).unwrap();
+        std::fs::write(&entry_path, serde_yaml_ng::to_string(&entry).unwrap()).unwrap();
+        let mut app = serde_json::json!({
+            "schema_version": 1,
+            "app_id": 1,
+            "installation_id": 2,
+            "private_key_path": root.path().join("absent-key.pem"),
+            "project_id": kontor_core::id::ProjectId::generate(),
+            "repositories": ["example-org/example-project"],
+        });
+        if let Some(name) = override_name {
+            app["check_name"] = serde_json::json!(name);
+        }
+        let text = serde_yaml_ng::to_string(&app).unwrap();
+        let document: kontor_daemon::github_publication::GithubPublicationConfig =
+            serde_yaml_ng::from_str(&text).expect("structurally valid public App fixture");
+        document.validate().unwrap();
+        std::fs::write(folder.join("forge/github-app.yml"), text).unwrap();
+        let error = Daemon::start_configured(
+            DaemonConfig::at(root.path().join(format!("state-{index}"))).with_config_dir(&folder),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("forge/github-app.yml"), "{error}");
+        assert!(!error.contains("conflicting-check-canary"), "{error}");
+        assert!(
+            !error.contains("private key"),
+            "check identity is validated before key access"
+        );
+    }
+}
+
+#[test]
 fn references_resolve_from_the_selected_folder_and_refuse_escape_or_json() {
     let root = tempfile::tempdir().unwrap();
     let folder = support::write_config_folder(root.path());

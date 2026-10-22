@@ -638,10 +638,10 @@ impl Daemon {
         // quota-signal document does.
         let github_publication = match selected {
             Some(folder) => folder.parse_optional("forge/github-app.yml", |text| {
-                let document: github_publication::GithubPublicationConfig =
-                    serde_yaml_ng::from_str(text).map_err(|_| ())?;
-                document.validate().map_err(|_| ())?;
-                Ok::<_, ()>(document)
+                github_publication::GithubPublicationConfig::from_selected_yaml(
+                    text,
+                    &folder.project.check_runs,
+                )
             })?,
             None => github_publication::GithubPublicationConfig::read(&config.state_root)
                 .map_err(|source| StartupError::GithubApp { source })?,

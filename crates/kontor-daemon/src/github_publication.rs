@@ -7,9 +7,10 @@
 //! `contents: write` for the squash merge, and nothing else. This module is that
 //! App's client — JWT, installation token, check runs, pull-request reads and the
 //! head-bound squash merge — plus the poller that re-judges every open pull
-//! request and posts `asma/publication-identity` for it.
+//! request and posts the selected project's publication-identity check for it.
 //!
-//! Everything here is inert until an operator installs the App and writes
+//! Everything here is inert until an operator installs the App and selects
+//! `forge/github-app.yml`. Explicit native embeddings retain the reader for
 //! `<state root>/config/github-app.json`. Absent configuration is valid; a
 //! present document that will not parse refuses the start, as the quota-signal
 //! document does. The private key is read from a path the document names and
@@ -34,7 +35,7 @@ use crate::applications::Services;
 
 /// Where the App configuration lives below the state root.
 pub const CONFIG_FILE: &str = "config/github-app.json";
-/// The check run every judged pull request carries.
+/// Legacy default for explicitly composed native App configuration.
 pub const DEFAULT_CHECK_NAME: &str = "asma/publication-identity";
 /// GitHub's REST API version this client speaks.
 const API_VERSION: &str = "2022-11-28";
@@ -63,7 +64,7 @@ pub struct GithubPublicationConfig {
     pub project_id: ProjectId,
     /// The `owner/name` repositories the App is installed on and judges.
     pub repositories: Vec<String>,
-    /// The check-run name. Defaults to [`DEFAULT_CHECK_NAME`].
+    /// The project-selected check name; native decoding defaults to [`DEFAULT_CHECK_NAME`].
     #[serde(default = "default_check_name")]
     pub check_name: String,
     /// Seconds between polls of open pull requests.
@@ -104,6 +105,44 @@ pub enum ConfigError {
 }
 
 impl GithubPublicationConfig {
+    /// Decode selected YAML using the project's publication-identity check name.
+    ///
+    /// An App's explicit name may confirm that selection, never override it.
+    /// The native reader's legacy default does not apply to selected YAML.
+    ///
+    /// # Errors
+    /// Refuses missing or ambiguous project checks, conflicting names and invalid YAML.
+    pub fn from_selected_yaml(text: &str, check_runs: &[String]) -> Result<Self, ConfigError> {
+        let invalid = |detail: &str| ConfigError::Invalid {
+            detail: detail.to_owned(),
+        };
+        let mut names = check_runs.iter().filter(|name| {
+            name.as_str() == "publication-identity" || name.ends_with("/publication-identity")
+        });
+        let name = names
+            .next()
+            .filter(|_| names.next().is_none())
+            .ok_or_else(|| {
+                invalid("project.check_runs must select exactly one publication-identity check")
+            })?;
+        let mut value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(text).map_err(|_| invalid("invalid App YAML"))?;
+        let fields = value
+            .as_mapping_mut()
+            .ok_or_else(|| invalid("App YAML must be a mapping"))?;
+        if fields
+            .get("check_name")
+            .is_some_and(|field| field.as_str() != Some(name.as_str()))
+        {
+            return Err(invalid("check_name must agree with project.check_runs"));
+        }
+        fields.insert("check_name".into(), name.clone().into());
+        let config: Self =
+            serde_yaml_ng::from_value(value).map_err(|_| invalid("invalid App YAML"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Read the document below `state_root`, if there is one.
     ///
     /// # Errors
@@ -848,6 +887,72 @@ mod tests {
     }
 
     #[test]
+    fn selected_check_names_come_only_from_project_settings() {
+        let mut value = serde_json::json!({
+            "schema_version": 1,
+            "app_id": 1,
+            "installation_id": 2,
+            "private_key_path": "/unused-key-reference.pem",
+            "project_id": ProjectId::generate(),
+            "repositories": ["example-org/example-project"],
+        });
+        for name in ["publication-identity", "example/publication-identity"] {
+            let checks = vec!["publication-branch-title".to_owned(), name.to_owned()];
+            value.as_object_mut().unwrap().remove("check_name");
+            let yaml = serde_yaml_ng::to_string(&value).unwrap();
+            assert_eq!(
+                GithubPublicationConfig::from_selected_yaml(&yaml, &checks)
+                    .unwrap()
+                    .check_name,
+                name
+            );
+            value["check_name"] = serde_json::json!(name);
+            let yaml = serde_yaml_ng::to_string(&value).unwrap();
+            assert_eq!(
+                GithubPublicationConfig::from_selected_yaml(&yaml, &checks)
+                    .unwrap()
+                    .check_name,
+                name
+            );
+            for bad in [
+                serde_json::json!("unselected/publication-identity"),
+                serde_json::json!(""),
+                serde_json::Value::Null,
+                serde_json::json!(7),
+            ] {
+                value["check_name"] = bad;
+                let yaml = serde_yaml_ng::to_string(&value).unwrap();
+                assert!(GithubPublicationConfig::from_selected_yaml(&yaml, &checks).is_err());
+            }
+            value["check_name"] = serde_json::json!(name);
+            let yaml = serde_yaml_ng::to_string(&value).unwrap();
+            for bad in [
+                format!("{yaml}check_name: {name}\n"),
+                format!("{yaml}unknown_field: true\n"),
+                format!("{yaml}schema_version: 2\n"),
+                "[not, a, mapping]".to_owned(),
+            ] {
+                assert!(GithubPublicationConfig::from_selected_yaml(&bad, &checks).is_err());
+            }
+            for (field, bad) in [
+                ("schema_version", serde_json::json!(2)),
+                ("poll_seconds", serde_json::json!(0)),
+                ("repositories", serde_json::json!(["not-a-repository"])),
+            ] {
+                let mut invalid = value.clone();
+                invalid[field] = bad;
+                assert!(
+                    GithubPublicationConfig::from_selected_yaml(
+                        &serde_yaml_ng::to_string(&invalid).unwrap(),
+                        &checks,
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_configuration_document_is_validated_structurally() {
         let directory = tempfile::tempdir().expect("a state root");
         assert!(
@@ -982,7 +1087,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/repos/Carasent-ASMA/asma-modules/check-runs"))
             .and(body_partial_json(serde_json::json!({
-                "name": DEFAULT_CHECK_NAME, "head_sha": "82c56f5043b436ba666962cf82a89e93e330a271",
+                "name": "example/publication-identity", "head_sha": "82c56f5043b436ba666962cf82a89e93e330a271",
                 "status": "completed", "conclusion": "failure"
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": 1})))
@@ -997,20 +1102,25 @@ mod tests {
             .mount(&server)
             .await;
 
-        let gateway = GithubPublicationGateway::with_key(
-            GithubPublicationConfig {
-                schema_version: 1,
-                app_id: 424242,
-                installation_id: 77,
-                private_key_path: PathBuf::from("/unused"),
-                project_id: ProjectId::parse("01a0064a-e056-7603-9968-ef64fdaacb75").expect("id"),
-                repositories: vec!["Carasent-ASMA/asma-modules".to_owned()],
-                check_name: DEFAULT_CHECK_NAME.to_owned(),
-                poll_seconds: 60,
-                api_base: server.uri(),
-            },
-            test_key(),
-        );
+        let mut document = serde_yaml_ng::to_value(GithubPublicationConfig {
+            schema_version: 1,
+            app_id: 424242,
+            installation_id: 77,
+            private_key_path: PathBuf::from("/unused"),
+            project_id: ProjectId::parse("01a0064a-e056-7603-9968-ef64fdaacb75").expect("id"),
+            repositories: vec!["Carasent-ASMA/asma-modules".to_owned()],
+            check_name: String::new(),
+            poll_seconds: 60,
+            api_base: server.uri(),
+        })
+        .unwrap();
+        document.as_mapping_mut().unwrap().remove("check_name");
+        let config = GithubPublicationConfig::from_selected_yaml(
+            &serde_yaml_ng::to_string(&document).unwrap(),
+            &["example/publication-identity".to_owned()],
+        )
+        .unwrap();
+        let gateway = GithubPublicationGateway::with_key(config, test_key());
         let pull_requests = gateway
             .open_pull_requests("Carasent-ASMA/asma-modules")
             .await

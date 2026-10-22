@@ -1902,8 +1902,17 @@ file is a human-edited source. It migrates to `forge/github-app.yml`, with the
 PEM path as a reference; the JSON file then becomes a generated projection with
 provenance.
 
-`check_name` defaults to `asma/publication-identity` and `poll_seconds` to 60
-(at least 1). An optional `api_base` (default `https://api.github.com`) points
+For selected-folder startup, `project.check_runs` must contain exactly one
+`publication-identity` name, either unprefixed or ending in
+`/publication-identity`. The gateway uses that exact name. The optional App
+`check_name` may repeat it; a different name, a missing project identity check,
+or multiple matching entries refuses `forge/github-app.yml` before key access.
+An absent App document remains valid and does not require an identity check.
+The explicit embedded native reader retains its legacy default; selected YAML
+never inherits that default.
+
+`poll_seconds` defaults to 60 (at least 1).
+An optional `api_base` (default `https://api.github.com`) points
 the gateway at another GitHub API host. `repositories` must list at least one
 `owner/name`.
 
