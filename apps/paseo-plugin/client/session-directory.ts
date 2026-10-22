@@ -100,9 +100,15 @@ export function hasEarlierError(entry: DirectoryEntry): boolean {
   return entry.attentionReason === "error" && entry.status !== "error";
 }
 
+/** Only native archive metadata or a fresh exact-ID read can establish archive membership. */
+export function isArchivedSession(entry: DirectoryEntry): boolean {
+  const evidence = freshAvailability(entry);
+  return (entry.archivedAt ?? null) !== null || evidence?.state === "readable" && !!evidence.archivedAt;
+}
+
 /** Retained error history does not create a current Attention signal. */
 export function hasSessionAttention(entry: DirectoryEntry): boolean {
-  return entry.archivedAt === null && freshAvailability(entry)?.state !== "missing" && !freshAvailability(entry)?.archivedAt &&
+  return !isArchivedSession(entry) && freshAvailability(entry)?.state !== "missing" &&
     entry.requiresAttention && !hasEarlierError(entry);
 }
 
@@ -329,6 +335,10 @@ export async function collectDirectory(
     });
     pages += 1;
     for (const entry of result.entries) {
+      if (!includeArchived && (entry.agent.archivedAt ?? null) !== null) {
+        entries.delete(entry.agent.id);
+        continue;
+      }
       entries.set(entry.agent.id, toDirectoryEntry(entry, entries.get(entry.agent.id)));
     }
 
@@ -771,6 +781,10 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     includeArchived = nextIncludeArchived;
+    // The new scope applies immediately, including while its replacement read waits or fails.
+    if (!includeArchived) {
+      for (const [id, entry] of entries) if (isArchivedSession(entry)) entries.delete(id);
+    }
     generation += 1;
     pendingUpdates = [];
     pendingOverflow = false;

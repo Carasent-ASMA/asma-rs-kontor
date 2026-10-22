@@ -295,6 +295,7 @@ import {
   patchSessionView,
   readSessionView,
   workScopeOf,
+  writeWorkingAs,
 } from "../client/session-view-store";
 import { responsibilitySchema, type ResponsibilityRead } from "../shared/responsibility";
 import { TOOLBAR_LAYOUT_GAP } from "../client/toolbar-visibility";
@@ -559,10 +560,14 @@ describe("SessionsScreen toolbar events", () => {
     expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
     expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
     expect(walk(row).find((element) => element.type === SessionStateMarker)!.props.state).toBe("closed");
-    // Archive remains an explicit independent option, and never hides closed-unarchived history.
+    // Archived history is disjoint from closed-but-unarchived records, without changing the state choice.
     if (compact) openMobileFilters();
     (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
     expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
+    if (compact) closeMobileFilters();
+    expect(sessionRowIds()).toHaveLength(0);
+    if (compact) openMobileFilters();
+    (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
     if (compact) closeMobileFilters();
     expect(sessionRowIds()).toHaveLength(13);
     setStateFilter("error");
@@ -750,8 +755,9 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("restores context-scoped filters and offsets without mixing them with host defaults", () => {
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("session-a", { archivedAt: "2026-10-18T11:00:00Z" }), sessionEntry("other")] };
     patchSessionView("host-a", { query: "host default", scrollOffset: 0 });
-    patchSessionView("host-a:epic-a", { query: "session-a", includeArchived: true, scrollOffset: 420, ...toolbarOpenPatch(true) });
+    patchSessionView("host-a:epic-a", { query: "session-a", membership: "archived", scrollOffset: 420, ...toolbarOpenPatch(true) });
     patchSessionView("host-a:epic-b", { query: "other", includeArchived: false, scrollOffset: 180, ...toolbarOpenPatch(true) });
     let viewScope = "host-a:epic-a";
     harness.render(() => SessionsScreen({
@@ -2001,7 +2007,7 @@ describe("SessionsScreen mobile filter page", () => {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
       status: "running", pendingPermissionCount: 1, archivedAt: "2026-10-18T11:00:00.000Z", workspaceName: "RSW • review",
     }), provider: "codex", model: "gpt-6.1-sol", telemetry: { lastUsage: { inputTokens: 100, outputTokens: 20 } } }] };
-    patchSessionView("host-a", { grouping: "flat", includeArchived: true, status: "all" });
+    patchSessionView("host-a", { grouping: "flat", membership: "archived", status: "all" });
     renderCompact();
     const leaf = renderSessionLeaf();
     expect((leaf.props.style as (state: { pressed: boolean }) => { minHeight: number })({ pressed: false }).minHeight).toBe(44);
@@ -2337,7 +2343,7 @@ describe("SessionsScreen mobile filter page", () => {
       sessionEntry("outside-epic", { projectKey: "project-a", labels: { epic: "ASMA-2" } }),
     ], pages: 1, lastUpdatedAt: 0, inventoryComplete: true }, refresh };
     patchSessionView(scope, { query: "no match", status: "favorites", task: { jira: "ASMA-9", kontorId: null, label: "ASMA-9" },
-      shortcut: "Adam", streams: [], includeArchived: true, grouping: "flat", arranging: true, advancedOpen: true, toolbarOpen: false, scrollOffset: entry === "collapsed" ? 300 : 0, treeOffset: 70 });
+      shortcut: "Adam", streams: [], includeArchived: true, membership: "archived", grouping: "flat", arranging: true, advancedOpen: true, toolbarOpen: false, scrollOffset: entry === "collapsed" ? 300 : 0, treeOffset: 70 });
     const compact = entry === "quick" || entry === "full-page";
     harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: "web" }, theme: { colors } as PluginTheme, params: {},
       directory: supplied, organization, projectId: "project-a", epicKey: "ASMA-1", scopeLabel: "ASMA-1", onClearScope, onIncludeArchived: archive, viewScope: scope }));
@@ -2357,7 +2363,7 @@ describe("SessionsScreen mobile filter page", () => {
       expect(testIDs(harness.current()).filter((id) => id === "sessions-search")).toHaveLength(1);
       closeMobileFilters();
     }
-    expect(readSessionView(scope)).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false,
+    expect(readSessionView(scope)).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false, membership: "sessions",
       grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 70, peek: null });
     expect(sessionRowIds().sort()).toEqual(["match", "second"]);
     const cleared = readSessionView(scope);
@@ -2674,6 +2680,42 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     expect(readSessionView("host-a").status).toBe("all");
     expect(sessionRowIds().sort()).toEqual(localIds);
     expect(message()).toBe("My work: every session on this host.");
+  });
+
+  it.each([true, false])("keeps archive membership disjoint through state, search, native scope, assignment and order (compact=%s)", (compact) => {
+    const archives = local.map((entry) => ({ ...entry, id: `archive-${entry.id}`, archivedAt: "2026-10-18T11:00:00Z" }));
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    patchSessionView("host-a", { grouping: "flat", status: "all", query: "Session", assignment: "me", sort: "title", sortDirection: "desc", advancedOpen: true, ...toolbarOpenPatch(true) });
+    const onIncludeArchived = vi.fn();
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: "web" }, theme: { colors } as PluginTheme,
+      params: {}, projectId: "prj_1", epicKey: "ASMA-100", responsibility: ready(), onIncludeArchived,
+      directory: { state: { ...emptyDirectoryState(), status: "ready" as const, entries: [...local, ...archives], pages: 1, lastUpdatedAt: 0, inventoryComplete: true }, refresh: vi.fn() },
+    }));
+    expect(sessionRowIds()).toEqual(["starting-other", "running-mine"]);
+    if (compact) openMobileFilters();
+    const toggle = findByTestID(harness.current(), "sessions-advanced-archived");
+    expect(toggle.props.label).toBe("Archived history");
+    (toggle.props.onPress as () => void)(); harness.flush();
+    expect(findByTestID(harness.current(), "sessions-filter-all").props.count).toBe(2);
+    expect(findByTestID(harness.current(), "sessions-filter-running").props.count).toBe(1);
+    expect(findByTestID(harness.current(), "sessions-filter-current").props.count).toBe(0);
+    expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toBe(0);
+    if (compact) closeMobileFilters();
+    expect(sessionRowIds()).toEqual(["archive-starting-other", "archive-running-mine"]);
+    expect(readSessionView("host-a")).toMatchObject({ membership: "archived", status: "all", query: "Session", assignment: "me", grouping: "flat", sort: "title", sortDirection: "desc" });
+    expect(onIncludeArchived).toHaveBeenLastCalledWith(true);
+    setStateFilter("running");
+    expect(sessionRowIds()).toEqual(["archive-running-mine"]);
+    setStateFilter("idle"); expect(sessionRowIds()).toEqual([]);
+    setStateFilter("attention"); expect(sessionRowIds()).toEqual([]);
+    setStateFilter("current"); expect(sessionRowIds()).toEqual([]);
+    setStateFilter("all");
+    expect(sessionRowIds()).toEqual(["archive-starting-other", "archive-running-mine"]);
+    if (compact) openMobileFilters();
+    (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
+    if (compact) closeMobileFilters();
+    expect(sessionRowIds()).toEqual(["starting-other", "running-mine"]);
+    expect(onIncludeArchived).toHaveBeenLastCalledWith(false);
   });
 
   it("shows every local session in My work with All visibility, whatever the projection or Working as", () => {

@@ -101,7 +101,7 @@ describe("compact toolbar helpers", () => {
   it("names every active choice for the collapsed summary, and nothing at rest", () => {
     expect(activeFilterParts({ query: "  ", status: "all", shortcut: null, streams: null, includeArchived: false })).toEqual([]);
     expect(activeFilterParts({ query: " ASMA-1 ", status: "needs_input", shortcut: "Adam", streams: ["pr review"], includeArchived: true }))
-      .toEqual(["“ASMA-1”", "Needs input", "Adam desk", "1 workstream", "Archived included"]);
+      .toEqual(["“ASMA-1”", "Needs input", "Adam desk", "1 workstream", "Archived history"]);
     expect(activeFilterParts({ query: "", status: "favorites", shortcut: "Desks", streams: ["a", "b"], includeArchived: false }))
       .toEqual(["★ Favorites", "Durable desks", "2 workstreams"]);
   });
