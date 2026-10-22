@@ -152,6 +152,26 @@ pub(super) async fn select_desk_definition(world: &World, project: &str) -> Team
         published.json()["spec"].clone()
     };
 
+    // The new epic pin must agree with the exact selected definition validator.
+    let topology_preview = Call::post(
+        format!("/v1/projects/{project}/topology-selection:preview"),
+        &serde_json::json!({"target_spec":{"id":topology["id"],"version":topology["version"]}}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(topology_preview.status, 200, "{}", topology_preview.body);
+    let topology_selected = Call::post(
+        format!("/v1/projects/{project}/topology-selection:apply"),
+        &serde_json::json!({"preview_hash":topology_preview.json()["preview_hash"],
+            "expected_revision":current_project_revision(world, project).await}),
+    )
+    .signed_as(world, "admin")
+    .with_key("desk-topology-select")
+    .send(world)
+    .await;
+    assert_eq!(topology_selected.status, 200, "{}", topology_selected.body);
+
     let catalog = Call::get(format!("/v1/projects/{project}/team-definitions"))
         .signed_as(world, "admin")
         .send(world)

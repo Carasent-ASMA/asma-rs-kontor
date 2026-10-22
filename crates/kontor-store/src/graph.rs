@@ -27,6 +27,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod domain;
+pub use domain::{EpicApplyCommand, EpicDomainBinding};
+
 use kontor_core::DomainError;
 use kontor_core::authority::{AuthoritySubject, SubjectAuthority};
 use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 140;
+pub const SCHEMA_VERSION: i64 = 141;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -477,6 +477,7 @@ const MIGRATIONS: &[&str] = &[
     // Domain context on existing project selections and epic snapshots; no backfill.
     include_str!("../migrations/0139_operational_domain_pins.sql"),
     include_str!("../migrations/0140_domain_selection_results.sql"),
+    include_str!("../migrations/0141_epic_domain_results.sql"),
 ];
 
 const _: () = assert!(

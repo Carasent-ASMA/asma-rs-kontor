@@ -109,7 +109,8 @@ async fn review_realm(slug: &str, review: Option<&str>) -> Review {
 }
 
 async fn review_realm_with_selection(slug: &str, review: Option<&str>, historical: bool) -> Review {
-    let world = World::open_empty_with_a_plane().await;
+    let mut world = World::open_empty_with_a_plane().await;
+    world.historical_epics = historical;
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let project = ensure_governed_project(&world, &format!("/tmp/kontor-{slug}"));
     if historical {
@@ -119,8 +120,9 @@ async fn review_realm_with_selection(slug: &str, review: Option<&str>, historica
     }
     let category = first_category(&world).await;
     let name = format!("{slug} epic");
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        &world,
+        &project,
         &epic_body(
             current_project_revision(&world, &project).await,
             &name,
@@ -131,10 +133,8 @@ async fn review_realm_with_selection(slug: &str, review: Option<&str>, historica
                 "worktree": "/w/review-it"
             }]),
         ),
+        format!("{slug}-epic"),
     )
-    .signed_as(&world, "admin")
-    .with_key(format!("{slug}-epic"))
-    .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"]
@@ -1695,6 +1695,7 @@ async fn restarted(realm: Review) -> Review {
         task_key,
     } = realm;
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -1719,6 +1720,7 @@ async fn restarted(realm: Review) -> Review {
     let router = daemon.router();
     Review {
         world: World {
+            historical_epics,
             directory,
             daemon,
             router,

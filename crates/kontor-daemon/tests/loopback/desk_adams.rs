@@ -438,6 +438,35 @@ fn receipt_recorded(realm: &DeskLed, key: &str) -> bool {
         .is_some()
 }
 
+// Graph creation is durable, but interrupted origin binding must never confirm it.
+fn assert_epic_creation_pending(realm: &DeskLed, key: &str) {
+    realm.world.daemon.state().with_store(|store| {
+        let receipt = store
+            .get_receipt_by_key(&IdempotencyKey::parse(key).unwrap())
+            .unwrap()
+            .expect("creation intent persists before follow-up effects");
+        assert_eq!(
+            receipt.state,
+            kontor_core::receipt::CommandReceiptState::IntentPersisted
+        );
+        let binding = store
+            .epic_domain_creation_result(&receipt)
+            .expect("exact frozen context");
+        let kontor_core::receipt::AggregateRef::MiniProject { mini_project_id } = receipt.target
+        else {
+            panic!("an epic target is required");
+        };
+        let pin = store
+            .get_mini_project_team_definition(realm.project_id, mini_project_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pin.operational_domain_bundle_hash,
+            Some(binding.operational_domain_bundle_hash)
+        );
+    });
+}
+
 /// Materialize exactly one Core Team seat of `epic` on `route`.
 async fn launch_role(
     realm: &DeskLed,
@@ -1875,7 +1904,7 @@ async fn a_binding_whose_fence_lost_its_answer_resumes_and_finishes_the_fence() 
     )
     .await;
     assert_eq!(lost.json()["code"], "unavailable", "{}", lost.body);
-    assert!(!receipt_recorded(&realm, "desk-adam-bind-resume-apply"));
+    assert_epic_creation_pending(&realm, "desk-adam-bind-resume-apply");
     // Only a session the runtime proves absent counts as gone: the occupancy,
     // the seat and the topic's freedom all stand, and no epic subject exists.
     assert_eq!(
@@ -2057,7 +2086,7 @@ async fn a_binding_recovers_and_fences_an_ad_hoc_launch_that_lost_its_answer() {
     )
     .await;
     assert_eq!(unproved.json()["code"], "unavailable", "{}", unproved.body);
-    assert!(!receipt_recorded(&realm, "desk-adam-lost-launch-apply"));
+    assert_epic_creation_pending(&realm, "desk-adam-lost-launch-apply");
     assert_eq!(
         seat_row(&realm, ad_hoc_lsa).lifecycle,
         TopologyLifecycle::Active
@@ -2559,6 +2588,7 @@ async fn restarted(realm: DeskLed) -> DeskLed {
         category,
     } = realm;
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -2583,6 +2613,7 @@ async fn restarted(realm: DeskLed) -> DeskLed {
     let router = daemon.router();
     DeskLed {
         world: World {
+            historical_epics,
             directory,
             daemon,
             router,

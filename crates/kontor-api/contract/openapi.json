@@ -14385,6 +14385,13 @@
               }
             ]
           },
+          "operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact immutable domain bundle bound to this epic operation."
+          },
           "project_id": {
             "type": "string",
             "description": "The project."
@@ -14774,6 +14781,13 @@
                 "description": "Durable identity used to place this epic and its tasks in a runtime.\nOmission preserves an existing declaration for wire compatibility."
               }
             ]
+          },
+          "expected_operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional preview precondition. A different selected/pinned domain refuses.\nOmission resolves the explicitly selected project domain at apply time."
           },
           "expected_revision": {
             "type": "integer",
@@ -25193,6 +25207,13 @@
                 "description": "The covering revoked authorization disposition apply would persist."
               }
             ]
+          },
+          "operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact immutable domain bundle bound to this epic operation."
           },
           "project_id": {
             "type": "string",

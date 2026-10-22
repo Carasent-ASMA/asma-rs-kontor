@@ -645,6 +645,27 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     )
     .await;
 
+    // Publish the exact bundle's resolved roster through the same public tools.
+    // Epic creation requires frozen purposes; it never manufactures this revision.
+    let core_source = &selection["target_operational_domain_bundle_hash"];
+    assert!(core_source.is_string());
+    let core_preview = ok(
+        &lead,
+        "kontor_core_team_preview",
+        serde_json::json!({"project_id": project, "source_bundle_hash": core_source}),
+    )
+    .await;
+    ok(
+        &lead,
+        "kontor_core_team_apply",
+        serde_json::json!({
+            "project_id": project, "idempotency_key": "journey-core-team-publish-1",
+            "source_bundle_hash": core_source, "preview_hash": core_preview["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .await;
+
     drop(domain_selection);
 
     // 3. An account profile a run could be pinned to.
@@ -856,9 +877,19 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     );
     assert_eq!(
         transport.calls(),
-        28,
-        "twenty-eight tool invocations made twenty-eight requests: {routes:#?}"
+        30,
+        "thirty tool invocations made thirty requests, including explicit Core Team preview/apply: {routes:#?}"
     );
+
+    for suffix in ["/core-team:preview", "/core-team:apply"] {
+        assert_eq!(
+            routes
+                .iter()
+                .filter(|(method, path)| method == "POST" && path.ends_with(suffix))
+                .count(),
+            1
+        );
+    }
 
     // Source accounts are real launch pins, selected through the public tool.
     // Recovery must never fill an unknown producer with the operator's identity.

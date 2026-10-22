@@ -4796,6 +4796,23 @@ async fn first_category(world: &World) -> String {
         .to_owned()
 }
 
+/// Historical fixture construction is explicit; normal calls use the real API.
+async fn apply_fixture_epic(
+    world: &World,
+    project: &str,
+    body: &serde_json::Value,
+    key: impl Into<String>,
+) -> Answer {
+    if world.historical_epics {
+        return harness::legacy_epic::seed(world, project, body).await;
+    }
+    Call::post(format!("/v1/projects/{project}/epics:apply"), body)
+        .signed_as(world, "admin")
+        .with_key(key)
+        .send(world)
+        .await
+}
+
 /// One deterministic, canonical Jira fixture key scoped by its logical seed.
 fn test_jira_key(seed: &str) -> String {
     let number = seed.bytes().fold(2_166_136_261_u64, |hash, byte| {
@@ -5280,6 +5297,7 @@ async fn a_legacy_backlog_is_imported_replayed_after_restart_and_switched_once()
         .as_str()
         .expect("a project id")
         .to_owned();
+    harness::DomainSelectionFixture::bind(&world, ProjectId::parse(&project).unwrap());
     let category = first_category(&world).await;
     let imported_epic = epic_body(
         created.json()["revision"].as_u64().expect("a revision"),
@@ -11027,11 +11045,7 @@ async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
     let worktree = world.directory.path().join(format!("{slug}-task-worktree"));
     std::fs::create_dir_all(worktree.join(".git")).expect("isolated fixture worktree");
     body["tasks"][0]["worktree"] = serde_json::json!(worktree);
-    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
-        .signed_as(world, "admin")
-        .with_key(format!("{slug}-epic"))
-        .send(world)
-        .await;
+    let applied = apply_fixture_epic(world, &project, &body, format!("{slug}-epic")).await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     Bootstrapped {
         project,
@@ -20225,6 +20239,7 @@ async fn request_and_resident_jira_reconciliation_ignore_an_unrelated_connector_
     .await;
     assert_eq!(ensured.status, 200, "{}", ensured.body);
     assert_eq!(ensured.json()["project_id"], project_id.to_string());
+    harness::DomainSelectionFixture::bind(&world, project_id);
     let category = first_category(&world).await;
     let mut bootstrap_body = epic_body(
         ensured.json()["revision"].as_u64().expect("a revision"),
@@ -20835,6 +20850,9 @@ async fn armed_and_planned_configured(
         .expect("id")
         .to_owned();
     let revision = created.json()["revision"].as_u64().expect("revision");
+    if !register_mvp_slots && !world.historical_epics {
+        harness::DomainSelectionFixture::bind(world, ProjectId::parse(&project).unwrap());
+    }
     let category = first_category(world).await;
 
     let account = Call::post(
@@ -20854,18 +20872,17 @@ async fn armed_and_planned_configured(
         .expect("id")
         .to_owned();
 
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        world,
+        &project,
         &epic_body(
             revision,
             "Planed epic",
             &category,
             serde_json::json!([{"title": "Only task"}]),
         ),
+        format!("{slug}-epic"),
     )
-    .signed_as(world, "admin")
-    .with_key(format!("{slug}-epic"))
-    .send(world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
@@ -24235,17 +24252,22 @@ fn register_test_delivery_slots(world: &World, project: &str, slots: &[(&str, &s
                 &kontor_core::repository::ProjectTeamDefinitionDefault {
                     operational_domain_bundle_hash: None,
                     project_id,
-                    expected: selected.map(|current| current.definition),
+                    expected: selected.as_ref().map(|current| current.definition.clone()),
                     definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
                         &definition,
                     )
                     .expect("a snapshot"),
                     selected_at: kontor_api::now(),
                 },
-                None,
+                selected
+                    .as_ref()
+                    .and_then(|current| current.operational_domain_bundle_hash.as_ref()),
             )
             .expect("the test selects the vocabulary it launches");
     });
+    if !world.historical_epics {
+        harness::DomainSelectionFixture::bind(world, project_id);
+    }
 }
 
 /// Bring a plane-holding realm to "seats materialized", and return the project,
@@ -25342,7 +25364,9 @@ async fn an_admin_replacement_retires_a_bound_nonterminal_predecessor_first() {
 
 #[tokio::test]
 async fn an_in_flight_team_definition_migration_fences_replacement_before_any_effect() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let (project, epic, _account, seats) = seated_turns(&world, "migration-fences-replace").await;
@@ -25775,7 +25799,9 @@ async fn strand_the_last_seat(
 /// envelope, and it must close the team once the fence lifts.
 #[tokio::test]
 async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_replayed() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-settlement-replay").await;
     let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-settlement-replay").await;
     let last_uri = strand_the_last_seat(&world, &fenced, &last, "stranded-settlement-replay").await;
@@ -25935,7 +25961,9 @@ async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_
 /// terminal, or the admission change turns that history into a permanent hold.
 #[tokio::test]
 async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_replay() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-replay").await;
     let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-replay").await;
     strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-replay").await;
@@ -26053,7 +26081,9 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
 /// does.
 #[tokio::test]
 async fn a_stranded_team_abandon_replay_releases_the_seat_before_the_fence() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-fence").await;
     let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-fence").await;
     strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-fence").await;
@@ -26165,7 +26195,9 @@ async fn a_stranded_team_abandon_replay_releases_the_seat_before_the_fence() {
 /// into a `placement_blocked` 409; the stored closure is the answer.
 #[tokio::test]
 async fn an_abandon_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let (project, epic, _account, seats) = seated_turns(&world, "closed-team-abandon-replay").await;
@@ -26266,7 +26298,9 @@ async fn an_abandon_replay_of_an_already_closed_team_answers_behind_a_migration_
 /// 409, and the replay must not leave the closed run's frozen snapshot held.
 #[tokio::test]
 async fn a_settlement_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let (project, epic, _account, seats) = seated_turns(&world, "closed-team-settle-replay").await;
@@ -31053,6 +31087,7 @@ async fn check_delivery_epoch_barrier(derived: bool, fail_commit: bool) {
     // Reopen the actual realm immediately, with no intervening history read
     // that could conceal a missing send barrier by persisting its mapping.
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -31079,6 +31114,7 @@ async fn check_delivery_epoch_barrier(derived: bool, fail_commit: bool) {
     assert_eq!(daemon.reconcile().await, BarrierState::Open);
     let router = daemon.router();
     let world = World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -31285,6 +31321,7 @@ async fn check_replay_after_restart_sends_once(derived: bool) {
     // The process boundary. Bindings and committed epochs come back; the
     // adapter-local delivery ledger does not, because nothing persists it.
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -31310,6 +31347,7 @@ async fn check_replay_after_restart_sends_once(derived: bool) {
     assert_eq!(daemon.reconcile().await, BarrierState::Open);
     let router = daemon.router();
     let world = World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -38883,7 +38921,7 @@ async fn proposed_bundle(world: &World) -> (String, String, String, String) {
 /// v1 and v2 honestly; and a v1 activation still converges over a v2 one.
 #[tokio::test]
 async fn an_orchestration_bundle_is_published_and_activated_through_registered_operations() {
-    let composed = compose_realm("/tmp/kontor-asma8280-bundle-operations").await;
+    let composed = compose_legacy_realm("/tmp/kontor-asma8280-bundle-operations").await;
     let world = &composed.world;
     let shaped = serde_json::json!({"orchestration": "", "fleet": "", "core_team": ""});
     for (path, body) in [
@@ -39176,7 +39214,7 @@ async fn an_orchestration_bundle_is_published_and_activated_through_registered_o
 /// roster, named in the intent and receipt, and never retargeting an epic pin.
 #[tokio::test]
 async fn a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract() {
-    let composed = compose_realm("/tmp/kontor-asma8280-bundle-core-team").await;
+    let composed = compose_legacy_realm("/tmp/kontor-asma8280-bundle-core-team").await;
     let world = &composed.world;
     let project = composed.project.clone();
     let epic_pin_before = leadership_keys(world, &project, &composed.epic)["lsa"]
@@ -45272,7 +45310,14 @@ struct Composed {
 }
 
 async fn compose_realm(root: &str) -> Composed {
-    let world = World::open_empty_with_a_plane().await;
+    compose_realm_with_history(root, false).await
+}
+async fn compose_legacy_realm(root: &str) -> Composed {
+    compose_realm_with_history(root, true).await
+}
+async fn compose_realm_with_history(root: &str, historical: bool) -> Composed {
+    let mut world = World::open_empty_with_a_plane().await;
+    world.historical_epics = historical;
     world.daemon.reconcile().await;
 
     let created = ensure_project(&world, "compose-project", "Kontor", root).await;
@@ -45303,18 +45348,17 @@ async fn compose_realm(root: &str) -> Composed {
         .to_owned();
 
     let category = first_category(&world).await;
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        &world,
+        &project,
         &epic_body(
             project_revision,
             "Composed epic",
             &category,
             serde_json::json!([{"title": "Do the thing"}]),
         ),
+        "compose-epic",
     )
-    .signed_as(&world, "admin")
-    .with_key("compose-epic")
-    .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"]
@@ -45849,7 +45893,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     .await;
     let roster_preview = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
-        &serde_json::json!({"target": {"id": SEEDED_CATALOG, "version": 1}}),
+        &serde_json::json!({"target": {"id": SEEDED_CATALOG, "version": current_core_team_revision(&world, &project) - 1}}),
     )
     .signed_as(&world, "admin")
     .send(&world)
@@ -49157,7 +49201,9 @@ async fn a_quarantined_qnr_code_is_corrected_without_weakening_canonical_assignm
 /// pinned Team Definition and switches its pin only after complete readback.
 #[tokio::test]
 async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_item_codes() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.daemon.reconcile().await;
     std::fs::create_dir_all("/tmp/kontor-item-code-naming/task/.git")
         .expect("the legacy task worktree exists");
@@ -49197,11 +49243,7 @@ async fn a_team_definition_upgrade_preserves_native_ids_and_renders_confirmed_it
         .as_object_mut()
         .expect("the task is an object")
         .remove("ticket_links");
-    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
-        .signed_as(&world, "admin")
-        .with_key("item-code-epic")
-        .send(&world)
-        .await;
+    let applied = apply_fixture_epic(&world, &project, &body, "item-code-epic").await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["epic_backlog_code"], "KOP");
     let epic = applied.json()["epic_id"]
@@ -50054,7 +50096,7 @@ async fn an_archived_rename_pending_advisor_can_retire_and_complete_the_same_mig
 /// block the live census or be retitled to make old history look current.
 #[tokio::test]
 async fn a_team_definition_upgrade_leaves_archived_native_history_untouched() {
-    let composed = compose_realm("/tmp/kontor-archived-team-definition-history").await;
+    let composed = compose_legacy_realm("/tmp/kontor-archived-team-definition-history").await;
     let world = &composed.world;
     let epic = Call::get(format!(
         "/v1/projects/{}/epics/{}",
@@ -50294,7 +50336,9 @@ async fn a_team_definition_upgrade_leaves_archived_native_history_untouched() {
 /// active-TSW seat completeness fence is covered separately and remains strict.
 #[tokio::test]
 async fn a_team_definition_upgrade_ignores_open_runs_on_archived_task_topology() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let (project, epic, _account, seats) =
@@ -50908,9 +50952,18 @@ fn seat(role_code: &str, presence: &str, ad_hoc_allowed: bool) -> serde_json::Va
 /// A roster is previewed, published and read back as what was published.
 #[tokio::test]
 async fn a_core_team_is_previewed_applied_and_read_back() {
-    let composed = compose_realm("/tmp/kontor-op04-core-team").await;
-    let world = &composed.world;
-    let project = &composed.project;
+    let world = World::open_empty().await;
+    let created = ensure_project_raw(
+        &world,
+        "empty-core-team-project",
+        "Core Team",
+        "/tmp/kontor-op04-core-team",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"].as_str().unwrap().to_owned();
+    let project = &project;
+    let world = &world;
 
     let previewed = Call::post(
         format!("/v1/projects/{project}/core-team:preview"),
@@ -51015,7 +51068,7 @@ async fn a_repeated_core_team_apply_publishes_one_revision() {
     let body = serde_json::json!({
         "seats": [seat("QA", "on_demand", false)],
         "preview_hash": preview_hash,
-        "expected_revision": 1,
+        "expected_revision": current_core_team_revision(world, project),
     });
 
     let first = Call::post(format!("/v1/projects/{project}/core-team:apply"), &body)
@@ -51155,6 +51208,15 @@ async fn adopt_session_base(world: &World, project: &str, project_revision: u64)
 }
 
 /// Publish a Core Team, and answer with the project's revision afterwards.
+fn current_core_team_revision(world: &World, project: &str) -> u64 {
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.get_current_core_team(ProjectId::parse(project).unwrap()))
+        .unwrap()
+        .map_or(1, |roster| u64::from(roster.version.get()) + 1)
+}
+
 async fn publish_core_team(world: &World, project: &str, seats: serde_json::Value) -> u64 {
     let previewed = Call::post(
         format!("/v1/projects/{project}/core-team:preview"),
@@ -51173,7 +51235,7 @@ async fn publish_core_team(world: &World, project: &str, seats: serde_json::Valu
         &serde_json::json!({
             "seats": seats,
             "preview_hash": preview_hash,
-            "expected_revision": 1,
+            "expected_revision": current_core_team_revision(world, project),
         }),
     )
     .signed_as(world, "admin")
@@ -52809,7 +52871,7 @@ async fn a_later_core_team_edit_leaves_a_promoted_epic_frozen() {
         &serde_json::json!({
             "seats": [seat("SA", "default", true), seat("QA", "default", false)],
             "preview_hash": previewed.json()["preview_hash"].as_str().expect("hash"),
-            "expected_revision": 2,
+            "expected_revision": current_core_team_revision(world, project),
         }),
     )
     .signed_as(world, "admin")
@@ -52845,7 +52907,7 @@ async fn a_later_core_team_edit_leaves_a_promoted_epic_frozen() {
     // The explicit upgrade is how it moves, and it adds only the new role.
     let previewed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
-        &serde_json::json!({"target": {"id": SEEDED_CATALOG, "version": 2}}),
+        &serde_json::json!({"target": {"id": SEEDED_CATALOG, "version": current_core_team_revision(world, project) - 1}}),
     )
     .signed_as(world, "admin")
     .send(world)
@@ -52951,7 +53013,7 @@ async fn a_legacy_epic_bootstraps_one_frozen_roster_and_one_leadership_pair() {
     let previewed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/roster:upgrade-preview"),
         &serde_json::json!({
-            "target": {"id": SEEDED_CATALOG, "version": 1},
+            "target": {"id": SEEDED_CATALOG, "version": current_core_team_revision(world, project) - 1},
         }),
     )
     .signed_as(world, "admin")
@@ -60248,7 +60310,9 @@ async fn an_unregistered_delivery_slot_is_refused_before_any_effect() {
 /// exact native title of every delivery slot at launch and migration time.
 #[tokio::test]
 async fn delivery_names_follow_the_exact_team_definition_when_legacy_bindings_disagree() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let created = ensure_project_raw(
@@ -60290,18 +60354,17 @@ async fn delivery_names_follow_the_exact_team_definition_when_legacy_bindings_di
     .await;
     assert_eq!(account.status, 200, "{}", account.body);
     let category = first_category(&world).await;
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        &world,
+        &project,
         &epic_body(
             project_revision,
             "Definition-owned delivery names",
             &category,
             serde_json::json!([{"title": "Use exact configured slot names"}]),
         ),
+        "definition-owned-delivery-epic",
     )
-    .signed_as(&world, "admin")
-    .with_key("definition-owned-delivery-epic")
-    .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"]
@@ -60584,7 +60647,9 @@ fn bound_delivery_runs(
 /// same-key replay without replacing any native session.
 #[tokio::test]
 async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade_censuses_them() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
 
@@ -60602,18 +60667,17 @@ async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade
         .to_owned();
     let project_revision = created.json()["revision"].as_u64().expect("a revision");
     let category = first_category(&world).await;
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        &world,
+        &project,
         &epic_body(
             project_revision,
             "Legacy delivery repair",
             &category,
             serde_json::json!([{"title": "Repair four delivery seats"}]),
         ),
+        "legacy-delivery-repair-epic",
     )
-    .signed_as(&world, "admin")
-    .with_key("legacy-delivery-repair-epic")
-    .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"]
@@ -63204,6 +63268,7 @@ async fn jira_configured_world(
             })
             .expect("the project is created");
     });
+    register_mvp_delivery_slots(&world, &project_id.to_string());
     world
 }
 
@@ -63828,6 +63893,7 @@ async fn seed_confirmed_task_binding(
             .revision
             .get()
     });
+    harness::DomainSelectionFixture::bind(world, project_id);
     let category = first_category(world).await;
     let mut body = epic_body(
         revision,
@@ -65172,7 +65238,7 @@ async fn bound_titles(world: &World, project: &str, epic: &str) -> BTreeMap<Stri
 /// a required key with no confirmed binding refuses before any native effect.
 #[tokio::test]
 async fn jira_key_containers_render_the_confirmed_binding_of_their_own_subject() {
-    let composed = compose_realm("/tmp/kontor-asma8117-jira-key-containers").await;
+    let composed = compose_legacy_realm("/tmp/kontor-asma8117-jira-key-containers").await;
     let world = &composed.world;
     let project = &composed.project;
     let epic = &composed.epic;
@@ -65380,7 +65446,7 @@ struct ConsultationFixture {
 }
 
 async fn jira_key_consultation_fixture(root: &str) -> ConsultationFixture {
-    let composed = compose_realm(root).await;
+    let composed = compose_legacy_realm(root).await;
     let world = &composed.world;
     let project = &composed.project;
     let epic = &composed.epic;
@@ -66322,7 +66388,7 @@ async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() 
 /// epic that happens to contain it.
 #[tokio::test]
 async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
-    let composed = compose_realm("/tmp/kontor-asma8117-absent-subject").await;
+    let composed = compose_legacy_realm("/tmp/kontor-asma8117-absent-subject").await;
     let world = &composed.world;
     let project = &composed.project;
     let epic = &composed.epic;
@@ -69649,6 +69715,7 @@ async fn epic_with_missing_roster_seats(slug: &str) -> (World, String, String, u
         .expect("a project id")
         .to_owned();
     let project_revision = created.json()["revision"].as_u64().expect("a revision");
+    harness::DomainSelectionFixture::bind(&world, ProjectId::parse(&project).unwrap());
     let category = first_category(&world).await;
 
     // A roster wider than the mandatory pair. Every epic is born with `LSA` and
@@ -72416,4 +72483,125 @@ async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona(
         launched_persona.prompt_hash.as_str(),
         "the retired launched occupancy must retain its frozen persona"
     );
+}
+
+#[tokio::test]
+async fn epic_domain_preview_apply_receipt_and_replay_keep_the_exact_target_hash() {
+    let world = World::open_empty().await;
+    let created = ensure_project(
+        &world,
+        "epic-domain-project",
+        "Domain project",
+        "/tmp/epic-domain-project",
+    )
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"].as_str().unwrap().to_owned();
+    let category = first_category(&world).await;
+    let mut body = epic_body(
+        created.json()["revision"].as_u64().unwrap(),
+        "Pinned domain epic",
+        &category,
+        serde_json::json!([{"title":"Pinned task"}]),
+    );
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let domain = preview.json()["operational_domain_bundle_hash"].clone();
+    assert!(domain.as_str().is_some());
+    body["expected_operational_domain_bundle_hash"] =
+        serde_json::json!(kontor_core::id::ContentHash::of(b"stale epic domain"));
+    let refused = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("epic-domain-stale")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("operational_domain_epic_target_moved")
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_mini_projects(ProjectId::parse(&project).unwrap()))
+            .unwrap()
+            .is_empty()
+    );
+    body["expected_operational_domain_bundle_hash"] = domain.clone();
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("epic-domain-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["operational_domain_bundle_hash"], domain);
+    let replay = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("epic-domain-apply")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["bundle_hash"], applied.json()["bundle_hash"]);
+    assert_eq!(replay.json()["operational_domain_bundle_hash"], domain);
+    assert_eq!(replay.json()["epic_id"], applied.json()["epic_id"]);
+    let receipt = world.daemon.state().with_store(|store| {
+        let receipt = store
+            .get_receipt_by_key(&IdempotencyKey::parse("epic-domain-apply").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.state,
+            kontor_core::receipt::CommandReceiptState::Confirmed
+        );
+        assert_eq!(
+            serde_json::json!(
+                store
+                    .epic_domain_creation_result(&receipt)
+                    .unwrap()
+                    .operational_domain_bundle_hash
+            ),
+            domain
+        );
+        receipt
+    });
+    body = epic_body(
+        current_project_revision(&world, &project).await,
+        "Concurrent domain epic",
+        &category,
+        serde_json::json!([{"title":"Concurrent pinned task"}]),
+    );
+    body["expected_operational_domain_bundle_hash"] = domain.clone();
+    let first = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("epic-domain-concurrent");
+    let second = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("epic-domain-concurrent");
+    let (first, second) = tokio::join!(first.send(&world), second.send(&world));
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(first.json()["epic_id"], second.json()["epic_id"]);
+    assert_eq!(first.json()["operational_domain_bundle_hash"], domain);
+    assert_ne!(first.json()["epic_id"], applied.json()["epic_id"]);
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .list_mini_projects(ProjectId::parse(&project).unwrap())
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            store
+                .get_receipt_by_key(&receipt.idempotency_key)
+                .unwrap()
+                .unwrap(),
+            receipt
+        );
+    });
 }
