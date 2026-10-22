@@ -9,6 +9,9 @@ export function contributePlanControl(client: PluginClientContext, screenId: str
   const pills = new Map<string, { workspaceId: string; registration: PluginButtonRegistration }>();
   const lifetime = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Hermes evaluates plugin bundles with function-scoped let/const, so a press handler made in the entry loop would
+  // open the last entry's plan. Each entry's IDs reach its handler only as this call's arguments.
+  const openPlan = (agentId: string, ids: readonly string[]) => () => { client.openScreen({ screenId, params: { tab: "Plan", agentId, ...(ids.length === 1 ? { sourceId: ids[0]! } : {}) } }); };
   const removeAll = () => { for (const pill of pills.values()) pill.registration.remove(); pills.clear(); };
   async function reconcile() {
     try {
@@ -25,8 +28,7 @@ export function contributePlanControl(client: PluginClientContext, screenId: str
         seen.add(entry.id);
         // Updating a descriptor avoids duplicate registrations on settings refresh.
         const contribution = { id: "open-linked-plan", workspaceId: entry.workspaceId, agentId: entry.id,
-          button: { title: "Open plan", icon: "BookOpen", label: "Open plan", behavior: { kind: "action" as const,
-            onPress() { client.openScreen({ screenId, params: { tab: "Plan", agentId: entry.id, ...(ids.length === 1 ? { sourceId: ids[0]! } : {}) } }); } } } };
+          button: { title: "Open plan", icon: "BookOpen", label: "Open plan", behavior: { kind: "action" as const, onPress: openPlan(entry.id, ids) } } };
         const current = pills.get(entry.id);
         if (current?.workspaceId === entry.workspaceId) current.registration.update(contribution.button);
         else { current?.registration.remove(); pills.set(entry.id, { workspaceId: entry.workspaceId, registration: client.addComposerPill(contribution) }); }
