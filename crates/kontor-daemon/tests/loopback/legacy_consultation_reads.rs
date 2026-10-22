@@ -124,7 +124,6 @@ async fn a_subjectless_settled_committee_remains_readable_without_rewriting_hist
     .await;
     let world = &boundary.composed.world;
     let project = &boundary.composed.project;
-    pin_jira_key_successor(world, project, &boundary.epic, "asma8114-legacy-committee").await;
     let path = format!(
         "/v1/projects/{project}/committee-runs/{}",
         boundary.committee_run

@@ -440,7 +440,7 @@ async fn pair_realm_with(
         current_project_revision(world, &project).await,
     )
     .await;
-    let (quick, preview_hash) = match selected {
+    let (_quick, _preview_hash) = match selected {
         None => {
             publish_core_team(
                 world,
@@ -493,19 +493,7 @@ async fn pair_realm_with(
             quick_session_selecting(world, &project, version, "LSA").await
         }
     };
-    let promoted = Call::post(
-        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
-        &promotion_apply_body(&preview_hash),
-    )
-    .signed_as(world, "operator")
-    .with_key("pp-promote")
-    .send(world)
-    .await;
-    assert_eq!(promoted.status, 200, "{}", promoted.body);
-    let epic = promoted.json()["epic_id"]
-        .as_str()
-        .expect("an epic id")
-        .to_owned();
+    let epic = pinned_runtime_epic(world, &project, "Planning pair epic").await;
     confirm_promoted_epic_identity(world, &project, &epic, "PROMO", "ASMA-9001");
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),

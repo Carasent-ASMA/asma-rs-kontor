@@ -98,7 +98,7 @@ fn business(daemon: &crate::Daemon) -> (ProjectId, MiniProjectId) {
 }
 
 #[tokio::test]
-async fn legacy_refuses_until_explicit_upgrade_and_delivery_edits_never_elevate_frozen_seats() {
+async fn domain_unpinned_legacy_refuses_roster_materialization_without_changing_frozen_seats() {
     use CoreTeamSeatPurpose::*;
     let directory = tempfile::tempdir().unwrap();
     let folder = source(directory.path());
@@ -223,7 +223,7 @@ async fn legacy_refuses_until_explicit_upgrade_and_delivery_edits_never_elevate_
         )
         .unwrap();
     let current = services.frozen_roster(project, epic).unwrap();
-    services
+    let refused = services
         .apply_roster_upgrade(
             &IdempotencyKey::parse("explicit-purpose-upgrade").unwrap(),
             project,
@@ -231,6 +231,103 @@ async fn legacy_refuses_until_explicit_upgrade_and_delivery_edits_never_elevate_
             &TopologyUpgradeApplyRequest {
                 preview_hash: preview.preview_hash,
                 expected_revision: current.revision_of_epic,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.rule.contains("operational_domain_unpinned"));
+    assert_eq!(
+        services.frozen_roster(project, epic).unwrap().revision,
+        legacy.revision
+    );
+    assert!(
+        daemon
+            .state()
+            .with_store(|store| store.list_topology_nodes(project, Some(epic)))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        daemon
+            .state()
+            .with_store(|store| store
+                .get_receipt_by_key(&IdempotencyKey::parse("explicit-purpose-upgrade").unwrap()))
+            .unwrap()
+            .is_none()
+    );
+    drop(services);
+    drop(daemon);
+    let daemon = start(&state_root, &folder);
+    let services = daemon.jira_reconciler();
+    assert_eq!(
+        services.frozen_roster(project, epic).unwrap().revision,
+        legacy.revision
+    );
+    for purpose in CoreTeamSeatPurpose::ALL {
+        assert!(
+            services
+                .epic_purpose(project, epic, *purpose)
+                .unwrap_err()
+                .rule
+                .contains("role_purpose_unpinned")
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_roster_upgrade_on_a_domain_pinned_epic_enables_only_its_frozen_purposes() {
+    use CoreTeamSeatPurpose::*;
+    let directory = tempfile::tempdir().unwrap();
+    let folder = source(directory.path());
+    let root = directory.path().join("state");
+    let daemon = start(&root, &folder);
+    let services = daemon.jira_reconciler();
+    let (project, _) = business(&daemon);
+    let tagged = publish(
+        &services,
+        project,
+        &selections(&services),
+        "pinned-purpose-publication",
+    )
+    .await;
+    super::epic_domain_tests::select_existing(&services, &folder, project).await;
+    let epic = super::domain_runtime_tests::epic(&services, project, "purpose-upgrade");
+    // Historical roster metadata, with the independently frozen domain retained.
+    let mut legacy = services.frozen_roster(project, epic).unwrap();
+    for seat in &mut legacy.revision.seats {
+        seat.purposes.clear();
+    }
+    services
+        .freeze_roster(project, epic, &legacy, None, kontor_api::now())
+        .unwrap();
+    assert!(
+        services
+            .epic_purpose(project, epic, Control)
+            .unwrap_err()
+            .rule
+            .contains("role_purpose_unpinned")
+    );
+    let preview = services
+        .preview_roster_upgrade(
+            project,
+            epic,
+            &RosterUpgradePreviewRequest {
+                target: RevisionRefDto {
+                    id: "core-team".into(),
+                    version: tagged.version,
+                },
+            },
+        )
+        .unwrap();
+    let before = services.frozen_roster(project, epic).unwrap();
+    services
+        .apply_roster_upgrade(
+            &IdempotencyKey::parse("pin-purpose-upgrade").unwrap(),
+            project,
+            epic,
+            &TopologyUpgradeApplyRequest {
+                preview_hash: preview.preview_hash,
+                expected_revision: before.revision_of_epic,
             },
         )
         .await
@@ -249,12 +346,13 @@ async fn legacy_refuses_until_explicit_upgrade_and_delivery_edits_never_elevate_
     let frozen = services.frozen_roster(project, epic).unwrap();
     drop(services);
     drop(daemon);
-    // All three selectors move, but no explicit roster upgrade was requested.
-    domain["delivery"]["architecture_closer_code"] = "LSA".into();
-    domain["delivery"]["process_closer_code"] = "TPM".into();
-    domain["delivery"]["control_role_code"] = "SA".into();
+    let path = folder.join("packs/operational-domain.yml");
+    let mut domain = read(&path);
+    domain["delivery"]["architecture_closer_code"] = "SA".into();
+    domain["delivery"]["process_closer_code"] = "QA".into();
+    domain["delivery"]["control_role_code"] = "QA".into();
     write(&path, &domain);
-    let daemon = start(&state_root, &folder);
+    let daemon = start(&root, &folder);
     let services = daemon.jira_reconciler();
     assert_eq!(
         services.frozen_roster(project, epic).unwrap().revision,
@@ -287,7 +385,7 @@ async fn legacy_refuses_until_explicit_upgrade_and_delivery_edits_never_elevate_
         .with_store(|store| store.list_seat_bindings(project, control.id))
         .unwrap()
         .into_iter()
-        .find(|seat| seat.role.role_code.as_str() == "LSA")
+        .find(|seat| seat.role.role_code.as_str() == "SA")
         .unwrap();
     assert_eq!(
         services
@@ -301,8 +399,7 @@ async fn legacy_refuses_until_explicit_upgrade_and_delivery_edits_never_elevate_
             .revision
             .seats
             .iter()
-            .all(|seat| seat.purposes.is_empty()),
-        "no legacy backfill"
+            .all(|seat| seat.purposes.is_empty())
     );
 }
 
@@ -312,7 +409,7 @@ async fn control_slot_requires_exact_frozen_role_for_reuse_and_release() {
     let folder = source(directory.path());
     let daemon = start(&directory.path().join("state"), &folder);
     let services = daemon.jira_reconciler();
-    let (project, epic) = business(&daemon);
+    let (project, _) = business(&daemon);
     let tagged = publish(
         &services,
         project,
@@ -320,6 +417,8 @@ async fn control_slot_requires_exact_frozen_role_for_reuse_and_release() {
         "control-binding-publication",
     )
     .await;
+    super::epic_domain_tests::select_existing(&services, &folder, project).await;
+    let epic = super::domain_runtime_tests::epic(&services, project, "exact-control-binding");
     let owner = tagged
         .seat_for_purpose(CoreTeamSeatPurpose::Control)
         .unwrap()

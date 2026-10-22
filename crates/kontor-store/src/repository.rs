@@ -5913,6 +5913,38 @@ impl SqliteStore {
         Ok(Some(snapshot))
     }
 
+    /// Commit a new launch and its optional persona together. An existing
+    /// intent keeps its exact persona (including none), even after a restart.
+    ///
+    /// # Errors
+    /// Refuses conflicting launch identity, invalid persona bytes, or storage
+    /// failure. Both new rows roll back together on refusal.
+    pub fn prepare_hosted_seat_launch_persona(
+        &self,
+        intent: &StoredHostedSeatLaunchIntent,
+        persona: Option<&kontor_core::spec::RolePersonaSnapshot>,
+    ) -> RepositoryResult<Option<kontor_core::spec::RolePersonaSnapshot>> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        let applied = self.prepare_hosted_seat_launch_intent(intent)?;
+        if applied == Applied::Created
+            && let Some(persona) = persona
+        {
+            self.record_hosted_seat_role_persona(
+                intent.project_id,
+                intent.seat_binding_id,
+                intent.occupancy_generation,
+                persona,
+            )?;
+        }
+        let frozen = self.get_hosted_seat_role_persona(
+            intent.project_id,
+            intent.seat_binding_id,
+            intent.occupancy_generation,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(frozen)
+    }
+
     /// Record what one hosted-seat launch resolved, before the native call.
     ///
     /// Idempotent for the same decision and refusing for a different one. A

@@ -71,7 +71,7 @@ pub(crate) async fn seed(world: &World, project: &str, body: &serde_json::Value)
         });
     let domain = kontor_profiles::bundled_operational_domain().unwrap();
     let state = world.daemon.state();
-    let (applied, roster) = state.with_store(|store| {
+    let applied = state.with_store(|store| {
         let applied = store
             .apply_epic(&EpicApplication {
                 project_id: project,
@@ -147,18 +147,182 @@ pub(crate) async fn seed(world: &World, project: &str, body: &serde_json::Value)
                 created_at: now,
             })
             .unwrap();
-        (applied, roster)
+        applied
     });
-    let ensured = Call::post(format!("/v1/projects/{project}/topology:ensure"), &serde_json::json!({
-        "target":{"scope":"epic_control", "epic_id":applied.mini_project_id}, "expected_revision":request.expected_revision,
-    })).signed_as(world, "admin").with_key(format!("legacy-fixture-{}", applied.mini_project_id)).send_to(&world.router).await;
-    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    install_geometry(world, project, applied.mini_project_id);
+    Answer { status:StatusCode::OK, body:serde_json::json!({
+        "project_id":project, "epic_id":applied.mini_project_id, "revision":applied.revision,
+        "epic_backlog_code":applied.epic_backlog_code, "applied":"created", "tasks":applied.tasks.iter().map(|task| serde_json::json!({
+            "task_id":task.task_id, "title":task.title, "revision":task.revision, "state":task.state.as_str(),
+        })).collect::<Vec<_>>(),
+    }).to_string() }
+}
+
+/// Install only explicitly historical pins/geometry/roster on an existing imported graph.
+/// These constructors never create a domain pin or call a production materializer.
+pub(crate) fn install_geometry(world: &World, project: ProjectId, epic: MiniProjectId) {
+    let state = world.daemon.state();
+    let now = kontor_api::now();
+    let domain = kontor_profiles::bundled_operational_domain().unwrap();
+    let roster = state.with_store(|store| {
+        let held = match store.get_epic_roster(project, epic).unwrap() {
+            Some(row) => row,
+            None => {
+                let current = store.get_current_core_team(project).unwrap().unwrap();
+                let row = StoredEpicRoster {
+                    project_id: project,
+                    mini_project_id: epic,
+                    core_team_version: current.version,
+                    catalog_hash: current.catalog_hash,
+                    seats: current.seats,
+                    quick_session_id: None,
+                    revision: AggregateRevision::INITIAL,
+                    pinned_at: now,
+                };
+                store.put_epic_roster(&row).unwrap();
+                row
+            }
+        };
+        kontor_teams::CoreTeamRevision {
+            version: held.core_team_version,
+            catalog_hash: held.catalog_hash,
+            seats: serde_json::from_value(held.seats).unwrap(),
+        }
+    });
     state.with_store(|store| {
-        let control = store
-            .list_topology_nodes(project, Some(applied.mini_project_id))
+        use kontor_core::repository::{
+            MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NewSessionTopologyNode,
+        };
+        for spec in &domain.topology_specs {
+            if store
+                .get_topology_spec(project, spec.spec_id, spec.version)
+                .unwrap()
+                .is_none()
+            {
+                store
+                    .publish_topology_spec(
+                        project,
+                        spec,
+                        &Shareability::default_for(ShareabilityTier::ProjectKnowledge).unwrap(),
+                        now,
+                    )
+                    .unwrap();
+            }
+        }
+        for definition in &domain.team_definitions {
+            if store
+                .get_team_definition(project, definition.definition_id, definition.version)
+                .unwrap()
+                .is_none()
+            {
+                store
+                    .publish_team_definition(project, definition, now)
+                    .unwrap();
+            }
+        }
+        if store
+            .get_project_team_definition_default(project)
             .unwrap()
-            .into_iter()
-            .find(|node| node.kind == domain.delivery.control_kind)
+            .is_none()
+        {
+            let definition = &domain.team_definitions[0];
+            store
+                .set_project_team_definition_default(
+                    &kontor_core::repository::ProjectTeamDefinitionDefault {
+                        project_id: project,
+                        expected: None,
+                        definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
+                            definition,
+                        )
+                        .unwrap(),
+                        operational_domain_bundle_hash: None,
+                        selected_at: now,
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        let selected = store
+            .get_project_team_definition_default(project)
+            .unwrap()
+            .unwrap();
+        let definition = store
+            .get_team_definition(
+                project,
+                selected.definition.definition_id,
+                selected.definition.version,
+            )
+            .unwrap()
+            .unwrap();
+        let topology = definition.topology.clone();
+        let spec = store
+            .get_topology_spec(project, topology.spec_id, topology.version)
+            .unwrap()
+            .unwrap();
+        store
+            .pin_mini_project_topology(&MiniProjectTopologySnapshot {
+                project_id: project,
+                mini_project_id: epic,
+                topology: topology.clone(),
+                pinned_at: now,
+            })
+            .unwrap();
+        store
+            .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+                project_id: project,
+                mini_project_id: epic,
+                definition: selected.definition,
+                operational_domain_bundle_hash: None,
+                pinned_at: now,
+            })
+            .unwrap();
+        let existing = store.list_topology_nodes(project, None).unwrap();
+        let root = match existing
+            .iter()
+            .find(|node| node.kind == spec.root_kind && node.parent_id.is_none())
+        {
+            Some(node) => node.id,
+            None => {
+                let id = TopologyNodeId::generate();
+                store
+                    .create_topology_node(&NewSessionTopologyNode {
+                        id,
+                        project_id: project,
+                        mini_project_id: None,
+                        topology: topology.clone(),
+                        kind: spec.root_kind.clone(),
+                        parent_id: None,
+                        task_id: None,
+                        created_at: now,
+                    })
+                    .unwrap();
+                id
+            }
+        };
+        let epic_node = TopologyNodeId::generate();
+        store
+            .create_topology_node(&NewSessionTopologyNode {
+                id: epic_node,
+                project_id: project,
+                mini_project_id: Some(epic),
+                topology: topology.clone(),
+                kind: domain.delivery.epic_kind.clone(),
+                parent_id: Some(root),
+                task_id: None,
+                created_at: now,
+            })
+            .unwrap();
+        let control = store
+            .create_topology_node(&NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id: project,
+                mini_project_id: Some(epic),
+                topology,
+                kind: domain.delivery.control_kind.clone(),
+                parent_id: Some(epic_node),
+                task_id: None,
+                created_at: now,
+            })
             .unwrap();
         for seat in &roster.seats {
             if seat.presence == EpicPresence::OnDemand {
@@ -183,17 +347,11 @@ pub(crate) async fn seed(world: &World, project: &str, body: &serde_json::Value)
         }
         assert!(
             store
-                .get_mini_project_team_definition(project, applied.mini_project_id)
+                .get_mini_project_team_definition(project, epic)
                 .unwrap()
                 .unwrap()
                 .operational_domain_bundle_hash
                 .is_none()
         );
     });
-    Answer { status:StatusCode::OK, body:serde_json::json!({
-        "project_id":project, "epic_id":applied.mini_project_id, "revision":applied.revision,
-        "epic_backlog_code":applied.epic_backlog_code, "applied":"created", "tasks":applied.tasks.iter().map(|task| serde_json::json!({
-            "task_id":task.task_id, "title":task.title, "revision":task.revision, "state":task.state.as_str(),
-        })).collect::<Vec<_>>(),
-    }).to_string() }
 }

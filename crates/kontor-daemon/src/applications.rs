@@ -7531,6 +7531,7 @@ impl Services {
         runtime: &RuntimeAdmissionEvidence,
     ) -> Result<PlacementAdmission, ApiError> {
         let state = self.state()?;
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let jira = state.with_store(|store| {
             Ok::<_, RepositoryError>((
                 store.confirmed_jira_epic_key(project_id, epic_id)?,
@@ -7631,11 +7632,11 @@ impl Services {
         // desk's own pin.
         let desk_led = definition.desk_leadership.as_ref();
         let control_kind =
-            desk_led.map_or(&self.domain.delivery.control_kind, |led| &led.epic_kind);
+            desk_led.map_or(&context.domain.delivery.control_kind, |led| &led.epic_kind);
         let (Some(esw), Some(ecp), Some(tsw)) = (
-            exact(&self.domain.delivery.epic_kind, None),
+            exact(&context.domain.delivery.epic_kind, None),
             exact(control_kind, None),
-            exact(&self.domain.delivery.task_kind, Some(task_id)),
+            exact(&context.domain.delivery.task_kind, Some(task_id)),
         ) else {
             return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
         };
@@ -7736,6 +7737,7 @@ impl Services {
             "team_definition_id": pin.definition.definition_id.to_string(),
             "team_definition_version": pin.definition.version.get(),
             "team_definition_hash": pin.definition.canonical_hash.as_str(),
+            "operational_domain_bundle_hash": context.bundle_hash,
             "worktree": canonical_worktree.as_str(),
             "containers": readbacks,
         });
@@ -7920,7 +7922,25 @@ impl Services {
         &self,
         role_code: &RoleCode,
     ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
-        let Some(prompt) = self.domain.role_prompt(role_code) else {
+        self.freeze_domain_persona(&self.domain, role_code)
+    }
+
+    fn freeze_epic_role_persona(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        role_code: &RoleCode,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
+        self.freeze_domain_persona(&context.domain, role_code)
+    }
+
+    fn freeze_domain_persona(
+        &self,
+        domain: &OperationalDomainPack,
+        role_code: &RoleCode,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let Some(prompt) = domain.role_prompt(role_code) else {
             return Ok(None);
         };
         kontor_core::spec::RolePersonaSnapshot::freeze(
@@ -8582,16 +8602,9 @@ impl Services {
     /// does, and doing it as a side effect of re-applying an epic would restaff
     /// a running one behind its operator's back.
     fn govern_epic(&self, project_id: ProjectId, epic_id: MiniProjectId) -> Result<(), ApiError> {
+        self.runtime_domain(project_id, Some(epic_id))?;
         let now = kontor_api::now();
-        let roster = match self.optional_frozen_roster(project_id, epic_id)? {
-            Some(frozen) => frozen,
-            None => {
-                let roster = self.epic_bootstrap_roster(project_id)?;
-                self.refuse_desk_led_roster_for(project_id, epic_id, &roster)?;
-                self.freeze_roster(project_id, epic_id, &roster, None, now)?;
-                roster
-            }
-        };
+        let roster = self.frozen_roster(project_id, epic_id)?;
         let control = self.ensure_scope_chain(
             project_id,
             &self.resolve_scope(
@@ -8629,19 +8642,9 @@ impl Services {
         project_id: ProjectId,
         epic_id: MiniProjectId,
     ) -> Result<EpicControlPlaneDto, ApiError> {
-        let scope = self.resolve_scope(
-            project_id,
-            &SemanticTopologyTargetDto::EpicControl { epic_id },
-        )?;
-        let nodes = self.scope_nodes(project_id, &scope)?;
-        // Matched on the scope's kind, never "the first node this epic has":
-        // an epic owns its ESW as well as its ECP, and the ESW holds none of
-        // the control-plane seats.
-        let Some(control) = scope
-            .kind
-            .as_ref()
-            .and_then(|kind| nodes.iter().find(|node| &node.kind == kind))
-        else {
+        // A projection reports recorded bindings without reinterpreting legacy
+        // rows or requiring a domain artifact for already-frozen evidence.
+        let Some(control) = self.recorded_core_team_node(project_id, epic_id)? else {
             return Ok(EpicControlPlaneDto {
                 materialized: false,
                 declared_seats: 0,
@@ -8654,7 +8657,7 @@ impl Services {
         };
         let state = self.state()?;
         // A desk Adam subject is placed once its desk's workspace is.
-        let host = self.session_container_node(control)?;
+        let host = self.session_container_node(&control)?;
         let materialized = state
             .with_store(|store| store.get_topology_node_container(project_id, host.id))
             .map_err(|error| self.refuse(&error))?
@@ -9363,7 +9366,7 @@ impl Services {
         target: &CoreTeamRevision,
         effects: &[TopologyUpgradeEffectDto],
     ) -> Result<ContentHash, ApiError> {
-        self.preview_hash(&serde_json::json!({
+        let mut document = serde_json::json!({
             "schema_version": 1,
             "operation": "epic_roster_upgrade_preview",
             "source_roster": &current.revision,
@@ -9376,7 +9379,16 @@ impl Services {
             "target_version": target.version.get(),
             "catalog": target.catalog_hash.as_str(),
             "effects": effect_digest(effects),
-        }))
+        });
+        if let Some(hash) = self
+            .state()?
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|pin| pin.operational_domain_bundle_hash)
+        {
+            document["operational_domain_bundle_hash"] = serde_json::json!(hash);
+        }
+        self.preview_hash(&document)
     }
 
     /// Find the published revision one roster preview was computed against.
@@ -9426,7 +9438,6 @@ impl Services {
         // frozen roster content and does not participate in the instant the
         // durable reads below have to share.
         let mut seats = self.core_team_seat_dtos(&roster.revision)?;
-        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let role_codes: Vec<_> = seats
             .iter()
             .map(|seat| seat.role.role_code.clone())
@@ -9442,10 +9453,12 @@ impl Services {
                     (Vec<CapturedCoreTeamSeat>, kontor_core::id::EventCursor),
                     RepositoryError,
                 > {
-                    let control = store
-                        .list_topology_nodes(project_id, Some(epic_id))?
-                        .into_iter()
-                        .find(|node| node.kind == control_kind);
+                    let control = Self::recorded_core_team_node_in(
+                        store,
+                        project_id,
+                        epic_id,
+                        &roster.revision,
+                    )?;
                     let held = match &control {
                         Some(node) => store.list_seat_bindings(project_id, node.id)?,
                         None => Vec::new(),
@@ -10286,6 +10299,7 @@ impl Services {
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
             "epic_revision": epic.revision.get(),
+            "operational_domain_bundle_hash": self.runtime_domain(project_id, Some(epic_id))?.bundle_hash,
             "seat_binding": binding.id.to_string(),
             "predecessor": {
                 "runtime_kind": predecessor.native_identity.runtime_kind.as_str(),
@@ -11163,7 +11177,6 @@ impl Services {
         project_id: ProjectId,
         target: &SemanticTopologyTargetDto,
     ) -> Result<TopologyScope, ApiError> {
-        let delivery = &self.domain.delivery;
         Ok(match target {
             SemanticTopologyTargetDto::ProjectRoot => TopologyScope {
                 node_id: None,
@@ -11175,7 +11188,7 @@ impl Services {
             },
             SemanticTopologyTargetDto::QuickSession { quick_session_id } => TopologyScope {
                 node_id: None,
-                kind: Some(delivery.quick_kind.clone()),
+                kind: Some(self.domain.delivery.quick_kind.clone()),
                 epic_id: None,
                 task_id: None,
                 desk_key: None,
@@ -11183,7 +11196,12 @@ impl Services {
             },
             SemanticTopologyTargetDto::Epic { epic_id } => TopologyScope {
                 node_id: None,
-                kind: Some(delivery.epic_kind.clone()),
+                kind: Some(
+                    self.runtime_domain(project_id, Some(*epic_id))?
+                        .domain
+                        .delivery
+                        .epic_kind,
+                ),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
                 desk_key: None,
@@ -11201,7 +11219,12 @@ impl Services {
                 let task = self.task_row(project_id, *task_id)?;
                 TopologyScope {
                     node_id: None,
-                    kind: Some(delivery.task_kind.clone()),
+                    kind: Some(
+                        self.runtime_domain(project_id, task.mini_project_id)?
+                            .domain
+                            .delivery
+                            .task_kind,
+                    ),
                     epic_id: Some(task.mini_project_id.ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::PlacementBlocked,
@@ -11218,7 +11241,12 @@ impl Services {
                     self.consultation_run(project_id, ConsultationRunId::Advisor(*advisor_run_id))?;
                 TopologyScope {
                     node_id: Some(run.topology_node_id),
-                    kind: Some(delivery.advisor_kind.clone()),
+                    kind: Some(
+                        self.runtime_domain(project_id, Some(run.mini_project_id))?
+                            .domain
+                            .delivery
+                            .advisor_kind,
+                    ),
                     epic_id: Some(run.mini_project_id),
                     task_id: None,
                     desk_key: None,
@@ -11232,7 +11260,12 @@ impl Services {
                 )?;
                 TopologyScope {
                     node_id: Some(run.topology_node_id),
-                    kind: Some(delivery.committee_kind.clone()),
+                    kind: Some(
+                        self.runtime_domain(project_id, Some(run.mini_project_id))?
+                            .domain
+                            .delivery
+                            .committee_kind,
+                    ),
                     epic_id: Some(run.mini_project_id),
                     task_id: None,
                     desk_key: None,
@@ -11273,8 +11306,17 @@ impl Services {
         }
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
-        let spec = self.pinned_spec(project_id)?;
+        let context = scope
+            .epic_id
+            .map(|epic| self.runtime_domain(project_id, Some(epic)))
+            .transpose()?;
+        let (topology, spec) = match &context {
+            Some(context) => (context.topology.clone(), self.domain_topology(context)?),
+            None => (
+                self.project_topology(project_id)?,
+                self.pinned_spec(project_id)?,
+            ),
+        };
         let now = kontor_api::now();
 
         if let Some(node_id) = scope.node_id {
@@ -11333,6 +11375,7 @@ impl Services {
             );
         };
 
+        let context = context.expect("an epic scope verified its domain before placement");
         let scoped = state
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?;
@@ -11346,19 +11389,19 @@ impl Services {
         let epic = self.ensure_node(
             scoped
                 .iter()
-                .find(|node| node.kind == self.domain.delivery.epic_kind),
+                .find(|node| node.kind == context.domain.delivery.epic_kind),
             NewSessionTopologyNode {
                 id: TopologyNodeId::generate(),
                 project_id,
                 mini_project_id: Some(epic_id),
                 topology: topology.clone(),
-                kind: self.domain.delivery.epic_kind.clone(),
+                kind: context.domain.delivery.epic_kind.clone(),
                 parent_id: Some(root.id),
                 task_id: None,
                 created_at: now,
             },
         )?;
-        if kind == self.domain.delivery.epic_kind {
+        if kind == context.domain.delivery.epic_kind {
             return Ok(epic);
         }
         // A desk-led epic's leadership is a subject below its desk's workspace,
@@ -11367,7 +11410,7 @@ impl Services {
             if kind == led.leadership.epic_kind {
                 return self.ensure_epic_subject(project_id, epic_id, &led, &topology);
             }
-            if kind == self.domain.delivery.control_kind {
+            if kind == context.domain.delivery.control_kind {
                 return Err(self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "a desk-led epic has no control plane of its own",
@@ -13873,20 +13916,31 @@ impl Services {
         &self,
         seat: &kontor_core::state::SeatBinding,
     ) -> Result<TopologySeatDto, ApiError> {
-        let segment = self
-            .domain
-            .role_catalogs
-            .iter()
-            .find(|catalog| {
-                catalog.catalog_id == seat.role.catalog_id
-                    && catalog.version == seat.role.catalog_revision
-            })
-            .and_then(|catalog| {
-                catalog
-                    .roles
-                    .iter()
-                    .find(|entry| entry.role_code == seat.role.role_code)
-            })
+        let epic_scoped = self
+            .state()?
+            .with_store(|store| store.get_topology_node(seat.project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some_and(|node| node.mini_project_id.is_some());
+        let catalog = if epic_scoped {
+            self.catalog_revision(seat.role.catalog_id, seat.role.catalog_revision)?
+        } else {
+            self.domain
+                .role_catalogs
+                .iter()
+                .find(|catalog| {
+                    catalog.catalog_id == seat.role.catalog_id
+                        && catalog.version == seat.role.catalog_revision
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the catalog revision this seat is pinned to is not in this build",
+                    )
+                })?
+        };
+        let segment = catalog
+            .role(&seat.role.role_code)
             .map(|entry| entry.segment)
             .ok_or_else(|| {
                 self.deny(
@@ -14874,12 +14928,13 @@ impl Services {
         caller: &kontor_core::state::SeatBinding,
     ) -> Result<StoredConsultationRun, ApiError> {
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
+        let domain_context = self.runtime_domain(project_id, Some(epic_id))?;
+        let topology = domain_context.topology.clone();
         let epic_node = self.ensure_scope_chain(
             project_id,
             &TopologyScope {
                 node_id: None,
-                kind: Some(self.domain.delivery.epic_kind.clone()),
+                kind: Some(domain_context.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
                 desk_key: None,
@@ -15052,13 +15107,13 @@ impl Services {
             project_id,
             mini_project_id: Some(epic_id),
             topology,
-            kind: self.domain.delivery.advisor_kind.clone(),
+            kind: domain_context.domain.delivery.advisor_kind.clone(),
             parent_id: Some(epic_node.id),
             task_id: request.task_id,
             created_at: now,
         };
         let configured = definition
-            .container(&self.domain.delivery.advisor_kind)
+            .container(&domain_context.domain.delivery.advisor_kind)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -15107,7 +15162,7 @@ impl Services {
                 project_id,
                 topology_node_id: node_id,
                 role_slot_id: slot.slot_id.clone(),
-                role: self.catalog_role_for_code(role_code)?,
+                role: self.role_in_catalog(&domain_context.catalog, role_code)?,
                 task_id: request.task_id,
                 team_run_id: None,
                 attach_deadline: deadline,
@@ -15488,12 +15543,13 @@ impl Services {
             re_review_evidence,
         } = invocation;
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
+        let domain_context = self.runtime_domain(project_id, Some(epic_id))?;
+        let topology = domain_context.topology.clone();
         let epic_node = self.ensure_scope_chain(
             project_id,
             &TopologyScope {
                 node_id: None,
-                kind: Some(self.domain.delivery.epic_kind.clone()),
+                kind: Some(domain_context.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
                 desk_key: None,
@@ -15643,7 +15699,7 @@ impl Services {
             project_id,
             mini_project_id: Some(epic_id),
             topology,
-            kind: self.domain.delivery.committee_kind.clone(),
+            kind: domain_context.domain.delivery.committee_kind.clone(),
             parent_id: Some(epic_node.id),
             task_id: request.task_id,
             created_at: now,
@@ -15654,7 +15710,7 @@ impl Services {
         let mut stored_seats = Vec::with_capacity(template.slots.len());
         let mut bindings = Vec::with_capacity(template.slots.len());
         for (slot, frozen) in template.slots.iter().zip(frozen_model_rungs) {
-            let code = self
+            let code = domain_context
                 .domain
                 .delivery
                 .role_code(&slot.logical_role)
@@ -15682,7 +15738,7 @@ impl Services {
                 project_id,
                 topology_node_id: node_id,
                 role_slot_id: slot.id.clone(),
-                role: self.catalog_role_for_code(code)?,
+                role: self.role_in_catalog(&domain_context.catalog, code)?,
                 task_id: request.task_id,
                 team_run_id: None,
                 attach_deadline: deadline,
@@ -22167,8 +22223,9 @@ impl Services {
                     "the Committee epic has no pinned Team Definition",
                 )
             })?;
+        let context = self.runtime_domain(project_id, Some(run.mini_project_id))?;
         let container = definition
-            .container(&self.domain.delivery.committee_kind)
+            .container(&context.domain.delivery.committee_kind)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -24472,6 +24529,7 @@ impl ApplicationOperations for Services {
                 "this scope has no epic for a materialization receipt to name",
             )
         })?;
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let replayed = self
             .replayed(
                 key,
@@ -24490,7 +24548,7 @@ impl ApplicationOperations for Services {
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
             if self.selected_config.is_some()
-                && scope.kind.as_ref() == Some(&self.domain.delivery.task_kind)
+                && scope.kind.as_ref() == Some(&context.domain.delivery.task_kind)
             {
                 let confirmed = state
                     .with_store(|store| {
@@ -24542,7 +24600,7 @@ impl ApplicationOperations for Services {
             // effects and can be repaired through `epics:preview/apply`.
             if let Some(epic_id) = scope.epic_id {
                 let requires_item_code = if let Some(kind) = scope.kind.as_ref() {
-                    self.pinned_spec(project_id)?
+                    self.domain_topology(&context)?
                         .node_kinds
                         .iter()
                         .find(|declared| &declared.kind == kind)
@@ -24562,7 +24620,7 @@ impl ApplicationOperations for Services {
                         )
                     })?;
                     if self.selected_config.is_some()
-                        && scope.kind.as_ref() == Some(&self.domain.delivery.task_kind)
+                        && scope.kind.as_ref() == Some(&context.domain.delivery.task_kind)
                         && let Some(task_id) = scope.task_id
                     {
                         self.freeze_task_checkout(project_id, task_id)?;
@@ -24592,7 +24650,7 @@ impl ApplicationOperations for Services {
             if let Some(task_id) = scope.task_id {
                 self.reconcile_ticket_delivery_seats(project_id, &leaf, task_id)?;
             }
-            let spec = self.pinned_spec(project_id)?;
+            let spec = self.domain_topology(&context)?;
             let declared = spec
                 .node_kinds
                 .iter()
@@ -24613,7 +24671,7 @@ impl ApplicationOperations for Services {
                         "the node's configured runtime family is unavailable",
                     )
                 })?;
-                if leaf.kind == self.domain.delivery.task_kind {
+                if leaf.kind == context.domain.delivery.task_kind {
                     let task_id = leaf.task_id.ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::PlacementBlocked,
@@ -24628,8 +24686,8 @@ impl ApplicationOperations for Services {
                     .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
                 let cwd = if matches!(
                     leaf.kind.as_str(),
-                    kind if kind == self.domain.delivery.advisor_kind.as_str()
-                        || kind == self.domain.delivery.committee_kind.as_str()
+                    kind if kind == context.domain.delivery.advisor_kind.as_str()
+                        || kind == context.domain.delivery.committee_kind.as_str()
                 ) {
                     self.consultation_root(
                         project.root_path.as_str(),
@@ -24656,7 +24714,7 @@ impl ApplicationOperations for Services {
             // persistent control seat: Advisor and Committee containers are
             // already populated from their pinned consultation definitions,
             // so adding the ECP control slot there invents an undeclared seat.
-            if leaf.kind == self.domain.delivery.control_kind
+            if leaf.kind == context.domain.delivery.control_kind
                 && declared
                     .projection_capabilities
                     .contains(&NodeProjectionCapability::SessionHost)
@@ -27746,7 +27804,7 @@ impl ApplicationOperations for Services {
         seat_binding_id: SeatBindingId,
     ) -> Result<HostedSeatOccupancyChainDto, ApiError> {
         let state = self.state()?;
-        let control_kind = self.epic_control_kind(project_id, epic_id)?;
+        let roster = self.frozen_roster(project_id, epic_id)?;
 
         // One acquisition for the whole chain.
         //
@@ -27765,10 +27823,8 @@ impl ApplicationOperations for Services {
         // directly. Mapping into DTOs is pure and happens after the release.
         let captured = state
             .with_store(|store| -> Result<CapturedOccupancyChain, RepositoryError> {
-                let Some(control) = store
-                    .list_topology_nodes(project_id, Some(epic_id))?
-                    .into_iter()
-                    .find(|node| node.kind == control_kind)
+                let Some(control) =
+                    Self::recorded_core_team_node_in(store, project_id, epic_id, &roster.revision)?
                 else {
                     return Ok(CapturedOccupancyChain::NoControlPlane);
                 };
@@ -28296,37 +28352,21 @@ impl ApplicationOperations for Services {
                 // Recorded before the effect, so the window between a created
                 // native and its persisted occupancy is never empty. This is
                 // idempotent for the same decision and refuses a different one.
-                state
-                    .with_store(|store| {
-                        store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
-                            project_id,
-                            seat_binding_id,
-                            occupancy_generation: FIRST_HOSTED_OCCUPANCY,
-                            autonomy,
-                            model_rung: model_rung.clone(),
-                            state: HostedSeatLaunchIntentState::Prepared,
-                            observed_native_id: None,
-                            prepared_at: kontor_api::now(),
-                            installed_at: None,
-                        })
-                    })
-                    .map_err(|error| self.refuse(&error))?;
-                // Frozen before the native call for the same reason the intent is:
-                // a launch whose acknowledgement is lost must still leave behind
-                // which persona it was going to deliver.
-                let role_persona = self.freeze_role_persona(&seat.role.role_code)?;
-                if let Some(persona) = role_persona.as_ref() {
-                    state
-                        .with_store(|store| {
-                            store.record_hosted_seat_role_persona(
-                                project_id,
-                                seat_binding_id,
-                                FIRST_HOSTED_OCCUPANCY,
-                                persona,
-                            )
-                        })
-                        .map_err(|error| self.refuse(&error))?;
-                }
+                let role_persona = self.prepare_epic_seat_launch(
+                    epic_id,
+                    &seat.role.role_code,
+                    &StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id,
+                        occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                        autonomy,
+                        model_rung: model_rung.clone(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    },
+                )?;
                 let launch_provenance = leadership
                     .get(seat.role.role_code.as_str())
                     .map(LeadershipRoute::launch_provenance);
@@ -29088,38 +29128,21 @@ impl ApplicationOperations for Services {
                 Some(intent) => intent.autonomy,
                 None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
             };
-            state
-                .with_store(|store| {
-                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
-                        project_id,
-                        seat_binding_id: plan.binding.id,
-                        occupancy_generation: successor_occupancy_generation,
-                        autonomy: successor_autonomy,
-                        model_rung: plan.desired.clone(),
-                        state: HostedSeatLaunchIntentState::Prepared,
-                        observed_native_id: None,
-                        prepared_at: kontor_api::now(),
-                        installed_at: None,
-                    })
-                })
-                .map_err(|error| self.refuse(&error))?;
-            // A successor is its own occupancy, so it freezes its own persona.
-            // Reading the predecessor's would report a persona this native was
-            // never created under, which is the exact confusion a per-seat
-            // record would permit.
-            let role_persona = self.freeze_role_persona(&plan.binding.role.role_code)?;
-            if let Some(persona) = role_persona.as_ref() {
-                state
-                    .with_store(|store| {
-                        store.record_hosted_seat_role_persona(
-                            project_id,
-                            plan.binding.id,
-                            successor_occupancy_generation,
-                            persona,
-                        )
-                    })
-                    .map_err(|error| self.refuse(&error))?;
-            }
+            let role_persona = self.prepare_epic_seat_launch(
+                epic_id,
+                &plan.binding.role.role_code,
+                &StoredHostedSeatLaunchIntent {
+                    project_id,
+                    seat_binding_id: plan.binding.id,
+                    occupancy_generation: successor_occupancy_generation,
+                    autonomy: successor_autonomy,
+                    model_rung: plan.desired.clone(),
+                    state: HostedSeatLaunchIntentState::Prepared,
+                    observed_native_id: None,
+                    prepared_at: kontor_api::now(),
+                    installed_at: None,
+                },
+            )?;
             if let Some(placed) = plan.leadership.as_ref() {
                 self.record_leadership_decision(
                     "core_team_route_correction",
@@ -30126,6 +30149,18 @@ impl ApplicationOperations for Services {
             // their next try is refused with "the epic's roster moved since the
             // caller previewed it" — naming an edit that was theirs. Re-reading
             // the epic and previewing again clears it.
+            let pin = state
+                .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            self.domain_for_definition(
+                project_id,
+                &pin.definition,
+                pin.operational_domain_bundle_hash.as_ref(),
+                Some(&target.revision),
+            )?;
             self.refuse_desk_led_roster_for(project_id, epic_id, &target)?;
             self.freeze_roster(project_id, epic_id, &target, target.quick_session_id, now)?;
             let control = self.ensure_scope_chain(
@@ -44103,7 +44138,17 @@ impl Services {
                     .map_err(|error| self.refuse_domain(&error))?;
                 let slots: Vec<RoleSlotId> =
                     team.slots.iter().map(|slot| slot.id.clone()).collect();
-                self.preflight_delivery_slots_against(definition, &node.kind, &slots)?;
+                self.preflight_delivery_slots_against(
+                    definition,
+                    &node.kind,
+                    &slots,
+                    self.domain.role_catalogs.first().ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "this build ships no role catalog",
+                        )
+                    })?,
+                )?;
             }
         }
         Ok(())
@@ -44433,7 +44478,8 @@ impl Services {
                 )
             })?;
         self.ensure_no_team_definition_migration(project_id, epic_id)?;
-        let topology = self.project_topology(project_id)?;
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
+        let topology = context.topology.clone();
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, topology.spec_id, topology.version)
@@ -44501,13 +44547,13 @@ impl Services {
         let epic = self.ensure_node(
             scoped
                 .iter()
-                .find(|node| node.kind == self.domain.delivery.epic_kind),
+                .find(|node| node.kind == context.domain.delivery.epic_kind),
             NewSessionTopologyNode {
                 id: TopologyNodeId::generate(),
                 project_id,
                 mini_project_id: Some(epic_id),
                 topology: topology.clone(),
-                kind: self.domain.delivery.epic_kind.clone(),
+                kind: context.domain.delivery.epic_kind.clone(),
                 parent_id: Some(root.id),
                 task_id: None,
                 created_at: now,
@@ -44523,13 +44569,13 @@ impl Services {
             self.ensure_node(
                 scoped
                     .iter()
-                    .find(|node| node.kind == self.domain.delivery.control_kind),
+                    .find(|node| node.kind == context.domain.delivery.control_kind),
                 NewSessionTopologyNode {
                     id: TopologyNodeId::generate(),
                     project_id,
                     mini_project_id: Some(epic_id),
                     topology: topology.clone(),
-                    kind: self.domain.delivery.control_kind.clone(),
+                    kind: context.domain.delivery.control_kind.clone(),
                     parent_id: Some(epic.id),
                     task_id: None,
                     created_at: now,
@@ -44552,7 +44598,7 @@ impl Services {
                 project_id,
                 mini_project_id: Some(epic_id),
                 topology,
-                kind: self.domain.delivery.task_kind.clone(),
+                kind: context.domain.delivery.task_kind.clone(),
                 parent_id: Some(epic.id),
                 task_id: Some(task_id),
                 created_at: now,
@@ -44990,6 +45036,7 @@ impl Services {
         epic_id: MiniProjectId,
         task_id: TaskId,
     ) -> Result<Option<bool>, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let state = self.state()?;
         // A task with no active workflow is not a candidate at all. `None`
         // says there is no candidate to include in the runtime-evidence
@@ -45023,7 +45070,7 @@ impl Services {
         match self.preflight_delivery_slots_for(
             project_id,
             Some(epic_id),
-            &self.domain.delivery.task_kind,
+            &context.domain.delivery.task_kind,
             &slots,
         ) {
             Ok(()) => Ok(Some(true)),
@@ -45049,7 +45096,12 @@ impl Services {
         slots: &[RoleSlotId],
     ) -> Result<(), ApiError> {
         let definition = self.governing_team_definition_for(project_id, epic_id)?;
-        self.preflight_delivery_slots_against(&definition, kind, slots)
+        self.preflight_delivery_slots_against(
+            &definition,
+            kind,
+            slots,
+            &self.runtime_domain(project_id, epic_id)?.catalog,
+        )
     }
 
     /// Apply the delivery-slot preflight to one exact immutable definition.
@@ -45061,6 +45113,7 @@ impl Services {
         definition: &TeamDefinitionSpec,
         kind: &TopologyKindKey,
         slots: &[RoleSlotId],
+        catalog: &kontor_core::spec::RoleCatalogRevision,
     ) -> Result<(), ApiError> {
         let mut rendered = BTreeSet::new();
         for slot in slots {
@@ -45089,7 +45142,7 @@ impl Services {
             // And the registered code has to be one the catalog actually
             // declares. Proving it here means a repair that writes several
             // seats cannot get half way and then fail on the last one.
-            self.catalog_role_for_code(code)?;
+            self.role_in_catalog(catalog, code)?;
         }
         Ok(())
     }
@@ -45176,7 +45229,8 @@ impl Services {
                 "this delivery slot is registered as a display label and has no role code",
             ));
         };
-        self.catalog_role_for_code(code)
+        let context = self.runtime_domain(node.project_id, node.mini_project_id)?;
+        self.role_in_catalog(&context.catalog, code)
     }
 
     /// The Team Definition that governs one node's seats.
@@ -45258,12 +45312,28 @@ impl Services {
         &self,
         code: &kontor_core::id::RoleCode,
     ) -> Result<CatalogRoleRef, ApiError> {
-        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+        self.domain_catalog_role(&self.domain, code)
+    }
+
+    fn domain_catalog_role(
+        &self,
+        domain: &OperationalDomainPack,
+        code: &RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
+        let catalog = domain.role_catalogs.first().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
                 "this build ships no role catalog",
             )
         })?;
+        self.role_in_catalog(catalog, code)
+    }
+
+    fn role_in_catalog(
+        &self,
+        catalog: &kontor_core::spec::RoleCatalogRevision,
+        code: &RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
         // A code the catalog does not declare *is* a refusal rather than a gap:
         // the seeded data contradicts itself, and a seat placed under it would
         // be recorded against a role no revision defines.
@@ -45527,6 +45597,15 @@ impl Services {
         // else. A desk has no execution scope at all: its runtime request
         // carries none, and its names and kinds come from the desk's own pin.
         let subject = self.container_subject(node)?;
+        let task_kind = match &subject {
+            ContainerSubject::Epic(epic) => Some(
+                self.runtime_domain(project_id, Some(*epic))?
+                    .domain
+                    .delivery
+                    .task_kind,
+            ),
+            ContainerSubject::Desk { .. } => None,
+        };
         let epic_scope = match subject {
             ContainerSubject::Epic(epic_id) => {
                 Some(self.execution_scope(project_id, epic_id, None, adapter)?)
@@ -45611,7 +45690,7 @@ impl Services {
                 (ContainerSubject::Epic(_), None) => epic_scope.clone(),
                 (ContainerSubject::Desk { .. }, _) => None,
             };
-            if level.kind != self.domain.delivery.task_kind {
+            if task_kind.as_ref() != Some(&level.kind) {
                 level_scope = level_scope.map(ExecutionScope::without_task_checkout);
             }
             let capabilities = if let Some(definition) = team_definition.as_ref() {
@@ -46245,9 +46324,10 @@ impl Services {
         topic: &ExternalName,
         re_review: Option<&CommitteeReReviewProvenance>,
     ) -> Result<ContentHash, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let kind = match family {
-            ConsultationFamily::Advisor => &self.domain.delivery.advisor_kind,
-            ConsultationFamily::Committee => &self.domain.delivery.committee_kind,
+            ConsultationFamily::Advisor => &context.domain.delivery.advisor_kind,
+            ConsultationFamily::Committee => &context.domain.delivery.committee_kind,
             // A planning pair's container kind is never the domain's: its own
             // published document names it explicitly, and only the planning
             // pair invocation path passes it.
@@ -50375,6 +50455,18 @@ mod coherence {
                 .purpose_roles(),
         )
         .expect("the mandatory roster resolves");
+        store
+            .put_epic_roster(&StoredEpicRoster {
+                project_id,
+                mini_project_id: epic_id,
+                core_team_version: revision.version,
+                catalog_hash: revision.catalog_hash.clone(),
+                seats: serde_json::to_value(&revision.seats).unwrap(),
+                quick_session_id: None,
+                revision: AggregateRevision::INITIAL,
+                pinned_at: created_at,
+            })
+            .expect("historical roster is frozen");
         let lead = revision
             .seats
             .iter()
@@ -50810,3 +50902,6 @@ mod domain_selection_tests;
 #[cfg(test)]
 #[path = "applications/epic_domain_tests.rs"]
 mod epic_domain_tests;
+
+#[cfg(test)]
+mod domain_runtime_tests;

@@ -288,7 +288,13 @@ impl<'a> InvokeOwner for InvokePorts<'a> {
             project_id,
             &TopologyScope {
                 node_id: None,
-                kind: Some(self.0.domain.delivery.epic_kind.clone()),
+                kind: Some(
+                    self.0
+                        .runtime_domain(project_id, Some(epic_id))?
+                        .domain
+                        .delivery
+                        .epic_kind,
+                ),
                 epic_id: Some(epic_id),
                 task_id: None,
                 desk_key: None,
