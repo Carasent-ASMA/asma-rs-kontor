@@ -24690,6 +24690,7 @@ impl TeamDefinitionRepository for SqliteStore {
     fn set_project_team_definition_default(
         &self,
         selection: &ProjectTeamDefinitionDefault,
+        expected_operational_domain_bundle_hash: Option<&ContentHash>,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
         team_definition_in(&transaction, selection.project_id, &selection.definition)?;
@@ -24697,17 +24698,24 @@ impl TeamDefinitionRepository for SqliteStore {
         // the same transaction that writes, so a bootstrap that observed "no
         // default" cannot silently overwrite an explicit selection made between
         // its read and its write.
-        let current: Option<(String, i64, String)> = transaction
+        let current: Option<(String, i64, String, Option<String>)> = transaction
             .query_row(
-                "SELECT definition_id, version, canonical_hash
+                "SELECT definition_id, version, canonical_hash, operational_domain_bundle_hash
                  FROM project_team_definition_defaults WHERE project_id = ?1",
                 params![selection.project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
+        let current_domain = current.as_ref().and_then(|row| row.3.as_deref());
+        if current_domain != expected_operational_domain_bundle_hash.map(ContentHash::as_str) {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_selection_moved",
+            ));
+        }
         let current = current
-            .map(|(definition_id, version, hash)| {
+            .map(|(definition_id, version, hash, _)| {
                 Ok::<_, RepositoryError>(TeamDefinitionSnapshot {
                     definition_id: TeamDefinitionId::parse(&definition_id)?,
                     version: read_version(version)?,
@@ -24724,19 +24732,21 @@ impl TeamDefinitionRepository for SqliteStore {
         transaction
             .execute(
                 "INSERT INTO project_team_definition_defaults
-                     (project_id, definition_id, version, canonical_hash, selected_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                     (project_id, definition_id, version, canonical_hash, selected_at, operational_domain_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(project_id) DO UPDATE SET
                      definition_id = excluded.definition_id,
                      version = excluded.version,
                      canonical_hash = excluded.canonical_hash,
-                     selected_at = excluded.selected_at",
+                     selected_at = excluded.selected_at,
+                     operational_domain_bundle_hash = excluded.operational_domain_bundle_hash",
                 params![
                     selection.project_id.to_string(),
                     selection.definition.definition_id.to_string(),
                     version_column(selection.definition.version),
                     selection.definition.canonical_hash.as_str(),
                     text(selection.selected_at),
+                    selection.operational_domain_bundle_hash.as_ref().map(ContentHash::as_str),
                 ],
             )
             .map_err(backend)?;
@@ -24748,18 +24758,18 @@ impl TeamDefinitionRepository for SqliteStore {
         &self,
         project_id: ProjectId,
     ) -> RepositoryResult<Option<ProjectTeamDefinitionDefault>> {
-        let found: Option<(String, i64, String, String)> = self
+        let found: Option<(String, i64, String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT definition_id, version, canonical_hash, selected_at
+                "SELECT definition_id, version, canonical_hash, selected_at, operational_domain_bundle_hash
                  FROM project_team_definition_defaults WHERE project_id = ?1",
                 params![project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .map_err(backend)?;
         found
-            .map(|(definition_id, version, hash, selected_at)| {
+            .map(|(definition_id, version, hash, selected_at, domain)| {
                 let definition = TeamDefinitionSnapshot {
                     definition_id: TeamDefinitionId::parse(&definition_id)?,
                     version: read_version(version)?,
@@ -24772,6 +24782,10 @@ impl TeamDefinitionRepository for SqliteStore {
                     // exactly what it saw.
                     expected: Some(definition.clone()),
                     definition,
+                    operational_domain_bundle_hash: domain
+                        .as_deref()
+                        .map(ContentHash::parse)
+                        .transpose()?,
                     selected_at: read_timestamp(&selected_at)?,
                 })
             })
@@ -24801,12 +24815,26 @@ impl TeamDefinitionRepository for SqliteStore {
             });
         }
         team_definition_in(&transaction, snapshot.project_id, &snapshot.definition)?;
+        if snapshot.operational_domain_bundle_hash.is_some() {
+            let migrating: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_definition_migration_intents
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND state IN ('recorded', 'applying'))",
+                params![snapshot.project_id.to_string(), snapshot.mini_project_id.to_string()],
+                |row| row.get(0),
+            ).map_err(backend)?;
+            if migrating {
+                return Err(conflict(
+                    "mini project team definition",
+                    "operational_domain_migration_in_flight",
+                ));
+            }
+        }
         transaction
             .execute(
                 "INSERT INTO mini_project_team_definition_snapshots
                      (mini_project_id, project_id, definition_id, version, canonical_hash,
-                      pinned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                      pinned_at, operational_domain_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     snapshot.mini_project_id.to_string(),
                     snapshot.project_id.to_string(),
@@ -24814,6 +24842,10 @@ impl TeamDefinitionRepository for SqliteStore {
                     version_column(snapshot.definition.version),
                     snapshot.definition.canonical_hash.as_str(),
                     text(snapshot.pinned_at),
+                    snapshot
+                        .operational_domain_bundle_hash
+                        .as_ref()
+                        .map(ContentHash::as_str),
                 ],
             )
             .map_err(backend)?;
@@ -24826,22 +24858,26 @@ impl TeamDefinitionRepository for SqliteStore {
         project_id: ProjectId,
         mini_project_id: MiniProjectId,
     ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {
-        let found: Option<(String, i64, String, String)> = self
+        let found: Option<(String, i64, String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT definition_id, version, canonical_hash, pinned_at
+                "SELECT definition_id, version, canonical_hash, pinned_at, operational_domain_bundle_hash
                  FROM mini_project_team_definition_snapshots
                  WHERE project_id = ?1 AND mini_project_id = ?2",
                 params![project_id.to_string(), mini_project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .map_err(backend)?;
         found
-            .map(|(definition_id, version, hash, pinned_at)| {
+            .map(|(definition_id, version, hash, pinned_at, domain)| {
                 Ok(MiniProjectTeamDefinitionSnapshot {
                     project_id,
                     mini_project_id,
+                    operational_domain_bundle_hash: domain
+                        .as_deref()
+                        .map(ContentHash::parse)
+                        .transpose()?,
                     definition: TeamDefinitionSnapshot {
                         definition_id: TeamDefinitionId::parse(&definition_id)?,
                         version: read_version(version)?,
@@ -25313,6 +25349,17 @@ impl TeamDefinitionRepository for SqliteStore {
         // migration of something else.
         let current =
             self.get_mini_project_team_definition(migration.project_id, migration.mini_project_id)?;
+        // The existing intent records definition retitles, not domain changes.
+        // It must not reinterpret a domain-pinned epic without that identity.
+        if current
+            .as_ref()
+            .is_some_and(|pin| pin.operational_domain_bundle_hash.is_some())
+        {
+            return Err(conflict(
+                "team definition migration",
+                "operational_domain_upgrade_unsupported",
+            ));
+        }
         if current.as_ref().map(|pin| &pin.definition) != migration.from.as_ref() {
             return Err(conflict(
                 "team definition migration",
@@ -25616,6 +25663,15 @@ impl TeamDefinitionRepository for SqliteStore {
         // And the epic must still be where the intent left it. Anything else
         // moved the pin behind this migration's back.
         let current = self.get_mini_project_team_definition(project_id, stored.mini_project_id)?;
+        if current
+            .as_ref()
+            .is_some_and(|pin| pin.operational_domain_bundle_hash.is_some())
+        {
+            return Err(conflict(
+                "team definition migration",
+                "operational_domain_upgrade_unsupported",
+            ));
+        }
         if current.as_ref().map(|pin| &pin.definition) != stored.from.as_ref() {
             return Err(conflict(
                 "team definition migration",

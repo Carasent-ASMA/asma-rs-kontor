@@ -4304,6 +4304,9 @@ pub struct ProjectTeamDefinitionDefault {
     pub expected: Option<TeamDefinitionSnapshot>,
     /// Exact published revision and hash.
     pub definition: TeamDefinitionSnapshot,
+    /// Existing immutable bundle identity that supplies this selection's domain context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// Selection instant.
     pub selected_at: Timestamp,
 }
@@ -4317,6 +4320,9 @@ pub struct MiniProjectTeamDefinitionSnapshot {
     pub mini_project_id: MiniProjectId,
     /// Exact published revision and hash.
     pub definition: TeamDefinitionSnapshot,
+    /// Domain context frozen with the epic, never inferred from a later project default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// Pinning instant.
     pub pinned_at: Timestamp,
 }
@@ -4777,12 +4783,15 @@ pub trait TeamDefinitionRepository {
     ///
     /// Existing epic pins are immutable under this call; moving one is the
     /// separate migration authority below.
+    /// `expected_operational_domain_bundle_hash` is the context read with
+    /// `selection.expected`; definition equality alone is not a complete CAS.
     ///
     /// # Errors
     /// Refuses a missing or hash-mismatched revision.
     fn set_project_team_definition_default(
         &self,
         selection: &ProjectTeamDefinitionDefault,
+        expected_operational_domain_bundle_hash: Option<&ContentHash>,
     ) -> RepositoryResult<()>;
 
     /// Read the selected project default.

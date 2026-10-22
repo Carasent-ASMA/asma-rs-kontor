@@ -825,7 +825,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // a marker the operator restored for a later outage.
     // v139 retains the activated publication policy's immutable source hash.
     // v140 freezes task checkout intents and their first Git readback.
-    assert_eq!(SCHEMA_VERSION, 140);
+    // v141 adds nullable domain context to existing selection/epic wrappers,
+    // without backfill.
+    assert_eq!(SCHEMA_VERSION, 141);
 }
 
 #[test]
@@ -7172,6 +7174,17 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
         checkout_rows, 0,
         "historical fixture must not erase checkout evidence"
     );
+    let domain_pins: i64 = connection.query_row(
+        "SELECT (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL)
+              + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        domain_pins, 0,
+        "historical fixture must not erase domain pins"
+    );
+    connection.execute_batch("ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash;
+        ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
     connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
     connection
         .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")

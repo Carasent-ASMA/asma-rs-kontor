@@ -11942,6 +11942,7 @@ impl Services {
             None => state
                 .with_store(|store| {
                     store.pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+                        operational_domain_bundle_hash: None,
                         project_id,
                         mini_project_id: epic_id,
                         definition: definition.clone(),
@@ -25839,12 +25840,16 @@ impl ApplicationOperations for Services {
                 self.target_of_project_team_definition_preview(project_id, &request.preview_hash)?;
             state
                 .with_store(|store| {
-                    store.set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-                        project_id,
-                        expected,
-                        definition: selected,
-                        selected_at: kontor_api::now(),
-                    })
+                    store.set_project_team_definition_default(
+                        &ProjectTeamDefinitionDefault {
+                            operational_domain_bundle_hash: None,
+                            project_id,
+                            expected,
+                            definition: selected,
+                            selected_at: kontor_api::now(),
+                        },
+                        None,
+                    )
                 })
                 .map_err(|error| self.refuse(&error))?;
         }
@@ -44439,12 +44444,16 @@ impl Services {
         let now = kontor_api::now();
         state
             .with_store(|store| {
-                store.set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-                    project_id,
-                    expected: None,
-                    definition: snapshot.clone(),
-                    selected_at: now,
-                })
+                store.set_project_team_definition_default(
+                    &ProjectTeamDefinitionDefault {
+                        operational_domain_bundle_hash: None,
+                        project_id,
+                        expected: None,
+                        definition: snapshot.clone(),
+                        selected_at: now,
+                    },
+                    None,
+                )
             })
             .map_err(|error| self.refuse(&error))?;
         Ok((snapshot, definition))

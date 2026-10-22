@@ -49,7 +49,11 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 17;
+pub const EXPORT_SCHEMA_VERSION: u32 = 18;
+
+/// Selection context cannot be lost by an older export generation.
+const OPERATIONAL_DOMAIN_SCHEMA_VERSION: i64 = 139;
+const OPERATIONAL_DOMAIN_EXPORT_VERSION: u32 = 18;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
@@ -773,6 +777,46 @@ impl KontorExportV1 {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation carries quota records it did not define",
             });
+        }
+        if self.schema_version < OPERATIONAL_DOMAIN_EXPORT_VERSION
+            && (self.database_schema_version >= OPERATIONAL_DOMAIN_SCHEMA_VERSION
+                || self
+                    .records
+                    .project_team_definition_defaults
+                    .iter()
+                    .any(|row| row.operational_domain_bundle_hash.is_some())
+                || self
+                    .records
+                    .mini_project_team_definition_snapshots
+                    .iter()
+                    .any(|row| row.operational_domain_bundle_hash.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove operational domain pin completeness",
+            });
+        }
+        for hash in self
+            .records
+            .project_team_definition_defaults
+            .iter()
+            .filter_map(|row| row.operational_domain_bundle_hash.as_deref())
+            .chain(
+                self.records
+                    .mini_project_team_definition_snapshots
+                    .iter()
+                    .filter_map(|row| row.operational_domain_bundle_hash.as_deref()),
+            )
+        {
+            if self.database_schema_version < OPERATIONAL_DOMAIN_SCHEMA_VERSION {
+                return Err(BackupError::Verification {
+                    detail: "the export carries operational domain pins its database generation could not hold",
+                });
+            }
+            if ContentHash::parse(hash).is_err() {
+                return Err(BackupError::Verification {
+                    detail: "operational domain bundle pin is not a content hash",
+                });
+            }
         }
         if ContentHash::of(&self.canonical_records_bytes()?) != self.records_hash {
             return Err(BackupError::Verification {
@@ -2002,6 +2046,8 @@ exported_tables! {
         version: i64,
         canonical_hash: String,
         selected_at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operational_domain_bundle_hash: Option<String>,
     }
     mini_project_team_definition_snapshots: MiniProjectTeamDefinitionSnapshotsRow from "mini_project_team_definition_snapshots" key(mini_project_id) {
         mini_project_id: String,
@@ -2010,6 +2056,8 @@ exported_tables! {
         version: i64,
         canonical_hash: String,
         pinned_at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operational_domain_bundle_hash: Option<String>,
     }
     desks: DesksRow from "desks" key(project_id, desk_key) {
         project_id: String,

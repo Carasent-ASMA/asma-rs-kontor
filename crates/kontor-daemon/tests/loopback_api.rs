@@ -24239,6 +24239,7 @@ fn register_test_delivery_slots(world: &World, project: &str, slots: &[(&str, &s
         store
             .set_project_team_definition_default(
                 &kontor_core::repository::ProjectTeamDefinitionDefault {
+                    operational_domain_bundle_hash: None,
                     project_id,
                     expected: selected.map(|current| current.definition),
                     definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
@@ -24247,6 +24248,7 @@ fn register_test_delivery_slots(world: &World, project: &str, slots: &[(&str, &s
                     .expect("a snapshot"),
                     selected_at: kontor_api::now(),
                 },
+                None,
             )
             .expect("the test selects the vocabulary it launches");
     });
