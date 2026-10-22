@@ -34,6 +34,8 @@ pub struct ProjectSettings {
     pub forge: ForgeSettings,
     /// Project worktree convention.
     pub worktree_layout: String,
+    /// Optional consultation convention; a candidate until its bundle is activated.
+    pub consultation_layout: Option<String>,
     /// Configured check-run names.
     pub check_runs: Vec<String>,
     /// Validated authoring projection; publication reads only its activated bundle.
@@ -116,6 +118,8 @@ impl ConfigFolder {
         let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
             .map_err(|_| refusal(&entry_path, "invalid YAML configuration"))?;
         crate::project_paths::validate(&raw["project"])
+            .map_err(|problem| refusal(&entry_path, problem))?;
+        crate::project_paths::consultation_policy(&text)
             .map_err(|problem| refusal(&entry_path, problem))?;
         let mut entry: Entry = serde_yaml_ng::from_str(&text).map_err(|_| {
             refusal(

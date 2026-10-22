@@ -590,7 +590,7 @@ fn publication_is_an_optional_explicit_project_policy_in_the_same_schema() {
     let schema = read("config/examples/orchestration/orchestration.schema.yml");
     assert_eq!(
         schema_keys(&schema["project"]["optional"], "project.optional"),
-        ["project_id", "publication"]
+        ["project_id", "publication", "consultation_layout"]
     );
     assert_eq!(
         schema_keys(

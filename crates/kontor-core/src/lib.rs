@@ -103,6 +103,7 @@ pub mod memory;
 pub mod naming;
 pub mod open_question;
 pub mod operational_gap;
+pub mod placement;
 pub mod planning_pair;
 pub mod publication;
 pub mod pull_request;

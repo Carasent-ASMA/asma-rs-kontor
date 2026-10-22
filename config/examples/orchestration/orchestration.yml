@@ -94,6 +94,7 @@ project:
   attention_channel: 'attention:platform-owner'
   glossary: project/docs/GLOSSARY.md
   worktree_layout: '.worktrees/<key-slug>/<module>'
+  consultation_layout: 'consultations/<key-slug>/<node>'
   check_runs: [publication-branch-title]
 
   capacity:
