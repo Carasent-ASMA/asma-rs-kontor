@@ -491,6 +491,52 @@ fn references_resolve_from_the_selected_folder_and_refuse_escape_or_json() {
 }
 
 #[test]
+fn a_normal_entry_file_is_selected_inside_its_config_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+
+    let selected = ConfigFolder::select(Some(&folder), None).unwrap();
+
+    assert_eq!(selected.root(), folder.canonicalize().unwrap());
+    assert!(
+        folder
+            .join(ENTRY)
+            .canonicalize()
+            .unwrap()
+            .starts_with(selected.root())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_entry_parent_outside_the_selected_folder_refuses_before_state_creation() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    let inside = folder.join("inside");
+    std::fs::rename(folder.join("orchestration"), &inside).unwrap();
+    let outside = root.path().join("outside orchestration");
+    std::fs::create_dir(&outside).unwrap();
+    let entry = std::fs::read_to_string(inside.join("orchestration.yml"))
+        .unwrap()
+        .replace("orchestration/", "inside/");
+    std::fs::write(outside.join("orchestration.yml"), entry).unwrap();
+    std::os::unix::fs::symlink(&outside, folder.join("orchestration")).unwrap();
+    let state = root.path().join("uncreated state");
+
+    let error =
+        Daemon::start_configured(DaemonConfig::at(&state).with_config_dir(&folder)).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "config reference must name a file inside the selected folder: {}",
+            folder.canonicalize().unwrap().join(ENTRY).display()
+        )
+    );
+    assert!(!state.exists());
+}
+
+#[test]
 fn startup_names_missing_invalid_and_conflicting_sources_before_creating_state() {
     let root = tempfile::tempdir().unwrap();
     let folder = support::write_config_folder(root.path());
@@ -505,6 +551,68 @@ fn startup_names_missing_invalid_and_conflicting_sources_before_creating_state()
     std::fs::remove_file(folder.join("packs/team.yml")).unwrap();
     assert!(start().unwrap_err().to_string().contains("packs/team.yml"));
     assert!(!state.exists());
+}
+
+fn write_unsupported_quota_signals(folder: &std::path::Path) {
+    let path = folder.join("quota-signals.yml");
+    let invalid = std::fs::read_to_string(&path).unwrap().replacen(
+        "schema_version: 1",
+        "schema_version: 999",
+        1,
+    );
+    std::fs::write(path, invalid).unwrap();
+}
+
+#[test]
+fn invalid_bootstrap_refuses_without_creating_an_absent_state_root() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    write_unsupported_quota_signals(&folder);
+    let state = root.path().join("uncreated state");
+
+    let error = Daemon::start_configured(DaemonConfig::at(&state).with_config_dir(&folder))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("quota-signals.yml"), "{error}");
+    assert!(!state.exists());
+}
+
+#[test]
+fn invalid_bootstrap_does_not_migrate_an_existing_database() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    write_unsupported_quota_signals(&folder);
+    let state = root.path().join("existing state");
+    std::fs::create_dir(&state).unwrap();
+    let database = state.join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+    drop(connection);
+    let before = std::fs::read(&database).unwrap();
+
+    let error = Daemon::start_configured(DaemonConfig::at(&state).with_config_dir(&folder))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("quota-signals.yml"), "{error}");
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    let connection = rusqlite::Connection::open_with_flags(
+        &database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

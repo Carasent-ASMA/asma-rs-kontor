@@ -16,7 +16,7 @@
 //! # Startup order, and why it is this order
 //!
 //! ```text
-//! validate config (loopback only)
+//! validate address and every selected bootstrap document
 //!   → claim the state root (exclusive, no waiting)
 //!     → open + migrate the database  → the Realm's identity
 //!       → select and validate stored capacity, or the seed when absent
@@ -491,6 +491,84 @@ fn capacity_in_force(
         .map_err(|source| StartupError::StoredCapacity { source })
 }
 
+/// Selected-folder inputs validated and retained before any state-root effect.
+struct ValidatedBootstrap {
+    jira_config: Option<kontor_jira::JiraConfig>,
+    runtime_settings: runtimes::RuntimeSettings,
+    quota_signals: Vec<kontor_accounts::QuotaSignal>,
+    github_publication: Option<Arc<github_publication::GithubPublicationGateway>>,
+    succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
+    memory_config: Option<kontor_memory_cognee::Config>,
+    attention: Option<attention::config::AttentionPolicy>,
+}
+
+impl ValidatedBootstrap {
+    fn read(
+        folder: &config_folder::ConfigFolder,
+        state_root: &Path,
+        runtimes: &RuntimeRegistry,
+        succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
+    ) -> Result<Self, StartupError> {
+        let jira_config = folder.optional::<kontor_jira::JiraConfig>("tracker/connectors.yml")?;
+        if let Some(config) = &jira_config {
+            config
+                .validate()
+                .map_err(|source| StartupError::Connector { source })?;
+        }
+        let runtime_settings = folder.runtimes()?;
+        let quota_signals = folder
+            .parse_optional("quota-signals.yml", kontor_accounts::parse_quota_signals)?
+            .map(|document| document.signals)
+            .unwrap_or_default();
+        let github_publication = folder
+            .parse_optional("forge/github-app.yml", |text| {
+                github_publication::GithubPublicationConfig::from_selected_yaml(
+                    text,
+                    &folder.project.check_runs,
+                )
+            })?
+            .map(github_publication::GithubPublicationGateway::from_config)
+            .transpose()
+            .map_err(|source| StartupError::GithubApp { source })?
+            .map(Arc::new);
+        let succession_summarizer = match succession_summarizer {
+            Some(transport) => Some(transport),
+            None => folder
+                .parse_optional("orchestration/succession.yml", |text| {
+                    succession_summarizer::read_yaml(text, runtimes)
+                })?
+                .flatten(),
+        };
+        let memory_config = folder.parse_optional("orchestration/memory.yml", |text| {
+            if text.len() > kontor_memory_cognee::MAX_CONFIG_BYTES {
+                return Err(());
+            }
+            let document: kontor_memory_cognee::Config =
+                serde_yaml_ng::from_str(text).map_err(|_| ())?;
+            document.validate().map_err(|_| ())?;
+            Ok::<_, ()>(document)
+        })?;
+        let attention = match folder.optional::<serde_yaml_ng::Value>("attention.yml")? {
+            Some(_) => {
+                let overrides = attention::config::read_env(state_root)?;
+                folder.parse_optional("attention.yml", |document| {
+                    attention::config::parse_with(document, &overrides)
+                })?
+            }
+            None => None,
+        };
+        Ok(Self {
+            jira_config,
+            runtime_settings,
+            quota_signals,
+            github_publication,
+            succession_summarizer,
+            memory_config,
+            attention,
+        })
+    }
+}
+
 /// A started, locked, reconciled daemon.
 ///
 /// Holding one means this process owns its state root: the lock lives here, so
@@ -531,9 +609,10 @@ impl Daemon {
     /// Returns [`StartupError`] when the address is not loopback, the selected
     /// capacity is not a set the domain accepts, the state root cannot
     /// be prepared or claimed, the database cannot be opened, or credentials
-    /// cannot be established. The loopback check precedes filesystem changes;
-    /// selecting capacity requires opening the store but precedes credentials
-    /// and service composition. A failed start releases its state-root lock.
+    /// cannot be established. Address and selected bootstrap validation precede
+    /// filesystem changes; selecting capacity requires opening the store but
+    /// precedes credentials and service composition. A failed start releases
+    /// its state-root lock.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
         Self::start_with_supervision(config, runtimes, None, None, None)
     }
@@ -595,6 +674,16 @@ impl Daemon {
                 }
                 .into()),
             };
+        let mut succession_summarizer = succession_summarizer;
+        let validated_bootstrap = match selected {
+            Some(folder) => Some(ValidatedBootstrap::read(
+                folder,
+                &config.state_root,
+                &runtimes,
+                succession_summarizer.take(),
+            )?),
+            None => None,
+        };
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
@@ -620,8 +709,8 @@ impl Daemon {
         // immediately afterwards. Nothing can serve a request in between: the
         // router does not exist yet.
         let jira = config.jira_connectors.clone().map_or_else(
-            || match selected {
-                Some(folder) => match folder.optional("tracker/connectors.yml")? {
+            || match &validated_bootstrap {
+                Some(bootstrap) => match bootstrap.jira_config.clone() {
                     Some(document) => kontor_jira::JiraConnectors::from_config(
                         &config.state_root,
                         realm_id,
@@ -637,10 +726,10 @@ impl Daemon {
         )?;
         let usage_poller = match usage_poller {
             Some(poller) => poller,
-            None => match selected {
-                Some(folder) => usage::UsagePoller::discover_with_runtimes(
+            None => match &validated_bootstrap {
+                Some(bootstrap) => usage::UsagePoller::discover_with_runtimes(
                     &config.state_root,
-                    &folder.runtimes()?,
+                    &bootstrap.runtime_settings,
                 ),
                 None => usage::UsagePoller::discover(&config.state_root),
             },
@@ -649,44 +738,33 @@ impl Daemon {
         // document that will not parse refuses the start, because serving a
         // Realm whose operator believes classification is armed is worse than
         // not starting.
-        let quota_signals = match selected {
-            Some(folder) => {
-                folder.parse_optional("quota-signals.yml", kontor_accounts::parse_quota_signals)?
-            }
+        let quota_signals = match &validated_bootstrap {
+            Some(bootstrap) => bootstrap.quota_signals.clone(),
             None => kontor_accounts::read_quota_signals(&config.state_root)
-                .map_err(|source| StartupError::QuotaSignals { source })?,
-        }
-        .map(|document| document.signals)
-        .unwrap_or_default();
+                .map_err(|source| StartupError::QuotaSignals { source })?
+                .map(|document| document.signals)
+                .unwrap_or_default(),
+        };
         // The GitHub App is optional configuration; a present document that
         // cannot be honoured refuses the start for the same reason a broken
         // quota-signal document does.
-        let github_publication = match selected {
-            Some(folder) => folder.parse_optional("forge/github-app.yml", |text| {
-                github_publication::GithubPublicationConfig::from_selected_yaml(
-                    text,
-                    &folder.project.check_runs,
-                )
-            })?,
+        let github_publication = match &validated_bootstrap {
+            Some(bootstrap) => bootstrap.github_publication.clone(),
             None => github_publication::GithubPublicationConfig::read(&config.state_root)
-                .map_err(|source| StartupError::GithubApp { source })?,
-        }
-        .map(github_publication::GithubPublicationGateway::from_config)
-        .transpose()
-        .map_err(|source| StartupError::GithubApp { source })?
-        .map(Arc::new);
+                .map_err(|source| StartupError::GithubApp { source })?
+                .map(github_publication::GithubPublicationGateway::from_config)
+                .transpose()
+                .map_err(|source| StartupError::GithubApp { source })?
+                .map(Arc::new),
+        };
         // An explicitly composed transport is the embedding and black-box seam
         // and always wins. Ordinary startup reads the Realm's own selection and
         // composes the named runtime; an absent document keeps the honest
         // unavailable fallback, so an unconfigured Realm launches nothing.
-        let succession_summarizer = match succession_summarizer {
-            Some(transport) => Some(transport),
-            None => match selected {
-                Some(folder) => folder
-                    .parse_optional("orchestration/succession.yml", |text| {
-                        succession_summarizer::read_yaml(text, &runtimes)
-                    })?
-                    .flatten(),
+        let succession_summarizer = match &validated_bootstrap {
+            Some(bootstrap) => bootstrap.succession_summarizer.clone(),
+            None => match succession_summarizer {
+                Some(transport) => Some(transport),
                 None => succession_summarizer::read(&config.state_root, &runtimes)
                     .map_err(|source| StartupError::SuccessionSummarizer { source })?,
             },
@@ -716,16 +794,8 @@ impl Daemon {
         )
         .map_err(|source| StartupError::Applications { source })?;
 
-        let memory_config = match selected {
-            Some(folder) => folder.parse_optional("orchestration/memory.yml", |text| {
-                if text.len() > kontor_memory_cognee::MAX_CONFIG_BYTES {
-                    return Err(());
-                }
-                let document: kontor_memory_cognee::Config =
-                    serde_yaml_ng::from_str(text).map_err(|_| ())?;
-                document.validate().map_err(|_| ())?;
-                Ok::<_, ()>(document)
-            })?,
+        let memory_config = match &validated_bootstrap {
+            Some(bootstrap) => bootstrap.memory_config.clone(),
             None => {
                 kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
                     .map_err(|source| StartupError::MemoryCognee { source })?
@@ -748,16 +818,8 @@ impl Daemon {
         // attention is armed is worse than not starting. The store receives the
         // observer only after this composition, and the observer itself performs
         // no egress — it formats a payload and spawns a detached one-shot.
-        let attention = match selected {
-            Some(folder) => match folder.optional::<serde_yaml_ng::Value>("attention.yml")? {
-                Some(_) => {
-                    let overrides = attention::config::read_env(&config.state_root)?;
-                    folder.parse_optional("attention.yml", |document| {
-                        attention::config::parse_with(document, &overrides)
-                    })?
-                }
-                None => None,
-            },
+        let attention = match &validated_bootstrap {
+            Some(bootstrap) => bootstrap.attention.clone(),
             None => attention::config::read(&config.state_root)?,
         }
         .map(|policy| {
@@ -840,15 +902,7 @@ impl Daemon {
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
-        let succession_summarizer = config
-            .selected_config
-            .as_ref()
-            .expect("folder selected above")
-            .parse_optional("orchestration/succession.yml", |text| {
-                succession_summarizer::read_yaml(text, &registry)
-            })?
-            .flatten();
-        Self::start_with_supervision(config, registry, supervision, None, succession_summarizer)
+        Self::start_with_supervision(config, registry, supervision, None, None)
     }
 
     /// This Realm's identity.

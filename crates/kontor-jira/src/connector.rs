@@ -60,6 +60,30 @@ pub struct JiraConfig {
     pub projects: Vec<JiraProjectConfig>,
 }
 
+impl JiraConfig {
+    /// Validate one decoded connector document without resolving credentials or state.
+    ///
+    /// # Errors
+    /// Returns the same configuration refusals as connector composition.
+    pub fn validate(&self) -> Result<(), JiraError> {
+        if self.schema_version != CONFIG_SCHEMA {
+            return Err(configuration(
+                "jira.json declares an unsupported schema version",
+            ));
+        }
+        let mut projects = BTreeSet::new();
+        for project in &self.projects {
+            validate_project_config(project)?;
+            if !projects.insert(project.project_id) {
+                return Err(configuration(
+                    "jira.json configures the same project more than once",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JiraProjectConfig {
@@ -179,13 +203,7 @@ impl JiraConnectors {
         scope: JiraCredentialScope,
         keychain: Arc<dyn KeychainBackend>,
     ) -> Result<Self, JiraError> {
-        if config.schema_version != CONFIG_SCHEMA {
-            return Err(JiraError::unavailable(
-                "configuration",
-                UnavailableReason::Configuration,
-                "jira.json declares an unsupported schema version",
-            ));
-        }
+        config.validate()?;
         let mut projects = BTreeMap::new();
         for project in config.projects {
             let id = project.project_id;
@@ -284,37 +302,7 @@ impl JiraConnector {
         credential_scope: JiraCredentialScope,
         keychain: Arc<dyn KeychainBackend>,
     ) -> Result<Self, JiraError> {
-        validate_alias(&config.credential_alias)
-            .map_err(|_| configuration("credential_alias is empty, oversized or unsupported"))?;
-        let mut endpoint = Url::parse(&config.endpoint)
-            .map_err(|_| configuration("endpoint is not an absolute URL"))?;
-        let loopback = endpoint
-            .host_str()
-            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1"));
-        if endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback) {
-            return Err(configuration(
-                "endpoint must use HTTPS (or explicit loopback HTTP)",
-            ));
-        }
-        if !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(configuration(
-                "endpoint may not contain credentials, query, or fragment",
-            ));
-        }
-        validate_create_fields(&config.create_fields)?;
-        let mut reconcile_epic_keys = BTreeSet::new();
-        for key in config.reconcile_epic_keys {
-            if !reconcile_epic_keys.insert(key) {
-                return Err(configuration(
-                    "reconcile_epic_keys names the same epic more than once",
-                ));
-            }
-        }
-        endpoint.set_path("/");
+        let (endpoint, reconcile_epic_keys) = validate_project_config(&config)?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
@@ -1079,6 +1067,43 @@ impl JiraConnector {
             description,
         })
     }
+}
+
+fn validate_project_config(
+    config: &JiraProjectConfig,
+) -> Result<(Url, BTreeSet<ExternalId>), JiraError> {
+    validate_alias(&config.credential_alias)
+        .map_err(|_| configuration("credential_alias is empty, oversized or unsupported"))?;
+    let mut endpoint = Url::parse(&config.endpoint)
+        .map_err(|_| configuration("endpoint is not an absolute URL"))?;
+    let loopback = endpoint
+        .host_str()
+        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1"));
+    if endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback) {
+        return Err(configuration(
+            "endpoint must use HTTPS (or explicit loopback HTTP)",
+        ));
+    }
+    if !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(configuration(
+            "endpoint may not contain credentials, query, or fragment",
+        ));
+    }
+    validate_create_fields(&config.create_fields)?;
+    let mut reconcile_epic_keys = BTreeSet::new();
+    for key in &config.reconcile_epic_keys {
+        if !reconcile_epic_keys.insert(key.clone()) {
+            return Err(configuration(
+                "reconcile_epic_keys names the same epic more than once",
+            ));
+        }
+    }
+    endpoint.set_path("/");
+    Ok((endpoint, reconcile_epic_keys))
 }
 
 #[async_trait]
