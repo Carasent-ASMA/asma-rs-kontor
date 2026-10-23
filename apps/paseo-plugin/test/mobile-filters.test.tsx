@@ -72,6 +72,22 @@ describe("mobile Filters navigation", () => {
     expect(hooks.nativeFocus).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the matching count beside the heading, outside the scroller, as one polite status that may wrap", () => {
+    type Node = { props: { testID?: string; children: unknown; [key: string]: unknown } };
+    const page = (count?: { text: string; label: string }) => MobileFiltersPage({ colors, onBack: () => {}, menuOpen: false, count, children: "Controls" }) as Node;
+    const [header, scroller] = page({ text: "284 sessions", label: "284 matching sessions" }).props.children as [Node, Node];
+    const [back, heading, count] = header.props.children as [Node, Node, Node];
+    expect(back.props.label).toBe("Back");
+    expect(header.props.style).toMatchObject({ flexDirection: "row", flexWrap: "wrap" });
+    expect(heading.props).toMatchObject({ accessibilityRole: "header", children: "Filters & view", style: { flexShrink: 1 } });
+    expect(count.props).toMatchObject({ testID: "sessions-mobile-filters-count", children: "284 sessions",
+      accessibilityLabel: "284 matching sessions", accessibilityLiveRegion: "polite", style: { flexGrow: 1, flexShrink: 1, textAlign: "right" } });
+    expect(count.props.numberOfLines).toBeUndefined();
+    expect(scroller.props.testID).toBe("sessions-mobile-filters-scroll");
+    expect(JSON.stringify(scroller.props.children)).not.toContain("284");
+    expect(((page().props.children as Node[])[0]!.props.children as unknown[])[2]).toBeNull();
+  });
+
   it("names the badge as active filters or view choices, with a 44pt touch target", () => {
     const tree = MobileFiltersTrigger({ colors, count: 2, onPress: () => {} });
     expect(tree.props.accessibilityLabel).toBe("Filters and view, 2 active filters or view choices");
