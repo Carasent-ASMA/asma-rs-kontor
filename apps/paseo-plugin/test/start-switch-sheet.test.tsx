@@ -531,7 +531,7 @@ describe("New LSA form", () => {
     expect(radios.every((node) => !node.props.disabled)).toBe(true);
   });
 
-  it("sends one request and opens the exact verified result without a directory or redundant options refresh", async () => {
+  it("sends one request and waits for explicit Open of the exact verified result without a directory or redundant options refresh", async () => {
     const f = form();
     let answer: (value: CreateOutcome) => void = () => {};
     model.rpc["sessions.create"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
@@ -544,6 +544,10 @@ describe("New LSA form", () => {
     answer(outcome("verified", { requestId })); await settle(); f.render();
     expect(byTestId(f.tree, "kontor-new-lsa-verified")?.props).toMatchObject({ accessibilityLiveRegion: "polite" });
     expect(text(f.tree)).toContain("Created and verified");
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    expect(action(f.tree, "Open session")).toBeDefined();
+    const open = action(f.tree, "Open session")!.props.onPress as () => void;
+    open(); open(); f.render();
     expect(f.onOpenCreated).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ state: "verified", agentId: "agent-new", requestId }));
     expect(f.onRefresh).not.toHaveBeenCalled();
   });
@@ -569,6 +573,8 @@ describe("New LSA form", () => {
     expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
     await settle(); f.render();
     expect(text(f.tree)).toContain("Created and verified");
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    f.press("Open session");
     expect(f.onOpenCreated).toHaveBeenCalledTimes(1);
   });
 
@@ -579,6 +585,8 @@ describe("New LSA form", () => {
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     expect(text(f.tree)).toContain("Created and verified");
     expect(text(f.tree)).toContain("Session ID: agent-new");
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    f.press("Open session");
     expect(text(f.tree)).toContain("Opening failed: navigation unavailable");
     expect(action(f.tree, "Back to the form")).toBeUndefined();
     f.press("Open session");
@@ -587,15 +595,36 @@ describe("New LSA form", () => {
     expect(text(f.tree)).toContain("Opened in Paseo.");
   });
 
-  it("records the successful exact-host open in Recently viewed through the existing helper", async () => {
+  it("records Recently viewed only after a successful user Open, never creation", async () => {
     model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
     const navigation = { openAgent: vi.fn(), openWorkspace: vi.fn() } as unknown as SessionNavigation;
     const f = form(undefined, { onOpenCreated: (outcome) => openCreatedSession({ outcome, serverId: "host-a", navigation }) });
     expect(readRecent("host-a").record.visits).toEqual([]);
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    expect(navigation.openAgent).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
+    f.press("Open session");
     expect(navigation.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-new", serverId: "host-a" });
     expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-new"]);
     expect(readRecent("host-b").record.visits).toEqual([]);
+  });
+
+  it.each(["close", "unmount", "host switch", "offline"])("rejects an old user Open action after %s without navigation or MRU", async (cancel) => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    let active = true;
+    const navigation = { openAgent: vi.fn(), openWorkspace: vi.fn() } as unknown as SessionNavigation;
+    const f = form(undefined, { isActive: () => active, onOpenCreated: (outcome) => openCreatedSession({ outcome, serverId: "host-a", navigation }) });
+    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    const open = action(f.tree, "Open session")!.props.onPress as () => void;
+    if (cancel === "close") active = false;
+    else if (cancel === "unmount") f.unmount();
+    else if (cancel === "host switch") f.setHost("host-b");
+    else f.setOptions({ status: "offline" });
+    open();
+    expect(navigation.openAgent).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
+    expect(readRecent("host-b").record.visits).toEqual([]);
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
   });
 
   it.each(["close", "unmount", "host switch"])("never navigates or refreshes a late response after %s", async (cancel) => {
@@ -608,7 +637,8 @@ describe("New LSA form", () => {
     if (cancel === "close") active = false;
     else if (cancel === "unmount") f.unmount();
     else f.setHost("host-b");
-    answer(outcome("verified", { requestId })); await settle();
+    answer(outcome("verified", { requestId })); await settle(); f.render();
+    expect(byTestId(f.tree, "kontor-new-lsa-verified")).toBeUndefined();
     expect(f.onOpenCreated).not.toHaveBeenCalled();
     expect(f.onRefresh).not.toHaveBeenCalled();
     expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
@@ -622,6 +652,7 @@ describe("New LSA form", () => {
     expect(f.onOpenCreated).not.toHaveBeenCalled();
     expect(action(f.tree, "Check")).toBeDefined();
     expect(action(f.tree, "Back to the form")).toBeUndefined();
+    expect(action(f.tree, "Open session")).toBeUndefined();
   });
 
   it.each(["close", "unmount", "host switch"])("ignores a late successful Check after %s", async (cancel) => {
@@ -634,7 +665,8 @@ describe("New LSA form", () => {
     if (cancel === "close") active = false;
     else if (cancel === "unmount") f.unmount();
     else f.setHost("host-b");
-    answer(outcome("verified", { requestId: pending.requestId })); await settle();
+    answer(outcome("verified", { requestId: pending.requestId })); await settle(); f.render();
+    expect(byTestId(f.tree, "kontor-new-lsa-verified")).toBeUndefined();
     expect(f.onOpenCreated).not.toHaveBeenCalled();
     expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
     expect(readRecent("host-a").record.visits).toEqual([]);
@@ -649,6 +681,8 @@ describe("New LSA form", () => {
       expect(text(f.tree)).toContain("Created and verified");
       expect(text(f.tree)).not.toContain("Nothing was created");
     }
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    expect(action(f.tree, "Open session")?.props.disabled).toBe(true);
   });
 
   it("turns an unknown outcome into a Check, never a retry", async () => {
@@ -658,6 +692,7 @@ describe("New LSA form", () => {
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     expect(text(f.tree)).toContain("Outcome unknown");
     expect(action(f.tree, "Back to the form")).toBeUndefined();
+    expect(action(f.tree, "Open session")).toBeUndefined();
     f.press("Check"); await settle(); f.render();
     expect(model.rpc["sessions.create-check"]).toHaveBeenCalledWith({ requestId: model.rpc["sessions.create"]!.mock.calls[0]![0].requestId });
     expect(text(f.tree)).toContain("Outcome unknown");
@@ -677,6 +712,10 @@ describe("New LSA form", () => {
     f.press("Check"); await settle(); f.render();
     expect(model.rpc["sessions.create-check"]).toHaveBeenCalledWith({ requestId });
     expect(text(f.tree)).toContain("Created and verified");
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    f.press("Open session");
+    expect(f.onOpenCreated).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId, agentId: "agent-new" }));
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
   });
 
   it("returns a refusal to the form with the draft kept", async () => {

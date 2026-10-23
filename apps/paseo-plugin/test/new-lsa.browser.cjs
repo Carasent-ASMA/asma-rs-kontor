@@ -76,6 +76,15 @@ async function pageFor(width, scenario = 'ready', theme = 'light') {
   await page.getByRole('button', { name: 'New LSA session', exact: true }).click();
   return { page, context };
 }
+async function createdWaitingForOpen(page) {
+  await page.getByTestId('kontor-new-lsa-verified').waitFor();
+  await page.getByText('Session ID: fixture-created-exact', { exact: true }).waitFor();
+  const before = await page.evaluate(() => ({ opens: window.fixture.opens, visits: window.fixture.recent('fixture-a').visits }));
+  assert.deepEqual(before.opens, []); assert.deepEqual(before.visits, []);
+  const open = page.getByRole('button', { name: 'Open session', exact: true });
+  await expect(open).toBeEnabled();
+  return open;
+}
 async function run(name, test) {
   try { await test(); report.cases.push({ name, status: 'PASS' }); }
   catch (error) { report.cases.push({ name, status: 'FAIL', error: String(error.stack) }); }
@@ -95,7 +104,7 @@ async function run(name, test) {
   });
   await server.listen(); browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
-    for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) await run(`${width}-${theme}-active-exact-open`, async () => {
+    for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) await run(`${width}-${theme}-active-explicit-exact-open`, async () => {
       const { page, context } = await pageFor(width, 'ready', theme);
       try {
         if (width < 700) await page.getByRole('button', { name: /^Provider, model and mode\./ }).click();
@@ -107,6 +116,9 @@ async function run(name, test) {
         await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
         await page.screenshot({ path: path.join(output, `${width}-${theme}-choices.png`) });
         await page.getByTestId('kontor-new-lsa-create').click();
+        const open = await createdWaitingForOpen(page);
+        await page.screenshot({ path: path.join(output, `${width}-${theme}-created-waiting-open.png`) });
+        await open.click();
         await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
         const state = await page.evaluate(() => ({ opens: window.fixture.opens, calls: window.fixture.calls, recent: window.fixture.recent('fixture-a'), timings: window.fixture.timings }));
         assert.deepEqual(state.opens, [{ agentId: 'fixture-created-exact', serverId: 'fixture-a' }]);
@@ -152,6 +164,7 @@ async function run(name, test) {
         assert.deepEqual(await page.evaluate(() => window.fixture.opens), []);
         await page.screenshot({ path: path.join(output, `${width}-two-desks.png`) });
         await page.getByTestId('kontor-new-lsa-create').click();
+        await (await createdWaitingForOpen(page)).click();
         await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
         const creates = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
         assert.equal(creates.length, 1); assert.equal(creates[0].input.workspaceId, 'wks-ops');
@@ -221,7 +234,18 @@ async function run(name, test) {
     });
     await run('open-failed-retry-only', async () => {
       const { page, context } = await pageFor(390, 'open-failed');
-      try { await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review'); await page.getByTestId('kontor-new-lsa-create').click(); await page.getByTestId('kontor-new-lsa-open-status').filter({ hasText: 'Opening failed' }).waitFor(); await page.getByText('Session ID: fixture-created-exact', { exact: true }).waitFor(); assert.deepEqual(await page.evaluate(() => window.fixture.recent('fixture-a').visits), []); await page.evaluate(() => { window.fixture.failOpen = false; }); await page.getByRole('button', { name: 'Open session', exact: true }).click(); await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor(); assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create').length), 1); } finally { await context.close(); }
+      try {
+        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
+        await page.getByTestId('kontor-new-lsa-create').click();
+        await (await createdWaitingForOpen(page)).click();
+        await page.getByTestId('kontor-new-lsa-open-status').filter({ hasText: 'Opening failed' }).waitFor();
+        await page.getByText('Session ID: fixture-created-exact', { exact: true }).waitFor();
+        assert.deepEqual(await page.evaluate(() => window.fixture.recent('fixture-a').visits), []);
+        await page.evaluate(() => { window.fixture.failOpen = false; });
+        await page.getByRole('button', { name: 'Open session', exact: true }).click();
+        await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
+        assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create').length), 1);
+      } finally { await context.close(); }
     });
     for (const cancel of ['close', 'host-switch']) await run(`late-${cancel}`, async () => {
       const { page, context } = await pageFor(390);

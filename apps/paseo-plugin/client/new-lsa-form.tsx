@@ -114,8 +114,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       return;
     }
     setPhase({ kind: "result", outcome });
-    if (outcome.state === "verified" && canOpen) openCreated(outcome);
-    else if (outcome.state === "unknown" || outcome.state === "refused") onRefresh(draft.workspaceId);
+    if (outcome.state === "unknown" || outcome.state === "refused") onRefresh(draft.workspaceId);
   };
   const runCheck = (requestId: string, title: string) => {
     if (!isCurrent()) return;

@@ -226,17 +226,19 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   leaves the outcome unknown because a delayed creation may still complete.
   An unknown outcome stays blocked until a correlated readback confirms it;
   otherwise the operator must reconcile it on the host. An unsettled or
-  unreadable record blocks the next create until it is settled. A verified
-  creation opens its exact returned native session ID through supported app
-  navigation, without waiting for the full session directory. **Created with
-  differences** keeps its warnings visible and offers **Open session**. If
+  unreadable record blocks the next create until it is settled. **Created and
+  verified** and **Created with differences** show the exact returned native
+  session ID and an explicit **Open session** button. Creating alone never
+  navigates or records Recently viewed. Open uses supported app navigation
+  without waiting for the full session directory; differences stay visible. If
   opening fails, the created ID stays visible with **Open session** to retry;
   retrying Open never creates another session. Closing the form or changing
-  hosts suppresses late navigation; it cannot cancel an already dispatched
-  create. Recently viewed is recorded by the existing device-local helper
-  only after navigation accepts that exact host and session ID. The SDK does
-  not acknowledge that a native conversation finished rendering. When the app
-  lacks plugin navigation, use Sessions to find the displayed ID. Nothing is
+  hosts invalidates old Open actions and late replies; it cannot cancel an
+  already dispatched create. Recently viewed is recorded by the existing
+  device-local helper only after a successful user-initiated Open of that exact
+  host and session ID. The SDK does not acknowledge that a native conversation
+  finished rendering. When the app lacks plugin navigation, use Sessions to
+  find the displayed ID. Nothing is
   created while the host is offline.
 - **Persona and rename.** The LSA persona goes in the system prompt. Its
   delivery is confirmed only for Claude and Codex; other providers show
