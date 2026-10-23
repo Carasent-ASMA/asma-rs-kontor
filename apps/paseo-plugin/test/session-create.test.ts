@@ -1,7 +1,7 @@
-import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
@@ -125,6 +125,50 @@ describe("create switch", () => {
     expect(await s.service.options()).toMatchObject({ enabled: false });
     expect(await s.service.create(request())).toMatchObject({ state: "refused" });
     expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps a directory at the switch path disabled without intent or dispatch", async () => {
+    const s = await setup();
+    await mkdir(s.switchFile);
+    expect(await s.service.options()).toMatchObject({ enabled: false, disabledReason: expect.stringContaining("not valid") });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused", message: expect.stringContaining("not valid") });
+    expect(s.intents).toEqual([]);
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["plugin-config", "plugin-config/kontor"])("refuses a dangling %s directory symlink before intent or native reads/dispatch", async (component) => {
+    const s = await setup(), root = dirname(s.switchFile), link = join(root, component);
+    await mkdir(dirname(link), { recursive: true });
+    await symlink(join(root, "missing-directory"), link);
+    const service = createSessionCreateService(s.client, s.stateRoot, join(root, "plugin-config", "kontor", "create.json"));
+    const workspaceRead = vi.spyOn(s.client.workspaces, "ref"), agentRead = vi.spyOn(s.client.agents, "ref");
+    const options = await service.options();
+    vi.clearAllMocks();
+    const outcome = await service.create(request());
+    expect(options).toMatchObject({ enabled: false, disabledReason: expect.stringContaining("not valid") });
+    expect(outcome).toMatchObject({ state: "refused", message: expect.stringContaining("not valid") });
+    expect(s.intents).toEqual([]);
+    for (const call of [s.client.workspaces.list, workspaceRead, s.snapshot, s.client.config.get, s.list, agentRead, s.create]) expect(call).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("is available when normal configuration directories are absent", async () => {
+    const s = await setup();
+    const service = createSessionCreateService(s.client, s.stateRoot, join(dirname(s.switchFile), "plugin-config", "kontor", "create.json"));
+    expect(await service.options()).toMatchObject({ enabled: true, disabledReason: null });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(await service.create(request())).toMatchObject({ state: "verified" });
+  });
+
+  it("is available through a resolved directory symlink with no switch", async () => {
+    const s = await setup(), root = dirname(s.switchFile), target = join(root, "config-target");
+    await mkdir(target);
+    await symlink(target, join(root, "plugin-config"));
+    const service = createSessionCreateService(s.client, s.stateRoot, join(root, "plugin-config", "kontor", "create.json"));
+    expect(await service.options()).toMatchObject({ enabled: true, disabledReason: null });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(await service.create(request())).toMatchObject({ state: "verified" });
   });
 });
 

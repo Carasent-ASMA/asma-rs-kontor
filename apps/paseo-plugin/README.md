@@ -193,8 +193,9 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   (default `~/.paseo/plugin-config/kontor/create.json`) is absent on the host
   computer. The operator can write exactly `{"create":"off"}` to disable it
   or `{"create":"on"}` to enable it explicitly. Any other content or an
-  unreadable file (including a dangling symlink) keeps it off, and the sheet
-  says why. The file is read on every request and never written by the plugin.
+  unreadable path (including a dangling symlink in any component) keeps it off.
+  The sheet says why. The file is read on every request and never written by
+  the plugin.
   Submitting **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
   project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
   to 48 characters after NFC normalization and never contains `•`, `·` or a
