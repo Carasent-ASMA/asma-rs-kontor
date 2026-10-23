@@ -99,6 +99,34 @@ describe("hover and focus help", () => {
     screen.update("A longer explanation that still needs the available reading width."); screen.render();
     expect((screen.tooltip()!.props.style as { maxWidth: number }).maxWidth).toBe(360);
   });
+  it.each(["scroll", "focus"])("accepts the first panel layout after %s repositions the same help", (event) => {
+    const screen = mount(1440, 1000);
+    screen.control.bindings.onFocus(); screen.render();
+    const firstLayout = screen.tooltip()!.props.onLayout as (event: unknown) => void;
+    expect((screen.tooltip()!.props.style as { opacity: number }).opacity).toBe(0);
+    if (event === "scroll") handlers.get("scroll")!({ target: {} } as never);
+    else screen.control.bindings.onFocus();
+    // Layout delivery can lag a new placement without the panel changing size.
+    screen.control.bindings.onBlur();
+    firstLayout({ nativeEvent: { layout: { width: 360, height: 220 } } });
+    screen.render();
+    expect((screen.tooltip()!.props.style as { opacity: number }).opacity).toBe(1);
+    vi.advanceTimersByTime(160); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it.each(["text", "anchor", "dismiss"])("ignores a pending panel layout after changing its %s", (change) => {
+    const screen = mount();
+    const other = change === "anchor" ? useControlHelp("Explanation: no execution or freshness inferred.") : null;
+    other?.bindings.ref(measure(40, 50, 28, 28) as View);
+    screen.control.bindings.onFocus(); screen.render();
+    const firstLayout = screen.tooltip()!.props.onLayout as (event: unknown) => void;
+    if (change === "text") screen.update("Different explanation");
+    else if (other) other.bindings.onFocus();
+    else handlers.get("keydown")!({ key: "Escape", preventDefault() {}, stopPropagation() {} } as never);
+    firstLayout({ nativeEvent: { layout: { width: 46, height: 40 } } });
+    screen.render();
+    if (change === "dismiss") expect(screen.tooltip()).toBeUndefined();
+    else expect((screen.tooltip()!.props.style as { opacity: number }).opacity).toBe(0);
+  });
   it.each(["hover", "focus"])("refreshes changed text during stationary %s without another input event", (mode) => {
     const screen = mount();
     const control = screen.update("Idle");
@@ -176,7 +204,7 @@ describe("compact metadata", () => {
   it("preserves explicit zeros, missing counters, and custom IDs without pretending a selection ran", () => {
     const missing = compactUsage({ provider: "opaque", model: null }); expect(missing.model).toBe("—"); expect(missing.modelIcon).toBe("CircleHelp"); expect(missing.tokens).toBe("—");
     const selected = compactUsage({ provider: "codex", model: "gpt-6.1-sol", telemetry: { lastUsage: { inputTokens: 0 } } });
-    expect(selected.model).toBe("sol"); expect(selected.modelIcon).toBe("SlidersHorizontal"); expect(selected.tokens).toBe("0 ↓ · — ↑"); expect(selected.usageHelp).toContain("Output count not reported");
+    expect(selected.model).toBe("sol"); expect(selected.modelIcon).toBe("SlidersHorizontal"); expect(selected.tokens).toBe("Last report 0 ↓ · — ↑"); expect(selected.usageHelp).toContain("Output count not reported");
     expect(compactUsage({ provider: "custom", model: "my-custom-id" }).model).toBe("my-custom-id");
   });
   it("distinguishes the last runtime report and keeps the stale-switch and attribution caveats", () => {
