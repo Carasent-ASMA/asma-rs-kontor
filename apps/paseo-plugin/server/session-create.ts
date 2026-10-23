@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstatSync, statSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -36,13 +37,26 @@ function createStateRoot(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-create-v1");
 }
 
-/** Off unless the file says exactly `{"create":"on"}`: absent, off, unreadable or malformed all keep creation off. */
+/** Available by default when absent; explicit off, unreadable or malformed switches keep creation off. */
 export function createSwitchProblem(file: string): string | null {
   const mode = readFloor(file, "create");
   if (mode.reason === "explicit-on") return null;
   if (mode.reason === "explicit-off") return "New LSA is switched off on this host.";
-  if (mode.reason === "invalid") return "New LSA is off: the host's create switch is not valid. The operator corrects it on the host computer.";
-  return "New LSA is off on this host. The operator turns it on at the host computer.";
+  if (mode.reason === "not-configured") {
+    // Missing descendants are valid only when the nearest existing ancestor resolves to a directory.
+    try {
+      if (!lstatSync(file, { throwIfNoEntry: false })) {
+        let path = dirname(file);
+        while (!lstatSync(path, { throwIfNoEntry: false })) {
+          const parent = dirname(path);
+          if (parent === path) break;
+          path = parent;
+        }
+        if (statSync(path).isDirectory()) return null;
+      }
+    } catch {}
+  }
+  return "New LSA is off: the host's create switch is not valid. The operator corrects it on the host computer.";
 }
 
 const PERSONA_TEMPLATE = [

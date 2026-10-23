@@ -188,12 +188,15 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   privacy and cross-device acceptance. A Paseo change is not automatically
   required to synchronize visits initiated through Kontor. Native views from
   outside Kontor still need the separate view-event capability above.
-- **New LSA (bounded create).** Off unless the operator writes exactly
-  `{"create":"on"}` to `$PASEO_HOME/plugin-config/kontor/create.json`
-  (default `~/.paseo/plugin-config/kontor/create.json`) on the host computer.
-  Any other content, an unreadable file or no file keeps it off, and the sheet
-  says why. The file is read on every request and never written by the plugin.
-  When on, **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
+- **New LSA (bounded create).** Available by default when
+  `$PASEO_HOME/plugin-config/kontor/create.json`
+  (default `~/.paseo/plugin-config/kontor/create.json`) is absent on the host
+  computer. The operator can write exactly `{"create":"off"}` to disable it
+  or `{"create":"on"}` to enable it explicitly. Any other content or an
+  unreadable path (including a dangling symlink in any component) keeps it off.
+  The sheet says why. The file is read on every request and never written by
+  the plugin.
+  Submitting **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
   project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
   to 48 characters after NFC normalization and never contains `•`, `·` or a
   control character. The labels are `role=LSA`, `title.auto=<title>`,
@@ -1176,6 +1179,11 @@ pnpm --filter @carasent/kontor-paseo-plugin typecheck
 pnpm --filter @carasent/kontor-paseo-plugin test
 apps/paseo-plugin/scripts/closure-suite.sh
 ```
+
+`test/session-create.test.ts` pins New LSA availability with no switch or
+explicit `on`, refusal for explicit `off` or invalid/unreadable switches,
+and the workspace, provider, duplicate-request, intent and readback guards.
+Availability alone never creates a session or sends a first prompt.
 
 `test/plan-workstreams.test.ts` reconciles every workstream choice with the tree:
 desk-held sessions are named, each session counts once, and choosing a choice shows
