@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,7 @@ const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-22", entries: [
 const dirs: string[] = [];
 afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function setup({ switchText = '{"create":"on"}' as string | null, answerMs = 5_000, existing = [] as Agent[] } = {}) {
+async function setup({ switchText = null as string | null, answerMs = 5_000, existing = [] as Agent[] } = {}) {
   const root = await mkdtemp(join(tmpdir(), "kontor-create-test-")); dirs.push(root);
   const switchFile = join(root, "create.json"), stateRoot = join(root, "state");
   if (switchText !== null) await writeFile(switchFile, switchText);
@@ -69,7 +69,7 @@ async function setup({ switchText = '{"create":"on"}' as string | null, answerMs
     config: { get: vi.fn(async () => ({ requestId: "fixture", config: MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false }, agentProfiles: [{ id: "profile-1", name: "lsa", provider: "claude", model: "opus", modeId: "default", thinkingOptionId: "max" }] }) })) },
   } as CreateClient;
   const service = createSessionCreateService(client, stateRoot, switchFile, answerMs);
-  return { service, client, create, list, snapshot, agents, intents, stateRoot, setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; } };
+  return { service, client, create, list, snapshot, agents, intents, stateRoot, switchFile, setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; } };
 }
 const request = (patch: Partial<CreateRequest> = {}): CreateRequest => ({ requestId: randomUUID(), topic: "  Route  review ", workspaceId: "wks-adam", provider: "claude", model: "opus", effort: "max", modeId: "default", ...patch });
 
@@ -94,7 +94,7 @@ describe("ad-hoc LSA title grammar", () => {
 describe("create switch", () => {
   it.each([
     ['{"create":"on"}', null],
-    [null, "off on this host"],
+    [null, null],
     ['{"create":"off"}', "switched off"],
     ['{"create":true}', "not valid"],
     ['{"create":"on","extra":1}', "not valid"],
@@ -108,9 +108,39 @@ describe("create switch", () => {
     const problem = createSwitchProblem(file);
     if (expected === null) expect(problem).toBeNull(); else expect(problem).toContain(expected);
   });
+
+  it.skipIf(process.getuid?.() === 0)("keeps an unreadable switch disabled", async () => {
+    const s = await setup({ switchText: '{"create":"on"}' });
+    await chmod(s.switchFile, 0o000);
+    expect(createSwitchProblem(s.switchFile)).toContain("not valid");
+    expect(await s.service.options()).toMatchObject({ enabled: false });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused" });
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps a dangling switch symlink disabled", async () => {
+    const s = await setup();
+    await symlink(join(s.stateRoot, "missing.json"), s.switchFile);
+    expect(createSwitchProblem(s.switchFile)).toContain("not valid");
+    expect(await s.service.options()).toMatchObject({ enabled: false });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused" });
+    expect(s.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("create options", () => {
+  it.each([
+    [null, true],
+    ['{"create":"on"}', true],
+    ['{"create":"off"}', false],
+    ["not json", false],
+  ])("reports availability for switch %s without creating a session", async (switchText, enabled) => {
+    const s = await setup({ switchText });
+    expect(await s.service.options()).toMatchObject({ enabled, disabledReason: enabled ? null : expect.any(String) });
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toThrow();
+  });
+
   it("offers desk ADAM workspaces, providers with reasons, and the host's LSA profile", async () => {
     const options = await (await setup()).service.options();
     expect(options).toMatchObject({ enabled: true, disabledReason: null, pending: null, notes: [],
@@ -127,16 +157,16 @@ describe("create options", () => {
     expect(codex).toMatchObject({ available: false, persona: "supported", note: "Disabled on this host." });
   });
 
-  it("is off without the operator's switch, and notes an unreadable profile list", async () => {
+  it("is available without the operator's switch, and notes an unreadable profile list", async () => {
     const s = await setup({ switchText: null });
     vi.mocked(s.client.config.get).mockRejectedValueOnce(new Error("config unavailable"));
-    expect(await s.service.options()).toMatchObject({ enabled: false, disabledReason: expect.stringContaining("off on this host"), profile: null, notes: ["Agent profiles unavailable: config unavailable."] });
+    expect(await s.service.options()).toMatchObject({ enabled: true, disabledReason: null, profile: null, notes: ["Agent profiles unavailable: config unavailable."] });
   });
 });
 
 describe("create", () => {
-  it("dispatches one idempotent create with the exact title, labels and config, then verifies the readback", async () => {
-    const s = await setup(), input = request();
+  it.each([null, '{"create":"on"}'])("dispatches one idempotent create with switch %s, the exact title, labels and config, then verifies the readback", async (switchText) => {
+    const s = await setup({ switchText }), input = request();
     const outcome = await s.service.create(input);
     const title = "LSA • ADHOC • Route review";
     expect(s.create).toHaveBeenCalledTimes(1);
@@ -175,6 +205,7 @@ describe("create", () => {
 
   it.each([
     ["the switch is off", { switchText: '{"create":"off"}' }, {}, "switched off"],
+    ["the switch is invalid", { switchText: "not json" }, {}, "not valid"],
     ["the topic forges a segment", {}, { topic: "A • B" }, "cannot contain"],
     ["the workspace is not a desk ADAM", {}, { workspaceId: "wks-repo" }, "no longer a desk's ADAM workspace"],
     ["the provider is unavailable", {}, { provider: "gemini", model: "x", effort: null, modeId: null }, "not signed in"],
@@ -187,6 +218,16 @@ describe("create", () => {
     const outcome = await s.service.create(request(patch));
     expect(outcome).toMatchObject({ state: "refused", agentId: null, message: expect.stringContaining(message) });
     expect(outcome.message).toContain("Nothing was created.");
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toThrow();
+  });
+
+  it("rechecks operator-off at dispatch after options were available by default", async () => {
+    const s = await setup();
+    expect(await s.service.options()).toMatchObject({ enabled: true });
+    await writeFile(s.switchFile, '{"create":"off"}');
+    expect(await s.service.options()).toMatchObject({ enabled: false });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused", message: expect.stringContaining("switched off") });
     expect(s.create).not.toHaveBeenCalled();
     await expect(readdir(s.stateRoot)).rejects.toThrow();
   });
