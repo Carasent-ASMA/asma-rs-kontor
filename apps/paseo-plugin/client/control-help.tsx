@@ -5,7 +5,7 @@ import { anchoredPanelOpen, menuFrame, type MenuFrame, type MenuSize } from "./a
 
 type Anchor = RefObject<View | null>;
 type Help = { anchor: Anchor; text: string; focused: boolean; held?: boolean };
-type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(): void; exit(anchor: Anchor): void; dismiss(): void };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(help: Help): void; exit(help: Help): void; dismiss(): void };
 const HelpContext = createContext<Controller | null>(null);
 type KeyEvent = { key?: string; pointerType?: string; clientX?: number; clientY?: number; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
@@ -19,7 +19,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const helpId = `kontor-help-${useId()}`;
   const root = useRef<View | null>(null), panel = useRef<View | null>(null);
   const current = useRef<Help | null>(null);
-  const overPanel = useRef(false);
+  const overPanel = useRef<Help | null>(null);
   const input = useRef<"keyboard" | "pointer" | "touch">("keyboard");
   const pressedAt = useRef<{ x?: number; y?: number } | null>(null);
   const fitted = useRef<{ text: string; size: MenuSize } | null>(null);
@@ -29,16 +29,18 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const [frame, setFrame] = useState<MenuFrame | null>(null);
   const controller = useMemo<Controller>(() => {
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
-    const dismiss = () => { cancel(); revision.current++; current.current = null; overPanel.current = false; fitted.current = null; setHelp(null); setFrame(null); };
+    const dismiss = () => { cancel(); revision.current++; current.current = null; overPanel.current = null; fitted.current = null; setHelp(null); setFrame(null); };
     // Source hover-out can arrive after panel pointer-enter on React Native Web.
     const leave = (anchor: Anchor, blur = false) => {
       if (current.current?.anchor !== anchor) return;
       if (blur) current.current.focused = false;
-      if (current.current.focused || current.current.held || overPanel.current) return;
+      if (current.current.focused || current.current.held || overPanel.current?.anchor === anchor) return;
       cancel(); timer.current = setTimeout(dismiss, 160);
     };
     const place = (next: Help) => {
       const token = ++revision.current;
+      // Hover belongs to this panel, not to the next control that reuses the overlay.
+      if (current.current?.anchor !== next.anchor || current.current.text !== next.text) overPanel.current = null;
       current.current = next;
       root.current?.measureInWindow((rootX, rootY, width, height) => next.anchor.current?.measureInWindow((x, y, w, h) => {
         if (token !== revision.current || !w || !h || !width || !height) return;
@@ -51,8 +53,14 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     };
     return {
       id: helpId, dismiss, leave,
-      enter() { overPanel.current = true; cancel(); },
-      exit(anchor) { overPanel.current = false; leave(anchor); },
+      enter(help) {
+        if (current.current?.anchor !== help.anchor || current.current.text !== help.text) return;
+        overPanel.current = help; cancel();
+      },
+      exit(help) {
+        if (overPanel.current?.anchor !== help.anchor || overPanel.current.text !== help.text) return;
+        overPanel.current = null; leave(help.anchor);
+      },
       show(anchor, text, focused = false, held = false) {
         // Native keyboard/accessibility focus has no document keydown to reset touch mode.
         if (focused && Platform.OS !== "web") input.current = "keyboard";
@@ -127,7 +135,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss} onTouchStart={() => controller.press(true)} onTouchCancel={controller.dismiss}>
       {children}
       {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
-        <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={controller.enter} onPointerLeave={() => controller.exit(help.anchor)}
+        <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={() => controller.enter(help)} onPointerLeave={() => controller.exit(help)}
           onLayout={({ nativeEvent }) => controller.fit(help, nativeEvent.layout)}
           style={{ position: "absolute", left: frame.left, maxWidth: frame.width, opacity: fitted.current?.text === help.text ? 1 : 0, ...(frame.bottom === null ? { top: frame.top ?? 0 } : { bottom: frame.bottom }), maxHeight: frame.maxHeight,
             padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 7, backgroundColor: colors.surface2, elevation: 12, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8 }}>
