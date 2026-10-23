@@ -1,6 +1,7 @@
 import { freshAvailability } from "../shared/session-lifecycle";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
+import { recordVisit } from "./recent-sessions";
 
 export type SessionNavigation = NonNullable<PluginScreenProps["navigation"]>;
 
@@ -15,7 +16,8 @@ export type OpenSessionResult =
 /**
  * Opens the existing native session by its host ID. A display title is never an
  * identity: duplicate names stay distinct rows and only the selected ID leaves
- * this function.
+ * this function. Every Kontor open path comes through here, so an accepted open is
+ * this device's Recent visit; a refusal records nothing.
  */
 export function openSessionById(input: {
   readonly entries: readonly DirectoryEntry[];
@@ -43,6 +45,7 @@ export function openSessionById(input: {
   }
   try {
     input.navigation.openAgent({ agentId: entry.id, serverId: input.serverId });
+    recordVisit(entry.id);
     return { ok: true };
   } catch (error) {
     return {
