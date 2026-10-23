@@ -47,14 +47,14 @@ describe("bulk archive selection accessibility", () => {
     const live = walk(tree).filter((element) => element.props.accessibilityLiveRegion);
     expect(live).toHaveLength(1); expect(live[0]!.props).toMatchObject({ role: "status", accessibilityLiveRegion: "polite", children: "Archiving 4 selected sessions." });
   });
-  it("shows one explicit confirmation with a collapsed exact-ID list and no retry action", () => {
-    const onRun = vi.fn(), lifecycle = { review: { rows: [{ id: "a", title: "A", eligible: true, outcome: "pending", reason: "Ready" }] }, busy: false, running: false, batch: null, stop: vi.fn() } as unknown as Lifecycle;
-    const tree = harness.render(() => BulkArchiveDialog({ lifecycle, root: { current: null }, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: vi.fn(), onRun }));
+  it("shows one explicit confirmation with a collapsed exact-ID list and no retry action", async () => {
+    const onFinished = vi.fn(), run = vi.fn(async () => "Archived 1"), lifecycle = { review: { rows: [{ id: "a", title: "A", eligible: true, outcome: "pending", reason: "Ready" }] }, busy: false, running: false, batch: null, stop: vi.fn(), run } as unknown as Lifecycle;
+    const tree = harness.render(() => BulkArchiveDialog({ lifecycle, root: { current: null }, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: vi.fn(), onFinished }));
     const list = walk(tree).find((element) => element.type === Disclosure)!;
     expect(list.props).toMatchObject({ label: "Selected sessions (1)" }); expect(list.props.open).toBeUndefined();
     expect((list.props.colors as PluginTheme["colors"]).accent).toBe(colors.foreground);
     const confirm = walk(tree).filter((element) => element.type === Action && element.props.label === "Archive 1 session");
-    expect(confirm).toHaveLength(1); expect(onRun).not.toHaveBeenCalled(); (confirm[0]!.props.onPress as () => void)(); expect(onRun).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveLength(1); expect(run).not.toHaveBeenCalled(); await (confirm[0]!.props.onPress as () => Promise<void>)(); expect(run).toHaveBeenCalledTimes(1); expect(onFinished).toHaveBeenCalledExactlyOnceWith("Archived 1");
     expect(walk(tree).some((element) => element.props.label === "Retry Archive")).toBe(false);
   });
 });

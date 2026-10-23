@@ -44,8 +44,8 @@ export function ArchiveRowFeedback({ row, colors }: { row: LifecycleRow | undefi
   return <Text style={{ color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>{`${row.outcome === "blocked" ? "Blocked" : "Archive not confirmed"}: ${row.message ?? row.reason}`}</Text>;
 }
 
-export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview, toggleRef }: {
-  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void; toggleRef?: RefObject<View | null>;
+export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview, toggleRef, announce = true }: {
+  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void; toggleRef?: RefObject<View | null>; announce?: boolean;
 }) {
   return <View testID="sessions-bulk-archive" style={{ gap: 4 }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
@@ -60,13 +60,13 @@ export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle,
     </View>
     {lifecycle.batch ? <>
       {lifecycle.running ? <Text style={{ color: colors.foreground, fontSize: 12 }}>{`Archiving ${Math.min(lifecycle.batch.completed + 1, lifecycle.batch.total)} of ${lifecycle.batch.total}`}</Text> : null}
-      <Text testID="sessions-bulk-status" role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{lifecycle.batch.announcement}</Text>
+      {announce ? <Text testID="sessions-bulk-status" role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{lifecycle.batch.announcement}</Text> : null}
     </> : null}
   </View>;
 }
 
-export function BulkArchiveDialog({ lifecycle, root, rootSize, colors, compact, onClose, onRun }: {
-  lifecycle: Lifecycle; root: RefObject<View | null>; rootSize: MenuSize; colors: Colors; compact: boolean; onClose: () => void; onRun: () => void;
+export function BulkArchiveDialog({ lifecycle, root, rootSize, colors, compact, onClose, onFinished }: {
+  lifecycle: Lifecycle; root: RefObject<View | null>; rootSize: MenuSize; colors: Colors; compact: boolean; onClose: () => void; onFinished: (summary: string) => void;
 }) {
   const closeButton = useRef<View | null>(null), { review, busy, running, batch } = lifecycle;
   useEffect(() => { const timer = setTimeout(() => (closeButton.current as View & { focus?: () => void } | null)?.focus?.(), 0); return () => clearTimeout(timer); }, []);
@@ -87,9 +87,9 @@ export function BulkArchiveDialog({ lifecycle, root, rootSize, colors, compact, 
             {(unresolvedArchive(row) || row.reconcileReviewId) && !running ? <Action colors={colors} label={`Check outcome: ${row.title}`} disabled={busy} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
           </View>)}
         </Disclosure>
-        {!batch ? <Action colors={colors} label={`Archive ${review.rows.length} session${review.rows.length === 1 ? "" : "s"}`} disabled={busy || running || !review.rows.length} onPress={onRun} /> : null}
+        {!batch ? <Action colors={colors} label={`Archive ${review.rows.length} session${review.rows.length === 1 ? "" : "s"}`} disabled={busy || running || !review.rows.length} onPress={async () => { const summary = await lifecycle.run(); if (summary) onFinished(summary); }} /> : null}
         {running ? <>{text(`Archiving ${Math.min((batch?.completed ?? 0) + 1, batch?.total ?? review.rows.length)} of ${batch?.total ?? review.rows.length}`)}<Action colors={colors} label="Stop before next session" onPress={lifecycle.stop} /></> : null}
-        {batch?.summary ? text(batch.summary) : null}
+        {batch ? <Text testID="sessions-bulk-status" role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{batch.announcement}</Text> : null}
       </> : null}
       {lifecycle.error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{lifecycle.error}</Text> : null}
     </ScrollView>
