@@ -44,6 +44,7 @@
 
 pub mod applications;
 pub mod attention;
+pub mod composition_snapshot;
 pub mod credentials;
 pub mod endpoint;
 pub mod fleet;
