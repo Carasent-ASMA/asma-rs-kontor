@@ -1,47 +1,49 @@
 import { useMemo, type ReactNode } from "react";
 import { PanResponder, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { aggregateState, aggregateSummary, leadingStates, ROLE_ROOT_KEY, STATE_LABELS, type OrganizationAggregate, type OrganizationGroup, type OrganizationGroupKind, type OrganizationRow, type OrganizationState } from "./session-organization";
+import { aggregateState, leadingStates, ROLE_ROOT_KEY, STATE_LABELS, type OrganizationAggregate, type OrganizationGroup, type OrganizationGroupKind, type OrganizationRow, type OrganizationState } from "./session-organization";
 import { SessionStateMarker } from "./session-state-marker";
 import { COARSE_POINTER, type Colors } from "./page-controls";
+import { organizationIcon } from "./desk-icon";
+import { useControlHelp } from "./control-help";
+export { KIND_ICONS } from "./desk-icon";
 
 /** Display glossary for repeated workspace-name prefixes; grouping by prefix establishes no authority. */
 export const WORKSPACE_KINDS: Readonly<Record<string, string>> = {
   RSW: "Review workspace", TSW: "Task workspace", ASW: "Advisory workspace", CSW: "Committee workspace",
-  ESW: "Epic workspace", ECP: "Legacy epic coordination", DESK: "Durable desk",
+  ESW: "Epic workspace", ECP: "Legacy epic coordination", QSW: "Quick Session Workspace", DESK: "Durable desk",
 };
-export const KIND_ICONS: Partial<Record<OrganizationGroupKind, string>> = { workstream: "Route", epic: "Flag", workspace: "PanelsTopLeft", project: "Folder" };
 export const KIND_NAMES: Readonly<Record<OrganizationGroupKind, string>> = {
   workstream: "Workstream", epic: "Epic", "workspace-kind": "Workspace kind", workspace: "Workspace", project: "Native project", role: "Role", flat: "Sessions",
 };
 
 export { stateColor } from "./session-status-ink";
 
-/** Highest-priority session icon; the full breakdown stays in the accessible label. */
-export function StateBadge({ state, colors, compact }: { state: OrganizationState | null; colors: Colors; compact: boolean }) {
-  if (state === null) return <Text style={{ color: colors.foregroundMuted, fontSize: 9, opacity: 0.75 }}>No sessions</Text>;
-  return <View style={{ flexDirection: "row", alignItems: "center", gap: compact ? 4 : 6 }}>
-    <SessionStateMarker state={state} colors={colors} />
-    {compact ? null : <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 10 }}>{STATE_LABELS[state]}</Text>}
-  </View>;
+/** Ratios count displayed states; native lifecycle and attention can overlap those states. */
+export function groupStateSummary(aggregate: OrganizationAggregate): string {
+  const unit = aggregate.total === 1 ? "session" : "sessions";
+  return leadingStates(aggregate, Infinity).map(({ state, count }) => `${STATE_LABELS[state]}: ${count} of ${aggregate.total} ${unit}`).join(". ") || "No sessions";
 }
 
-/**
- * A Role header's states: up to two non-zero ones, most urgent first, each as shape, count and
- * word, so one error among five sessions reads as one. The total stays in its own column.
- * While the inventory is stale they follow "Last known", as on the Board.
- */
-function StateCounts({ aggregate, colors, compact, stale }: { aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale: boolean }) {
-  const states = leadingStates(aggregate);
-  if (!states.length) return <StateBadge state={null} colors={colors} compact={compact} />;
-  return <View testID="organization-state-counts" style={{ flexDirection: "row", alignItems: "center", gap: compact ? 6 : 10, flexShrink: 1, minWidth: 0 }}>
-    {stale ? <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: compact ? 9 : 10 }}>Last known</Text> : null}
-    {states.map(({ state, count }) => <View key={state} style={{ flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 1, minWidth: 0 }}>
+export function groupStateScopeHelp(contextual: boolean): string {
+  if (contextual) return "The denominator counts every descendant session in the retained surrounding context, including collapsed branches. Show in tree can include sessions outside the results' search, task or explicit state filter. Project, desk, workstream, epic and assignment scopes still apply; Current still applies when selected. Back to results returns to matching sessions.";
+  return "The denominator counts descendant sessions matching the current search and filters, including collapsed branches.";
+}
+
+export function groupStateHelp(aggregate: OrganizationAggregate, contextual = false): string {
+  return `${groupStateSummary(aggregate)}. ${groupStateScopeHelp(contextual)} Each session has one displayed state, in priority order: Needs input, Error, Running, Attention, Starting, Idle, Closed. Native lifecycle and attention signals can overlap; for example a running session that needs input is counted as Needs input here. These are displayed-state counts, not counts of every attention signal. ${nativeCounts(aggregate)}`;
+}
+
+/** One primary state and its share, at every depth and width; the row owns focus and full help. */
+export function StateBadge({ state, aggregate, colors, compact, stale = false }: { state: OrganizationState | null; aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale?: boolean }) {
+  if (state === null) return <Text style={{ color: colors.foregroundMuted, fontSize: 9, opacity: 0.75 }}>No sessions</Text>;
+  const count = leadingStates(aggregate, 1)[0]!.count;
+  return <View testID="organization-state-counts" style={{ alignItems: "flex-end", flexShrink: 0 }}>
+    {stale ? <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>Last known</Text> : null}
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
       <SessionStateMarker state={state} colors={colors} />
-      <Text style={{ color: colors.foreground, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{count}</Text>
-      {/* The word gives way first on a narrow header; the shape and count stay. */}
-      {compact ? null : <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: 10 }}>{STATE_LABELS[state].toLocaleLowerCase()}</Text>}
-    </View>)}
+      <Text style={{ color: colors.foregroundMuted, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{`${STATE_LABELS[state]} ${count}/${aggregate.total}`}</Text>
+    </View>
   </View>;
 }
 
@@ -59,14 +61,14 @@ export function groupCount(group: OrganizationGroup): string {
 
 function nativeCounts(aggregate: OrganizationAggregate): string {
   const native = aggregate.native;
-  return `Native counts: ${native.initializing} initializing, ${native.idle} idle, ${native.running} running, ${native.error} errors, ${native.closed} closed.`;
+  return `Native counts: ${native.initializing} initializing, ${native.idle} idle, ${native.running} running, ${native.error} error${native.error === 1 ? "" : "s"}, ${native.closed} closed.`;
 }
 
 export function groupDisplayLabel(group: OrganizationGroup): string {
   return group.kind === "workspace" && group.parentKey?.includes("/kind:") ? group.label.slice(group.label.indexOf("•") + 1).trim() : group.label;
 }
 
-export function OrganizationRowView({ row, colors, compact, children, details, lifecycleAction, disabled, arranging, selected, favorite, stale = false, actions, onFavorite, onToggle, onMove, onSelect }: {
+export function OrganizationRowView({ row, colors, compact, children, details, lifecycleAction, disabled, arranging, selected, favorite, stale = false, contextual = false, actions, onFavorite, onToggle, onMove, onSelect }: {
   row: OrganizationRow; colors: Colors; compact: boolean; children?: ReactNode;
   /** A session's own control beside its row button, never inside it. */
   details?: ReactNode;
@@ -76,10 +78,13 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   arranging: boolean; selected: boolean; favorite: boolean;
   /** The sessions were not read live; a Role header calls its states last known. */
   stale?: boolean;
+  /** Show in tree retains surrounding sessions outside the result filters. */
+  contextual?: boolean;
   /** Contextual destinations shown under an expanded group. */
   actions?: ReactNode;
   onFavorite: () => void; onToggle: () => void; onMove: (distance: number) => void; onSelect: () => void;
 }) {
+  const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known. " : ""}${groupStateHelp(row.group.aggregate, contextual)}` : "");
   if (row.kind === "empty") {
     return <View style={{ minHeight: compact ? 36 : 30, justifyContent: "center", paddingLeft: indentOf(row.depth, compact) + 8 }}>
       <Guides depth={row.depth} compact={compact} colors={colors} />
@@ -121,22 +126,23 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   }
   const group = row.group;
   const state = aggregateState(group.aggregate);
-  const icon = group.kind === "workspace" && group.parentKey?.includes("/kind:") ? undefined : KIND_ICONS[group.kind];
+  const icon = organizationIcon(group);
   const meaning = group.kind === "workspace-kind" ? WORKSPACE_KINDS[group.label] : undefined;
   const top = row.depth === 0;
-  const height = compact || top ? 44 : 40;
+  const height = 44;
   const roleView = group.kind === "role" && group.parentKey === ROLE_ROOT_KEY;
   const name = roleView && group.shortCode === null ? label : `${KIND_NAMES[group.kind]} ${label}`;
-  const summary = `${roleView && stale ? "Last known: " : ""}${aggregateSummary(group.aggregate)}`;
+  const summary = `${stale ? "Last known: " : ""}${groupStateSummary(group.aggregate)}`;
   const title = <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: top ? 13 : 12.5, fontWeight: "600", fontFamily: group.kind === "workspace-kind" || (group.kind === "role" && group.shortCode !== null) ? "monospace" : undefined }}>{label}</Text>;
   return <View style={{ paddingLeft: indent, borderTopWidth: top ? 1 : 0, borderColor: colors.border }}>
     <Guides depth={row.depth} compact={compact} colors={colors} />
     <View style={{ flexDirection: "row", alignItems: "center" }}>
       {handle}
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: row.expanded }} aria-expanded={row.expanded}
-        accessibilityLabel={`${name}${meaning ? ` (${meaning})` : ""}${group.detail ? `, ${group.detail}` : ""}, ${groupCount(group)} ${group.unit}. ${summary}. ${nativeCounts(group.aggregate)}`}
-        onPress={onToggle}
-        style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ flex: 1, minWidth: 0, minHeight: height, flexDirection: "row", alignItems: "center", gap: compact ? 5 : 8, paddingHorizontal: 8, borderRadius: 6, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
+      <Pressable {...help.bindings} accessibilityRole="button" accessibilityState={{ expanded: row.expanded }} aria-expanded={row.expanded}
+        accessibilityLabel={`${name}${meaning ? ` (${meaning})` : ""}${group.detail ? `, ${group.detail}` : ""}, ${groupCount(group)} ${group.unitTotal === 1 ? group.unit.slice(0, -1) : group.unit}. ${summary}. ${nativeCounts(group.aggregate)}`}
+        accessibilityHint={groupStateHelp(group.aggregate, contextual)}
+        onPress={() => { help.dismiss(); onToggle(); }}
+        style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ flex: 1, minWidth: 0, minHeight: height, flexDirection: "row", alignItems: "center", gap: compact ? 5 : 8, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.foreground : "transparent", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
         <Text style={{ width: 10, color: colors.foregroundMuted, fontSize: 13 }}>{row.expanded ? "⌄" : "›"}</Text>
         {icon ? <Icon name={icon} size={compact ? 14 : 16} color={colors.foregroundMuted} /> : null}
         {compact && group.detail ? <View style={{ flexShrink: 1, minWidth: 0, paddingVertical: 4 }}>
@@ -146,7 +152,7 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
         </View> : title}
         {group.detail && !compact ? <Text numberOfLines={1} style={{ flexShrink: 2, color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text> : null}
         <View style={{ flex: 1 }} />
-        {roleView ? <StateCounts aggregate={group.aggregate} colors={colors} compact={compact} stale={stale} /> : <StateBadge state={state} colors={colors} compact={compact} />}
+        <StateBadge state={state} aggregate={group.aggregate} colors={colors} compact={compact} stale={stale} />
         {/* "No sessions" already says zero; the empty slot keeps the count column aligned. */}
         {state === null && groupCount(group) === "0" ? <View style={{ minWidth: compact ? 22 : 28 }} />
           : <Text style={{ minWidth: compact ? 22 : 28, textAlign: "center", color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{groupCount(group)}</Text>}

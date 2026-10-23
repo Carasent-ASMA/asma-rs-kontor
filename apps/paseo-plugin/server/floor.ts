@@ -64,12 +64,12 @@ function repeatsMember(raw: string): boolean {
 }
 
 /**
- * Parse the switch. Strictness is on the parsed shape and value: one object with
- * exactly the `floor` key, whose value is exactly the string `on` or `off`.
+ * Parse a switch. Strictness is on the parsed shape and value: one object with
+ * exactly the `key` key, whose value is exactly the string `on` or `off`.
  * Formatting whitespace around tokens is allowed; any other spelling, type, key
  * or a repeated member is an error, so a doubtful file never turns the floor off.
  */
-export function parseFloor(raw: string): { value: "on" | "off" } | { error: string } {
+export function parseFloor(raw: string, key = "floor"): { value: "on" | "off" } | { error: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -80,15 +80,15 @@ export function parseFloor(raw: string): { value: "on" | "off" } | { error: stri
     return { error: `expected a JSON object, found ${excerpt(parsed)}` };
   }
   const keys = Object.keys(parsed);
-  if (keys.length !== 1 || keys[0] !== "floor") {
-    return { error: `expected exactly the key "floor", found keys ${excerpt(keys)}` };
+  if (keys.length !== 1 || keys[0] !== key) {
+    return { error: `expected exactly the key "${key}", found keys ${excerpt(keys)}` };
   }
   if (repeatsMember(raw)) {
-    return { error: 'expected exactly one "floor" member, found it repeated' };
+    return { error: `expected exactly one "${key}" member, found it repeated` };
   }
-  const value = (parsed as { floor: unknown }).floor;
+  const value = (parsed as Record<string, unknown>)[key];
   if (value !== "on" && value !== "off") {
-    return { error: `"floor" must be the string "on" or "off", found ${excerpt(value)}` };
+    return { error: `"${key}" must be the string "on" or "off", found ${excerpt(value)}` };
   }
   return { value };
 }
@@ -97,7 +97,7 @@ const invalid = (file: string, error: string): FloorMode => ({ enabled: true, re
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-function readOpen(file: string, descriptor: number): FloorMode {
+function readOpen(file: string, descriptor: number, key: string): FloorMode {
   const info = fstatSync(descriptor);
   if (!info.isFile() || info.size > MAX_BYTES) {
     return invalid(file, "must be a regular file of at most 2 MiB");
@@ -110,7 +110,7 @@ function readOpen(file: string, descriptor: number): FloorMode {
     length += count;
   }
   if (length > MAX_BYTES) return invalid(file, "exceeds 2 MiB");
-  const parsed = parseFloor(buffer.subarray(0, length).toString("utf8"));
+  const parsed = parseFloor(buffer.subarray(0, length).toString("utf8"), key);
   if ("error" in parsed) return invalid(file, parsed.error);
   return parsed.value === "off"
     ? { enabled: false, reason: "explicit-off", file, error: null }
@@ -124,7 +124,7 @@ function readOpen(file: string, descriptor: number): FloorMode {
  * enabled and reports why; this never throws, so a bad file cannot stop the
  * plugin from starting.
  */
-export function readFloor(file = floorFile()): FloorMode {
+export function readFloor(file = floorFile(), key = "floor"): FloorMode {
   let descriptor: number;
   try {
     // Non-blocking open prevents a misconfigured FIFO from blocking plugin start.
@@ -137,7 +137,7 @@ export function readFloor(file = floorFile()): FloorMode {
   }
   let mode: FloorMode;
   try {
-    mode = readOpen(file, descriptor);
+    mode = readOpen(file, descriptor, key);
   } catch (error) {
     mode = invalid(file, `cannot read: ${messageOf(error)}`);
   }

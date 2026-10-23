@@ -4,7 +4,7 @@ import type { Colors } from "../client/page-controls";
 import { buildOrganizationTree, type OrganizationGroup, type OrganizationInput } from "../client/session-organization";
 import { relateSplitProjects } from "../client/split-project-rows";
 import { sessionEntry } from "./session-fixtures";
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory() }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useContext: () => null, useRef: (current: unknown) => ({ current }) }));
 vi.mock("react-native", () => ({ PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
@@ -193,6 +193,6 @@ describe("a group row's detail on a phone", () => {
     const detail = nodes.find((node) => node.type === "Text" && node.props.children === group.detail)!;
     expect(group.detail).toBe("1 session with no known epic · same project as ASMA-8108");
     expect(detail.props.numberOfLines).toBe(compact ? 2 : 1);
-    expect(String(nodes.find((node) => node.type === "Pressable")!.props.accessibilityLabel)).toContain(`, ${group.detail}, 1 sessions.`);
+    expect(String(nodes.find((node) => node.type === "Pressable")!.props.accessibilityLabel)).toContain(`, ${group.detail}, 1 session.`);
   });
 });
