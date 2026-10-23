@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { configureRecentStorage, readRecent } from "../client/recent-sessions";
+import { configureRecentStorage, readRecent, recentRows } from "../client/recent-sessions";
 import { openSessionById, type SessionNavigation } from "../client/session-actions";
 import { sessionEntry } from "./session-fixtures";
 
@@ -34,7 +34,7 @@ describe("openSessionById", () => {
     expect(nav.openAgent).not.toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "agent-first" }),
     );
-    expect(readRecent().record.visits.map((visit) => visit.id)).toEqual(["agent-second"]);
+    expect(readRecent("srv_host").record.visits.map((visit) => visit.id)).toEqual(["agent-second"]);
   });
 
   it("refuses a session that disappeared instead of falling back to a name", () => {
@@ -88,6 +88,32 @@ describe("openSessionById", () => {
     const failing = navigation();
     failing.openAgent.mockImplementation(() => { throw new Error("workspace is unavailable"); });
     openSessionById({ entries, id: "agent-first", serverId: "srv_host", navigation: failing });
-    expect(readRecent().record.visits).toEqual([]);
+    expect(readRecent("srv_host").record.visits).toEqual([]);
+  });
+
+  it.each([
+    { sequence: "A → B → A", opens: [{ id: "agent-a", at: 0 }, { id: "agent-b", at: 1 }, { id: "agent-a", at: 2 }], expected: [{ id: "agent-a", at: 2 }, { id: "agent-b", at: 1 }] },
+    { sequence: "B → A → B with equal wall times", opens: [{ id: "agent-b", at: 0 }, { id: "agent-a", at: 0 }, { id: "agent-b", at: 0 }], expected: [{ id: "agent-b", at: 0 }, { id: "agent-a", at: 0 }] },
+    { sequence: "A → B with the clock moving backwards", opens: [{ id: "agent-a", at: 0 }, { id: "agent-b", at: -1 }], expected: [{ id: "agent-b", at: -1 }, { id: "agent-a", at: 0 }] },
+  ])("persists $sequence once each, newest open first, after a remount", ({ opens, expected }) => {
+    const now = Date.now(), values = new Map<string, string>();
+    const storage = { read: (key: string) => values.get(key), write: (key: string, value: string | null) => { if (value !== null) values.set(key, value); } };
+    configureRecentStorage(storage);
+    const entries = [sessionEntry("agent-a"), sessionEntry("agent-b"), { ...sessionEntry("agent-c"), lastUserMessageAt: new Date(now + 100).toISOString() }];
+    const nav = navigation();
+    const clock = vi.spyOn(Date, "now");
+    try {
+      for (const { id, at } of opens) {
+        clock.mockReturnValue(now + at);
+        expect(openSessionById({ entries, id, serverId: "srv_host", navigation: nav }).ok).toBe(true);
+      }
+      configureRecentStorage(storage);
+      const record = readRecent("srv_host").record;
+      expect(record.visits).toEqual(expected.map(({ id, at }) => ({ id, at: now + at })));
+      expect(recentRows(entries, record, now + 100).map((row) => row.entry.id)).toEqual(expected.map(({ id }) => id));
+      expect(readRecent("other-host").record.visits).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

@@ -6,7 +6,6 @@ import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { contributeReturnControl } from "./client/return-control";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
-import { recordVisit } from "./client/recent-sessions";
 import { SWITCH_SHEET } from "./client/start-switch-sheet";
 import { disposeRetainedDirectories } from "./client/use-session-directory";
 import { forgetWorkspaceDirectories } from "./client/use-workspace-directory";
@@ -60,8 +59,7 @@ export default function contribute(client: PluginClientContext): () => void {
       icon: "ArrowLeft",
       keywords: ["back", "return", "kontor", "sessions"],
       context: "agent",
-      onSelect({ openScreen, agent }) {
-        recordVisit(agent.id);
+      onSelect({ openScreen }) {
         openScreen({ screenId: SESSIONS_SCREEN_ID });
       },
     }),

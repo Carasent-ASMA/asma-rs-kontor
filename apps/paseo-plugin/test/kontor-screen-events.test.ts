@@ -819,7 +819,7 @@ describe("Start or switch entry", () => {
     patchSessionView(scope, { query: "old query", status: "favorites", task: { jira: "ASMA-2", kontorId: null, label: "Unrelated task" },
       shortcut: "desk-unrelated", streams: ["unrelated-workstream"], epic: { kind: "known", key: "ASMA-2" }, work: "mine", assignment: "me", membership: "archived", includeArchived: true,
       layout: "flat", grouping: "role", sort: "title", sortDirection: "desc", advancedOpen: true, toolbarOpen: true, legendOpen: true, scrollOffset: 123, peek: { sessionId: "other", resultsOffset: 10 } });
-    const promised = switchRows(model.entries, "route review", Date.now());
+    const promised = switchRows(model.entries, "route review", Date.now(), { clearedAt: null, visits: [] });
     expect(promised.total).toBe(23);
     screen.click(compact ? "Start or switch session" : "Start or switch");
     (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();

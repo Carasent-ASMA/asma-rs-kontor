@@ -135,8 +135,8 @@ describe("Kontor client entry", () => {
     const returned: unknown[] = [];
     backCommand.onSelect({ openScreen: (input) => returned.push(input), agent: { id: "agent-left" } });
     expect(returned).toEqual([{ screenId: SESSIONS_SCREEN_ID }]);
-    // Leaving a conversation for Kontor records it as this device's latest visit.
-    expect(recordVisit).toHaveBeenCalledWith("agent-left");
+    // Returning to Kontor never rewrites an opening time.
+    expect(recordVisit).not.toHaveBeenCalled();
 
     const switchCommand = calls[4]!.value as CommandContribution;
     expect(switchCommand.id).toBe(SWITCH_COMMAND_ID);
@@ -147,7 +147,7 @@ describe("Kontor client entry", () => {
     switchCommand.onSelect({ openScreen: (input) => switched.push(input as { screenId: string; params: Record<string, string> }) });
     expect(switched).toEqual([{ screenId: SESSIONS_SCREEN_ID, params: { sheet: "switch", at: expect.stringMatching(/^\d+$/) } }]);
     // Opening the sheet records nothing: only an open is a visit.
-    expect(recordVisit).toHaveBeenCalledTimes(1);
+    expect(recordVisit).not.toHaveBeenCalled();
 
     expect(contributeReturnControl).toHaveBeenCalledTimes(1);
     expect(contributeReturnControl).toHaveBeenCalledWith(client, SESSIONS_SCREEN_ID);

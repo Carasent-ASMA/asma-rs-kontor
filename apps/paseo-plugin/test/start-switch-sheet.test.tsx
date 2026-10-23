@@ -32,7 +32,7 @@ vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl })
 
 import { createAvailability, StartSwitchSheet, switchRows, type CreateOptionsState } from "../client/start-switch-sheet";
 import { NewLsaForm, newRequestId, personaLine, resolveDraft } from "../client/new-lsa-form";
-import { configureRecentStorage, recordVisit } from "../client/recent-sessions";
+import { configureRecentStorage, recordVisit, readRecent } from "../client/recent-sessions";
 import { Action, Copy } from "../client/page-controls";
 import { sessionEntry } from "./session-fixtures";
 
@@ -77,22 +77,23 @@ beforeEach(() => {
 });
 
 describe("Start or switch rows", () => {
-  it("lists up to eight Recent rows with their place and reason, and none archived", () => {
+  it("lists up to eight Recent rows in saved open order with their place and reason, and none archived", () => {
     const entries: DirectoryEntry[] = Array.from({ length: 10 }, (_, index) => prompted(`agent-${index}`, NOW - (index + 1) * 60_000, { projectName: "DESK • ADAM", workspaceName: "ADAM" }));
+    entries.forEach((entry, index) => recordVisit("host-a", entry.id, NOW - (index + 1) * 60_000));
     entries.push(sessionEntry("agent-archived", { archivedAt: "2026-10-22" }));
-    recordVisit("agent-archived", NOW); recordVisit("agent-9", NOW - 1000);
-    const { rows, total } = switchRows(entries, "", NOW);
+    recordVisit("host-a", "agent-archived", NOW); recordVisit("host-a", "agent-9", NOW - 1000);
+    const { rows, total } = switchRows(entries, "", NOW, readRecent("host-a", NOW).record);
     expect(total).toBe(8);
-    expect(rows.map((row) => row.entry.id)).toEqual(["agent-9", "agent-0", "agent-1", "agent-2", "agent-3", "agent-4", "agent-5", "agent-6"]);
+    expect(rows.map((row) => row.entry.id)).toEqual(["agent-9", "agent-8", "agent-7", "agent-6", "agent-5", "agent-4", "agent-3", "agent-2"]);
     expect(rows[0]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
-    expect(rows[1]!.detail).toMatch(/^Prompted .+ · DESK • ADAM \/ ADAM$/);
+    expect(rows[1]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
   });
 
   it("matches every token across the directory, Recent first, at most 20 shown with the full count", () => {
     const entries = Array.from({ length: 25 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
     entries.push(sessionEntry("agent-other", { title: "Billing" }), sessionEntry("agent-archived", { title: "Route review old", archivedAt: "2026-10-22" }));
-    recordVisit("agent-24", NOW);
-    const { rows, total } = switchRows(entries, "  review   ROUTE ", NOW);
+    recordVisit("host-a", "agent-24", NOW);
+    const { rows, total } = switchRows(entries, "  review   ROUTE ", NOW, readRecent("host-a", NOW).record);
     expect(total).toBe(25);
     expect(rows).toHaveLength(20);
     expect(rows[0]!.entry.id).toBe("agent-24");
@@ -110,8 +111,9 @@ describe("Start or switch rows", () => {
 
 describe("Start or switch sheet", () => {
   function sheet(props: Partial<Parameters<typeof StartSwitchSheet>[0]> = {}) {
+    recordVisit("host-a", "agent-a", Date.now() - 60_000);
     const onOpen = vi.fn(), onShowAll = vi.fn(), onClose = vi.fn();
-    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostStatus: "online" as const,
+    const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
       directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen, onShowAll, onClose, ...props };
     let tree: Element[] = [];
     const render = () => { model.cursor = 0; model.effect = 0; tree = elements(StartSwitchSheet(all)); return tree; };
@@ -125,7 +127,7 @@ describe("Start or switch sheet", () => {
     expect(root.props).toMatchObject({ testID: "kontor-switch-sheet", dialog: true, label: "Start or switch session", placement: { align: "end", width: 400, maxHeight: 560 } });
     expect(byTestId(s.tree, "kontor-switch-list")?.props).toMatchObject({ role: "menu", accessibilityLabel: "Recent sessions" });
     const row = byTestId(s.tree, "kontor-switch-row-agent-a")!;
-    expect(row.props).toMatchObject({ role: "menuitem", accessibilityLabel: expect.stringMatching(/^LSA • ASMA-1 • Route, Prompted .+ · /) });
+    expect(row.props).toMatchObject({ role: "menuitem", accessibilityLabel: expect.stringMatching(/^LSA • ASMA-1 • Route, Opened .+ · /) });
     (row.props.onPress as () => void)();
     expect(s.onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-a" }));
     expect(text(s.tree)).not.toMatch(/Archive|✕|×/);
@@ -204,7 +206,7 @@ describe("Start or switch sheet", () => {
   });
 
   it("clears Recent on this device and says so", () => {
-    recordVisit("agent-a", Date.now());
+    recordVisit("host-a", "agent-a", Date.now());
     const s = sheet({ directory: directory([sessionEntry("agent-a")]) });
     expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
     (action(s.tree, "Clear recent on this device")!.props.onPress as () => void)(); s.render();
@@ -215,6 +217,32 @@ describe("Start or switch sheet", () => {
 
   it("lists without opening when this Paseo app gives plugins no navigation", () => {
     expect(text(sheet({ canOpen: false }).tree)).toContain("does not let plugins open sessions");
+  });
+
+  it("discloses native coverage and keeps legacy IDs separate without inferred times", () => {
+    const raw = JSON.stringify({ clearedAt: null, visits: [{ id: "legacy-id", at: NOW }] });
+    const values = new Map([["kontor.recent@1", raw]]);
+    configureRecentStorage({ read: (key) => values.get(key), write: (key, value) => { if (value !== null) values.set(key, value); } });
+    const s = sheet({ directory: directory([sessionEntry("legacy-id"), sessionEntry("agent-a")]) });
+    expect(byTestId(s.tree, "kontor-switch-row-legacy-id")).toBeUndefined();
+    expect(text(s.tree)).toContain("Native sidebar opens and other devices are not included.");
+    expect(text(s.tree)).not.toContain("Prompted");
+    (action(s.tree, "Show saved history (1)")!.props.onPress as () => void)(); s.render();
+    expect(byTestId(s.tree, "kontor-saved-history")).toBeDefined();
+    expect(text(s.tree)).toContain("original host and opening times unknown");
+    expect(text(s.tree)).toContain("legacy-id");
+    (action(s.tree, "Clear recent on this device")!.props.onPress as () => void)(); s.render();
+    expect(values.get("kontor.recent@1")).toBe(raw);
+    expect(text(s.tree)).toContain("legacy-id");
+  });
+
+  it.each([320, 390])("keeps the existing compact sheet and accessible 44px rows at %ipx", (width) => {
+    const s = sheet({ compact: true, rootSize: { width, height: 844 } });
+    expect(s.tree[0]!.props.placement).toEqual({ align: "stretch", width: 0, cover: true });
+    const row = byTestId(s.tree, "kontor-switch-row-agent-a")!;
+    expect(row.props.role).toBe("menuitem");
+    expect(row.props.accessibilityLabel).toMatch(/^LSA .*Opened/);
+    expect((row.props.style as (state: { pressed: boolean }) => object)({ pressed: false })).toMatchObject({ minHeight: 44 });
   });
 });
 

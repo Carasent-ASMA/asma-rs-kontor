@@ -8,7 +8,7 @@ import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { Action, COARSE_POINTER, IconButton, type Colors } from "./page-controls";
-import { clearRecent, readRecent, recentRows, RECENT_SHOWN } from "./recent-sessions";
+import { clearRecent, readRecent, readSavedHistory, recentRows, RECENT_SHOWN, type RecentRecord } from "./recent-sessions";
 import { isArchivedSession, type DirectoryEntry, type DirectoryState } from "./session-directory";
 import { sessionState } from "./session-organization";
 import { SessionStateMarker } from "./session-state-marker";
@@ -60,7 +60,7 @@ export type SwitchRow = { readonly entry: DirectoryEntry; readonly detail: strin
  * An empty query lists up to 8 Recent rows. A query matches every token across the whole directory: Recent matches
  * first, then the others in directory order, at most 20; `total` counts every match.
  */
-export function switchRows(entries: readonly DirectoryEntry[], query: string, now: number, record = readRecent().record): { rows: SwitchRow[]; total: number } {
+export function switchRows(entries: readonly DirectoryEntry[], query: string, now: number, record: RecentRecord): { rows: SwitchRow[]; total: number } {
   const recent = recentRows(entries, record, now).map((row) => ({ entry: row.entry, detail: `${row.reason} ${ageInWords(row.at, now)} · ${sessionPlace(row.entry)}` }));
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   if (!tokens.length) return { rows: recent.slice(0, RECENT_SHOWN), total: Math.min(recent.length, RECENT_SHOWN) };
@@ -81,16 +81,18 @@ function persistenceNote(persistence: ReturnType<typeof readRecent>["persistence
  * One sheet for switching and starting: Recent and a search over every session, plus New LSA as a header action when
  * the host allows it. Rows open only through the screen's `onOpen`, the shared open path with its refusals.
  */
-export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, hostStatus, directory, canOpen, onOpen, onShowAll, onClose }: {
+export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, hostId, hostStatus, directory, canOpen, onOpen, onShowAll, onClose }: {
   anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; compact: boolean; colors: Colors;
-  hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
+  hostId: string; hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
   /** Whether this Paseo app exposes native navigation to plugins. */
   canOpen: boolean;
   onOpen: (entry: DirectoryEntry) => void; onShowAll: (query: string) => void; onClose: () => void;
 }) {
   const [mode, setMode] = useState<"switch" | "new">("switch");
   const [query, setQuery] = useState("");
-  const [recent, setRecent] = useState(readRecent);
+  const [recent, setRecent] = useState(() => readRecent(hostId));
+  const [showSaved, setShowSaved] = useState(false);
+  const saved = readSavedHistory();
   const create = useCreateOptions(hostStatus === "online");
   const now = Date.now();
   const { rows, total } = switchRows(directory.entries, query, now, recent.record);
@@ -119,8 +121,8 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
   const muted = { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 } as const;
   let empty: string | null = null;
   if (!rows.length && query.trim()) empty = `No session matches “${query.trim()}”.`;
-  else if (!rows.length && recent.record.clearedAt !== null) empty = `Cleared on this device at ${new Date(recent.record.clearedAt).toLocaleTimeString()}. Sessions you open or prompt after that appear here.`;
-  else if (!rows.length) empty = "Sessions you open from Kontor, or send a prompt to, appear here.";
+  else if (!rows.length && recent.record.clearedAt !== null) empty = `Cleared on this device at ${new Date(recent.record.clearedAt).toLocaleTimeString()}. Sessions you open from Kontor after that appear here.`;
+  else if (!rows.length) empty = "Sessions you open from Kontor appear here, most recent first.";
   const persistence = persistenceNote(recent.persistence);
   return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={colors} label={mode === "new" ? "New LSA session" : "Start or switch session"} onClose={dismiss}
     placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 400, maxHeight: 560 }} header={header}>
@@ -134,8 +136,17 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
       {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
       {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
       <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
-        <Action small label="Clear recent on this device" colors={colors} onPress={() => setRecent(clearRecent())} />
-        <Text style={muted}>Opened: this device only · Prompted: any device on this host</Text>
+        <Action small label="Clear recent on this device" colors={colors} onPress={() => setRecent(clearRecent(hostId))} />
+        <Text style={muted}>Opened from Kontor · this host and app profile only</Text>
+        <Text style={muted}>Native sidebar opens and other devices are not included.</Text>
+        {saved.ids.length ? <>
+          <Action small label={`${showSaved ? "Hide" : "Show"} saved history (${saved.ids.length})`} colors={colors} onPress={() => setShowSaved(!showSaved)} />
+          {showSaved ? <View testID="kontor-saved-history">
+            <Text style={muted}>Saved history · original host and opening times unknown. Session IDs only.</Text>
+            {saved.ids.map((id) => <Text key={id} selectable style={muted}>{id}</Text>)}
+          </View> : null}
+        </> : null}
+        {saved.unreadable ? <Text style={muted}>Earlier saved history could not be read and has been left untouched.</Text> : null}
         {persistence ? <Text style={muted}>{persistence}</Text> : null}
         {unavailable ? <Text testID="kontor-switch-create-status" style={muted}>{unavailable}</Text> : null}
       </View>
