@@ -31,9 +31,9 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   let problem: string | null = null;
   if (!options.enabled) problem = options.disabledReason ?? "New LSA is off on this host.";
   else if (options.pending) problem = `An earlier creation, “${options.pending.title}”, is not settled. Check it first.`;
-  else if (!desk) problem = "No desk on this host has an ADAM workspace.";
+  else if (!desk) problem = options.desks.length ? "The selected desk is no longer available. Choose a listed desk or Refresh desks." : "No desk on this host has an ADAM workspace.";
   else if (options.catalogWorkspaceId !== desk.workspaceId) problem = "Refresh this desk's provider catalog before creating a session.";
-  else if (!provider?.available) problem = provider?.note ?? (providerId ? `Provider ${providerId} is no longer active. Choose an active provider.` : "No active provider is available on this host.");
+  else if (!provider?.available) problem = provider?.note ?? (providerId ? `Provider ${providerId} is no longer active. Choose an active provider.` : "No active provider is available for this desk.");
   else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : "No selectable model.";
   else if (staleEffort) problem = `Effort ${effortId ?? "none"} is no longer offered for ${model.label}. Choose an available effort.`;
   else if (staleMode) problem = `Mode ${modeId ?? "none"} is no longer offered by ${provider.label}. Choose an available mode.`;
@@ -181,7 +181,9 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
         (error: unknown) => { if (isCurrent()) setPhase({ kind: "lost", requestId, title, message: `The Kontor server did not answer (${error instanceof Error ? error.message : String(error)}).` }); });
   };
   const set = (patch: Partial<CreateDraft>) => setDraft({ ...draft, ...patch });
-  const summary = [choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ");
+  const summary = choice.desk ? [choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ") : "Choose a desk first";
+  const providerEmpty = !choice.desk ? ready.desks.length ? "Choose an available desk to read its providers." : "Provider choices require an ADAM workspace."
+    : ready.catalogWorkspaceId !== choice.desk.workspaceId ? "Refresh choices to read this desk's providers." : "No active provider is available for this desk.";
   return wrap(<>
     <View style={{ gap: 4 }}>
       <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Topic</Text>
@@ -196,7 +198,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       <View style={{ gap: 10, paddingTop: 4 }}>
         <Text style={muted}>{choice.fromProfile ? `Defaults from the host's ${ready.profile!.name} profile.` : "Defaults: the provider's own."}</Text>
         <Choices label="Provider" colors={colors} tall={tall} selected={choice.provider?.id ?? null} onSelect={(provider) => set({ provider, model: undefined, effort: undefined, modeId: undefined })}
-          options={ready.providers.filter((provider) => provider.available).map((provider) => ({ id: provider.id, label: provider.label }))} empty="No active provider on this host." />
+          options={ready.providers.filter((provider) => provider.available).map((provider) => ({ id: provider.id, label: provider.label }))} empty={providerEmpty} />
         {choice.provider?.available ? <Choices label="Model" colors={colors} tall={tall} selected={choice.model?.id ?? null} onSelect={(model) => set({ model, effort: undefined })}
           options={choice.provider.models.map((model) => ({ id: model.id, label: model.label }))} empty="No selectable model." /> : null}
         {choice.model?.efforts.length ? <Choices label="Effort" colors={colors} tall={tall} selected={choice.effort?.id ?? null} onSelect={(effort) => set({ effort })}
@@ -211,7 +213,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     {ready.providers.some((provider) => provider.status === "unknown") ? <Text style={muted}>Some provider availability is unknown.</Text> : null}
     {ready.providers.some((provider) => provider.status === "error") ? <Text style={muted}>Some providers could not be read.</Text> : null}
     {ready.providers.some((provider) => provider.status === "unavailable") ? <Text style={muted}>Some providers are unavailable.</Text> : null}
-    <Action small label="Refresh choices" colors={colors} onPress={() => onRefresh(draft.workspaceId)} />
+    <Action small label={choice.desk ? "Refresh choices" : "Refresh desks"} colors={colors} onPress={() => onRefresh(draft.workspaceId)} />
     {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
     {choice.provider ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
     {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}

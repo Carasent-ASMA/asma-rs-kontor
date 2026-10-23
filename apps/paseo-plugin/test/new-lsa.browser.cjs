@@ -44,12 +44,12 @@ const query=new URLSearchParams(location.search), scenario=query.get('scenario')
 const dark=query.get('theme')==='dark';
 const colors={surface0:dark?'#15171c':'#fff',surface1:dark?'#1f222a':'#f5f6f8',surface2:dark?'#2e333e':'#e6ebf2',foreground:dark?'#ecedf0':'#20242c',foregroundMuted:dark?'#a8adb7':'#5e6570',border:dark?'#414754':'#c7cdd7',accent:dark?'#9cbfff':'#245bba',accentForeground:dark?'#15171c':'#fff',statusSuccess:'#168047',statusWarning:'#a76b0a',statusDanger:'#b02222'};
 const values=new Map(); configureRecentStorage({read:key=>values.get(key),write:(key,value)=>values.set(key,value)});
-let stale=false,settingsRequired=false;
+let stale=false,settingsRequired=false,deskVanished=false;
 const model=(id,label)=>({id,label,efforts:settingsRequired?[{id:'high',label:'High effort'}]:[],defaultEffort:settingsRequired?'high':null});
 const provider=(id,label,status,available)=>({id,label,status,available,note:available?null:status,persona:'supported',models:available?[model('first','Active model'),model('second','Second model')]:[],defaultModel:'first',modes:settingsRequired?[{id:'default',label:'Default mode',dangerous:false}]:[],defaultMode:settingsRequired?'default':null});
-const catalog=workspaceId=>({enabled:true,disabledReason:null,pending:null,notes:[],catalogWorkspaceId:workspaceId||'wks-adam',desks:[{workspaceId:'wks-adam',projectId:'project-adam',desk:'ADAM',project:'DESK • ADAM'},...(scenario==='two-desks'?[{workspaceId:'wks-ops',projectId:'project-ops',desk:'OPS',project:'DESK • OPS'}]:[])],profile:scenario==='nullable-refresh'?{name:'LSA',provider:'active',model:'first',effort:'retired',modeId:'retired'}:null,
- providers:scenario==='empty'?[]:scenario==='loading'?[provider('loading','Loading provider','loading',false)]:[ {...provider('active','Active provider','ready',true),models:stale?[model('first','Active model')]:[model('first','Active model'),model('second','Second model')]}, provider('disabled','Disabled provider','disabled',false),provider('error','Error provider','error',false)]});
-window.fixture={calls:[],opens:[],timings:[],failOpen:scenario==='open-failed', invalidateModel:()=>{stale=true;},restoreSettings:()=>{settingsRequired=true;},recent:host=>readRecent(host).record,
+const catalog=workspaceId=>({enabled:true,disabledReason:null,pending:null,notes:[],catalogWorkspaceId:deskVanished&&workspaceId==='wks-adam'?null:workspaceId||'wks-adam',desks:[...(!deskVanished?[{workspaceId:'wks-adam',projectId:'project-adam',desk:'ADAM',project:'DESK • ADAM'}]:[]),...(scenario==='two-desks'?[{workspaceId:'wks-ops',projectId:'project-ops',desk:'OPS',project:'DESK • OPS'}]:[]),...(scenario==='vanished-desk'?[{workspaceId:'wks-pr',projectId:'project-pr',desk:'PR REVIEW',project:'DESK • PR REVIEW'}]:[])],profile:scenario==='nullable-refresh'?{name:'LSA',provider:'active',model:'first',effort:'retired',modeId:'retired'}:null,
+ providers:scenario==='empty'||deskVanished&&workspaceId==='wks-adam'?[]:scenario==='loading'?[provider('loading','Loading provider','loading',false)]:[ {...provider('active','Active provider','ready',true),models:stale?[model('first','Active model')]:[model('first','Active model'),model('second','Second model')]}, provider('disabled','Disabled provider','disabled',false),provider('error','Error provider','error',false)]});
+window.fixture={calls:[],opens:[],timings:[],failOpen:scenario==='open-failed', invalidateModel:()=>{stale=true;},restoreSettings:()=>{settingsRequired=true;},vanishDesk:()=>{deskVanished=true;},recent:host=>readRecent(host).record,
  rpc:async(name,input,host)=>{const started=performance.now();window.fixture.calls.push({name,input,host});
   if(name==='sessions.create-options'){if(scenario==='two-desks'&&input.workspaceId)await new Promise(resolve=>{window.fixture.finishCatalog=resolve;});await new Promise(resolve=>setTimeout(resolve,10));window.fixture.timings.push({phase:'catalog',ms:performance.now()-started});return catalog(input.workspaceId);}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,180));window.fixture.timings.push({phase:'create-fixture',ms:performance.now()-started});return {requestId:input.requestId,state:scenario==='unknown'?'unknown':'verified',title:'LSA • ADHOC • '+input.topic,agentId:scenario==='unknown'?null:'fixture-created-exact',workspaceId:input.workspaceId,message:scenario==='unknown'?'Creation may still complete.':'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
@@ -160,6 +160,37 @@ async function run(name, test) {
     await run('invalidated-selection', async () => {
       const { page, context } = await pageFor(390);
       try { await page.getByRole('button', { name: /^Provider, model and mode\./ }).click(); await page.getByRole('radio', { name: 'Second model', exact: true }).click(); await page.evaluate(() => window.fixture.invalidateModel()); await page.getByRole('button', { name: 'Refresh choices', exact: true }).click(); await page.getByText(/Model second is no longer active/).waitFor(); assert.equal(await page.getByRole('radio', { name: 'Active model', exact: true }).getAttribute('aria-checked'), 'false'); assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true); } finally { await context.close(); }
+    });
+    for (const width of [320, 390, 1440]) await run(`${width}-vanished-desk-recovery`, async () => {
+      const { page, context } = await pageFor(width, 'vanished-desk');
+      try {
+        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
+        if (width < 700) await page.getByRole('button', { name: /^Provider, model and mode\./ }).click();
+        await page.evaluate(() => window.fixture.vanishDesk());
+        await page.getByRole('button', { name: 'Refresh choices', exact: true }).click();
+        const problem = page.getByTestId('kontor-new-lsa-problem');
+        await expect(problem).toHaveText('The selected desk is no longer available. Choose a listed desk or Refresh desks.');
+        await page.getByRole('button', { name: 'Provider, model and mode. Choose a desk first', exact: true }).waitFor();
+        await page.getByText('Choose an available desk to read its providers.', { exact: true }).waitFor();
+        assert.equal(await page.getByText('No desk on this host has an ADAM workspace.', { exact: true }).count(), 0);
+        assert.equal(await page.getByText(/No active provider.*host/).count(), 0);
+        const remaining = page.getByRole('radio', { name: 'DESK • PR REVIEW / ADAM', exact: true });
+        assert.equal(await remaining.getAttribute('aria-checked'), 'false');
+        await expect(page.getByTestId('kontor-new-lsa-create')).toBeDisabled();
+        await page.getByRole('button', { name: 'Refresh desks', exact: true }).click();
+        await page.waitForFunction(() => window.fixture.timings.filter(event => event.phase === 'catalog').length === 3);
+        await expect(problem).toHaveText('The selected desk is no longer available. Choose a listed desk or Refresh desks.');
+        assert.equal(await remaining.getAttribute('aria-checked'), 'false');
+        await page.screenshot({ path: path.join(output, `${width}-vanished-desk.png`) });
+        await remaining.click();
+        await expect(page.getByTestId('kontor-new-lsa-create')).toBeEnabled();
+        assert.equal(await remaining.getAttribute('aria-checked'), 'true');
+        assert.equal(await page.getByRole('textbox', { name: 'Topic', exact: true }).inputValue(), 'Route review');
+        const state = await page.evaluate(() => ({ calls: window.fixture.calls, opens: window.fixture.opens, visits: window.fixture.recent('fixture-a').visits }));
+        assert.deepEqual(state.calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { workspaceId: 'wks-adam' }, { workspaceId: 'wks-adam' }, { workspaceId: 'wks-pr' }]);
+        assert.equal(state.calls.filter(call => call.name === 'sessions.create').length, 0);
+        assert.deepEqual(state.opens, []); assert.deepEqual(state.visits, []);
+      } finally { await context.close(); }
     });
     await run('390-nullable-settings-refresh', async () => {
       const { page, context } = await pageFor(390, 'nullable-refresh');

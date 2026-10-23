@@ -339,7 +339,7 @@ describe("New LSA form", () => {
 
   it("handles an empty active catalog with a refresh action and no create", () => {
     const f = form({ status: "ready", options: { ...OPTIONS, profile: null, providers: [] } });
-    expect(text(f.tree)).toContain("No active provider is available on this host.");
+    expect(text(f.tree)).toContain("No active provider is available for this desk.");
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
     f.press("Refresh choices");
     expect(f.onRefresh).toHaveBeenCalledTimes(1);
@@ -376,6 +376,32 @@ describe("New LSA form", () => {
     expect(text(f.tree)).toContain("Refresh this desk's provider catalog");
     f.setOptions({ status: "ready", options: { ...OPTIONS, catalogWorkspaceId: "wks-pr" } });
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+  });
+
+  it("offers truthful recovery when the selected desk vanishes but another ADAM workspace remains", () => {
+    const f = form(); f.type("Route review");
+    const vanished = { ...OPTIONS, desks: [OPTIONS.desks[1]!], catalogWorkspaceId: null, providers: [] };
+    f.setOptions({ status: "ready", options: vanished });
+    expect(text(f.tree)).toContain("The selected desk is no longer available. Choose a listed desk or Refresh desks.");
+    expect(text(f.tree)).toContain("Choose an available desk to read its providers.");
+    expect(text(f.tree)).not.toContain("No desk on this host has an ADAM workspace.");
+    expect(text(f.tree)).not.toContain("No active provider on this host.");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    const remaining = () => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • PR REVIEW / ADAM")!;
+    expect(remaining().props["aria-checked"]).toBe(false);
+    f.press("Refresh desks");
+    expect(f.onRefresh).toHaveBeenLastCalledWith("wks-adam");
+    f.setOptions({ status: "ready", options: vanished });
+    expect(remaining().props["aria-checked"]).toBe(false);
+    (remaining().props.onPress as () => void)(); f.render();
+    expect(f.onRefresh).toHaveBeenLastCalledWith("wks-pr");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    f.setOptions({ status: "ready", options: { ...OPTIONS, desks: vanished.desks, catalogWorkspaceId: "wks-pr" } });
+    expect(remaining().props["aria-checked"]).toBe(true);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
   });
 
   it("retains the keyboard-selected desk and draft through loading and failed scoped reads, with no implicit submit", () => {
