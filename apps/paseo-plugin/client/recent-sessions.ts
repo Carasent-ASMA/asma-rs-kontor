@@ -110,18 +110,19 @@ export function clearRecent(hostId: string, now = Date.now()): RecentState {
 }
 
 /**
- * One row per live, non-archived directory session that was opened here within the window
- * and after the last Clear; newest first, ties by ID. A visited session absent from the directory is not shown, and
- * its visit is kept, so a partial read or an outage never erases it.
+ * Follow the recorded MRU sequence; wall times determine age and retention, never open order.
+ * A visited session absent from the directory is not shown, and its visit is kept,
+ * so a partial read or an outage never erases it. Clear already empties the sequence.
  */
 export function recentRows(entries: readonly DirectoryEntry[], record: RecentRecord, now: number): RecentRow[] {
-  const opened = new Map(record.visits.map((visit) => [visit.id, visit.at]));
-  const floor = Math.max(now - RECENT_DAYS * DAY, record.clearedAt ?? Number.NEGATIVE_INFINITY);
+  const available = new Map(entries.map((entry) => [entry.id, entry]));
+  const floor = now - RECENT_DAYS * DAY;
   const rows: RecentRow[] = [];
-  for (const entry of entries) {
-    if (isArchivedSession(entry)) continue;
-    const visit = opened.get(entry.id);
-    if (visit !== undefined && visit > floor) rows.push({ entry, at: visit, reason: "Opened" });
+  for (const { id, at } of record.visits) {
+    const entry = available.get(id);
+    if (!entry || isArchivedSession(entry) || at <= floor) continue;
+    rows.push({ entry, at, reason: "Opened" });
+    available.delete(id);
   }
-  return rows.sort((a, b) => b.at - a.at || (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0));
+  return rows;
 }

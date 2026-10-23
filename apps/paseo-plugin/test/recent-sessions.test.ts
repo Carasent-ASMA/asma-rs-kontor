@@ -134,6 +134,20 @@ describe("Recent visit store", () => {
     clearRecent("host-a", NOW);
     expect(values.get("kontor.recent@1")).toBe("{not json");
   });
+
+  it("shows an open after Clear even when its wall time is earlier or equal", () => {
+    for (const at of [NOW - 1, NOW]) {
+      const { storage } = memory();
+      configureRecentStorage(storage);
+      recordVisit("host-a", "before-clear", NOW - 10);
+      clearRecent("host-a", NOW);
+      recordVisit("host-a", "after-clear", at);
+      configureRecentStorage(storage);
+      const record = readRecent("host-a", NOW).record;
+      expect(record.visits).toEqual([{ id: "after-clear", at }]);
+      expect(recentRows([sessionEntry("before-clear"), sessionEntry("after-clear")], record, NOW).map((row) => row.entry.id)).toEqual(["after-clear"]);
+    }
+  });
 });
 
 describe("Recent rows", () => {
@@ -155,16 +169,16 @@ describe("Recent rows", () => {
     expect(visits.visits).toHaveLength(3);
   });
 
-  it("hides opens at or before Clear and outside 14 days, regardless of prompts", () => {
+  it("hides expired opens, regardless of prompts", () => {
     const entries = [prompted("agent-before", NOW - 2000), prompted("agent-after", NOW - 500), prompted("agent-stale", NOW - 15 * DAY)];
-    const rows = recentRows(entries, record([{ id: "agent-before", at: NOW - 1500 }], NOW - 1000), NOW);
+    const rows = recentRows(entries, record([{ id: "agent-stale", at: NOW - 15 * DAY }]), NOW);
     expect(rows).toEqual([]);
   });
 
-  it("uses ID to break ties and ignores worker, creation and change timestamps", () => {
+  it("keeps MRU order for tied times and ignores worker, creation and change timestamps", () => {
     const entries = ["agent-b", "agent-a", "never-opened"].map((id) => ({ ...sessionEntry(id, {
       status: "running", createdAt: new Date(NOW).toISOString(), updatedAt: new Date(NOW).toISOString(),
     }), lastActivityAt: new Date(NOW).toISOString() }));
-    expect(recentRows(entries, record([{ id: "agent-b", at: NOW - 100 }, { id: "agent-a", at: NOW - 100 }]), NOW).map((row) => row.entry.id)).toEqual(["agent-a", "agent-b"]);
+    expect(recentRows(entries, record([{ id: "agent-b", at: NOW - 100 }, { id: "agent-a", at: NOW - 100 }]), NOW).map((row) => row.entry.id)).toEqual(["agent-b", "agent-a"]);
   });
 });

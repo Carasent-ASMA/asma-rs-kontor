@@ -77,14 +77,14 @@ beforeEach(() => {
 });
 
 describe("Start or switch rows", () => {
-  it("lists up to eight Recent rows with their place and reason, and none archived", () => {
+  it("lists up to eight Recent rows in saved open order with their place and reason, and none archived", () => {
     const entries: DirectoryEntry[] = Array.from({ length: 10 }, (_, index) => prompted(`agent-${index}`, NOW - (index + 1) * 60_000, { projectName: "DESK • ADAM", workspaceName: "ADAM" }));
     entries.forEach((entry, index) => recordVisit("host-a", entry.id, NOW - (index + 1) * 60_000));
     entries.push(sessionEntry("agent-archived", { archivedAt: "2026-10-22" }));
     recordVisit("host-a", "agent-archived", NOW); recordVisit("host-a", "agent-9", NOW - 1000);
     const { rows, total } = switchRows(entries, "", NOW, readRecent("host-a", NOW).record);
     expect(total).toBe(8);
-    expect(rows.map((row) => row.entry.id)).toEqual(["agent-9", "agent-0", "agent-1", "agent-2", "agent-3", "agent-4", "agent-5", "agent-6"]);
+    expect(rows.map((row) => row.entry.id)).toEqual(["agent-9", "agent-8", "agent-7", "agent-6", "agent-5", "agent-4", "agent-3", "agent-2"]);
     expect(rows[0]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
     expect(rows[1]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
   });

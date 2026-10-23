@@ -128,6 +128,9 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 - **Recently viewed (supported interim scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.
+  The saved sequence determines order even when wall times tie or the clock moves
+  backwards. Recorded times are used only for age and retention; Clear empties
+  the sequence without filtering later opens against its wall time.
   Prompts, worker activity, creation/change times, **← Kontor** and **Back to
   Kontor** never add or reorder visits. Storage is scoped by the surface's
   `host.id` and the local app/browser storage profile (iOS settings or web local

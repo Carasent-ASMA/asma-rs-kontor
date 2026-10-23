@@ -91,7 +91,11 @@ describe("openSessionById", () => {
     expect(readRecent("srv_host").record.visits).toEqual([]);
   });
 
-  it("persists A → B → A once each, newest open first, after a remount", () => {
+  it.each([
+    { sequence: "A → B → A", opens: [{ id: "agent-a", at: 0 }, { id: "agent-b", at: 1 }, { id: "agent-a", at: 2 }], expected: [{ id: "agent-a", at: 2 }, { id: "agent-b", at: 1 }] },
+    { sequence: "B → A → B with equal wall times", opens: [{ id: "agent-b", at: 0 }, { id: "agent-a", at: 0 }, { id: "agent-b", at: 0 }], expected: [{ id: "agent-b", at: 0 }, { id: "agent-a", at: 0 }] },
+    { sequence: "A → B with the clock moving backwards", opens: [{ id: "agent-a", at: 0 }, { id: "agent-b", at: -1 }], expected: [{ id: "agent-b", at: -1 }, { id: "agent-a", at: 0 }] },
+  ])("persists $sequence once each, newest open first, after a remount", ({ opens, expected }) => {
     const now = Date.now(), values = new Map<string, string>();
     const storage = { read: (key: string) => values.get(key), write: (key: string, value: string | null) => { if (value !== null) values.set(key, value); } };
     configureRecentStorage(storage);
@@ -99,14 +103,14 @@ describe("openSessionById", () => {
     const nav = navigation();
     const clock = vi.spyOn(Date, "now");
     try {
-      for (const [index, id] of ["agent-a", "agent-b", "agent-a"].entries()) {
-        clock.mockReturnValue(now + index);
+      for (const { id, at } of opens) {
+        clock.mockReturnValue(now + at);
         expect(openSessionById({ entries, id, serverId: "srv_host", navigation: nav }).ok).toBe(true);
       }
       configureRecentStorage(storage);
       const record = readRecent("srv_host").record;
-      expect(record.visits).toEqual([{ id: "agent-a", at: now + 2 }, { id: "agent-b", at: now + 1 }]);
-      expect(recentRows(entries, record, now + 100).map((row) => row.entry.id)).toEqual(["agent-a", "agent-b"]);
+      expect(record.visits).toEqual(expected.map(({ id, at }) => ({ id, at: now + at })));
+      expect(recentRows(entries, record, now + 100).map((row) => row.entry.id)).toEqual(expected.map(({ id }) => id));
       expect(readRecent("other-host").record.visits).toEqual([]);
     } finally {
       clock.mockRestore();
