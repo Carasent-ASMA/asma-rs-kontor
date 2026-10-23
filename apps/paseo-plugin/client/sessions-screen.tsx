@@ -1494,6 +1494,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const bulkToggleRef = useRef<View | null>(null);
+  const bulkReviewRef = useRef<View | null>(null);
+  const bulkReturnFocusRef = useRef(false);
   const lifecycleAnchor = useRef<View | null>(null);
   const recoveryButton = useRef<View | null>(null);
   const slimRecoveryButton = useRef<View | null>(null);
@@ -2390,6 +2392,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // One lifecycle action at a time: every Resume, Details, the X and Check again wait while another runs.
   const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
   const canStart = hostOnline && lifecycleIdle && state.status === "ready";
+  useLayoutEffect(() => {
+    if (bulkOpen || !bulkReturnFocusRef.current) return;
+    bulkReturnFocusRef.current = false;
+    // The dialog disables its trigger; restore only after the closed render re-enables it.
+    const origin = bulkSelection.selected.length ? bulkReviewRef.current : null;
+    focusControl(canStart && !includeArchived ? origin ?? bulkToggleRef.current ?? rootRef.current : rootRef.current);
+  }, [bulkOpen]);
   const selectForArchive = (entry: DirectoryEntry) => { if (canStart && !bulkOpen) bulkSelection.toggle(entry.id); };
   const openOrSelect = (entry: DirectoryEntry) => { if (bulkSelection.selecting) selectForArchive(entry); else handleOpen(entry); };
   // One placement per layout: compact notices, the wide full toolbar, or the wide slim row.
@@ -2982,6 +2991,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <View
       ref={rootRef}
       onLayout={handleRootLayout}
+      tabIndex={-1}
       style={{
         flex: 1,
         backgroundColor: colors.surface0,
@@ -2999,7 +3009,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {peekBar}
       {shortScreen ? null : layoutBar}
       {!includeArchived || lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} shownCount={bulkScopeIds.length} disabled={!canStart || bulkOpen || includeArchived}
-        lifecycle={lifecycle} colors={colors} toggleRef={bulkToggleRef} announce={!bulkOpen} onReview={() => {
+        lifecycle={lifecycle} colors={colors} toggleRef={bulkToggleRef} reviewRef={bulkReviewRef} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} onReview={() => {
           if (!canStart || !bulkSelection.selected.length) return;
           lifecycle.clear(); setBulkOpen(true); void lifecycle.prepare("archive", "filtered", [...bulkSelection.selected], true);
         }} /> : null}
@@ -3128,8 +3138,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionMenuLayer}
       {detailsLayer}
       {quickChooserLayer}
-      {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
-        onClose={() => { setBulkOpen(false); (bulkToggleRef.current as View & { focus?: () => void } | null)?.focus?.(); }}
+      {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} anchor={bulkReviewRef} rootSize={rootSize} colors={colors} compact={compact}
+        onClose={() => { bulkReturnFocusRef.current = true; setBulkOpen(false); }}
         onFinished={(summary) => toast.show(summary)} /> : null}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); lifecycleHelp.dismiss(); }} /> : null}

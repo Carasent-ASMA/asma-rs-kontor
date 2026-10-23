@@ -47,9 +47,16 @@ describe("bulk archive selection accessibility", () => {
     const live = walk(tree).filter((element) => element.props.accessibilityLiveRegion);
     expect(live).toHaveLength(1); expect(live[0]!.props).toMatchObject({ role: "status", accessibilityLiveRegion: "polite", children: "Archiving 4 selected sessions." });
   });
-  it("shows one explicit confirmation with a collapsed exact-ID list and no retry action", async () => {
+  it("discloses direct request scope and the concurrent-child cascade risk before one explicit confirmation", async () => {
     const onFinished = vi.fn(), run = vi.fn(async () => "Archived 1"), lifecycle = { review: { rows: [{ id: "a", title: "A", eligible: true, outcome: "pending", reason: "Ready" }] }, busy: false, running: false, batch: null, stop: vi.fn(), run } as unknown as Lifecycle;
-    const tree = harness.render(() => BulkArchiveDialog({ lifecycle, root: { current: null }, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: vi.fn(), onFinished }));
+    const anchor = { current: null };
+    const tree = harness.render(() => BulkArchiveDialog({ lifecycle, root: { current: null }, anchor, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: vi.fn(), onFinished }));
+    expect(tree.props.anchor).toBe(anchor);
+    const copy = walk(tree).filter((element) => element.type === "Text").map((element) => element.props.children).join("\n");
+    expect(copy).toContain("Only selected session IDs are directly requested for archive.");
+    expect(copy).toContain("At preflight, a parent is blocked unless every active managed child is selected.");
+    expect(copy).toContain("The child check and parent archive are not atomic: a new child created between the final check and parent archive may be archived by the host with its parent, even if unselected.");
+    expect(copy).not.toContain("Unselected sessions are never archived");
     const list = walk(tree).find((element) => element.type === Disclosure)!;
     expect(list.props).toMatchObject({ label: "Selected sessions (1)" }); expect(list.props.open).toBeUndefined();
     expect((list.props.colors as PluginTheme["colors"]).accent).toBe(colors.foreground);

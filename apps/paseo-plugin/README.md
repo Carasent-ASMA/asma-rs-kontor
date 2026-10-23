@@ -1205,8 +1205,8 @@ and stays unknown, never missing.
 
 The per-session X performs one exact-session Archive after native preflight.
 Native archive requests cancellation and closes the runtime, including an active
-turn and its provider tools. Managed child sessions block this action to prevent
-an unseen cascade. Only active children block, so that check reads the active
+turn and its provider tools. Managed child sessions observed by preflight block
+this action. Only active children block, so that check reads the active
 inventory and never archived history. Native identity/placement and child impact
 are rechecked; activity updates alone do not make a running session impossible to stop.
 While the directory has a complete live stream, a settled action changes only its
@@ -1231,12 +1231,23 @@ also enters selection. Checkboxes support Space on web and have 44-point targets
 50 exact IDs and always needs one confirmation, including a one-item selection.
 The confirmation keeps its session list collapsed and explains that history and
 files remain, active work stops, and no undo is exposed here.
+Closing the confirmation returns focus to its enabled bulk control, or the screen
+while an operation is pending. On short compact screens the bulk controls and
+status scroll within a bounded frame so they leave room for the sessions list.
 
-A parent is blocked unless every active managed child is selected. Selected
-children run first; the server requires their confirmed saved archive outcomes
-and rechecks native child impact before dispatching the parent. A new child,
-blocked child or unconfirmed child prevents a parent archive. Requests remain
-sequential, with the existing durable per-session fences and exact-ID readback.
+At preflight, a parent is blocked unless every active managed child is selected.
+Selected children run first; the server requires their confirmed saved archive outcomes
+and rechecks native child impact before dispatching the parent. A new child
+observed by that check, a blocked child or an unconfirmed child prevents a parent
+archive.
+
+Only selected session IDs are directly requested for archive. The child check
+and parent archive are not atomic: a new child created between the final check
+and parent archive may be archived by the host with its parent, even if unselected.
+The host exposes no atomic precondition to prevent this concurrent-child cascade.
+
+Requests remain sequential, with the existing durable per-session fences and
+exact-ID readback.
 **Stop before next session** lets the current request settle; it does not undo
 or retry it. Pending rows stay visible, uncertain outcomes offer a metadata-only
 Check, and blocked rows keep their reasons. The final status and one summary

@@ -28,7 +28,7 @@ const { harness, fake } = vi.hoisted(() => {
     return tree;
   }
   return {
-    harness: { ...hooks, render(fn: () => unknown) { component = fn; return draw(); }, flush: draw,
+    harness: { ...hooks, render(fn: () => unknown) { component = fn; return draw(); }, flush: draw, current: () => tree,
       unmount() { for (const slot of slots) slot.cleanup?.(); slots.length = 0; component = null; tree = null; } },
     fake: { rpc: {} as Record<string, (input: Record<string, unknown>) => Promise<unknown>>, calls: [] as Array<[string, Record<string, unknown>]>,
       toast: { show: vi.fn(), error: vi.fn() }, refresh: vi.fn(), state: null as unknown, host: "host-a" },
@@ -119,10 +119,29 @@ describe.each(["full", "slim", "compact"] as const)("bulk archive on the %s Sess
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item").map(([, input]) => input.agentId)).toEqual(["a", "b"]);
     expect(fake.refresh).not.toHaveBeenCalled();
   });
-  it("keeps a one-item bulk selection behind confirmation and closes without execution", async () => {
+  it("keeps a one-item bulk selection behind confirmation and restores focus only after the origin is re-enabled", async () => {
     mount(); await settle(); selection().start(); harness.flush(); selection().toggle("a"); harness.flush();
+    const focus = vi.fn(() => expect(walk(harness.current()).find((element) => element.type === BulkArchiveToolbar)!.props.disabled).toBe(false));
+    (toolbar().props.reviewRef as { current: unknown }).current = { focus };
     (toolbar().props.onReview as () => void)(); await settle();
-    expect(executing).toHaveLength(0); (sheet()!.props.onClose as () => void)(); await settle(); expect(sheet()).toBeUndefined(); expect(executing).toHaveLength(0);
+    expect(sheet()!.props.anchor).toBe(toolbar().props.reviewRef);
+    expect(toolbar().props.disabled).toBe(true);
+    expect(executing).toHaveLength(0); (sheet()!.props.onClose as () => void)(); expect(focus).not.toHaveBeenCalled();
+    await settle(); expect(sheet()).toBeUndefined(); expect(executing).toHaveLength(0); expect(focus).toHaveBeenCalledTimes(1);
+  });
+  it.each([320, 360])("bounds pending bulk controls on a %spt short screen and keeps Stop and readbacks available", async (height) => {
+    mount(); await settle();
+    const root = harness.current() as Element, fallback = { focus: vi.fn() };
+    (root.props.ref as { current: unknown }).current = fallback;
+    (root.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: layout === "compact" ? 390 : 1440, height } } });
+    selection().toggle("a"); harness.flush(); (toolbar().props.onReview as () => void)(); await settle(); confirm(); await settle();
+    (sheet()!.props.onClose as () => void)(); await settle();
+    expect(fallback.focus).toHaveBeenCalledTimes(1);
+    const pending = BulkArchiveToolbar(toolbar().props as Parameters<typeof BulkArchiveToolbar>[0]);
+    expect(pending.props.style).toMatchObject({ flexGrow: 0, flexShrink: 0, maxHeight: layout === "compact" ? 88 : undefined });
+    expect(walk(pending).some((element) => element.props.label === "Stop before next session")).toBe(true);
+    expect(walk(pending).find((element) => element.props.testID === "sessions-bulk-status")!.props.accessibilityLiveRegion).toBe("polite");
+    expect(executing).toHaveLength(1);
   });
   it("enters selection through a row long press and resets host-local selection", async () => {
     mount(); await settle();

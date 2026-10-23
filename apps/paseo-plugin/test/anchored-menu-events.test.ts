@@ -9,9 +9,10 @@ vi.mock("react", async (original) => ({
   useState: (initial: unknown) => [initial, () => {}],
 }));
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", ScrollView: "ScrollView" }));
 
 import { AnchoredMenu, anchoredPanelOpen, type FocusTarget } from "../client/anchored-menu";
+import { BulkArchiveDialog } from "../client/bulk-archive";
 import { installBackShortcut, type ShortcutEvent } from "../client/keyboard-shortcuts";
 
 type Key = { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean };
@@ -74,6 +75,26 @@ function slot() {
 describe("anchored menu keys on web", () => {
   beforeEach(() => { vi.stubGlobal("document", page); page.activeElement = null; });
   afterEach(() => { mounted.splice(0).forEach((unmount) => unmount()); vi.unstubAllGlobals(); });
+
+  it.each(["Close", "Escape", "backdrop"])("dismisses the actual bulk confirmation through %s without executing archive", (dismiss) => {
+    effects.length = 0;
+    const onClose = vi.fn(), run = vi.fn(), stop = vi.fn(), anchor = node();
+    const dialog = BulkArchiveDialog({ lifecycle: { review: { rows: [{ id: "fixture-a", title: "A", outcome: "pending", eligible: true }] }, run, stop } as never,
+      root: { current: { measureInWindow: () => {} } } as never, anchor: refOf(anchor) as never, rootSize: { width: 390, height: 844 }, colors: {} as never,
+      compact: true, onClose, onFinished: vi.fn() }) as ReactElement<Record<string, unknown>>;
+    expect(dialog.props.anchor).toBe(refOf(anchor));
+    const menu = AnchoredMenu(dialog.props as never) as ReactElement<Record<string, unknown>>;
+    const tree = (menu.type as (props: Record<string, unknown>) => ReactElement<{ children: ReactElement<Record<string, unknown>>[] }>)(menu.props);
+    const cleanups = effects.map((effect) => effect()).filter((cleanup): cleanup is () => void => typeof cleanup === "function");
+    mounted.push(() => cleanups.forEach((cleanup) => cleanup()));
+    if (dismiss === "Escape") press({ key: "Escape" });
+    else if (dismiss === "backdrop") (tree.props.children[0]!.props.onPress as () => void)();
+    else {
+      const header = dialog.props.header as ReactElement<{ children: ReactElement<Record<string, unknown>>[] }>;
+      (header.props.children.find((child) => child.props.label === "Close")!.props.onPress as () => void)();
+    }
+    expect(onClose).toHaveBeenCalledTimes(1); expect(stop).toHaveBeenCalledTimes(1); expect(run).not.toHaveBeenCalled();
+  });
 
   it("keeps Tab and Shift+Tab inside an open dialog, and still closes it with Escape or a press outside", () => {
     const [close, lines] = [node(), node()];
