@@ -33,6 +33,8 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
   const [unresolved, setUnresolved] = useState<readonly UnresolvedRef[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  // The host whose list a read reported since mount or host switch; until then an empty list is unknown, not none.
+  const [listed, setListed] = useState<string | null>(null);
   // A host switch starts a new run; a result from an earlier run, even for the same host ID, changes nothing.
   const owner = useRef(hostId), run = useRef(0), loads = useRef(0), active = useRef(false);
   owner.current = hostId;
@@ -42,13 +44,13 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
       const result = await read({});
       if (owner.current !== host || current !== loads.current) return;
       // null: no review and no fence on this host. A review without the field (older server) is unknown: keep what is known.
-      if (!result) { setUnresolved([]); setError(null); }
-      else if (result.unresolved) { setUnresolved(result.unresolved); setError(null); }
+      if (!result) { setUnresolved([]); setError(null); setListed(host); }
+      else if (result.unresolved) { setUnresolved(result.unresolved); setError(null); setListed(host); }
       else setError("The host did not report its current list.");
     } catch (failure) { if (owner.current === host && current === loads.current) setError(text(failure)); }
   };
   // An unmount ends the run too: a Check loop never reconciles, loads or calls onChanged for an unmounted view.
-  useEffect(() => { run.current++; active.current = false; setUnresolved([]); setError(null); setChecking(false); return () => { run.current++; }; }, [hostId]);
+  useEffect(() => { run.current++; active.current = false; setUnresolved([]); setError(null); setChecking(false); setListed(null); return () => { run.current++; }; }, [hostId]);
   useEffect(() => { if (!lifecycle.busy && !lifecycle.running) void load(); }, [hostId, lifecycle.review, lifecycle.busy, lifecycle.running]);
   const check = async () => {
     if (active.current) return;
@@ -67,5 +69,5 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
       if (run.current === token) { await load(); if (run.current === token) { active.current = false; setChecking(false); if (failed) setError(failed); } }
     }
   };
-  return { unresolved, error, checking, check, reload: load, line: recoveryLine(unresolved, error) };
+  return { unresolved, error, checking, listed, check, reload: load, line: recoveryLine(unresolved, error) };
 }

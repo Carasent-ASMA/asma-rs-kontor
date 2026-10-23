@@ -29,15 +29,15 @@ export function QuickToolbarButton({ label, help = label, icon, iconColor, color
 
 type ToolbarProps = {
   colors: Colors; width: number; query: string; status: StatusFilter; counts: Readonly<Record<StatusFilter, number>>;
-  activeCount: number; summary: string; searchInputRef: RefObject<ComponentRef<typeof TextInput> | null>;
+  activeCount: number; searchInputRef: RefObject<ComponentRef<typeof TextInput> | null>;
   filtersTriggerRef: RefObject<View | null>; chooserRef: RefObject<View | null>; chooserOpen: boolean;
   helpDismissRef: Ref<() => void>;
-  onQuery(query: string): void; onStatus(status: StatusFilter): void; onFilters(): void; onChooser(): void; onClear(): void;
+  onQuery(query: string): void; onStatus(status: StatusFilter): void; onFilters(): void; onChooser(): void;
 };
 
 /** Expandable search leaves a useful editing width; narrow rows explicitly overflow into the named seven-choice legend. */
 export function MobileQuickToolbar(props: ToolbarProps) {
-  const { colors, query, status, counts, width, summary, searchInputRef, filtersTriggerRef, chooserRef } = props;
+  const { colors, query, status, counts, width, searchInputRef, filtersTriggerRef, chooserRef } = props;
   const { fontScale } = useWindowDimensions();
   const [searchOpen, setSearchOpen] = useState(false);
   const help = useControlHelp("");
@@ -79,17 +79,6 @@ export function MobileQuickToolbar(props: ToolbarProps) {
         label={props.activeCount ? `Filters and view, ${props.activeCount} active filters or view choices` : "Filters and view"}
         help="Filters and view. Opens the full filter page. Choices apply immediately; Back keeps them."
         icon="SlidersHorizontal" caption="Filters" colors={colors} target={target} onPress={props.onFilters} />
-    </View>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-    <Text testID="sessions-mobile-selected-filter" accessibilityLiveRegion="polite" style={{ flex: 1, color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>
-      {quickFilterLabel(status)} · {counts[status]}{summary ? ` · ${summary}` : ""}
-    </Text>
-    <Pressable testID="sessions-mobile-clear-filters" accessibilityRole="button" accessibilityLabel="Clear filters"
-      accessibilityState={{ disabled: props.activeCount === 0 }} aria-disabled={props.activeCount === 0} disabled={props.activeCount === 0}
-      accessibilityHint="Clears all search and filter choices; keeps this context and view preferences" onPress={props.onClear}
-      style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: "center", borderRadius: 6, opacity: props.activeCount === 0 ? 0.45 : 1 }}>
-      <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>Clear filters</Text>
-    </Pressable>
     </View>
   </View>;
 }

@@ -811,9 +811,9 @@ describe("SessionsScreen toolbar events", () => {
     expect(directory.inputs.at(-1)?.enabled).toBe(false);
     expect(onIncludeArchived).toHaveBeenCalledWith(false);
     const list = findByTestID(harness.current(), "sessions-list");
-    const count = JSON.stringify(findByTestID(harness.current(), "sessions-count").props.children);
-    expect(count).toContain('"1 session"'); expect(count).not.toContain("3");
-    expect(count).toContain("partial inventory read");
+    // Compact says the Filters matching count: one session, qualified because the read is not live and complete.
+    const count = findByTestID(harness.current(), "sessions-mobile-count");
+    expect(textOf(count)).toBe("1 session · stale"); expect(count.props.accessibilityLabel).toContain("1 session matched the read at");
     const banner = findByTestID(harness.current(), "sessions-source-banner");
     expect(banner.props.message).toContain("Inventory read attempt");
     expect(banner.props.message).not.toContain("Last complete read");
@@ -1167,7 +1167,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
     expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
-    expect(header()).toEqual(["sessions-layout-bar"]);
+    expect(header()).toEqual(["sessions-layout-bar", "sessions-mobile-count"]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
@@ -2115,7 +2115,7 @@ describe("SessionsScreen mobile filter page", () => {
     (walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.onStatus as (status: string) => void)("current");harness.flush();
     const toolbar=walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!;
     expect(toolbar.props.activeCount).toBe(1);
-    (toolbar.props.onClear as () => void)();harness.flush();
+    (findByTestID(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent, "sessions-mobile-clear-filters").props.onPress as () => void)();harness.flush();
     expect(readSessionView("host-a").status).toBe("all");
     expect(sessionRowIds().sort()).toEqual(["closed","error","old"]);
   });
@@ -2319,7 +2319,32 @@ describe("SessionsScreen mobile filter page", () => {
     const triggers = walk(harness.current()).filter((node) => node.type === MobileQuickToolbar);
     expect(triggers).toHaveLength(1);
     expect(triggers[0]!.props.activeCount).toBe(1);
-    expect(triggers[0]!.props.summary).toContain("Idle");
+    // The selected chip says the state; there is no summary row repeating it.
+    expect(triggers[0]!.props.status).toBe("idle"); expect(triggers[0]!.props).not.toHaveProperty("summary");
+  });
+
+  it("says the Filters matching count once in the compact count row, and keeps Clear filters at 44pt in the work line", () => {
+    patchSessionView("host-a", { status: "idle", query: "session", layout: "grouped", grouping: "role" });
+    renderCompact({ scopeLabel: "ASMA-1" });
+    openMobileFilters();
+    const filters = walk(harness.current()).find((node) => node.type === MobileFiltersPage)!.props.count as { text: string; label: string };
+    closeMobileFilters();
+    expect(testIDs(harness.current())).not.toContain("sessions-mobile-selected-filter");
+    const bar = findByTestID(harness.current(), "sessions-layout-bar");
+    // Only what no visible control says: not the state chip, the work line or the layout control.
+    expect(textOf(findByTestID(bar, "sessions-mobile-count"))).toBe(`${filters.text} · ASMA-1 · “session” · Group: Role`);
+    expect(findByTestID(bar, "sessions-mobile-count").props.accessibilityLabel).toBe(`${filters.label}. ASMA-1. “session”. Group: Role`);
+    expect(walk(bar).some((node) => node.type === SessionLayoutControl)).toBe(true);
+    const clear = () => findByTestID(findByTestID(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent, "sessions-work"), "sessions-mobile-clear-filters");
+    expect(clear().props).toMatchObject({ disabled: false, style: expect.objectContaining({ minHeight: 44 }) });
+    (clear().props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a")).toMatchObject({ status: "all", query: "", layout: "grouped", grouping: "role" });
+    expect(clear().props.disabled).toBe(true);
+    expect(textOf(findByTestID(harness.current(), "sessions-mobile-count"))).not.toContain("session”");
+
+    renderCompact({ compact: false, scopeLabel: "ASMA-1" });
+    expect(testIDs(harness.current())).not.toContain("sessions-mobile-count");
+    expect(testIDs(harness.current())).not.toContain("sessions-mobile-clear-filters");
   });
 
   it.each([true, false])("explains incomplete workstream availability with zero, one and unregistered associations (compact=%s)", (compact) => {
@@ -2418,7 +2443,7 @@ describe("SessionsScreen mobile filter page", () => {
       directory: supplied, organization, projectId: "project-a", epicKey: "ASMA-1", scopeLabel: "ASMA-1", onClearScope, onIncludeArchived: archive, viewScope: scope }));
     expect(sessionRowIds()).toEqual([]);
     let clear: () => void;
-    if (entry === "quick") clear = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.onClear as () => void;
+    if (entry === "quick") clear = findByTestID(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent, "sessions-mobile-clear-filters").props.onPress as () => void;
     else if (entry === "collapsed") clear = walk(harness.current()).find((node) => node.type === ActiveFilterSummary)!.props.onClear as () => void;
     else if (entry === "empty") clear = walk(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent).find((node) => node.props.accessibilityLabel === "Clear filters")!.props.onPress as () => void;
     else {

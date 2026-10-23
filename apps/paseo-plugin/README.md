@@ -66,7 +66,10 @@ pill is the in-session return control where the composer supports it.
   permission waits. The advanced area shows an active-filter count and a clear
   action. On compact layouts the Filters button has a visible down/up chevron,
   an active-count badge and a 44x44 pt target; Clear filters is a separate
-  control.
+  44 pt control in the work line at the top of the list. The compact header has
+  no summary row: one count row beside **Grouped / Flat** says the matching
+  count the Filters header says, followed only by what no visible control says
+  (the context, search, Task, Archived history, Group and sort).
 - **Open the existing session.** Each row shows its native agent ID and opens
   by that ID through the host's navigation API. Duplicate titles never select
   by name. Missing sessions, older hosts without plugin navigation and host
@@ -917,7 +920,7 @@ Evidence checklist:
       scroll and reveals on a short reverse scroll or Search/Filters without a
       blank gap or visible row jump.
 - [ ] The Filters button has a chevron, active count, 44x44 pt target and a
-      separate Clear filters control.
+      separate Clear filters control (in the work line on compact).
 - [ ] Missing-session and reconnect cases use controlled/disposable data only.
 - [x] Desktop pass/fail, iPhone pass/fail, tester and timestamp: desktop pass,
       iPhone pass, Igor, 2026-10-19 (candidate `e7006612`, test host
@@ -1065,6 +1068,15 @@ archive scope, session count and pages read).
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
    wait for reconnect; the next subscription snapshot reconciles every page
    before the screen reports **Live** again.
+5. The notices at the top (source, navigation, settings and unconfirmed
+   archives) form one tray with a **Hide notices** button. Hidden notices leave
+   one status button beside **Resume** (in the count row before **Grouped /
+   Flat** on compact, and where the tray was on compact **Filters**) that names them and shows the tray again. Hiding runs nothing
+   and resolves nothing; any new or changed notice opens the tray again, and so
+   does a notice that returns after a completed read reported it gone, while one
+   that stays present stays hidden. The choice is kept for the view until the
+   app restarts. Escape hides the tray
+   while focus is in it.
 
 ## Configuration
 
@@ -1176,7 +1188,9 @@ covers the filters affordance, slim toolbar actions, touch targets and saved
 settings. `test/sessions-screen-events.test.ts` exercises the actual
 SessionsScreen scroll/layout path for compact collapse and near-bottom reveal
 compensation (including the parent gap and post-reveal range), bottom
-bounce/return, top reveal and saved-settings preservation. That is code/model
+bounce/return, top reveal and saved-settings preservation, and the compact
+count row (the Filters count, no summary row, Clear filters at 44 pt in the work
+line). That is code/model
 evidence with analytical geometry, not a native no-jump claim.
 `test/toolbar-visibility.test.ts` covers the single compact scroll/collapse
 variant, pins, suppression, bounce handling and compensation helpers.
@@ -1187,7 +1201,12 @@ workflow-write call.
 the repeated-member rule and both log lines. `test/floor-growth.test.ts` covers a
 file that grows past 2 MiB after it is opened, and `test/floor-close.test.ts` a
 failed read or close of the file, including a server start under a failed
-close. `test/server-entry.test.ts` starts
+close. `test/sessions-notice-tray.test.tsx` covers hiding and showing the top
+notices on the wide, slim and 320/390 compact layouts: placement beside
+Resume or in the compact count row, no RPC or toast on hide, persistence across a remount, reopening for a
+new archive or read error, continuous presence through in-flight and failed reads,
+reopening when the same notice returns after a completed read without it, focus
+moves, Escape and touch targets. `test/server-entry.test.ts` starts
 the server entry for each file state and checks which hooks it registers: none
 when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
 that `KONTOR_PLUGIN_FLOOR` has no effect, one read per start, and that the file
