@@ -498,7 +498,6 @@ struct ValidatedBootstrap {
     quota_signals: Vec<kontor_accounts::QuotaSignal>,
     github_publication: Option<Arc<github_publication::GithubPublicationGateway>>,
     succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
-    memory_config: Option<kontor_memory_cognee::Config>,
     attention: Option<attention::config::AttentionPolicy>,
 }
 
@@ -508,6 +507,7 @@ impl ValidatedBootstrap {
         state_root: &Path,
         runtimes: &RuntimeRegistry,
         succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
+        memory_client_available: bool,
     ) -> Result<Self, StartupError> {
         let jira_config = folder.optional::<kontor_jira::JiraConfig>("tracker/connectors.yml")?;
         if let Some(config) = &jira_config {
@@ -548,6 +548,17 @@ impl ValidatedBootstrap {
             document.validate().map_err(|_| ())?;
             Ok::<_, ()>(document)
         })?;
+        if memory_config
+            .as_ref()
+            .is_some_and(|document| document.enabled)
+            && !memory_client_available
+        {
+            return Err(StartupError::MemoryCognee {
+                source: kontor_memory_cognee::Error(
+                    kontor_core::memory::DegradedReason::Unavailable,
+                ),
+            });
+        }
         let attention = match folder.optional::<serde_yaml_ng::Value>("attention.yml")? {
             Some(_) => {
                 let overrides = attention::config::read_env(state_root)?;
@@ -563,7 +574,6 @@ impl ValidatedBootstrap {
             quota_signals,
             github_publication,
             succession_summarizer,
-            memory_config,
             attention,
         })
     }
@@ -681,6 +691,7 @@ impl Daemon {
                 &config.state_root,
                 &runtimes,
                 succession_summarizer.take(),
+                config.memory_cognee.is_some(),
             )?),
             None => None,
         };
@@ -794,20 +805,19 @@ impl Daemon {
         )
         .map_err(|source| StartupError::Applications { source })?;
 
-        let memory_config = match &validated_bootstrap {
-            Some(bootstrap) => bootstrap.memory_config.clone(),
-            None => {
+        if validated_bootstrap.is_none() {
+            let memory_config =
                 kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
-                    .map_err(|source| StartupError::MemoryCognee { source })?
+                    .map_err(|source| StartupError::MemoryCognee { source })?;
+            if memory_config.is_some_and(|document| document.enabled)
+                && config.memory_cognee.is_none()
+            {
+                return Err(StartupError::MemoryCognee {
+                    source: kontor_memory_cognee::Error(
+                        kontor_core::memory::DegradedReason::Unavailable,
+                    ),
+                });
             }
-        };
-        if memory_config.is_some_and(|document| document.enabled) && config.memory_cognee.is_none()
-        {
-            return Err(StartupError::MemoryCognee {
-                source: kontor_memory_cognee::Error(
-                    kontor_core::memory::DegradedReason::Unavailable,
-                ),
-            });
         }
         if let Some(client) = config.memory_cognee.clone() {
             applications.attach_memory_cognee(client);

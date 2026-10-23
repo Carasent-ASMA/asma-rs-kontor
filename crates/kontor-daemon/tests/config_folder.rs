@@ -615,6 +615,72 @@ fn invalid_bootstrap_does_not_migrate_an_existing_database() {
     );
 }
 
+fn write_enabled_memory_without_composed_client(folder: &std::path::Path) {
+    std::fs::write(
+        folder.join("orchestration/memory.yml"),
+        "enabled: true\nendpoint: https://memory.example.invalid\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn unavailable_memory_client_refuses_without_creating_an_absent_state_root() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    write_enabled_memory_without_composed_client(&folder);
+    let state = root.path().join("uncreated state");
+
+    let error = Daemon::start_configured(DaemonConfig::at(&state).with_config_dir(&folder))
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(
+        error,
+        "the memory transport could not be composed: cognee_unavailable"
+    );
+    assert!(!state.exists());
+}
+
+#[test]
+fn unavailable_memory_client_does_not_migrate_an_existing_database() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    write_enabled_memory_without_composed_client(&folder);
+    let state = root.path().join("existing state");
+    std::fs::create_dir(&state).unwrap();
+    let database = state.join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+    drop(connection);
+    let before = std::fs::read(&database).unwrap();
+
+    let error = Daemon::start_configured(DaemonConfig::at(&state).with_config_dir(&folder))
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(
+        error,
+        "the memory transport could not be composed: cognee_unavailable"
+    );
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    let connection = rusqlite::Connection::open_with_flags(
+        &database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+}
+
 #[test]
 fn absent_selection_and_non_folder_inputs_are_named_refusals() {
     let root = tempfile::tempdir().unwrap();
