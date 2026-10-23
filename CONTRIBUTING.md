@@ -24,6 +24,17 @@ The delivery method is [Workflow](docs/WORKFLOW.md), the vocabulary is
 [Principles](docs/PRINCIPLES.md). Kontor decisions are recorded in
 [`docs/decisions/`](docs/decisions/README.md).
 
+### Product availability
+
+Follow the canonical workspace [Kontor product availability decision
+(Igor, 2026-10-23)](https://github.com/Carasent-ASMA/asma-modules/blob/master/.github/instructions/memory.instructions.md#kontor-product-availability):
+shipped, supported features, including **New LSA**, are standard and available
+by default, without per-feature opt-in or experimental/lab enablement.
+**Desk PR is the sole opt-in exception:** ask Igor for explicit enablement.
+Feature owners apply that contract through normal review/release, preserving
+permissions, real host capability guards, explicit operator-off safeguards and
+action intent; unsupported or deferred functionality stays so.
+
 ## Set up
 
 ```sh
