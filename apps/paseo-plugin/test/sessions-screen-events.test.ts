@@ -633,30 +633,27 @@ describe("SessionsScreen toolbar events", () => {
     if (compact) closeMobileFilters();
   });
 
-  it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
-    const list = () => findByTestID(harness.current(), "sessions-list");
+  it("shows one primary matching count and keeps inventory units/read status subordinate in Filters", () => {
     const header = () => findByTestID(harness.current(), "sessions-layout-bar");
+    directory.state = { ...directory.state as object, includeArchived: false };
+    patchSessionView("host-a", { includeArchived: false });
     renderScreen();
     const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("");
-    expect(testIDs(header())).not.toContain("sessions-count");
-    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^1 session · 1 workspace · complete inventory read /);
-    expect(list().props.ListFooterComponent).toBeNull();
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session");
+    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^Inventory: 1 session in this host context, excluding archived\. Results span 1 workspace \/ folder group/);
     search("no such session");
-    // No results: the empty state says so instead of a zero count.
-    expect(testIDs(header())).not.toContain("sessions-count");
-    expect(textOf(list().props.ListEmptyComponent)).toContain("No sessions match the current search and filters.");
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("0 matching sessions");
     search("session-a");
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session · 1 workspace");
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session");
     expect(findByTestID(header(), "sessions-count").props.accessibilityLiveRegion).toBe("polite");
-    search("");
-    expect(testIDs(header())).not.toContain("sessions-count");
     directory.state = { ...directory.state as object, inventoryComplete: false };
     renderScreen();
-    expect(textOf(findByTestID(header(), "sessions-count"))).toMatch(/^1 session · partial inventory read /);
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session · partial");
     directory.state = { ...directory.state as object, inventoryComplete: true, lastUpdatedAt: null };
     renderScreen();
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 session · not read yet");
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("…");
+    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toBe("Inventory for this membership has not been read yet.");
   });
 
   it("shows No sessions without a 0 beside it, and keeps non-zero group counts", () => {
@@ -674,7 +671,8 @@ describe("SessionsScreen toolbar events", () => {
     expect(counts(rendered(empty))).toEqual([]);
     expect(String(walk(rendered(empty)).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toContain(", 0 sessions.");
     const full = groupRows().find((row) => row.group.unitTotal > 0)!;
-    expect(counts(rendered(full))).toEqual([String(full.group.unitTotal)]);
+    expect(counts(rendered(full))).toEqual([]);
+    expect(walk(rendered(full)).find((element) => element.type === StateBadge)!.props.aggregate).toMatchObject({ total: full.group.visibleCount });
   });
 
   it("keeps the workspace read note in Filters and shows only a workspace list failure under the list", () => {
@@ -753,11 +751,12 @@ describe("SessionsScreen toolbar events", () => {
       pages: 1,
       lastUpdatedAt: 0,
       inventoryComplete,
-      includeArchived: true,
+      includeArchived: false,
     };
+    patchSessionView("host-a", { includeArchived: false });
     renderScreen();
     const list = findByTestID(harness.current(), "sessions-list");
-    const count = JSON.stringify(findByTestID(harness.current(), "sessions-count").props.children);
+    const count = JSON.stringify(findByTestID(harness.current(), "sessions-options-count").props.children);
 
     expect(count).toContain("partial inventory read");
     expect(count).not.toContain("complete inventory read");
@@ -813,7 +812,7 @@ describe("SessionsScreen toolbar events", () => {
     const list = findByTestID(harness.current(), "sessions-list");
     // Compact says the Filters matching count: one session, qualified because the read is not live and complete.
     const count = findByTestID(harness.current(), "sessions-mobile-count");
-    expect(textOf(count)).toBe("1 session · stale"); expect(count.props.accessibilityLabel).toContain("1 session matched the read at");
+    expect(textOf(count)).toBe("1 matching session · stale"); expect(count.props.accessibilityLabel).toContain("1 matching session matched the read at");
     const banner = findByTestID(harness.current(), "sessions-source-banner");
     expect(banner.props.message).toContain("Inventory read attempt");
     expect(banner.props.message).not.toContain("Last complete read");
@@ -1167,7 +1166,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
     expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
-    expect(header()).toEqual(["sessions-layout-bar", "sessions-mobile-count"]);
+    expect(header()).toEqual(["sessions-layout-bar", "sessions-mobile-count", "sessions-view-controls"]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
@@ -1775,16 +1774,16 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it.each([true, false])("draws the primary Role state as count/total with a separate total and stale cue, compact=%s", compact => {
+  it.each([true, false])("labels the primary Role total once with its state subset and stale cue, compact=%s", compact => {
     const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(["Needs input 1/5"]);
+    expect(words).toEqual(["5 sessions", "Needs input 1"]);
     expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input"]);
-    expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
+    expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(0);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
     expect(label()).toContain("Role QA, 5 sessions. Needs input: 1 of 5 sessions. Error: 1 of 5 sessions. Running: 3 of 5 sessions.");
     directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Host offline" };
@@ -1792,7 +1791,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(label()).toContain("5 sessions. Last known: Needs input: 1 of 5 sessions.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(["Last known", "Needs input 1/5"]);
+      .toEqual(["Last known", "5 sessions", "Needs input 1"]);
   });
 
   it("shows a Role row's conflict cue and place, giving the compact title its whole line above the place and age", () => {

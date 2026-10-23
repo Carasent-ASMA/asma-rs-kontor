@@ -8,6 +8,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return fixture.native ? "ios" : "web"; } }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: (_text: string, ref: { current: unknown }) => ({ bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss }) }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { SessionLayoutControl } from "../client/session-layout-control";
 
 type Element = { props: Record<string, unknown> };
