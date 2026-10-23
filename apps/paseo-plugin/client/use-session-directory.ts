@@ -18,6 +18,11 @@ function offlineReason(status: HostStatus): string {
 
 type DirectoryListener = (state: DirectoryState) => void;
 
+type ConnectionAttempt = {
+  readonly token: number;
+  readonly promise: Promise<void>;
+};
+
 type RetainedDirectory = {
   readonly hostId: string;
   readonly directory: SessionDirectory;
@@ -25,6 +30,9 @@ type RetainedDirectory = {
   state: DirectoryState;
   /** The host status last applied to the directory; null before its first start. */
   appliedStatus: HostStatus | null;
+  /** The reconnect in flight for this host; a second online caller joins it. */
+  connection: ConnectionAttempt | null;
+  connectionToken: number;
 };
 
 type DirectoryBinding = {
@@ -73,6 +81,25 @@ function notifyListener(
   }
 }
 
+function invalidateConnection(record: RetainedDirectory): void {
+  record.connectionToken += 1;
+  record.connection = null;
+}
+
+function startConnection(record: RetainedDirectory): void {
+  record.connectionToken += 1;
+  const token = record.connectionToken;
+  const promise = record.directory
+    .reconnect()
+    .catch(() => undefined)
+    .finally(() => {
+      if (record.connection?.token === token) {
+        record.connection = null;
+      }
+    });
+  record.connection = { token, promise };
+}
+
 function claimOwner(record: RetainedDirectory): void {
   if (ownerHostId !== null) {
     return;
@@ -98,6 +125,8 @@ function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
     listeners,
     state: emptyDirectoryState(includeArchived),
     appliedStatus: null,
+    connection: null,
+    connectionToken: 0,
     directory: new SessionDirectory({
       client: () => getPaseoClient(hostId),
       includeArchived,
@@ -120,6 +149,12 @@ function applyHostStatus(
   hostStatus: HostStatus,
 ): void {
   if (hostStatus === "online") {
+    // The sidebar and the first HostScreen can both observe the same
+    // offline-to-online transition. A second caller joins the reconnect that
+    // is already in flight, even while the retained rows still read stale.
+    if (record.connection !== null) {
+      return;
+    }
     // A remount over a live or still-loading directory reuses it; a new,
     // offline or degraded one reconnects and walks every page.
     if (
@@ -129,11 +164,14 @@ function applyHostStatus(
       return;
     }
     record.appliedStatus = hostStatus;
-    void record.directory.reconnect();
+    startConnection(record);
     return;
   }
   if (record.appliedStatus !== hostStatus) {
     record.appliedStatus = hostStatus;
+    // A disconnect fences the connection that was in flight; the next online
+    // transition must be free to start its own.
+    invalidateConnection(record);
     record.directory.markHostOffline(offlineReason(hostStatus));
   }
 }

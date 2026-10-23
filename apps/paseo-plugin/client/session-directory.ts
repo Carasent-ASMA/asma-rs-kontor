@@ -731,6 +731,9 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           }
           subscriptionActive = false;
           live = false;
+          // Buffered updates belong to the subscription that just failed. A
+          // walk still in flight must not replay them over its fresh rows.
+          releaseSubscription();
           error = describeDirectoryError(subscriptionError);
           status = entries.size > 0 ? "stale" : "error";
           staleReason = entries.size > 0 ? "Live updates stopped." : null;
@@ -741,6 +744,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     } catch (subscriptionError) {
       subscriptionActive = false;
       live = false;
+      pendingUpdates = [];
+      pendingOverflow = false;
       await result.subscription.release().catch(() => undefined);
       error = describeDirectoryError(subscriptionError);
       status = entries.size > 0 ? "stale" : "error";

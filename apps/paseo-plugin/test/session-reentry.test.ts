@@ -117,6 +117,24 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(host.walks).toHaveLength(3);
   });
 
+  it("joins an in-flight sidebar reconnect instead of starting a third walk", async () => {
+    const host = fakeHost("host-a", sessions(3));
+    kontor();
+    await settle();
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(1);
+    unmount();
+
+    startHostDirectory("host-a", "offline");
+    startHostDirectory("host-a", "online");
+    kontor();
+    await settle();
+
+    expect(kontor().state).toMatchObject({ status: "ready", live: true });
+    expect(host.subscribes).toHaveLength(2);
+    expect(host.walks).toHaveLength(2);
+  });
+
   it("renders the 25-row bootstrap as an incomplete read while the remaining pages load", async () => {
     const host = fakeHost("host-a", sessions(450));
     const release = host.holdWalk();

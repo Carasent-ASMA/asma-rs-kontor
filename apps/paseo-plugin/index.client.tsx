@@ -21,6 +21,19 @@ export const SESSIONS_COMMAND_ID = "sessions";
 export const BACK_COMMAND_ID = "back-to-kontor";
 export const SWITCH_COMMAND_ID = "start-or-switch";
 
+function runCleanup(
+  label: string,
+  action: () => void | Promise<void>,
+): void {
+  try {
+    void Promise.resolve(action()).catch((error) => {
+      console.error(`Kontor ${label} cleanup failed`, error);
+    });
+  } catch (error) {
+    console.error(`Kontor ${label} cleanup failed`, error);
+  }
+}
+
 function SessionsSidebarItem({
   host,
   currentScreen,
@@ -87,12 +100,12 @@ export default function contribute(client: PluginClientContext): () => void {
   const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID);
   const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
   return () => {
-    stopPlanControl();
-    stopReturnControl();
-    void disposeRetainedDirectories();
-    forgetWorkspaceDirectories();
+    runCleanup("retained directories", () => disposeRetainedDirectories());
+    runCleanup("workspace directories", forgetWorkspaceDirectories);
+    runCleanup("plan control", stopPlanControl);
+    runCleanup("return control", stopReturnControl);
     for (const cleanup of cleanups) {
-      void cleanup();
+      runCleanup("contribution", cleanup);
     }
   };
 }

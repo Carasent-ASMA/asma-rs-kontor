@@ -30,6 +30,16 @@ import {
   disposeRetainedDirectories,
   startHostDirectory,
 } from "../client/use-session-directory";
+import {
+  configureRecentStorage,
+  readRecent,
+  recordVisit,
+} from "../client/recent-sessions";
+import {
+  clearSessionViews,
+  patchSessionView,
+  readSessionView,
+} from "../client/session-view-store";
 
 type Observer = {
   snapshot: () => void;
@@ -161,7 +171,10 @@ function fakeHost(hostId: string, initialRows: readonly AgentDirectoryPage[]) {
       };
     },
     emitUpdate(update: PaseoAgentUpdate) {
-      observers[0]?.update({ type: "agent_update", payload: update });
+      observers.at(-1)?.update({ type: "agent_update", payload: update });
+    },
+    emitError(error: unknown) {
+      observers.at(-1)?.error?.(error);
     },
   };
   hosts.set(hostId, host);
@@ -258,6 +271,7 @@ function installHosts(): void {
 describe("Kontor composer controls share one host directory", () => {
   beforeEach(async () => {
     await disposeRetainedDirectories();
+    clearSessionViews();
     hosts.clear();
     getPaseoClient.mockReset();
     installHosts();
@@ -307,8 +321,23 @@ describe("Kontor composer controls share one host directory", () => {
     expect(host.walks).toHaveLength(1);
     expect(host.subscribes).toHaveLength(1);
 
+    patchSessionView("host-a", {
+      query: "ASMA-8540",
+      status: "running",
+      shortcut: "Adam",
+      includeArchived: true,
+      advancedOpen: true,
+      scrollOffset: 240,
+    });
+    configureRecentStorage(null);
+    recordVisit("host-a", "s-1", Date.now() - 60_000);
+    const beforeReturn = readRecent("host-a");
+    const beforeView = readSessionView("host-a");
+
     controls.pillFor("s-1")?.contribution.button.behavior.onPress();
     expect(controls.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
+    expect(readRecent("host-a")).toEqual(beforeReturn);
+    expect(readSessionView("host-a")).toEqual(beforeView);
 
     stop();
   });
@@ -321,12 +350,21 @@ describe("Kontor composer controls share one host directory", () => {
     const stop = contributeReturnControl(controls.client, "sessions");
     startHostDirectory("host-a");
     await settle();
-    expect(controls.pillFor("agent-a")).toBeDefined();
+    const initialPill = controls.pillFor("agent-a");
+    expect(initialPill).toBeDefined();
+
+    host.emitUpdate({
+      kind: "upsert",
+      agent: { ...rows[0]!.agent, workspaceId: "wks-a2" },
+    } as PaseoAgentUpdate);
+    expect(initialPill?.registration.remove).toHaveBeenCalledTimes(1);
+    expect(controls.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a2");
 
     host.emitUpdate({
       kind: "upsert",
       agent: {
         ...rows[0]!.agent,
+        workspaceId: "wks-a2",
         archivedAt: "2026-10-22T11:00:00.000Z",
       },
     } as PaseoAgentUpdate);
@@ -411,6 +449,131 @@ describe("Kontor composer controls share one host directory", () => {
     stopPlan();
     stopReturn();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("excludes archived sessions from plan pills even when history is in scope", async () => {
+    const rows = [
+      agentPage("archived", {
+        workspaceId: "wks-archived",
+        archivedAt: "2026-10-22T11:00:00.000Z",
+      }),
+      agentPage("live", { workspaceId: "wks-live" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    controls.rpc.mockResolvedValue({
+      status: "ready",
+      associations: {
+        archived: ["plan-archived"],
+        live: ["plan-live"],
+      },
+      sources: [{ id: "plan-archived" }, { id: "plan-live" }],
+      error: null,
+    });
+
+    const stopPlan = contributePlanControl(controls.client, "sessions");
+    await settle();
+    const stopReturn = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a", "online", true);
+    await settle();
+
+    expect(controls.pillFor("archived", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("live", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("archived", RETURN_CONTROL_ID)).toBeUndefined();
+    expect(controls.pillFor("live", RETURN_CONTROL_ID)).toBeDefined();
+
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[1]!.agent,
+        archivedAt: "2026-10-22T12:00:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+    await settle();
+
+    expect(controls.pillFor("live", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("live", RETURN_CONTROL_ID)).toBeUndefined();
+
+    stopPlan();
+    stopReturn();
+  });
+
+  it("drops a buffered workspace update when the subscription fails during the held walk", async () => {
+    const rows = [agentPage("agent-a", { workspaceId: "wks-a" })];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+
+    startHostDirectory("host-a", "offline");
+    const releaseWalk = host.holdWalk();
+    startHostDirectory("host-a", "online");
+    await settle();
+    expect(host.observers).toHaveLength(2);
+
+    host.emitUpdate({
+      kind: "upsert",
+      agent: { ...rows[0]!.agent, workspaceId: "wks-b" },
+    } as PaseoAgentUpdate);
+    host.emitError(new Error("stream closed"));
+    releaseWalk();
+    await settle();
+
+    expect(controls.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+    stop();
+  });
+
+  it("lets a buffered remove win over the bootstrap page and the held walk", async () => {
+    const rows = [
+      agentPage("keep", { workspaceId: "wks-keep" }),
+      agentPage("remove", { workspaceId: "wks-remove" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const releaseWalk = host.holdWalk();
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.pillFor("remove")).toBeDefined();
+
+    host.emitUpdate({ kind: "remove", agentId: "remove" } as PaseoAgentUpdate);
+    releaseWalk();
+    await settle();
+
+    expect(controls.pillFor("remove")).toBeUndefined();
+    expect(controls.pillFor("keep")).toBeDefined();
+    stop();
+  });
+
+  it("registers pills only for sessions with a usable workspace in a mixed inventory", async () => {
+    const rows = [
+      agentPage("no-workspace", { workspaceId: null }),
+      agentPage("empty-workspace", { workspaceId: "" }),
+      agentPage("live", { workspaceId: "wks-live" }),
+      agentPage("closed", { workspaceId: "wks-closed", status: "closed" }),
+      agentPage("archived", {
+        workspaceId: "wks-archived",
+        archivedAt: "2026-10-22T11:00:00.000Z",
+      }),
+    ];
+    fakeHost("host-a", rows);
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+
+    expect(controls.activePills()).toHaveLength(1);
+    expect(controls.pillFor("live")).toBeDefined();
+    expect(controls.pillFor("no-workspace")).toBeUndefined();
+    expect(controls.pillFor("empty-workspace")).toBeUndefined();
+    expect(controls.pillFor("closed")).toBeUndefined();
+    expect(controls.pillFor("archived")).toBeUndefined();
+    stop();
   });
 
   it("keeps the remaining plan pills and both controls when one registration throws", async () => {
@@ -575,6 +738,7 @@ describe("Kontor composer controls share one host directory", () => {
     startHostDirectory("host-a");
     await settle();
     const pill = controls.pillFor("agent-a");
+    const observer = host.observers.at(-1)!;
     expect(pill).toBeDefined();
 
     stop();
@@ -584,8 +748,46 @@ describe("Kontor composer controls share one host directory", () => {
     expect(host.unsubscribed).toBe(1);
     expect(host.releases).toBe(1);
 
+    const adds = controls.addComposerPill.mock.calls.length;
+    observer.snapshot();
+    observer.update({
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: agentPage("late", { workspaceId: "wks-late" }).agent,
+      } as PaseoAgentUpdate,
+    });
+    observer.error?.(new Error("late error"));
+    await settle();
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(adds);
+    expect(controls.activePills()).toHaveLength(0);
+
     await disposeRetainedDirectories();
     expect(host.unsubscribed).toBe(1);
     expect(host.releases).toBe(1);
+  });
+
+  it("publishes nothing from a late bootstrap walk after cleanup", async () => {
+    const rows = [
+      agentPage("agent-a", { workspaceId: "wks-a" }),
+      agentPage("agent-b", { workspaceId: "wks-b" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const releaseWalk = host.holdWalk();
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.activePills()).toHaveLength(2);
+
+    const adds = controls.addComposerPill.mock.calls.length;
+    stop();
+    await disposeRetainedDirectories();
+    releaseWalk();
+    await settle();
+
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(adds);
+    expect(controls.activePills()).toHaveLength(0);
   });
 });

@@ -1,6 +1,10 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { readPlanAssociations } from "../shared/read-sources";
-import type { DirectoryEntry, DirectoryState } from "./session-directory";
+import {
+  isArchivedSession,
+  type DirectoryEntry,
+  type DirectoryState,
+} from "./session-directory";
 import { bindHostDirectory } from "./use-session-directory";
 import { linkedPlans } from "./navigation-state";
 
@@ -39,7 +43,7 @@ export function contributePlanControl(client: PluginClientContext, screenId: str
     const seen = new Set<string>();
     for (const entry of entries) {
       const ids = linkedPlans(associations.associations, entry.id, catalog);
-      if (!ids.length || !entry.workspaceId || entry.status === "closed") continue;
+      if (!ids.length || !entry.workspaceId || entry.status === "closed" || isArchivedSession(entry)) continue;
       seen.add(entry.id);
       try {
         // Updating a descriptor avoids duplicate registrations on settings refresh.
