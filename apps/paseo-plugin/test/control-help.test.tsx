@@ -178,6 +178,12 @@ describe("hover and focus help", () => {
     (screen.tooltip()!.props.onPointerEnter as () => void)(); vi.advanceTimersByTime(10000); screen.render(); expect(screen.tooltip()).toBeDefined();
     (screen.tooltip()!.props.onPointerLeave as () => void)(); vi.advanceTimersByTime(160); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
+  it("keeps panel hover when the source leave callback arrives after panel entry", () => {
+    const screen = mount(); screen.control.bindings.onHoverIn(); screen.render();
+    (screen.tooltip()!.props.onPointerEnter as () => void)();
+    screen.control.bindings.onHoverOut(); vi.advanceTimersByTime(1000); screen.render(); expect(screen.tooltip()).toBeDefined();
+    (screen.tooltip()!.props.onPointerLeave as () => void)(); vi.advanceTimersByTime(160); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
   it.each([[320, 240], [390, 320], [1400, 800]])("clamps help inside a %s by %s viewport and opens upward at the bottom", (width, height) => {
     const screen = mount(width, height); screen.control.bindings.onFocus(); screen.render();
     const style = screen.tooltip()!.props.style as { left: number; maxWidth: number; bottom: number; maxHeight: number };

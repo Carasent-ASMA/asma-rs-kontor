@@ -48,12 +48,12 @@ export function validTokenCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-const compactTokens = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+// Compact row units stay K/M across device locales; exact Details keep localized numbers.
+const compactTokens = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 const exactTokenNumber = new Intl.NumberFormat();
 
-export function formatTokens(value: number, locale?: string): string {
-  const formatter = locale === undefined ? compactTokens : new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 });
-  return formatter.format(value);
+export function formatTokens(value: number, _locale?: string): string {
+  return compactTokens.format(value);
 }
 
 /** Format an exact report, preserving absent/invalid values and explicit zero. */

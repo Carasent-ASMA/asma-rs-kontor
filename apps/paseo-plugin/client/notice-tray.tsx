@@ -1,7 +1,8 @@
 import { useEffect, useRef, type ReactNode, type Ref } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { Action, COARSE_POINTER, type Colors } from "./page-controls";
+import { Action, type Colors } from "./page-controls";
+import { useActionHelp } from "./control-help";
 
 /** One top-of-screen notice. Its keys name what it reports, so a changed or new notice is never one the operator hid. */
 export type Notice = { readonly keys: readonly string[]; readonly summary: string; readonly tone: "warning" | "danger"; readonly node: ReactNode };
@@ -65,16 +66,17 @@ export function NoticeTray({ colors, compact, disabled = false, onHide, hideRef,
   </View>;
 }
 
-/** What a hidden tray leaves beside Resume: its tone, the first notice (a count on compact) and every notice in its name. */
-export function NoticesButton({ notices, colors, compact, onPress, ref }: { notices: readonly Notice[]; colors: Colors; compact: boolean; onPress: () => void; ref?: Ref<View> }) {
+/** Icon and count for the hidden tray; its name and deliberate help retain every notice summary. */
+export function NoticesButton({ notices, colors, onPress, ref }: { notices: readonly Notice[]; colors: Colors; compact: boolean; onPress: () => void; ref?: Ref<View> }) {
   const ink = notices.some((notice) => notice.tone === "danger") ? colors.statusDanger : colors.statusWarning;
-  const label = compact ? `${notices.length} notice${notices.length === 1 ? "" : "s"}` : `${notices[0]?.summary ?? ""}${notices.length > 1 ? ` +${notices.length - 1}` : ""}`;
-  const touch = compact || COARSE_POINTER;
-  return <Pressable ref={ref} testID="sessions-notices-button" accessibilityRole="button" accessibilityLabel={`Show notices: ${notices.map((notice) => notice.summary).join("; ")}`}
-    accessibilityState={{ expanded: false }} aria-expanded={false} onPress={onPress}
-    style={{ minHeight: touch ? 44 : 30, minWidth: 44, maxWidth: "100%", flexShrink: 1, flexDirection: compact ? "column" : "row", alignItems: "center", justifyContent: "center", gap: compact ? 1 : 5,
-      paddingHorizontal: compact ? 4 : 9, borderRadius: compact ? 7 : 6, borderWidth: 1, borderColor: ink, backgroundColor: colors.surface1 }}>
-    <Icon name="CircleAlert" size={compact ? 18 : 14} color={ink} />
-    <Text numberOfLines={1} style={{ flexShrink: 1, color: compact ? colors.foreground : ink, fontSize: compact ? 10 : 12, fontWeight: "600" }}>{label}</Text>
+  const summary = notices.map((notice) => notice.summary).join("; ");
+  const hint = `Notices. Show ${notices.length} notice${notices.length === 1 ? "" : "s"}: ${summary}.`;
+  const help = useActionHelp(hint, ref);
+  return <Pressable {...help.bindings} testID="sessions-notices-button" accessibilityRole="button" accessibilityLabel={`Show notices: ${summary}`} accessibilityHint={hint}
+    accessibilityState={{ expanded: false }} aria-expanded={false} onPress={() => { help.dismiss(); onPress(); }}
+    style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center",
+      borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.foreground : "transparent", backgroundColor: pressed ? colors.surface2 : undefined })}>
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name="CircleAlert" size={18} color={ink} /></View>
+    <Text accessibilityElementsHidden importantForAccessibility="no" style={{ position: "absolute", top: 1, right: 2, minWidth: 14, textAlign: "center", color: colors.foreground, backgroundColor: colors.surface2, borderRadius: 7, fontSize: 10, fontWeight: "600" }}>{notices.length}</Text>
   </Pressable>;
 }

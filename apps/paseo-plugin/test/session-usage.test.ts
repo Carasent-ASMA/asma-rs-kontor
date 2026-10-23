@@ -139,10 +139,21 @@ describe("latest report, without invented session totals", () => {
     expect(lines(entry)["Reported input tokens"]).toBe("Invalid report (not shown)");
   });
 
-  it("formats large counts with Intl while preserving exact localized details", () => {
+  it("keeps compact row units stable while preserving exact localized details", () => {
     expect(formatTokens(1_234_567, "en")).toBe("1.2M");
     expect(lines({ ...configured, telemetry: { lastUsage: { outputTokens: 1_234_567 } } })["Reported output tokens"]).toBe("1,234,567");
-    expect(formatTokens(12_400, "nb")).toBe(new Intl.NumberFormat("nb", { notation: "compact", maximumFractionDigits: 1 }).format(12_400));
+    expect(formatTokens(12_400, "nb")).toBe("12.4K");
+  });
+
+  it.each([undefined, "en", "nb-NO", "de-DE"])("uses the same precision and threshold rounding in %s", locale => {
+    for (const [value, label] of [[0, "0"], [999, "999"], [1_000, "1K"], [1_049, "1K"], [1_050, "1.1K"], [300_000, "300K"],
+      [999_949, "999.9K"], [999_950, "1M"], [1_000_000, "1M"], [1_200_000, "1.2M"]] as const) {
+      expect(formatTokens(value, locale)).toBe(label);
+    }
+    const entry = routed("opaque-route", { inputTokens: 300_000, outputTokens: 1_200_000, cachedInputTokens: 234_567 });
+    expect(usagePresentation(entry, locale).label).toBe("Last report ≥300K ↓ · 1.2M ↑ · 234.6K cached");
+    expect(usagePresentation(entry, locale).spoken).toContain(new Intl.NumberFormat(locale).format(300_000));
+    expect(sessionUsageLines(entry, false, locale).find(line => line.label === "Reported output tokens")?.value).toBe(new Intl.NumberFormat(locale).format(1_200_000));
   });
 
   it.each(["claude", "opencode", "cursor", "opaque-alias"])("discloses provider-specific limits for %s", (provider) => {

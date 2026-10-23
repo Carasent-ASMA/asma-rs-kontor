@@ -13,7 +13,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("../client/anchored-menu", async (original) => ({ ...await original<typeof import("../client/anchored-menu")>(), anchoredPanelOpen: () => hooks.panelOpen }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return hooks.platform; } }, Pressable: "Pressable", View: "View", Text: "Text", ScrollView: "ScrollView", BackHandler: { addEventListener: () => { hooks.backAdded++; return { remove() { hooks.backRemoved++; } }; } } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-import { ControlHelpProvider, useControlHelp } from "../client/control-help";
+import { ControlHelpProvider, useActionHelp, useControlHelp } from "../client/control-help";
 type Element = ReactElement<Record<string, unknown>>;
 function all(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(all);
@@ -32,7 +32,7 @@ beforeEach(() => {
   vi.stubGlobal("document", target); vi.stubGlobal("window", target);
 });
 afterEach(() => { cleanup.forEach(fn => fn()); cleanup = []; vi.useRealTimers(); vi.unstubAllGlobals(); });
-function mount(width = 390, height = 320) {
+function mount(width = 390, height = 320, longPress = false) {
   let tree: ReactNode;
   const render = () => { hooks.cursor = 0; tree = ControlHelpProvider({ children: "screen", colors }); return tree; };
   render();
@@ -40,10 +40,42 @@ function mount(width = 390, height = 320) {
   const root = all(tree).find(e => e.type === "View")!;
   (root.props.ref as { current: unknown }).current = measure(20, 30, width, height);
   cleanup = hooks.effects.map(fn => fn()).filter((fn): fn is () => void => typeof fn === "function");
-  const control = useControlHelp("Explanation: no execution or freshness inferred.");
+  const control = longPress ? useActionHelp("Explanation: no execution or freshness inferred.") : useControlHelp("Explanation: no execution or freshness inferred.");
+  const controlCleanup = longPress ? hooks.effects.at(-1)?.() : undefined;
+  if (controlCleanup) cleanup.push(controlCleanup);
   control.bindings.ref(measure(20 + width - 34, 30 + height - 34, 28, 28) as View);
-  return { control, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
+  return { control: control as ReturnType<typeof useActionHelp>, controlCleanup, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
 }
+describe("deliberate long-press help", () => {
+  const touch = (x = 10, y = 20) => ({ nativeEvent: { pageX: x, pageY: y } }) as Parameters<NonNullable<ReturnType<typeof useActionHelp>["bindings"]["onPressIn"]>>[0];
+  it.each(["web", "ios", "android"])("opens on a recognized %s hold, stays after release, and closes on the next touch", platform => {
+    hooks.platform = platform;
+    const screen = mount(390, 320, true);
+    (screen.root.props.onTouchStart as () => void)();
+    screen.control.bindings.onPressIn!(touch()); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    screen.control.bindings.onLongPress!(); screen.control.bindings.onPressOut!();
+    screen.render(); expect(screen.tooltip()).toBeDefined();
+    screen.control.bindings.onHoverOut(); vi.advanceTimersByTime(1000); screen.render(); expect(screen.tooltip()).toBeDefined();
+    (screen.root.props.onTouchStart as () => void)(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it.each(["move", "cancel", "pointercancel", "release"])("ignores a late hold callback after %s", reason => {
+    const screen = mount(390, 320, true);
+    screen.control.bindings.onPressIn!(touch());
+    if (reason === "move") screen.control.bindings.onTouchMove!(touch(30, 20));
+    if (reason === "cancel") screen.control.bindings.onTouchCancel!();
+    if (reason === "pointercancel") screen.control.bindings.onPointerCancel!();
+    if (reason === "release") screen.control.bindings.onPressOut!();
+    screen.control.bindings.onLongPress!(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it("dismisses held help on scroll, pointer cancellation, Escape and unmount", () => {
+    const screen = mount(390, 320, true);
+    const hold = () => { screen.control.bindings.onPressIn!(touch()); screen.control.bindings.onLongPress!(); screen.render(); expect(screen.tooltip()).toBeDefined(); };
+    hold(); handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    hold(); handlers.get("pointercancel")!({} as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    hold(); handlers.get("keydown")!({ key: "Escape", preventDefault() {}, stopPropagation() {} } as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    hold(); screen.controlCleanup?.(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+});
 describe("hover and focus help", () => {
   it.each(["ios", "android"])("shows help on later %s keyboard/accessibility focus after a root touch without a DOM key event", (platform) => {
     hooks.platform = platform;

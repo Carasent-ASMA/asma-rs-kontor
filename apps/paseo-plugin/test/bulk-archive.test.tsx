@@ -6,7 +6,7 @@ vi.mock("react", async (original) => ({ ...(await original<typeof import("react"
 vi.mock("react-native", () => ({ Platform: { OS: "web" }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
 vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
-vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ bindings: {}, dismiss() {} }) }));
+vi.mock("../client/control-help", () => ({ useActionHelp: () => ({ bindings: {}, dismiss() {} }) }));
 
 import { ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "../client/bulk-archive";
 import type { useSessionLifecycle } from "../client/use-session-lifecycle";
@@ -25,7 +25,8 @@ describe("bulk archive selection accessibility", () => {
       const button = ArchiveSelectionToggle({ selection, disabled: false, colors });
       expect(button.props).toMatchObject({ accessibilityRole: "button", "aria-pressed": selecting,
         accessibilityLabel: selecting ? "Cancel archive selection" : "Select sessions for archive" });
-      expect(button.props.accessibilityHint).toContain("review and confirm");
+      expect(button.props.accessibilityHint).toContain(selecting ? "without archiving" : "review and confirm");
+      expect(walk(button).some(node => node.type === "Text")).toBe(false);
       expect(button.props.style({ pressed: false })).toMatchObject({ minWidth: 44, minHeight: 44 });
       expect(walk(button).some((node) => node.type === "Icon")).toBe(true);
       button.props.onPress();
