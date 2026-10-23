@@ -17,7 +17,7 @@ vi.mock("react", () => ({
   useEffect: (effect: () => () => void) => { model.effect = effect; },
 }));
 vi.mock("@getpaseo/plugin/client", () => ({ getPaseoClient: (hostId: string) => model.client(hostId) }));
-import { useWorkspaceDirectory } from "../client/use-workspace-directory";
+import { forgetWorkspaceDirectories, useWorkspaceDirectory } from "../client/use-workspace-directory";
 
 const desk: PaseoProject = {
   projectId: "prj_empty_desk", projectKey: "fixture:empty-desk", projectDisplayName: "Desk", projectCustomName: "DESK • RESEARCH",
@@ -30,7 +30,7 @@ function mount(online = true) {
 }
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
-  model.state = undefined; model.effect = null; model.cleanup = null;
+  model.state = undefined; model.effect = null; model.cleanup = null; forgetWorkspaceDirectories();
   model.projects.mockReset().mockResolvedValue({ requestId: "projects", projects: [desk] });
   model.workspaces.mockReset().mockResolvedValue({ requestId: "workspaces", entries: [], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } });
   model.client.mockReset().mockReturnValue({ projects: { list: model.projects }, workspaces: { list: model.workspaces } });

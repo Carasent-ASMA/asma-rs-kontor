@@ -595,10 +595,12 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       subscription: OwnedSubscription<PaseoAgentListResult>;
     };
     try {
+      // The filter, not the page, scopes the subscription, and the walk reads every
+      // row: a full bootstrap page would be decrypted on the phone only to be dropped.
       result = await options.client().agents.list({
         filter: filterOptions(includeArchived),
         sort: AGENT_SORT,
-        page: { limit: DIRECTORY_PAGE_LIMIT },
+        page: { limit: 1 },
         subscribe: {},
       });
     } catch (subscriptionError) {

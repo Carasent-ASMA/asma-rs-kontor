@@ -28,6 +28,30 @@ export const lifecycleRowSchema = z.object({
   runtime: z.enum(["closed", "not-observed", "unconfirmed"]).optional(),
 });
 export type LifecycleRow = z.infer<typeof lifecycleRowSchema>;
+export const ARCHIVE_BATCH_LIMIT = 50;
+/** Stable child-first order; a cyclic native relationship cannot be archived safely. */
+export function archiveOrder(rows: LifecycleRow[]): LifecycleRow[] {
+  const byId = new Map(rows.map((row) => [row.id, row])), visiting = new Set<string>(), done = new Set<string>(), ordered: LifecycleRow[] = [];
+  function visit(row: LifecycleRow) {
+    if (done.has(row.id)) return;
+    if (visiting.has(row.id)) throw new Error("Managed-child cycle: no archive batch can run. Review native relationships first.");
+    visiting.add(row.id);
+    for (const child of row.children) { const selected = byId.get(child.id); if (selected) visit(selected); }
+    visiting.delete(row.id); done.add(row.id); ordered.push(row);
+  }
+  rows.forEach(visit);
+  return ordered;
+}
+export function archiveSummary(rows: LifecycleRow[]): string {
+  const archived = rows.filter((row) => row.outcome === "archived" && row.runtime !== "unconfirmed").length;
+  const uncertain = rows.filter((row) => unresolvedArchive(row)).length;
+  const blocked = rows.filter((row) => row.outcome === "blocked").length;
+  const absent = rows.filter((row) => row.outcome === "absent").length;
+  const existing = rows.filter((row) => row.outcome === "already_archived").length;
+  const pending = rows.filter((row) => row.outcome === "pending").length;
+  return [`Archived ${archived}`, uncertain ? `${uncertain} not confirmed` : null, blocked ? `${blocked} blocked` : null,
+    absent ? `${absent} absent (local removal only)` : null, existing ? `${existing} already archived` : null, pending ? `${pending} not attempted` : null].filter(Boolean).join(" · ");
+}
 /** An archive whose fence stays held until an exact-ID read settles it. */
 export const unresolvedArchive = (row: Pick<LifecycleRow, "outcome" | "runtime">) =>
   row.outcome === "intent" || row.outcome === "uncertain" || (row.outcome === "archived" && row.runtime === "unconfirmed");
