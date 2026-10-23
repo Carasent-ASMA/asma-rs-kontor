@@ -56,8 +56,11 @@ export function NoticeTray({ colors, compact, disabled = false, onHide, hideRef,
     return () => document?.removeEventListener("keydown", key, true);
   }, []);
   // Hide comes first for focus and reading order, drawn at the top right: Show lands on it, so Enter toggles back.
+  // Compact draws it as a 44 pt close mark, as the desktop does: "X Hide" would push a notice's actions to a second row.
   return <View ref={tray} testID={testID} role="region" accessibilityLabel="Notices" style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 6 }}>
-    <Action ref={hideRef} small={!compact} colors={colors} label="Hide" icon="X" iconOnly help="Hide notices" accessibilityLabel="Hide notices" disabled={disabled} onPress={onHide} />
+    {compact ? <Pressable ref={hideRef} accessibilityRole="button" accessibilityLabel="Hide notices" accessibilityState={{ disabled }} aria-disabled={disabled} disabled={disabled} onPress={onHide}
+      style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.5 : 1 }}><Icon name="X" size={18} color={colors.foregroundMuted} /></Pressable>
+      : <Action ref={hideRef} small colors={colors} label="Hide" icon="X" iconOnly help="Hide notices" accessibilityLabel="Hide notices" disabled={disabled} onPress={onHide} />}
     <View style={{ flex: 1, minWidth: 0, gap: 8 }}>{children}</View>
   </View>;
 }

@@ -2783,16 +2783,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <View style={{ flex: 1, minWidth: 0 }}>
     <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
     query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
-    summary={[scopeLabel, ...summaryParts, `Layout: ${sessionLayout}`, sessionLayout === "grouped" && grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null, sortPart].filter(Boolean).join(" · ")}
     searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
     onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
-    onClear={handleClearFilters}
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
-    <View style={{ width: 80, alignItems: "flex-end", gap: 4 }}>
+    <View style={{ width: 80, alignItems: "flex-end" }}>
       <Action ref={slimRecoveryButton} colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
         onPress={() => { if (!canStart) return; quickHelpDismissRef.current?.(); setQuickChooserScope(null); lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />
-      {noticesTrigger(allNotices, noticesHide)}
       {view.status === "attention" ? <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} /> : null}
     </View>
   </View>;
@@ -3015,13 +3012,27 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {assignment !== "any" ? <TextAction testID="sessions-assignment-show-any" label="Any assignment" accessibilityLabel="Show any assignment" colors={colors} compact={compact} onPress={() => chooseAssignment("any")} /> : null}
       {assignmentState === "no-profile" ? <TextAction testID="sessions-work-choose" label="Choose Working as" colors={colors} compact={compact} onPress={handleRevealFilters} /> : null}
       {assignmentState === "ready" && assignment !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-assignment-show-unknown" label="Show unknown assignment" accessibilityLabel="Show sessions whose assignment is unknown" colors={colors} compact={compact} onPress={() => chooseAssignment("unknown")} /> : null}
+      {compact ? <Pressable testID="sessions-mobile-clear-filters" accessibilityRole="button" accessibilityLabel="Clear filters"
+        accessibilityState={{ disabled: activeCount === 0 }} aria-disabled={activeCount === 0} disabled={activeCount === 0}
+        accessibilityHint="Clears all search and filter choices; keeps this context and view preferences" onPress={handleClearFilters}
+        style={{ minHeight: FILTERS_TOUCH_TARGET, paddingHorizontal: 6, justifyContent: "center", opacity: activeCount === 0 ? 0.45 : 1 }}>
+        <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>Clear filters</Text>
+      </Pressable> : null}
     </View>
   );
   // On short screens the utility row must scroll, so it cannot consume the list's last usable pixels.
+  // Compact has no summary row: the count row says the matching count, as Filters does, and only what no visible
+  // control says. The state chip, scope chips, work line and layout control already say the rest.
+  const compactParts = [scopeLabel, ...activeFilterParts({ query: view.query, status: "all", shortcut: null, streams: null, includeArchived, task: task?.label }),
+    sessionLayout === "grouped" && grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null, sortPart].filter((part): part is string => !!part);
+  const mobileCount = <Text testID="sessions-mobile-count" accessibilityLiveRegion="polite" accessibilityLabel={[filterCount.label, ...compactParts].join(". ")}
+    style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: 4 }}>{[filterCount.text, ...compactParts].join(" · ")}</Text>;
   const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-    <View style={{ flex: 1, minWidth: 80 }}>
-      {listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
+    <View style={{ flex: 1, minWidth: compact ? 64 : 80 }}>
+      {compact ? mobileCount : listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
     </View>
+    {/* A hidden tray's button sits in this row on compact, so the Resume column stays one control high. */}
+    {compact ? noticesTrigger(allNotices, noticesHide) : null}
     <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
   </View>;
   const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;

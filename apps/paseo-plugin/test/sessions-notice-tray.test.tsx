@@ -103,9 +103,17 @@ const count = (name: string) => fake.calls.filter(([called]) => called === name)
 const press = (element: Element | undefined) => (element!.props.onPress as () => void)();
 const button = (props: Record<string, unknown>) => (NoticesButton as unknown as (props: Record<string, unknown>) => Element)(props);
 const isResume = (element: Element) => element.props.accessibilityLabel === "Resume sessions";
-/** The status button sits beside Resume in the same row or column (the slim row passes both to SlimToolbar), so it adds no row. */
-function besideResume() {
+/**
+ * Wide: the status button sits beside Resume in the same row (the slim row passes both to SlimToolbar), so it adds no row.
+ * Compact: it sits in the count row before Grouped / Flat, and the Resume column holds only Resume.
+ */
+function placed(layout: Layout) {
   const tree = all();
+  if (layout.startsWith("compact")) {
+    const bar = tree.find((element) => element.props.testID === "sessions-layout-bar");
+    const column = tree.find((element) => ([element.props.children].flat(2) as Element[]).some((kid) => !!kid && typeof kid === "object" && isResume(kid)));
+    return !!bar && walk(bar).some((element) => element.type === NoticesButton) && !walk(column).some((element) => element.type === NoticesButton);
+  }
   const slim = tree.find((element) => element.type === SlimToolbar && (element.props.notice as Element | null)?.type === NoticesButton);
   if (slim) return isResume(slim.props.action as Element);
   return tree.some((element) => { const kids = ([element.props.children].flat(2) as Element[]).filter((kid) => !!kid && typeof kid === "object"); return kids.some((kid) => kid.type === NoticesButton) && kids.some(isResume); });
@@ -126,14 +134,14 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
   });
   afterEach(() => harness.unmount());
 
-  it("hides the unconfirmed archive behind a status button beside Resume, with no action and no false success", async () => {
+  it("hides the unconfirmed archive behind one status button (beside Resume, or in the compact count row), with no action and no false success", async () => {
     mount(layout); await settle();
     expect(lineText()).toBe("1 archive not confirmed"); expect(trigger()).toBeUndefined();
     const before = fake.calls.length;
     (tray()!.props.onHide as () => void)(); await settle();
     // Hidden: no tray, no recovery line holding top space, one status button that still says what is unresolved.
     expect(trays()).toHaveLength(0); expect(recovery()).toBeUndefined();
-    expect(summaries(trigger())).toEqual(["1 archive not confirmed"]); expect(besideResume()).toBe(true);
+    expect(summaries(trigger())).toEqual(["1 archive not confirmed"]); expect(placed(layout)).toBe(true);
     const rendered = button(trigger()!.props);
     expect(rendered.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Show notices: 1 archive not confirmed", "aria-expanded": false, accessibilityState: { expanded: false } });
     expect((rendered.props.style as { borderColor: string }).borderColor).toBe(colors.statusWarning);
@@ -337,12 +345,14 @@ describe("NoticeTray keyboard and outside presses", () => {
     harness.unmount(); expect(listeners).toHaveLength(0);
   });
 
-  it("is a named region with Hide first and no backdrop, so a press outside never hides it", () => {
+  it.each([true, false])("is a named region with Hide first and no backdrop, so a press outside never hides it (compact=%s)", (compact) => {
     const onHide = vi.fn();
-    const tree = harness.render(() => NoticeTray({ colors, compact: true, onHide, children: "Fixture notice" })) as Element;
+    const tree = harness.render(() => NoticeTray({ colors, compact, onHide, children: "Fixture notice" })) as Element;
     expect(tree.props).toMatchObject({ role: "region", accessibilityLabel: "Notices" });
     const [hide] = [tree.props.children].flat() as Element[];
-    expect(hide!.props).toMatchObject({ label: "Hide", icon: "X", accessibilityLabel: "Hide notices", small: false });
+    // Compact: a 44 pt close mark, so a notice and its actions keep one row on a phone.
+    if (compact) expect([hide!.props.accessibilityLabel, hide!.props.style, walk(hide).find((element) => element.type === "Icon")?.props.name]).toEqual(["Hide notices", expect.objectContaining({ width: 44, height: 44 }), "X"]);
+    else expect(hide!.props).toMatchObject({ label: "Hide", icon: "X", iconOnly: true, accessibilityLabel: "Hide notices", small: true });
     expect(walk(tree).filter((element) => typeof element.props.onPress === "function")).toEqual([hide]);
     press(hide); expect(onHide).toHaveBeenCalledTimes(1);
   });

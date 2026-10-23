@@ -2,7 +2,7 @@
 goal: Top-of-screen notices on the Kontor Sessions screen can be hidden, stop holding vertical space once hidden, and stay reachable from one compact status button beside Resume without any notice being resolved, softened or lost.
 version: 0.1
 date_created: 2026-10-22
-last_updated: 2026-10-22
+last_updated: 2026-10-23
 status: Proposed
 tags: [paseo-plugin, sessions, ux, accessibility, ASMA-8541]
 workstream: kontor
@@ -111,12 +111,66 @@ their pages, not top chrome; they are out of scope.
 10. **Light and dark.** Only theme tokens: `statusWarning` / `statusDanger` for tone,
     `border`, `surface1` and `foreground`, so both themes follow the host.
 
+## Addendum 2026-10-23: compact mobile header
+
+On installed `5072b403`, the compact Sessions screen holds five plugin rows above
+the list before any session shows:
+
+1. the quick toolbar;
+2. a two-line summary such as `Current · 233 · My work · Current · Layout: flat`
+   with **Clear filters**;
+3. the archive notice;
+4. the count with **Grouped / Flat**;
+5. the My work line.
+
+Most of row 2 repeats something else on the screen:
+
+- the state is the selected chip, with its count;
+- My work and assignment are in the work line;
+- desk, workstream and epic scope are the removable scope chips;
+- the layout is its control.
+
+The proposal, for the compact main screen only:
+
+1. **No summary row.** The quick toolbar keeps one row: search, state chips,
+   More and Filters, with Resume beside it.
+2. **One count row.** The layout bar's left side shows the matching count from
+   `matchingCount`. It is the same number, with the same partial, stale and
+   reading qualifiers, as the Filters header. After it comes only what no visible
+   control says: the route scope, a task, the search text, Archived history, a
+   non-default group and the sort.
+3. **Notices button in the count row.** A hidden tray's status button sits before
+   **Grouped / Flat**, so the Resume column stays one control high.
+4. **Clear filters scrolls.** It stays a separate 44 pt control, with the same
+   disabled state, and moves to the work line at the top of the list, beside the
+   other ways back.
+5. **Static chrome** is the toolbar row and the count row. The notice tray shows
+   only while it is open, and the scope chips only while a scope is set.
+6. **A 44 pt close mark.** On compact, the tray's Hide is an X with the name
+   "Hide notices", as on desktop. "X Hide" pushed **Details** to a second row at
+   390 pt.
+
+Measured in a local fixture render with the archive notice, list top in points:
+
+| Width × height | Master `5eb801a0` | Tray open | Tray hidden |
+| --- | --- | --- | --- |
+| 390 × 844 | 222 | 174 | 122 |
+| 320 × 640 | 279 | 224 | 122 |
+| 320 × 568 | 279 | 224 | 122 |
+
+The wide layout, the Filters page and the notice semantics are unchanged. A
+continuously present hidden notice stays hidden. Hiding never resolves, retries
+or confirms an archive.
+
 ## Rejected
 
 - **Anchored popover on reopen.** It would stack under the Details lifecycle
   dialog, which anchors to Resume, and it covers the list on a 320 pt screen.
 - **Auto-hide or light dismiss.** Either can lose an unresolved archive or failure
   without an operator decision.
+- **Icon-only Clear filters, a smaller layout control or the notices button in the
+  quick row.** Each saves width only by hiding a label, changing a liked control or
+  dropping state chips.
 - **Per-notice close buttons.** Five close targets for one decision; one tray and
   one button keep a single place to look.
 
