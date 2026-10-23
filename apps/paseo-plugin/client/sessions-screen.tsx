@@ -37,7 +37,7 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import { openSessionById } from "./session-actions";
-import { type DirectoryEntry } from "./session-directory";
+import { type DirectoryEntry, type DirectoryState } from "./session-directory";
 import {
   attentionLabel,
   archivedLabel,
@@ -338,6 +338,30 @@ function updatedLabel(timestamp: number | null): string {
     return "not read yet";
   }
   return new Date(timestamp).toLocaleTimeString();
+}
+
+/**
+ * The Filters header count of final matching sessions. Exact only from a ready, live and complete read of the
+ * membership in view; otherwise qualified or unknown, so a read in progress never shows as an empty 0.
+ */
+export function matchingCount({ count, state, includeArchived, freshness, blocked }: {
+  count: number; state: DirectoryState; includeArchived: boolean; freshness: string; blocked: string | null;
+}): { text: string; label: string } {
+  if (blocked !== null) return { text: "Not evaluated", label: `Matching sessions not evaluated: ${blocked} is not evaluated` };
+  // The other membership's read, or none yet: its entries say nothing about this filter.
+  if (state.includeArchived !== includeArchived || state.lastUpdatedAt === null) {
+    return state.status === "error" && state.includeArchived === includeArchived
+      ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
+      : { text: "…", label: "Reading matching sessions" };
+  }
+  const sessions = `${count} session${count === 1 ? "" : "s"}`;
+  if (freshness === "Live") {
+    return state.inventoryComplete === true
+      ? { text: sessions, label: `${count} matching session${count === 1 ? "" : "s"}` }
+      : { text: `${sessions} · partial`, label: `${sessions} match a partial read; the count may be incomplete` };
+  }
+  if (count === 0) return { text: "…", label: `Matching sessions updating: ${freshness}` };
+  return { text: `${sessions} · ${freshness.toLocaleLowerCase()}`, label: `${sessions} matched the read at ${updatedLabel(state.lastUpdatedAt)}; ${freshness}` };
 }
 
 type SessionRowProps = {
@@ -2167,6 +2191,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
   const countSummary = `${sessionCount} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"} · ${inventoryRead}`;
+  // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
+  const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
+    freshness: nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) });
   const setExpansion = (patch: Readonly<Record<string, boolean>>) => {
     const local = patchLocalExpansion(host.id, patch);
     setExpansionRevision((revision) => revision + 1);
@@ -2868,7 +2895,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   if (mobileFiltersOpen) return (
     <View ref={rootRef} onLayout={handleRootLayout} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
-      <MobileFiltersPage colors={colors} onBack={closeMobileFilters} menuOpen={optionMenu !== null || (view.associationsOpen ?? false) || view.scopeOpen != null}>
+      <MobileFiltersPage colors={colors} onBack={closeMobileFilters} count={filterCount} menuOpen={optionMenu !== null || (view.associationsOpen ?? false) || view.scopeOpen != null}>
         {compactNotices}
         {activeScopeSummary}
         <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>Changes apply immediately. Back keeps your choices.</Text>
