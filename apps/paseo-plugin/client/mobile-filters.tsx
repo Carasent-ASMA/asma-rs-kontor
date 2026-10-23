@@ -20,8 +20,11 @@ type PageDocument = {
 };
 
 /** Local page, not a modal: host tabs and browser history keep their native behavior. */
-export function MobileFiltersPage({ colors, onBack, menuOpen, children }: {
-  colors: Colors; onBack(): void; menuOpen: boolean; children: ReactNode;
+export function MobileFiltersPage({ colors, onBack, menuOpen, count, children }: {
+  colors: Colors; onBack(): void; menuOpen: boolean;
+  /** Already-derived matching count; this page only shows it. */
+  count?: { text: string; label: string };
+  children: ReactNode;
 }) {
   const backRef = useRef<View | null>(null);
   const latestOnBack = useRef(onBack);
@@ -41,9 +44,13 @@ export function MobileFiltersPage({ colors, onBack, menuOpen, children }: {
     return () => { back.remove(); document?.removeEventListener("keydown", escape); };
   }, [menuOpen]);
   return <View testID="sessions-mobile-filters" style={{ flex: 1, minHeight: 0 }}>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 8, borderBottomWidth: 1, borderColor: colors.border }}>
+    {/* Outside the scroller, so the count stays in view. Natural widths decide wrapping: the count takes the heading's
+        line when it fits, else its own line at the right; larger text wraps whole words and grows the row. */}
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, paddingHorizontal: 8, borderBottomWidth: 1, borderColor: colors.border }}>
       <Action ref={backRef} label="Back" icon="ArrowLeft" accessibilityLabel="Back to sessions, keep filter choices" onPress={onBack} colors={colors} />
-      <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 17, fontWeight: "600" }}>Filters &amp; view</Text>
+      <Text accessibilityRole="header" style={{ flexShrink: 1, color: colors.foreground, fontSize: 17, fontWeight: "600" }}>Filters &amp; view</Text>
+      {count ? <Text testID="sessions-mobile-filters-count" accessibilityRole="text" accessibilityLiveRegion="polite" accessibilityLabel={count.label}
+        style={{ flexGrow: 1, flexShrink: 1, textAlign: "right", color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>{count.text}</Text> : null}
     </View>
     <ScrollView testID="sessions-mobile-filters-scroll" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets
       style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 12, paddingBottom: 24, gap: 12 }}>
