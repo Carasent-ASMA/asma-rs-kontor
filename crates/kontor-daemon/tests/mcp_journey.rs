@@ -678,7 +678,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "label": "Primary",
             "harness": "fake.runtime",
             "credential_alias": "journey-alias",
-            "selectable_providers": ["claude", "claude-work", "claude-personal", "codex", "codex-work", "codex-personal", "opencode"],
+            "selectable_providers": ["claude", "claude-b", "claude-a", "codex", "codex-b", "codex-a", "opencode"],
             "enabled": true,
         }),
     )
@@ -688,13 +688,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     // The scripted runtime has no vendor quota endpoint. Its actual pinned
     // account declares this limitation through the supported MCP surface.
     for provider in [
-        "claude",
-        "claude-work",
-        "claude-personal",
-        "codex",
-        "codex-work",
-        "codex-personal",
-        "opencode",
+        "claude", "claude-b", "claude-a", "codex", "codex-b", "codex-a", "opencode",
     ] {
         ok(
             &lead,

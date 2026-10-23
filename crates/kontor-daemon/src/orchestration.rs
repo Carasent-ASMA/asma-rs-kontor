@@ -375,8 +375,8 @@ pub(crate) mod fixture {
             "\
 schema_version: 2
 domains:
-  codex: {{ provider: codex, accounts: [codex-work] }}
-  claude: {{ provider: claude, accounts: [claude-personal] }}
+  codex: {{ provider: codex, accounts: [codex-b] }}
+  claude: {{ provider: claude, accounts: [claude-a] }}
 models:
   sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}
   opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}

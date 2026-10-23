@@ -2189,6 +2189,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
+            opt(
+                "expected_operational_domain_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The operational-domain bundle hash the caller read; a different selected or pinned domain is refused.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -2274,6 +2280,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The owning project.",
             ),
             IDEMPOTENCY,
+            opt(
+                "expected_operational_domain_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The operational-domain bundle hash the caller read; a different selected or pinned domain is refused.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,

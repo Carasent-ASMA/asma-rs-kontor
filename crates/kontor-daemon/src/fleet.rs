@@ -1716,8 +1716,8 @@ mod tests {
         let yaml = "\
 schema_version: 1
 domains:
-  claude: { provider: claude, accounts: [claude-personal, claude-work] }
-  codex: { provider: codex, accounts: [codex-work] }
+  claude: { provider: claude, accounts: [claude-a, claude-b] }
+  codex: { provider: codex, accounts: [codex-b] }
 models:
   opus-5: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
   opus-4.8: { domain: claude, id: claude-opus-4-8, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1745,11 +1745,11 @@ bindings:
         assert_eq!(
             seen,
             vec![
-                ("claude-personal", "claude-opus-5", 1, 1),
-                ("claude-work", "claude-opus-5", 1, 2),
-                ("claude-personal", "claude-opus-4-8", 1, 3),
-                ("claude-work", "claude-opus-4-8", 1, 4),
-                ("codex-work", "gpt-5.6-sol", 2, 1),
+                ("claude-a", "claude-opus-5", 1, 1),
+                ("claude-b", "claude-opus-5", 1, 2),
+                ("claude-a", "claude-opus-4-8", 1, 3),
+                ("claude-b", "claude-opus-4-8", 1, 4),
+                ("codex-b", "gpt-5.6-sol", 2, 1),
             ]
         );
     }
@@ -1759,11 +1759,11 @@ bindings:
         let yaml = "\
 schema_version: 1
 domains:
-  claude: { provider: claude, accounts: [claude-personal, claude-work] }
-  codex: { provider: codex, accounts: [codex-work] }
+  claude: { provider: claude, accounts: [claude-a, claude-b] }
+  codex: { provider: codex, accounts: [codex-b] }
 unavailable:
   domains: [codex]
-  accounts: [claude-work]
+  accounts: [claude-b]
 models:
   opus-5: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
@@ -1777,7 +1777,7 @@ bindings:
         let snapshot = FleetSnapshot::parse(yaml).expect("valid document");
         let routes = snapshot.routes_for("team/t/s").expect("bound");
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].rung.provider.0, "claude-personal");
+        assert_eq!(routes[0].rung.provider.0, "claude-a");
         assert_eq!(routes[0].step, 2);
         assert_eq!(routes[0].sub_step, 1);
     }
@@ -1858,12 +1858,12 @@ rules:
     #[test]
     fn without_a_fleet_claude_and_codex_map_to_their_vendor() {
         let claude = ModelRung {
-            provider: ProviderRef("claude-work".to_owned()),
+            provider: ProviderRef("claude-b".to_owned()),
             model: ModelRef("claude-opus-5".to_owned()),
             effort: None,
         };
         let codex = ModelRung {
-            provider: ProviderRef("codex-work".to_owned()),
+            provider: ProviderRef("codex-b".to_owned()),
             model: ModelRef("gpt-5.6-sol".to_owned()),
             effort: None,
         };
@@ -1887,8 +1887,8 @@ rules:
         let first_yaml = "\
 schema_version: 1
 domains:
-  codex: { provider: codex, accounts: [codex-work] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  codex: { provider: codex, accounts: [codex-b] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
   opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1902,8 +1902,8 @@ bindings:
         let second_yaml = "\
 schema_version: 1
 domains:
-  codex: { provider: codex, accounts: [codex-work] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  codex: { provider: codex, accounts: [codex-b] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
   opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1925,7 +1925,7 @@ bindings:
                 .rung
                 .provider
                 .0,
-            "claude-personal"
+            "claude-a"
         );
     }
 
@@ -2221,8 +2221,8 @@ bindings:
     const V1_CLAUDE_FIRST: &str = "\
 schema_version: 1
 domains:
-  codex: { provider: codex, accounts: [codex-work] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  codex: { provider: codex, accounts: [codex-b] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
   opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -2288,13 +2288,13 @@ bindings:
         let source = FleetSource::at(root.path());
         assert_eq!(
             first_provider(&source.current().expect("legacy")),
-            "claude-personal"
+            "claude-a"
         );
 
         let hash = activate(&source, &codex_first());
         let active = source.policy().expect("verified").expect("activated");
         assert_eq!(active.hash(), &hash);
-        assert_eq!(first_provider(&active), "codex-work");
+        assert_eq!(first_provider(&active), "codex-b");
         let status = read_status(root.path());
         assert_eq!(status["active_hash"].as_str(), Some(hash.as_str()));
         assert_eq!(status["selection"].as_str(), Some("activation"));
@@ -2323,7 +2323,7 @@ bindings:
         for _ in 0..2 {
             let active = source.policy().expect("verified").expect("activated");
             assert_eq!(active.hash(), &activated);
-            assert_eq!(first_provider(&active), "codex-work");
+            assert_eq!(first_provider(&active), "codex-b");
             assert_eq!(source.current().expect("activated").hash(), &activated);
         }
 
@@ -2573,8 +2573,8 @@ bindings:
             "\
 schema_version: 2
 domains:
-  codex: {{ provider: codex, accounts: [codex-work] }}
-  claude: {{ provider: claude, accounts: [claude-personal] }}
+  codex: {{ provider: codex, accounts: [codex-b] }}
+  claude: {{ provider: claude, accounts: [claude-a] }}
 models:
   sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}
   opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}
@@ -2611,11 +2611,11 @@ bindings:
             policy.resolve(&advisor).expect("advisor"),
         ];
         let expected = [
-            (keys[0].as_str(), "codex-first", "codex-work"),
-            (keys[1].as_str(), "claude-first", "claude-personal"),
-            (delivery.as_str(), "claude-first", "claude-personal"),
-            (reviewer.as_str(), "codex-first", "codex-work"),
-            (advisor.as_str(), "claude-first", "claude-personal"),
+            (keys[0].as_str(), "codex-first", "codex-b"),
+            (keys[1].as_str(), "claude-first", "claude-a"),
+            (delivery.as_str(), "claude-first", "claude-a"),
+            (reviewer.as_str(), "codex-first", "codex-b"),
+            (advisor.as_str(), "claude-first", "claude-a"),
         ];
         for (resolution, (key, chain, first)) in resolutions.iter().zip(expected) {
             // Every slot class names the same activated bytes, its own key and
@@ -2722,7 +2722,7 @@ bindings:
             chain: "codex-first".to_owned(),
             step: 1,
             sub_step: 1,
-            provider: "codex-work".to_owned(),
+            provider: "codex-b".to_owned(),
             model: "gpt-5.6-sol".to_owned(),
             effort: Some("xhigh".to_owned()),
             vendor: "openai".to_owned(),
@@ -2801,7 +2801,7 @@ bindings:
         let policy = |first: &str, second: &str| {
             format!(
                 "schema_version: 2\n\
-                 domains:\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+                 domains:\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  claude: {{ provider: claude, accounts: [claude-a] }}\n\
                  models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n\
                  chains:\n  lead:\n    - [{first}@xhigh]\n    - [{second}@xhigh]\n\
                  bindings:\n  {lsa}: lead\n  {tpm}: lead\n  {delivery}: lead\n  {reviewer}: lead\n  {advisor}: lead\n",
@@ -2830,7 +2830,7 @@ bindings:
         let eligibilities = [
             Eligibility::default(),
             Eligibility {
-                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
                 excluded_vendors: BTreeSet::new(),
             },
             Eligibility {
@@ -2887,7 +2887,7 @@ bindings:
                 chosen.step,
                 chosen.sub_step
             ),
-            ("codex-work", 1, 1),
+            ("codex-b", 1, 1),
             "the policy, not the caller, chooses the route"
         );
 

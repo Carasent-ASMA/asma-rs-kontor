@@ -20,7 +20,7 @@ fn fixture() -> (tempfile::TempDir, SeatMcp, PathBuf) {
 fn compose(seat: &SeatMcp, cwd: &Path) -> io::Result<()> {
     compose_for_hosted_seat(
         Some(seat),
-        "claude-work",
+        "claude-b",
         cwd,
         HostedCompositionMode::OwnedDirectory,
     )
@@ -307,7 +307,7 @@ fn two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface
     let first_seat = seat.clone();
     let first_cwd = cwd.clone();
     let first = std::thread::spawn(move || {
-        compose_hosted_directory(&first_seat, "claude-work", &first_cwd, &mut |step| {
+        compose_hosted_directory(&first_seat, "claude-b", &first_cwd, &mut |step| {
             if step == PublicationStep::StageSettings {
                 // Check the live publication's exclusion directly; a timeout
                 // alone can mistake slow scheduling or Git I/O for locking.

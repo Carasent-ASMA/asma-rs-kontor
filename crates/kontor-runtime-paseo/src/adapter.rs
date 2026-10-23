@@ -11435,11 +11435,11 @@ mod governed_pin_tests {
     #[test]
     fn a_launch_that_returns_a_different_provider_alias_fails_correlation() {
         let requested = ModelRung {
-            provider: ProviderRef("codex-work".to_owned()),
+            provider: ProviderRef("codex-b".to_owned()),
             model: ModelRef("gpt-5.6-sol".to_owned()),
             effort: None,
         };
-        let mut agent = agent_on_route("codex-work", "gpt-5.6-sol");
+        let mut agent = agent_on_route("codex-b", "gpt-5.6-sol");
         assert!(
             PaseoAdapter::verify_frozen_agent_route(
                 &agent,
@@ -11455,7 +11455,7 @@ mod governed_pin_tests {
         // normalizes both aliases to `codex`, so the permission mode and every
         // family-level rule still agree — and yet a different account. The
         // readback is the only thing that can tell them apart.
-        agent.provider = "codex-personal".to_owned();
+        agent.provider = "codex-a".to_owned();
         assert!(
             matches!(
                 PaseoAdapter::verify_frozen_agent_route(

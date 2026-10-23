@@ -1986,7 +1986,7 @@ mod tests {
             sub_step: 2,
             vendor: "openai".to_owned(),
             eligibility: Some(kontor_runtime::LaunchEligibility {
-                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
                 excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
             }),
         }
@@ -2021,7 +2021,7 @@ mod tests {
         assert!(!labels.contains_key(label::FLEET_SOURCE_BUNDLE));
         assert_eq!(
             labels[label::FLEET_ELIGIBILITY],
-            r#"{"unavailable_accounts":["codex-work"],"excluded_vendors":["anthropic"]}"#
+            r#"{"unavailable_accounts":["codex-b"],"excluded_vendors":["anthropic"]}"#
         );
         assert!(
             labels

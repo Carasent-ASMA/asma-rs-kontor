@@ -285,8 +285,8 @@ fn freeze_as(
     let members = PlanningPairMembers::freeze(
         placement.hash().clone(),
         vec![
-            member(PlanningPairSlot::SeatA, "claude-personal", "anthropic"),
-            member(PlanningPairSlot::SeatB, "codex-work", "openai"),
+            member(PlanningPairSlot::SeatA, "claude-a", "anthropic"),
+            member(PlanningPairSlot::SeatB, "codex-b", "openai"),
         ],
     )
     .expect("two members on distinct vendors");
@@ -327,7 +327,7 @@ fn freeze_as(
         settled_at: None,
     };
     let rung = ModelRung {
-        provider: ProviderRef("claude-personal".to_owned()),
+        provider: ProviderRef("claude-a".to_owned()),
         model: ModelRef("anthropic-flagship".to_owned()),
         effort: None,
     };

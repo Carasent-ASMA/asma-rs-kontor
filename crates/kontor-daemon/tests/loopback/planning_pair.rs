@@ -420,7 +420,8 @@ async fn pair_realm_with(
     selected: Option<&RoleCatalogRevision>,
     role_code: &str,
 ) -> PairRealm {
-    let owned_world = World::open_native_consultations().await;
+    let owned_world =
+        World::open_native_consultations_with_catalog(&native_fixture_catalog(), selected).await;
     let world = &owned_world;
     world.daemon.reconcile().await;
     let checkout = world
@@ -502,7 +503,7 @@ async fn pair_realm_with(
     };
     let epic = pinned_runtime_epic(world, &project, "Planning pair epic").await;
     confirm_promoted_epic_identity(world, &project, &epic, "PROMO", "ASMA-9001");
-    activate_through_the_registry(world, &native_fixture_catalog(), "pair-fixture-catalog").await;
+    activate_catalog_for_epic(world, &project, &epic, "pair-fixture-catalog").await;
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
         &control_seat_routes(1),
@@ -1779,18 +1780,20 @@ async fn a_member_role_only_the_epics_selected_catalog_declares_is_frozen_from_i
 #[tokio::test]
 async fn a_member_role_outside_the_epics_selected_catalog_freezes_nothing() {
     let selected = successor_catalog(|catalog| {
-        catalog.roles.retain(|role| role.role_code.as_str() != "SA");
+        catalog
+            .roles
+            .retain(|role| role.role_code.as_str() != "SDET");
         catalog
             .roles
             .iter_mut()
-            .find(|role| role.role_code.as_str() == "AUD")
+            .find(|role| role.role_code.as_str() == "OBS")
             .expect("the bundled AUD entry")
             .lifecycle = kontor_core::spec::CodeLifecycle::Compatibility;
     });
     let realm = pair_realm_with(
         "/tmp/kontor-asma8282-pair-unselected-catalog",
         Some(&selected),
-        "SA",
+        "SDET",
     )
     .await;
     let world = &realm.world;
@@ -1809,7 +1812,7 @@ async fn a_member_role_outside_the_epics_selected_catalog_freezes_nothing() {
     let compatibility = publish_pair_document(
         world,
         &realm.project,
-        &pair_document_as("01991c00-0000-7000-8000-0000000000b4", PAIR_KIND, "AUD"),
+        &pair_document_as("01991c00-0000-7000-8000-0000000000b4", PAIR_KIND, "OBS"),
         "pp-catalog-compatibility-document",
     )
     .await;
@@ -2724,9 +2727,7 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
     let world = &realm.world;
     world.fake.take_calls();
     let body = realm.invoke_body(&realm.profile, "Both routes plan").await;
-    world
-        .fake
-        .withholding_planning_pair_members_on("claude-personal");
+    world.fake.withholding_planning_pair_members_on("claude-a");
     let seat_b_only = realm
         .invoke_with(&body, realm.caller_token(), "pp-seat-b-route")
         .await;
@@ -2738,7 +2739,7 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
     );
     assert_eq!(
         seat_b_only.json()["at"],
-        "providers/claude-personal/not_composed",
+        "providers/claude-a/not_composed",
         "seat B's route is refused on its own: {}",
         seat_b_only.body
     );
@@ -2755,7 +2756,7 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
         refused.body
     );
     assert!(
-        !refused.body.contains("claude-personal"),
+        !refused.body.contains("claude-a"),
         "seat B's refused provider is not named: {}",
         refused.body
     );
@@ -2904,9 +2905,7 @@ async fn the_hypothetical_fake_reconciles_only_the_exact_known_member_native_in_
             .await,
         Err(kontor_runtime::RuntimeError::StaleBinding { .. })
     ));
-    world
-        .fake
-        .withholding_planning_pair_members_on("claude-personal");
+    world.fake.withholding_planning_pair_members_on("claude-a");
     assert!(matches!(
         world
             .fake

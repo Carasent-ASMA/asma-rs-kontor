@@ -26,17 +26,22 @@ async fn usage_endpoint_throttle_is_public_persisted_and_never_refreshes_quota_e
     )
     .await;
     let project = created.json()["project_id"].as_str().unwrap().to_owned();
-    let account = Call::post(format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
         &serde_json::json!({ "label":"Claude usage", "harness":"fake.runtime",
-            "credential_alias":"claude-work", "selectable_providers":["claude-work"], "enabled":true }))
-        .signed_as(&world,"admin").with_key("throttle-account").send(&world).await;
+            "credential_alias":"claude-b", "selectable_providers":["claude-b"], "enabled":true }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("throttle-account")
+    .send(&world)
+    .await;
     assert_eq!(account.status, 200, "{}", account.body);
     let account = account.json()["account_profile_id"]
         .as_str()
         .unwrap()
         .to_owned();
     let uri = format!("/v1/projects/{project}/provider-account-profiles/{account}/quota:probe");
-    let body = serde_json::json!({"provider":"claude-work"});
+    let body = serde_json::json!({"provider":"claude-b"});
     let positive = Call::post(&uri, &body)
         .signed_as(&world, "operator")
         .with_key("throttle-prior-success")
@@ -49,7 +54,7 @@ async fn usage_endpoint_throttle_is_public_persisted_and_never_refreshes_quota_e
         (
             store.list_provider_quota_states(project_id).unwrap(),
             store
-                .latest_provider_usage_observation(project_id, account_id, "claude-work")
+                .latest_provider_usage_observation(project_id, account_id, "claude-b")
                 .unwrap()
                 .unwrap(),
         )
@@ -115,7 +120,7 @@ async fn usage_endpoint_throttle_is_public_persisted_and_never_refreshes_quota_e
         );
         assert_eq!(
             store
-                .latest_provider_usage_observation(project_id, account_id, "claude-work")
+                .latest_provider_usage_observation(project_id, account_id, "claude-b")
                 .unwrap()
                 .unwrap(),
             prior.1,

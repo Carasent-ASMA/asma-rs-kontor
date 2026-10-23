@@ -139,6 +139,7 @@ async fn realm_with(slug: &str, desk_led: bool) -> DeskLed {
     )
     .await;
     prepare_fake_provider_headroom(&world, &project).await;
+    activate_through_the_registry(&world, &unbound_fixture_catalog(), "desk-fixture-catalog").await;
     let category = first_category(&world).await;
     DeskLed {
         project_id: ProjectId::parse(&project).expect("a project id"),
@@ -916,7 +917,7 @@ async fn a_same_vendor_handoff_is_refused_before_any_effect() {
         &epic,
         (lsa, &native, generation),
         tpm,
-        serde_json::json!({"provider": "claude-work", "model": "claude-fable-5", "effort": "high"}),
+        serde_json::json!({"provider": "claude-b", "model": "claude-fable-5", "effort": "high"}),
         "desk-adam-same",
     )
     .await;

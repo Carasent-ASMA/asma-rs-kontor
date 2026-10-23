@@ -689,7 +689,7 @@ fn an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn(
         id,
         project_id: fixture.project_id,
         account_profile_id: fixture.account_profile_id,
-        provider: "claude-work".into(),
+        provider: "claude-b".into(),
         evidence_hash: evidence.clone(),
         state: ProviderQuotaKind::Available,
         resets_at: None,
@@ -703,7 +703,7 @@ fn an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn(
             quota_state: Some(NewProviderQuotaState {
                 project_id: fixture.project_id,
                 account_profile_id: fixture.account_profile_id,
-                provider: "claude-work".into(),
+                provider: "claude-b".into(),
                 state: ProviderQuotaKind::Available,
                 resets_at: None,
                 windows: windows.clone(),
@@ -745,7 +745,7 @@ fn an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn(
         .latest_provider_usage_observation(
             fixture.project_id,
             fixture.account_profile_id,
-            "claude-work",
+            "claude-b",
         )
         .expect("the exact latest observation reads")
         .expect("the heartbeat exists");
@@ -757,14 +757,14 @@ fn an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn(
 #[test]
 fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_intent() {
     let fixture = fixture();
-    let key = IdempotencyKey::parse("probe-exact-claude-work").expect("a key");
+    let key = IdempotencyKey::parse("probe-exact-claude-b").expect("a key");
     let intent = ContentHash::of(b"exact project account and provider");
     let evidence = ContentHash::of(b"provider answer");
     let original = ProviderUsageObservation {
         id: ProviderUsageObservationId::generate(),
         project_id: fixture.project_id,
         account_profile_id: fixture.account_profile_id,
-        provider: "claude-work".into(),
+        provider: "claude-b".into(),
         evidence_hash: evidence.clone(),
         state: ProviderQuotaKind::Available,
         resets_at: None,
@@ -778,7 +778,7 @@ fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_
             quota_state: Some(NewProviderQuotaState {
                 project_id: fixture.project_id,
                 account_profile_id: fixture.account_profile_id,
-                provider: "claude-work".into(),
+                provider: "claude-b".into(),
                 state: ProviderQuotaKind::Available,
                 resets_at: None,
                 windows: Vec::new(),
@@ -854,7 +854,7 @@ fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_
                     id: ProviderUsageObservationId::generate(),
                     project_id: second_project,
                     account_profile_id: second_account,
-                    provider: "claude-work".into(),
+                    provider: "claude-b".into(),
                     evidence_hash: ContentHash::of(b"a second provider answer"),
                     state: ProviderQuotaKind::Available,
                     resets_at: None,
@@ -883,7 +883,7 @@ fn an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_
     assert!(
         fixture
             .store
-            .latest_provider_usage_observation(second_project, second_account, "claude-work")
+            .latest_provider_usage_observation(second_project, second_account, "claude-b")
             .expect("the second observation reads")
             .is_none(),
         "global replay conflict appends no second observation"

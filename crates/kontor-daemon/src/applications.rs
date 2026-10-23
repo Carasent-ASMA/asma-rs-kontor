@@ -18133,7 +18133,7 @@ fn account_for_explicit_provider_alias(
 ///
 /// Paseo selects an account through the provider alias itself. A template's
 /// generic `claude` rung therefore cannot participate in the account-before-
-/// rung walk whose candidates are `claude-work` and `claude-personal`; this
+/// rung walk whose candidates are `claude-b` and `claude-a`; this
 /// expansion preserves the declared model/effort while making those governed
 /// choices explicit and deterministic. Already-qualified routes remain exact.
 ///
@@ -18467,16 +18467,22 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung, authority: CatalogAuth
 fn compiled_route_is_catalogued(rung: &ModelRung) -> bool {
     let effort = rung.effort.map(EffortLevel::as_str);
     let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));
-    match (rung.provider.0.as_str(), rung.model.0.as_str()) {
-        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-sol" | "gpt-5.6-terra") => {
+    // Family recognition grants no account: selected placements require exact
+    // fleet/host membership and the existing account eligibility checks.
+    let provider = match provider_family(&rung.provider.0) {
+        family @ ("codex" | "claude") => family,
+        _ => rung.provider.0.as_str(),
+    };
+    match (provider, rung.model.0.as_str()) {
+        ("codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultra"])
         }
-        ("claude" | "claude-work" | "claude-personal", "claude-opus-5") => {
+        ("claude", "claude-opus-5") => {
             effort_is(&["off", "low", "medium", "high", "xhigh", "max", "ultracode"])
         }
         // Historical frozen routes remain admissible during recovery. Only the
         // current catalog below advertises the replacement release.
-        ("claude" | "claude-work" | "claude-personal", "claude-fable-5" | "claude-fable-5-1") => {
+        ("claude", "claude-fable-5" | "claude-fable-5-1") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultracode"])
         }
         ("opencode", "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash") => {
@@ -18487,9 +18493,7 @@ fn compiled_route_is_catalogued(rung: &ModelRung) -> bool {
         // Recognition only: whether a route is *reachable* still depends on
         // account headroom, role eligibility, provider availability and
         // template authority, which remain the separate gates they already are.
-        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-luna") => {
-            effort_is(&["low", "medium", "high", "xhigh", "max"])
-        }
+        ("codex", "gpt-5.6-luna") => effort_is(&["low", "medium", "high", "xhigh", "max"]),
         ("cursor", "auto-smart") => effort_is(&["low", "medium", "high", "xhigh"]),
         // Operator exception 2026-09-23: Codex's model through the Cursor
         // plan, for audit and review while Codex accounts are exhausted.
@@ -50011,27 +50015,27 @@ mod tests {
         let template = generic_committee_template();
         let candidates = vec![
             vec![
-                committee_route("codex-work", "gpt-5.6-sol"),
+                committee_route("codex-b", "gpt-5.6-sol"),
                 committee_route("opencode", "deepseek/deepseek-v4-flash"),
             ],
-            vec![committee_route("codex-personal", "gpt-5.6-sol")],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("codex-a", "gpt-5.6-sol")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
         ];
 
         let selected =
             allocated(&template, &candidates, None).expect("a diverse whole allocation exists");
         assert_eq!(selected[0].model_rung.provider.0, "opencode");
-        assert_eq!(selected[1].model_rung.provider.0, "codex-personal");
-        assert_eq!(selected[2].model_rung.provider.0, "codex-work");
+        assert_eq!(selected[1].model_rung.provider.0, "codex-a");
+        assert_eq!(selected[2].model_rung.provider.0, "codex-b");
     }
 
     #[test]
     fn whole_committee_allocation_is_deterministic_and_fails_without_diversity() {
         let template = generic_committee_template();
         let primary = vec![
-            vec![committee_route("claude-work", "claude-opus-5")],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
-            vec![committee_route("claude-personal", "claude-opus-5")],
+            vec![committee_route("claude-b", "claude-opus-5")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
+            vec![committee_route("claude-a", "claude-opus-5")],
         ];
         let first =
             allocated(&template, &primary, None).expect("the ordinary primaries are diverse");
@@ -50047,12 +50051,12 @@ mod tests {
                 .map(|route| &route.model_rung)
                 .collect::<Vec<_>>()
         );
-        assert_eq!(first[0].model_rung.provider.0, "claude-work");
+        assert_eq!(first[0].model_rung.provider.0, "claude-b");
 
         let colliding = vec![
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
-            vec![committee_route("codex-personal", "gpt-5.6-sol")],
-            vec![committee_route("claude-work", "claude-opus-5")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
+            vec![committee_route("codex-a", "gpt-5.6-sol")],
+            vec![committee_route("claude-b", "claude-opus-5")],
         ];
         assert!(allocated(&template, &colliding, None).is_none());
     }
@@ -50066,17 +50070,17 @@ mod tests {
         let template = generic_committee_template();
         let candidates = vec![
             vec![
-                committee_route("claude-work", "claude-opus-5"),
-                committee_route("codex-work", "gpt-5.6-sol"),
+                committee_route("claude-b", "claude-opus-5"),
+                committee_route("codex-b", "gpt-5.6-sol"),
             ],
             vec![
-                committee_route("codex-personal", "gpt-5.6-sol"),
-                committee_route("claude-personal", "claude-opus-5"),
+                committee_route("codex-a", "gpt-5.6-sol"),
+                committee_route("claude-a", "claude-opus-5"),
             ],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
         ];
         let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
-        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
+        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-b".to_owned()]);
         let allocation = allocate_committee(&template, &candidates, &eligibility, None);
         assert_eq!(allocation.chosen(), Some(vec![1, 1, 0]));
         assert_eq!(
@@ -50086,7 +50090,7 @@ mod tests {
         assert_eq!(allocation.slots[0].eligibility, eligibility[0]);
 
         // Nothing left for one slot blocks every slot.
-        eligibility[2].unavailable_accounts = BTreeSet::from(["codex-work".to_owned()]);
+        eligibility[2].unavailable_accounts = BTreeSet::from(["codex-b".to_owned()]);
         let blocked = allocate_committee(&template, &candidates, &eligibility, None);
         assert_eq!(
             blocked.blocked,
@@ -50115,8 +50119,8 @@ mod tests {
         .expect("the fixture fleet parses");
         let candidates = vec![
             vec![committee_route("cursor", "auto-smart")],
-            vec![committee_route("claude-work", "claude-opus-5")],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("claude-b", "claude-opus-5")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
         ];
         assert!(
             allocated(&template, &candidates, Some(&fleet)).is_none(),
@@ -50134,19 +50138,19 @@ mod tests {
         let bound = bound_routes(&fleet, "reviewer-a");
         let opus = bound
             .iter()
-            .find(|route| route.model_rung.provider.0 == "claude-work")
+            .find(|route| route.model_rung.provider.0 == "claude-b")
             .unwrap()
             .model_rung
             .clone();
         let sol = bound
             .iter()
-            .find(|route| route.model_rung.provider.0 == "codex-work")
+            .find(|route| route.model_rung.provider.0 == "codex-b")
             .unwrap()
             .model_rung
             .clone();
         let personal_sol = bound
             .iter()
-            .find(|route| route.model_rung.provider.0 == "codex-personal")
+            .find(|route| route.model_rung.provider.0 == "codex-a")
             .unwrap()
             .model_rung
             .clone();
@@ -50201,7 +50205,7 @@ mod tests {
     fn shaped_formal_policy() -> String {
         format!(
             "schema_version: 2\n\
-             domains:\n  claude: {{ provider: claude, accounts: [claude-work, claude-personal] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
+             domains:\n  claude: {{ provider: claude, accounts: [claude-b, claude-a] }}\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
              unavailable:\n  domains: [deepseek]\n  accounts: []\n\
              models:\n  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}\n  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n  sol: {{ domain: codex, id: gpt-6.1-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [xhigh], vision: true, calibrated: true }}\n  deepseek-flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek, efforts: [max], vision: false, calibrated: false }}\n\
              chains:\n  review-a:\n    - [sol@xhigh]\n    - [deepseek-flash@max]\n    - [opus-5.5@xhigh, opus-5@xhigh]\n  review-b:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n  consult-claude-first:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n    - [grok-4.6@xhigh]\n\
@@ -50248,7 +50252,7 @@ mod tests {
             .into_iter()
             .map(|slot| bound_routes(&fleet, slot))
             .collect();
-        for unavailable in [&[][..], &["codex-work", "codex-personal"][..]] {
+        for unavailable in [&[][..], &["codex-b", "codex-a"][..]] {
             let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
             eligibility[2].unavailable_accounts = unavailable
                 .iter()
@@ -50286,9 +50290,9 @@ mod tests {
                 assert_eq!(
                     seated(&governed),
                     [
-                        owned("codex-work", "gpt-6.1-sol", 1),
-                        owned("claude-work", "claude-opus-5", 1),
-                        owned("codex-work", "gpt-6.1-sol", 2),
+                        owned("codex-b", "gpt-6.1-sol", 1),
+                        owned("claude-b", "claude-opus-5", 1),
+                        owned("codex-b", "gpt-6.1-sol", 2),
                     ]
                 );
                 let judge = &governed.slots[2].considered;
@@ -50352,7 +50356,7 @@ mod tests {
             );
         }
 
-        let listing = policy_snapshot(&listing_policy("claude-work, claude-personal", "codex", ""));
+        let listing = policy_snapshot(&listing_policy("claude-b, claude-a", "codex", ""));
         let capped = allocate_committee(&template, &declared, &eligibility, Some(&listing));
         assert_eq!(capped.blocked, Some(AllocationFailure::VendorCapExceeded));
         assert!(capped.slots.iter().all(|slot| slot.selected.is_none()
@@ -50368,16 +50372,16 @@ mod tests {
             .into_iter()
             .map(|(provider, ..)| provider)
             .collect();
-        assert_eq!(providers, ["claude-work", "codex", "claude-work"]);
+        assert_eq!(providers, ["claude-b", "codex", "claude-b"]);
 
         // An alias the policy does not list names no maker, however it is spelled.
-        let work_only = policy_snapshot(&listing_policy("claude-work", "codex", ""));
+        let work_only = policy_snapshot(&listing_policy("claude-b", "codex", ""));
         let partial = allocate_committee(&template, &declared, &eligibility, Some(&work_only));
         assert_eq!(partial.blocked, Some(AllocationFailure::VendorCapExceeded));
         assert_eq!(
             exclusions(&partial, 2)[1],
             Some(AllocationExclusion::VendorUnknown),
-            "claude-personal is not in the policy's Claude domain"
+            "claude-a is not in the policy's Claude domain"
         );
     }
 
@@ -50390,11 +50394,11 @@ mod tests {
     fn a_formal_recovery_route_keeps_its_own_ordinal_after_the_template() {
         use kontor_fleet::AllocationExclusion;
         let fleet = policy_snapshot(&listing_policy(
-            "claude-work, claude-personal",
-            "codex-work, codex-personal",
+            "claude-b, claude-a",
+            "codex-b, codex-a",
             "",
         ));
-        let accounts = ["codex-work", "codex-personal"].map(|alias| EligibleAccount {
+        let accounts = ["codex-b", "codex-a"].map(|alias| EligibleAccount {
             account_profile_id: AccountProfileId::generate(),
             selectable_providers: BTreeSet::from([alias.to_owned()]),
         });
@@ -50403,7 +50407,7 @@ mod tests {
             vec![sourced_route(
                 "template",
                 1,
-                "claude-work",
+                "claude-b",
                 "claude-opus-5",
                 Some(EffortLevel::Xhigh),
             )],
@@ -50418,21 +50422,21 @@ mod tests {
                 sourced_route(
                     "template",
                     1,
-                    "claude-work",
+                    "claude-b",
                     "claude-opus-5",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "template",
                     2,
-                    "claude-personal",
+                    "claude-a",
                     "claude-opus-5",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "initial_recovery_profile",
                     1,
-                    "codex-work",
+                    "codex-b",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
@@ -50440,7 +50444,7 @@ mod tests {
                 sourced_route(
                     "initial_recovery_profile",
                     3,
-                    "codex-personal",
+                    "codex-a",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
@@ -50450,7 +50454,7 @@ mod tests {
         let allocation = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
         assert_eq!(
             seated(&allocation)[2],
-            ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 1)
+            ("codex-b".to_owned(), "gpt-5.6-sol".to_owned(), 1)
         );
         assert_eq!(
             exclusions(&allocation, 2),
@@ -50470,8 +50474,8 @@ mod tests {
         assert_eq!(expanded, [(1, 1), (1, 2)], "an account is not a rung");
 
         // The template's rung-2 route is preferred over the recovery's rung 1.
-        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
-        eligibility[2].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
+        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-b".to_owned()]);
+        eligibility[2].unavailable_accounts = BTreeSet::from(["claude-b".to_owned()]);
         let mut candidates = candidates;
         candidates[0].push(sourced_route(
             "initial_recovery_profile",
@@ -50483,7 +50487,7 @@ mod tests {
         let preferred = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
         assert_eq!(
             seated(&preferred)[2],
-            ("claude-personal".to_owned(), "claude-opus-5".to_owned(), 2)
+            ("claude-a".to_owned(), "claude-opus-5".to_owned(), 2)
         );
     }
 
@@ -50497,8 +50501,8 @@ mod tests {
     fn a_formal_recovery_route_cannot_relabel_or_broaden_a_bound_chain() {
         use kontor_fleet::{AllocationExclusion, AllocationFailure};
         let fleet = policy_snapshot(&listing_policy(
-            "claude-work, claude-personal",
-            "codex-work, codex-personal",
+            "claude-b, claude-a",
+            "codex-b, codex-a",
             &format!("  {FORMAL_KEY}/reviewer-b: opus-sol-grok\n"),
         ));
         let template = formal_committee_template();
@@ -50512,7 +50516,7 @@ mod tests {
                 "grok-4.7",
                 Some(EffortLevel::Xhigh),
             ),
-            // Claims the chain's first place, which `claude-work` Opus holds.
+            // Claims the chain's first place, which `claude-b` Opus holds.
             sourced_route(
                 "fleet_configuration",
                 1,
@@ -50533,37 +50537,31 @@ mod tests {
             vec![sourced_route(
                 "template",
                 1,
-                "claude-work",
+                "claude-b",
                 "claude-opus-5",
                 Some(EffortLevel::Xhigh),
             )],
             reviewer_b,
             vec![
-                sourced_route(
-                    "fleet_configuration",
-                    1,
-                    "codex-personal",
-                    "gpt-5.6-sol",
-                    None,
-                ),
+                sourced_route("fleet_configuration", 1, "codex-a", "gpt-5.6-sol", None),
                 sourced_route(
                     "seat_recovery_profile",
                     1,
-                    "codex-personal",
+                    "codex-a",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "template",
                     0,
-                    "codex-personal",
+                    "codex-a",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "template",
                     1,
-                    "codex-work",
+                    "codex-b",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
@@ -50571,7 +50569,7 @@ mod tests {
         ];
         let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
         eligibility[1].unavailable_accounts =
-            BTreeSet::from(["codex-work".to_owned(), "codex-personal".to_owned()]);
+            BTreeSet::from(["codex-b".to_owned(), "codex-a".to_owned()]);
         let blocked = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
         assert_eq!(
             blocked.blocked,
@@ -50626,9 +50624,9 @@ mod tests {
         assert_eq!(
             seated(&allocation),
             [
-                ("claude-work".to_owned(), "claude-opus-5".to_owned(), 1),
-                ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 2),
-                ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 1),
+                ("claude-b".to_owned(), "claude-opus-5".to_owned(), 1),
+                ("codex-b".to_owned(), "gpt-5.6-sol".to_owned(), 2),
+                ("codex-b".to_owned(), "gpt-5.6-sol".to_owned(), 1),
             ]
         );
         assert_eq!(
@@ -50665,10 +50663,10 @@ mod tests {
     fn an_explicit_recovery_alias_resolves_one_account_and_refuses_ambiguity() {
         let first = AccountProfileId::generate();
         let second = AccountProfileId::generate();
-        let route = committee_route("codex-personal", "gpt-5.6-sol").model_rung;
+        let route = committee_route("codex-a", "gpt-5.6-sol").model_rung;
         let exact = [EligibleAccount {
             account_profile_id: first,
-            selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+            selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
         }];
         assert_eq!(
             account_for_explicit_provider_alias(&route, &exact).expect("one exact owner"),
@@ -50677,18 +50675,18 @@ mod tests {
 
         let missing = [EligibleAccount {
             account_profile_id: first,
-            selectable_providers: BTreeSet::from(["codex-work".to_owned()]),
+            selectable_providers: BTreeSet::from(["codex-b".to_owned()]),
         }];
         assert!(account_for_explicit_provider_alias(&route, &missing).is_err());
 
         let ambiguous = [
             EligibleAccount {
                 account_profile_id: first,
-                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
             },
             EligibleAccount {
                 account_profile_id: second,
-                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
             },
         ];
         assert!(account_for_explicit_provider_alias(&route, &ambiguous).is_err());
@@ -50702,7 +50700,7 @@ mod tests {
         let selected = AccountProfileId::generate();
         let accounts = [EligibleAccount {
             account_profile_id: selected,
-            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
         }];
         let outlook = QuotaOutlook {
             states: &[],
@@ -50721,7 +50719,7 @@ mod tests {
             .expect("the selected account has a governed default route");
 
         assert_eq!(frozen.len(), 1);
-        assert_eq!(frozen[0].provider.0, "claude-work");
+        assert_eq!(frozen[0].provider.0, "claude-b");
         assert_eq!(frozen[0].model.0, "claude-opus-5");
         assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
     }
@@ -50736,11 +50734,11 @@ mod tests {
         let accounts = [
             EligibleAccount {
                 account_profile_id: selected,
-                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
             },
             EligibleAccount {
                 account_profile_id: other,
-                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+                selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
             },
         ];
         let now = Timestamp::from_second(1000).unwrap();
@@ -50752,7 +50750,7 @@ mod tests {
         let current = ProviderQuotaState {
             project_id: kontor_core::id::ProjectId::generate(),
             account_profile_id: selected,
-            provider: "codex-personal".to_owned(),
+            provider: "codex-a".to_owned(),
             state: ProviderQuotaKind::Available,
             resets_at: None,
             windows: Vec::new(),
@@ -50789,7 +50787,7 @@ mod tests {
         assert!(
             matches!(resolve(std::slice::from_ref(&current), std::slice::from_ref(&route)),
             Placement::Admit { account, rung } if account == selected
-                && rung.provider.0 == "codex-personal" && rung.model == route.model
+                && rung.provider.0 == "codex-a" && rung.model == route.model
                 && rung.effort == route.effort),
             "a generic frozen route must reach its fresh exact governed account alias"
         );
@@ -50818,7 +50816,7 @@ mod tests {
             Placement::Admit { .. }
         ));
         let mut explicit = route.clone();
-        explicit.provider = ProviderRef("codex-work".to_owned());
+        explicit.provider = ProviderRef("codex-b".to_owned());
         assert!(
             !matches!(
                 resolve(std::slice::from_ref(&current), &[explicit]),
@@ -50828,7 +50826,7 @@ mod tests {
         );
         let mut foreign = current;
         foreign.account_profile_id = other;
-        foreign.provider = "claude-work".to_owned();
+        foreign.provider = "claude-b".to_owned();
         assert!(
             !matches!(resolve(&[foreign], &[route]), Placement::Admit { .. }),
             "an unpinned generic route never gains a cross-provider fallback"
@@ -50840,7 +50838,7 @@ mod tests {
         let selected = AccountProfileId::generate();
         let accounts = [EligibleAccount {
             account_profile_id: selected,
-            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
         }];
         let outlook = QuotaOutlook {
             states: &[],
@@ -50887,7 +50885,7 @@ mod tests {
         let state = ProviderQuotaState {
             project_id: kontor_core::id::ProjectId::generate(),
             account_profile_id: AccountProfileId::generate(),
-            provider: "claude-work".to_owned(),
+            provider: "claude-b".to_owned(),
             state: ProviderQuotaKind::Available,
             resets_at: None,
             windows: Vec::new(),
@@ -50927,7 +50925,7 @@ mod tests {
             match mismatch {
                 0 => wrong.project_id = kontor_core::id::ProjectId::generate(),
                 1 => wrong.account_profile_id = AccountProfileId::generate(),
-                2 => wrong.provider = "claude-personal".to_owned(),
+                2 => wrong.provider = "claude-a".to_owned(),
                 3 => wrong.evidence_hash = ContentHash::of(b"different report"),
                 4 => wrong.state = ProviderQuotaKind::Unknown,
                 _ => wrong.resets_at = Some(now),
@@ -50953,12 +50951,12 @@ mod tests {
             EligibleAccount {
                 account_profile_id: AccountProfileId::parse("0193f000-0000-7000-8000-000000000001")
                     .expect("an account id"),
-                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+                selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
             },
             EligibleAccount {
                 account_profile_id: AccountProfileId::parse("0193f000-0000-7000-8000-000000000002")
                     .expect("an account id"),
-                selectable_providers: BTreeSet::from(["claude-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["claude-a".to_owned()]),
             },
         ];
         let generic = ModelRung {
@@ -50969,14 +50967,14 @@ mod tests {
         let expanded = consultation_account_rungs(&[generic], &accounts);
 
         assert_eq!(expanded.len(), 2);
-        assert_eq!(expanded[0].provider.0, "claude-work");
-        assert_eq!(expanded[1].provider.0, "claude-personal");
+        assert_eq!(expanded[0].provider.0, "claude-b");
+        assert_eq!(expanded[1].provider.0, "claude-a");
         assert!(expanded.iter().all(|route| {
             route.model.0 == "claude-opus-5" && route.effort == Some(EffortLevel::Xhigh)
         }));
 
         let explicit = ModelRung {
-            provider: ProviderRef("claude-work".to_owned()),
+            provider: ProviderRef("claude-b".to_owned()),
             model: ModelRef("claude-opus-5".to_owned()),
             effort: Some(EffortLevel::High),
         };
@@ -50996,8 +50994,8 @@ mod tests {
             selectable_providers: BTreeSet::from([provider.to_owned()]),
         };
         let accounts = [
-            account("0193f000-0000-7000-8000-000000000001", "claude-work"),
-            account("0193f000-0000-7000-8000-000000000002", "claude-personal"),
+            account("0193f000-0000-7000-8000-000000000001", "claude-b"),
+            account("0193f000-0000-7000-8000-000000000002", "claude-a"),
             account("0193f000-0000-7000-8000-000000000003", "claude"),
         ];
         let generic = ModelRung {
@@ -51010,7 +51008,7 @@ mod tests {
             .iter()
             .map(|route| route.provider.0.as_str())
             .collect();
-        assert_eq!(providers, ["claude", "claude-work", "claude-personal"]);
+        assert_eq!(providers, ["claude", "claude-b", "claude-a"]);
         assert!(ensure_unambiguous_generic_consultation_routes(&expanded, &accounts).is_ok());
 
         // A generic codex account is not a pool. Without the Claude-family
@@ -51023,14 +51021,14 @@ mod tests {
         };
         let codex_accounts = [
             account("0193f000-0000-7000-8000-000000000004", "codex"),
-            account("0193f000-0000-7000-8000-000000000005", "codex-work"),
+            account("0193f000-0000-7000-8000-000000000005", "codex-b"),
         ];
         let expanded = consultation_account_rungs(std::slice::from_ref(&codex), &codex_accounts);
         let providers: Vec<&str> = expanded
             .iter()
             .map(|route| route.provider.0.as_str())
             .collect();
-        assert_eq!(providers, ["codex-work"]);
+        assert_eq!(providers, ["codex-b"]);
     }
 
     /// ASMA-8237: a model the runtime does not list is refused when it is
@@ -51107,6 +51105,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn account_names_do_not_supply_compiled_placement_authority() {
+        use super::model_route_is_catalogued;
+
+        let policy = policy_snapshot(
+            "schema_version: 2\ndomains:\n  codex: { provider: codex, accounts: [codex-synthetic] }\nmodels:\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high], vision: true, calibrated: true }\nchains:\n  primary:\n    - [sol@high]\nbindings: {}\n",
+        );
+        for alias in ["codex-synthetic", "codex-unregistered"] {
+            let rung = committee_route(alias, "gpt-5.6-sol").model_rung;
+            assert!(model_route_is_catalogued(
+                &rung,
+                CatalogAuthority::CompiledOnly
+            ));
+            assert_eq!(
+                model_route_is_catalogued(&rung, CatalogAuthority::PinnedFleet(Some(&policy))),
+                alias == "codex-synthetic",
+            );
+            assert!(!model_route_is_catalogued(
+                &rung,
+                CatalogAuthority::PinnedFleet(None)
+            ));
+            assert!(account_for_explicit_provider_alias(&rung, &[]).is_err());
+        }
+    }
+
     /// ASMA-8280: the ASMA-8255 operator exception — Codex's model through the
     /// bare Cursor plan (2026-09-23) — is historical compiled compatibility. The
     /// activated policy successor gives it no new slot, provider, model, effort,
@@ -51139,7 +51162,7 @@ mod tests {
                 admitted,
                 "{effort:?}"
             );
-            for alias in ["cursor-work", "cursor-personal"] {
+            for alias in ["cursor-b", "cursor-a"] {
                 assert!(!super::compiled_route_is_catalogued(&route(
                     alias,
                     "gpt-5.6-sol",
@@ -51171,7 +51194,7 @@ bindings:
         ))
         .expect("the policy parses");
         for effort in efforts {
-            for alias in ["cursor", "cursor-work", "cursor-personal"] {
+            for alias in ["cursor", "cursor-b", "cursor-a"] {
                 let rung = route(alias, "gpt-5.6-sol", effort);
                 assert!(!super::model_route_is_catalogued(
                     &rung,
@@ -51254,7 +51277,7 @@ bindings:
         }
         // Each Codex account alias reaches Luna: the alias changes the
         // credential home, never the model.
-        for provider in ["codex", "codex-work", "codex-personal"] {
+        for provider in ["codex", "codex-b", "codex-a"] {
             assert!(
                 parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max"), None).is_ok(),
                 "{provider} reaches Luna at its ceiling"

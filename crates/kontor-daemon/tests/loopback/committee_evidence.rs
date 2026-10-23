@@ -408,7 +408,7 @@ async fn simulated_formal_committee_provenance_loss_refuses_recovery_and_finding
         .unwrap()
         .clone();
     assert!(judge["observed_binding"].is_null());
-    assert_eq!(judge["model_route"]["provider"], "codex-work");
+    assert_eq!(judge["model_route"]["provider"], "codex-b");
     let mut simulated_context = frozen_invocation.context.clone();
     simulated_context
         .as_object_mut()
@@ -620,7 +620,7 @@ async fn formal_committee_recovery_counts_the_deferred_judge_before_attempts_and
         &read,
         "reviewer-a",
         "provider_unavailable",
-        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]),
+        serde_json::json!([{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}]),
         "formal-recovery-cap-refused",
     )
     .await;
@@ -725,7 +725,7 @@ async fn formal_committee_pending_recovery_refuses_peer_budget_and_resumes_exact
         );
     activate_through_the_registry(world, &replacement_policy, "formal-permission-4").await;
     let route =
-        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]);
+        serde_json::json!([{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}]);
     world
         .fake
         .refusing_launch_of(&RoleSlotId::parse("reviewer-a").unwrap());
@@ -833,7 +833,7 @@ async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() 
     )
     .await;
     let route =
-        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]);
+        serde_json::json!([{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}]);
     let (a, b) = tokio::join!(
         formal_recover(
             &realm,
@@ -870,7 +870,7 @@ async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() 
             .as_array()
             .unwrap()
             .iter()
-            .filter(|seat| seat["model_route"]["provider"] == "claude-work")
+            .filter(|seat| seat["model_route"]["provider"] == "claude-b")
             .count(),
         1
     );
@@ -928,7 +928,7 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
     let refused = Call::post(
         &endpoint,
         &reroute_body(
-            serde_json::json!({"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}),
+            serde_json::json!({"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}),
         ),
     )
     .signed_as(world, "admin")
@@ -970,7 +970,7 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
         .replace("bindings:\n", "  terra-only:\n    - [terra]\n\nbindings:\n");
     assert!(kontor_fleet::FleetSnapshot::parse(&lawful_policy).is_ok());
     activate_through_the_registry(world, &lawful_policy, "lawful-judge-policy").await;
-    let body = reroute_body(serde_json::json!({"provider":"codex-work","model":"gpt-5.6-terra"}));
+    let body = reroute_body(serde_json::json!({"provider":"codex-b","model":"gpt-5.6-terra"}));
     let lawful = Call::post(&endpoint, &body)
         .signed_as(world, "admin")
         .with_key("formal-judge-reroute-lawful")
@@ -981,7 +981,7 @@ async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persist
     assert_eq!(formal_seat(&after, "judge")["occupancy_generation"], 2);
     assert_eq!(
         formal_seat(&after, "judge")["model_route"]["provider"],
-        "codex-work"
+        "codex-b"
     );
     for slot in ["reviewer-a", "reviewer-b"] {
         assert_eq!(formal_seat(&after, slot), formal_seat(&read, slot));
@@ -1036,12 +1036,12 @@ async fn formal_committee_recovery_unknown_rank_or_vendor_refuses_before_fencing
         (
             "formal-unknown-rank",
             policy.clone(),
-            serde_json::json!({"provider":"claude-work", "model":"claude-opus-5", "effort":"xhigh"}),
+            serde_json::json!({"provider":"claude-b", "model":"claude-opus-5", "effort":"xhigh"}),
         ),
         (
             "formal-unknown-vendor",
             formal_review_fleet_yaml().replace("vendor: anthropic", "vendor: unknown"),
-            serde_json::json!({"provider":"claude-work", "model":"claude-opus-5","effort":"xhigh"}),
+            serde_json::json!({"provider":"claude-b", "model":"claude-opus-5","effort":"xhigh"}),
         ),
     ] {
         let parsed = kontor_fleet::FleetSnapshot::parse(&yaml)
@@ -1049,7 +1049,7 @@ async fn formal_committee_recovery_unknown_rank_or_vendor_refuses_before_fencing
         if key == "formal-unknown-vendor" {
             assert_eq!(
                 parsed.vendor_of(&ModelRung {
-                    provider: ProviderRef("claude-work".to_owned()),
+                    provider: ProviderRef("claude-b".to_owned()),
                     model: ModelRef("claude-opus-5".to_owned()),
                     effort: None
                 }),
@@ -1330,8 +1330,8 @@ async fn formal_committee_legacy_profile_only_recovery_refuses_without_effects()
     }))
     .unwrap();
     let profile = CanonicalDocument::from_value(&serde_json::json!({
-        "schema_version":1,"ordered_rungs":[predecessor.model_rung],"constraint_policy_hash":hash,
-        "constraint_candidate":{"rung":predecessor.model_rung,"step":1,"sub_step":1,"vendor":"xai","independence":"xai"},
+        "schema_version":1,"ordered_rungs":[predecessor.model_rung.canonical_rung()],"constraint_policy_hash":hash,
+        "constraint_candidate":{"rung":predecessor.model_rung.canonical_rung(),"step":1,"sub_step":1,"vendor":"xai","independence":"xai"},
     })).unwrap();
     let attempt = realm
         .world
@@ -1417,11 +1417,6 @@ async fn formal_committee_legacy_profile_only_recovery_refuses_without_effects()
 
 #[tokio::test]
 async fn formal_committee_materialization_profile_freezes_permission_policy() {
-    let realm = consultation_realm(
-        "/tmp/kontor-materialization-policy-pin",
-        &[("Recovery account", "opencode-recovery")],
-    )
-    .await;
     let policy = permitted_committee_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "codex-sol"),
         (&committee_fleet_key("reviewer-b"), "claude-then-codex"),
@@ -1432,6 +1427,12 @@ async fn formal_committee_materialization_profile_freezes_permission_policy() {
         .replace("id: grok-4.7", "id: example/recovery")
         .replace("accounts: [cursor]", "accounts: [opencode-recovery]")
         .replace("account: cursor,", "account: opencode-recovery,");
+    let realm = consultation_realm_with_catalog(
+        "/tmp/kontor-materialization-policy-pin",
+        &[("Recovery account", "opencode-recovery")],
+        &policy,
+    )
+    .await;
     activate_through_the_registry(&realm.world, &policy, "materialization-permission-active").await;
     let slot = RoleSlotId::parse("reviewer-a").unwrap();
     realm.world.fake.refusing_launch_of(&slot);

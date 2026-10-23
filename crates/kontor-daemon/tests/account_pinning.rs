@@ -52,7 +52,7 @@ async fn account(world: &World, label: &str, alias: &str) -> AccountProfileId {
 #[tokio::test]
 async fn an_unpinned_run_claims_the_account_it_was_given() {
     let world = World::open().await;
-    let profile = account(&world, "pin-first", "codex-work").await;
+    let profile = account(&world, "pin-first", "codex-b").await;
     let run = world.unbound_run();
     let state = world.daemon.state();
 
@@ -83,7 +83,7 @@ async fn an_unpinned_run_claims_the_account_it_was_given() {
 #[tokio::test]
 async fn re_presenting_the_same_account_is_a_replay_that_writes_nothing() {
     let world = World::open().await;
-    let profile = account(&world, "pin-replay", "codex-work").await;
+    let profile = account(&world, "pin-replay", "codex-b").await;
     let run = world.unbound_run();
     let state = world.daemon.state();
 
@@ -115,8 +115,8 @@ async fn re_presenting_the_same_account_is_a_replay_that_writes_nothing() {
 #[tokio::test]
 async fn a_second_different_account_is_refused_rather_than_repointed() {
     let world = World::open().await;
-    let first = account(&world, "pin-first-account", "codex-work").await;
-    let second = account(&world, "pin-second-account", "codex-personal").await;
+    let first = account(&world, "pin-first-account", "codex-b").await;
+    let second = account(&world, "pin-second-account", "codex-a").await;
     let run = world.unbound_run();
     let state = world.daemon.state();
 
@@ -145,7 +145,7 @@ async fn a_second_different_account_is_refused_rather_than_repointed() {
 #[tokio::test]
 async fn an_unknown_run_is_not_created_by_pinning_it() {
     let world = World::open().await;
-    let profile = account(&world, "pin-unknown", "codex-work").await;
+    let profile = account(&world, "pin-unknown", "codex-b").await;
     let state = world.daemon.state();
     let absent = kontor_core::id::AgentRunId::generate();
 
@@ -160,7 +160,7 @@ async fn an_unknown_run_is_not_created_by_pinning_it() {
 #[tokio::test]
 async fn a_legacy_unpinned_run_is_left_exactly_as_it_is() {
     let world = World::open().await;
-    let _profile = account(&world, "pin-legacy", "codex-work").await;
+    let _profile = account(&world, "pin-legacy", "codex-b").await;
     let run = world.unbound_run();
     let state = world.daemon.state();
 

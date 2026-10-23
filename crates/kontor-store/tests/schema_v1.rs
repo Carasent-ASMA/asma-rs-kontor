@@ -1485,7 +1485,7 @@ fn v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent() {
             "INSERT INTO provider_usage_observations
                  (id, project_id, account_profile_id, provider, evidence_hash, state,
                   resets_at, windows, observed_at, idempotency_key, intent_hash)
-             VALUES (?1, ?2, ?3, 'claude-work', ?4, 'available', NULL, '[]', ?5,
+             VALUES (?1, ?2, ?3, 'claude-b', ?4, 'available', NULL, '[]', ?5,
                      'probe-key', ?6)",
             rusqlite::params![
                 "0193f000-0000-7000-8000-000000000003",
@@ -1544,7 +1544,7 @@ fn v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_aut
                 "0193f000-0000-7000-8000-000000000002",
                 "0193f000-0000-7000-8000-000000000003",
                 r#"{"provider":"opencode","model":"deepseek/deepseek-v4-flash","effort":"max"}"#,
-                r#"{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}"#,
+                r#"{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}"#,
                 r#"{"schema_version":1,"ordered_routes":[]}"#,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

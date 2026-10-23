@@ -199,7 +199,7 @@ fn world() -> World {
     };
 
     let rung = ModelRung {
-        provider: ProviderRef("claude-work".to_owned()),
+        provider: ProviderRef("claude-b".to_owned()),
         model: ModelRef("claude-opus-5".to_owned()),
         effort: None,
     };

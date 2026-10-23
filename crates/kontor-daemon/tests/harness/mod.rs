@@ -237,6 +237,7 @@ struct WorldComposition {
     attention: Option<String>,
     native_consultations: bool,
     native_route_policy: Option<String>,
+    native_role_catalog: Option<kontor_core::spec::RoleCatalogRevision>,
 }
 
 impl World {
@@ -303,26 +304,24 @@ impl World {
 
     /// Start an empty Realm with the test-owned runtime-refusal quota signals.
     ///
-    /// The fixture names neutral account aliases, while the compiled route
-    /// catalog the test packs route through names the Codex logins `codex-work`
-    /// and `codex-personal`. Only the two Codex `provider:` lines are mapped
-    /// back; every marker, reset prefix and zone stays the fixture bytes.
+    /// The test packs and signal document use the same synthetic account ids;
+    /// markers, reset prefixes and zones remain the exact fixture bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
         let document = Self::catalogued_quota_signal_document();
         Self::open_empty_with_quota_signal_document(&document).await
     }
 
     fn catalogued_quota_signal_document() -> String {
-        let mut document =
+        let document =
             include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
-        for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
-            let line = format!("    provider: {shipped}\n");
+        for alias in ["codex-b", "codex-a"] {
             assert_eq!(
-                document.matches(&line).count(),
+                document
+                    .matches(&format!("    provider: {alias}\n"))
+                    .count(),
                 1,
-                "the fixture declares {shipped} once"
+                "the fixture declares {alias} once"
             );
-            document = document.replace(&line, &format!("    provider: {catalogued}\n"));
         }
         document
     }
@@ -523,6 +522,13 @@ impl World {
     }
 
     pub(crate) async fn open_native_consultations_with_routes(policy: &str) -> Self {
+        Self::open_native_consultations_with_catalog(policy, None).await
+    }
+
+    pub(crate) async fn open_native_consultations_with_catalog(
+        policy: &str,
+        catalog: Option<&kontor_core::spec::RoleCatalogRevision>,
+    ) -> Self {
         Self::compose_with_connector(
             every_capability(),
             true,
@@ -532,6 +538,7 @@ impl World {
             WorldComposition {
                 native_consultations: true,
                 native_route_policy: Some(policy.to_owned()),
+                native_role_catalog: catalog.cloned(),
                 ..WorldComposition::default()
             },
         )
@@ -720,6 +727,7 @@ impl World {
             config = config.with_config_dir(native_consultation_config(
                 directory.path(),
                 composition.native_route_policy.as_deref(),
+                composition.native_role_catalog.as_ref(),
             ));
         } else {
             config =
@@ -1696,9 +1704,23 @@ impl Drop for DomainSelectionFixture {
 }
 
 /// Authored test inputs and a real source checkout, all under one disposable owner.
-fn native_consultation_config(root: &Path, route_policy: Option<&str>) -> std::path::PathBuf {
+fn native_consultation_config(
+    root: &Path,
+    route_policy: Option<&str>,
+    catalog: Option<&kontor_core::spec::RoleCatalogRevision>,
+) -> std::path::PathBuf {
     let checkout = native_checkout_fixture::repository(&root.join("checkout"));
     let folder = native_config_fixture::write_config_folder(root);
+    if let Some(catalog) = catalog {
+        let path = folder.join("packs/operational-domain.yml");
+        let mut domain: serde_json::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        domain["role_catalogs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(catalog).unwrap());
+        std::fs::write(path, serde_yaml_ng::to_string(&domain).unwrap()).unwrap();
+    }
     let entry = folder.join("orchestration/orchestration.yml");
     let mut yaml: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();

@@ -10355,8 +10355,8 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
 async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
     for (provider, model, mode) in [
         ("codex", "gpt-5.6-sol", "full-access"),
-        ("codex-personal", "gpt-5.6-sol", "full-access"),
-        ("codex-work", "gpt-5.6-sol", "full-access"),
+        ("codex-a", "gpt-5.6-sol", "full-access"),
+        ("codex-b", "gpt-5.6-sol", "full-access"),
         ("opencode", "deepseek/deepseek-flash", "build"),
     ] {
         for enabled in [true, false] {
@@ -14641,7 +14641,7 @@ fn fleet_provenance() -> kontor_runtime::FleetLaunchProvenance {
         sub_step: 1,
         vendor: "openai".to_owned(),
         eligibility: Some(kontor_runtime::LaunchEligibility {
-            unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+            unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
             excluded_vendors: BTreeSet::new(),
         }),
     }
@@ -15041,7 +15041,7 @@ async fn every_real_planning_pair_member_route_is_refused_before_any_effect() {
             MemberSurfaceGap::RestrictionUnacknowledged,
         ),
         (
-            "claude-work",
+            "claude-b",
             "claude-opus-5",
             MemberSurfaceGap::RestrictionUnacknowledged,
         ),
@@ -15051,7 +15051,7 @@ async fn every_real_planning_pair_member_route_is_refused_before_any_effect() {
             MemberSurfaceGap::ClosedToolsUnavailable,
         ),
         (
-            "codex-work",
+            "codex-b",
             "gpt-5.6-sol",
             MemberSurfaceGap::ClosedToolsUnavailable,
         ),
@@ -15197,7 +15197,7 @@ async fn every_real_route_reads_as_a_route_refusal_in_the_readiness_seam() {
         ),
         (
             (
-                "codex-work",
+                "codex-b",
                 "gpt-5.6-sol",
                 "openai",
                 "closed_tools_unavailable",
@@ -15206,7 +15206,7 @@ async fn every_real_route_reads_as_a_route_refusal_in_the_readiness_seam() {
         ),
         (
             ("cursor", "grok-4.7", "xai", "read_only_unenforced"),
-            ("claude-work", "claude-opus-5", "anthropic"),
+            ("claude-b", "claude-opus-5", "anthropic"),
         ),
         (
             (
