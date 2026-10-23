@@ -17,12 +17,20 @@ function offlineReason(status: HostStatus): string {
 }
 
 type RetainedDirectory = {
+  readonly hostId: string;
   readonly directory: SessionDirectory;
   readonly listeners: Set<(state: DirectoryState) => void>;
   state: DirectoryState;
   /** The host status last applied to the directory; null before its first start. */
   appliedStatus: HostStatus | null;
 };
+
+type DirectoryBinding = {
+  readonly listener: (state: DirectoryState) => void;
+  record: RetainedDirectory | null;
+};
+
+export const BOOTSTRAP_LIMIT = 25;
 
 /**
  * One live directory per host, kept across screen remounts. Opening a session
@@ -32,17 +40,43 @@ type RetainedDirectory = {
  */
 const retained = new Map<string, RetainedDirectory>();
 
+/**
+ * `PluginClientContext` carries no host id, and `useHosts()` only lists hosts
+ * without saying which installation is rendering. A host-bearing plugin
+ * contribution (the sidebar item, or the first HostScreen when no sidebar item
+ * mounted) supplies the installation's own `props.host.id`; the first such
+ * mount claims this runtime's host. Controls contributed before that mount
+ * wait for the claim; they never guess a host id or attach to a later host.
+ */
+let ownerHostId: string | null = null;
+const pendingBindings = new Set<DirectoryBinding>();
+
+function claimOwner(record: RetainedDirectory): void {
+  if (ownerHostId !== null) {
+    return;
+  }
+  ownerHostId = record.hostId;
+  for (const binding of pendingBindings) {
+    binding.record = record;
+    record.listeners.add(binding.listener);
+    binding.listener(record.state);
+  }
+  pendingBindings.clear();
+}
+
 function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
   const existing = retained.get(hostId);
   if (existing) return existing;
   const listeners = new Set<(state: DirectoryState) => void>();
   const record: RetainedDirectory = {
+    hostId,
     listeners,
     state: emptyDirectoryState(includeArchived),
     appliedStatus: null,
     directory: new SessionDirectory({
       client: () => getPaseoClient(hostId),
       includeArchived,
+      bootstrapLimit: BOOTSTRAP_LIMIT,
       onChange: (next) => {
         record.state = next;
         for (const listener of listeners) listener(next);
@@ -50,12 +84,76 @@ function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
     }),
   };
   retained.set(hostId, record);
+  claimOwner(record);
   return record;
+}
+
+function applyHostStatus(
+  record: RetainedDirectory,
+  hostStatus: HostStatus,
+): void {
+  if (hostStatus === "online") {
+    // A remount over a live or still-loading directory reuses it; a new,
+    // offline or degraded one reconnects and walks every page.
+    if (
+      record.appliedStatus === "online" &&
+      (record.state.live || record.state.status === "loading")
+    ) {
+      return;
+    }
+    record.appliedStatus = hostStatus;
+    void record.directory.reconnect();
+    return;
+  }
+  if (record.appliedStatus !== hostStatus) {
+    record.appliedStatus = hostStatus;
+    record.directory.markHostOffline(offlineReason(hostStatus));
+  }
+}
+
+/** Starts this runtime's retained directory at the first host-bearing contribution. */
+export function startHostDirectory(
+  hostId: string,
+  hostStatus: HostStatus = "online",
+  includeArchived = false,
+): void {
+  applyHostStatus(retain(hostId, includeArchived), hostStatus);
+}
+
+/**
+ * Binds a composer control to the directory owned by this plugin runtime.
+ * The listener receives the current state immediately and every later state.
+ */
+export function bindHostDirectory(
+  listener: (state: DirectoryState) => void,
+): () => void {
+  if (ownerHostId === null) {
+    const binding: DirectoryBinding = { listener, record: null };
+    pendingBindings.add(binding);
+    return () => {
+      pendingBindings.delete(binding);
+      binding.record?.listeners.delete(listener);
+      binding.record = null;
+    };
+  }
+  const record = retained.get(ownerHostId);
+  if (!record) {
+    return () => undefined;
+  }
+  record.listeners.add(listener);
+  listener(record.state);
+  return () => {
+    record.listeners.delete(listener);
+  };
 }
 
 export async function disposeRetainedDirectories(): Promise<void> {
   const records = [...retained.values()];
   retained.clear();
+  ownerHostId = null;
+  for (const binding of pendingBindings) binding.record = null;
+  pendingBindings.clear();
+  for (const record of records) record.listeners.clear();
   await Promise.all(records.map((record) => record.directory.dispose()));
 }
 
@@ -101,16 +199,7 @@ export function useSessionDirectory(input: {
     if (!record) {
       return;
     }
-    if (hostStatus === "online") {
-      // A remount over a live or still-loading directory reuses it; a new,
-      // offline or degraded one reconnects and walks every page.
-      if (record.appliedStatus === "online" && (record.state.live || record.state.status === "loading")) return;
-      record.appliedStatus = hostStatus;
-      void record.directory.reconnect();
-    } else if (record.appliedStatus !== hostStatus) {
-      record.appliedStatus = hostStatus;
-      record.directory.markHostOffline(offlineReason(hostStatus));
-    }
+    applyHostStatus(record, hostStatus);
   }, [hostId, hostStatus, enabled]);
 
   useEffect(() => {

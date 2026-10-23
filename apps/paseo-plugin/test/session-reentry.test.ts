@@ -21,7 +21,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
   getPaseoClient: (hostId: string) => react.hosts.get(hostId),
   useRpc: (rpc: { name: string }) => rpc.name === "sessions.lifecycle-dispositions" ? react.dispositions : async () => ({}),
 }));
-import { disposeRetainedDirectories, useSessionDirectory, type HostStatus } from "../client/use-session-directory";
+import { disposeRetainedDirectories, startHostDirectory, useSessionDirectory, type HostStatus } from "../client/use-session-directory";
 import { useSessionAvailability } from "../client/use-session-availability";
 import { forgetWorkspaceDirectories, useWorkspaceDirectory } from "../client/use-workspace-directory";
 import type { AgentDirectoryPage } from "../client/session-directory";
@@ -87,7 +87,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     kontor(); await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
     expect(kontor().state.entries).toHaveLength(450);
-    expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 1 }]);
+    expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 25 }]);
     expect(host.walks.map((call) => call.page)).toEqual([{ limit: 200 }, { limit: 200, cursor: "200" }, { limit: 200, cursor: "400" }]);
 
     unmount();
@@ -97,6 +97,49 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     await settle();
     expect(host.calls).toHaveLength(4);
     expect(host.released).toBe(0);
+  });
+
+  it("reuses the directory a host contribution already started instead of walking twice", async () => {
+    const host = fakeHost("host-a", sessions(450));
+
+    startHostDirectory("host-a");
+    await settle();
+    kontor();
+    await settle();
+
+    expect(kontor().state).toMatchObject({
+      status: "ready",
+      live: true,
+      inventoryComplete: true,
+    });
+    expect(kontor().state.entries).toHaveLength(450);
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(3);
+  });
+
+  it("renders the 25-row bootstrap as an incomplete read while the remaining pages load", async () => {
+    const host = fakeHost("host-a", sessions(450));
+    const release = host.holdWalk();
+
+    kontor();
+    await settle();
+    const provisional = kontor();
+    expect(provisional.state).toMatchObject({
+      status: "loading",
+      live: false,
+      pages: 0,
+      lastUpdatedAt: null,
+      inventoryComplete: false,
+    });
+    expect(provisional.state.entries).toHaveLength(25);
+    expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 25 }]);
+    expect(host.walks).toHaveLength(1);
+
+    release();
+    await settle();
+    expect(kontor().state).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
+    expect(kontor().state.entries).toHaveLength(450);
+    expect(host.subscribes).toHaveLength(1);
   });
 
   it("shows native updates that arrived while Kontor was closed", async () => {
