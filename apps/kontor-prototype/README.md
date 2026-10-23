@@ -47,6 +47,8 @@ scenarios and light/dark appearance. Query parameters:
 - `session-lifecycle.ts`: disposable fixture reviews, archive/Resume outcomes,
   exact-ID availability, dispositions and reconciliation. These simulate effects
   only in the page's map; they do not qualify the production server behavior.
+- `session-create.ts`: synthetic New LSA options and idempotent outcomes. Creation
+  adds a fictional entry to the page's map; it never dispatches a native request.
 - `task-team-source.ts`: delegates to the production reader except for explicitly
   marked simulated team scenarios. Those declarations are not an authoritative
   production assignment source.
@@ -71,8 +73,8 @@ node apps/kontor-prototype/scripts/browser-check.mjs \
 
 No native device, VoiceOver/TalkBack, packaged Electron or real host/session
 check is claimed. Fonts, touch behavior and host chrome remain web approximations.
-Start/Switch is not in the reference scenario catalog; it is the next prototype
-increment, outside this source sync. Bulk takeover remains unavailable in the
+Start/Switch comes from the current pinned plugin. Its creation options and
+New LSA outcome are synthetic; a created session exists only in the fixture map. Bulk takeover remains unavailable in the
 pinned production client.
 
 ## Retained scenarios

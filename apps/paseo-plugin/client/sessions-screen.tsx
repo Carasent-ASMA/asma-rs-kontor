@@ -1,4 +1,5 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import { SessionLayoutControl } from "./session-layout-control";
 import { useHosts } from "@getpaseo/plugin/client";
 import {
   FlatList,
@@ -36,7 +37,7 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import { openSessionById } from "./session-actions";
-import { type DirectoryEntry } from "./session-directory";
+import { type DirectoryEntry, type DirectoryState } from "./session-directory";
 import {
   attentionLabel,
   archivedLabel,
@@ -80,6 +81,8 @@ import { defaultSortDirection, explicitLeafOrder, sessionComparator, SESSION_SOR
 import { indexResponsibility, MATCH_REASONS, responsibilityExpired, rosterChoices, sessionResponsibility, type MatchReason, type SessionResponsibility } from "./responsibility";
 import { WorkstreamSelector } from "./workstream-selector";
 import { SessionScopeSelector } from "./session-scope-selector";
+import { SESSION_SHORTCUTS, SessionScopeChip } from "./session-scope-chip";
+export { SESSION_SHORTCUTS } from "./session-scope-chip";
 import { epicScopeChoice, epicScopeChoices, epicScopeKey, epicScopeLabel, matchesEpicScope } from "./session-scope";
 import type { ResponsibilityRead } from "../shared/responsibility";
 import { inWorkspace, labelledRole, matchesResultSearch, sessionAncestors, sessionProvenance, taskSessions, TASK_JIRA_LABELS, TASK_TICKET_LABEL, type SessionProvenance } from "./session-results";
@@ -138,16 +141,6 @@ export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): stri
   return sessionStateColor(sessionState(entry), colors);
 }
 
-/**
- * Desk shortcuts. Outside desks is every session no desk holds; its ID stays "Other work" for saved
- * views, while the Other work group and choice hold only sessions with no workstream association.
- */
-export const SESSION_SHORTCUTS: readonly { readonly id: string | null; readonly label: string }[] = [
-  { id: null, label: "All sessions" },
-  { id: "PR Review", label: "PR Review" },
-  { id: "Adam", label: "Adam desk" },
-  { id: "Other work", label: "Outside desks" },
-];
 /** Workspace scope, a menu in Filters & view; the shortcuts above repeat all but Durable desks. */
 const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: string }[] = [
   { id: null, label: "All Paseo workspaces" },
@@ -343,6 +336,30 @@ function updatedLabel(timestamp: number | null): string {
     return "not read yet";
   }
   return new Date(timestamp).toLocaleTimeString();
+}
+
+/**
+ * The Filters header count of final matching sessions. Exact only from a ready, live and complete read of the
+ * membership in view; otherwise qualified or unknown, so a read in progress never shows as an empty 0.
+ */
+export function matchingCount({ count, state, includeArchived, freshness, blocked }: {
+  count: number; state: DirectoryState; includeArchived: boolean; freshness: string; blocked: string | null;
+}): { text: string; label: string } {
+  if (blocked !== null) return { text: "Not evaluated", label: `Matching sessions not evaluated: ${blocked} is not evaluated` };
+  // The other membership's read, or none yet: its entries say nothing about this filter.
+  if (state.includeArchived !== includeArchived || state.lastUpdatedAt === null) {
+    return state.status === "error" && state.includeArchived === includeArchived
+      ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
+      : { text: "…", label: "Reading matching sessions" };
+  }
+  const sessions = `${count} session${count === 1 ? "" : "s"}`;
+  if (freshness === "Live") {
+    return state.inventoryComplete === true
+      ? { text: sessions, label: `${count} matching session${count === 1 ? "" : "s"}` }
+      : { text: `${sessions} · partial`, label: `${sessions} match a partial read; the count may be incomplete` };
+  }
+  if (count === 0) return { text: "…", label: `Matching sessions updating: ${freshness}` };
+  return { text: `${sessions} · ${freshness.toLocaleLowerCase()}`, label: `${sessions} matched the read at ${updatedLabel(state.lastUpdatedAt)}; ${freshness}` };
 }
 
 type SessionRowProps = {
@@ -2151,6 +2168,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
   const countSummary = `${sessionCount} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"} · ${inventoryRead}`;
+  // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
+  const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
+    freshness: nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) });
   const setExpansion = (patch: Readonly<Record<string, boolean>>) => {
     const local = patchLocalExpansion(host.id, patch);
     setExpansionRevision((revision) => revision + 1);
@@ -2459,7 +2479,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           {onClearScope ? <Action small={!compact} colors={colors} label="All sessions" accessibilityLabel={`Show all sessions instead of ${scopeLabel}`} disabled={!compact && toolbarCollapsed} onPress={onClearScope} /> : null}
         </View> : <Text testID="sessions-heading" accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 16 : 17, fontWeight: "600" }}>All sessions</Text>}
         <View accessibilityRole="toolbar" accessibilityLabel="Desk shortcuts" style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, ...(compact ? { width: "100%" } : { marginLeft: "auto" }) }}>
-          {SESSION_SHORTCUTS.map(({ id, label }, index) => <FilterChip key={label} testID={`sessions-shortcut-${index}`} label={label} count={shortcutCounts[index]} compact={compact} active={shortcut === id} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); }} />)}
+          {SESSION_SHORTCUTS.map((choice, index) => <SessionScopeChip key={choice.label} testID={`sessions-shortcut-${index}`} choice={choice} count={shortcutCounts[index]!} active={shortcut === choice.id} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ shortcut: choice.id, scrollOffset: 0 }); }} />)}
         </View>
       </View>
 
@@ -2590,9 +2610,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <OptionSelect testID="sessions-working-as" label="Working as" value={realm === null ? (responsibility === null ? "Loading…" : "Unavailable") : workingAsLabel ?? (workingAs ? "Not in this projection" : "Not set")} expanded={optionMenu === "workingAs"} anchor={workingAsRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "workingAs" ? null : "workingAs")} />
             <Text testID="sessions-responsibility-source" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{responsibilitySource}</Text>
           </View>
-          <OptionLine label="Layout" colors={colors}>
-            {(["grouped", "flat"] as const).map((layout) => <FilterChip key={layout} testID={`sessions-layout-${layout}`} label={layout === "flat" ? "Flat" : "Grouped"} compact={compact} active={sessionLayout === layout} colors={colors} {...focusProps} onPress={() => chooseLayout(layout)} />)}
-          </OptionLine>
           {sessionLayout === "grouped" ? <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} /> : null}
           <OptionSelect testID="sessions-sort" label="Sort by" value={sortLabel(sort)} expanded={optionMenu === "sort"} anchor={sortRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "sort" ? null : "sort")} />
           {sort !== "current" ? <OptionLine label="Direction" colors={colors}>
@@ -2637,7 +2654,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
           <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
-          <SessionsLegend colors={colors} compact={compact} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
+          <SessionsLegend colors={colors} compact={compact} contextual={peek !== null} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
         </OptionsContainer>
       ) : null}
     </View>
@@ -2846,7 +2863,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   if (mobileFiltersOpen) return (
     <View ref={rootRef} onLayout={handleRootLayout} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
-      <MobileFiltersPage colors={colors} onBack={closeMobileFilters} menuOpen={optionMenu !== null || (view.associationsOpen ?? false) || view.scopeOpen != null}>
+      <MobileFiltersPage colors={colors} onBack={closeMobileFilters} count={filterCount} menuOpen={optionMenu !== null || (view.associationsOpen ?? false) || view.scopeOpen != null}>
         {compactNotices}
         {activeScopeSummary}
         <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>Changes apply immediately. Back keeps your choices.</Text>
@@ -2916,7 +2933,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </Text>
   ) : null;
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
-  const shortPeek = peek !== null && compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const shortPeek = peek !== null && shortScreen;
   const peekDescription = peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`;
   let peekText = peekDescription;
   if (shortPeek) peekText = peekAncestors ? "In the tree · not saved" : "Not in this tree";
@@ -2955,7 +2973,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {assignmentState === "ready" && assignment !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-assignment-show-unknown" label="Show unknown assignment" accessibilityLabel="Show sessions whose assignment is unknown" colors={colors} compact={compact} onPress={() => chooseAssignment("unknown")} /> : null}
     </View>
   );
-  const listHeader = peek ? null : <>{workLine}{listLine}</>;
+  // On short screens the utility row must scroll, so it cannot consume the list's last usable pixels.
+  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+    <View style={{ flex: 1, minWidth: 80 }}>
+      {listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
+    </View>
+    <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+  </View>;
+  const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
 
   return (
     <View
@@ -2976,6 +3001,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {activeScopeSummary}
       {compact ? null : fullToolbarSlot}
       {peekBar}
+      {shortScreen ? null : layoutBar}
       <FlatList
         ref={listRef}
         testID="sessions-list"
@@ -3021,7 +3047,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
-          return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
+          return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             details={details}
             lifecycleAction={lifecycleAction}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { configureRecentStorage, readRecent } from "../client/recent-sessions";
 import { openSessionById, type SessionNavigation } from "../client/session-actions";
 import { sessionEntry } from "./session-fixtures";
 
@@ -10,6 +11,8 @@ function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn>
 }
 
 describe("openSessionById", () => {
+  beforeEach(() => configureRecentStorage(null));
+
   it("opens by native ID and leaves duplicate titles distinct", () => {
     const first = sessionEntry("agent-first", { title: "Same title" });
     const second = sessionEntry("agent-second", { title: "Same title" });
@@ -31,6 +34,7 @@ describe("openSessionById", () => {
     expect(nav.openAgent).not.toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "agent-first" }),
     );
+    expect(readRecent().record.visits.map((visit) => visit.id)).toEqual(["agent-second"]);
   });
 
   it("refuses a session that disappeared instead of falling back to a name", () => {
@@ -75,5 +79,15 @@ describe("openSessionById", () => {
       message: "workspace is unavailable",
     });
     expect(nav.openAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a visit only when the host opened the session", () => {
+    const entries = [sessionEntry("agent-first")];
+    openSessionById({ entries, id: "agent-gone", serverId: "srv_host", navigation: navigation() });
+    openSessionById({ entries, id: "agent-first", serverId: "srv_host", navigation: undefined });
+    const failing = navigation();
+    failing.openAgent.mockImplementation(() => { throw new Error("workspace is unavailable"); });
+    openSessionById({ entries, id: "agent-first", serverId: "srv_host", navigation: failing });
+    expect(readRecent().record.visits).toEqual([]);
   });
 });

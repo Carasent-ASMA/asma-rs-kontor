@@ -11,8 +11,12 @@ const { contributeReturnControl, stopReturnControl } = vi.hoisted(() => {
 
 vi.mock("../client/return-control", () => ({ contributeReturnControl }));
 
+const { recordVisit } = vi.hoisted(() => ({ recordVisit: vi.fn() }));
+vi.mock("../client/recent-sessions", async (importOriginal) => ({ ...(await importOriginal<object>()), recordVisit }));
+
 vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
+  Platform: { OS: "web" },
   Pressable: () => null,
   Text: () => null,
   View: () => null,
@@ -38,6 +42,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 import contribute, {
   BACK_COMMAND_ID,
   SESSIONS_COMMAND_ID,
+  SWITCH_COMMAND_ID,
   SESSIONS_SCREEN_ID,
   SESSIONS_SIDEBAR_ID,
 } from "../index.client";
@@ -60,7 +65,7 @@ type CommandContribution = {
   context: "global" | "agent";
   icon: string;
   keywords?: readonly string[];
-  onSelect: (context: { openScreen: (input: unknown) => void }) => void;
+  onSelect: (context: { openScreen: (input: unknown) => void; agent?: { id: string } }) => void;
 };
 
 describe("Kontor client entry", () => {
@@ -68,7 +73,7 @@ describe("Kontor client entry", () => {
     vi.clearAllMocks();
   });
 
-  it("registers the Kontor screen, native sidebar entry, Open Kontor and Back to Kontor commands", () => {
+  it("registers the Kontor screen, native sidebar entry, Open Kontor, Back to Kontor and Start or switch commands", () => {
     const calls: Array<{
       kind: "screen" | "sidebar" | "command";
       value: ScreenContribution | SidebarContribution | CommandContribution;
@@ -97,7 +102,7 @@ describe("Kontor client entry", () => {
 
     const cleanup = contribute(client);
 
-    expect(calls.map((call) => call.kind)).toEqual(["screen", "sidebar", "command", "command"]);
+    expect(calls.map((call) => call.kind)).toEqual(["screen", "sidebar", "command", "command", "command"]);
 
     const screen = calls[0]!.value as ScreenContribution;
     expect(screen.id).toBe(SESSIONS_SCREEN_ID);
@@ -128,14 +133,27 @@ describe("Kontor client entry", () => {
     expect(backCommand.icon).toBe("ArrowLeft");
     expect(backCommand.keywords).toEqual(expect.arrayContaining(["back", "kontor"]));
     const returned: unknown[] = [];
-    backCommand.onSelect({ openScreen: (input) => returned.push(input) });
+    backCommand.onSelect({ openScreen: (input) => returned.push(input), agent: { id: "agent-left" } });
     expect(returned).toEqual([{ screenId: SESSIONS_SCREEN_ID }]);
+    // Leaving a conversation for Kontor records it as this device's latest visit.
+    expect(recordVisit).toHaveBeenCalledWith("agent-left");
+
+    const switchCommand = calls[4]!.value as CommandContribution;
+    expect(switchCommand.id).toBe(SWITCH_COMMAND_ID);
+    expect(switchCommand.title).toBe("Start or switch Kontor session…");
+    expect(switchCommand.context).toBe("global");
+    expect(switchCommand.keywords).toEqual(expect.arrayContaining(["recent", "switch", "new", "lsa"]));
+    const switched: Array<{ screenId: string; params: Record<string, string> }> = [];
+    switchCommand.onSelect({ openScreen: (input) => switched.push(input as { screenId: string; params: Record<string, string> }) });
+    expect(switched).toEqual([{ screenId: SESSIONS_SCREEN_ID, params: { sheet: "switch", at: expect.stringMatching(/^\d+$/) } }]);
+    // Opening the sheet records nothing: only an open is a visit.
+    expect(recordVisit).toHaveBeenCalledTimes(1);
 
     expect(contributeReturnControl).toHaveBeenCalledTimes(1);
     expect(contributeReturnControl).toHaveBeenCalledWith(client, SESSIONS_SCREEN_ID);
 
     cleanup();
     expect(stopReturnControl).toHaveBeenCalledTimes(1);
-    expect(cleaned).toEqual(["screen", "sidebar", "command", "command"]);
+    expect(cleaned).toEqual(["screen", "sidebar", "command", "command", "command"]);
   });
 });

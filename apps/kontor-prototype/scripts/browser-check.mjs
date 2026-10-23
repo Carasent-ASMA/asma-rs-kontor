@@ -48,13 +48,30 @@ try {
     await page.screenshot({ path: join(values.output, `${width}-${theme}.png`) });
     if (width < 500) await page.getByTestId("sessions-mobile-filters-trigger").click();
     else await page.getByTestId("sessions-advanced-toggle").click();
+    if (width < 500) {
+      assert.match(await page.getByTestId("sessions-mobile-filters-count").innerText(), /61 sessions/);
+      await page.screenshot({ path: join(values.output, `${width}-${theme}-filters.png`) });
+    }
     await page.getByTestId("sessions-working-as").click();
     await page.getByRole("menuitem", { name: /Alex \(fictional\)/ }).click();
     assert.match(await page.getByTestId("sessions-working-as").innerText(), /Alex/);
     await page.getByTestId("sessions-sort").click();
     await page.getByRole("menuitem", { name: "Title", exact: true }).click();
     assert.match(await page.getByTestId("sessions-sort").innerText(), /Title/);
-    results.push({ width, theme, profileAndSort: true, noOverflow: true });
+    if (width < 500) await page.getByRole("button", { name: "Show sessions with the current filters", exact: true }).click();
+    await page.getByRole("button", { name: "Start or switch session", exact: true }).click();
+    await page.getByTestId("kontor-switch-search").fill("ASMA-99103");
+    await page.locator('[data-testid^="kontor-switch-row-"]').first().click();
+    await page.getByTestId("host-agent-shim").waitFor();
+    await page.getByRole("button", { name: "Back (host)", exact: true }).click();
+    await page.getByRole("button", { name: "Start or switch session", exact: true }).click();
+    assert(await page.locator('[data-testid^="kontor-switch-row-"]').count() > 0, "Recent retains the opened fictional session");
+    await page.getByRole("button", { name: "New LSA session", exact: true }).click();
+    await page.getByTestId("kontor-new-lsa-topic").fill("Fictional review");
+    await page.getByTestId("kontor-new-lsa-create").click();
+    await page.getByTestId("kontor-new-lsa-verified").waitFor();
+    assert.match(await page.getByTestId("kontor-new-lsa-verified").innerText(), /SIMULATED/);
+    results.push({ width, theme, profileAndSort: true, startSwitchAndRecent: true, syntheticCreation: true, noOverflow: true });
     await context.close();
   }
   {

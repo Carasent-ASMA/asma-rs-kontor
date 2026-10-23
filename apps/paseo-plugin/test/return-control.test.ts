@@ -27,6 +27,7 @@ import {
   patchSessionView,
   readSessionView,
 } from "../client/session-view-store";
+import { configureRecentStorage, readRecent } from "../client/recent-sessions";
 import { sessionEntry } from "./session-fixtures";
 
 type ReadyAgent = {
@@ -217,8 +218,11 @@ describe("Kontor return control", () => {
       advancedOpen: true,
       scrollOffset: 240,
     });
+    configureRecentStorage(null);
     fake.pillFor("agent-a")?.contribution.button.behavior.onPress();
     expect(fake.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
+    // The conversation left for Kontor is this device's latest visit.
+    expect(readRecent().record.visits.map((visit) => visit.id)).toEqual(["agent-a"]);
     expect(readSessionView("host-a")).toMatchObject({
       query: "ASMA-8540",
       status: "running",

@@ -3,6 +3,7 @@ import { lifecycleReviewSchema, lifecycleRowSchema, DEFAULT_RECOVERY_TARGET, ava
 import { listReadSources, readSource, readPlanAssociations } from "../../paseo-plugin/shared/read-sources";
 import { readResponsibility } from "../../paseo-plugin/shared/responsibility";
 import { readKontorStatus } from "../../paseo-plugin/shared/kontor-status";
+import { readCreateOptions, executeCreate, checkCreate } from "../../paseo-plugin/shared/session-create";
 import { callPluginRpc } from "paseo-sdk/host";
 import { recoverySessions } from "../src/fixtures/recovery";
 import { fixtureLifecycle } from "../src/host/session-lifecycle";
@@ -20,6 +21,16 @@ describe("current plugin contracts", () => {
     expect((await callPluginRpc(readPlanAssociations, invokeRpc, {})).status).toBe("ready");
     expect((await callPluginRpc(readResponsibility, invokeRpc, {})).projection?.people).toHaveLength(2);
     expect((await callPluginRpc(readKontorStatus, invokeRpc, {})).observation).toBe("ready");
+    expect((await callPluginRpc(readCreateOptions, invokeRpc, {})).enabled).toBe(true);
+    const request = { requestId: crypto.randomUUID(), topic: "Fictional review", workspaceId: "wks_proof_adam", provider: "codex", model: "gpt-6.1-sol", effort: "xhigh", modeId: "fixture-mode" };
+    const first = await callPluginRpc(executeCreate, invokeRpc, request);
+    expect(first.state).toBe("verified");
+    expect(first.agentId).toMatch(/^agt_fixture_create_/);
+    expect(await callPluginRpc(executeCreate, invokeRpc, request)).toEqual(first);
+    expect(await callPluginRpc(checkCreate, invokeRpc, { requestId: request.requestId })).toEqual(first);
+    const refused = await callPluginRpc(executeCreate, invokeRpc, { ...request, requestId: crypto.randomUUID(), workspaceId: "not-a-fixture" });
+    expect(refused.state).toBe("refused");
+    expect(refused.agentId).toBeNull();
   });
 
   it("keeps unknown and protected children visible, archives a running fixture and retains its history", async () => {

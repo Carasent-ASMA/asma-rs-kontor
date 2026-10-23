@@ -6,6 +6,7 @@ import { modelUsageSessions } from "../fixtures/model-usage";
 import { lifecycleSessions } from "../fixtures/lifecycle";
 import { recoverySessions } from "../fixtures/recovery";
 import { fixtureLifecycle } from "./session-lifecycle";
+import { fixtureCreate } from "./session-create";
 import { integrationSessions } from "../fixtures/integration";
 import { SOURCE_READS } from "../fixtures/sources";
 import { responsibilityFixture } from "../fixtures/responsibility";
@@ -128,9 +129,23 @@ export const fakePaseo = refusingProxy("paseo", {
 // Configured sources (plugin RPC) --------------------------------------------
 
 const lifecycleRpc = fixtureLifecycle(fixtureSessions, simulateUpdate);
+const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario.inventory === "desks", (request, title) => {
+  const id = `agt_fixture_create_${request.requestId}`;
+  const seed = baseSessions()[0]!;
+  const row: FixtureSession = { ...seed, agent: { ...seed.agent, id, title, status: "idle", requiresAttention: false, attentionReason: null,
+    workspaceId: request.workspaceId, cwd: "/fixture/prj_proof_adam", provider: request.provider, model: request.model,
+    effectiveThinkingOptionId: request.effort ?? undefined, currentModeId: request.modeId ?? undefined, archivedAt: null,
+    labels: { role: "LSA", scope: "ADHOC", "create.request": request.requestId }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    project: { projectKey: "prj_proof_adam", projectName: "DESK • ADAM", workspaceName: "ADAM" } };
+  sessions.set(id, row);
+  for (const observer of observers) observer.update?.({ type: "agent_update", payload: { kind: "upsert", agent: row.agent, project: row.project } });
+  logHostEvent("simulated.update", `Created ${id} in fixture memory only`);
+  return id;
+});
 export async function invokeRpc(method: string, input: unknown): Promise<unknown> {
   await new Promise((resolve) => setTimeout(resolve, 60));
   if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
+  if (method === "sessions.create-options" || method === "sessions.create" || method === "sessions.create-check") return createRpc(method, input);
   if (method.startsWith("sessions.")) return lifecycleRpc(method, input);
   const reads = scenario.sources ? SOURCE_READS : [];
   switch (method) {

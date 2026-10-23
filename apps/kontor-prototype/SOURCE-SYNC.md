@@ -1,13 +1,15 @@
 # Prototype source-sync audit
 
-Pinned source: `61f6b07518aadcf741ccdc60c127b0aff60e63f5`.
+Pinned source: `5072b403a60d3302c8dbad59afd1e64b8d277023`.
+Initial sync: `07fe9e50` pinned `61f6b075`; the current pin advances it to installed MAIN.
 Reference: `b88a7b94` (`feat/ASMA-8541-start-switch-real-prototype`).
-This app imports the pinned plugin directly; only the prototype app and its
-workspace lock importer/dependency additions are carried forward.
+This app imports the pinned plugin directly. The initial import carried only the
+prototype app and workspace lock additions; the later pin advance uses the exact
+merged plugin source, without local plugin behavior changes.
 
 ## Delta
 
-The reference lacks these 32 plugin commits, oldest first. Their current source
+The initial sync recovered these 32 plugin commits missing from the reference, oldest first. Their current source
 comes from the pinned base, not from the reference branch.
 
 | Commit | Change |
@@ -51,6 +53,24 @@ prototype Test-shortcut delta. The pinned source already contains its reviewed
 keyboard behavior via `6ccffea4`; the retained keyboard scenario exercises that
 implementation. No reference `apps/paseo-plugin` file is copied or merged.
 
+## Advance to installed MAIN
+
+The following six merged plugin commits advance the pin. The plugin subtree is
+byte-identical to `5072b403`; no local plugin behavior is added.
+
+- `fd4def7b ASMA-8541 fix(paseo-plugin): label session tokens as the last report (#450)`
+- `454c51e8 ASMA-8541 Keep session layout visible (#452)`
+- `bafccb3a ASMA-8541 Add desk icons, scope chips and group state ratios (#451)`
+- `14974094 ASMA-8541 Add Start/Switch and Recent sessions (#457)`
+- `db4b7caa fix(paseo-plugin): Preserve explicit catalog epic mappings (ASMA-8541) (#456)`
+- `5072b403 feat(paseo-plugin): ASMA-8541 Show the matching count in the mobile Filters header (#458)`
+
+The qualified raw client is SHA-256
+`c341a308eef4c9f2d3620d62472cb9d42f6f7d2cffe1674bac2d8d38137d1288`
+(801,897 bytes). The React Native Web build has its own output hash because it
+substitutes the fixture host. Raw artifact hashes and source-map parity are
+recorded separately in operator-local evidence.
+
 ## Retained and dropped files
 
 All 27 non-script reference prototype files are retained: HTML, package/Vite/TS
@@ -78,8 +98,8 @@ Run from the repository root at the candidate HEAD:
 
 ```sh
 git rev-parse HEAD
-git diff --exit-code 61f6b07518aadcf741ccdc60c127b0aff60e63f5 HEAD -- apps/paseo-plugin
-git diff --exit-code 61f6b07518aadcf741ccdc60c127b0aff60e63f5 -- apps/paseo-plugin
+git diff --exit-code 5072b403a60d3302c8dbad59afd1e64b8d277023 HEAD -- apps/paseo-plugin
+git diff --exit-code 5072b403a60d3302c8dbad59afd1e64b8d277023 -- apps/paseo-plugin
 git ls-files --others --exclude-standard apps/paseo-plugin
 ```
 
@@ -90,7 +110,7 @@ source document. The Vite host substitutions are listed in the app README.
 
 ## Remaining boundary
 
-Start/Switch is absent from the reference scenario catalog and is the next
-prototype increment. Native runtime/server changes and production cutover are
+The reference scenario IDs stay unchanged. Start/Switch now comes from the
+pinned production client; its options and creation RPCs use synthetic fixtures. Native runtime/server changes and production cutover are
 outside this task. The synthetic lifecycle adapter is a UI fixture, not a second
 production authority or an exhaustive replay of the server's failure semantics.
