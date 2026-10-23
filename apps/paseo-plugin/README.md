@@ -137,7 +137,7 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
   the query to Sessions unscoped. A row opens by native ID through the same
   path as Sessions. Rows carry no archive control.
-- **Recently viewed (supported interim scope).** A user opening a session
+- **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.
   The saved sequence determines order even when wall times tie or the clock moves
@@ -155,25 +155,39 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   during partial/offline reads. **Clear recent on this device** clears the
   selected host only. Without a device store it lasts until Paseo restarts;
   an unreadable new record stays untouched until Clear; the sheet says which.
+  Source and install evidence: [Unreleased release note](../../CHANGELOG.md#unreleased).
 - **Saved history.** The old `kontor.recent@1` value mixed opens and returns
   without recording their source or host. Its bytes are preserved, including
   on Clear. **Show saved history** exposes its session IDs separately, with
   unknown original host and opening times. Old timestamps are never imported
   as opens or used to order Recently viewed. No earlier opening times can be
   recovered from this record.
-- **Open host capability gap (owner needed: Paseo public client API).** Native
-  sidebar opens and other devices are not captured by this interim scope.
-  As of 2026-10-23, the installed Paseo 0.12.0 plugin contract and the
+- **DEFERRED FUTURE WORK — native Paseo session views (Igor, 2026-10-23).**
+  Openings through the native sidebar or other Paseo screens are outside the
+  supported Kontor-initiated scope. This enhancement is not completed and is
+  not a release prerequisite for the delivered personal Recently viewed list.
+  As of 2026-10-23, the Paseo 0.12.0 plugin contract and the
   [public plugin reference](https://paseo.sh/docs/plugins/reference#screens-and-sidebar-items)
-  expose `openAgent(...): void`, selected surface host IDs, and entity snapshots
-  by supplied ID. They do not expose a personal view-event/history subscription.
-  The 0.12.0 host routes plugin opens through `navigateToAgent`; its internal
-  viewed-timeline synchronization is a content replica, not a public personal
-  history API. A returned navigation call is an accepted open, not proof that
-  rendering succeeded later. Complete native/all-device personal history needs
-  a public host capability carrying confirmed user views, host/user attribution
-  and completion/failure semantics. This remains separately owned host work;
-  it is not delivered by this plugin correction or a permanent API-absence claim.
+  expose navigation commands and snapshots by supplied ID, without a global
+  session-view notification. A returned `openAgent(...): void` call confirms
+  navigation acceptance, not that a session was actually brought into view.
+  This is a current interface limit, not a permanent API-absence claim.
+
+  Future delivery needs a public Paseo app session-view event/API usable while
+  Kontor is not mounted. It must report actual views with exact host/session
+  IDs and truthful viewer/device scope, and define repeat opens, background
+  updates and failed navigation without treating activity as a view. It then
+  needs a reviewed compatible desktop/mobile Paseo release, a capability-gated
+  Kontor consumer, and native-device proof of those semantics on desktop and
+  mobile.
+- **Optional future work — shared phone/desktop history.** Synchronizing
+  Kontor-initiated visits across devices is a separate optional feature, not
+  part of this delivery. It needs an explicit user requirement, supported
+  viewer identity, and a storage/synchronization design covering host/user
+  isolation, duplicates, deterministic order, offline/reconnect behavior,
+  privacy and cross-device acceptance. A Paseo change is not automatically
+  required to synchronize visits initiated through Kontor. Native views from
+  outside Kontor still need the separate view-event capability above.
 - **New LSA (bounded create).** Off unless the operator writes exactly
   `{"create":"on"}` to `$PASEO_HOME/plugin-config/kontor/create.json`
   (default `~/.paseo/plugin-config/kontor/create.json`) on the host computer.
