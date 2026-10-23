@@ -215,6 +215,13 @@ visible. Use Tab to reach the
 selected segment, arrows to switch and Space or Enter to select. Layout is
 remembered through the existing host view and saved organization preferences;
 **Group by** and **Sort by** remain in Filters & view.
+On mobile, the fixed Filters & view header shows how many sessions match every
+active filter, beside the heading, while its controls scroll. The number is the
+final matching session set, so layout, grouping, sort and collapsed groups never
+change it. It is exact only from a ready, live and complete read of the chosen
+Sessions or Archived history; a partial or stale read is marked, and a read in
+progress, a failed first read or an assignment that cannot be evaluated shows
+**…**, **—** or **Not evaluated**, never 0.
 Search, state, task, assignment and association filters apply in both layouts,
 and changing layout or grouping preserves those filters and the sort. Grouped
 search/state/task matches open their branches temporarily; these disclosures do
