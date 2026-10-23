@@ -978,7 +978,7 @@ pub struct CoreTeamSeatSelectionDto {
 }
 
 /// A proposed Core Team composition: the caller's seats, or the Core Team
-/// revision one published orchestration bundle declares (ASMA-8280 S-3).
+/// revision one published orchestration bundle declares.
 /// Exactly one of the two.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1048,7 +1048,7 @@ pub struct CoreTeamMaterializeRequest {
 /// Exactly one of `model_route` and `eligibility`: the caller's exact route,
 /// which the activated fleet policy may admit or refuse but never replaces, or
 /// — when the caller names none — the policy's own choice under the
-/// eligibility the caller states (ASMA-8280).
+/// eligibility the caller states.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamSeatRouteRequest {
@@ -1192,7 +1192,7 @@ pub struct CoreTeamRouteOccupantDto {
 /// recorded is the subject the grant is scoped to — the logical seat and the
 /// occupancy generation — and a digest over exactly that public pair. A reader
 /// can therefore prove which generation-scoped grant the successor derived
-/// without the record ever having held anything secret (ASMA-8187).
+/// without the record ever having held anything secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CoreTeamRouteGrantSubjectDto {
     /// The generation this successor's grant is scoped to.
@@ -2945,7 +2945,7 @@ pub struct CapacityConfigurationPreviewDto {
     pub preview_hash: ContentHash,
 }
 
-/// The Realm's fleet policy selection (ASMA-8280).
+/// The Realm's fleet policy selection.
 ///
 /// Exactly one source decides fleet routing: an activation record naming one
 /// published policy by content hash, or — when none exists — the unmigrated
@@ -3084,7 +3084,7 @@ pub struct FleetPolicyActivatedDto {
     pub applied: AppliedDto,
 }
 
-/// The Realm's orchestration bundle selection (ASMA-8280 S-1).
+/// The Realm's orchestration bundle selection.
 ///
 /// The same single activation pointer [`FleetPolicyDto`] reports, read for its
 /// bundle: a schema_version 1 record names a policy alone; a schema_version 2
@@ -3282,7 +3282,7 @@ pub struct FleetBundleActivateRequest {
     pub expected_active: Option<FleetActivationFenceDto>,
 }
 
-/// A proposed initial orchestration bundle for review (ASMA-8280 S-2).
+/// A proposed initial orchestration bundle for review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct FleetBundleProposalDto {
     /// The Realm it was proposed for.
@@ -3720,7 +3720,7 @@ pub struct JiraMaterializationPreviewDto {
     pub preview_hash: ContentHash,
 }
 
-/// A confirmed Jira materialization and ASMA activation receipt.
+/// A confirmed Jira materialization and epic activation receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct JiraMaterializationAppliedDto {
     /// The Realm that owns the receipt.
@@ -3735,7 +3735,7 @@ pub struct JiraMaterializationAppliedDto {
     pub items: Vec<JiraMaterializationItemDto>,
     /// The materialization command receipt.
     pub receipt_id: String,
-    /// The separate ASMA activation command receipt.
+    /// The separate epic activation command receipt.
     pub activation_receipt_id: String,
     /// Whether the whole required binding set is activated.
     pub activated: bool,
@@ -5021,7 +5021,7 @@ pub struct EpicTaskRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EpicExecutionScopeDto {
-    /// The external tracker key, e.g. `ASMA-7869`.
+    /// The confirmed external tracker key.
     #[schema(value_type = String)]
     pub external_epic_key: ExternalId,
     /// The compact title used when a runtime renders the epic container.
@@ -6494,7 +6494,7 @@ pub struct TicketReconcilePlanDto {
     ///
     /// Content is part of this answer deliberately. Reporting `true` while an
     /// issue's description still held only `Kontor <kind> <uuid>: <title>` is
-    /// the defect ASMA-8123 fixes: a caller asking whether a ticket is
+    /// a content-projection defect: a caller asking whether a ticket is
     /// reconciled must not be told yes while its reader sees an internal UUID.
     pub converged: bool,
 }
@@ -13440,7 +13440,7 @@ pub async fn recover_gate_rejection(
 /// Catch a stalled workflow up to the phase its own durable evidence proves.
 ///
 /// The advance is normally computed as a side effect of recording a gate or
-/// settling a turn. When that moment is missed — ASMA-8205 passed its
+/// settling a turn. When that moment is missed — a task passed its
 /// `high-verification-gate` at sequence 2 and the stored phase never moved —
 /// nothing re-derives it afterwards, and the workflow stalls with complete and
 /// unambiguous evidence sitting in front of it.

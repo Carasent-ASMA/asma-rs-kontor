@@ -453,6 +453,19 @@ name `fleet.yml` to `orchestration/fleet.yml` and `teams/core-team.yml` to
 hash, preserves active pins and refuses a conflicting old and new source. No
 manifest reader changes before KR-14.
 
+The Paseo transport announces only its existing protocol number and capabilities,
+with no client application version. Readiness still checks the actual server
+version against the supported 0.8.0 floor and verifies each required capability;
+this cleanup does not qualify a new server release or advance KR-14.
+
+Schema 143 renames the activation authority to `epic_activations` and its command
+kind to `activate_epic` through the existing ordered migration transaction. It
+retains receipt IDs, canonical intent bytes/digests, frozen pins and activation
+rows; only the typed command kind and table name change. A retry compares all
+operation arguments and reuses the frozen receipt intent. Older binaries must
+refuse the newer schema; rollback requires a compatible binary, never a forced
+schema-version downgrade. The historical migration CHECK lists remain frozen.
+
 For ASMA, the selected folder is `asma-modules/config/`. Its successor
 references are `fleet: orchestration/fleet.yml`,
 `supervision: orchestration/tpm-supervision.yml` (the TPM cadence profile),

@@ -450,17 +450,17 @@ pub struct PinnedConfiguration {
 pub struct PromotionTarget {
     /// Tracker-neutral MiniProject name.
     pub name: ExternalName,
-    /// Whether the ASMA Epic policy should activate.
-    pub activate_asma_epic: bool,
-    /// Confirmed Jira Epic binding, required for ASMA activation.
+    /// Whether the epic policy should activate.
+    pub activate_epic: bool,
+    /// Confirmed Jira Epic binding, required for epic activation.
     pub confirmed_jira_epic_id: Option<ExternalId>,
 }
 
 impl PromotionTarget {
     fn validate(&self) -> DomainResult<()> {
-        if self.activate_asma_epic && self.confirmed_jira_epic_id.is_none() {
+        if self.activate_epic && self.confirmed_jira_epic_id.is_none() {
             return Err(DomainError::MissingAuthority {
-                subject: "ASMA Epic activation",
+                subject: "epic activation",
                 rule: "a confirmed Jira Epic binding is required",
             });
         }

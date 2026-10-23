@@ -94,3 +94,18 @@ pub(crate) fn created_state_root() -> TempDir {
     SqliteStore::open(&root.path().join(DATABASE_FILE)).expect("the realm is created");
     root
 }
+
+/// Return an empty current activation shape to its pre-143 name for a historical
+/// fixture that will replay the whole chain. Refuse to erase activation evidence.
+pub(crate) fn rewind_activation_name(connection: &rusqlite::Connection) {
+    let evidence: i64 = connection.query_row(
+        "SELECT (SELECT count(*) FROM epic_activations) + (SELECT count(*) FROM command_receipts WHERE kind='activate_epic')",
+        [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        evidence, 0,
+        "historical fixture must not rewrite activation evidence"
+    );
+    connection
+        .execute_batch("ALTER TABLE epic_activations RENAME TO asma_epic_activations;")
+        .unwrap();
+}

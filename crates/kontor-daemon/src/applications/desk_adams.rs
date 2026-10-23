@@ -674,7 +674,7 @@ impl Services {
                 )
                 .about("desk Adam handoff")
                 .advising(
-                    "route the TPM on another vendor; a same-vendor handoff waits on Igor's pending decision on seat-credential continuity (ASMA-8452); nothing was changed",
+                    "route the TPM on another vendor; a same-vendor handoff waits on an explicit policy decision on seat-credential continuity; nothing was changed",
                 ));
         }
 
@@ -1454,7 +1454,7 @@ impl Services {
                 )
                 .about("desk Adam binding")
                 .advising(
-                    "omit keep_native: the epic's LSA launches fresh and the ad-hoc session is fenced; keeping the session waits on Igor's pending decision on seat-credential continuity (ASMA-8452); nothing was placed",
+                    "omit keep_native: the epic's LSA launches fresh and the ad-hoc session is fenced; keeping the session waits on an explicit policy decision on seat-credential continuity; nothing was placed",
                 ));
         }
         let state = self.state()?;

@@ -18,8 +18,8 @@
 //! `ws://127.0.0.1:6767/ws`:
 //!
 //! 1. connect, then send exactly one `hello` carrying
-//!    [`PASEO_WS_PROTOCOL_VERSION`] and [`PASEO_APP_VERSION`] as separate
-//!    fields;
+//!    [`PASEO_WS_PROTOCOL_VERSION`] and the client capabilities, with no client
+//!    application version;
 //! 2. wait for the daemon's pushed `status/server_info` and gate on it — no
 //!    operational request is written before that push agrees with both pins;
 //! 3. wrap every request as `{"type":"session","message":{…}}`, and accept an
@@ -68,10 +68,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::wire::{
-    MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_STREAM_QUEUE, PASEO_APP_VERSION,
-    PASEO_CAP_SELECTIVE_AGENT_TIMELINE, PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION,
-    PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION, PaseoDirection, PaseoProjection, PaseoServerInfo,
-    PaseoTimelineCursor,
+    MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_STREAM_QUEUE, PASEO_CAP_SELECTIVE_AGENT_TIMELINE,
+    PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION, PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION,
+    PaseoDirection, PaseoProjection, PaseoServerInfo, PaseoTimelineCursor,
 };
 
 /// The JSON flag every lifecycle command carries.
@@ -2058,9 +2057,8 @@ impl PaseoLiveTransport {
 
     /// The hello this transport opens every connection with.
     ///
-    /// Protocol and app version are separate fields, because they are separate
-    /// pins: the daemon closes the socket on a protocol number it does not
-    /// implement, and the app version is what this adapter's own gate reads.
+    /// Announce the protocol and capabilities only. The supported server floor
+    /// is checked against server readback, independently of this hello.
     #[must_use]
     pub fn hello(client_id: &str) -> serde_json::Value {
         serde_json::json!({
@@ -2068,7 +2066,6 @@ impl PaseoLiveTransport {
             "clientId": client_id,
             "clientType": PASEO_CLIENT_TYPE,
             "protocolVersion": PASEO_WS_PROTOCOL_VERSION,
-            "appVersion": PASEO_APP_VERSION,
             "capabilities": {
                 PASEO_CAP_SELECTIVE_AGENT_TIMELINE: true,
                 PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION: true,
@@ -3577,13 +3574,13 @@ mod tests {
     }
 
     #[test]
-    fn the_hello_pins_protocol_and_app_version_as_separate_fields() {
+    fn the_hello_announces_protocol_and_capabilities_without_a_client_version() {
         let hello = PaseoLiveTransport::hello("kontor-plane-1");
         assert_eq!(hello["type"], "hello");
         assert_eq!(hello["clientId"], "kontor-plane-1");
         assert_eq!(hello["clientType"], "cli");
         assert_eq!(hello["protocolVersion"], 1);
-        assert_eq!(hello["appVersion"], PASEO_APP_VERSION);
+        assert!(hello.get("appVersion").is_none());
         // The daemon's capability table spells this one snake_case; the
         // camelCase spelling is silently ignored, which is worse than an error.
         assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);

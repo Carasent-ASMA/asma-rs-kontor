@@ -1,4 +1,6 @@
 //! ASMA-8159 F4: real ordered migration rollback on a disposable v119 ledger.
+mod support;
+
 use kontor_core::id::{CanonicalDocument, ContentHash, ExternalName, ProjectId, Timestamp};
 use kontor_core::repository::{NewProject, ProjectRepository};
 use kontor_store::memory::MemoryProvenance;
@@ -93,6 +95,7 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
         .unwrap();
     drop(store);
     let connection = Connection::open(&database).unwrap();
+    support::rewind_activation_name(&connection);
     let later_pins:i64=connection.query_row("SELECT (SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL) + (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL) + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",[],|row|row.get(0)).unwrap();
     assert_eq!(
         later_pins, 0,
