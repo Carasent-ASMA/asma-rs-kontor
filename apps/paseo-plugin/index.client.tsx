@@ -6,11 +6,14 @@ import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { contributeReturnControl } from "./client/return-control";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
+import { recordVisit } from "./client/recent-sessions";
+import { SWITCH_SHEET } from "./client/start-switch-sheet";
 
 export const SESSIONS_SCREEN_ID = "sessions";
 export const SESSIONS_SIDEBAR_ID = "sessions";
 export const SESSIONS_COMMAND_ID = "sessions";
 export const BACK_COMMAND_ID = "back-to-kontor";
+export const SWITCH_COMMAND_ID = "start-or-switch";
 
 function SessionsSidebarItem({
   currentScreen,
@@ -55,8 +58,19 @@ export default function contribute(client: PluginClientContext): () => void {
       icon: "ArrowLeft",
       keywords: ["back", "return", "kontor", "sessions"],
       context: "agent",
-      onSelect({ openScreen }) {
+      onSelect({ openScreen, agent }) {
+        recordVisit(agent.id);
         openScreen({ screenId: SESSIONS_SCREEN_ID });
+      },
+    }),
+    client.addCommandCenterItem({
+      id: SWITCH_COMMAND_ID,
+      title: "Start or switch Kontor session…",
+      icon: "History",
+      keywords: ["recent", "switch", "jump", "last", "visited", "new", "start", "lsa", "adam", "kontor", "sessions"],
+      context: "global",
+      onSelect({ openScreen }) {
+        openScreen({ screenId: SESSIONS_SCREEN_ID, params: { sheet: SWITCH_SHEET, at: String(Date.now()) } });
       },
     }),
   ];

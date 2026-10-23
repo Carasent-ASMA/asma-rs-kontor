@@ -42,11 +42,11 @@ export function Card({ title, children, colors }: { title: string; children: Rea
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>{title}</Text>{children}
   </View>;
 }
-/** Square icon button; a touch pointer gets a real 44pt target, since the web ignores a hit slop. A disabled button keeps its place. */
-export function IconButton({ label, icon, colors, onPress, disabled = false }: { label: string; icon: string; colors: Colors; onPress: () => void; disabled?: boolean }) {
-  const hint = useControlHelp(label);
+/** Square icon button; a touch pointer gets a real 44pt target, since the web ignores a hit slop. A disabled button keeps its place. `expanded` makes it a menu trigger. */
+export function IconButton({ label, icon, colors, onPress, disabled = false, expanded, ref }: { label: string; icon: string; colors: Colors; onPress: () => void; disabled?: boolean; expanded?: boolean; ref?: Ref<View> }) {
+  const hint = useControlHelp(label, ref);
   const size = COARSE_POINTER ? 44 : 34;
-  return <Pressable {...hint.bindings} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} aria-disabled={disabled} disabled={disabled} onPress={() => { hint.dismiss(); onPress(); }} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.45 : 1 }}>
+  return <Pressable {...hint.bindings} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} aria-disabled={disabled} disabled={disabled} onPress={() => { hint.dismiss(); onPress(); }} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: expanded ? colors.accent : colors.border, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.45 : 1 }}>
     <Icon name={icon} size={16} color={disabled ? colors.foregroundMuted : colors.foreground} />
   </Pressable>;
 }
