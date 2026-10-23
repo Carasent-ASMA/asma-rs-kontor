@@ -1139,6 +1139,24 @@ a settled action reconciles its exact stale list snapshot until it changes.
 The action outcome remains visible when its row disappears.
 The Current default is part of the combined Sessions view.
 
+**Select** enters bulk archive selection on desktop and mobile; a row long press
+also enters selection. Checkboxes support Space on web and have 44-point targets.
+**Select all shown** covers only the filtered sessions. A batch contains at most
+50 exact IDs and always needs one confirmation, including a one-item selection.
+The confirmation keeps its session list collapsed and explains that history and
+files remain, active work stops, and no undo is exposed here.
+
+A parent is blocked unless every active managed child is selected. Selected
+children run first; the server requires their confirmed saved archive outcomes
+and rechecks native child impact before dispatching the parent. A new child,
+blocked child or unconfirmed child prevents a parent archive. Requests remain
+sequential, with the existing durable per-session fences and exact-ID readback.
+**Stop before next session** lets the current request settle; it does not undo
+or retry it. Pending rows stay visible, uncertain outcomes offer a metadata-only
+Check, and blocked rows keep their reasons. The final status and one summary
+toast distinguish archived, blocked, unconfirmed, absent and unattempted rows.
+There is no whole-host bulk archive or automatic provider-history load.
+
 Archive does not require provider history. Resume requires its separate history
 and route preflight. Provider-history
 existence is unverified unless an authorized operation supplies that evidence;
