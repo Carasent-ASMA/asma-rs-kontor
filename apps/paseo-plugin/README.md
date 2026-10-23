@@ -50,6 +50,15 @@ pill is the in-session return control where the composer supports it.
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
   rows visible with the failure and a Retry action.
+- **Returning to Kontor.** Opening a session closes the Kontor screen, but the
+  plugin runtime lives as long as the host connection. The host's directory and
+  its subscription live with it, so a return shows the live rows at once
+  without reading a page. Updates and reconnects that arrive meanwhile still
+  apply. A return walks every page again only when the directory is new,
+  offline or no longer live, or when the archive scope differs. The
+  subscription's bootstrap page is one row, since the walk reads every row. A
+  workspace and project read under 30 s old is reused with its own read time.
+  Plugin cleanup releases the subscriptions.
 - **Search and filters.** Search matches every token against the full original
   session title, workspace name, project name/key, cwd and recognized
   structured labels (`epic`, `workstream`, PR and ticket identifiers). Native
@@ -1118,6 +1127,10 @@ exactly its count. It also pins choice wording and the unlinked-session plan not
 and missing cursors, native upserts/removals, attention, archival scope,
 recognized epic/workstream label search, disconnect staleness, reconnect
 reconciliation, obsolete-generation update fencing and source failures.
+`test/session-reentry.test.ts` covers returning to Kontor: live rows without a
+read, updates and reconnects while closed, an unfinished first walk, stopped or
+offline directories, host isolation, archive scope, cleanup, reorder-stable
+removal receipts and workspace reuse.
 `test/session-actions.test.ts` covers duplicate-name open by native ID and the
 missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
 screen, sidebar and the **Open Kontor** and **Back to Kontor** commands.

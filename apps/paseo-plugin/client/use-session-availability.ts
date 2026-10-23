@@ -36,7 +36,8 @@ export function useSessionAvailability(hostId: string, entries: readonly Directo
   const dispositionsRef = useRef(readDispositions); dispositionsRef.current = readDispositions;
   const generation = useRef(0), owner = useRef(hostId); owner.current = hostId;
   const signature = entries.filter(hasSessionAttention).map((entry) => `${entry.id}:${entry.updatedAt}`).join("|");
-  const idsSignature = entries.map((entry) => entry.id).join("|");
+  // Sorted: a running session's reorder is not a new set of sessions, and must not re-read every disposition.
+  const idsSignature = entries.map((entry) => entry.id).sort().join("|");
   const refresh = () => { generation.current++; setEvidence({ hostId, values: {} }); setSettled({ hostId, values: {} }); setRevision((value) => value + 1); };
   const reconcile = (rows: readonly LifecycleRow[]) => {
     generation.current++;
