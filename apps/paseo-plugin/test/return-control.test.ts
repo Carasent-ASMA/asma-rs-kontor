@@ -21,8 +21,12 @@ import {
   RETURN_CONTROL_LABEL,
   RETURN_CONTROL_TITLE,
 } from "../client/return-control";
-import type { AgentDirectoryPage } from "../client/session-directory";
+import type {
+  AgentDirectoryPage,
+  DirectoryState,
+} from "../client/session-directory";
 import {
+  bindHostDirectory,
   disposeRetainedDirectories,
   startHostDirectory,
 } from "../client/use-session-directory";
@@ -185,9 +189,12 @@ type Pill = {
   active: boolean;
 };
 
-function fakeControls() {
+function fakeControls(
+  beforeAdd?: (contribution: PillContribution) => void,
+) {
   const pills: Pill[] = [];
   const addComposerPill = vi.fn((contribution: PillContribution) => {
+    beforeAdd?.(contribution);
     let pill!: Pill;
     const registration = {
       update: vi.fn(),
@@ -258,6 +265,7 @@ describe("Kontor composer controls share one host directory", () => {
 
   afterEach(async () => {
     await disposeRetainedDirectories();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -403,6 +411,119 @@ describe("Kontor composer controls share one host directory", () => {
     stopPlan();
     stopReturn();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the remaining plan pills and both controls when one registration throws", async () => {
+    const rows = ["fixture-a", "fixture-b", "fixture-c"].map((id) =>
+      agentPage(id, { workspaceId: `wks-${id}` }),
+    );
+    const host = fakeHost("host-a", rows);
+    let failFixtureB = true;
+    const controls = fakeControls((contribution) => {
+      if (
+        failFixtureB &&
+        contribution.id === "open-linked-plan" &&
+        contribution.agentId === "fixture-b"
+      ) {
+        throw new Error("registration boom");
+      }
+    });
+    controls.rpc.mockResolvedValue({
+      status: "ready",
+      associations: {
+        "fixture-a": ["plan-a"],
+        "fixture-b": ["plan-b"],
+        "fixture-c": ["plan-c"],
+        "fixture-d": ["plan-d"],
+      },
+      sources: ["plan-a", "plan-b", "plan-c", "plan-d"].map((id) => ({ id })),
+      error: null,
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const stopPlan = contributePlanControl(controls.client, "sessions");
+    await settle();
+    const stopReturn = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+
+    expect(controls.pillFor("fixture-a", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-b", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("fixture-c", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-a", RETURN_CONTROL_ID)).toBeDefined();
+    expect(controls.pillFor("fixture-c", RETURN_CONTROL_ID)).toBeDefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor plan control could not reconcile a composer pill",
+      expect.any(Error),
+    );
+
+    failFixtureB = false;
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[0]!.agent,
+        id: "fixture-d",
+        workspaceId: "wks-fixture-d",
+      },
+    } as PaseoAgentUpdate);
+    await settle();
+
+    expect(controls.pillFor("fixture-b", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-d", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-d", RETURN_CONTROL_ID)).toBeDefined();
+
+    stopPlan();
+    stopReturn();
+  });
+
+  it("keeps later listeners and pending bindings when one listener throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = vi.fn(() => {
+      throw new Error("listener boom");
+    });
+    const second = vi.fn();
+    const releaseFirst = bindHostDirectory(first);
+    const releaseSecond = bindHostDirectory(second);
+    const rows = [agentPage("agent-a", { workspaceId: "wks-a" })];
+    const host = fakeHost("host-a", rows);
+
+    expect(() => startHostDirectory("host-a")).not.toThrow();
+    await settle();
+
+    expect(first).toHaveBeenCalled();
+    expect(second).toHaveBeenCalled();
+    const beforeUpdate = second.mock.calls.length;
+    host.emitUpdate({
+      kind: "upsert",
+      agent: { ...rows[0]!.agent, title: "Renamed" },
+    } as PaseoAgentUpdate);
+    await settle();
+    expect(second.mock.calls.length).toBeGreaterThan(beforeUpdate);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor host directory listener failed for host-a",
+      expect.any(Error),
+    );
+
+    const third = vi.fn();
+    const releaseThird = bindHostDirectory(third);
+    expect(third).toHaveBeenCalled();
+
+    fakeHost("host-b", [agentPage("b-only", { workspaceId: "wks-b" })]);
+    startHostDirectory("host-b");
+    await settle();
+
+    const fourth = vi.fn<(state: DirectoryState) => void>();
+    const releaseFourth = bindHostDirectory(fourth);
+    expect(fourth).toHaveBeenCalled();
+    expect(
+      fourth.mock.calls[0]![0].entries.map((entry) => entry.id),
+    ).not.toContain("b-only");
+
+    releaseFirst();
+    releaseSecond();
+    releaseThird();
+    releaseFourth();
   });
 
   it("binds the controls to the first HostScreen host and never to a later host", async () => {

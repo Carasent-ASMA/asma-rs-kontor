@@ -22,7 +22,16 @@ export function contributePlanControl(client: PluginClientContext, screenId: str
   // Hermes evaluates plugin bundles with function-scoped let/const, so a press handler made in the entry loop would
   // open the last entry's plan. Each entry's IDs reach its handler only as this call's arguments.
   const openPlan = (agentId: string, ids: readonly string[]) => () => { client.openScreen({ screenId, params: { tab: "Plan", agentId, ...(ids.length === 1 ? { sourceId: ids[0]! } : {}) } }); };
-  const removeAll = () => { for (const pill of pills.values()) pill.registration.remove(); pills.clear(); };
+  const reconciliationError = "Kontor plan control could not reconcile a composer pill";
+  const removePill = (id: string): boolean => {
+    const pill = pills.get(id);
+    if (!pill) return true;
+    try { pill.registration.remove(); }
+    catch (error) { console.error(reconciliationError, error); return false; }
+    pills.delete(id);
+    return true;
+  };
+  const removeAll = () => { for (const id of [...pills.keys()]) removePill(id); };
   const apply = () => {
     if (lifetime.signal.aborted) return;
     if (!associations || associations.status !== "ready") { removeAll(); return; }
@@ -32,16 +41,21 @@ export function contributePlanControl(client: PluginClientContext, screenId: str
       const ids = linkedPlans(associations.associations, entry.id, catalog);
       if (!ids.length || !entry.workspaceId || entry.status === "closed") continue;
       seen.add(entry.id);
-      // Updating a descriptor avoids duplicate registrations on settings refresh.
-      const contribution = { id: "open-linked-plan", workspaceId: entry.workspaceId, agentId: entry.id,
-        button: { title: "Open plan", icon: "BookOpen", label: "Open plan", behavior: { kind: "action" as const, onPress: openPlan(entry.id, ids) } } };
-      const current = pills.get(entry.id);
-      if (current?.workspaceId === entry.workspaceId) current.registration.update(contribution.button);
-      else { current?.registration.remove(); pills.set(entry.id, { workspaceId: entry.workspaceId, registration: client.addComposerPill(contribution) }); }
+      try {
+        // Updating a descriptor avoids duplicate registrations on settings refresh.
+        const contribution = { id: "open-linked-plan", workspaceId: entry.workspaceId, agentId: entry.id,
+          button: { title: "Open plan", icon: "BookOpen", label: "Open plan", behavior: { kind: "action" as const, onPress: openPlan(entry.id, ids) } } };
+        const current = pills.get(entry.id);
+        if (current?.workspaceId === entry.workspaceId) current.registration.update(contribution.button);
+        else {
+          if (current && !removePill(entry.id)) continue;
+          pills.set(entry.id, { workspaceId: entry.workspaceId, registration: client.addComposerPill(contribution) });
+        }
+      } catch (error) { console.error(reconciliationError, error); }
     }
     // The shared directory supplies sessions; it is walked once per host. Only
     // its complete inventory can retire a pill that is no longer associated.
-    if (complete) for (const [id, pill] of pills) if (!seen.has(id)) { pill.registration.remove(); pills.delete(id); }
+    if (complete) for (const id of [...pills.keys()]) if (!seen.has(id)) removePill(id);
   };
   const releaseDirectory = bindHostDirectory((state: DirectoryState) => { entries = state.entries; complete = state.status === "ready" && state.inventoryComplete === true; apply(); });
   async function reconcile() {

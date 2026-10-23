@@ -16,17 +16,19 @@ function offlineReason(status: HostStatus): string {
   return "The Paseo host is reconnecting. Showing the last inventory.";
 }
 
+type DirectoryListener = (state: DirectoryState) => void;
+
 type RetainedDirectory = {
   readonly hostId: string;
   readonly directory: SessionDirectory;
-  readonly listeners: Set<(state: DirectoryState) => void>;
+  readonly listeners: Set<DirectoryListener>;
   state: DirectoryState;
   /** The host status last applied to the directory; null before its first start. */
   appliedStatus: HostStatus | null;
 };
 
 type DirectoryBinding = {
-  readonly listener: (state: DirectoryState) => void;
+  readonly listener: DirectoryListener;
   record: RetainedDirectory | null;
 };
 
@@ -50,18 +52,41 @@ const retained = new Map<string, RetainedDirectory>();
  */
 let ownerHostId: string | null = null;
 const pendingBindings = new Set<DirectoryBinding>();
+const reportedListenerFailures = new Set<DirectoryListener>();
+
+function notifyListener(
+  record: RetainedDirectory,
+  listener: DirectoryListener,
+  state: DirectoryState,
+): void {
+  try {
+    listener(state);
+  } catch (error) {
+    if (reportedListenerFailures.has(listener)) {
+      return;
+    }
+    reportedListenerFailures.add(listener);
+    console.error(
+      `Kontor host directory listener failed for ${record.hostId}`,
+      error,
+    );
+  }
+}
 
 function claimOwner(record: RetainedDirectory): void {
   if (ownerHostId !== null) {
     return;
   }
   ownerHostId = record.hostId;
-  for (const binding of pendingBindings) {
-    binding.record = record;
-    record.listeners.add(binding.listener);
-    binding.listener(record.state);
+  try {
+    for (const binding of [...pendingBindings]) {
+      binding.record = record;
+      record.listeners.add(binding.listener);
+      notifyListener(record, binding.listener, record.state);
+    }
+  } finally {
+    pendingBindings.clear();
   }
-  pendingBindings.clear();
 }
 
 function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
@@ -79,7 +104,9 @@ function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
       bootstrapLimit: BOOTSTRAP_LIMIT,
       onChange: (next) => {
         record.state = next;
-        for (const listener of listeners) listener(next);
+        for (const listener of [...listeners]) {
+          notifyListener(record, listener, next);
+        }
       },
     }),
   };
@@ -141,7 +168,7 @@ export function bindHostDirectory(
     return () => undefined;
   }
   record.listeners.add(listener);
-  listener(record.state);
+  notifyListener(record, listener, record.state);
   return () => {
     record.listeners.delete(listener);
   };
@@ -154,6 +181,7 @@ export async function disposeRetainedDirectories(): Promise<void> {
   for (const binding of pendingBindings) binding.record = null;
   pendingBindings.clear();
   for (const record of records) record.listeners.clear();
+  reportedListenerFailures.clear();
   await Promise.all(records.map((record) => record.directory.dispose()));
 }
 
