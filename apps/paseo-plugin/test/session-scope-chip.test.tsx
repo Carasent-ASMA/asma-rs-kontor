@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 const help = vi.hoisted(() => ({ show: vi.fn(), hide: vi.fn(), focus: vi.fn(), blur: vi.fn(), dismiss: vi.fn(), text: "" }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (fn: () => unknown) => fn() }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View", PanResponder: { create: () => ({ panHandlers: {} }) } }));
@@ -97,19 +97,19 @@ describe("group primary state shares", () => {
     expect(groupStateHelp(value)).toContain("including collapsed branches");
   });
 
-  it.each([true, false])("keeps a state word and ratio at every width, including 0/1/all, compact=%s", (compact) => {
+  it.each([true, false])("labels session totals and their state subset at every width, including 0/1/all, compact=%s", (compact) => {
     for (const values of [[], [entries[2]!], [entries[2]!, entries[2]!], entries]) {
       const value = aggregate(values);
       const tree = StateBadge({ state: aggregateState(value), aggregate: value, colors, compact });
       const text = walk(tree).flatMap((node) => typeof node.props.children === "string" ? [node.props.children] : []).join("");
-      expect(text).toBe(values.length === 0 ? "No sessions" : values.length === 5 ? "Needs input 1/5" : `Running ${values.length}/${values.length}`);
+      expect(text).toBe(values.length === 0 ? "No sessions" : values.length === 5 ? "5 sessionsNeeds input 1" : `${values.length} session${values.length === 1 ? "" : "s"}Running ${values.length}`);
       expect(text).not.toContain("0/0");
     }
     expect(groupStateSummary(aggregate([entries[2]!]))).toBe("Running: 1 of 1 session");
   });
 
   it.each([
-    [2, 85, "running", "Running 2/85"], [50, 85, "attention", "Attention 50/85"], [85, 85, "running", "Running 85/85"],
+    [2, 85, "running", "Running 2"], [50, 85, "attention", "Attention 50"], [85, 85, "running", "Running 85"],
   ] as const)("shows %s of %s sessions in %s without borrowing the group total", (count, total, state, expected) => {
     const values = Array.from({ length: total }, (_, index) => sessionEntry(String(index), { status: state === "running" && index < count ? "running" : "idle", requiresAttention: state === "attention" && index < count }));
     const value = aggregate(values);
@@ -130,6 +130,16 @@ describe("group primary state shares", () => {
     expect(button.style({ focused: true }).borderColor).toBe(colors.foreground);
     button.onFocus(); expect(help.focus).toHaveBeenCalledOnce();
     button.onPress(); expect(help.dismiss).toHaveBeenCalledOnce(); expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("removes the repeated visible session total but keeps labelled prefilter totals and equal workspace counts", () => {
+    const group = buildOrganizationTree({ entries, grouping: "flat" })[0]!;
+    const render = (patch: Partial<typeof group>) => OrganizationRowView({ row: { kind: "group", group: { ...group, ...patch }, depth: 0, expanded: false }, colors, compact: true,
+      disabled: false, arranging: false, selected: false, favorite: false, onToggle() {}, onFavorite() {}, onMove() {}, onSelect() {} });
+    const secondary = (tree: ReactNode) => walk(tree).filter((node) => node.props.testID === "organization-unit-count").map((node) => node.props.children);
+    expect(secondary(render({}))).toEqual([]);
+    expect(secondary(render({ unitVisible: 2 }))).toEqual(["5 sessions before filters"]);
+    expect(secondary(render({ unit: "workspaces", unitVisible: 5, unitTotal: 5 }))).toEqual(["5 workspaces"]);
   });
 
   it.each([true, false])("uses the same scope explanation in the tooltip and accessible hint, contextual=%s", (contextual) => {

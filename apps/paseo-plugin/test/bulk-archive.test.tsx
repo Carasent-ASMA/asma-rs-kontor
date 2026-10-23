@@ -8,7 +8,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView
 vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ bindings: {}, dismiss() {} }) }));
 
-import { ArchiveSelectionCheckbox, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "../client/bulk-archive";
+import { ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "../client/bulk-archive";
 import type { useSessionLifecycle } from "../client/use-session-lifecycle";
 import { Action, Disclosure } from "../client/page-controls";
 
@@ -19,6 +19,20 @@ const colors = { foreground: "#111", foregroundMuted: "#666", surface0: "#fff", 
 type Lifecycle = ReturnType<typeof useSessionLifecycle>;
 
 describe("bulk archive selection accessibility", () => {
+  it("keeps Select a labelled button with a 44pt target and help, and only starts or cancels selection", () => {
+    for (const selecting of [false, true]) {
+      const selection = { selecting, start: vi.fn(), clear: vi.fn() } as unknown as ReturnType<typeof useArchiveSelection>;
+      const button = ArchiveSelectionToggle({ selection, disabled: false, colors });
+      expect(button.props).toMatchObject({ accessibilityRole: "button", "aria-pressed": selecting,
+        accessibilityLabel: selecting ? "Cancel archive selection" : "Select sessions for archive" });
+      expect(button.props.accessibilityHint).toContain("review and confirm");
+      expect(button.props.style({ pressed: false })).toMatchObject({ minWidth: 44, minHeight: 44 });
+      expect(walk(button).some((node) => node.type === "Icon")).toBe(true);
+      button.props.onPress();
+      expect(selection.start).toHaveBeenCalledTimes(selecting ? 0 : 1);
+      expect(selection.clear).toHaveBeenCalledTimes(selecting ? 1 : 0);
+    }
+  });
   it("renders a labelled 44pt checkbox with checked/busy states and supports Space once", () => {
     const press = vi.fn(), element = ArchiveSelectionCheckbox({ session: { id: "fixture-a", title: "Duplicate title" }, checked: true, disabled: false, pending: true, colors, onPress: press });
     expect(element.props).toMatchObject({ accessibilityRole: "checkbox", accessibilityLabel: "Select Duplicate title (fixture-a) for archive", accessibilityState: { checked: true, disabled: false, busy: true }, style: { minWidth: 44, minHeight: 44 } });

@@ -50,13 +50,13 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", I
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: fake.state, refresh: fake.refresh }) }));
 
 import { SessionsScreen } from "../client/sessions-screen";
-import { ArchiveSelectionCheckbox, BulkArchiveDialog, BulkArchiveToolbar } from "../client/bulk-archive";
+import { ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar } from "../client/bulk-archive";
 import { DEFAULT_RECOVERY_TARGET, type LifecycleRow } from "../shared/session-lifecycle";
 import { clearSessionViews, patchSessionView } from "../client/session-view-store";
 import { sessionEntry } from "./session-fixtures";
 
 type Element = { type?: unknown; props: Record<string, unknown> };
-const walk = (node: unknown): Element[] => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(walk) : [node as Element, ...walk((node as Element).props.children)];
+const walk = (node: unknown): Element[] => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(walk) : [node as Element, ...walk((node as Element).props.children), ...walk((node as Element).props.ListHeaderComponent)];
 const all = () => walk(harness.flush());
 const toolbar = () => all().find((element) => element.type === BulkArchiveToolbar)!;
 const sheet = () => all().find((element) => element.type === BulkArchiveDialog);
@@ -66,7 +66,7 @@ const confirm = () => {
   void (button.props.onPress as () => Promise<void>)();
 };
 type Selection = { start(): void; toggle(id: string): void; selected: string[] };
-const selection = () => toolbar().props.selection as Selection;
+const selection = () => all().find((element) => element.type === ArchiveSelectionToggle)!.props.selection as Selection;
 const list = () => all().find((element) => element.props.testID === "sessions-list")!;
 const listed = () => (list().props.data as Array<{ entry?: { id: string } }>).flatMap((row) => row.entry ? [row.entry.id] : []);
 const drawnRow = (id: string) => (list().props.renderItem as (input: unknown) => Element)({ item: (list().props.data as Array<{ entry?: { id: string } }>).find((row) => row.entry?.id === id) });

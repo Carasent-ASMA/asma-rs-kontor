@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useControlHelp } from "./control-help";
 import type { Colors } from "./page-controls";
 import type { SessionLayout } from "./session-view-store";
@@ -35,7 +36,7 @@ export function SessionLayoutControl({ value, colors, onChange }: {
     return () => target?.removeEventListener("keydown", keydown);
   }, [value, onChange]);
   return <View ref={root} testID="sessions-layout" accessibilityRole="radiogroup" accessibilityLabel="Session layout"
-    style={{ flexDirection: "row", alignSelf: "flex-start", flexShrink: 0, padding: 2, borderWidth: 1, borderColor: colors.border, borderRadius: 9, backgroundColor: colors.surface1 }}>
+    style={{ flexDirection: "row", flexWrap: "wrap", alignSelf: "flex-start", gap: 2, flexShrink: 1 }}>
     {(["grouped", "flat"] as const).map((layout) => {
       const selected = value === layout;
       const help = layout === "grouped" ? groupedHelp : flatHelp;
@@ -44,12 +45,12 @@ export function SessionLayoutControl({ value, colors, onChange }: {
         accessibilityHint={HELP} accessibilityState={{ checked: selected }} aria-checked={selected}
         tabIndex={Platform.OS === "web" ? selected ? 0 : -1 : undefined}
         onPress={() => { help.dismiss(); if (!selected) onChange(layout); }}
-        style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 60, paddingHorizontal: 8,
+        style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, paddingHorizontal: 8, paddingVertical: 6,
           flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, borderWidth: 2, borderRadius: 6,
-          borderColor: selected || focused ? colors.accent : "transparent", backgroundColor: selected || pressed ? colors.surface2 : colors.surface1,
+          borderColor: focused ? colors.foreground : "transparent", backgroundColor: selected || pressed ? colors.surface2 : undefined,
           ...(focused && Platform.OS === "web" ? { outlineStyle: "solid", outlineWidth: 2, outlineColor: colors.foreground } : {}) })}>
-        <Text accessibilityElementsHidden importantForAccessibility="no" style={{ width: 12, color: colors.foreground, fontSize: 12 }}>{selected ? "✓" : ""}</Text>
-        <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{layout === "grouped" ? "Grouped" : "Flat"}</Text>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={layout === "grouped" ? "ListTree" : "List"} size={16} color={selected ? colors.accent : colors.foregroundMuted} /></View>
+        <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: selected ? "600" : "400", textDecorationLine: selected ? "underline" : "none" }}>{layout === "grouped" ? "Grouped" : "Flat"}</Text>
       </Pressable>;
     })}
   </View>;

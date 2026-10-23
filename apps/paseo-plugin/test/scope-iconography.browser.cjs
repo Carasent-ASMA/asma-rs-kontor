@@ -47,7 +47,7 @@ async function checkContextual(page, touch, theme, name, filter) {
   if (filter === 'search') await page.getByTestId('sessions-search').fill('Unique quiet');
   else await activate(page.getByTestId('sessions-filter-idle'), touch);
   const kontor = () => page.getByRole('button', { name: /^Workstream Kontor,/ });
-  if (!touch) assert.ok((await kontor().innerText()).includes('Idle 1/1'));
+  if (!touch) assert.ok((await kontor().innerText()).includes('Idle 1'));
   await activate(page.getByRole('button', { name: 'Legend', exact: true }), touch);
   assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('matching the current search and filters'));
   if (touch) await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
@@ -56,7 +56,8 @@ async function checkContextual(page, touch, theme, name, filter) {
   assert.equal(await page.getByTestId('sessions-result-context-busy').count(), 0);
   const before = await state(page);
   await activate(page.getByRole('button', { name: 'Show Unique quiet session in the tree', exact: true }), touch);
-  assert.ok((await kontor().innerText()).includes('Running 1/2'));
+  assert.ok((await kontor().innerText()).includes('Running 1'));
+  assert.ok((await kontor().innerText()).includes('2 sessions'));
   assert.ok((await kontor().getAttribute('aria-label')).includes('Idle: 1 of 2 sessions'));
   assert.equal(await page.getByTestId('sessions-row-context-busy').count(), 1, 'nonmatching context remains');
   if (touch) await page.getByTestId('sessions-mobile-filters-trigger').tap();
@@ -76,7 +77,7 @@ async function checkContextual(page, touch, theme, name, filter) {
     await page.keyboard.press('Escape');
   }
   await activate(page.getByRole('button', { name: /^Epic ASMA-99100,/ }), touch);
-  assert.ok((await kontor().innerText()).includes('Running 1/2'), 'collapsed context keeps its denominator');
+  assert.ok((await kontor().innerText()).includes('Running 1'), 'collapsed context keeps its denominator');
   await activate(page.getByRole('button', { name: 'Back to 1 result', exact: true }), touch);
   assert.equal(await page.getByTestId('sessions-result-context-quiet').count(), 1);
   assert.equal(await page.getByTestId('sessions-result-context-busy').count(), 0);
@@ -98,7 +99,8 @@ async function check(width, theme) {
     await page.goto(`${origin}/?theme=${theme}`);
     const kontor = () => page.getByRole('button', { name: /^Workstream Kontor,/ });
     await kontor().waitFor();
-    assert.ok((await kontor().innerText()).includes('Running 2/538'));
+    assert.ok((await kontor().innerText()).includes('Running 2'));
+    assert.ok((await kontor().innerText()).includes('538 sessions'));
     assert.ok((await kontor().getAttribute('aria-label')).includes('Running: 2 of 538 sessions'));
     const qsw = page.getByRole('button', { name: /^Native project DESK • QSW,/ });
     assert.ok((await qsw.innerText()).includes('No sessions'));
@@ -156,7 +158,7 @@ async function check(width, theme) {
     await page.getByTestId('sessions-search').fill('Synthetic session 141');
     if (touch) await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
     await kontor().waitFor();
-    assert.ok((await kontor().innerText()).includes('Running 1/1'));
+    assert.ok((await kontor().innerText()).includes('Running 1'));
     assert.ok((await kontor().getAttribute('aria-label')).includes('Running: 1 of 1 session'));
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     assert.equal(overflow, false, 'no horizontal document overflow');
