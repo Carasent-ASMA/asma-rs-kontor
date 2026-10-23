@@ -101,7 +101,7 @@ const row = (id: string, patch: Partial<LifecycleRow> = {}) => ({ id, title: `Se
 const review = (ids: string[]) => ({ id: "00000000-0000-4000-8000-000000000001", createdAt: "2026-10-22", action: "archive", scope: "filtered", target: DEFAULT_RECOVERY_TARGET, rows: ids.map((id) => row(id)), limitation: TAKEOVER_LIMIT });
 /** The header names exactly the sessions the flat list draws after Back. */
 function expectCount(ids: readonly string[]) {
-  expect(header()).toEqual({ text: `${ids.length} session${ids.length === 1 ? "" : "s"}`, label: `${ids.length} matching session${ids.length === 1 ? "" : "s"}` });
+  expect(header()).toEqual({ text: `${ids.length} matching session${ids.length === 1 ? "" : "s"}`, label: `${ids.length} matching session${ids.length === 1 ? "" : "s"}` });
   back(); expect(listedIds().sort()).toEqual([...ids].sort()); open();
 }
 
@@ -118,12 +118,12 @@ describe("mobile Filters & view matching count", () => {
     expectCount(["alpha-idle", "alpha-closed"]);
     press("sessions-filter-error");
     // A complete, live read with nothing left is a confirmed 0.
-    expect(header()).toEqual({ text: "0 sessions", label: "0 matching sessions" });
+    expect(header()).toEqual({ text: "0 matching sessions", label: "0 matching sessions" });
     (all().find((element) => element.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
     expectCount(["alpha-idle", "beta-running", "alpha-closed", "delta-error", "gamma-input"]);
     press("sessions-reset-view");
     // Reset returns to collapsed Grouped: the list draws group rows, the count still names the sessions.
-    expect(header()).toEqual({ text: "3 sessions", label: "3 matching sessions" });
+    expect(header()).toEqual({ text: "3 matching sessions", label: "3 matching sessions" });
     back(); expect(listedIds()).toEqual([]);
     layout("flat"); open();
     expectCount(["alpha-idle", "beta-running", "gamma-input"]);
@@ -132,7 +132,7 @@ describe("mobile Filters & view matching count", () => {
   it("keeps the count when only layout, sort or group disclosure changes", () => {
     mount(); open(); press("sessions-filter-all"); search("a");
     const before = header();
-    expect(before?.text).toBe("5 sessions");
+    expect(before?.text).toBe("5 matching sessions");
     back(); layout("grouped");
     open(); expect(header()).toEqual(before);
     press("sessions-sort");
@@ -143,9 +143,9 @@ describe("mobile Filters & view matching count", () => {
   it.each<[string, Partial<DirectoryState>, string, string]>([
     ["nothing read yet", { entries: [], status: "loading", live: false, lastUpdatedAt: null, inventoryComplete: false }, "…", "Reading matching sessions"],
     ["a failed first read", { entries: [], status: "error", live: false, lastUpdatedAt: null, inventoryComplete: false }, "—", "Matching sessions unavailable: the session list could not be read"],
-    ["a partial live read", { inventoryComplete: false }, "3 sessions · partial", "3 sessions match a partial read; the count may be incomplete"],
-    ["a stale read", { status: "stale", live: false }, "3 sessions · stale", `3 sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
-    ["a ready read without its live stream", { live: false }, "3 sessions · stale", `3 sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
+    ["a partial live read", { inventoryComplete: false }, "3 matching sessions · partial", "3 matching sessions match a partial read; the count may be incomplete"],
+    ["a stale read", { status: "stale", live: false }, "3 matching sessions · stale", `3 matching sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
+    ["a ready read without its live stream", { live: false }, "3 matching sessions · stale", `3 matching sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
     ["a stale read with no current match", { status: "stale", live: false, entries: ENTRIES.filter((entry) => entry.status === "closed") }, "…", "Matching sessions updating: Stale"],
   ])("qualifies %s instead of claiming an exact or empty count", (_, patch, text, label) => {
     mount(); open();
@@ -156,9 +156,9 @@ describe("mobile Filters & view matching count", () => {
   it("names the host state when the host is offline, and treats a read at time 0 as read", () => {
     fake.hostStatus = "offline";
     mount(); open();
-    expect(header()?.text).toBe("3 sessions · host offline");
+    expect(header()?.text).toBe("3 matching sessions · host offline");
     fake.hostStatus = "online";
-    expect(header()?.text).toBe("3 sessions");
+    expect(header()?.text).toBe("3 matching sessions");
   });
 
   it("shows Reading, never 0, while the Archived read has not replaced the ordinary one", () => {
@@ -194,10 +194,10 @@ describe("mobile Filters & view matching count", () => {
 describe("matchingCount", () => {
   it("is exact only for a live, complete read of the membership in view", () => {
     const count = (patch: Partial<DirectoryState>, includeArchived = false, freshness = "Live") => matchingCount({ count: 1, state: ready(patch), includeArchived, freshness, blocked: null }).text;
-    expect(count({})).toBe("1 session");
+    expect(count({})).toBe("1 matching session");
     expect(count({}, true)).toBe("…");
     expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("…");
-    expect(count({ inventoryComplete: undefined })).toBe("1 session · partial");
-    expect(count({}, false, "Reconnecting")).toBe("1 session · reconnecting");
+    expect(count({ inventoryComplete: undefined })).toBe("1 matching session · partial");
+    expect(count({}, false, "Reconnecting")).toBe("1 matching session · reconnecting");
   });
 });

@@ -250,7 +250,9 @@ Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
 lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
 **Desks & workspaces** and **Role**; switching back restores the last grouping.
 The labelled **Grouped / Flat** segments stay above the scrolling list on mobile
-and desktop, beside the result count when present. In short compact windows,
+and desktop, alongside one explicitly labelled matching-session count (below
+it on compact screens). The same row includes the separate Select action with
+an icon and short label. In short compact windows,
 that row scrolls at the top of the list so session rows retain usable space.
 Their checked state, keyboard focus outline and hover/focus help make the choice
 visible. Use Tab to reach the
@@ -260,8 +262,11 @@ remembered through the existing host view and saved organization preferences;
 On mobile, the fixed Filters & view header shows how many sessions match every
 active filter, beside the heading, while its controls scroll. The number is the
 final matching session set, so layout, grouping, sort and collapsed groups never
-change it. It is exact only from a ready, live and complete read of the chosen
-Sessions or Archived history; a partial or stale read is marked, and a read in
+change it. Inventory totals sit below the filters with their host context and
+archive membership. Workspace/folder group totals are labelled as groups, since
+working directories without native workspaces also form groups; Grouped can
+retain empty native workspaces. The matching count is exact only from a ready,
+live and complete read of the chosen Sessions or Archived history; a partial or stale read is marked, and a read in
 progress, a failed first read or an assignment that cannot be evaluated shows
 **…**, **—** or **Not evaluated**, never 0.
 Search, state, task, assignment and association filters apply in both layouts,
@@ -289,12 +294,13 @@ Adam, Outside). Their full names and scope explanations appear on hover or
 keyboard focus and in accessible names/hints; touch keeps the captions. Counts
 describe the current project/epic context before search and other filters.
 Each shortcut has a 44 pt target, a pressed state, a focus border and an
-underlined selected caption. Group rows show the primary displayed state as
-count/total, such as **Running 2/85**, at every tree depth. The denominator counts
-descendant sessions represented in the displayed tree, including collapsed
-branches. In normal Grouped view, these are only the current search/filter
-matches. **Show in tree** from Flat results retains surrounding context, so its
-denominator can also include sessions outside the results' search, task or
+underlined selected caption. Group rows label the descendant total once, such
+as **85 sessions**, with the leading displayed state below it, **Running 2**.
+A different total before filters is labelled separately; workspace-kind rows
+retain a labelled workspace count even when it equals the session count.
+The session total includes collapsed branches. In normal Grouped view, these
+are only the current search/filter matches. **Show in tree** from Flat results retains surrounding context, so its
+total can also include sessions outside the results' search, task or
 explicit state filter. Project, desk, workstream, epic and assignment scopes
 still apply, as does **Current** when selected. **Back to results** restores the
 matching results. Empty groups say **No sessions**. Hover/focus help and accessible hints
@@ -1303,7 +1309,11 @@ a settled action reconciles its exact stale list snapshot until it changes.
 The action outcome remains visible when its row disappears.
 The Current default is part of the combined Sessions view.
 
-**Select** enters bulk archive selection on desktop and mobile; a row long press
+**Select** shares a wrapping row with the mutually exclusive **Grouped** and
+**Flat** layout choices. Icons have short visible labels and accessible help;
+all three targets are at least 44 pt. The layout group uses a subtle fill and
+underlined selected label, with no enclosing frame. **Select** enters bulk
+archive selection on desktop and mobile; a row long press
 also enters selection. Checkboxes support Space on web and have 44-point targets.
 **Select all shown** covers only the filtered sessions. A batch contains at most
 50 exact IDs and always needs one confirmation, including a one-item selection.

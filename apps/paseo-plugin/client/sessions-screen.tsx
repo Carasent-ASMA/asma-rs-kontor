@@ -123,7 +123,7 @@ import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
-import { ArchiveRowFeedback, ArchiveSelectionCheckbox, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
+import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
 import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
 import { notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery } from "./archive-feedback";
 import { hideNotices, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
@@ -355,7 +355,7 @@ export function matchingCount({ count, state, includeArchived, freshness, blocke
       ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
       : { text: "…", label: "Reading matching sessions" };
   }
-  const sessions = `${count} session${count === 1 ? "" : "s"}`;
+  const sessions = `${count} matching session${count === 1 ? "" : "s"}`;
   if (freshness === "Live") {
     return state.inventoryComplete === true
       ? { text: sessions, label: `${count} matching session${count === 1 ? "" : "s"}` }
@@ -2190,16 +2190,19 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const bulkScopeIds = useMemo(() => shown.filter((entry) => entry.archivedAt === null).map((entry) => entry.id), [shown]);
   const bulkSelection = useArchiveSelection(host.id, bulkScopeIds);
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
-  // The full count and read statement; Filters shows it, the visible count line only when it adds something.
+  const resultWorkspaces = new Set(shown.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
+  const unplaced = shown.filter((entry) => !inWorkspace(entry)).length;
+  // Inventory and placement are secondary facts in Filters; the matching count has one primary home per page.
   const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
-  const sessionCount = assignmentBlocked ? `${assignmentPart} not evaluated · ${scoped.length} session${scoped.length === 1 ? "" : "s"} on this host`
-    : `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
+  const sessionCount = `Inventory: ${scoped.length} session${scoped.length === 1 ? "" : "s"} in this host context${state.includeArchived ? ", including archived" : ", excluding archived"}`;
   const inventoryRead = state.lastUpdatedAt === null
     ? "not read yet"
     : state.inventoryComplete
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
-  const countSummary = `${sessionCount} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"} · ${inventoryRead}`;
+  const countSummary = state.includeArchived !== includeArchived || state.lastUpdatedAt === null
+    ? "Inventory for this membership has not been read yet."
+    : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
   const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
     freshness: nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) });
@@ -2724,7 +2727,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Action small={!compact} colors={colors} label="↑ Move up" accessibilityLabel="Move selected row up" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(-1)} />
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
-          <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
+          <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? ` ${workspaceNote}.` : ""}</Text>
           <SessionsLegend colors={colors} compact={compact} contextual={peek !== null} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
         </OptionsContainer>
       ) : null}
@@ -2989,22 +2992,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       : state.status === "error"
         ? "No sessions could be read from this host."
         : "No sessions in this host's scope.";
-  // Shown only when narrowed or when the read is partial or missing; group rows already carry the
-  // counts. The workspace count stays in the label and, with the complete read, in Filters.
-  const hasResultFilter = tokens.length > 0 || !!task || (view.status !== "all" && view.status !== "current");
-  const countLine = shown.length === 0 || state.entries.length === 0 || (!hasResultFilter && shown.length === scoped.length && state.inventoryComplete && state.lastUpdatedAt !== null) ? null : (
-    <Text testID="sessions-count" accessibilityRole="text" accessibilityLiveRegion="polite" accessibilityLabel={countSummary} style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
-      {hasResultFilter ? `${shown.length} matching session${shown.length === 1 ? "" : "s"} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}` : sessionCount}{state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
-    </Text>
-  );
-  const resultWorkspaces = new Set(results.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
-  const unplaced = results.filter((entry) => !inWorkspace(entry)).length;
-  const resultLine = resultMode && results.length > 0 ? (
-    <Text testID="sessions-count" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
-      {`${results.length} matching session${results.length === 1 ? "" : "s"} · ${resultWorkspaces} workspace${resultWorkspaces === 1 ? "" : "s"}${unplaced ? ` · ${unplaced} without a workspace` : ""}`}
-      {state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
-    </Text>
-  ) : null;
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
   const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
   const shortPeek = peek !== null && shortScreen;
@@ -3023,7 +3010,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </View>
   ) : null;
   // A peek pins its way back above the list, so scrolling to the session never hides it.
-  const listLine = peek ? null : resultMode ? resultLine : countLine;
   const plural = (count: number) => `${count} session${count === 1 ? "" : "s"}`;
   const reasonText = workTally ? [...workTally.reasons].map(([reason, count]) => `${count} ${MATCH_REASONS[reason].toLocaleLowerCase()}`).join(", ") : "";
   // Always reachable outside Filters: the scope, any assignment filter and why it shows what it shows, and the ways back.
@@ -3058,14 +3044,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const compactParts = [scopeLabel, ...activeFilterParts({ query: view.query, status: "all", shortcut: null, streams: null, includeArchived, task: task?.label }),
     sessionLayout === "grouped" && grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null, sortPart].filter((part): part is string => !!part);
   const mobileCount = <Text testID="sessions-mobile-count" accessibilityLiveRegion="polite" accessibilityLabel={[filterCount.label, ...compactParts].join(". ")}
-    style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: 4 }}>{[filterCount.text, ...compactParts].join(" · ")}</Text>;
-  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-    <View style={{ flex: 1, minWidth: compact ? 64 : 80 }}>
-      {compact ? mobileCount : listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
+    style={{ color: colors.foreground, fontSize: 12, lineHeight: 17, fontWeight: "600", paddingHorizontal: 4 }}>{[filterCount.text, ...compactParts].join(" · ")}</Text>;
+  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap", alignItems: compact ? "stretch" : "center", gap: 4 }}>
+    <View style={{ flexGrow: compact ? 0 : 1 }}>
+      {compact ? mobileCount : <Text testID="sessions-count" accessibilityLiveRegion="polite" accessibilityLabel={filterCount.label} style={{ color: colors.foreground, fontSize: 12, fontWeight: "600", paddingHorizontal: 4 }}>{filterCount.text}</Text>}
     </View>
-    {/* A hidden tray's button sits in this row on compact, so the Resume column stays one control high. */}
-    {compact ? noticesTrigger(allNotices, noticesHide) : null}
-    <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+    <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10 }}>
+      {!includeArchived || lifecycle.batch ? <ArchiveSelectionToggle selection={bulkSelection} disabled={!canStart || bulkOpen || includeArchived} colors={colors} toggleRef={bulkToggleRef} /> : null}
+      <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+      {compact ? noticesTrigger(allNotices, noticesHide) : null}
+    </View>
   </View>;
   const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
 
@@ -3090,8 +3078,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {compact ? null : fullToolbarSlot}
       {peekBar}
       {shortScreen ? null : layoutBar}
-      {!includeArchived || lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} shownCount={bulkScopeIds.length} disabled={!canStart || bulkOpen || includeArchived}
-        lifecycle={lifecycle} colors={colors} toggleRef={bulkToggleRef} reviewRef={bulkReviewRef} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} onReview={() => {
+      {bulkSelection.selecting || lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} shownCount={bulkScopeIds.length} disabled={!canStart || bulkOpen || includeArchived}
+        lifecycle={lifecycle} colors={colors} reviewRef={bulkReviewRef} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} onReview={() => {
           if (!canStart || !bulkSelection.selected.length) return;
           lifecycle.clear(); setBulkOpen(true); void lifecycle.prepare("archive", "filtered", [...bulkSelection.selected], true);
         }} /> : null}

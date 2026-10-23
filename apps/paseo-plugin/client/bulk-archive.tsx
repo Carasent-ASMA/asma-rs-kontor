@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { ScrollView } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
+import { useControlHelp } from "./control-help";
 import { ARCHIVE_BATCH_LIMIT, unresolvedArchive, type LifecycleRow } from "../shared/session-lifecycle";
 import { Action, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
@@ -44,13 +45,28 @@ export function ArchiveRowFeedback({ row, colors }: { row: LifecycleRow | undefi
   return <Text style={{ color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>{`${row.outcome === "blocked" ? "Blocked" : "Archive not confirmed"}: ${row.message ?? row.reason}`}</Text>;
 }
 
-export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview, toggleRef, reviewRef, maxHeight, announce = true }: {
-  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void; toggleRef?: RefObject<View | null>; reviewRef?: RefObject<View | null>; maxHeight?: number; announce?: boolean;
+export function ArchiveSelectionToggle({ selection, disabled, colors, toggleRef }: {
+  selection: ReturnType<typeof useArchiveSelection>; disabled: boolean; colors: Colors; toggleRef?: RefObject<View | null>;
+}) {
+  const hint = "Choose sessions for archive. Nothing is archived until you review and confirm.";
+  const help = useControlHelp(hint, toggleRef);
+  return <Pressable {...help.bindings} testID="sessions-selection-toggle" accessibilityRole="button"
+    accessibilityLabel={selection.selecting ? "Cancel archive selection" : "Select sessions for archive"} accessibilityHint={hint}
+    accessibilityState={{ selected: selection.selecting, disabled }} aria-pressed={selection.selecting} disabled={disabled}
+    onPress={() => { help.dismiss(); if (selection.selecting) selection.clear(); else selection.start(); }}
+    style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minWidth: 44, minHeight: 44, paddingHorizontal: 8, paddingVertical: 6,
+      flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 6, borderWidth: 2, borderColor: focused ? colors.foreground : "transparent",
+      backgroundColor: pressed || selection.selecting ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={selection.selecting ? "X" : "ListChecks"} size={16} color={colors.foregroundMuted} /></View>
+    <Text style={{ color: colors.foreground, fontSize: 12 }}>{selection.selecting ? "Cancel" : "Select"}</Text>
+  </Pressable>;
+}
+
+export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview, reviewRef, maxHeight, announce = true }: {
+  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void; reviewRef?: RefObject<View | null>; maxHeight?: number; announce?: boolean;
 }) {
   return <ScrollView testID="sessions-bulk-archive" style={{ flexGrow: 0, flexShrink: 0, maxHeight }} contentContainerStyle={{ gap: 4 }} keyboardShouldPersistTaps="handled">
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-      <Action ref={toggleRef} colors={colors} label={selection.selecting ? "Cancel selection" : "Select"} disabled={disabled}
-        accessibilityLabel={selection.selecting ? "Cancel archive selection" : "Select sessions for archive"} onPress={selection.selecting ? selection.clear : selection.start} />
       {selection.selecting ? <>
         <Action colors={colors} label={`Select all shown (${shownCount})`} disabled={disabled || shownCount > ARCHIVE_BATCH_LIMIT} onPress={selection.selectShown} />
         <Action ref={reviewRef} colors={colors} label={`Archive selected (${selection.selected.length})`} disabled={disabled || !selection.selected.length} onPress={onReview} />
