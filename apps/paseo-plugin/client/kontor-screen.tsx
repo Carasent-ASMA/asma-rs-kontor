@@ -40,7 +40,7 @@ import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
 import { declaredPlanWorkstream, planWorkstreamMappings } from "./plan-workstreams";
 import { taskTeamReader } from "./task-team-source";
 
-// Set at plugin load, before Back to Kontor or the composer pill records a visit.
+// One device store; Recent uses a separate key for each host.
 configureRecentStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
@@ -252,7 +252,7 @@ function HostScreen(props: PluginScreenProps) {
       {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
-  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostStatus={hostStatus} directory={directory.state}
+  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
     onShowAll={(text) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
       const scope = sessionScopeKey(host.id, next);

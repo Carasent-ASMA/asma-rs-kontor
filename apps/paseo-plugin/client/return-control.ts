@@ -8,7 +8,6 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import { collectDirectory, type DirectoryEntry } from "./session-directory";
-import { recordVisit } from "./recent-sessions";
 
 export const RETURN_CONTROL_ID = "return-to-kontor";
 export const RETURN_CONTROL_TITLE = "Open Kontor";
@@ -122,8 +121,6 @@ export function contributeReturnControl(
           behavior: {
             kind: "action",
             onPress() {
-              // Leaving a session through Kontor's return path is a Recent visit on this device.
-              recordVisit(agent.id);
               client.openScreen({ screenId });
             },
           },

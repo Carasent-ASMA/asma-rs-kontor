@@ -125,18 +125,40 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
   the query to Sessions unscoped. A row opens by native ID through the same
   path as Sessions. Rows carry no archive control.
-- **Recent.** Paseo keeps no visit history a plugin can read, so Kontor records
-  its own. Opening a session from Kontor, the **← Kontor** pill and **Back to
-  Kontor** each record that session's ID and time on this device (iOS settings
-  or web local storage, key `kontor.recent@1`; no titles). It keeps 20 visits
-  for 14 days (pruned on reads and writes), merged with the host's `lastUserMessageAt` ("Prompted", from any
-  device on the host). Archived and absent sessions are hidden, and their
-  visits kept. **Clear recent on this device** empties the visits and hides
-  prompts up to that moment, on this device only. Without a device store Recent
-  lasts until Paseo restarts; an unreadable stored value is left untouched until
-  Clear; the sheet says which. The plugin client is given no stable host
-  identity, so the store is per device rather than per host; native agent IDs
-  do not collide.
+- **Recently viewed (supported interim scope).** A user opening a session
+  through Kontor's native navigation records that exact session ID and time.
+  Most recent opens come first, one row per session; A → B → A shows A, B.
+  Prompts, worker activity, creation/change times, **← Kontor** and **Back to
+  Kontor** never add or reorder visits. Storage is scoped by the surface's
+  `host.id` and the local app/browser storage profile (iOS settings or web local
+  storage, key `kontor.recent@2 ` followed by the JSON host tuple; no titles).
+  This is local user storage, not a detected signed-in identity; **Working as**
+  is an assignment filter and never determines ownership of visits. People
+  sharing one app/browser profile share its history.
+  It keeps 20 visits for 14 days, pruned on reads and writes. Archived and
+  absent sessions are hidden while their unexpired visits are kept, including
+  during partial/offline reads. **Clear recent on this device** clears the
+  selected host only. Without a device store it lasts until Paseo restarts;
+  an unreadable new record stays untouched until Clear; the sheet says which.
+- **Saved history.** The old `kontor.recent@1` value mixed opens and returns
+  without recording their source or host. Its bytes are preserved, including
+  on Clear. **Show saved history** exposes its session IDs separately, with
+  unknown original host and opening times. Old timestamps are never imported
+  as opens or used to order Recently viewed. No earlier opening times can be
+  recovered from this record.
+- **Open host capability gap (owner needed: Paseo public client API).** Native
+  sidebar opens and other devices are not captured by this interim scope.
+  As of 2026-10-23, the installed Paseo 0.12.0 plugin contract and the
+  [public plugin reference](https://paseo.sh/docs/plugins/reference#screens-and-sidebar-items)
+  expose `openAgent(...): void`, selected surface host IDs, and entity snapshots
+  by supplied ID. They do not expose a personal view-event/history subscription.
+  The 0.12.0 host routes plugin opens through `navigateToAgent`; its internal
+  viewed-timeline synchronization is a content replica, not a public personal
+  history API. A returned navigation call is an accepted open, not proof that
+  rendering succeeded later. Complete native/all-device personal history needs
+  a public host capability carrying confirmed user views, host/user attribution
+  and completion/failure semantics. This remains separately owned host work;
+  it is not delivered by this plugin correction or a permanent API-absence claim.
 - **New LSA (bounded create).** Off unless the operator writes exactly
   `{"create":"on"}` to `$PASEO_HOME/plugin-config/kontor/create.json`
   (default `~/.paseo/plugin-config/kontor/create.json`) on the host computer.

@@ -45,7 +45,7 @@ export function openSessionById(input: {
   }
   try {
     input.navigation.openAgent({ agentId: entry.id, serverId: input.serverId });
-    recordVisit(entry.id);
+    recordVisit(input.serverId, entry.id);
     return { ok: true };
   } catch (error) {
     return {
