@@ -119,6 +119,21 @@ describe("native read acknowledgement", () => {
     expect(s.markSeen).not.toHaveBeenCalled();
   });
 
+  it("keeps a prepared batch on its original client when the selected host changes", async () => {
+    const original = setup();
+    const foreign = setup([agent("a")], "host-b");
+    let selected = original.client;
+    const actions = createSessionReadActions("host-a", () => selected);
+    const preview = await actions.prepareHost();
+    selected = foreign.client;
+    const results = [];
+    for await (const item of actions.markHost(preview)) results.push(item);
+    expect(results).toMatchObject([{ hostId: "host-a", agentId: "a", outcome: "seen" }]);
+    expect(original.native.get("a")?.requiresAttention).toBe(false);
+    expect(foreign.native.get("a")?.requiresAttention).toBe(true);
+    expect(foreign.markSeen).not.toHaveBeenCalled();
+  });
+
   it("recovers a lost response from fresh native metadata without sending twice", async () => {
     const s = setup();
     s.markSeen.mockImplementationOnce(async () => {

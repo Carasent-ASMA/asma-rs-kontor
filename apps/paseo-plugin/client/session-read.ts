@@ -69,6 +69,8 @@ async function reconcile(handle: AgentHandle, target: SessionReadTarget): Promis
 
 /** Borrow one exact host's public API. This service keeps no local read state or hidden-row store. */
 export function createSessionReadActions(hostId: string, client: () => Client) {
+  const native = client();
+
   function checkHost(target: { readonly hostId: string }) {
     if (target.hostId !== hostId) throw new Error("Read acknowledgement belongs to a different host. Nothing was sent.");
   }
@@ -76,7 +78,6 @@ export function createSessionReadActions(hostId: string, client: () => Client) {
   async function markOne(input: SessionReadTarget): Promise<SessionReadResult> {
     const target = sessionReadTargetSchema.parse(input);
     checkHost(target);
-    const native = client();
     const handle = native.agents.ref(target.id);
     if (!hostSupportsMarkSeen(native) || !supportsReadAcknowledgement(handle)) return result(target, "unsupported");
     try {
@@ -98,7 +99,6 @@ export function createSessionReadActions(hostId: string, client: () => Client) {
   }
 
   async function prepareHost(signal?: AbortSignal): Promise<HostReadPreview> {
-    const native = client();
     if (!hostSupportsMarkSeen(native)) throw new Error(SESSION_READ_MESSAGES.unsupported);
     const inventory = await collectDirectory(hostDirectoryClient(native), true, signal);
     const unread = inventory.entries.filter((entry) => entry.requiresAttention);
