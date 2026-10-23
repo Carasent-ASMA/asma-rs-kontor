@@ -25,6 +25,8 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   const effort = model?.efforts.find((entry) => entry.id === effortId) ?? null;
   const modeId = draft.modeId !== undefined ? draft.modeId : preset?.modeId ?? provider?.defaultMode ?? provider?.modes[0]?.id;
   const mode = provider?.available ? provider.modes.find((entry) => entry.id === modeId) ?? null : null;
+  const staleEffort = !effort && (!!effortId || !!model?.efforts.length);
+  const staleMode = !mode && (!!modeId || !!provider?.modes.length);
   const topic = normalizeTopic(draft.topic);
   let problem: string | null = null;
   if (!options.enabled) problem = options.disabledReason ?? "New LSA is off on this host.";
@@ -33,10 +35,10 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   else if (options.catalogWorkspaceId !== desk.workspaceId) problem = "Refresh this desk's provider catalog before creating a session.";
   else if (!provider?.available) problem = provider?.note ?? (providerId ? `Provider ${providerId} is no longer active. Choose an active provider.` : "No active provider is available on this host.");
   else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : "No selectable model.";
-  else if (effortId && !effort) problem = `Effort ${effortId} is no longer offered for ${model.label}. Choose an available effort.`;
-  else if (modeId && !mode) problem = `Mode ${modeId} is no longer offered by ${provider.label}. Choose an available mode.`;
+  else if (staleEffort) problem = `Effort ${effortId ?? "none"} is no longer offered for ${model.label}. Choose an available effort.`;
+  else if (staleMode) problem = `Mode ${modeId ?? "none"} is no longer offered by ${provider.label}. Choose an available mode.`;
   else problem = topicProblem(topic);
-  return { desk, provider, model, effort, mode, topic, title: adhocTitle(topic), problem, fromProfile: preset !== null, staleEffort: !!effortId && !effort, staleMode: !!modeId && !mode };
+  return { desk, provider, model, effort, mode, topic, title: adhocTitle(topic), problem, fromProfile: preset !== null, staleEffort, staleMode };
 }
 
 /** A version-4 UUID for the request's idempotency; not a secret. */
@@ -76,6 +78,11 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const [phase, setPhase] = useState<Phase>({ kind: "draft" });
   const [advanced, setAdvanced] = useState(!compact);
   const submitted = useRef(false);
+  // Keep controls mounted during a scoped refresh so keyboard focus/selection survives. This snapshot is
+  // presentation only: submit still requires current ready options and the server's fresh validation.
+  const presentation = useRef<{ hostId: string; options: CreateOptions } | null>(null);
+  if (options.status === "ready") presentation.current = { hostId, options: options.options };
+  else if (options.status === "offline" || presentation.current?.hostId !== hostId) presentation.current = null;
   const live = useRef(true), currentHost = useRef(hostId), currentOptions = useRef(options), currentCanOpen = useRef(canOpen);
   currentHost.current = hostId; currentOptions.current = options; currentCanOpen.current = canOpen;
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
@@ -138,7 +145,8 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       </View>
     </View>);
   };
-  const choice = options.status === "ready" ? resolveDraft(options.options, draft) : null;
+  const ready = presentation.current?.options;
+  const choice = ready ? resolveDraft(ready, draft) : null;
   const providerLabel = choice?.provider?.label ?? "This provider";
   if (phase.kind === "busy") return wrap(<View accessibilityLiveRegion="polite" aria-live="polite"><Copy colors={colors}>{phase.label} Nothing is reported until the host answers.</Copy></View>);
   if (phase.kind === "result") return outcomeView(phase.outcome, providerLabel);
@@ -150,19 +158,21 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       <Action small label="Check" accessibilityLabel="Check the host for this creation" colors={colors} onPress={() => runCheck(phase.requestId, phase.title)} />
     </View>
   </View>);
-  if (!choice || options.status !== "ready") {
+  if (!choice || !ready) {
     const text = options.status === "error" ? `Kontor could not read this host's options (${options.message}).` : options.status === "offline" ? "Host offline. Nothing can be created until it reconnects." : "Reading this host's desks and providers…";
     return wrap(<>
       <Copy colors={colors} muted>{text}</Copy>
       {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh(draft.workspaceId)} /> : null}
     </>);
   }
-  const ready = options.options;
+  const problem = options.status === "ready" ? choice.problem : options.status === "error"
+    ? `Choices could not be refreshed (${options.message}). Refresh choices before creating a session.`
+    : "Refreshing this desk's choices… Creation stays disabled until the host answers.";
   // An unsettled earlier request (this device or another) is shown instead of the form until a Check settles it.
   if (ready.pending) return outcomeView(ready.pending, providerLabel);
 
   const submit = () => {
-    if (!isCurrent() || submitted.current || choice.problem || !choice.desk || !choice.provider || !choice.model) return;
+    if (!isCurrent() || currentOptions.current.status !== "ready" || submitted.current || problem || !choice.desk || !choice.provider || !choice.model) return;
     submitted.current = true;
     const requestId = newRequestId(), title = choice.title;
     setPhase({ kind: "busy", requestId, label: `Creating “${title}”…` });
@@ -176,7 +186,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     <View style={{ gap: 4 }}>
       <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Topic</Text>
       <TextInput testID="kontor-new-lsa-topic" accessibilityLabel="Topic" placeholder="What this session is about" autoFocus={!compact} maxLength={TOPIC_MAX} value={draft.topic}
-        onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!choice.problem) submit(); }} returnKeyType="go"
+        onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
         placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
       <Text testID="kontor-new-lsa-title" style={muted}>Title: {choice.title}. The session promotes ADHOC to a confirmed epic key itself.</Text>
     </View>
@@ -205,12 +215,12 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
     {choice.provider ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
     {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}
-    {choice.problem ? <Text testID="kontor-new-lsa-problem" style={{ color: colors.foregroundMuted, fontSize: 12 }}>{choice.problem}</Text> : null}
+    {problem ? <Text testID="kontor-new-lsa-problem" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 12 }}>{problem}</Text> : null}
   </>, <>
       <Action small label="Cancel" colors={colors} onPress={onCancel} />
-      <Pressable testID="kontor-new-lsa-create" accessibilityRole="button" accessibilityLabel={`Create ${choice.title}`} accessibilityHint={choice.problem ?? undefined} accessibilityState={{ disabled: !!choice.problem }} aria-disabled={!!choice.problem}
-        disabled={!!choice.problem} onPress={submit} style={{ minHeight: tall ? 44 : 30, paddingHorizontal: 12, borderRadius: 6, justifyContent: "center", backgroundColor: choice.problem ? colors.surface2 : colors.accent, opacity: choice.problem ? 0.6 : 1 }}>
-        <Text style={{ color: choice.problem ? colors.foregroundMuted : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Create LSA</Text>
+      <Pressable testID="kontor-new-lsa-create" accessibilityRole="button" accessibilityLabel={`Create ${choice.title}`} accessibilityHint={problem ?? undefined} accessibilityState={{ disabled: !!problem }} aria-disabled={!!problem}
+        disabled={!!problem} onPress={submit} style={{ minHeight: tall ? 44 : 30, paddingHorizontal: 12, borderRadius: 6, justifyContent: "center", backgroundColor: problem ? colors.surface2 : colors.accent, opacity: problem ? 0.6 : 1 }}>
+        <Text style={{ color: problem ? colors.foregroundMuted : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Create LSA</Text>
       </Pressable>
   </>);
 }

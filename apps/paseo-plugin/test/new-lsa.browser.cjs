@@ -13,7 +13,7 @@ assert.ok(process.env.RENDERER_PACKAGE_JSON && process.env.EVIDENCE_DIR, 'Supply
 const renderer = createRequire(path.resolve(process.env.RENDERER_PACKAGE_JSON));
 const output = path.resolve(process.env.EVIDENCE_DIR);
 assert.ok(!output.startsWith(plugin + path.sep), 'Evidence stays outside the plugin tree');
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || consoleDeps.resolve('@playwright/test'));
+const { chromium, expect } = require(process.env.PLAYWRIGHT_MODULE || consoleDeps.resolve('@playwright/test'));
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'kontor-new-lsa-browser-'));
 fs.mkdirSync(output, { recursive: true });
 const rootOf = (resolver, name) => path.dirname(resolver.resolve(name + '/package.json'));
@@ -44,14 +44,14 @@ const query=new URLSearchParams(location.search), scenario=query.get('scenario')
 const dark=query.get('theme')==='dark';
 const colors={surface0:dark?'#15171c':'#fff',surface1:dark?'#1f222a':'#f5f6f8',surface2:dark?'#2e333e':'#e6ebf2',foreground:dark?'#ecedf0':'#20242c',foregroundMuted:dark?'#a8adb7':'#5e6570',border:dark?'#414754':'#c7cdd7',accent:dark?'#9cbfff':'#245bba',accentForeground:dark?'#15171c':'#fff',statusSuccess:'#168047',statusWarning:'#a76b0a',statusDanger:'#b02222'};
 const values=new Map(); configureRecentStorage({read:key=>values.get(key),write:(key,value)=>values.set(key,value)});
-const model=(id,label)=>({id,label,efforts:[],defaultEffort:null});
-const provider=(id,label,status,available)=>({id,label,status,available,note:available?null:status,persona:'supported',models:available?[model('first','Active model'),model('second','Second model')]:[],defaultModel:'first',modes:[],defaultMode:null});
-let stale=false;
-const catalog=workspaceId=>({enabled:true,disabledReason:null,pending:null,notes:[],catalogWorkspaceId:workspaceId||'wks-adam',desks:[{workspaceId:'wks-adam',projectId:'project-adam',desk:'ADAM',project:'DESK • ADAM'}],profile:null,
+let stale=false,settingsRequired=false;
+const model=(id,label)=>({id,label,efforts:settingsRequired?[{id:'high',label:'High effort'}]:[],defaultEffort:settingsRequired?'high':null});
+const provider=(id,label,status,available)=>({id,label,status,available,note:available?null:status,persona:'supported',models:available?[model('first','Active model'),model('second','Second model')]:[],defaultModel:'first',modes:settingsRequired?[{id:'default',label:'Default mode',dangerous:false}]:[],defaultMode:settingsRequired?'default':null});
+const catalog=workspaceId=>({enabled:true,disabledReason:null,pending:null,notes:[],catalogWorkspaceId:workspaceId||'wks-adam',desks:[{workspaceId:'wks-adam',projectId:'project-adam',desk:'ADAM',project:'DESK • ADAM'},...(scenario==='two-desks'?[{workspaceId:'wks-ops',projectId:'project-ops',desk:'OPS',project:'DESK • OPS'}]:[])],profile:scenario==='nullable-refresh'?{name:'LSA',provider:'active',model:'first',effort:'retired',modeId:'retired'}:null,
  providers:scenario==='empty'?[]:scenario==='loading'?[provider('loading','Loading provider','loading',false)]:[ {...provider('active','Active provider','ready',true),models:stale?[model('first','Active model')]:[model('first','Active model'),model('second','Second model')]}, provider('disabled','Disabled provider','disabled',false),provider('error','Error provider','error',false)]});
-window.fixture={calls:[],opens:[],timings:[],failOpen:scenario==='open-failed', invalidateModel:()=>{stale=true;},recent:host=>readRecent(host).record,
+window.fixture={calls:[],opens:[],timings:[],failOpen:scenario==='open-failed', invalidateModel:()=>{stale=true;},restoreSettings:()=>{settingsRequired=true;},recent:host=>readRecent(host).record,
  rpc:async(name,input,host)=>{const started=performance.now();window.fixture.calls.push({name,input,host});
-  if(name==='sessions.create-options'){await new Promise(resolve=>setTimeout(resolve,10));window.fixture.timings.push({phase:'catalog',ms:performance.now()-started});return catalog(input.workspaceId);}
+  if(name==='sessions.create-options'){if(scenario==='two-desks'&&input.workspaceId)await new Promise(resolve=>{window.fixture.finishCatalog=resolve;});await new Promise(resolve=>setTimeout(resolve,10));window.fixture.timings.push({phase:'catalog',ms:performance.now()-started});return catalog(input.workspaceId);}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,180));window.fixture.timings.push({phase:'create-fixture',ms:performance.now()-started});return {requestId:input.requestId,state:scenario==='unknown'?'unknown':'verified',title:'LSA • ADHOC • '+input.topic,agentId:scenario==='unknown'?null:'fixture-created-exact',workspaceId:input.workspaceId,message:scenario==='unknown'?'Creation may still complete.':'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   if(name==='sessions.create-check')return {requestId:input.requestId,state:'unknown',title:'LSA • ADHOC • Route review',agentId:null,workspaceId:'wks-adam',message:'Creation may still complete.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};
   throw new Error('Unexpected RPC in isolated fixture: '+name);
@@ -120,9 +120,73 @@ async function run(name, test) {
       const { page, context } = await pageFor(390, scenario);
       try { await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review'); assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true); await page.getByRole('button', { name: 'Refresh choices', exact: true }).waitFor(); if (scenario === 'loading') await page.getByText('Some providers are still loading.').waitFor(); } finally { await context.close(); }
     });
+    for (const width of [320, 390, 1440]) await run(`${width}-two-desk-keyboard-refresh`, async () => {
+      const { page, context } = await pageFor(width, 'two-desks');
+      try {
+        const topic = page.getByRole('textbox', { name: 'Topic', exact: true });
+        await topic.fill('Route review');
+        await topic.evaluate(input => { input.setSelectionRange(2, 7); window.fixture.topicElement = input; });
+        const adam = page.getByRole('radio', { name: 'DESK • ADAM / ADAM', exact: true });
+        const ops = page.getByRole('radio', { name: 'DESK • OPS / ADAM', exact: true });
+        await ops.evaluate(radio => { window.fixture.deskElement = radio; });
+        await adam.focus(); await adam.press('ArrowRight');
+        await page.waitForFunction(() => typeof window.fixture.finishCatalog === 'function');
+        const assertSelection = async () => {
+          assert.equal(await ops.getAttribute('aria-checked'), 'true');
+          assert.equal(await adam.getAttribute('aria-checked'), 'false');
+          assert.equal(await ops.getAttribute('tabindex'), '0');
+          assert.equal(await adam.getAttribute('tabindex'), '-1');
+          assert.equal(await ops.evaluate(radio => radio === document.activeElement && radio === window.fixture.deskElement), true);
+          assert.deepEqual(await topic.evaluate(input => [input === window.fixture.topicElement, input.value, input.selectionStart, input.selectionEnd]), [true, 'Route review', 2, 7]);
+        };
+        await assertSelection();
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
+        assert.deepEqual(await page.evaluate(() => window.fixture.opens), []);
+        await page.evaluate(() => window.fixture.finishCatalog());
+        await page.waitForFunction(() => window.fixture.timings.filter(event => event.phase === 'catalog').length === 2);
+        await expect(page.getByTestId('kontor-new-lsa-create')).toBeEnabled();
+        await assertSelection();
+        const calls = await page.evaluate(() => window.fixture.calls);
+        assert.deepEqual(calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { workspaceId: 'wks-ops' }]);
+        assert.equal(calls.filter(call => call.name === 'sessions.create').length, 0);
+        assert.deepEqual(await page.evaluate(() => window.fixture.opens), []);
+        await page.screenshot({ path: path.join(output, `${width}-two-desks.png`) });
+        await page.getByTestId('kontor-new-lsa-create').click();
+        await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
+        const creates = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
+        assert.equal(creates.length, 1); assert.equal(creates[0].input.workspaceId, 'wks-ops');
+      } finally { await context.close(); }
+    });
     await run('invalidated-selection', async () => {
       const { page, context } = await pageFor(390);
       try { await page.getByRole('button', { name: /^Provider, model and mode\./ }).click(); await page.getByRole('radio', { name: 'Second model', exact: true }).click(); await page.evaluate(() => window.fixture.invalidateModel()); await page.getByRole('button', { name: 'Refresh choices', exact: true }).click(); await page.getByText(/Model second is no longer active/).waitFor(); assert.equal(await page.getByRole('radio', { name: 'Active model', exact: true }).getAttribute('aria-checked'), 'false'); assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true); } finally { await context.close(); }
+    });
+    await run('390-nullable-settings-refresh', async () => {
+      const { page, context } = await pageFor(390, 'nullable-refresh');
+      try {
+        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
+        await page.getByRole('button', { name: /^Provider, model and mode\./ }).click();
+        await page.getByRole('button', { name: 'Use current effort default', exact: true }).click();
+        await page.getByRole('button', { name: 'Use current mode default', exact: true }).click();
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), false);
+        await page.evaluate(() => window.fixture.restoreSettings());
+        await page.getByRole('button', { name: 'Refresh choices', exact: true }).click();
+        const effort = page.getByRole('radio', { name: 'High effort', exact: true });
+        const mode = page.getByRole('radio', { name: 'Default mode', exact: true });
+        await effort.waitFor(); await mode.waitFor();
+        assert.equal(await effort.getAttribute('aria-checked'), 'false');
+        assert.equal(await mode.getAttribute('aria-checked'), 'false');
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
+        await page.getByText(/Choose an available effort/).waitFor();
+        await effort.click();
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
+        await page.getByText(/Choose an available mode/).waitFor();
+        await mode.click();
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), false);
+        assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create').length), 0);
+        assert.deepEqual(await page.evaluate(() => window.fixture.opens), []);
+        await page.screenshot({ path: path.join(output, '390-nullable-settings-recovered.png') });
+      } finally { await context.close(); }
     });
     await run('open-failed-retry-only', async () => {
       const { page, context } = await pageFor(390, 'open-failed');

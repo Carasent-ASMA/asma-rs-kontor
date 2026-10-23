@@ -304,6 +304,11 @@ describe("New LSA draft", () => {
     expect(resolveDraft(OPTIONS, { topic: "Route review", effort: "removed" })).toMatchObject({ effort: null, problem: expect.stringContaining("Effort removed is no longer offered") });
     expect(resolveDraft(OPTIONS, { topic: "Route review", modeId: "removed" })).toMatchObject({ mode: null, problem: expect.stringContaining("Mode removed is no longer offered") });
   });
+
+  it.each(["effort", "modeId"] as const)("rejects a cleared %s once the current catalog requires a value", (setting) => {
+    const draft = { topic: "Route review", [setting]: null };
+    expect(resolveDraft(OPTIONS, draft)).toMatchObject({ problem: expect.stringContaining(setting === "effort" ? "Choose an available effort" : "Choose an available mode") });
+  });
 });
 
 describe("New LSA form", () => {
@@ -373,6 +378,44 @@ describe("New LSA form", () => {
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
   });
 
+  it("retains the keyboard-selected desk and draft through loading and failed scoped reads, with no implicit submit", () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const options = { ...OPTIONS, desks: [OPTIONS.desks[0]!, { workspaceId: "wks-ops", projectId: "prj-ops", desk: "OPS", project: "DESK • OPS" }] };
+    const f = form({ status: "ready", options }); f.type("Route review");
+    const desk = (label: string) => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === `DESK • ${label} / ADAM`)!;
+    const focus = [vi.fn(), vi.fn()];
+    (desk("ADAM").props.onKeyDown as (event: object) => void)({ key: "ArrowRight", preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: { parentElement: { querySelectorAll: () => focus.map((focus) => ({ focus })) } } });
+    f.render();
+    expect(focus[1]).toHaveBeenCalledTimes(1);
+    expect(f.onRefresh).toHaveBeenCalledExactlyOnceWith("wks-ops");
+    for (const state of [{ status: "loading" }, { status: "error", message: "scoped read failed" }] as const) {
+      f.setOptions(state);
+      expect(desk("OPS")?.props).toMatchObject({ "aria-checked": true, tabIndex: 0 });
+      expect(desk("ADAM")?.props).toMatchObject({ "aria-checked": false, tabIndex: -1 });
+      expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
+      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+      f.press("kontor-new-lsa-create");
+      expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+    }
+    f.setOptions({ status: "ready", options: { ...options, catalogWorkspaceId: "wks-ops" } });
+    expect(desk("OPS")?.props).toMatchObject({ "aria-checked": true, tabIndex: 0 });
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+    f.press("kontor-new-lsa-create");
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ workspaceId: "wks-ops", topic: "Route review" }));
+  });
+
+  it.each(["offline", "host change"])("discards retained presentation options on %s", (change) => {
+    const f = form(); f.type("Route review");
+    f.setOptions({ status: "loading" });
+    expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
+    if (change === "offline") f.setOptions({ status: "offline" });
+    else f.setHost("host-b");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")).toBeUndefined();
+    expect(f.tree.some((node) => node.props.accessibilityRole === "radio")).toBe(false);
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+  });
+
   it("requires an explicit action to clear saved effort and mode when the host no longer offers either", () => {
     model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
     const f = form({ status: "ready", options: { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, modes: [], defaultMode: null, models: provider.models.map((model) => ({ ...model, efforts: [], defaultEffort: null })) })) } });
@@ -384,6 +427,25 @@ describe("New LSA form", () => {
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
     f.press("kontor-new-lsa-create");
     expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ effort: null, modeId: null }));
+  });
+
+  it("requires explicit recovery when a refresh adds effort and mode after both were cleared", () => {
+    const options = { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, modes: [], defaultMode: null, models: provider.models.map((model) => ({ ...model, efforts: [], defaultEffort: null })) })) };
+    const f = form({ status: "ready", options }); f.type("Route review");
+    f.press("Use current effort default"); f.press("Use current mode default");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    f.setOptions({ status: "loading" });
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    f.setOptions({ status: "ready", options: OPTIONS });
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    expect(text(f.tree)).toContain("Choose an available effort");
+    expect(f.tree.filter((node) => node.props.accessibilityRole === "radio" && ["High", "Max", "Default", "Bypass ⚠"].includes(String(node.props.accessibilityLabel))).every((node) => node.props["aria-checked"] === false)).toBe(true);
+    f.press("Use current effort default");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    expect(text(f.tree)).toContain("Choose an available mode");
+    f.press("Use current mode default");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
   });
 
   it("disables Create with a visible, announced reason until the topic is valid", () => {
