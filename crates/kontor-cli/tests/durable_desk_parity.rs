@@ -160,6 +160,43 @@ async fn desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli() {
         .expect("bundled publication read");
     assert!(published.status().is_success());
     let domain = kontor_profiles::bundled_operational_domain().expect("shipped definitions");
+    // Selection requires a published domain, even when no native seat is configured.
+    let catalog = &domain.role_catalogs[0];
+    let core_team = kontor_daemon::orchestration::propose_core_team(catalog, &domain)
+        .expect("fixture core team");
+    let orchestration =
+        kontor_daemon::orchestration::propose_orchestration().expect("fixture orchestration");
+    let mut bundle = kontor_daemon::orchestration::resolve_bundle(
+        &kontor_daemon::orchestration::BundleSources {
+            orchestration: &orchestration,
+            fleet: include_str!("../../../config/examples/orchestration/fleet.yml"),
+            core_team: &core_team,
+        },
+        catalog,
+        &domain,
+    )
+    .expect("fixture bundle");
+    let document = serde_json::to_string(&domain).expect("JSON is valid YAML");
+    let pin = kontor_fleet_activation::OperationalDomainPin {
+        source: "packs/parity-domain.yml".to_owned(),
+        source_hash: kontor_core::id::ContentHash::of(document.as_bytes()),
+    };
+    bundle
+        .manifest
+        .sources
+        .insert(pin.source.clone(), pin.source_hash.clone());
+    bundle.manifest.operational_domain = Some(pin);
+    bundle.operational_domain = Some(document);
+    let source = kontor_daemon::fleet::FleetSource::at(root.path());
+    let published = source
+        .publish_bundle(&bundle)
+        .expect("publish fixture domain");
+    source
+        .activate_bundle(
+            &published.bundle_hash,
+            &kontor_daemon::fleet::ActivationFence::default(),
+        )
+        .expect("activate fixture domain");
     let definition = domain
         .team_definitions
         .iter()

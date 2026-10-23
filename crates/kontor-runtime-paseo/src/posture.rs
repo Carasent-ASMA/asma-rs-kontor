@@ -826,18 +826,18 @@ mod tests {
     #[test]
     fn an_account_alias_renders_like_its_harness() {
         assert_eq!(
-            render_posture("opencode-work", SeatAutonomy::Bounded, &[]).expect("alias"),
+            render_posture("opencode-b", SeatAutonomy::Bounded, &[]).expect("alias"),
             render_posture("opencode", SeatAutonomy::Bounded, &[]).expect("harness"),
         );
         assert_eq!(
-            seat_posture("cursor-personal", SeatAutonomy::Bounded, &[])
+            seat_posture("cursor-a", SeatAutonomy::Bounded, &[])
                 .expect("alias")
                 .mode,
             Some("agent"),
         );
         assert!(
             matches!(
-                seat_posture("cursor-personal", SeatAutonomy::Supervised, &[]),
+                seat_posture("cursor-a", SeatAutonomy::Supervised, &[]),
                 Err(RuntimeError::PermissionModeUnsupported { .. })
             ),
             "an alias inherits its harness's refusal too"
@@ -1032,7 +1032,7 @@ mod tests {
             SeatAutonomy::Supervised,
             SeatAutonomy::Advisory,
         ] {
-            for provider in ["opencode", "opencode-work"] {
+            for provider in ["opencode", "opencode-b"] {
                 let posture = seat_posture(provider, autonomy, &[])
                     .unwrap_or_else(|error| panic!("{provider} {autonomy:?}: {error:?}"));
                 assert!(

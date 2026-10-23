@@ -623,9 +623,9 @@ fn kontor_mcp_has_no_dependency_path_to_a_forbidden_crate() {
 }
 
 /// ASMA-8280 B-1: the local fleet resolution is daemon-free. The shared
-/// verified reader links only the resolver and the core types, and the CLI
-/// that runs it reaches no daemon, store or runtime — so "no daemon" is a
-/// property of the graph, not of how the command happens to be invoked.
+/// verified reader links the resolver and the typed artifact parsers, and the
+/// CLI that runs it reaches no daemon or persistent authority — so "no daemon"
+/// is a property of the graph, not of how the command happens to be invoked.
 #[test]
 fn the_local_fleet_read_has_no_dependency_path_to_a_daemon() {
     let tree = |package: &str| {
@@ -645,26 +645,29 @@ fn the_local_fleet_read_has_no_dependency_path_to_a_daemon() {
         "kontor-daemon",
         "kontor-store",
         "kontor-api",
-        "kontor-runtime",
         "kontor-scheduler",
         "kontor-workflows",
         "rusqlite",
     ];
 
     let reader = tree("kontor-fleet-activation");
-    for forbidden in daemon
-        .iter()
-        .chain(&["kontor-mcp", "kontor-teams", "kontor-profiles"])
-    {
+    for forbidden in daemon.iter().chain(&["kontor-mcp"]) {
         assert!(
             !reader.contains(forbidden),
             "kontor-fleet-activation reaches {forbidden}:\n{reader}"
         );
     }
-    assert!(
-        reader.contains("kontor-fleet "),
-        "the audit resolved nothing:\n{reader}"
-    );
+    for required in [
+        "kontor-fleet ",
+        "kontor-profiles ",
+        "kontor-teams ",
+        "kontor-runtime ",
+    ] {
+        assert!(
+            reader.contains(required),
+            "the audit did not resolve required typed parser dependency {required}:\n{reader}"
+        );
+    }
 
     let cli = tree("kontor-cli");
     for forbidden in daemon {

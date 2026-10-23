@@ -228,6 +228,12 @@ async fn a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses
 async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives() {
     // Start desk-less: an existing legacy epic is a positive old-pin control.
     let realm = legacy_realm().await;
+    activate_through_the_registry(
+        &realm.world,
+        &unbound_fixture_catalog(),
+        "qualification-explicit-catalog",
+    )
+    .await;
     let old_pin = pin(&realm);
     let original = realm.world.daemon.state().with_store(|store| {
         store

@@ -471,7 +471,7 @@ async fn a_resumed_launch_refuses_each_context_drift_and_claims_the_baseline_has
         (
             (container_topology, [&other_hash, &container]),
             (container_topology, [&container_hash, &container]),
-            "the member container's topology differs from the epic's pinned topology",
+            "consultation.source_layout_binding_mismatch",
         ),
         (
             (repin, [&successor_hash, &realm.epic]),

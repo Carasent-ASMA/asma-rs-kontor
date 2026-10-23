@@ -61,7 +61,7 @@ fn the_presets_reviewers_reach_contrasting_providers() {
 }
 
 #[test]
-fn every_claude_consultation_slot_tries_work_then_personal() {
+fn every_claude_consultation_slot_preserves_the_declared_logical_slot_order() {
     let pack = bundled_consultation_presets().expect("the presets load");
     let mut checked = 0;
     for slot in &pack.committee_templates[0].slots {
@@ -77,7 +77,7 @@ fn every_claude_consultation_slot_tries_work_then_personal() {
                 .iter()
                 .map(|rung| rung.provider.0.as_str())
                 .collect();
-            assert_eq!(providers, ["claude-work", "claude-personal"]);
+            assert_eq!(providers, ["claude-b", "claude-a"]);
             checked += 1;
         }
     }

@@ -50,6 +50,30 @@ struct Writer {
 /// holds.
 const EXPECTED: &[Writer] = &[
     Writer {
+        file: "migrations.rs",
+        sql: "UPDATE command_receipts SET intent='{}'",
+        observation: Observation::None,
+        why: "migration test-only corruption fixture, not a production writer",
+    },
+    Writer {
+        file: "migrations.rs",
+        sql: "UPDATE command_receipts SET kind='activate_asma_epic'",
+        observation: Observation::None,
+        why: "migration test-only historical command fixture, not a production writer",
+    },
+    Writer {
+        file: "migrations.rs",
+        sql: "INSERT INTO command_receipts(id,project_id,idempotency_key,kind,target,target_revision,intent,intent_hash,state,correlation,result_ref,attempts,created_at,updated_at,execution_mode) VALUES (?1,?2,?3,?4,?5,1,?6,?7,'confirmed','correlation','evidence',2,?8,?8,'local')",
+        observation: Observation::None,
+        why: "migration test-only preservation fixture, not a production writer",
+    },
+    Writer {
+        file: "repository.rs",
+        sql: "UPDATE command_receipts SET result_ref = ?3 WHERE project_id = ?1 AND id = ?2 AND state = 'intent_persisted'",
+        observation: Observation::None,
+        why: "a pre-effect local result checkpoint leaves its receipt unconfirmed and settles no task",
+    },
+    Writer {
         file: "commands/intent.rs",
         sql: "INSERT INTO command_receipts (id, project_id, idempotency_key, kind, target, target_revision, intent, intent_hash, state, attempts, created_at, updated_at, execution_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'intent_persisted', 0, ?9, ?9, 'local')",
         observation: Observation::None,

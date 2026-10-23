@@ -20150,7 +20150,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The runtime provider aliases this account is addressable under, when the\ndeployment has registered one alias per login — `codex-work` for one\nCodex account, `codex-personal` for the other. Frozen into the profile's\nimmutable routing document at creation, because a pin that could move\nunder a running seat would not be a pin. Empty means the account is not\naddressable per provider and no quota walk will select it, which is\nexactly the pre-declaration behaviour."
+            "description": "The runtime provider aliases this account is addressable under, when the\ndeployment has registered one alias per login — `codex-b` for one\nCodex account, `codex-a` for the other. Frozen into the profile's\nimmutable routing document at creation, because a pin that could move\nunder a running seat would not be a pin. Empty means the account is not\naddressable per provider and no quota walk will select it, which is\nexactly the pre-declaration behaviour."
           }
         }
       },

@@ -24,7 +24,7 @@ const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
 fn policy(roster: &str) -> String {
     format!(
         "schema_version: 2\n\
-         domains:\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex-b] }}\n  claude: {{ provider: claude, accounts: [claude-a] }}\n\
          models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n\
          chains:\n  codex-first:\n    - [sol@xhigh]\n    - [opus@xhigh]\n\
          bindings:\n  leadership/{roster}/lsa: codex-first\n  leadership/{roster}/tpm: codex-first\n  {TEAM}: codex-first\n"
@@ -166,26 +166,20 @@ fn an_aligned_bundle_resolves_every_seat_class_without_a_daemon() {
             "the CLI prints the one resolver's selection verbatim"
         );
         assert_eq!(envelope["body"]["provenance"]["binding_key"], key.as_str());
-        assert_eq!(
-            envelope["body"]["selected"]["rung"]["provider"],
-            "codex-work"
-        );
+        assert_eq!(envelope["body"]["selected"]["rung"]["provider"], "codex-b");
     }
 
     // The stated eligibility is what the choice is made under, and is echoed.
     let (exit, envelope) = resolve(
         realm.path(),
         &realm.leadership("lsa"),
-        &["--unavailable-accounts", r#"["codex-work"]"#],
+        &["--unavailable-accounts", r#"["codex-b"]"#],
     );
     assert_eq!(exit, 0, "{envelope}");
-    assert_eq!(
-        envelope["body"]["selected"]["rung"]["provider"],
-        "claude-personal"
-    );
+    assert_eq!(envelope["body"]["selected"]["rung"]["provider"], "claude-a");
     assert_eq!(
         envelope["body"]["eligibility"]["unavailable_accounts"],
-        serde_json::json!(["codex-work"])
+        serde_json::json!(["codex-b"])
     );
 
     // Nothing eligible is the defined block result: printed in full, refused.
@@ -339,7 +333,7 @@ fn the_local_read_keeps_its_tier_its_schema_and_takes_no_base_url() {
     let (exit, document) = resolve(
         realm.path(),
         &key,
-        &["--unavailable-accounts", r#"{"codex-work": true}"#],
+        &["--unavailable-accounts", r#"{"codex-b": true}"#],
     );
     assert_eq!(exit, 2, "{document}");
     assert_eq!(document["code"], "invalid_request");
@@ -402,9 +396,9 @@ fn a_joint_allocation_is_one_snapshot_through_the_shared_allocator() {
     assert_eq!(
         providers,
         [
-            serde_json::json!("codex-work"),
-            serde_json::json!("claude-personal"),
-            serde_json::json!("codex-work"),
+            serde_json::json!("codex-b"),
+            serde_json::json!("claude-a"),
+            serde_json::json!("codex-b"),
         ],
         "reviewers take distinct vendors; the judge is unconstrained"
     );
@@ -423,9 +417,9 @@ fn a_joint_allocation_is_one_snapshot_through_the_shared_allocator() {
         "diversity": "distinct_vendor_per_reviewer",
         "slots": [
             {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": TEAM,
-             "unavailable_accounts": ["claude-personal"]},
+             "unavailable_accounts": ["claude-a"]},
             {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": realm.leadership("lsa"),
-             "unavailable_accounts": ["claude-personal"]},
+             "unavailable_accounts": ["claude-a"]},
         ],
     });
     let (exit, envelope) = allocate(realm.path(), &request, &[]);
@@ -472,7 +466,7 @@ fn a_joint_request_names_one_mode_and_the_declared_shape() {
     let (exit, document) = allocate(
         realm.path(),
         &slots(serde_json::json!({})),
-        &["--unavailable-accounts", r#"["codex-work"]"#],
+        &["--unavailable-accounts", r#"["codex-b"]"#],
     );
     assert_refused(&(exit, document), 2, "invalid_request", rule::J02);
     // A repeated slot id is ambiguous.
@@ -607,12 +601,8 @@ fn a_planning_pair_is_one_placement_through_the_shared_reader() {
     assert_eq!(
         picked,
         [
-            ("seat-a".into(), "codex-work".into(), "openai".into()),
-            (
-                "seat-b".into(),
-                "claude-personal".into(),
-                "anthropic".into()
-            ),
+            ("seat-a".into(), "codex-b".into(), "openai".into()),
+            ("seat-b".into(), "claude-a".into(), "anthropic".into()),
         ]
     );
     assert_eq!(
@@ -669,8 +659,8 @@ fn a_planning_pair_on_one_actual_vendor_is_blocked_whole() {
         ]}),
         // The same, stated as the Claude account being unavailable now.
         serde_json::json!({"members": [
-            {"slot": "seat-a", "binding_key": TEAM, "unavailable_accounts": ["claude-personal"]},
-            {"slot": "seat-b", "binding_key": TEAM, "unavailable_accounts": ["claude-personal"]},
+            {"slot": "seat-a", "binding_key": TEAM, "unavailable_accounts": ["claude-a"]},
+            {"slot": "seat-b", "binding_key": TEAM, "unavailable_accounts": ["claude-a"]},
         ]}),
     ] {
         let (exit, envelope) = place(realm.path(), &request, &[]);
@@ -776,7 +766,7 @@ fn the_three_request_forms_are_mutually_exclusive() {
     assert_refused(&run(&[]), 2, "invalid_request", rule::J01);
     // Each member states its own eligibility; the top level belongs to a single binding.
     for extra in [
-        ["--unavailable-accounts", r#"["codex-work"]"#],
+        ["--unavailable-accounts", r#"["codex-b"]"#],
         ["--excluded-vendors", r#"["openai"]"#],
     ] {
         assert_refused(

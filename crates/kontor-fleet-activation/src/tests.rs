@@ -72,7 +72,7 @@ fn roster(version: SpecVersion) -> (CanonicalDocument, RoleCatalogId) {
 fn policy(lsa: &str, tpm: &str) -> String {
     format!(
         "schema_version: 2\n\
-         domains:\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  claude: {{ provider: claude, accounts: [claude-a] }}\n\
          models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n\
          chains:\n  lead:\n    - [sol@xhigh]\n    - [opus@xhigh]\n  review:\n    - [opus@xhigh]\n\
          bindings:\n  {lsa}: lead\n  {tpm}: lead\n  {TEAM}: lead\n  {COMMITTEE}: review\n  {ADVISOR}: lead\n"
@@ -461,7 +461,7 @@ fn a_verified_v2_bundle_resolves_every_seat_class_from_one_policy() {
             "{key}"
         );
         assert_eq!(selection.provenance.binding_key, key);
-        assert_eq!(first(&selection), ("codex-work".to_owned(), 1, 1), "{key}");
+        assert_eq!(first(&selection), ("codex-b".to_owned(), 1, 1), "{key}");
     }
     let reviewer = resolve(bundle.path(), COMMITTEE, &Eligibility::default()).expect("bound");
     assert_eq!(reviewer.provenance.chain, "review");
@@ -470,12 +470,12 @@ fn a_verified_v2_bundle_resolves_every_seat_class_from_one_policy() {
         bundle.path(),
         &bundle.key("lsa"),
         &Eligibility {
-            unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+            unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
             excluded_vendors: BTreeSet::new(),
         },
     )
     .expect("bound");
-    assert_eq!(first(&degraded), ("codex-personal".to_owned(), 1, 2));
+    assert_eq!(first(&degraded), ("codex-a".to_owned(), 1, 2));
     let blocked = resolve(
         bundle.path(),
         &bundle.key("lsa"),
@@ -810,7 +810,7 @@ fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
             {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": COMMITTEE},
             {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": TEAM},
             {"slot_id": "lead", "role": "judge", "binding_key": bundle.key("lsa"),
-             "unavailable_accounts": ["codex-work"]},
+             "unavailable_accounts": ["codex-b"]},
         ],
     }));
     let selection = activated.allocate(&request).expect("allocates");
@@ -840,9 +840,9 @@ fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
     assert_eq!(
         picked,
         [
-            (COMMITTEE, "review", "claude-personal"),
-            (TEAM, "lead", "codex-work"),
-            (lsa.as_str(), "lead", "codex-personal"),
+            (COMMITTEE, "review", "claude-a"),
+            (TEAM, "lead", "codex-b"),
+            (lsa.as_str(), "lead", "codex-a"),
         ]
     );
     assert_eq!(
@@ -850,7 +850,7 @@ fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
             .allocation
             .eligibility
             .unavailable_accounts,
-        BTreeSet::from(["codex-work".to_owned()])
+        BTreeSet::from(["codex-b".to_owned()])
     );
     // The same snapshot through the one-call path: equal answer.
     assert_eq!(
@@ -875,7 +875,7 @@ fn a_joint_allocation_is_whole_or_blocked_with_every_reason() {
         "diversity": "distinct_vendor_per_reviewer",
         "slots": [
             {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": TEAM,
-             "unavailable_accounts": ["codex-work", "codex-personal"]},
+             "unavailable_accounts": ["codex-b", "codex-a"]},
             {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": COMMITTEE},
         ],
     }));
@@ -990,7 +990,7 @@ const CROSS_HARNESS: &str = "\
 schema_version: 2
 domains:
   cursor: { provider: cursor, accounts: [cursor] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   auto: { domain: cursor, id: auto, vendor: unknown }
   sonnet: { domain: cursor, id: claude-sonnet-5, vendor: anthropic }
@@ -1063,13 +1063,8 @@ fn a_planning_pair_is_one_joint_allocation_on_two_actual_vendors() {
     assert_eq!(
         picked,
         [
-            (PlanningPairSlot::SeatA, TEAM, "codex-work", "openai"),
-            (
-                PlanningPairSlot::SeatB,
-                TEAM,
-                "claude-personal",
-                "anthropic"
-            ),
+            (PlanningPairSlot::SeatA, TEAM, "codex-b", "openai"),
+            (PlanningPairSlot::SeatB, TEAM, "claude-a", "anthropic"),
         ]
     );
     let passed_over = &placement.selection.slots[1].allocation.considered[0];
@@ -1264,7 +1259,7 @@ const GENERIC: &str = "team/01936f5a-0000-7000-8000-000000000002";
 fn committee_policy() -> String {
     format!(
         "schema_version: 2\n\
-         domains:\n  claude: {{ provider: claude, accounts: [claude-work, claude-personal] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-b, claude-a] }}\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
          unavailable:\n  domains: [deepseek]\n  accounts: []\n\
          models:\n  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}\n  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n  sol: {{ domain: codex, id: gpt-6.1-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [xhigh], vision: true, calibrated: true }}\n  deepseek-flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek, efforts: [max], vision: false, calibrated: false }}\n\
          chains:\n  review-a:\n    - [sol@xhigh]\n    - [deepseek-flash@max]\n    - [opus-5.5@xhigh, opus-5@xhigh]\n  review-b:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n  consult-claude-first:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n    - [grok-4.6@xhigh]\n\
@@ -1335,9 +1330,9 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
     assert_eq!(
         seated(&formal),
         owned([
-            ("codex-work", "gpt-6.1-sol", 1),
-            ("claude-work", "claude-opus-5", 1),
-            ("codex-work", "gpt-6.1-sol", 2),
+            ("codex-b", "gpt-6.1-sol", 1),
+            ("claude-b", "claude-opus-5", 1),
+            ("codex-b", "gpt-6.1-sol", 2),
         ])
     );
     let judge = &formal.slots[2].allocation;
@@ -1373,9 +1368,9 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
     assert_eq!(
         seated(&generic),
         owned([
-            ("codex-work", "gpt-6.1-sol", 1),
-            ("claude-work", "claude-opus-5", 1),
-            ("claude-work", "claude-opus-5", 1),
+            ("codex-b", "gpt-6.1-sol", 1),
+            ("claude-b", "claude-opus-5", 1),
+            ("claude-b", "claude-opus-5", 1),
         ])
     );
 
@@ -1391,8 +1386,7 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
 fn a_formal_review_with_no_admissible_judge_is_blocked_whole() {
     let activated = committee_snapshot();
     let mut request = committee(FORMAL, ["reviewer-a", "reviewer-b", "judge"]);
-    request["slots"][2]["unavailable_accounts"] =
-        serde_json::json!(["codex-work", "codex-personal"]);
+    request["slots"][2]["unavailable_accounts"] = serde_json::json!(["codex-b", "codex-a"]);
     let blocked = activated
         .allocate(&joint(request))
         .expect("a defined block result");

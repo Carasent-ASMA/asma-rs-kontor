@@ -118,8 +118,8 @@ fn members() -> PlanningPairMembers {
     PlanningPairMembers::freeze(
         placement(),
         vec![
-            member(SeatA, "claude-personal", "claude-opus-5", "anthropic"),
-            member(SeatB, "codex-work", "gpt-5.6-sol", "openai"),
+            member(SeatA, "claude-a", "claude-opus-5", "anthropic"),
+            member(SeatB, "codex-b", "gpt-5.6-sol", "openai"),
         ],
     )
     .expect("two members on distinct actual vendors")
@@ -232,7 +232,7 @@ fn one_findings_round_one_clarification_then_the_callers_disposition() {
     assert_eq!(pair.state(), PlanningPairState::Disposed);
     assert_eq!(
         pair.members().member(SeatB).route.provider.0,
-        "codex-work",
+        "codex-b",
         "the members are the ones frozen at placement"
     );
     assert_eq!(pair.members().placement_hash(), &placement());
@@ -293,12 +293,12 @@ fn members_on_one_actual_vendor_are_refused() {
     // actual vendor, not the alias or the provider family.
     for (a, b) in [
         (
-            member(SeatA, "claude-personal", "claude-opus-5", "anthropic"),
-            member(SeatB, "claude-work", "claude-sonnet-5", "anthropic"),
+            member(SeatA, "claude-a", "claude-opus-5", "anthropic"),
+            member(SeatB, "claude-b", "claude-sonnet-5", "anthropic"),
         ),
         (
             member(SeatA, "cursor", "claude-sonnet-5", "anthropic"),
-            member(SeatB, "claude-personal", "claude-opus-5", "anthropic"),
+            member(SeatB, "claude-a", "claude-opus-5", "anthropic"),
         ),
     ] {
         assert_eq!(
@@ -316,7 +316,7 @@ fn a_member_without_a_known_vendor_is_refused() {
                 placement(),
                 vec![
                     member(SeatA, "cursor", "auto", vendor),
-                    member(SeatB, "codex-work", "gpt-5.6-sol", "openai"),
+                    member(SeatB, "codex-b", "gpt-5.6-sol", "openai"),
                 ],
             ),
             Err(invalid("PlanningPairMembers", rule::VENDOR_UNKNOWN)),
@@ -331,8 +331,8 @@ fn a_member_without_a_known_vendor_is_refused() {
 
 #[test]
 fn a_pair_missing_a_member_is_refused() {
-    let a = || member(SeatA, "claude-personal", "claude-opus-5", "anthropic");
-    let b = || member(SeatB, "codex-work", "gpt-5.6-sol", "openai");
+    let a = || member(SeatA, "claude-a", "claude-opus-5", "anthropic");
+    let b = || member(SeatB, "codex-b", "gpt-5.6-sol", "openai");
     let c = || member(SeatB, "cursor", "grok-4.6", "xai");
     for members in [
         vec![a()],
