@@ -123,6 +123,8 @@ import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
+import { ArchiveRowFeedback, ArchiveSelectionCheckbox, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
+import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
 import { notifyArchive, useArchiveRecovery } from "./archive-feedback";
 import { useSessionAvailability } from "./use-session-availability";
 
@@ -367,6 +369,9 @@ type SessionRowProps = {
   readonly colors: ThemeColors;
   readonly compact: boolean;
   readonly onPress: (entry: DirectoryEntry) => void;
+  readonly onLongPress?: (entry: DirectoryEntry) => void;
+  readonly selectionMode?: boolean;
+  readonly lifecycleFeedback?: ReactNode;
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
@@ -394,6 +399,9 @@ export const SessionRow = memo(function SessionRow({
   colors,
   compact,
   onPress,
+  onLongPress,
+  selectionMode = false,
+  lifecycleFeedback,
   displayTitle,
   displayContext,
   compactContext,
@@ -448,8 +456,9 @@ export const SessionRow = memo(function SessionRow({
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityHint="Opens the existing Paseo session"
+      accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
       onPress={() => { stateHint.dismiss(); onPress(entry); }}
+      onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
         minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
@@ -480,6 +489,7 @@ export const SessionRow = memo(function SessionRow({
             {age}
           </View>
           <SessionUsage entry={entry} colors={colors} />
+          {lifecycleFeedback}
           </View>
           <SessionStateMarker state={state} colors={colors} />
         </>
@@ -503,6 +513,7 @@ export const SessionRow = memo(function SessionRow({
             {age}
             <SessionUsage entry={entry} colors={colors} />
           </View>
+          {lifecycleFeedback}
           </View>
       ) : (
         <>
@@ -521,6 +532,7 @@ export const SessionRow = memo(function SessionRow({
                 {meta}
               </Text>
             ) : null}
+            {lifecycleFeedback}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
           <View style={{ alignItems: "flex-end", gap: 2 }}>
@@ -673,6 +685,9 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
 
 type SessionResultRowProps = {
   readonly lifecycleAction?: ReactNode;
+  readonly lifecycleFeedback?: ReactNode;
+  readonly onLongPress?: (entry: DirectoryEntry) => void;
+  readonly selectionMode?: boolean;
   readonly entry: DirectoryEntry;
   readonly provenance: SessionProvenance;
   readonly colors: ThemeColors;
@@ -687,7 +702,7 @@ type SessionResultRowProps = {
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details, lifecycleAction }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
   const state = sessionState(entry);
@@ -701,8 +716,9 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
-        accessibilityHint="Opens the existing Paseo session"
+        accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
         onPress={() => { stateHint.dismiss(); onPress(entry); }}
+        onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
           flex: 1,
           minWidth: 0,
@@ -730,6 +746,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
         {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
+        {lifecycleFeedback}
         {compact ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
           <SessionStateMarker state={state} colors={colors} />
           {time ? rowAge(time, compact, colors) : null}
@@ -1499,11 +1516,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const recovery = useArchiveRecovery(host.id, lifecycle, lifecycleChanged);
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const bulkToggleRef = useRef<View | null>(null);
+  const bulkReviewRef = useRef<View | null>(null);
+  const bulkReturnFocusRef = useRef(false);
   const lifecycleAnchor = useRef<View | null>(null);
   const recoveryButton = useRef<View | null>(null);
   const slimRecoveryButton = useRef<View | null>(null);
   const archiveButtons = useRef(new Map<string, View>());
-  useEffect(() => { setLifecycleOpen(false); }, [host.id]);
+  useEffect(() => { setLifecycleOpen(false); setBulkOpen(false); }, [host.id]);
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
   const shortcut = view.shortcut ?? null;
   const { layout: sessionLayout, grouping } = sessionPresentation(view, preferences);
@@ -2157,6 +2178,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
   }, [compact, rowSignature]);
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
+  const bulkScopeIds = useMemo(() => shown.filter((entry) => entry.archivedAt === null).map((entry) => entry.id), [shown]);
+  const bulkSelection = useArchiveSelection(host.id, bulkScopeIds);
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
   // The full count and read statement; Filters shows it, the visible count line only when it adds something.
   const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
@@ -2396,6 +2419,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // One lifecycle action at a time: every Resume, Details, the X and Check again wait while another runs.
   const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
   const canStart = hostOnline && lifecycleIdle && state.status === "ready";
+  useLayoutEffect(() => {
+    if (bulkOpen || !bulkReturnFocusRef.current) return;
+    bulkReturnFocusRef.current = false;
+    // The dialog disables its trigger; restore only after the closed render re-enables it.
+    const origin = bulkSelection.selected.length ? bulkReviewRef.current : null;
+    focusControl(canStart && !includeArchived ? origin ?? bulkToggleRef.current ?? rootRef.current : rootRef.current);
+  }, [bulkOpen]);
+  const selectForArchive = (entry: DirectoryEntry) => { if (canStart && !bulkOpen) bulkSelection.toggle(entry.id); };
+  const openOrSelect = (entry: DirectoryEntry) => { if (bulkSelection.selecting) selectForArchive(entry); else handleOpen(entry); };
   // One placement per layout: compact notices, the wide full toolbar, or the wide slim row.
   const recoveryLine = recovery.line ? <View testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
     <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, flexShrink: 1 }}>{recovery.line}</Text>
@@ -2986,6 +3018,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <View
       ref={rootRef}
       onLayout={handleRootLayout}
+      tabIndex={-1}
       style={{
         flex: 1,
         backgroundColor: colors.surface0,
@@ -3002,6 +3035,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {compact ? null : fullToolbarSlot}
       {peekBar}
       {shortScreen ? null : layoutBar}
+      {!includeArchived || lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} shownCount={bulkScopeIds.length} disabled={!canStart || bulkOpen || includeArchived}
+        lifecycle={lifecycle} colors={colors} toggleRef={bulkToggleRef} reviewRef={bulkReviewRef} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} onReview={() => {
+          if (!canStart || !bulkSelection.selected.length) return;
+          lifecycle.clear(); setBulkOpen(true); void lifecycle.prepare("archive", "filtered", [...bulkSelection.selected], true);
+        }} /> : null}
       <FlatList
         ref={listRef}
         testID="sessions-list"
@@ -3035,11 +3073,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
-          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
+          const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && (item.kind === "result" || item.kind === "session") ? lifecycle.review.rows.find((row) => row.id === item.entry.id) : undefined;
+          const lifecycleFeedback = <ArchiveRowFeedback row={outcome} colors={colors} />;
+          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? bulkSelection.selecting ? <ArchiveSelectionCheckbox session={item.entry} colors={colors}
+                checked={bulkSelection.selected.includes(item.entry.id)} pending={lifecycle.running && lifecycle.batch?.currentId === item.entry.id}
+                disabled={!canStart || bulkOpen || !bulkScopeIds.includes(item.entry.id) || (!bulkSelection.selected.includes(item.entry.id) && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT)}
+                outcome={outcome} onCheck={() => { if (canStart) void lifecycle.reconcile(item.entry.id); }} onPress={() => selectForArchive(item.entry)} /> : <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
                 // One X, one status line: no sheet and no focus move. Details on the recovery line opens the review.
                 onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} />;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -3065,7 +3108,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             compact={compact}
             highlighted={peek?.sessionId === item.entry.id}
             live={timesLive}
-            onPress={handleOpen}
+            onPress={openOrSelect}
+            onLongPress={selectForArchive}
+            selectionMode={bulkSelection.selecting}
+            lifecycleFeedback={lifecycleFeedback}
           /> : null}
           </OrganizationRowView>;
         }}
@@ -3119,6 +3165,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionMenuLayer}
       {detailsLayer}
       {quickChooserLayer}
+      {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} anchor={bulkReviewRef} rootSize={rootSize} colors={colors} compact={compact}
+        onClose={() => { bulkReturnFocusRef.current = true; setBulkOpen(false); }}
+        onFinished={(summary) => toast.show(summary)} /> : null}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); lifecycleHelp.dismiss(); }} /> : null}
     </View>

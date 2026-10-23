@@ -6,7 +6,7 @@ import type { PaseoApi, PaseoAgentListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readConfig } from "./config";
 import {
-  TAKEOVER_LIMIT, RESUME_PROMPT, lifecycleReviewSchema, lifecycleRowSchema, lifecycleCapabilities, unresolvedArchive,
+  TAKEOVER_LIMIT, RESUME_PROMPT, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, lifecycleCapabilities, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type UnresolvedRef,
 } from "../shared/session-lifecycle";
@@ -178,7 +178,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       models: (entry.models ?? []).filter((model) => model.isSelectable !== false).map((model) => ({ id: model.id, efforts: (model.thinkingOptions ?? []).map((option) => option.id) })) })), limitation: TAKEOVER_LIMIT };
   }
   async function preview(input: { action: LifecycleReview["action"]; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget }): Promise<LifecycleReview> {
-    if (input.action === "archive" && (input.scope !== "filtered" || input.agentIds.length !== 1)) throw new Error("Archive requires one exact session ID.");
+    if (input.action === "archive" && (input.scope !== "filtered" || input.agentIds.length < 1 || input.agentIds.length > ARCHIVE_BATCH_LIMIT)) throw new Error(`Archive requires 1–${ARCHIVE_BATCH_LIMIT} explicitly selected session IDs in filtered scope.`);
     const all = await inventory(client, input.action), ids = new Set(input.agentIds);
     const selectedIds = input.scope === "host" ? all.filter((agent) => agent.archivedAt == null).map((agent) => agent.id) : [...ids];
     const rows: LifecycleRow[] = [];
@@ -191,11 +191,15 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         nativeStatus: observed.availability.state, fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
       };
       row.availability = observed.availability;
+      if (input.action === "archive" && record?.archivedAt == null && row.children.length && row.children.every((child) => ids.has(child.id))) {
+        row.category = "candidate"; row.eligible = true;
+        row.reason = "All active managed children are selected. They must archive successfully before this parent; native preflight still blocks any remaining child.";
+      }
       if (!observed.agent) { row.eligible = input.action === "archive" && observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
       if (input.action === "archive" && archivedMembership(observed.agent)) row.eligible = true;
       rows.push(row);
     }
-    const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows, limitation: TAKEOVER_LIMIT };
+    const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: input.action === "archive" ? archiveOrder(rows) : rows, limitation: TAKEOVER_LIMIT };
     await save(review); return review;
   }
   async function observe(id: string): Promise<{ agent?: Agent; availability: SessionAvailability }> {
@@ -235,6 +239,13 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (!review || !row) throw new Error("Exact session ID is not in this review.");
     if (row.outcome !== "pending") return review.action === "archive" && unresolvedArchive(row) ? reconcile(reviewId, agentId) : row;
     if (!row.eligible) { const blocked = { ...row, outcome: "blocked" as const, message: row.reason }; await saveRow(reviewId, blocked); return blocked; }
+    if (review.action === "archive" && row.children.some((child) => {
+      const result = review.rows.find((entry) => entry.id === child.id);
+      return !result || !(result.outcome === "already_archived" || result.outcome === "archived" && result.runtime !== "unconfirmed");
+    })) {
+      const blocked = { ...row, outcome: "blocked" as const, message: "Selected children have not all archived with confirmed outcomes. No parent archive was sent." };
+      await saveRow(reviewId, blocked); return blocked;
+    }
     // A per-session lock covers competing reviews/actions and survives worker reload/crash.
     const lockPath = join(root, `intent-${hash(agentId)}.json`);
     let lock;
