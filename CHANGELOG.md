@@ -289,6 +289,17 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed personal Recently viewed for sessions opened through Kontor on the
+  selected host and this device: most recent first; A → B → A gives A, B.
+  Prompts and worker activity do not count as visits, and legacy saved history
+  is preserved without invented opening times. Source:
+  [3b16f79e](https://github.com/Carasent-ASMA/asma-rs-kontor/commit/3b16f79ec2cf1f81cd01e5fef5c63e87fc1ff2e3).
+  As of 2026-10-23, installed/readback **PASS**, recorded in
+  `2026-10-23-personal-mru-install-3b16f79e-r1/RECEIPT.json`
+  (SHA256 `656b5e840cea40f8ef5b0f8a3d9f9373100a6c9a42f7a6f89fb1276328ff4830`).
+  Physical acceptance remains pending. Cumulative prototype and TEST delivery
+  are separate and unscheduled (ASMA-8541).
+
 - Desk seat MCP configuration is published, journaled, into the non-Git desk
   directory. A fresh desk reservation commits atomically with its two
   topology nodes (ASMA-8454).
