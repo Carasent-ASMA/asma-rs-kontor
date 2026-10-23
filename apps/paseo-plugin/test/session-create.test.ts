@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
-import { adamDesks, createSessionCreateService, createSwitchProblem, PERSONA_VERSION, type CreateClient } from "../server/session-create";
+import { adamDesks, createProviders, createSessionCreateService, createSwitchProblem, PERSONA_VERSION, type CreateClient } from "../server/session-create";
 import { adhocTitle, deskName, isAdamWorkspace, normalizeTopic, topicProblem, type CreateRequest } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -30,7 +30,7 @@ const WORKSPACES = [
   workspace("wks-dev", "DESK • ADAM", "DEV"),
   workspace("wks-closing", "DESK • OPS", "ADAM", { archivingAt: "2026-10-22" } as Partial<PaseoWorkspace>),
 ];
-const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-22", entries: [
+const SNAPSHOT: Awaited<ReturnType<CreateClient["providers"]["snapshot"]>> = { requestId: "fixture", generatedAt: "2026-10-22", entries: [
   { provider: "claude", label: "Claude", enabled: true, status: "ready", defaultModeId: "default",
     models: [{ provider: "claude", id: "opus", label: "Opus", isDefault: true, defaultThinkingOptionId: "high", thinkingOptions: [{ id: "high", label: "High" }, { id: "max", label: "Max" }] },
       { provider: "claude", id: "legacy", label: "Legacy", isSelectable: false }],
@@ -58,7 +58,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
   });
   const list = vi.fn<CreateClient["agents"]["list"]>(async (options) => ({ requestId: "fixture", pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
     entries: [...agents.values()].filter((value) => Object.entries(options?.filter?.labels ?? {}).every(([key, label]) => value.labels?.[key] === label)).map((value) => ({ agent: value, project: PROJECT })) }));
-  const snapshot = vi.fn(async () => SNAPSHOT);
+  const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
   const client = {
     workspaces: {
       list: vi.fn(async () => ({ requestId: "fixture", entries: WORKSPACES, pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } })),
@@ -173,6 +173,18 @@ describe("create switch", () => {
 });
 
 describe("create options", () => {
+  it("scopes the catalog to the chosen desk and never falls back from a missing desk", async () => {
+    const s = await setup();
+    expect(await s.service.options()).toMatchObject({ catalogWorkspaceId: "wks-adam" });
+    expect(s.snapshot).toHaveBeenLastCalledWith({ cwd: "/fixtures/wks-adam" });
+    expect(await s.service.options("wks-pr")).toMatchObject({ catalogWorkspaceId: "wks-pr" });
+    expect(s.snapshot).toHaveBeenLastCalledWith({ cwd: "/fixtures/wks-pr" });
+    s.snapshot.mockClear();
+    expect(await s.service.options("missing")).toMatchObject({ catalogWorkspaceId: null, providers: [] });
+    expect(s.snapshot).not.toHaveBeenCalled();
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
   it.each([
     [null, true],
     ['{"create":"on"}', true],
@@ -208,7 +220,55 @@ describe("create options", () => {
   });
 });
 
+describe("host provider eligibility", () => {
+  it.each([
+    [true, "ready", "ready", true],
+    [false, "ready", "disabled", false],
+    [true, "loading", "loading", false],
+    [true, "error", "error", false],
+    [true, "unavailable", "unavailable", false],
+    [undefined, "ready", "unknown", false],
+    [true, undefined, "unknown", false],
+  ])("keeps enabled=%s status=%s distinct", (enabled, status, expected, available) => {
+    const snapshot = { ...SNAPSHOT, entries: [{ ...SNAPSHOT.entries[0]!, enabled, status }] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>;
+    expect(createProviders(snapshot)[0]).toMatchObject({ status: expected, available });
+  });
+
+  it("uses the host's selectable model list without inventing credential or account eligibility", () => {
+    const [provider] = createProviders(SNAPSHOT as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
+    expect(provider!.models.map((model) => model.id)).toEqual(["opus"]);
+    expect(provider!.defaultModel).toBe("opus");
+  });
+});
+
 describe("create", () => {
+  it.each(["disabled provider", "unselectable model"])("revalidates a %s after options were read, without intent or dispatch", async (change) => {
+    const s = await setup();
+    expect(await s.service.options()).toMatchObject({ providers: [expect.objectContaining({ available: true }), expect.anything(), expect.anything()] });
+    const provider = { ...SNAPSHOT.entries[0]!, ...(change === "disabled provider" ? { enabled: false } : { models: [] }) };
+    s.snapshot.mockResolvedValueOnce({ ...SNAPSHOT, entries: [provider] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
+    expect(await s.service.create(request())).toMatchObject({ state: "refused" });
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("checks duplicates after a slow catalog read and before intent", async () => {
+    const s = await setup();
+    let catalog!: (value: Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>) => void;
+    s.snapshot.mockImplementationOnce(() => new Promise((resolve) => { catalog = resolve; }));
+    const creating = s.service.create(request());
+    await vi.waitFor(() => expect(s.snapshot).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam" }));
+    expect(s.list).not.toHaveBeenCalled();
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    s.agents.set("agent-concurrent", agent("agent-concurrent", { title: "LSA • ADHOC • Route review" }));
+    catalog(SNAPSHOT as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
+    expect(await creating).toMatchObject({ state: "refused", message: expect.stringContaining("already names a session") });
+    expect(s.list).toHaveBeenCalledWith({ page: { limit: 200 } });
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each([null, '{"create":"on"}'])("dispatches one idempotent create with switch %s, the exact title, labels and config, then verifies the readback", async (switchText) => {
     const s = await setup({ switchText }), input = request();
     const outcome = await s.service.create(input);

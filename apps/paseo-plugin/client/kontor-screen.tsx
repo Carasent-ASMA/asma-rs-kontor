@@ -26,7 +26,7 @@ import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
 import { OrganizationSettingsPage } from "./organization-settings-page";
-import { openSessionById } from "./session-actions";
+import { openCreatedSession, openSessionById } from "./session-actions";
 import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
 import { useWorkspaceDirectory } from "./use-workspace-directory";
@@ -254,6 +254,7 @@ function HostScreen(props: PluginScreenProps) {
     </ScrollView>
   </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
+    onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
     onShowAll={(text) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
       const scope = sessionScopeKey(host.id, next);
       const current = readSessionView(scope);

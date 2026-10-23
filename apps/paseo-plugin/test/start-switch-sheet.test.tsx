@@ -5,6 +5,7 @@ import type { DirectoryEntry, DirectoryState } from "../client/session-directory
 
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, effect: 0, deps: [] as (readonly unknown[] | undefined)[],
+  cleanups: [] as (void | (() => void))[],
   rpc: {} as Record<string, ReturnType<typeof vi.fn>>,
   focusControl: vi.fn(),
   platform: "web",
@@ -14,17 +15,19 @@ const model = vi.hoisted(() => ({
     return [this.slots[index] as T, (next) => { this.slots[index] = typeof next === "function" ? (next as (previous: T) => T)(this.slots[index] as T) : next; }];
   },
   /** Runs an effect when its dependencies change, as React would after a render. */
-  useEffect(effect: () => void, deps?: readonly unknown[]) {
+  useEffect(effect: () => void | (() => void), deps?: readonly unknown[]) {
     const index = this.effect++, previous = this.deps[index];
     if (previous && deps && deps.length === previous.length && deps.every((value, at) => Object.is(value, previous[at]))) return;
+    this.cleanups[index]?.();
     this.deps[index] = deps;
-    effect();
+    this.cleanups[index] = effect();
   },
+  unmount() { this.cleanups.forEach((cleanup) => cleanup?.()); this.cleanups = []; },
 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useState: <T,>(initial: T | (() => T)) => model.useState(initial),
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
-  useEffect: (effect: () => void, deps?: readonly unknown[]) => model.useEffect(effect, deps) }));
+  useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps) }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name] }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
@@ -32,6 +35,7 @@ vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl })
 
 import { createAvailability, StartSwitchSheet, switchRows, type CreateOptionsState } from "../client/start-switch-sheet";
 import { NewLsaForm, newRequestId, personaLine, resolveDraft } from "../client/new-lsa-form";
+import { openCreatedSession, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
 import { configureRecentStorage, recordVisit, readRecent } from "../client/recent-sessions";
 import { Action, Copy } from "../client/page-controls";
 import { sessionEntry } from "./session-fixtures";
@@ -52,23 +56,25 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const NOW = Date.parse("2026-10-22T12:00:00.000Z");
 const COLORS = { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } as never;
 const OPTIONS: CreateOptions = {
-  enabled: true, disabledReason: null, pending: null, notes: [],
+  enabled: true, disabledReason: null, pending: null, notes: [], catalogWorkspaceId: "wks-adam",
   desks: [{ workspaceId: "wks-adam", projectId: "prj-adam", desk: "ADAM", project: "DESK • ADAM" }, { workspaceId: "wks-pr", projectId: "prj-pr", desk: "PR REVIEW", project: "DESK • PR REVIEW" }],
   providers: [
-    { id: "claude", label: "Claude", available: true, note: null, persona: "supported", defaultModel: "opus", defaultMode: "default",
+    { id: "claude", label: "Claude", status: "ready", available: true, note: null, persona: "supported", defaultModel: "opus", defaultMode: "default",
       models: [{ id: "opus", label: "Opus", efforts: [{ id: "high", label: "High" }, { id: "max", label: "Max" }], defaultEffort: "high" }, { id: "sonnet", label: "Sonnet", efforts: [], defaultEffort: null }],
       modes: [{ id: "default", label: "Default", dangerous: false }, { id: "bypassPermissions", label: "Bypass", dangerous: true }] },
-    { id: "gemini", label: "Gemini", available: false, note: "Provider error: not signed in.", persona: "unverified", defaultModel: null, defaultMode: null, models: [], modes: [] },
-    { id: "opencode", label: "OpenCode", available: true, note: null, persona: "unverified", defaultModel: "big", defaultMode: null, models: [{ id: "big", label: "Big", efforts: [], defaultEffort: null }], modes: [] },
+    { id: "gemini", label: "Gemini", status: "error", available: false, note: "Provider error: not signed in.", persona: "unverified", defaultModel: null, defaultMode: null, models: [], modes: [] },
+    { id: "opencode", label: "OpenCode", status: "ready", available: true, note: null, persona: "unverified", defaultModel: "big", defaultMode: null, models: [{ id: "big", label: "Big", efforts: [], defaultEffort: null }], modes: [] },
   ],
   profile: { name: "lsa", provider: "claude", model: "opus", modeId: "default", effort: "max" },
 };
 const outcome = (state: CreateOutcome["state"], patch: Partial<CreateOutcome> = {}): CreateOutcome => ({ requestId: "00000000-0000-4000-8000-000000000001", state, title: "LSA • ADHOC • Route review",
   agentId: state === "verified" || state === "differences" ? "agent-new" : null, workspaceId: "wks-adam", message: `Fixture ${state}.`, differences: [], persona: "supported", checkedAt: "2026-10-22", ...patch });
+const reply = (state: CreateOutcome["state"], patch: Partial<CreateOutcome> = {}) => async (input: { requestId: string }) => outcome(state, { ...patch, requestId: input.requestId });
 const prompted = (id: string, at: number, overrides: Parameters<typeof sessionEntry>[1] = {}) => ({ ...sessionEntry(id, overrides), lastUserMessageAt: new Date(at).toISOString() });
 const directory = (entries: DirectoryEntry[], live = true): DirectoryState => ({ entries, status: "ready", live, lastUpdatedAt: NOW, error: null, staleReason: null, pages: 1, includeArchived: false });
 
 beforeEach(() => {
+  model.unmount();
   model.slots = []; model.cursor = 0; model.effect = 0; model.deps = [];
   model.focusControl.mockClear();
   model.platform = "web";
@@ -112,9 +118,9 @@ describe("Start or switch rows", () => {
 describe("Start or switch sheet", () => {
   function sheet(props: Partial<Parameters<typeof StartSwitchSheet>[0]> = {}) {
     recordVisit("host-a", "agent-a", Date.now() - 60_000);
-    const onOpen = vi.fn(), onShowAll = vi.fn(), onClose = vi.fn();
+    const onOpen = vi.fn(), onOpenCreated = vi.fn(() => ({ ok: true } as const)), onShowAll = vi.fn(), onClose = vi.fn();
     const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
-      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen, onShowAll, onClose, ...props };
+      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen, onOpenCreated, onShowAll, onClose, ...props };
     let tree: Element[] = [];
     const render = () => { model.cursor = 0; model.effect = 0; tree = elements(StartSwitchSheet(all)); return tree; };
     render();
@@ -160,10 +166,23 @@ describe("Start or switch sheet", () => {
     expect(s.tree[0]!.props.label).toBe("New LSA session");
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
     expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true });
-    expect((form.props.listed as (id: string) => boolean)("agent-a")).toBe(true);
-    expect((form.props.listed as (id: string) => boolean)("agent-unknown")).toBe(false);
+    expect(form.props.hostId).toBe("host-a");
+    expect(form.props.onOpenCreated).toBeDefined();
     (form.props.onCancel as () => void)(); s.render();
     expect(byTestId(s.tree, "kontor-switch-list")).toBeDefined();
+  });
+
+  it.each(["Close", "Back", "Cancel"])("invalidates the creation continuation immediately on %s", async (leave) => {
+    const s = sheet();
+    await settle(); s.render();
+    (action(s.tree, "New LSA")!.props.onPress as () => void)(); s.render();
+    const form = s.tree.find((node) => node.type === NewLsaForm)!;
+    const active = form.props.isActive as () => boolean;
+    expect(active()).toBe(true);
+    if (leave === "Cancel") (form.props.onCancel as () => void)();
+    else if (leave === "Close") (action(s.tree, "Close")!.props.onPress as () => void)();
+    else (s.tree.find((node) => node.props.label === "Back to recent sessions")!.props.onPress as () => void)();
+    expect(active()).toBe(false);
   });
 
   it.each([
@@ -259,7 +278,7 @@ describe("New LSA draft", () => {
     [{ ...OPTIONS, enabled: false, disabledReason: "Switched off." }, "Route review", "Switched off."],
     [{ ...OPTIONS, pending: outcome("unknown") }, "Route review", "An earlier creation, “LSA • ADHOC • Route review”, is not settled. Check it first."],
     [{ ...OPTIONS, desks: [] }, "Route review", "No desk on this host has an ADAM workspace."],
-    [{ ...OPTIONS, providers: [OPTIONS.providers[1]!] }, "Route review", "No provider is available on this host."],
+    [{ ...OPTIONS, providers: [OPTIONS.providers[1]!] }, "Route review", "Provider claude is no longer active. Choose an active provider."],
     [OPTIONS, "Route review", "Provider error: not signed in.", "gemini"],
     [OPTIONS, "ab", "Type a topic of at least 3 characters."],
     [OPTIONS, "A • B", "A topic cannot contain • or ·, which separate title parts."],
@@ -277,18 +296,26 @@ describe("New LSA draft", () => {
     expect(personaLine("supported", "Claude")).toContain("Claude and Codex apply it");
     expect(personaLine("unverified", "OpenCode")).toBe("Persona delivery unverified: OpenCode is not confirmed to apply a system prompt.");
   });
+
+  it("keeps invalidated explicit and saved choices invalid instead of replacing them", () => {
+    expect(resolveDraft(OPTIONS, { topic: "Route review", provider: "removed" })).toMatchObject({ provider: null, problem: expect.stringContaining("Provider removed is no longer active") });
+    expect(resolveDraft(OPTIONS, { topic: "Route review", model: "removed" })).toMatchObject({ model: null, problem: expect.stringContaining("Model removed is no longer active") });
+    expect(resolveDraft({ ...OPTIONS, profile: { ...OPTIONS.profile!, model: "removed" } }, { topic: "Route review" })).toMatchObject({ model: null, problem: expect.stringContaining("Model removed is no longer active") });
+    expect(resolveDraft(OPTIONS, { topic: "Route review", effort: "removed" })).toMatchObject({ effort: null, problem: expect.stringContaining("Effort removed is no longer offered") });
+    expect(resolveDraft(OPTIONS, { topic: "Route review", modeId: "removed" })).toMatchObject({ mode: null, problem: expect.stringContaining("Mode removed is no longer offered") });
+  });
 });
 
 describe("New LSA form", () => {
   function form(options: CreateOptionsState = { status: "ready", options: OPTIONS }, props: Partial<Parameters<typeof NewLsaForm>[0]> = {}) {
-    const onRefresh = vi.fn(), onOpen = vi.fn(), onCancel = vi.fn();
-    const all = { colors: COLORS, compact: false, options, onRefresh, canOpen: true, listed: () => true, onOpen, onCancel, ...props };
+    const onRefresh = vi.fn(), onOpenCreated = vi.fn<(outcome: CreateOutcome) => OpenSessionResult>(() => ({ ok: true })), onCancel = vi.fn();
+    const all = { hostId: "host-a", colors: COLORS, compact: false, options, onRefresh, canOpen: true, onOpenCreated, onCancel, ...props };
     let tree: Element[] = [];
     const render = () => { model.cursor = 0; model.effect = 0; tree = elements(NewLsaForm(all)); return tree; };
     render();
     const type = (topic: string) => { (byTestId(tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)(topic); render(); };
     const press = (id: string) => { ((byTestId(tree, id) ?? action(tree, id))!.props.onPress as () => void)(); render(); };
-    return { render, type, press, onRefresh, onOpen, onCancel, setOptions: (options: CreateOptionsState) => { all.options = options; render(); }, get tree() { return tree; } };
+    return { render, type, press, onRefresh, onOpenCreated, onCancel, unmount: () => model.unmount(), setHost: (hostId: string) => { all.hostId = hostId; render(); }, setOptions: (options: CreateOptionsState) => { all.options = options; render(); }, get tree() { return tree; } };
   }
 
   it.each([
@@ -305,6 +332,60 @@ describe("New LSA form", () => {
     expect(f.onRefresh).toHaveBeenCalledTimes(1);
   });
 
+  it("handles an empty active catalog with a refresh action and no create", () => {
+    const f = form({ status: "ready", options: { ...OPTIONS, profile: null, providers: [] } });
+    expect(text(f.tree)).toContain("No active provider is available on this host.");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    f.press("Refresh choices");
+    expect(f.onRefresh).toHaveBeenCalledTimes(1);
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["loading", "Some providers are still loading."],
+    ["unknown", "Some provider availability is unknown."],
+    ["error", "Some providers could not be read."],
+    ["unavailable", "Some providers are unavailable."],
+  ] as const)("distinguishes %s from disabled without offering an inactive radio", (status, message) => {
+    const f = form({ status: "ready", options: { ...OPTIONS, profile: null, providers: [{ ...OPTIONS.providers[0]!, label: "Unready provider", available: false, status, note: message }] } });
+    expect(text(f.tree)).toContain(message);
+    expect(f.tree.some((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "Unready provider")).toBe(false);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+  });
+
+  it("retains an explicit model when a refresh removes it and asks for a new choice", () => {
+    const f = form(); f.type("Route review");
+    (f.tree.find((node) => node.props.accessibilityLabel === "Sonnet")!.props.onPress as () => void)(); f.render();
+    f.setOptions({ status: "ready", options: { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, models: provider.models.filter((model) => model.id !== "sonnet") })) } });
+    expect(text(f.tree)).toContain("Model sonnet is no longer active");
+    expect(f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "Opus")?.props["aria-checked"]).toBe(false);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+  });
+
+  it("requires a catalog scoped to a newly selected desk", () => {
+    const f = form(); f.type("Route review");
+    (f.tree.find((node) => node.props.accessibilityLabel === "DESK • PR REVIEW / ADAM")!.props.onPress as () => void)(); f.render();
+    expect(f.onRefresh).toHaveBeenCalledWith("wks-pr");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    expect(text(f.tree)).toContain("Refresh this desk's provider catalog");
+    f.setOptions({ status: "ready", options: { ...OPTIONS, catalogWorkspaceId: "wks-pr" } });
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+  });
+
+  it("requires an explicit action to clear saved effort and mode when the host no longer offers either", () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const f = form({ status: "ready", options: { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, modes: [], defaultMode: null, models: provider.models.map((model) => ({ ...model, efforts: [], defaultEffort: null })) })) } });
+    f.type("Route review");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    f.press("Use current effort default");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    f.press("Use current mode default");
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    f.press("kontor-new-lsa-create");
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ effort: null, modeId: null }));
+  });
+
   it("disables Create with a visible, announced reason until the topic is valid", () => {
     const f = form();
     const create = () => byTestId(f.tree, "kontor-new-lsa-create")!;
@@ -315,12 +396,12 @@ describe("New LSA form", () => {
     expect(text(f.tree)).toContain("Title: LSA • ADHOC • Route review.");
   });
 
-  it("offers each choice as a radio with its state, and keeps an unavailable provider visible with its reason", () => {
+  it("offers active choices as radios and keeps unavailable providers out of the picker", () => {
     const f = form();
     const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
     expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Desk", "Provider", "Model", "Effort", "Mode"]);
     expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM / ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
-    expect(radios.find((node) => node.props.accessibilityLabel === "Gemini, Provider error: not signed in.")?.props).toMatchObject({ disabled: true, accessibilityState: { checked: false, disabled: true } });
+    expect(radios.some((node) => String(node.props.accessibilityLabel).includes("Gemini"))).toBe(false);
     expect(radios.every((node) => (node.props.style as (state: { focused: boolean }) => { minHeight: number })({ focused: false }).minHeight >= 44)).toBe(true);
   });
 
@@ -346,10 +427,10 @@ describe("New LSA form", () => {
     expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([-1, 0]);
     expect(key("Desk", 1, "ArrowLeft")[0]!.focus).toHaveBeenCalledTimes(1);
     expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([true, false]);
-    expect(key("Provider", 0, "ArrowRight")[2]!.focus).toHaveBeenCalledTimes(1);
-    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([false, false, true]);
-    expect(key("Provider", 2, "ArrowDown")[0]!.focus).toHaveBeenCalledTimes(1);
-    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([true, false, false]);
+    expect(key("Provider", 0, "ArrowRight")[1]!.focus).toHaveBeenCalledTimes(1);
+    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([false, true]);
+    expect(key("Provider", 1, "ArrowDown")[0]!.focus).toHaveBeenCalledTimes(1);
+    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([true, false]);
   });
 
   it("keeps native radio and disabled semantics without web-only keyboard or tab props", () => {
@@ -359,10 +440,10 @@ describe("New LSA form", () => {
     expect(radios.length).toBeGreaterThan(0);
     expect(radios.every((node) => node.props.onKeyDown === undefined && node.props.tabIndex === undefined)).toBe(true);
     expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM / ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
-    expect(radios.find((node) => node.props.disabled)?.props.accessibilityState).toEqual({ checked: false, disabled: true });
+    expect(radios.every((node) => !node.props.disabled)).toBe(true);
   });
 
-  it("sends one request, waits for the host, and offers Open only for a listed, verified session", async () => {
+  it("sends one request and opens the exact verified result without a directory or redundant options refresh", async () => {
     const f = form();
     let answer: (value: CreateOutcome) => void = () => {};
     model.rpc["sessions.create"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
@@ -371,26 +452,28 @@ describe("New LSA form", () => {
     expect(model.rpc["sessions.create"]).toHaveBeenCalledWith({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), topic: "Route review", workspaceId: "wks-adam", provider: "claude", model: "opus", effort: "max", modeId: "default" });
     expect(text(f.tree)).toContain("Nothing is reported until the host answers.");
     expect(byTestId(f.tree, "kontor-new-lsa-create")).toBeUndefined();
-    answer(outcome("verified")); await settle(); f.render();
+    const requestId = model.rpc["sessions.create"]!.mock.calls[0]![0].requestId;
+    answer(outcome("verified", { requestId })); await settle(); f.render();
     expect(byTestId(f.tree, "kontor-new-lsa-verified")?.props).toMatchObject({ accessibilityLiveRegion: "polite" });
     expect(text(f.tree)).toContain("Created and verified");
-    f.press("Open session");
-    expect(f.onOpen).toHaveBeenCalledWith("agent-new");
-    expect(f.onRefresh).toHaveBeenCalled();
+    expect(f.onOpenCreated).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ state: "verified", agentId: "agent-new", requestId }));
+    expect(f.onRefresh).not.toHaveBeenCalled();
   });
 
-  it("does not offer Open before the session list shows the new session", async () => {
-    model.rpc["sessions.create"]!.mockResolvedValue(outcome("differences", { differences: ["Model reads sonnet."] }));
-    const f = form(undefined, { listed: () => false });
+  it("keeps readback differences visible with an exact-ID Open action without a directory wait", async () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("differences", { differences: ["Model reads sonnet."] }));
+    const f = form();
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     expect(text(f.tree)).toContain("Created with differences");
     expect(text(f.tree)).toContain("Model reads sonnet.");
-    expect(text(f.tree)).toContain("Open is offered once the session list shows it.");
-    expect(action(f.tree, "Open session")).toBeUndefined();
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    expect(text(f.tree)).toContain("Session ID: agent-new");
+    f.press("Open session");
+    expect(f.onOpenCreated).toHaveBeenCalledWith(expect.objectContaining({ state: "differences", agentId: "agent-new" }));
   });
 
   it("ignores a second submit before React has rendered the busy state", async () => {
-    model.rpc["sessions.create"]!.mockResolvedValue(outcome("verified"));
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
     const f = form();
     f.type("Route review");
     const submit = byTestId(f.tree, "kontor-new-lsa-create")!.props.onPress as () => void;
@@ -398,10 +481,79 @@ describe("New LSA form", () => {
     expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
     await settle(); f.render();
     expect(text(f.tree)).toContain("Created and verified");
+    expect(f.onOpenCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains Created and the exact ID after opening fails, then retries only opening", async () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const f = form();
+    f.onOpenCreated.mockReturnValueOnce({ ok: false, reason: "failed", message: "navigation unavailable" });
+    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    expect(text(f.tree)).toContain("Created and verified");
+    expect(text(f.tree)).toContain("Session ID: agent-new");
+    expect(text(f.tree)).toContain("Opening failed: navigation unavailable");
+    expect(action(f.tree, "Back to the form")).toBeUndefined();
+    f.press("Open session");
+    expect(f.onOpenCreated).toHaveBeenCalledTimes(2);
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
+    expect(text(f.tree)).toContain("Opened in Paseo.");
+  });
+
+  it("records the successful exact-host open in Recently viewed through the existing helper", async () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const navigation = { openAgent: vi.fn(), openWorkspace: vi.fn() } as unknown as SessionNavigation;
+    const f = form(undefined, { onOpenCreated: (outcome) => openCreatedSession({ outcome, serverId: "host-a", navigation }) });
+    expect(readRecent("host-a").record.visits).toEqual([]);
+    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    expect(navigation.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-new", serverId: "host-a" });
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-new"]);
+    expect(readRecent("host-b").record.visits).toEqual([]);
+  });
+
+  it.each(["close", "unmount", "host switch"])("never navigates or refreshes a late response after %s", async (cancel) => {
+    let answer: (value: CreateOutcome) => void = () => {};
+    let active = true;
+    model.rpc["sessions.create"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const f = form(undefined, { isActive: () => active });
+    f.type("Route review"); f.press("kontor-new-lsa-create");
+    const requestId = model.rpc["sessions.create"]!.mock.calls[0]![0].requestId;
+    if (cancel === "close") active = false;
+    else if (cancel === "unmount") f.unmount();
+    else f.setHost("host-b");
+    answer(outcome("verified", { requestId })); await settle();
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    expect(f.onRefresh).not.toHaveBeenCalled();
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
+    expect(readRecent("host-a").record.visits).toEqual([]);
+  });
+
+  it("keeps a mismatched request reply unknown instead of opening another session", async () => {
+    model.rpc["sessions.create"]!.mockResolvedValue(outcome("verified"));
+    const f = form(); f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    expect(text(f.tree)).toContain("different request ID");
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    expect(action(f.tree, "Check")).toBeDefined();
+    expect(action(f.tree, "Back to the form")).toBeUndefined();
+  });
+
+  it.each(["close", "unmount", "host switch"])("ignores a late successful Check after %s", async (cancel) => {
+    let answer!: (value: CreateOutcome) => void;
+    let active = true;
+    model.rpc["sessions.create-check"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const pending = outcome("unknown");
+    const f = form({ status: "ready", options: { ...OPTIONS, pending } }, { isActive: () => active });
+    f.press("Check");
+    if (cancel === "close") active = false;
+    else if (cancel === "unmount") f.unmount();
+    else f.setHost("host-b");
+    answer(outcome("verified", { requestId: pending.requestId })); await settle();
+    expect(f.onOpenCreated).not.toHaveBeenCalled();
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
   });
 
   it("keeps the confirmed result visible while options refresh fails or the host disconnects", async () => {
-    model.rpc["sessions.create"]!.mockResolvedValue(outcome("verified"));
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
     const f = form();
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     for (const options of [{ status: "loading" }, { status: "error", message: "read failed" }, { status: "offline" }] as const) {
@@ -412,14 +564,14 @@ describe("New LSA form", () => {
   });
 
   it("turns an unknown outcome into a Check, never a retry", async () => {
-    model.rpc["sessions.create"]!.mockResolvedValue(outcome("unknown"));
-    model.rpc["sessions.create-check"]!.mockResolvedValue(outcome("unknown", { message: "No session is visible yet. Creation may still complete." }));
+    model.rpc["sessions.create"]!.mockImplementation(reply("unknown"));
+    model.rpc["sessions.create-check"]!.mockImplementation(reply("unknown", { message: "No session is visible yet. Creation may still complete." }));
     const f = form();
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     expect(text(f.tree)).toContain("Outcome unknown");
     expect(action(f.tree, "Back to the form")).toBeUndefined();
     f.press("Check"); await settle(); f.render();
-    expect(model.rpc["sessions.create-check"]).toHaveBeenCalledWith({ requestId: outcome("unknown").requestId });
+    expect(model.rpc["sessions.create-check"]).toHaveBeenCalledWith({ requestId: model.rpc["sessions.create"]!.mock.calls[0]![0].requestId });
     expect(text(f.tree)).toContain("Outcome unknown");
     expect(text(f.tree)).toContain("Creation may still complete");
     expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
@@ -427,7 +579,7 @@ describe("New LSA form", () => {
 
   it("treats a lost reply as unknown with Check, using the same request", async () => {
     model.rpc["sessions.create"]!.mockRejectedValue(new Error("socket closed"));
-    model.rpc["sessions.create-check"]!.mockResolvedValue(outcome("verified"));
+    model.rpc["sessions.create-check"]!.mockImplementation(reply("verified"));
     const f = form();
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     expect(byTestId(f.tree, "kontor-new-lsa-lost")).toBeDefined();
@@ -440,7 +592,7 @@ describe("New LSA form", () => {
   });
 
   it("returns a refusal to the form with the draft kept", async () => {
-    model.rpc["sessions.create"]!.mockResolvedValue(outcome("refused", { message: "Mode plan is not offered by Claude. Nothing was created." }));
+    model.rpc["sessions.create"]!.mockImplementation(reply("refused", { message: "Mode plan is not offered by Claude. Nothing was created." }));
     const f = form();
     f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
     expect(text(f.tree)).toContain("Not created");

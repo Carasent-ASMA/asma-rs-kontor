@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureRecentStorage, readRecent, recentRows } from "../client/recent-sessions";
-import { openSessionById, type SessionNavigation } from "../client/session-actions";
+import { openCreatedSession, openSessionById, type SessionNavigation } from "../client/session-actions";
+import type { CreateOutcome } from "../shared/session-create";
 import { sessionEntry } from "./session-fixtures";
 
 function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn> } {
@@ -115,5 +116,50 @@ describe("openSessionById", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+});
+
+describe("openCreatedSession", () => {
+  beforeEach(() => configureRecentStorage(null));
+  const created = (patch: Partial<CreateOutcome> = {}): CreateOutcome => ({ requestId: "00000000-0000-4000-8000-000000000001", state: "verified", title: "LSA • ADHOC • Fixture",
+    agentId: "created-exact-id", workspaceId: "wks-adam", message: "Created and verified.", differences: [], persona: "supported", checkedAt: "2026-10-23", ...patch });
+
+  it("opens the successful readback's exact host/native ID without needing a directory entry", () => {
+    const nav = navigation();
+    expect(openCreatedSession({ outcome: created(), serverId: "host-a", navigation: nav })).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "created-exact-id", serverId: "host-a" });
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["created-exact-id"]);
+    expect(readRecent("host-b").record.visits).toEqual([]);
+  });
+
+  it.each([
+    { state: "unknown", agentId: "unconfirmed-id" },
+    { state: "refused", agentId: "unconfirmed-id" },
+    { state: "verified", agentId: null },
+  ] as const)("never opens or records an unqualified outcome $state/$agentId", (patch) => {
+    const nav = navigation();
+    expect(openCreatedSession({ outcome: created(patch), serverId: "host-a", navigation: nav })).toMatchObject({ ok: false, reason: "missing" });
+    expect(nav.openAgent).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
+  });
+
+  it("does not invent a recent visit when navigation is absent or throws", () => {
+    const nav = navigation();
+    nav.openAgent.mockImplementation(() => { throw new Error("host navigation failed"); });
+    expect(openCreatedSession({ outcome: created(), serverId: "host-a", navigation: undefined })).toMatchObject({ ok: false, reason: "navigation" });
+    expect(openCreatedSession({ outcome: created(), serverId: "host-a", navigation: nav })).toMatchObject({ ok: false, reason: "failed", message: "host navigation failed" });
+    expect(readRecent("host-a").record.visits).toEqual([]);
+  });
+
+  it("shares the existing persistent A-B-A MRU path with ordinary opens", () => {
+    const values = new Map<string, string>();
+    const storage = { read: (key: string) => values.get(key), write: (key: string, value: string | null) => { if (value !== null) values.set(key, value); } };
+    configureRecentStorage(storage);
+    const nav = navigation();
+    openSessionById({ entries: [sessionEntry("a")], id: "a", serverId: "host-a", navigation: nav });
+    openCreatedSession({ outcome: created({ agentId: "b" }), serverId: "host-a", navigation: nav });
+    openCreatedSession({ outcome: created({ agentId: "a" }), serverId: "host-a", navigation: nav });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["a", "b"]);
   });
 });

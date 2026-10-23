@@ -55,6 +55,7 @@ const id = z.string().min(1).max(200);
 export const createDeskSchema = z.object({ workspaceId: id, projectId: id, desk: z.string(), project: z.string() }).strict();
 export const createProviderSchema = z.object({
   id, label: z.string(), available: z.boolean(), note: z.string().nullable(), persona: z.enum(["supported", "unverified"]),
+  status: z.enum(["ready", "loading", "error", "unavailable", "disabled", "unknown"]),
   models: z.array(z.object({ id, label: z.string(), efforts: z.array(z.object({ id, label: z.string() })), defaultEffort: z.string().nullable() })),
   defaultModel: z.string().nullable(),
   modes: z.array(z.object({ id, label: z.string(), dangerous: z.boolean() })),
@@ -86,6 +87,8 @@ export const createOptionsSchema = z.object({
   /** Why creation is off; null when it is on. */
   disabledReason: z.string().nullable(),
   desks: z.array(createDeskSchema),
+  /** The desk whose working directory scoped this provider catalog; null when no desk is available. */
+  catalogWorkspaceId: id.nullable(),
   providers: z.array(createProviderSchema),
   /** The host's `LSA` agent profile, the form's defaults when present. */
   profile: z.object({ name: z.string(), provider: z.string(), model: z.string().nullable(), modeId: z.string().nullable(), effort: z.string().nullable() }).nullable(),
@@ -107,6 +110,6 @@ export const createRequestSchema = z.object({
 }).strict();
 export type CreateRequest = z.infer<typeof createRequestSchema>;
 
-export const readCreateOptions = defineRpc({ name: "sessions.create-options", input: z.object({}).strict(), output: createOptionsSchema });
+export const readCreateOptions = defineRpc({ name: "sessions.create-options", input: z.object({ workspaceId: id.optional() }).strict(), output: createOptionsSchema });
 export const executeCreate = defineRpc({ name: "sessions.create", input: createRequestSchema, output: createOutcomeSchema });
 export const checkCreate = defineRpc({ name: "sessions.create-check", input: z.object({ requestId: z.string().uuid() }).strict(), output: createOutcomeSchema });

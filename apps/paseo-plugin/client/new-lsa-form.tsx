@@ -1,35 +1,42 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { adhocTitle, checkCreate, executeCreate, normalizeTopic, topicProblem, TOPIC_MAX, type CreateOptions, type CreateOutcome } from "../shared/session-create";
 import { Action, COARSE_POINTER, Copy, Disclosure, type Colors } from "./page-controls";
 import type { CreateOptionsState } from "./start-switch-sheet";
+import type { OpenSessionResult } from "./session-actions";
 
-export type CreateDraft = { readonly topic: string; readonly workspaceId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string; readonly modeId?: string };
+export type CreateDraft = { readonly topic: string; readonly workspaceId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null };
 
 /**
- * The draft's effective choices: each explicit choice that still exists, else the host's LSA profile for that
- * provider, else the provider's defaults. `problem` is why Create is disabled, or null.
+ * Defaults fill only unspecified choices. An explicit or saved choice that disappears stays invalid until
+ * the operator chooses again; a catalog refresh never silently substitutes another model or permission mode.
  */
 export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
-  const desk = options.desks.find((entry) => entry.workspaceId === draft.workspaceId) ?? options.desks[0] ?? null;
+  const desk = (draft.workspaceId ? options.desks.find((entry) => entry.workspaceId === draft.workspaceId) : options.desks[0]) ?? null;
   const profile = options.profile;
-  const providerId = draft.provider ?? (options.providers.some((entry) => entry.id === profile?.provider && entry.available) ? profile!.provider : options.providers.find((entry) => entry.available)?.id);
+  const providerId = draft.provider ?? profile?.provider ?? options.providers.find((entry) => entry.available)?.id;
   const provider = options.providers.find((entry) => entry.id === providerId) ?? null;
   const preset = profile && profile.provider === provider?.id ? profile : null;
-  const model = provider?.models.find((entry) => entry.id === (draft.model ?? preset?.model)) ?? provider?.models.find((entry) => entry.id === provider.defaultModel) ?? provider?.models[0] ?? null;
-  const effort = model?.efforts.find((entry) => entry.id === (draft.effort ?? preset?.effort)) ?? model?.efforts.find((entry) => entry.id === model.defaultEffort) ?? model?.efforts[0] ?? null;
-  const mode = provider?.modes.find((entry) => entry.id === (draft.modeId ?? preset?.modeId)) ?? provider?.modes.find((entry) => entry.id === provider.defaultMode) ?? provider?.modes[0] ?? null;
+  const modelId = draft.model ?? preset?.model ?? provider?.defaultModel ?? provider?.models[0]?.id;
+  const model = provider?.available ? provider.models.find((entry) => entry.id === modelId) ?? null : null;
+  const effortId = draft.effort !== undefined ? draft.effort : (preset?.model === model?.id ? preset?.effort : null) ?? model?.defaultEffort ?? model?.efforts[0]?.id;
+  const effort = model?.efforts.find((entry) => entry.id === effortId) ?? null;
+  const modeId = draft.modeId !== undefined ? draft.modeId : preset?.modeId ?? provider?.defaultMode ?? provider?.modes[0]?.id;
+  const mode = provider?.available ? provider.modes.find((entry) => entry.id === modeId) ?? null : null;
   const topic = normalizeTopic(draft.topic);
   let problem: string | null = null;
   if (!options.enabled) problem = options.disabledReason ?? "New LSA is off on this host.";
   else if (options.pending) problem = `An earlier creation, “${options.pending.title}”, is not settled. Check it first.`;
   else if (!desk) problem = "No desk on this host has an ADAM workspace.";
-  else if (!provider?.available) problem = provider?.note ?? "No provider is available on this host.";
-  else if (!model) problem = "No selectable model.";
+  else if (options.catalogWorkspaceId !== desk.workspaceId) problem = "Refresh this desk's provider catalog before creating a session.";
+  else if (!provider?.available) problem = provider?.note ?? (providerId ? `Provider ${providerId} is no longer active. Choose an active provider.` : "No active provider is available on this host.");
+  else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : "No selectable model.";
+  else if (effortId && !effort) problem = `Effort ${effortId} is no longer offered for ${model.label}. Choose an available effort.`;
+  else if (modeId && !mode) problem = `Mode ${modeId} is no longer offered by ${provider.label}. Choose an available mode.`;
   else problem = topicProblem(topic);
-  return { desk, provider, model, effort, mode, topic, title: adhocTitle(topic), problem, fromProfile: preset !== null };
+  return { desk, provider, model, effort, mode, topic, title: adhocTitle(topic), problem, fromProfile: preset !== null, staleEffort: !!effortId && !effort, staleMode: !!modeId && !mode };
 }
 
 /** A version-4 UUID for the request's idempotency; not a secret. */
@@ -58,15 +65,23 @@ type Phase =
   /** The plugin server's reply was lost: the request may or may not have been dispatched. */
   | { readonly kind: "lost"; readonly requestId: string; readonly title: string; readonly message: string };
 
-export function NewLsaForm({ colors, compact, options, onRefresh, canOpen, listed, onOpen, onCancel }: {
-  colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: () => void; canOpen: boolean;
-  listed: (agentId: string) => boolean; onOpen: (agentId: string) => void; onCancel: () => void;
+export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel }: {
+  hostId: string; colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: (workspaceId?: string) => void; canOpen: boolean;
+  onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult; onCancel: () => void;
+  /** A sheet close invalidates pending continuations immediately, before React's unmount cleanup. */
+  isActive?: () => boolean;
 }) {
   const execute = useRpc(executeCreate), check = useRpc(checkCreate);
-  const [draft, setDraft] = useState<CreateDraft>({ topic: "" });
+  const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", workspaceId: options.status === "ready" ? options.options.catalogWorkspaceId ?? undefined : undefined }));
   const [phase, setPhase] = useState<Phase>({ kind: "draft" });
   const [advanced, setAdvanced] = useState(!compact);
   const submitted = useRef(false);
+  const live = useRef(true), currentHost = useRef(hostId), currentOptions = useRef(options), currentCanOpen = useRef(canOpen);
+  currentHost.current = hostId; currentOptions.current = options; currentCanOpen.current = canOpen;
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const isCurrent = () => live.current && currentHost.current === hostId && isActive();
+  const opening = useRef<string | null>(null);
+  const [openState, setOpenState] = useState<{ requestId: string; status: "opening" | "opened" | "failed"; message?: string } | null>(null);
   const tall = compact || COARSE_POINTER;
   const muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 } as const;
   // The footer stays outside the scroll so Create is never below the fold of a short panel.
@@ -75,25 +90,48 @@ export function NewLsaForm({ colors, compact, options, onRefresh, canOpen, liste
     {footer ? <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, paddingHorizontal: 6, paddingTop: 6, borderTopWidth: 1, borderColor: colors.border }}>{footer}</View> : null}
   </>;
 
+  const openCreated = (outcome: CreateOutcome) => {
+    if (!isCurrent() || !currentCanOpen.current || currentOptions.current.status === "offline" || opening.current === outcome.requestId) return;
+    opening.current = outcome.requestId;
+    setOpenState({ requestId: outcome.requestId, status: "opening" });
+    let result: OpenSessionResult;
+    try { result = onOpenCreated(outcome); }
+    catch (error) { result = { ok: false, reason: "failed", message: error instanceof Error ? error.message : "Paseo could not open this session." }; }
+    if (!result.ok) opening.current = null;
+    if (isCurrent()) setOpenState(result.ok ? { requestId: outcome.requestId, status: "opened" } : { requestId: outcome.requestId, status: "failed", message: result.message });
+  };
+  const finish = (outcome: CreateOutcome, requestId: string, title: string) => {
+    if (!isCurrent()) return;
+    if (outcome.requestId !== requestId) {
+      setPhase({ kind: "lost", requestId, title, message: "The host replied with a different request ID. Check this request before opening any session." });
+      return;
+    }
+    setPhase({ kind: "result", outcome });
+    if (outcome.state === "verified" && canOpen) openCreated(outcome);
+    else if (outcome.state === "unknown" || outcome.state === "refused") onRefresh(draft.workspaceId);
+  };
   const runCheck = (requestId: string, title: string) => {
+    if (!isCurrent()) return;
     setPhase({ kind: "busy", requestId, label: "Checking the host…" });
-    check({ requestId }).then((outcome) => { setPhase({ kind: "result", outcome }); onRefresh(); },
-      (error: unknown) => setPhase({ kind: "lost", requestId, title, message: `Check did not complete: ${error instanceof Error ? error.message : String(error)}` }));
+    check({ requestId }).then((outcome) => finish(outcome, requestId, title),
+      (error: unknown) => { if (isCurrent()) setPhase({ kind: "lost", requestId, title, message: `Check did not complete: ${error instanceof Error ? error.message : String(error)}` }); });
   };
   const outcomeView = (outcome: CreateOutcome, providerLabel: string) => {
     const created = outcome.state === "verified" || outcome.state === "differences";
     let openNote: string | null = null;
-    if (created && !canOpen) openNote = "This Paseo app cannot open it from Kontor; it is listed in Sessions.";
-    else if (created && outcome.agentId && !listed(outcome.agentId)) openNote = "Open is offered once the session list shows it.";
+    if (created && !canOpen) openNote = "This Paseo app cannot open it from Kontor. Use Sessions to find this exact ID.";
+    const opened = openState?.requestId === outcome.requestId ? openState : null;
     return wrap(<View testID={`kontor-new-lsa-${outcome.state}`} accessibilityLiveRegion="polite" aria-live="polite" style={{ gap: 8 }}>
       <Text accessibilityRole="header" style={{ color: outcome.state === "verified" ? colors.statusSuccess : outcome.state === "differences" || outcome.state === "unknown" ? colors.statusWarning : colors.foreground, fontSize: 14, fontWeight: "600" }}>{HEADINGS[outcome.state]}</Text>
       <Text selectable style={{ color: colors.foreground, fontSize: 13 }}>{outcome.title}</Text>
+      {outcome.agentId ? <Text selectable style={muted}>Session ID: {outcome.agentId}</Text> : null}
       <Copy colors={colors} small>{outcome.message}</Copy>
       {outcome.differences.map((line) => <Text key={line} style={muted}>• {line}</Text>)}
       {created ? <Text style={muted}>{personaLine(outcome.persona, providerLabel)}</Text> : null}
       {openNote ? <Text style={muted}>{openNote}</Text> : null}
+      {opened ? <Text testID="kontor-new-lsa-open-status" accessibilityLiveRegion="polite" style={muted}>{opened.status === "opening" ? "Opening session…" : opened.status === "opened" ? "Opened in Paseo." : `Created. Opening failed: ${opened.message} Use Open session to try again.`}</Text> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {created && outcome.agentId && canOpen && listed(outcome.agentId) ? <Action small label="Open session" colors={colors} onPress={() => onOpen(outcome.agentId!)} /> : null}
+        {created && outcome.agentId && canOpen && opened?.status !== "opened" ? <Action small label="Open session" colors={colors} disabled={opened?.status === "opening" || options.status === "offline"} onPress={() => openCreated(outcome)} /> : null}
         {outcome.state === "unknown" ? <Action small label="Check" accessibilityLabel="Check the host for this creation" colors={colors} onPress={() => runCheck(outcome.requestId, outcome.title)} /> : null}
         {outcome.state === "refused" ? <Action small label="Back to the form" colors={colors} onPress={() => { submitted.current = false; setPhase({ kind: "draft" }); }} /> : null}
         {outcome.state !== "refused" && outcome.state !== "unknown" ? <Action small label="Done" colors={colors} onPress={onCancel} /> : null}
@@ -116,7 +154,7 @@ export function NewLsaForm({ colors, compact, options, onRefresh, canOpen, liste
     const text = options.status === "error" ? `Kontor could not read this host's options (${options.message}).` : options.status === "offline" ? "Host offline. Nothing can be created until it reconnects." : "Reading this host's desks and providers…";
     return wrap(<>
       <Copy colors={colors} muted>{text}</Copy>
-      {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={onRefresh} /> : null}
+      {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh(draft.workspaceId)} /> : null}
     </>);
   }
   const ready = options.options;
@@ -124,13 +162,13 @@ export function NewLsaForm({ colors, compact, options, onRefresh, canOpen, liste
   if (ready.pending) return outcomeView(ready.pending, providerLabel);
 
   const submit = () => {
-    if (submitted.current || choice.problem || !choice.desk || !choice.provider || !choice.model) return;
+    if (!isCurrent() || submitted.current || choice.problem || !choice.desk || !choice.provider || !choice.model) return;
     submitted.current = true;
     const requestId = newRequestId(), title = choice.title;
     setPhase({ kind: "busy", requestId, label: `Creating “${title}”…` });
     execute({ requestId, topic: choice.topic, workspaceId: choice.desk.workspaceId, provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null })
-      .then((outcome) => { setPhase({ kind: "result", outcome }); onRefresh(); },
-        (error: unknown) => setPhase({ kind: "lost", requestId, title, message: `The Kontor server did not answer (${error instanceof Error ? error.message : String(error)}).` }));
+      .then((outcome) => finish(outcome, requestId, title),
+        (error: unknown) => { if (isCurrent()) setPhase({ kind: "lost", requestId, title, message: `The Kontor server did not answer (${error instanceof Error ? error.message : String(error)}).` }); });
   };
   const set = (patch: Partial<CreateDraft>) => setDraft({ ...draft, ...patch });
   const summary = [choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ");
@@ -142,21 +180,28 @@ export function NewLsaForm({ colors, compact, options, onRefresh, canOpen, liste
         placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
       <Text testID="kontor-new-lsa-title" style={muted}>Title: {choice.title}. The session promotes ADHOC to a confirmed epic key itself.</Text>
     </View>
-    <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.workspaceId ?? null} onSelect={(workspaceId) => set({ workspaceId })}
+    <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.workspaceId ?? null} onSelect={(workspaceId) => { set({ workspaceId }); onRefresh(workspaceId); }}
       options={ready.desks.map((desk) => ({ id: desk.workspaceId, label: `${desk.project} / ADAM` }))} empty="No desk on this host has an ADAM workspace." />
     <Disclosure small label={`Provider, model and mode: ${summary || "none available"}`} accessibilityLabel={`Provider, model and mode. ${summary || "None available"}`} colors={colors} open={advanced} onToggle={setAdvanced}>
       <View style={{ gap: 10, paddingTop: 4 }}>
         <Text style={muted}>{choice.fromProfile ? `Defaults from the host's ${ready.profile!.name} profile.` : "Defaults: the provider's own."}</Text>
         <Choices label="Provider" colors={colors} tall={tall} selected={choice.provider?.id ?? null} onSelect={(provider) => set({ provider, model: undefined, effort: undefined, modeId: undefined })}
-          options={ready.providers.map((provider) => ({ id: provider.id, label: provider.label, disabled: !provider.available, note: provider.note }))} empty="No provider on this host." />
-        {choice.provider ? <Choices label="Model" colors={colors} tall={tall} selected={choice.model?.id ?? null} onSelect={(model) => set({ model, effort: undefined })}
+          options={ready.providers.filter((provider) => provider.available).map((provider) => ({ id: provider.id, label: provider.label }))} empty="No active provider on this host." />
+        {choice.provider?.available ? <Choices label="Model" colors={colors} tall={tall} selected={choice.model?.id ?? null} onSelect={(model) => set({ model, effort: undefined })}
           options={choice.provider.models.map((model) => ({ id: model.id, label: model.label }))} empty="No selectable model." /> : null}
         {choice.model?.efforts.length ? <Choices label="Effort" colors={colors} tall={tall} selected={choice.effort?.id ?? null} onSelect={(effort) => set({ effort })}
           options={choice.model.efforts} /> : choice.model ? <Text style={muted}>No effort setting for this model.</Text> : null}
-        {choice.provider?.modes.length ? <Choices label="Mode" colors={colors} tall={tall} selected={choice.mode?.id ?? null} onSelect={(modeId) => set({ modeId })}
+        {choice.provider?.available && choice.provider.modes.length ? <Choices label="Mode" colors={colors} tall={tall} selected={choice.mode?.id ?? null} onSelect={(modeId) => set({ modeId })}
           options={choice.provider.modes.map((mode) => ({ id: mode.id, label: mode.dangerous ? `${mode.label} ⚠` : mode.label }))} /> : null}
+        {choice.model && choice.staleEffort ? <Action small label="Use current effort default" colors={colors} onPress={() => set({ effort: choice.model!.efforts.find((effort) => effort.id === choice.model!.defaultEffort)?.id ?? choice.model!.efforts[0]?.id ?? null })} /> : null}
+        {choice.provider?.available && choice.staleMode ? <Action small label="Use current mode default" colors={colors} onPress={() => set({ modeId: choice.provider!.modes.find((mode) => mode.id === choice.provider!.defaultMode)?.id ?? choice.provider!.modes[0]?.id ?? null })} /> : null}
       </View>
     </Disclosure>
+    {ready.providers.some((provider) => provider.status === "loading") ? <Text style={muted}>Some providers are still loading.</Text> : null}
+    {ready.providers.some((provider) => provider.status === "unknown") ? <Text style={muted}>Some provider availability is unknown.</Text> : null}
+    {ready.providers.some((provider) => provider.status === "error") ? <Text style={muted}>Some providers could not be read.</Text> : null}
+    {ready.providers.some((provider) => provider.status === "unavailable") ? <Text style={muted}>Some providers are unavailable.</Text> : null}
+    <Action small label="Refresh choices" colors={colors} onPress={() => onRefresh(draft.workspaceId)} />
     {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
     {choice.provider ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
     {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}

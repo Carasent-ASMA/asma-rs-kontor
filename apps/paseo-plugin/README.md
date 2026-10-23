@@ -208,7 +208,14 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   `persona=kontor-lsa-adhoc@<hash>` and `create.request=<request ID>`; never a
   `kontor.*` or orchestration label. Provider, model, effort and mode default
   to the host's `LSA` agent profile, else the provider's own defaults; a
-  dangerous mode is marked. No first prompt is sent.
+  dangerous mode is marked. The provider catalog is read from the selected
+  desk's working directory. Pickers show only enabled, ready providers and
+  their selectable models. Loading, unknown, unavailable and failed reads
+  have separate messages and a **Refresh choices** action. An empty catalog
+  blocks creation. A saved or selected choice that disappears stays invalid
+  until the operator chooses again; refresh never silently substitutes it.
+  Submit revalidates workspace, catalog and duplicate title before recording
+  intent. No first prompt is sent.
 - **Truthful outcome.** The request is recorded on the host, under
   `$PASEO_HOME/plugin-state/kontor/session-create-v1/`, before one idempotent
   native create. Success is claimed only from an exact readback: **Created and
@@ -219,9 +226,18 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   leaves the outcome unknown because a delayed creation may still complete.
   An unknown outcome stays blocked until a correlated readback confirms it;
   otherwise the operator must reconcile it on the host. An unsettled or
-  unreadable record blocks the next create until it is settled. **Open
-  session** appears only once the session list shows the new session and the
-  app exposes plugin navigation. Nothing is created while the host is offline.
+  unreadable record blocks the next create until it is settled. A verified
+  creation opens its exact returned native session ID through supported app
+  navigation, without waiting for the full session directory. **Created with
+  differences** keeps its warnings visible and offers **Open session**. If
+  opening fails, the created ID stays visible with **Open session** to retry;
+  retrying Open never creates another session. Closing the form or changing
+  hosts suppresses late navigation; it cannot cancel an already dispatched
+  create. Recently viewed is recorded by the existing device-local helper
+  only after navigation accepts that exact host and session ID. The SDK does
+  not acknowledge that a native conversation finished rendering. When the app
+  lacks plugin navigation, use Sessions to find the displayed ID. Nothing is
+  created while the host is offline.
 - **Persona and rename.** The LSA persona goes in the system prompt. Its
   delivery is confirmed only for Claude and Codex; other providers show
   "Persona delivery unverified". A plugin cannot rename a session, so the
