@@ -123,7 +123,8 @@ import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
-import { notifyArchive, useArchiveRecovery } from "./archive-feedback";
+import { notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery } from "./archive-feedback";
+import { hideNotices, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
 
 type ThemeColors = PluginTheme["colors"];
@@ -976,6 +977,7 @@ export function SlimActionButton({
  */
 export function SlimToolbar({
   action,
+  notice,
   hostLabel,
   activeCount,
   colors,
@@ -987,6 +989,8 @@ export function SlimToolbar({
   onHide,
 }: {
   readonly action?: ReactNode;
+  /** The status button a hidden notice tray leaves beside Resume. */
+  readonly notice?: ReactNode;
   readonly hostLabel: string;
   readonly activeCount: number;
   readonly colors: ThemeColors;
@@ -1023,6 +1027,7 @@ export function SlimToolbar({
         </Text>
       </View>
       {action}
+      {notice}
       <SlimActionButton
         testID="sessions-slim-search"
         label="Search"
@@ -1502,6 +1507,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const lifecycleAnchor = useRef<View | null>(null);
   const recoveryButton = useRef<View | null>(null);
   const slimRecoveryButton = useRef<View | null>(null);
+  // The status button a hidden notice tray leaves beside Resume, and each tray's Hide, so focus moves between them.
+  const noticesButton = useRef<View | null>(null);
+  const noticesHide = useRef<View | null>(null);
+  const slimNoticesHide = useRef<View | null>(null);
   const archiveButtons = useRef(new Map<string, View>());
   useEffect(() => { setLifecycleOpen(false); }, [host.id]);
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
@@ -2392,12 +2401,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const noticeProps = compact ? {} : focusProps;
   const settingsUnavailable = organization !== undefined && organization.state.status !== "ready";
   const settingsAlert = saveMessage ?? organization?.state.saveError ?? null;
-  const hasNotices = (showBanner && !!staleMessage) || navigationMissing || settingsUnavailable || !!settingsAlert || !!recovery.line;
   // One lifecycle action at a time: every Resume, Details, the X and Check again wait while another runs.
   const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
   const canStart = hostOnline && lifecycleIdle && state.status === "ready";
-  // One placement per layout: compact notices, the wide full toolbar, or the wide slim row.
-  const recoveryLine = recovery.line ? <View testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+  const recoveryLine = recovery.line ? <View key="archive" testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
     <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, flexShrink: 1 }}>{recovery.line}</Text>
     {recovery.unresolved.length ? <Action small colors={colors} label={recovery.checking ? "Checking…" : "Check again"} accessibilityLabel="Check unconfirmed archives again" disabled={!lifecycleIdle} onPress={() => { if (lifecycleIdle) void recovery.check(); }} />
       : <Action small colors={colors} label="Retry" accessibilityLabel="Read archive checks again" disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
@@ -2407,10 +2414,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         // Only the exact owner review opens; a failed read never shows another review.
         if (typeof result === "string") toast.error(`Archive details could not be read: ${result}`); else if (result) setLifecycleOpen(true); }); }} /> : null}
   </View> : null;
-  const notices = (
-    <>
-      {showBanner && staleMessage ? (
+  // Each notice's keys name what it reports; a hidden tray opens again for any key it has not hidden.
+  const banners = ([
+    showBanner && staleMessage ? { keys: [`source:${state.status}:${staleMessage}`], summary: state.status === "error" ? "Session read failed" : "Sessions not live",
+      tone: state.status === "error" ? "danger" : "warning", node: (
         <Banner
+          key="source"
           testID="sessions-source-banner"
           message={`${staleMessage} ${
             state.inventoryComplete ? "Last complete read" : "Inventory read attempt"
@@ -2421,30 +2430,60 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           colors={colors}
           {...noticeProps}
         />
-      ) : null}
-
-      {navigationMissing ? (
+      ) } : null,
+    navigationMissing ? { keys: ["navigation"], summary: "Session navigation unavailable", tone: "warning", node: (
         <Banner
+          key="navigation"
           testID="sessions-navigation-banner"
           message="This Paseo app does not expose native session navigation to plugins. Update Paseo to open sessions from this screen."
           tone="warning"
           colors={colors}
           {...noticeProps}
         />
-      ) : null}
-
-      {organization && organization.state.status !== "ready" ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Organization settings {organization.state.status}; saved preferences are unavailable. Native sessions remain visible and branches still open and close here.</Text> : null}
-      {saveMessage || organization?.state.saveError ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{saveMessage ?? organization?.state.saveError}</Text> : null}
-    </>
-  );
-  const compactNotices = compact && hasNotices ? (
-    <View testID="sessions-notices" style={{ gap: 8 }}>
-      {notices}
-      {recoveryLine}
-    </View>
-  ) : null;
+      ) } : null,
+    organization && settingsUnavailable ? { keys: [`settings:${organization.state.status}`], summary: `Organization settings ${organization.state.status}`, tone: "warning",
+      node: <Text key="settings" style={{ color: colors.statusWarning, fontSize: 12 }}>Organization settings {organization.state.status}; saved preferences are unavailable. Native sessions remain visible and branches still open and close here.</Text> } : null,
+    settingsAlert ? { keys: [`save:${settingsAlert}`], summary: "Organization not saved", tone: "warning",
+      node: <Text key="save" accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{settingsAlert}</Text> } : null,
+  ] satisfies (Notice | null)[]).filter((notice) => notice !== null);
+  // One key per unconfirmed archive, so a confirmed one leaves the tray hidden and a new one opens it; a read error is a new notice too.
+  const archiveNotice: Notice | null = recoveryLine ? { summary: archiveSummary(recovery.unresolved, null) ?? "Archive checks could not be read", tone: "warning", node: recoveryLine,
+    keys: [...recovery.unresolved.map((ref) => `archive:${ref.reviewId}:${ref.agentId}`), ...(recovery.error ? [`archive-error:${recovery.error}`] : [])] } : null;
+  const allNotices = archiveNotice ? [...banners, archiveNotice] : banners;
+  const hiddenNotices = view.noticesHidden ?? [];
+  // A notice missing while its source reads (first load, refresh, save, Check) is unread, not absent; navigation is always read.
+  const noticeRead: Readonly<Record<string, boolean>> = {
+    source: state.status !== "idle" && state.status !== "loading",
+    settings: organization?.state.status !== "loading",
+    save: !organization?.state.saving,
+    // The archive state still names the previous host for one render after a switch, so only this host's list counts.
+    archive: recovery.listed === host.id && !recovery.checking,
+    "archive-error": recovery.listed === host.id && !recovery.checking,
+  };
+  // A hidden notice a completed reading no longer reports is forgotten, so its return opens the tray; one continuously present stays hidden.
+  const presentNotices = presentHidden(allNotices, hiddenNotices, (key) => noticeRead[key.split(":")[0]!] ?? true);
+  useEffect(() => { if (presentNotices !== hiddenNotices) updateView({ noticesHidden: presentNotices }); }, [presentNotices, hiddenNotices, updateView]);
   const OptionsContainer = compact ? View : ScrollView;
   const toolbar = toolbarLayout({ collapsed: toolbarCollapsed, compact });
+  // Hide and Show change presentation only: no action runs, and focus moves to the control that replaces the pressed one.
+  const hideNoticeTray = (shown: readonly Notice[]) => {
+    updateView({ noticesHidden: hideNotices(shown, hiddenNotices) });
+    setTimeout(() => focusControl(noticesButton.current), 0);
+  };
+  const showNoticeTray = (shown: readonly Notice[], hide: RefObject<View | null>) => {
+    updateView({ noticesHidden: showNotices(shown, hiddenNotices) });
+    setTimeout(() => focusControl(hide.current), 0);
+  };
+  const noticeTray = (shown: readonly Notice[], hide: RefObject<View | null>, testID: string, disabled = false) => shown.length > 0 && !noticesHidden(shown, hiddenNotices) ? (
+    <NoticeTray testID={testID} colors={colors} compact={compact} disabled={disabled} hideRef={hide} onHide={() => hideNoticeTray(shown)}>{shown.map((notice) => notice.node)}</NoticeTray>
+  ) : null;
+  const noticesTrigger = (shown: readonly Notice[], hide: RefObject<View | null>) => noticesHidden(shown, hiddenNotices) ? (
+    <NoticesButton ref={noticesButton} notices={shown} colors={colors} compact={compact} onPress={() => showNoticeTray(shown, hide)} />
+  ) : null;
+  // One placement per layout: compact notices, the wide full toolbar (the slim row takes the archive line while it shows), or the wide slim row.
+  const slimNotices = archiveNotice && toolbar.showSlimRow ? [archiveNotice] : [];
+  const fullNotices = toolbar.showSlimRow ? banners : allNotices;
+  const compactNotices = compact ? noticeTray(allNotices, noticesHide, "sessions-notices") : null;
   const scopeRemovals = [
     shortcut !== null ? { id: "desk", label: `Desk / workspace: ${scopeChoiceLabel}${shortcut.startsWith("desk-project:") ? ` · ${shortcut.slice("desk-project:".length)}` : ""}`, patch: { shortcut: null } } : null,
     streams !== null ? { id: "streams", label: `Workstreams: ${streams.length ? streams.map((key) => workstreamOptions.find((option) => option.key === key)?.label ?? `Unavailable (${key})`).slice(0, 2).join(", ") + (streams.length > 2 ? ` +${streams.length - 2}` : "") : "None"}`, patch: { streams: null } } : null,
@@ -2462,11 +2501,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       onLayout={handleToolbarLayout}
       style={{ gap: 8 }}
     >
-      {compact ? null : notices}
-      {compact || toolbar.showSlimRow ? null : recoveryLine}
+      {compact ? null : noticeTray(fullNotices, noticesHide, "sessions-top-notices", focusProps.disabled)}
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
         {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
           onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
+        {!toolbar.showSlimRow ? noticesTrigger(fullNotices, noticesHide) : null}
         {view.status === "attention" ? <>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{availability.checking ? "Checking exact session IDs…" : "Attention includes unread results. Native record checks do not verify provider history."}</Text>
           <Action small={!compact} colors={colors} label="Check availability" onPress={() => { availability.refresh(); refresh(); }} />
@@ -2750,9 +2789,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     onClear={handleClearFilters}
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
-    <View style={{ width: 80, alignItems: "flex-end" }}>
+    <View style={{ width: 80, alignItems: "flex-end", gap: 4 }}>
       <Action ref={slimRecoveryButton} colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
         onPress={() => { if (!canStart) return; quickHelpDismissRef.current?.(); setQuickChooserScope(null); lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />
+      {noticesTrigger(allNotices, noticesHide)}
       {view.status === "attention" ? <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} /> : null}
     </View>
   </View>;
@@ -2790,6 +2830,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <SlimToolbar
         action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
           onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
+        notice={noticesTrigger(slimNotices, slimNoticesHide)}
         hostLabel={host.label}
         activeCount={slimActiveCount}
         colors={colors}
@@ -2809,7 +2850,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           onClearScope={onClearScope}
         />
       ) : null}
-      {toolbar.showSlimRow ? recoveryLine : null}
+      {noticeTray(slimNotices, slimNoticesHide, "sessions-slim-notices")}
     </View>
   );
   // Desktop keeps its existing inline toolbar; compact mounts these controls only on the filter page.
@@ -2861,10 +2902,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     return () => clearTimeout(timer);
   }, [compact]);
 
+  // Filters has no Resume, so a hidden tray leaves its button where the tray was.
+  const filtersNoticesTrigger = noticesTrigger(allNotices, noticesHide);
   if (mobileFiltersOpen) return (
     <View ref={rootRef} onLayout={handleRootLayout} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
       <MobileFiltersPage colors={colors} onBack={closeMobileFilters} count={filterCount} menuOpen={optionMenu !== null || (view.associationsOpen ?? false) || view.scopeOpen != null}>
         {compactNotices}
+        {filtersNoticesTrigger ? <View style={{ alignItems: "flex-start" }}>{filtersNoticesTrigger}</View> : null}
         {activeScopeSummary}
         <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>Changes apply immediately. Back keeps your choices.</Text>
         {fullToolbar}

@@ -1031,6 +1031,15 @@ archive scope, session count and pages read).
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
    wait for reconnect; the next subscription snapshot reconciles every page
    before the screen reports **Live** again.
+5. The notices at the top (source, navigation, settings and unconfirmed
+   archives) form one tray with a **Hide notices** button. Hidden notices leave
+   one status button beside **Resume** (where the tray was on compact
+   **Filters**) that names them and shows the tray again. Hiding runs nothing
+   and resolves nothing; any new or changed notice opens the tray again, and so
+   does a notice that returns after a completed read reported it gone, while one
+   that stays present stays hidden. The choice is kept for the view until the
+   app restarts. Escape hides the tray
+   while focus is in it.
 
 ## Configuration
 
@@ -1149,7 +1158,12 @@ workflow-write call.
 the repeated-member rule and both log lines. `test/floor-growth.test.ts` covers a
 file that grows past 2 MiB after it is opened, and `test/floor-close.test.ts` a
 failed read or close of the file, including a server start under a failed
-close. `test/server-entry.test.ts` starts
+close. `test/sessions-notice-tray.test.tsx` covers hiding and showing the top
+notices on the wide, slim and 320/390 compact layouts: placement beside
+Resume, no RPC or toast on hide, persistence across a remount, reopening for a
+new archive or read error, continuous presence through in-flight and failed reads,
+reopening when the same notice returns after a completed read without it, focus
+moves, Escape and touch targets. `test/server-entry.test.ts` starts
 the server entry for each file state and checks which hooks it registers: none
 when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
 that `KONTOR_PLUGIN_FLOOR` has no effect, one read per start, and that the file
