@@ -8,7 +8,7 @@ export function compactUsage(entry: SessionUsageEntry) {
   return {
     model: model.model === null ? "—" : model.short,
     modelIcon: model.model === null ? "CircleHelp" : model.source === "Last reported runtime model" ? "Radio" : "SlidersHorizontal",
-    tokens: usage.label === "Usage not reported" ? "—" : usage.label.replace(/^Report: /, "").replace(/ in · /, " ↓ · ").replace(/ out$/, " ↑"),
+    tokens: usage.label,
     modelHelp: modelSourceHelp(entry),
     usageHelp: reportedUsageHelp(entry),
   };

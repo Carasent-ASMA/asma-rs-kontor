@@ -1,4 +1,5 @@
 import { SessionScopeSelector } from "../client/session-scope-selector";
+import { SessionScopeChip } from "../client/session-scope-chip";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type {
@@ -281,6 +282,7 @@ import {
 } from "../client/sessions-screen";
 import { SessionsLegend } from "../client/sessions-legend";
 import { MobileFiltersPage } from "../client/mobile-filters";
+import { SessionLayoutControl } from "../client/session-layout-control";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
@@ -360,6 +362,11 @@ function findByTestID(node: unknown, testID: string): ElementLike {
   );
   expect(found).toHaveLength(1);
   return found[0]!;
+}
+
+function chooseLayout(value: "grouped" | "flat") {
+  const control = walk(harness.current()).find((node) => node.type === SessionLayoutControl)!;
+  (control.props.onChange as (value: "grouped" | "flat") => void)(value); harness.flush();
 }
 
 function sessionSearch(): ElementLike {
@@ -628,7 +635,7 @@ describe("SessionsScreen toolbar events", () => {
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
     const list = () => findByTestID(harness.current(), "sessions-list");
-    const header = () => list().props.ListHeaderComponent;
+    const header = () => findByTestID(harness.current(), "sessions-layout-bar");
     renderScreen();
     const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("");
@@ -750,7 +757,7 @@ describe("SessionsScreen toolbar events", () => {
     };
     renderScreen();
     const list = findByTestID(harness.current(), "sessions-list");
-    const count = JSON.stringify(findByTestID(list.props.ListHeaderComponent, "sessions-count").props.children);
+    const count = JSON.stringify(findByTestID(harness.current(), "sessions-count").props.children);
 
     expect(count).toContain("partial inventory read");
     expect(count).not.toContain("complete inventory read");
@@ -804,7 +811,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(directory.inputs.at(-1)?.enabled).toBe(false);
     expect(onIncludeArchived).toHaveBeenCalledWith(false);
     const list = findByTestID(harness.current(), "sessions-list");
-    const count = JSON.stringify(findByTestID(list.props.ListHeaderComponent, "sessions-count").props.children);
+    const count = JSON.stringify(findByTestID(harness.current(), "sessions-count").props.children);
     expect(count).toContain('"1 session"'); expect(count).not.toContain("3");
     expect(count).toContain("partial inventory read");
     const banner = findByTestID(harness.current(), "sessions-source-banner");
@@ -962,7 +969,8 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("session-a", { labels: { desk: "Adam" } })] };
     renderScreen(organization);
     const chip = (testID: string) => findByTestID(harness.current(), testID);
-    expect([chip("sessions-filter-favorites").props.label, chip("sessions-shortcut-2").props.label]).toEqual(["★ Favorites", "Adam desk"]);
+    expect([chip("sessions-filter-favorites").props.label, (chip("sessions-shortcut-2").props.choice as { label: string }).label]).toEqual(["★ Favorites", "Adam desk"]);
+    expect(chip("sessions-shortcut-2").type).toBe(SessionScopeChip);
     expect([chip("sessions-filter-favorites").props.count, chip("sessions-shortcut-2").props.count]).toEqual([1, 1]);
     (chip("sessions-filter-favorites").props.onPress as () => void)(); harness.flush();
     (chip("sessions-shortcut-2").props.onPress as () => void)(); harness.flush();
@@ -1027,7 +1035,7 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { layout: "grouped" });
     renderScreen();
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:Epic unknown"]);
-    (findByTestID(harness.current(), "sessions-layout-flat").props.onPress as () => void)(); harness.flush();
+    chooseLayout("flat");
     setStateFilter("idle");
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
@@ -1041,6 +1049,63 @@ describe("SessionsScreen toolbar events", () => {
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
     expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · Epic unknown · Workspace", "Kontor · Epic unknown · Workspace"]);
+  });
+
+  it.each([
+    { compact: false, filter: "search" }, { compact: true, filter: "search" },
+    { compact: false, filter: "state" }, { compact: true, filter: "state" },
+  ])("keeps denominator help truthful during contextual peek, compact=$compact filter=$filter", ({ compact, filter }) => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("quiet", { title: "Unique quiet session", status: "idle", labels: { workstream: "alpha", epic: "ASMA-1" } }),
+      sessionEntry("busy", { status: "running", labels: { workstream: "alpha", epic: "ASMA-1" } }),
+      sessionEntry("outside", { status: "idle", labels: { workstream: "beta", epic: "ASMA-2" } }),
+    ] };
+    const query = filter === "search" ? "Unique quiet" : "";
+    const status = filter === "state" ? "idle" : "all";
+    patchSessionView("host-a", { layout: "grouped", query, status, streams: ["alpha"], legendOpen: true });
+    renderScreen(undefined, compact);
+    const renderItem = (item: ListRow) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: ListRow }) => ElementLike)({ item });
+    const header = (row: GroupRow) => {
+      const element = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+      return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props;
+    };
+    const legendText = () => {
+      if (compact) openMobileFilters();
+      const element = walk(harness.current()).find((node) => node.type === SessionsLegend)!;
+      const text = textOf(SessionsLegend(element.props as Parameters<typeof SessionsLegend>[0]));
+      if (compact) closeMobileFilters();
+      return text;
+    };
+    const filteredKeys = groupRows().map((row) => row.group.key);
+    expect(groupRows().every((row) => row.group.aggregate.total === 1)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityLabel)).toContain("Idle: 1 of 1 session");
+    chooseLayout("flat");
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    const result = listRows()[0] as Extract<ListRow, { kind: "result" }>;
+    (renderItem(result).props.onShowInTree as (entry: typeof result.entry) => void)(result.entry); harness.flush();
+    expect(sessionRowIds().sort()).toEqual(["busy", "quiet"]);
+    expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
+    for (const row of groupRows()) {
+      expect(String(header(row).accessibilityLabel)).toContain("Running: 1 of 2 sessions. Idle: 1 of 2 sessions");
+      expect(String(header(row).accessibilityHint)).toContain("retained surrounding context");
+      expect(String(header(row).accessibilityHint)).toContain("outside the results' search, task or explicit state filter");
+      expect(String(header(row).accessibilityHint)).toContain("Current still applies when selected");
+    }
+    expect(legendText()).toContain("retained surrounding context");
+    toggle("workspace");
+    expect(sessionRowIds()).toEqual([]);
+    expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityHint)).toContain("including collapsed branches");
+    const back = walk(findByTestID(harness.current(), "sessions-peek")).find((node) => node.props.label === "Back to 1 result")!;
+    (back.props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    expect(readSessionView("host-a")).toMatchObject({ query, status, streams: ["alpha"], peek: null });
+    chooseLayout("grouped");
+    expect(groupRows().map((row) => row.group.key)).toEqual(filteredKeys);
+    expect(groupRows().every((row) => row.group.aggregate.total === 1)).toBe(true);
+    expect(String(header(groupRows()[0]!).accessibilityHint)).toContain("matching the current search and filters");
+    expect(legendText()).toContain("matching the current search and filters");
+    expect(legendText()).not.toContain("retained surrounding context");
   });
 
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
@@ -1073,7 +1138,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(testIDs(harness.current())).not.toContain("sessions-peek");
     expect(sessionRowIds()).toEqual(["quiet"]);
     setStateFilter("all");
-    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
+    chooseLayout("grouped");
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
     expect(save.mock.calls).toEqual([[{ layout: "grouped", grouping: "hierarchy" }]]);
   });
@@ -1102,7 +1167,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
     expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
-    expect(header()).toEqual([]);
+    expect(header()).toEqual(["sessions-layout-bar"]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
@@ -1710,24 +1775,24 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it.each([true, false])("draws the same leading Role icons and counts with a separate total and stale cue, compact=%s", compact => {
+  it.each([true, false])("draws the primary Role state as count/total with a separate total and stale cue, compact=%s", compact => {
     const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(compact ? [1, 1] : [1, "needs input", 1, "error"]);
-    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input", "failed"]);
+    expect(words).toEqual(["Needs input 1/5"]);
+    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input"]);
     expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
-    expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
+    expect(label()).toContain("Role QA, 5 sessions. Needs input: 1 of 5 sessions. Error: 1 of 5 sessions. Running: 3 of 5 sessions.");
     directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Host offline" };
     harness.flush();
-    expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
+    expect(label()).toContain("5 sessions. Last known: Needs input: 1 of 5 sessions.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
+      .toEqual(["Last known", "Needs input 1/5"]);
   });
 
   it("shows a Role row's conflict cue and place, giving the compact title its whole line above the place and age", () => {
@@ -1738,7 +1803,7 @@ describe("SessionsScreen toolbar events", () => {
     ]);
     expect(groupRows().map((row) => row.group.label)).toEqual(["AUD", "No role"]);
     const headerOf = (label: string) => walk(drawn(groupRows().find((row) => row.group.label === label)));
-    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 sessions\. 1 idle\./);
+    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 session\. Idle: 1 of 1 session\./);
     expect(["AUD", "No role"].map((label) => (headerOf(label).find((element) => element.props.children === label)!.props.style as { fontFamily?: string }).fontFamily)).toEqual(["monospace", undefined]);
     expandAll();
     const props = (id: string) => walk(renderItem(listRows().find((row) => row.kind === "session" && row.entry.id === id))).find((element) => "displayContext" in element.props)!.props;
@@ -1822,9 +1887,7 @@ describe("SessionsScreen toolbar events", () => {
     harness.flush();
     expect(sessionRowIds()).toEqual(["n"]);
     setStateFilter("all");
-    openMobileFilters();
-    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
-    closeMobileFilters();
+    chooseLayout("grouped");
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["QA:false"]);
     expect(save.mock.calls.filter(([patch]) => "expandedGroups" in patch)).toEqual([]);
   });
@@ -1836,14 +1899,14 @@ describe("SessionsScreen toolbar events", () => {
     scroll(480);
     const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("quiet");
-    (findByTestID(harness.current(), "sessions-layout-flat").props.onPress as () => void)(); harness.flush();
+    chooseLayout("flat");
     expect(readSessionView("host-a")).toMatchObject({ treeOffset: 480, scrollOffset: 0 });
     vi.runOnlyPendingTimers();
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 0, animated: false });
     scroll(40);
     search("");
     expect(readSessionView("host-a").layout).toBe("flat");
-    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
+    chooseLayout("grouped");
     vi.runOnlyPendingTimers();
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 480, animated: false });
     expect(readSessionView("host-a")).toMatchObject({ scrollOffset: 480, treeOffset: undefined });
@@ -2083,8 +2146,8 @@ describe("SessionsScreen mobile filter page", () => {
       .map((child) => child.type === SessionStateMarker ? "state" : child.type === SessionUsage ? "usage" : child.props.testID)).toEqual(["state", "sessions-row-age", "usage"]);
     expect(walk(content)).toContain(age);
     expect(walk(content).some((element) => element.type === SessionUsage && (element.props.entry as { id: string }).id === "0123456789abcdef")).toBe(true);
-    expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
-    expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
+    expect(leaf.props.accessibilityLabel).toContain("Last usage report, not a session total. Input tokens: 100.");
+    expect(leaf.props.accessibilityLabel).toContain("Output tokens: 20.");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
     expect(walk(leaf).some((element) => (element as { type?: unknown }).type === SessionStateMarker && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
@@ -2224,10 +2287,14 @@ describe("SessionsScreen mobile filter page", () => {
     expect(items.map((node) => node.props.label)).toEqual(["Desks & workstreams", "Desks & workspaces", "Role"]);
     (items.find((node) => node.props.label === "Role")!.props.onPress as () => void)(); harness.flush();
     expect(save).toHaveBeenCalledWith({ grouping: "role", layout: "grouped" });
-    (findByTestID(harness.current(), "sessions-layout-flat").props.onPress as () => void)(); harness.flush();
+    closeMobileFilters();
+    chooseLayout("flat");
+    openMobileFilters();
     expect(testIDs(harness.current())).not.toContain("sessions-grouping");
     expect(readSessionView("host-a")).toMatchObject({ layout: "flat", grouping: "role", shortcut: "Desks" });
-    (findByTestID(harness.current(), "sessions-layout-grouped").props.onPress as () => void)(); harness.flush();
+    closeMobileFilters();
+    chooseLayout("grouped");
+    openMobileFilters();
     expect(findByTestID(harness.current(), "sessions-grouping").props.value).toBe("Role");
     closeMobileFilters();
     expect(readSessionView("host-a")).toMatchObject({ layout: "grouped", grouping: "role", shortcut: "Desks" });
@@ -2511,7 +2578,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     if (compact) closeMobileFilters();
     if (!compact) {
       const shortcut = findByTestID(harness.current(), "sessions-shortcut-3").props;
-      expect([shortcut.label, shortcut.count]).toEqual(["Outside desks", 2]);
+      expect([(shortcut.choice as { label: string }).label, shortcut.count]).toEqual(["Outside desks", 2]);
     }
     // A partial read keeps the same association counts, and Filters says beside them that the read is partial.
     directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: false, inventoryComplete: false, lastUpdatedAt: 0 };
@@ -2858,6 +2925,68 @@ describe("independent Layout, Group by and exact scope", () => {
     (walk(menu).find((node) => node.props.label === label)!.props.onPress as () => void)(); harness.flush();
   };
 
+  it.each([320, 360])("scrolls the utility row inside the list at 390×%s and pins it again after resize without losing filters", (height) => {
+    directory.state = { ...emptyDirectoryState(), status: "ready", entries: [sessionEntry("match", { title: "SWE topic" })], inventoryComplete: true, lastUpdatedAt: 0 };
+    patchSessionView("host-a", { layout: "grouped", grouping: "role", query: "topic", status: "idle", sort: "title" });
+    renderScreen(undefined, true);
+    const resize = (height: number) => {
+      ((harness.current() as ElementLike).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }); harness.flush();
+    };
+    const list = () => findByTestID(harness.current(), "sessions-list");
+    const headerControls = () => walk(list().props.ListHeaderComponent).filter((node) => node.type === SessionLayoutControl);
+    const pinnedBars = () => ((harness.current() as ElementLike).props.children as ElementLike[]).filter((node) => node?.props?.testID === "sessions-layout-bar");
+    resize(height);
+    expect(headerControls()).toHaveLength(1);
+    expect(pinnedBars()).toHaveLength(0);
+    chooseLayout("flat");
+    expect(headerControls()[0]!.props.value).toBe("flat");
+    expect(listRows().map((row) => row.kind)).toEqual(["result"]);
+    resize(800);
+    expect(headerControls()).toHaveLength(0);
+    expect(pinnedBars()).toHaveLength(1);
+    expect(walk(harness.current()).filter((node) => node.type === SessionLayoutControl)).toHaveLength(1);
+    expect(readSessionView("host-a")).toMatchObject({ layout: "flat", grouping: "role", query: "topic", status: "idle", sort: "title" });
+    resize(height);
+    expect(headerControls()).toHaveLength(1);
+    expect(pinnedBars()).toHaveLength(0);
+    chooseLayout("grouped");
+    expect(headerControls()[0]!.props.value).toBe("grouped");
+  });
+
+  it.each([320, 390, 1440])("keeps one layout control outside the list and collapsing filters at %s, and restores its scoped state on remount", (width) => {
+    const compact = width < 600;
+    directory.state = { ...emptyDirectoryState(), status: "ready", entries: [sessionEntry("match", { title: "SWE topic" })], inventoryComplete: true, lastUpdatedAt: 0 };
+    patchSessionView("host-a", { layout: "grouped", grouping: "role", query: "topic", status: "idle", sort: "title", sortDirection: "desc" });
+    const save = vi.fn(async (_patch: object) => true);
+    const organization = { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "r", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    renderScreen(organization, compact);
+    ((harness.current() as ElementLike).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width, height: 800 } } }); harness.flush();
+    scroll(320);
+    const controls = () => walk(harness.current()).filter((node) => node.type === SessionLayoutControl);
+    expect(controls()).toHaveLength(1);
+    expect(walk(findByTestID(harness.current(), "sessions-list")).some((node) => node.type === SessionLayoutControl)).toBe(false);
+    expect(walk(findByTestID(harness.current(), "sessions-layout-bar")).some((node) => node.type === SessionLayoutControl)).toBe(true);
+    const original = readSessionView("host-a");
+    chooseLayout("flat");
+    expect(save).toHaveBeenLastCalledWith({ layout: "flat", grouping: "role" });
+    expect(readSessionView("host-a")).toMatchObject({ query: original.query, status: original.status, sort: original.sort, sortDirection: original.sortDirection, grouping: "role" });
+    expect(listRows().map((row) => row.kind)).toEqual(["result"]);
+    if (compact) {
+      openMobileFilters();
+      expect(controls()).toHaveLength(0);
+      expect(testIDs(harness.current())).not.toContain("sessions-layout-flat");
+      expect(testIDs(harness.current())).not.toContain("sessions-grouping");
+      closeMobileFilters();
+    }
+    harness.unmount(); harness.reset(); renderScreen(organization, compact);
+    expect(controls()[0]!.props.value).toBe("flat");
+    chooseLayout("grouped");
+    expect(controls()[0]!.props.value).toBe("grouped");
+    expect(readSessionView("host-a").grouping).toBe("role");
+    expect(readSessionView("host-b").layout).toBeUndefined();
+    expect(save.mock.calls.every(([patch]) => Object.keys(patch).every((key) => key === "layout" || key === "grouping"))).toBe(true);
+  });
+
   it.each([320, 390, 1280])("retains the exact desk/workstream/epic + search/status/task/person intersection across layouts at %s", (width) => {
     const compact = width < 600;
     const projection = responsibilitySchema.parse({ schema: "kontor/responsibility@1", realm: "tracker.example", generatedAt: "2026-10-21T12:00:00Z", expiresAt: "2026-10-22T12:00:00Z",
@@ -2889,8 +3018,8 @@ describe("independent Layout, Group by and exact scope", () => {
       chooseGroup(grouping);
       if (compact) closeMobileFilters();
       expect(sessionRowIds()).toEqual(["selected"]);
+      chooseLayout("flat");
       if (compact) openMobileFilters();
-      press("sessions-layout-flat");
       expect(testIDs(harness.current())).not.toContain("sessions-grouping");
       if (compact) closeMobileFilters();
       expect(sessionRowIds()).toEqual(["selected"]);
@@ -2898,8 +3027,8 @@ describe("independent Layout, Group by and exact scope", () => {
       const drawn = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: unknown) => ElementLike)({ item: listRows()[0] });
       expect(drawn.props.entry).toMatchObject(selected);
       expect(drawn.props.provenance).toMatchObject({ parts: ["DESK • ADAM", "ADAM"], nativeDesk: { id: "prj_desk", workspaceId: "w_adam" }, association: "Association alpha · ASMA-10" });
+      chooseLayout("grouped");
       if (compact) openMobileFilters();
-      press("sessions-layout-grouped");
       expect(readSessionView("host-a")).toMatchObject({ query: original.query, status: original.status, shortcut: original.shortcut, streams: original.streams, epic: original.epic, task: original.task, assignment: original.assignment, sort: original.sort, sortDirection: original.sortDirection });
     }
     if (compact) closeMobileFilters();
@@ -2917,9 +3046,9 @@ describe("independent Layout, Group by and exact scope", () => {
     renderScreen(); expandAll();
     const groups = groupRows().map((row) => row.group.key);
     expect(sessionRowIds()).toEqual(["a", "z", "newest", "missing"]);
-    press("sessions-layout-flat"); expect(sessionRowIds()).toEqual(["newest", "a", "z", "missing"]);
+    chooseLayout("flat"); expect(sessionRowIds()).toEqual(["newest", "a", "z", "missing"]);
     press("sessions-sort-asc"); expect(sessionRowIds()).toEqual(["a", "z", "newest", "missing"]);
-    press("sessions-layout-grouped");
+    chooseLayout("grouped");
     expect(groupRows().map((row) => row.group.key)).toEqual(groups);
     expect(sessionRowIds()).toEqual(["a", "z", "newest", "missing"]);
   });

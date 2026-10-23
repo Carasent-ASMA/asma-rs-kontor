@@ -125,6 +125,63 @@ The screen is a React Native plugin screen. It does not replace Paseo's native
 sidebar, footer, tab strip, session room or composer, and it does not embed the
 workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 
+### Start or switch and Recent
+
+- **One sheet.** **Start or switch** in the Kontor context row (an icon button
+  on compact layouts) and the global Command Center item **Start or switch
+  Kontor session…** open one sheet. With no query it lists up to 8 Recent
+  sessions; typing matches every non-archived session by title, place and
+  labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
+  the query to Sessions unscoped. A row opens by native ID through the same
+  path as Sessions. Rows carry no archive control.
+- **Recent.** Paseo keeps no visit history a plugin can read, so Kontor records
+  its own. Opening a session from Kontor, the **← Kontor** pill and **Back to
+  Kontor** each record that session's ID and time on this device (iOS settings
+  or web local storage, key `kontor.recent@1`; no titles). It keeps 20 visits
+  for 14 days (pruned on reads and writes), merged with the host's `lastUserMessageAt` ("Prompted", from any
+  device on the host). Archived and absent sessions are hidden, and their
+  visits kept. **Clear recent on this device** empties the visits and hides
+  prompts up to that moment, on this device only. Without a device store Recent
+  lasts until Paseo restarts; an unreadable stored value is left untouched until
+  Clear; the sheet says which. The plugin client is given no stable host
+  identity, so the store is per device rather than per host; native agent IDs
+  do not collide.
+- **New LSA (bounded create).** Off unless the operator writes exactly
+  `{"create":"on"}` to `$PASEO_HOME/plugin-config/kontor/create.json`
+  (default `~/.paseo/plugin-config/kontor/create.json`) on the host computer.
+  Any other content, an unreadable file or no file keeps it off, and the sheet
+  says why. The file is read on every request and never written by the plugin.
+  When on, **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
+  project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
+  to 48 characters after NFC normalization and never contains `•`, `·` or a
+  control character. The labels are `role=LSA`, `title.auto=<title>`,
+  `persona=kontor-lsa-adhoc@<hash>` and `create.request=<request ID>`; never a
+  `kontor.*` or orchestration label. Provider, model, effort and mode default
+  to the host's `LSA` agent profile, else the provider's own defaults; a
+  dangerous mode is marked. No first prompt is sent.
+- **Truthful outcome.** The request is recorded on the host, under
+  `$PASEO_HOME/plugin-state/kontor/session-create-v1/`, before one idempotent
+  native create. Success is claimed only from an exact readback: **Created and
+  verified**, or **Created with differences** naming each one, including the
+  chosen workspace's working directory. A failed or
+  unanswered dispatch (120 s) is **Outcome unknown** with **Check**, which reads
+  the host by the request label and never dispatches again. No matching session
+  leaves the outcome unknown because a delayed creation may still complete.
+  An unknown outcome stays blocked until a correlated readback confirms it;
+  otherwise the operator must reconcile it on the host. An unsettled or
+  unreadable record blocks the next create until it is settled. **Open
+  session** appears only once the session list shows the new session and the
+  app exposes plugin navigation. Nothing is created while the host is offline.
+- **Persona and rename.** The LSA persona goes in the system prompt. Its
+  delivery is confirmed only for Claude and Codex; other providers show
+  "Persona delivery unverified". A plugin cannot rename a session, so the
+  persona tells the session to rename itself with Paseo MCP `update_agent`, and
+  only while its title equals `title.auto`. It renames once, to
+  `LSA • <KEY> • <topic>`, when it has a confirmed epic key, and sets `epic` and
+  `title.auto`. It changes the topic only at a checkpoint. Once its title
+  differs from `title.auto`, which means the operator renamed it, it never
+  renames again.
+
 ## Organization and read-only pages
 
 The plugin body has Sessions, Overview, Plan, Board and More on compact clients.
@@ -150,6 +207,14 @@ filters; the native **← Kontor** control returns to the last host-local view.
 Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
 lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
 **Desks & workspaces** and **Role**; switching back restores the last grouping.
+The labelled **Grouped / Flat** segments stay above the scrolling list on mobile
+and desktop, beside the result count when present. In short compact windows,
+that row scrolls at the top of the list so session rows retain usable space.
+Their checked state, keyboard focus outline and hover/focus help make the choice
+visible. Use Tab to reach the
+selected segment, arrows to switch and Space or Enter to select. Layout is
+remembered through the existing host view and saved organization preferences;
+**Group by** and **Sort by** remain in Filters & view.
 Search, state, task, assignment and association filters apply in both layouts,
 and changing layout or grouping preserves those filters and the sort. Grouped
 search/state/task matches open their branches temporarily; these disclosures do
@@ -170,6 +235,27 @@ prefix groups keep their existing behavior. Explicit epic contexts and workstrea
 association filters explore declared associations without changing native placement.
 
 Filters also offers searchable **Desk / workspace scope** and **Epic scope**.
+The four scope shortcuts pair icons with counts and short captions (All, Review,
+Adam, Outside). Their full names and scope explanations appear on hover or
+keyboard focus and in accessible names/hints; touch keeps the captions. Counts
+describe the current project/epic context before search and other filters.
+Each shortcut has a 44 pt target, a pressed state, a focus border and an
+underlined selected caption. Group rows show the primary displayed state as
+count/total, such as **Running 2/85**, at every tree depth. The denominator counts
+descendant sessions represented in the displayed tree, including collapsed
+branches. In normal Grouped view, these are only the current search/filter
+matches. **Show in tree** from Flat results retains surrounding context, so its
+denominator can also include sessions outside the results' search, task or
+explicit state filter. Project, desk, workstream, epic and assignment scopes
+still apply, as does **Current** when selected. **Back to results** restores the
+matching results. Empty groups say **No sessions**. Hover/focus help and accessible hints
+explain the full displayed-state breakdown and the existing priority order;
+native lifecycle and attention signals can overlap those displayed states. The
+Legend provides the same scope and desk explanations on touch screens and
+describes whether the current tree counts matches or retained context.
+Desk rows retain their full names: PR Review uses
+a pull request, Adam a bot, QA a flask and QSW a bolt; unknown desks use an
+armchair. These glyphs describe presentation, never durable desk configuration.
 An exact desk choice uses the native project ID, distinguishing identical names;
 workstream choices keep canonical association keys, and epic choices use the same
 label/mapping/Jira-capture resolver as Details. Conflicting or missing epic
