@@ -116,7 +116,7 @@ impl ConfigFolder {
         if !root.is_dir() {
             return Err(refusal(root, "config folder is not a directory"));
         }
-        let entry_path = root.join(ENTRY);
+        let entry_path = resolve_reference(&root, ENTRY)?;
         let text = std::fs::read_to_string(&entry_path)
             .map_err(|_| refusal(&entry_path, "config file cannot be read"))?;
         let branch_rules = crate::project_branch::parse(&text)
@@ -338,34 +338,7 @@ impl ConfigFolder {
     }
 
     fn reference_path(&self, value: &str) -> Result<PathBuf, ConfigError> {
-        let relative = Path::new(value);
-        if relative
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-            || relative.as_os_str().is_empty()
-        {
-            return Err(refusal(
-                self.root.join(value),
-                "config reference must be folder-relative without traversal",
-            ));
-        }
-        let path = self.root.join(relative);
-        if !matches!(
-            path.extension().and_then(|v| v.to_str()),
-            Some("yml" | "yaml")
-        ) {
-            return Err(refusal(path, "config authoring source must be YAML"));
-        }
-        let resolved = path
-            .canonicalize()
-            .map_err(|_| refusal(&path, "referenced config file is missing or unreadable"))?;
-        if !resolved.starts_with(&self.root) || !resolved.is_file() {
-            return Err(refusal(
-                path,
-                "config reference must name a file inside the selected folder",
-            ));
-        }
-        Ok(resolved)
+        resolve_reference(&self.root, value)
     }
 
     /// Capture bounded, owner-checked pack bytes once for parsing and hashing.
@@ -491,6 +464,37 @@ impl ConfigFolder {
         }
         Ok(())
     }
+}
+
+fn resolve_reference(root: &Path, value: &str) -> Result<PathBuf, ConfigError> {
+    let relative = Path::new(value);
+    if relative
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_)))
+        || relative.as_os_str().is_empty()
+    {
+        return Err(refusal(
+            root.join(value),
+            "config reference must be folder-relative without traversal",
+        ));
+    }
+    let path = root.join(relative);
+    if !matches!(
+        path.extension().and_then(|v| v.to_str()),
+        Some("yml" | "yaml")
+    ) {
+        return Err(refusal(path, "config authoring source must be YAML"));
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|_| refusal(&path, "referenced config file is missing or unreadable"))?;
+    if !resolved.starts_with(root) || !resolved.is_file() {
+        return Err(refusal(
+            path,
+            "config reference must name a file inside the selected folder",
+        ));
+    }
+    Ok(resolved)
 }
 
 fn read_yaml<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
