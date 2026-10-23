@@ -254,10 +254,12 @@ python3 scripts/kontor_project.py \
 The generated YAML carries the complete `generated:` provenance and quotes
 every string, so values such as `ON` or `2026` stay strings on reload. The
 workflow opens an API check run whose name it reads from the selected
-projection and completes it with the job result. Branch protection must require
-both that configured check and the static
+projection and completes it with the job result. For ruleset protection,
+maintainers require both that configured check and the static
 `Publication branch and title identity` job check: the static check fails on
 every preflight or configuration error, including an unresolvable check name.
+The check definitions are recorded here; the live GitHub ruleset is external
+configuration that a maintainer verifies when enabling protection.
 
 The retired escape hatch `ASMA_ALLOW_AGENT_PUSH` is now
 `KONTOR_ALLOW_AGENT_PUSH`.
@@ -268,6 +270,12 @@ For an outside contribution without a tracker key, a maintainer creates or
 links the task and supplies its confirmed key in the contribution's issue or
 pull-request thread. Use that key in the branch and title below. The public
 shape check validates the spelling; the maintainer confirms the task binding.
+The maintainer posts the confirmed `<KEY>-<number>` in that thread before the
+contributor publishes the final branch/title, or prepares a keyed branch for
+them when the original fork branch cannot be renamed. The key must name a real
+linked task; neither the contributor nor the checker invents one. Record the
+issue/PR-to-task link in the thread so a reviewer can verify it without private
+tracker access.
 
 The pull-request title leads with the branch's key and one space
 (`<KEY>-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly

@@ -12802,7 +12802,7 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
             );
             assert!(
                 !store
-                    .asma_epic_is_active(project_id, epic_id)
+                    .epic_is_active(project_id, epic_id)
                     .expect("activation read")
             );
         });

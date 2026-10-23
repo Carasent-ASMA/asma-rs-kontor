@@ -44,8 +44,8 @@ pub struct OpenPrReviewRequest {
     /// The project revision the caller believes is current.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
-    /// The exact confirmed external tracker key the review is opened under,
-    /// e.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize
+    /// The exact confirmed external tracker key of the epic or one of its tasks.
+    /// It must authorize
     /// the pull request's repository.
     #[schema(value_type = String)]
     pub external_key: ExternalId,

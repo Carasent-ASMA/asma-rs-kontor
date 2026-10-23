@@ -3292,7 +3292,7 @@ export interface paths {
         /**
          * Catch a stalled workflow up to the phase its own durable evidence proves.
          * @description The advance is normally computed as a side effect of recording a gate or
-         *     settling a turn. When that moment is missed — ASMA-8205 passed its
+         *     settling a turn. When that moment is missed — a task passed its
          *     `high-verification-gate` at sequence 2 and the stored phase never moved —
          *     nothing re-derives it afterwards, and the workflow stalls with complete and
          *     unambiguous evidence sitting in front of it.
@@ -6465,7 +6465,7 @@ export interface components {
         };
         /**
          * @description A proposed Core Team composition: the caller's seats, or the Core Team
-         *     revision one published orchestration bundle declares (ASMA-8280 S-3).
+         *     revision one published orchestration bundle declares.
          *     Exactly one of the two.
          */
         CoreTeamPreviewRequest: {
@@ -6515,7 +6515,7 @@ export interface components {
          *     recorded is the subject the grant is scoped to — the logical seat and the
          *     occupancy generation — and a digest over exactly that public pair. A reader
          *     can therefore prove which generation-scoped grant the successor derived
-         *     without the record ever having held anything secret (ASMA-8187).
+         *     without the record ever having held anything secret.
          */
         CoreTeamRouteGrantSubjectDto: {
             /**
@@ -6793,7 +6793,7 @@ export interface components {
          *     Exactly one of `model_route` and `eligibility`: the caller's exact route,
          *     which the activated fleet policy may admit or refuse but never replaces, or
          *     — when the caller names none — the policy's own choice under the
-         *     eligibility the caller states (ASMA-8280).
+         *     eligibility the caller states.
          */
         CoreTeamSeatRouteRequest: {
             eligibility?: null | components["schemas"]["FleetEligibilityRequest"];
@@ -7369,7 +7369,7 @@ export interface components {
         EpicExecutionScopeDto: {
             /** @description Immutable two-keyword summary captured at intake. */
             ai_short_name?: string | null;
-            /** @description The external tracker key, e.g. `ASMA-7869`. */
+            /** @description The confirmed external tracker key. */
             external_epic_key: string;
             /** @description Immutable Kontor backlog identity used by the built-in epic templates. */
             kontor_backlog_code?: string | null;
@@ -7763,7 +7763,7 @@ export interface components {
             source_bundle_hash: string;
         };
         /**
-         * @description The Realm's orchestration bundle selection (ASMA-8280 S-1).
+         * @description The Realm's orchestration bundle selection.
          *
          *     The same single activation pointer [`FleetPolicyDto`] reports, read for its
          *     bundle: a schema_version 1 record names a policy alone; a schema_version 2
@@ -7833,7 +7833,7 @@ export interface components {
             /** @description The exact bytes of `orchestration.yml`. */
             orchestration: string;
         };
-        /** @description A proposed initial orchestration bundle for review (ASMA-8280 S-2). */
+        /** @description A proposed initial orchestration bundle for review. */
         FleetBundleProposalDto: {
             /** @description The proposed `teams/core-team.yml` bytes: the mandatory roles alone. */
             core_team: string;
@@ -7899,7 +7899,7 @@ export interface components {
             realm_id: string;
         };
         /**
-         * @description The Realm's fleet policy selection (ASMA-8280).
+         * @description The Realm's fleet policy selection.
          *
          *     Exactly one source decides fleet routing: an activation record naming one
          *     published policy by content hash, or — when none exists — the unmigrated
@@ -8526,11 +8526,11 @@ export interface components {
          * @enum {string}
          */
         JiraBindingStatusDto: "awaiting_jira_binding" | "confirmed";
-        /** @description A confirmed Jira materialization and ASMA activation receipt. */
+        /** @description A confirmed Jira materialization and epic activation receipt. */
         JiraMaterializationAppliedDto: {
             /** @description Whether the whole required binding set is activated. */
             activated: boolean;
-            /** @description The separate ASMA activation command receipt. */
+            /** @description The separate epic activation command receipt. */
             activation_receipt_id: string;
             /** @description Stable batch identity. */
             batch_id: string;
@@ -9045,8 +9045,8 @@ export interface components {
              */
             expected_revision: number;
             /**
-             * @description The exact confirmed external tracker key the review is opened under,
-             *     e.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize
+             * @description The exact confirmed external tracker key of the epic or one of its tasks.
+             *     It must authorize
              *     the pull request's repository.
              */
             external_key: string;
@@ -12587,7 +12587,7 @@ export interface components {
              *
              *     Content is part of this answer deliberately. Reporting `true` while an
              *     issue's description still held only `Kontor <kind> <uuid>: <title>` is
-             *     the defect ASMA-8123 fixes: a caller asking whether a ticket is
+             *     a content-projection defect: a caller asking whether a ticket is
              *     reconciled must not be told yes while its reader sees an internal UUID.
              */
             converged: boolean;

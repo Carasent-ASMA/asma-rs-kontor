@@ -11004,7 +11004,7 @@
           "applications"
         ],
         "summary": "Catch a stalled workflow up to the phase its own durable evidence proves.",
-        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — ASMA-8205 passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
+        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — a task passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
         "operationId": "recover_workflow_phase",
         "parameters": [
           {
@@ -18675,7 +18675,7 @@
       },
       "CoreTeamPreviewRequest": {
         "type": "object",
-        "description": "A proposed Core Team composition: the caller's seats, or the Core Team\nrevision one published orchestration bundle declares (ASMA-8280 S-3).\nExactly one of the two.",
+        "description": "A proposed Core Team composition: the caller's seats, or the Core Team\nrevision one published orchestration bundle declares.\nExactly one of the two.",
         "properties": {
           "seats": {
             "type": [
@@ -18764,7 +18764,7 @@
       },
       "CoreTeamRouteGrantSubjectDto": {
         "type": "object",
-        "description": "The successor's grant subject, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret (ASMA-8187).",
+        "description": "The successor's grant subject, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret.",
         "required": [
           "generation",
           "subject_seat_binding_id",
@@ -19325,7 +19325,7 @@
       },
       "CoreTeamSeatRouteRequest": {
         "type": "object",
-        "description": "One authorized native route for a persistent Core Team role.\n\nExactly one of `model_route` and `eligibility`: the caller's exact route,\nwhich the activated fleet policy may admit or refuse but never replaces, or\n— when the caller names none — the policy's own choice under the\neligibility the caller states (ASMA-8280).",
+        "description": "One authorized native route for a persistent Core Team role.\n\nExactly one of `model_route` and `eligibility`: the caller's exact route,\nwhich the activated fleet policy may admit or refuse but never replaces, or\n— when the caller names none — the policy's own choice under the\neligibility the caller states.",
         "required": [
           "role_code"
         ],
@@ -20432,7 +20432,7 @@
           },
           "external_epic_key": {
             "type": "string",
-            "description": "The external tracker key, e.g. `ASMA-7869`."
+            "description": "The confirmed external tracker key."
           },
           "kontor_backlog_code": {
             "type": [
@@ -21456,7 +21456,7 @@
       },
       "FleetBundleDto": {
         "type": "object",
-        "description": "The Realm's orchestration bundle selection (ASMA-8280 S-1).\n\nThe same single activation pointer [`FleetPolicyDto`] reports, read for its\nbundle: a schema_version 1 record names a policy alone; a schema_version 2\nrecord also names the orchestration bundle and Core Team revision, whose\nmanifest is reported here when it verifies.",
+        "description": "The Realm's orchestration bundle selection.\n\nThe same single activation pointer [`FleetPolicyDto`] reports, read for its\nbundle: a schema_version 1 record names a policy alone; a schema_version 2\nrecord also names the orchestration bundle and Core Team revision, whose\nmanifest is reported here when it verifies.",
         "required": [
           "realm_id",
           "selection"
@@ -21632,7 +21632,7 @@
       },
       "FleetBundleProposalDto": {
         "type": "object",
-        "description": "A proposed initial orchestration bundle for review (ASMA-8280 S-2).",
+        "description": "A proposed initial orchestration bundle for review.",
         "required": [
           "realm_id",
           "orchestration",
@@ -21777,7 +21777,7 @@
       },
       "FleetPolicyDto": {
         "type": "object",
-        "description": "The Realm's fleet policy selection (ASMA-8280).\n\nExactly one source decides fleet routing: an activation record naming one\npublished policy by content hash, or — when none exists — the unmigrated\nstate-root `fleet.yml`. An activation that cannot be verified is reported\nhere and refuses placement; it never falls back.",
+        "description": "The Realm's fleet policy selection.\n\nExactly one source decides fleet routing: an activation record naming one\npublished policy by content hash, or — when none exists — the unmigrated\nstate-root `fleet.yml`. An activation that cannot be verified is reported\nhere and refuses placement; it never falls back.",
         "required": [
           "realm_id",
           "selection"
@@ -23079,7 +23079,7 @@
       },
       "JiraMaterializationAppliedDto": {
         "type": "object",
-        "description": "A confirmed Jira materialization and ASMA activation receipt.",
+        "description": "A confirmed Jira materialization and epic activation receipt.",
         "required": [
           "realm_id",
           "epic_id",
@@ -23096,7 +23096,7 @@
           },
           "activation_receipt_id": {
             "type": "string",
-            "description": "The separate ASMA activation command receipt."
+            "description": "The separate epic activation command receipt."
           },
           "batch_id": {
             "type": "string",
@@ -24190,7 +24190,7 @@
           },
           "external_key": {
             "type": "string",
-            "description": "The exact confirmed external tracker key the review is opened under,\ne.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize\nthe pull request's repository."
+            "description": "The exact confirmed external tracker key of the epic or one of its tasks.\nIt must authorize\nthe pull request's repository."
           },
           "model_routes": {
             "type": [
@@ -32001,7 +32001,7 @@
           },
           "converged": {
             "type": "boolean",
-            "description": "Whether every link is already converged, in status **and** in content.\n\nContent is part of this answer deliberately. Reporting `true` while an\nissue's description still held only `Kontor <kind> <uuid>: <title>` is\nthe defect ASMA-8123 fixes: a caller asking whether a ticket is\nreconciled must not be told yes while its reader sees an internal UUID."
+            "description": "Whether every link is already converged, in status **and** in content.\n\nContent is part of this answer deliberately. Reporting `true` while an\nissue's description still held only `Kontor <kind> <uuid>: <title>` is\na content-projection defect: a caller asking whether a ticket is\nreconciled must not be told yes while its reader sees an internal UUID."
           },
           "diff": {
             "type": "array",

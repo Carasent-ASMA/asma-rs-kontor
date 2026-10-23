@@ -113,15 +113,14 @@ use kontor_runtime::workspace::{
 use crate::client::{PaseoCommand, PaseoRpc, PaseoTransport, ensure_frame_bounded, paseo_mode};
 use crate::mcp::{PaseoMcp, RENAME_WORKSPACE_TOOL};
 use crate::wire::{
-    MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES,
-    PASEO_APP_VERSION, PaseoAgent, PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus,
-    PaseoCliAgentReloaded, PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived,
-    PaseoCliStopped, PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved,
-    PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
-    PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
-    PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
-    PaseoWorkspacePage, covers_window, expand_to_sequences, label, normalize_entry,
-    stream_permission_external_id,
+    MAX_DIRECTORY_PAGE, MAX_DIRECTORY_PAGES, MAX_HISTORY_PAGE, MAX_MESSAGE_BYTES, PaseoAgent,
+    PaseoAgentAnswer, PaseoAgentPage, PaseoAgentStatus, PaseoCliAgentReloaded,
+    PaseoCliAgentStarted, PaseoCliAgentUpdated, PaseoCliArchived, PaseoCliStopped,
+    PaseoCliWorkspaceCreated, PaseoDirection, PaseoPermissionResolved, PaseoProject,
+    PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection, PaseoSendAccepted,
+    PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck, PaseoTimelineCursor,
+    PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind, PaseoWorkspacePage,
+    covers_window, expand_to_sequences, label, normalize_entry, stream_permission_external_id,
 };
 
 /// Map this plane's wire vocabulary onto the runtime-neutral container shape.
@@ -2921,7 +2920,6 @@ impl PaseoAdapter {
             .map_err(|_| DomainError::invalid("PaseoAgent", "is not serializable as JSON"))?;
         CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
-            "paseo_version": PASEO_APP_VERSION,
             "raw_digest": ContentHash::of(raw.as_bytes()).as_str(),
             "read": {
                 "agent_id": agent.id,

@@ -7247,6 +7247,45 @@ impl Services {
         Ok(Some(existing))
     }
 
+    fn epic_activation_intent(
+        &self,
+        key: &IdempotencyKey,
+        target: &AggregateRef,
+        expected: CanonicalDocument,
+    ) -> Result<CanonicalDocument, ApiError> {
+        let Some(saved) = self
+            .state()?
+            .with_store(|store| store.get_receipt_by_key(key))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(expected);
+        };
+        let mut document: serde_json::Value = saved
+            .intent
+            .deserialize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The typed migrated kind is authority; the historical operation label
+        // remains inside its original bytes/digest. All arguments must still match.
+        if saved.kind != CommandKind::ActivateEpic
+            || &saved.target != target
+            || !document["operation"].is_string()
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "epic activation intent differs",
+            ));
+        }
+        document["operation"] = "activate_epic".into();
+        let normalized = self.intent(&document)?;
+        if normalized != expected {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "epic activation intent differs",
+            ));
+        }
+        Ok(saved.intent)
+    }
+
     fn intent(&self, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
         CanonicalDocument::from_value(value).map_err(|error| self.refuse_domain(&error))
     }
@@ -26205,22 +26244,24 @@ impl ApplicationOperations for Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let activation_intent = self.intent(&serde_json::json!({
             "schema_version": 1,
-            "operation": "activate_asma_epic",
+            "operation": "activate_epic",
             "project_id": project_id.to_string(),
             "epic_id": epic_id.to_string(),
             "materialization_receipt_id": receipt_id.to_string(),
         }))?;
+        let activation_intent =
+            self.epic_activation_intent(&activation_key, &target, activation_intent)?;
         let activation_receipt_id = self.record(
             &activation_key,
             project_id,
-            CommandKind::ActivateAsmaEpic,
+            CommandKind::ActivateEpic,
             target,
             prepared.epic.revision,
             &activation_intent,
         )?;
         state
             .with_store(|store| {
-                store.activate_asma_epic(
+                store.activate_epic(
                     project_id,
                     epic_id,
                     activation_receipt_id,
@@ -26297,7 +26338,7 @@ impl ApplicationOperations for Services {
             receipt_id: receipt_id.to_string(),
             activation_receipt_id: activation_receipt_id.to_string(),
             activated: state
-                .with_store(|store| store.asma_epic_is_active(project_id, epic_id))
+                .with_store(|store| store.epic_is_active(project_id, epic_id))
                 .map_err(|error| self.refuse(&error))?,
         })
     }
@@ -52782,3 +52823,7 @@ mod epic_domain_tests;
 
 #[cfg(test)]
 mod domain_runtime_tests;
+
+#[cfg(test)]
+#[path = "applications/activation_names_tests.rs"]
+mod activation_names_tests;

@@ -349,7 +349,7 @@ async fn qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa() {
             quick.id,
             PromotionTarget {
                 name: name("Operational bootstrap"),
-                activate_asma_epic: true,
+                activate_epic: true,
                 confirmed_jira_epic_id: Some(external("ASMA-9000")),
             },
             topology(),
@@ -565,7 +565,7 @@ async fn invalid_role_base_and_asma_activation_refuse_before_effects() {
                 quick.id,
                 PromotionTarget {
                     name: name("Unbound ASMA epic"),
-                    activate_asma_epic: true,
+                    activate_epic: true,
                     confirmed_jira_epic_id: None,
                 },
                 topology(),
@@ -581,7 +581,7 @@ async fn invalid_role_base_and_asma_activation_refuse_before_effects() {
             quick.id,
             PromotionTarget {
                 name: name("Tracker-neutral work"),
-                activate_asma_epic: false,
+                activate_epic: false,
                 confirmed_jira_epic_id: None,
             },
             topology(),

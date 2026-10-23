@@ -3097,6 +3097,7 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 /// where those rows lived.
 fn rewind_to_schema_121(path: &std::path::Path) {
     let connection = Connection::open(path).expect("the database opens");
+    support::rewind_activation_name(&connection);
     let consultation_pins: i64 = connection.query_row(
         "SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_intent_hash IS NOT NULL OR consultation_git_readback IS NOT NULL",
         [], |row| row.get(0)).unwrap();

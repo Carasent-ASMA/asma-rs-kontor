@@ -666,7 +666,7 @@ const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
     field(
         "external_epic_key",
         ArgType::ExternalId,
-        "The external tracker key, such as `ASMA-7869`.",
+        "The confirmed external tracker key.",
     ),
     field(
         "short_title",

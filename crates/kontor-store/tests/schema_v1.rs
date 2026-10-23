@@ -13,6 +13,8 @@
 //! * turning an append-only table into an updatable one, or letting direct SQL
 //!   reopen a terminal run.
 
+mod support;
+
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -128,7 +130,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "intake_created_work",
     "intake_decisions",
     "intake_receipts",
-    "asma_epic_activations",
+    "epic_activations",
     "jira_epic_bindings",
     "jira_links",
     "jira_epic_rename_authorizations",
@@ -830,7 +832,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v142 admits domain selection to the existing exact local-result ledger.
     // v143 admits epic creation to the existing exact local-result ledger.
     // v144 pins consultation checkout intent and correlated Git readback.
-    assert_eq!(SCHEMA_VERSION, 144);
+    // v145 renames the activation authority and command kind while preserving
+    // every frozen document.
+    assert_eq!(SCHEMA_VERSION, 145);
 }
 
 #[test]
@@ -7166,6 +7170,7 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
+    support::rewind_activation_name(&connection);
     // v137 adds a column too; the simulated v119 fixture must remove it before
     // replaying the chain, just as it removes every later additive table.
     let consultation_pins:i64=connection.query_row("SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL",[],|r|r.get(0)).unwrap();

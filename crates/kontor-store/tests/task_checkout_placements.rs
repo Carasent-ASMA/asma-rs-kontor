@@ -1,4 +1,6 @@
 //! Checkout intent/claim atomicity, immutable evidence and cross-task collision guards.
+mod support;
+
 use kontor_core::id::{AggregateRevision, CanonicalDocument, ExternalName, ProjectId, TaskId};
 use kontor_core::repository::{NewProject, NewTask, ProjectRepository};
 use kontor_core::state::TaskState;
@@ -254,6 +256,7 @@ fn additive_upgrade_preserves_existing_graph_without_inventing_checkout_sources(
         later_evidence, 0,
         "historical fixture must not erase checkout or domain evidence"
     );
+    support::rewind_activation_name(&sql);
     sql.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback; ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash; ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
     sql.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements; PRAGMA user_version=137;").unwrap();
     drop(sql);

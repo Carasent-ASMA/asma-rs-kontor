@@ -59,26 +59,9 @@ use serde::{Deserialize, Serialize};
 /// this adapter's own refusal.
 pub const PASEO_WS_PROTOCOL_VERSION: u64 = 1;
 
-/// The Paseo application release this adapter's DTOs, fixtures and argv
-/// evidence are recorded from, and the **lowest** release it will drive.
-///
-/// A floor rather than an equality, and the distinction is not cosmetic. An
-/// exact pin cannot tell "a release we have not seen" from "a release we cannot
-/// speak to", so every upgrade of the app degraded the entire fleet at once:
-/// bindings frozen under the previous release assert capabilities the
-/// now-unrecognized daemon is not credited with, and
-/// [`crate::adapter::PaseoAdapter`] then refuses to attest a single one of them.
-/// Paseo `0.4.0` did exactly that, and nothing about the wire had changed.
-///
-/// It tracks the release the fixtures are recorded from, because that is the
-/// oldest daemon this adapter is *proven* against. `0.8.0` is that release: the
-/// recordings in `tests/fixtures/paseo-0.8.0` and the live conformance suite
-/// were taken from it, and the fleet it serves is qualified on it. Builds older
-/// than the floor stay observable — a project can still be discovered and read
-/// back — but nothing is driven on them. A newer one is driven at full
-/// capability until something it actually removed proves otherwise, which is
-/// `REQUIRED_FEATURES`' job: that check is per-feature and per-connection, so a
-/// genuine removal still degrades correctly without a version ever being named.
+/// The minimum supported server release, checked against actual server readback.
+/// This is an admission floor, never an announced client version. Older servers
+/// remain observable, and readiness still requires every advertised capability.
 pub const PASEO_APP_VERSION: &str = "0.8.0";
 
 /// The first Paseo release carrying the correlated project-rename envelope.
@@ -1927,7 +1910,6 @@ pub fn normalize_entry(entry: &PaseoTimelineEntry, epoch: u64) -> RuntimeResult<
     };
     let payload = CanonicalDocument::from_value(&serde_json::json!({
         "schema_version": 1,
-        "paseo_version": PASEO_APP_VERSION,
         "message_body_hash": if entry.item.item_type == "user_message" {
             entry.item.text.as_ref().map(|text| kontor_core::id::ContentHash::of(text.as_bytes()).to_string())
         } else { None },
@@ -2008,6 +1990,24 @@ mod tests {
                 excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
             }),
         }
+    }
+
+    #[test]
+    fn timeline_evidence_does_not_announce_an_application_version() {
+        let event = normalize_entry(&entry(1, "user_message"), 1).unwrap();
+        let payload: serde_json::Value = event.payload.deserialize().unwrap();
+        assert!(payload.get("paseo_version").is_none());
+        assert_eq!(PASEO_APP_VERSION, "0.8.0");
+        assert_eq!(PASEO_WS_PROTOCOL_VERSION, 1);
+        let at = |version: &str| PaseoServerInfo {
+            version: Some(version.to_owned()),
+            server_id: "fixture".to_owned(),
+            hostname: None,
+            permissions: None,
+            features: Default::default(),
+        };
+        assert!(!at("0.7.9").is_supported_baseline());
+        assert!(at("0.8.0").is_supported_baseline());
     }
 
     /// ASMA-8280 G-3: fleet provenance round-trips through native labels, and a
