@@ -145,18 +145,21 @@ The proposal, for the compact main screen only:
    disabled state, and moves to the work line at the top of the list, beside the
    other ways back.
 5. **Static chrome** is the toolbar row and the count row. The notice tray shows
-   only while it is open, and the scope chips only while a scope is set.
+   only while it is open, and the scope chips only while a scope is set. Bulk
+   archive (#459) adds its own **Select** row below the count row on every
+   layout; this change leaves it as it is.
 6. **A 44 pt close mark.** On compact, the tray's Hide is an X with the name
    "Hide notices", as on desktop. "X Hide" pushed **Details** to a second row at
    390 pt.
 
-Measured in a local fixture render with the archive notice, list top in points:
+Measured in a local fixture render with the archive notice, list top in points,
+both sides including the bulk **Select** row:
 
-| Width × height | Master `5eb801a0` | Tray open | Tray hidden |
+| Width × height | Master `86b59985` | Tray open | Tray hidden |
 | --- | --- | --- | --- |
-| 390 × 844 | 222 | 174 | 122 |
-| 320 × 640 | 279 | 224 | 122 |
-| 320 × 568 | 279 | 224 | 122 |
+| 390 × 844 | 274 | 226 | 174 |
+| 320 × 640 | 331 | 276 | 174 |
+| 320 × 568 | 331 | 276 | 174 |
 
 The wide layout, the Filters page and the notice semantics are unchanged. A
 continuously present hidden notice stays hidden. Hiding never resolves, retries
