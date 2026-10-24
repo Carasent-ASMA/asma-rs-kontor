@@ -9,16 +9,16 @@ import { contributeSessionLifecycle, createLifecycleService, lifecycleRow, type 
 import { DEFAULT_RECOVERY_TARGET as target, RESUME_PROMPT } from "../shared/session-lifecycle";
 import type { ProviderRefusalRead } from "../shared/provider-block";
 
-// Deterministic interleaving points: one runs between a guarded release's compare and its delete; the other fails the
-// next read of a stored refusal with an I/O error.
-const fsHook = vi.hoisted(() => ({ beforeUnlink: undefined as undefined | (() => Promise<void>), failRefusalRead: false }));
+// Deterministic interleaving points: one runs between a guarded release's compare and its delete; `fail` fails the next
+// n reads, writes or renames of refusal files with an I/O error.
+const fsHook = vi.hoisted(() => ({ beforeUnlink: undefined as undefined | (() => Promise<void>), fail: { readFile: 0, writeFile: 0, rename: 0 } }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const readFile = (async (...args: Parameters<typeof actual.readFile>) => {
-    if (fsHook.failRefusalRead && String(args[0]).includes("refusal-")) { fsHook.failRefusalRead = false; throw Object.assign(new Error("EIO: fixture i/o error"), { code: "EIO" }); }
-    return actual.readFile(...args);
-  }) as typeof actual.readFile;
-  return { ...actual, readFile, unlink: async (path: Parameters<typeof actual.unlink>[0]) => { const hook = fsHook.beforeUnlink; fsHook.beforeUnlink = undefined; await hook?.(); return actual.unlink(path); } };
+  const failing = <T,>(name: keyof typeof fsHook.fail, call: T): T => (async (...args: unknown[]) => {
+    if (fsHook.fail[name] > 0 && String(args[0]).includes("refusal-")) { fsHook.fail[name]--; throw Object.assign(new Error(`EIO: fixture i/o error (${name})`), { code: "EIO" }); }
+    return (call as (...values: unknown[]) => Promise<unknown>)(...args);
+  }) as T;
+  return { ...actual, readFile: failing("readFile", actual.readFile), writeFile: failing("writeFile", actual.writeFile), rename: failing("rename", actual.rename), unlink: async (path: Parameters<typeof actual.unlink>[0]) => { const hook = fsHook.beforeUnlink; fsHook.beforeUnlink = undefined; await hook?.(); return actual.unlink(path); } };
 });
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -63,7 +63,7 @@ async function host(initial: Agent[], entries: Entry[]) {
       send: (text, options) => send(id, text, options), archive: () => archive(id), timeline: { refetch: timeline } }),
   }, providers: { snapshot } };
   const service = createLifecycleService(client, root);
-  return { service, root, records, unreadable, hooks, send, archive, snapshot, timeline, update: (id: string, patch: Partial<Agent>) => records.set(id, { ...records.get(id)!, ...patch }),
+  return { service, client, root, records, unreadable, hooks, send, archive, snapshot, timeline, update: (id: string, patch: Partial<Agent>) => records.set(id, { ...records.get(id)!, ...patch }),
     preview: (action: "resume" | "archive", ids = ["a"]) => service.preview({ action, scope: "filtered", agentIds: ids, target }) };
 }
 
@@ -122,11 +122,23 @@ const quiet: Partial<Agent> = { status: "idle", lastError: undefined, activeTurn
 const transport: Partial<Agent> = { status: "error", lastError: "Turn interrupted by transport failure", activeTurn: null, updatedAt: "2026-10-24T10:00:03Z" };
 const refusalFile = (root: string, id: string) => join(root, `refusal-${createHash("sha256").update(id).digest("hex")}.json`);
 const refusalFiles = async (root: string) => (await readdir(root)).filter((name) => name.startsWith("refusal-"));
+/** Holds the next recovery's final exact read until `finish`, so another read can run while that release is pending. */
+function holdFinalRead(h: Awaited<ReturnType<typeof host>>, tail: Timeline) {
+  let finish!: () => void, engaged!: () => void;
+  const reached = new Promise<void>((resolve) => { engaged = resolve; });
+  h.timeline.mockImplementation(async () => { h.hooks.refresh = () => { engaged(); return new Promise((resolve) => { finish = resolve; }); }; return tail; });
+  return { reached, finish: () => finish() };
+}
+/** The same host after a worker restart: a fresh module, so nothing this worker held in memory survives. */
+async function restarted(h: Awaited<ReturnType<typeof host>>) {
+  vi.resetModules();
+  return (await import("../server/session-lifecycle")).createLifecycleService(h.client, h.root);
+}
 async function refusedHost(others: Agent[] = []) {
   const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA }), ...others], [ready("codex-fixture-account"), ready("claude")]);
   return { h, first: await h.service.providerRefusal("a") };
 }
-afterEach(() => { fsHook.beforeUnlink = undefined; fsHook.failRefusalRead = false; vi.useRealTimers(); });
+afterEach(() => { fsHook.beforeUnlink = undefined; fsHook.fail = { readFile: 0, writeFile: 0, rename: 0 }; vi.useRealTimers(); });
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("Provider refusal on an exact read (R1)", () => {
@@ -271,15 +283,166 @@ describe("Provider refusal on an exact read (R1)", () => {
     h.update("a", { lastError: "401 Unauthorized", updatedAt: "2026-10-24T10:00:04Z" });
     await h.service.providerRefusal("a");
     const stored = await readFile(path, "utf8");
-    fsHook.failRefusalRead = true;
+    fsHook.fail.readFile = 1;
     finish();
     await expect(pending).rejects.toThrow("cannot be read (EIO");
     expect(await readFile(path, "utf8")).toBe(stored);
-    fsHook.failRefusalRead = true;
+    fsHook.fail.readFile = 1;
     const review = await h.preview("resume");
     expect(review.rows[0]).toMatchObject({ eligible: false });
     expect(await readFile(path, "utf8")).toBe(stored);
     expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("a newer read that rewrites identical bytes after a clock rollback stops an older pending release (QA F7)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const at = Date.parse("2026-10-24T10:00:00.000Z");
+    vi.setSystemTime(at);
+    const { h, first } = await refusedHost(), path = refusalFile(h.root, "a"), bytes = await readFile(path, "utf8");
+    vi.setSystemTime(at + 5_000);
+    h.update("a", quiet);
+    const final = holdFinalRead(h, recoveredTail(first.refusal!.observedAt)), pending = h.service.providerRefusal("a");
+    await final.reached;
+    vi.setSystemTime(at);
+    h.update("a", { status: "error", lastError: QUOTA, updatedAt: "2026-10-24T10:00:04Z" });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "current" });
+    expect(await readFile(path, "utf8")).toBe(bytes);
+    final.finish();
+    expect((await pending).refusal).toMatchObject({ recovery: "not-confirmed" });
+    expect(await readFile(path, "utf8")).toBe(bytes);
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("a newer refusal whose recording fails still stops an older pending release (QA F8)", async () => {
+    const { h, first } = await refusedHost(), path = refusalFile(h.root, "a"), bytes = await readFile(path, "utf8");
+    h.update("a", quiet);
+    const final = holdFinalRead(h, recoveredTail(first.refusal!.observedAt)), pending = h.service.providerRefusal("a");
+    await final.reached;
+    h.update("a", { status: "error", lastError: "401 Unauthorized", updatedAt: "2026-10-24T10:00:04Z" });
+    fsHook.fail.readFile = 1;
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("cannot be read (EIO");
+    final.finish();
+    expect((await pending).refusal).toMatchObject({ recovery: "not-confirmed" });
+    expect(await readFile(path, "utf8")).toBe(bytes);
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it.each([["comparison read", "readFile"], ["publication", "rename"]] as const)("a newer unavailable refusal whose %s fails is held: a readiness change and the old tail cannot clear it (AUD-R3-01)", async (_name, op) => {
+    const { h, first } = await refusedHost(), o = first.refusal!.observedAt, path = refusalFile(h.root, "a"), bytes = await readFile(path, "utf8");
+    const tail: Timeline = { entries: [entry(refusedItem, o, -1_000), entry(retryItem, o, 1), entry(answeredItem, o, 2)], error: null };
+    await sleep(10);
+    h.update("a", { ...quiet, providerUnavailable: true });
+    fsHook.fail[op] = 1;
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("is held on disk");
+    expect(await readFile(path, "utf8")).toBe(bytes);
+    h.update("a", { ...quiet, providerUnavailable: false });
+    h.timeline.mockResolvedValue(tail);
+    const later = await createLifecycleService(h.client, h.root).providerRefusal("a");
+    expect(later.refusal).toMatchObject({ kind: "unavailable", recovery: "not-confirmed" });
+    expect(Date.parse(later.refusal!.observedAt)).toBeGreaterThan(Date.parse(o));
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("a first refusal whose publication fails is held across a restart; only recovery after it releases it (AUD-R3-01)", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
+    fsHook.fail.rename = 1;
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("is held on disk");
+    h.update("a", transport);
+    for (const service of [createLifecycleService(h.client, h.root), await restarted(h)]) {
+      const review = await service.preview({ action: "resume", scope: "filtered", agentIds: ["a"], target });
+      expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+      expect(await service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    }
+    expect(h.send).not.toHaveBeenCalled();
+    const service = await restarted(h);
+    h.update("a", quiet);
+    const held = (await service.providerRefusal("a")).refusal;
+    expect(held).toMatchObject({ kind: "quota", read: "stale", recovery: "not-confirmed" });
+    h.timeline.mockResolvedValue(recoveredTail(held!.observedAt));
+    expect((await service.providerRefusal("a")).refusal).toMatchObject({ recovery: "confirmed" });
+    expect((await refusalFiles(h.root)).filter((name) => !name.endsWith(".tmp"))).toEqual([]);
+    h.update("a", transport);
+    expect((await service.preview({ action: "resume", scope: "filtered", agentIds: ["a"], target })).rows[0]?.eligible).toBe(true);
+  });
+
+  it("restart boundary: a refusal nothing could be written for is held by this worker only, and the failed read says a restart forgets it", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
+    fsHook.fail.writeFile = 2;
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("held by this worker only; a restart before it is recorded forgets it");
+    expect(await refusalFiles(h.root)).toEqual([]);
+    h.update("a", transport);
+    expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+    // The defined limit: with no byte on disk, a restarted worker has only the native record, which no longer shows it.
+    const after = await restarted(h);
+    expect((await after.preview({ action: "resume", scope: "filtered", agentIds: ["a"], target })).rows[0]?.eligible).toBe(true);
+  });
+
+  it("a newer read whose identical evidence fails to record again still stops an older pending release (QA F7, F8)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-24T10:00:00.000Z"));
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
+    fsHook.fail.rename = 1;
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("is held on disk");
+    h.update("a", quiet);
+    const final = holdFinalRead(h, recoveredTail("2026-10-24T10:00:00.000Z")), pending = h.service.providerRefusal("a");
+    await final.reached;
+    h.update("a", { status: "error", lastError: QUOTA, updatedAt: "2026-10-24T10:00:04Z" });
+    fsHook.fail.readFile = 1;
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("cannot be read (EIO");
+    final.finish();
+    expect((await pending).refusal).toMatchObject({ recovery: "not-confirmed" });
+    h.update("a", transport);
+    expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+  });
+
+  it("an older read whose write fails still moves this worker's binding to its completion", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
+    let finishOlder!: () => void;
+    h.hooks.refresh = () => new Promise((resolve) => { finishOlder = resolve; });
+    const older = h.service.providerRefusal("a");
+    await sleep(5);
+    const stored = (await h.service.providerRefusal("a")).refusal!.observedAt;
+    await sleep(10);
+    fsHook.fail.readFile = 1;
+    finishOlder();
+    await expect(older).rejects.toThrow("cannot be read (EIO");
+    h.update("a", quiet);
+    h.timeline.mockResolvedValue({ entries: [entry(refusedItem, stored, -1_000), entry(retryItem, stored, 1), entry(answeredItem, stored, 2)], error: null });
+    const read = (await h.service.providerRefusal("a")).refusal;
+    expect(read).toMatchObject({ kind: "quota", recovery: "not-confirmed" });
+    expect(Date.parse(read!.observedAt)).toBeGreaterThan(Date.parse(stored) + 2);
+  });
+
+  it("an older read that moves the binding later while a release is pending stops that release", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]), path = refusalFile(h.root, "a");
+    let finishOlder!: () => void;
+    h.hooks.refresh = () => new Promise((resolve) => { finishOlder = resolve; });
+    const older = h.service.providerRefusal("a");
+    await sleep(5);
+    const stored = await h.service.providerRefusal("a");
+    h.update("a", quiet);
+    const final = holdFinalRead(h, recoveredTail(stored.refusal!.observedAt)), pending = h.service.providerRefusal("a");
+    await final.reached;
+    await sleep(5);
+    finishOlder();
+    expect(Date.parse((await older).refusal!.observedAt)).toBeGreaterThan(Date.parse(stored.refusal!.observedAt));
+    const moved = await readFile(path, "utf8");
+    final.finish();
+    expect((await pending).refusal).toMatchObject({ recovery: "not-confirmed" });
+    expect(await readFile(path, "utf8")).toBe(moved);
+    expect(JSON.parse(moved)).toMatchObject({ kind: "quota", observedAt: (await older).refusal!.observedAt });
   });
 
   it.each([
