@@ -66,7 +66,8 @@ function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
   // Block every managed child, even one the native cascade would detach today.
   return inventory.filter((child) => child.archivedAt == null && parent(child) === agent.id);
 }
-export function lifecycleRow(agent: Agent, inventory: Agent[], action: LifecycleReview["action"], target: RecoveryTarget): LifecycleRow {
+// Resume is a same-ID retry on the session's own route, so no review target takes part in eligibility.
+export function lifecycleRow(agent: Agent, inventory: Agent[], action: LifecycleReview["action"]): LifecycleRow {
   const children = childrenOf(agent, inventory).map((child) => ({ id: child.id, title: child.title ?? child.id, status: child.status, workspaceId: child.workspaceId ?? null }));
   const row: LifecycleRow = { id: agent.id, title: agent.title ?? agent.id, workspaceId: agent.workspaceId ?? null, cwd: agent.cwd,
     provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model ?? null,
@@ -83,7 +84,6 @@ export function lifecycleRow(agent: Agent, inventory: Agent[], action: Lifecycle
   else if (agent.activeTurn || agent.status === "running" || agent.status === "initializing") { row.category = "unknown"; row.reason = "Execution may still be progressing or waiting on a dependency. No supported stalled-execution proof; age is not evidence."; }
   else if (agent.status !== "error") { row.category = "unknown"; row.reason = "No current native failure. Idle, old timestamps and earlier error notices do not prove a stuck task."; }
   else if (agent.providerUnavailable || /quota|usage.?limit|rate.?limit|exhaust|unauthori[sz]ed|authenticat|\b401\b|\b403\b|billing|credit|api.?key|credential|token.expired|permission.denied/i.test(agent.lastError ?? "")) { row.category = "candidate"; row.reason = "Quota/auth/provider restriction: no validated changed account or condition. Open native Accounts/session to resolve it, then review again. Resume alone is not a takeover or a quota fix."; }
-  else if (agent.provider !== target.provider || row.model !== target.model || row.effort !== target.effort) { row.category = "candidate"; row.reason = "Target differs from this session. Resume preserves its existing provider/model/effort. Provider change requires the still-open takeover workflow."; }
   else if (!agent.capabilities.supportsSessionPersistence || !agent.persistence?.sessionId || !row.mode || !agent.cwd) { row.category = "candidate"; row.reason = "Missing native history/persistence, permission mode or checkout evidence. This screen cannot fabricate a recovery brief."; }
   else { row.category = "candidate"; row.eligible = true; row.reason = `Current native error${agent.lastError ? `: ${agent.lastError}` : ""}. Retry in the same session with existing context and permissions; dispatch is not completion.`; }
   return row;
@@ -188,7 +188,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const observed = await observe(id), listed = all.find((agent) => agent.id === id);
       const record = observed.agent ?? listed;
       // No record: the exact read either confirmed absence ("missing") or failed ("unknown"); only absence reads as missing.
-      const row: LifecycleRow = record ? lifecycleRow(record, all, input.action, input.target) : {
+      const row: LifecycleRow = record ? lifecycleRow(record, all, input.action) : {
         id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null,
         nativeStatus: observed.availability.state, fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
       };
@@ -286,13 +286,13 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       if (found.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(found.agent) : lifecycleRevision(found.agent)) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
       const all = await inventory(client, review.action);
-      const current = lifecycleRow(found.agent, all, review.action, review.target);
+      const current = lifecycleRow(found.agent, all, review.action);
       if (!current.eligible || (review.action === "archive" && current.children.length)) throw new Error(current.reason);
       if (review.action === "resume") {
+        // The session's own provider, never the review target.
         const snapshot = await client.providers.snapshot({ cwd: found.agent.cwd });
-        const provider = snapshot.entries.find((entry) => entry.provider === review.target.provider && entry.enabled && entry.status === "ready");
-        const model = provider?.models?.find((entry) => entry.id === review.target.model);
-        if (!model || !model.thinkingOptions?.some((option) => option.id === review.target.effort)) throw new Error("Requested provider/model/effort is not currently available on this host.");
+        if (!snapshot.entries.some((entry) => entry.provider === found.agent.provider && entry.enabled && entry.status === "ready"))
+          throw new Error(`This session's provider ${found.agent.provider} is not ready on this host. Nothing was sent.`);
         // This is user-authorized execution preflight, never an automatic availability probe:
         // native timeline fetch can load the provider runtime. Context stays in that same session.
         const history = await agent.timeline.refetch({ direction: "tail", limit: 1 });
@@ -306,7 +306,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       alreadyArchived = archivedMembership(final.agent);
       if (final.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(final.agent) : lifecycleRevision(final.agent)) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
-      const finalDecision = lifecycleRow(final.agent, all, review.action, review.target);
+      const finalDecision = lifecycleRow(final.agent, all, review.action);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry.";
       const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
