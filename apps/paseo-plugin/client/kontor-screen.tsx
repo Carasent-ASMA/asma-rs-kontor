@@ -18,6 +18,7 @@ import { useKontorStatus } from "./use-kontor-status";
 import { kontordLine, kontordSentence } from "./kontord-copy";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
+import { useSessionRetirementProjection } from "./use-session-lifecycle";
 import type { DirectoryEntry } from "./session-directory";
 import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
@@ -149,6 +150,16 @@ function HostScreen(props: PluginScreenProps) {
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
+  // Read-only retention is a Sessions projection over the shared archive-inclusive directory and the
+  // already-read source/receipt evidence. It is disabled elsewhere, so opening another page reads nothing.
+  const retirement = useSessionRetirementProjection(host.id, {
+    entries: directory.state.entries,
+    directory: directory.state,
+    sources: sourcesInContext,
+    reads: sourceState.reads,
+    associations: saved.planAssociations,
+    enabled: route.tab === "Sessions",
+  });
   // Pages demand exact reads for their own context: the selected plan and its linked associations on Plan,
   // Board and Graph; the context sources on the recorded and overview pages; none on Sessions.
   const demandedSourceIds = useMemo(() => demandedSourceIdsFor(route, sources, associationIds),
@@ -276,7 +287,7 @@ function HostScreen(props: PluginScreenProps) {
       setSessionsRevision((revision) => revision + 1);
     })} /> : null;
   let page;
-  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
+  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}

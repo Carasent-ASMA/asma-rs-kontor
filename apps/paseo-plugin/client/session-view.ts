@@ -4,6 +4,7 @@ import {
   hasSessionAttention,
   isArchivedSession,
   type DirectoryEntry,
+  type DirectoryState,
   type SessionStatus,
 } from "./session-directory";
 
@@ -120,6 +121,14 @@ export function matchesStatus(
     default:
       return entry.status === status;
   }
+}
+
+/**
+ * A read covers ordinary membership whenever it includes archived rows; an archive-inclusive
+ * read is a superset, not the other membership. Only an ordinary read fails to cover Archived.
+ */
+export function readCoversMembership(state: Pick<DirectoryState, "includeArchived">, includeArchived: boolean): boolean {
+  return state.includeArchived || !includeArchived;
 }
 
 export function matchesFilters(

@@ -629,8 +629,8 @@ describe("SessionsScreen toolbar events", () => {
     }
     // Labeled filters teach the same shapes, keeping their labels and exact counts.
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: { text: "…", label: expect.stringContaining("Reading") } });
-    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: { text: "…", label: expect.stringContaining("Reading") } });
+    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: { text: "1" } });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: { text: "0" } });
     if (compact) closeMobileFilters();
   });
 
@@ -655,6 +655,19 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen();
     expect(String(findByTestID(header(), "sessions-applied-filters").props.accessibilityLabel)).toContain("Reading matching sessions");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toBe("Inventory for this membership has not been read yet.");
+  });
+
+  it("counts ordinary sessions from an archive-inclusive read without claiming including archived", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("ordinary", { status: "idle" }),
+      sessionEntry("retired", { status: "idle", archivedAt: "2026-10-18T11:00:00Z" }),
+    ], includeArchived: true };
+    patchSessionView("host-a", { query: "ordinary", status: "all", includeArchived: false, membership: "sessions" });
+    renderScreen();
+    const header = findByTestID(harness.current(), "sessions-applied-filters");
+    expect(String(header.props.accessibilityLabel)).toContain("1 matching session");
+    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^Inventory: 1 session in this host context, excluding archived/);
+    expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
   });
 
   it("shows No sessions without a 0 beside it, and keeps non-zero group counts", () => {
@@ -781,7 +794,7 @@ describe("SessionsScreen toolbar events", () => {
     viewScope = "host-a:epic-b"; harness.flush(); vi.advanceTimersByTime(0);
     expect(sessionSearch().props.value).toBe("other");
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 180, animated: false });
-    expect(directory.inputs.at(-1)?.includeArchived).toBe(false);
+    expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
     (sessionSearch().props.onChangeText as (query: string) => void)("edited b");
     harness.flush();
     expect(readSessionView("host-a:epic-b").query).toBe("edited b");
@@ -971,7 +984,8 @@ describe("SessionsScreen toolbar events", () => {
     const chip = (testID: string) => findByTestID(harness.current(), testID);
     expect([chip("sessions-filter-favorites").props.label, (chip("sessions-shortcut-2").props.choice as { label: string }).label]).toEqual(["★ Favorites", "Adam desk"]);
     expect(chip("sessions-shortcut-2").type).toBe(SessionScopeChip);
-    expect((chip("sessions-filter-favorites").props.count as SessionStateCount).label).toContain("Reading");
+    expect((chip("sessions-filter-favorites").props.count as SessionStateCount).text).toBe("1/1");
+    expect((chip("sessions-filter-favorites").props.count as SessionStateCount).label).toContain("1 of 1 sessions after refinements");
     expect(chip("sessions-shortcut-2").props.count).toBe(1);
     (chip("sessions-filter-favorites").props.onPress as () => void)(); harness.flush();
     (chip("sessions-shortcut-2").props.onPress as () => void)(); harness.flush();

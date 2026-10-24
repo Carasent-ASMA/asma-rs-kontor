@@ -38,7 +38,7 @@ vi.mock("react-native", () => ({
   Linking: { openURL: vi.fn(async () => {}) },
   SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable",
 }));
-vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => model.hosts }));
+vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => model.hosts, useRpc: () => async () => null }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
   Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError, show: model.toastShow }),
   copyText: (text: string) => model.copyText(text),
@@ -196,6 +196,9 @@ describe("Kontor shell native actions", () => {
     screen.click("Sessions");
     expect(model.directoryInputs.at(-1)).toMatchObject({ hostId: screen.props.host.id, includeArchived: true });
     expect(model.directoryInputs.every((input) => input.hostId === screen.props.host.id)).toBe(true);
+    const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
+    expect(sessions.props.retirement).toMatchObject({ projections: expect.any(Map), receipts: { state: "idle" } });
+    expect((sessions.props.retirement as { projections: Map<string, unknown> }).projections.size).toBe(1);
     expect(model.sourceCalls).toBe(sources + 1);
     screen.click("Overview");
     expect(model.directoryInputs.at(-1)).toMatchObject({ hostId: screen.props.host.id, includeArchived: false });

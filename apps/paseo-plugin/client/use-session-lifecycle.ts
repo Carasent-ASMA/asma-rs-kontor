@@ -150,6 +150,8 @@ type ProjectionReceipts = {
 const emptyReceipts = (hostId: string): ProjectionReceipts => ({ hostId, state: "idle", reviews: {}, unknownIntent: new Set(), error: null, readAt: null });
 const failureText = (failure: unknown) => failure instanceof Error ? failure.message : String(failure);
 
+export type SessionRetirementRead = ReturnType<typeof useSessionRetirementProjection>;
+
 export type SessionProjectionHookInput = {
   readonly entries: readonly DirectoryEntry[];
   readonly directory: Pick<DirectoryState, "status" | "live" | "lastUpdatedAt" | "inventoryComplete" | "includeArchived">;

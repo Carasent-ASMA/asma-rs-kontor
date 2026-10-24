@@ -46,6 +46,7 @@ import {
   matchesQuery,
   matchesMembership,
   matchesStatus,
+  readCoversMembership,
   MORE_STATUS_FILTERS,
   QUICK_STATUS_FILTERS,
   statusFilterLabel,
@@ -122,8 +123,8 @@ import { SessionDetailSection } from "./session-detail-section";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
 import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
-import { useSessionLifecycle } from "./use-session-lifecycle";
-import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
+import { useSessionLifecycle, type SessionRetirementRead } from "./use-session-lifecycle";
+import { ArchiveSessionButton, SessionLifecycleDialog, SessionRetirementConflict, SessionRetirementDetails, SessionRetirementSummary, retirementDispositionLabel } from "./session-lifecycle-view";
 import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
 import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
 import { archiveAckKey, archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
@@ -346,16 +347,16 @@ function updatedLabel(timestamp: number | null): string {
 }
 
 /**
- * The Filters header count of final matching sessions. Exact only from a ready, live and complete read of the
- * membership in view; otherwise qualified or unknown, so a read in progress never shows as an empty 0.
+ * The Filters header count of final matching sessions. Exact only from a ready, live and complete read that
+ * covers the membership in view; an archive-inclusive read covers ordinary membership, while an ordinary
+ * read does not cover Archived. A read in progress never shows as an empty 0.
  */
 export function matchingCount({ count, state, includeArchived, freshness, blocked }: {
   count: number; state: DirectoryState; includeArchived: boolean; freshness: string; blocked: string | null;
 }): { text: string; label: string } {
   if (blocked !== null) return { text: "Not evaluated", label: `Matching sessions not evaluated: ${blocked} is not evaluated` };
-  // The other membership's read, or none yet: its entries say nothing about this filter.
-  if (state.includeArchived !== includeArchived || state.lastUpdatedAt === null) {
-    return state.status === "error" && state.includeArchived === includeArchived
+  if (!readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null) {
+    return state.status === "error" && readCoversMembership(state, includeArchived)
       ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
       : { text: "…", label: "Reading matching sessions" };
   }
@@ -377,6 +378,8 @@ type SessionRowProps = {
   readonly onLongPress?: (entry: DirectoryEntry) => void;
   readonly selectionMode?: boolean;
   readonly lifecycleFeedback?: ReactNode;
+  readonly retirementFeedback?: ReactNode;
+  readonly retirementLabel?: string;
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
@@ -407,6 +410,8 @@ export const SessionRow = memo(function SessionRow({
   onLongPress,
   selectionMode = false,
   lifecycleFeedback,
+  retirementFeedback,
+  retirementLabel,
   displayTitle,
   displayContext,
   compactContext,
@@ -441,6 +446,7 @@ export const SessionRow = memo(function SessionRow({
     history,
     accessibilityContext ?? detail,
     sessionUsageLabel(entry),
+    retirementLabel ?? null,
     highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
@@ -495,6 +501,7 @@ export const SessionRow = memo(function SessionRow({
           </View>
           <SessionUsage entry={entry} colors={colors} />
           {lifecycleFeedback}
+          {retirementFeedback}
           </View>
           <SessionStateMarker state={state} colors={colors} />
         </>
@@ -519,6 +526,7 @@ export const SessionRow = memo(function SessionRow({
             <SessionUsage entry={entry} colors={colors} />
           </View>
           {lifecycleFeedback}
+          {retirementFeedback}
           </View>
       ) : (
         <>
@@ -538,6 +546,7 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
             {lifecycleFeedback}
+            {retirementFeedback}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
           <View style={{ alignItems: "flex-end", gap: 2 }}>
@@ -691,6 +700,8 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
 type SessionResultRowProps = {
   readonly lifecycleAction?: ReactNode;
   readonly lifecycleFeedback?: ReactNode;
+  readonly retirementFeedback?: ReactNode;
+  readonly retirementLabel?: string;
   readonly onLongPress?: (entry: DirectoryEntry) => void;
   readonly selectionMode?: boolean;
   readonly entry: DirectoryEntry;
@@ -707,7 +718,7 @@ type SessionResultRowProps = {
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback, retirementFeedback, retirementLabel }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
   const state = sessionState(entry);
@@ -720,7 +731,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
-        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
+        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), retirementLabel, time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
         onPress={() => { stateHint.dismiss(); onPress(entry); }}
         onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
@@ -752,6 +763,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         </Text>
         {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
         {lifecycleFeedback}
+        {retirementFeedback}
         {compact ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
           <SessionStateMarker state={state} colors={colors} />
           {time ? rowAge(time, compact, colors) : null}
@@ -1470,10 +1482,12 @@ type SessionsScreenProps = PluginScreenProps & {
   workstreamNote?: string | null;
   /** The host's responsibility projection read; absent or not ready leaves My work unevaluated. */
   responsibility?: ResponsibilityRead | null;
+  /** Read-only retention projection over the full host inventory; absent means no retirement wiring. */
+  retirement?: SessionRetirementRead;
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null, retirement }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
@@ -1500,7 +1514,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const localDirectory = useSessionDirectory({
     hostId: host.id,
     hostStatus: hostSummary?.status ?? "offline",
-    includeArchived,
+    // The local fallback has no parent read: request the full inventory once and filter this view
+    // from it, so an ordinary count is never blocked by an archive-exclusive read.
+    includeArchived: true,
     enabled: directory === undefined,
   });
   const { state: rawState, refresh } = directory ?? localDirectory;
@@ -2205,13 +2221,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const resultWorkspaces = new Set(shown.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
   const unplaced = shown.filter((entry) => !inWorkspace(entry)).length;
   // Inventory and placement are secondary facts in Filters; the matching count has one primary home per page.
-  const sessionCount = `Inventory: ${scoped.length} session${scoped.length === 1 ? "" : "s"} in this host context${state.includeArchived ? ", including archived" : ", excluding archived"}`;
+  const sessionCount = `Inventory: ${scoped.length} session${scoped.length === 1 ? "" : "s"} in this host context${includeArchived ? ", including archived" : ", excluding archived"}`;
   const inventoryRead = state.lastUpdatedAt === null
     ? "not read yet"
     : state.inventoryComplete
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
-  const countSummary = state.includeArchived !== includeArchived || state.lastUpdatedAt === null
+  const countSummary = !readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null
     ? "Inventory for this membership has not been read yet."
     : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
@@ -2792,7 +2808,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     detailsWhereRef.current = detailsWhere;
     setDetailsId(id);
   };
-  const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
+  const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : availability.entries.find((entry) => entry.id === detailsId) ?? null;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
@@ -2828,6 +2844,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
         <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
+        {retirement?.projections.get(detailsEntry.id) ? <SessionRetirementDetails projection={retirement.projections.get(detailsEntry.id)!} colors={colors} /> : null}
         {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Assignment" colors={colors} values={[
           { label: assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}` : `Assigned to ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
           { label: "Source", value: `${projection!.realm} responsibility projection, observed ${projection!.generatedAt}` },
@@ -3084,7 +3101,30 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {compact ? noticesTrigger(allNotices, noticesHide) : null}
     </View>
   </View>;
-  const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
+  // Archived obligations stay reachable from an ordinary, filtered or empty list even though its
+  // membership excludes archived rows. The index shows exact native identity and opens the same
+  // read-only details; it never adds them to the ordinary count or tree.
+  const retirementConflicts = !retirement || includeArchived ? [] : [...retirement.projections.values()].filter((projection) => {
+    const entry = availability.entries.find((candidate) => candidate.id === projection.sessionId);
+    return !!entry && projection.native.archiveMembership === "archived" && projection.conflicts.some((conflict) => conflict.kind.startsWith("archived-with-"))
+      && (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey));
+  });
+  const retirementConflictIndex = retirementConflicts.length === 0 ? null : (
+    <View testID="sessions-retirement-conflicts" style={{ gap: 4, paddingHorizontal: 4, paddingVertical: 2 }}>
+      <Text accessibilityRole="header" style={{ color: colors.statusWarning, fontSize: 12, fontWeight: "600" }}>Archived conflicts</Text>
+      {retirementConflicts.map((projection) => (
+        <View key={projection.sessionId} testID={`sessions-retirement-conflict-${projection.sessionId}`} style={{ gap: 2 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text selectable style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 12 }}>{`${projection.sessionId} · native ${projection.native.status}`}</Text>
+            <SessionDetailsButton title={projection.sessionId} expanded={detailsId === projection.sessionId} compact={compact} colors={colors}
+              ref={(node) => detailsButtonRef(projection.sessionId, node)} onPress={() => openDetails(projection.sessionId)} />
+          </View>
+          <SessionRetirementConflict conflicts={projection.conflicts} colors={colors} />
+        </View>
+      ))}
+    </View>
+  );
+  const listHeader = <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine}</>;
 
   return (
     <View
@@ -3146,6 +3186,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
           const id = item.kind === "result" || item.kind === "session" ? item.entry.id : null;
+          const projection = id === null ? null : retirement?.projections.get(id) ?? null;
+          const retirementFeedback = projection ? <SessionRetirementSummary projection={projection} colors={colors} /> : null;
+          const retirementLabel = projection ? `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : undefined;
           const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && id ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
           // A row still listed keeps its unresolved archive's state after the batch that sent it is gone.
           const lifecycleFeedback = <ArchiveRowFeedback row={outcome ?? recovery.items.find((entry) => entry.ref.agentId === id)?.row ?? undefined} colors={colors} />;
@@ -3156,7 +3199,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
                 // One X, one status line: no sheet and no focus move. Review archive on the recovery line opens what stays unresolved.
                 onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} />;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} retirementFeedback={retirementFeedback} retirementLabel={retirementLabel} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -3186,6 +3229,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onLongPress={selectForArchive}
             selectionMode={bulkSelection.selecting}
             lifecycleFeedback={lifecycleFeedback}
+            retirementFeedback={retirementFeedback}
+            retirementLabel={retirementLabel}
           /> : null}
           </OrganizationRowView>;
         }}
