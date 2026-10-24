@@ -24,7 +24,8 @@ use utoipa::ToSchema;
 use crate::applications::{
     AdviceDispositionDto, AppliedProfileDto, MutationReceiptDto, ObservedBindingDto,
     ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest,
-    ProfileRevisionDto, RuntimeModelRouteRequest, resolve_epic_selector,
+    ProfileRevisionDto, RuntimeModelRouteRequest, require_scoped_seat_membership,
+    resolve_epic_selector,
 };
 use crate::control::{idempotency_key, parse_id};
 use crate::error::{ApiError, ApiErrorCode};
@@ -571,6 +572,10 @@ pub async fn invoke_planning_pair_run(
 ) -> Result<Json<PlanningPairRunDto>, ApiError> {
     let seat = scoped_seat(&state, caller)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    // Resolving the selector reads this project's Jira bindings and tells a
+    // missing key from an unconfirmed one from a task-kind one. A seat
+    // credential names no project, so membership is decided first.
+    require_scoped_seat_membership(&state, project_id, caller)?;
     let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(

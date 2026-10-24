@@ -53712,6 +53712,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     };
     let lsa = seat_of("LSA");
     let tpm = seat_of("TPM");
+    let sa = seat_of("SA");
 
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
     let project_id = ProjectId::parse(project).expect("a project id");
@@ -53806,6 +53807,549 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             .is_empty(),
         "materializing the native is not itself a completion transition"
     );
+    // The native leadership seats must be able to read the exact CAS state
+    // that their remediation writes consume, without realm-wide observer power.
+    let scoped_completion =
+        |actor: SeatBindingId, generation: u64, target_project: &str, target_epic: &str| {
+            Call::get(format!(
+                "/v1/projects/{target_project}/epics/{target_epic}/completion"
+            ))
+            .with_token(
+                world
+                    .daemon
+                    .state()
+                    .credentials()
+                    .seat_credential_for_generation(actor, generation),
+            )
+        };
+    let completion_reads_db =
+        rusqlite::Connection::open(world.directory.path().join("kontor.db")).unwrap();
+    let read_receipts = || {
+        completion_reads_db
+            .query_row("SELECT count(*) FROM command_receipts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    let receipts_before_reads = read_receipts();
+    let calls_before_reads = world.fake.calls();
+    let shared_completion = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(shared_completion.status, 200, "{}", shared_completion.body);
+    for actor in [lsa, tpm] {
+        let read = scoped_completion(actor, 1, project, &epic)
+            .send(world)
+            .await;
+        assert_eq!(
+            read.status, 200,
+            "scoped leadership must read its own completion: {}",
+            read.body
+        );
+        assert_eq!(read.json(), shared_completion.json());
+    }
+    for tier in ["operator", "admin"] {
+        let read = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+            .signed_as(world, tier)
+            .send(world)
+            .await;
+        assert_eq!(read.status, 200, "{}", read.body);
+        assert_eq!(read.json(), shared_completion.json());
+    }
+    let wrong_role = scoped_completion(sa, 1, project, &epic).send(world).await;
+    assert_eq!(wrong_role.status, 403, "{}", wrong_role.body);
+    let tpm_title: String = completion_reads_db
+        .query_row(
+            "SELECT standard_title FROM seat_bindings WHERE id=?1",
+            [tpm.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // Even a materialized native loses this read authority when its persisted
+    // role ceases to be leadership; its bearer and occupancy remain unchanged.
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET role_code='AUD', standard_title='AUD' WHERE id=?1",
+            [tpm.to_string()],
+        )
+        .unwrap();
+    let role_drift = scoped_completion(tpm, 1, project, &epic).send(world).await;
+    assert_eq!(role_drift.status, 403, "{}", role_drift.body);
+    assert!(role_drift.json().get("phase").is_none());
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET role_code='TPM', standard_title=?2 WHERE id=?1",
+            [&tpm.to_string(), &tpm_title],
+        )
+        .unwrap();
+    let no_global_observer = Call::get(format!("/v1/projects/{project}/completion-profiles"))
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .seat_credential_for_generation(lsa, 1),
+        )
+        .send(world)
+        .await;
+    assert_eq!(
+        no_global_observer.status, 403,
+        "scoped access cannot widen Caller::require: {}",
+        no_global_observer.body
+    );
+    assert_eq!(
+        world.fake.calls(),
+        calls_before_reads,
+        "completion reads cause no native operation"
+    );
+    assert_eq!(
+        read_receipts(),
+        receipts_before_reads,
+        "completion reads create no receipt"
+    );
+
+    // Another real epic has a durable completion to leak if scope is bypassed.
+    // Materialize its control plane first, so its own LSA and TPM seats exist
+    // and the refusal below is the epic-membership fence rather than "this
+    // epic has no control plane".
+    let other_epic_read = Call::get(format!("/v1/projects/{project}/epics/{}", composed.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(other_epic_read.status, 200, "{}", other_epic_read.body);
+    let other_materialized = Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/core-team/seats:materialize",
+            composed.epic
+        ),
+        &serde_json::json!({"expected_revision": other_epic_read.json()["revision"]}),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-other-epic-materialize")
+    .send(world)
+    .await;
+    assert_eq!(
+        other_materialized.status, 200,
+        "{}",
+        other_materialized.body
+    );
+    let other_seats = other_materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .clone();
+    for role in ["LSA", "TPM"] {
+        let other_seat = SeatBindingId::parse(
+            other_seats
+                .iter()
+                .find(|entry| entry["role"]["role_code"] == role)
+                .unwrap_or_else(|| panic!("the other epic's {role} seat"))["seat_binding_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a bound {role} seat")),
+        )
+        .expect("a seat binding id");
+        assert_ne!(
+            other_seat,
+            seat_of(role),
+            "the other epic must hold its own {role}"
+        );
+    }
+    let mut other_completion = seed(&ticket_phase);
+    other_completion.mini_project_id = MiniProjectId::parse(&composed.epic).unwrap();
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.create_epic_completion(&other_completion))
+        .unwrap();
+    let other_read = Call::get(format!(
+        "/v1/projects/{project}/epics/{}/completion",
+        composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(other_read.status, 200, "{}", other_read.body);
+    for actor in [lsa, tpm] {
+        let cross_epic = scoped_completion(actor, 1, project, &composed.epic)
+            .send(world)
+            .await;
+        assert_eq!(
+            cross_epic.status, 403,
+            "another epic's leadership must not read this completion: {}",
+            cross_epic.body
+        );
+        assert_eq!(cross_epic.code(), "forbidden");
+        assert!(cross_epic.json().get("phase").is_none());
+    }
+    // The other epic's TPM seat retires. The membership check refuses this
+    // reader before any of that epic's staffing is read, so its unbound role
+    // is never reported.
+    let other_tpm = SeatBindingId::parse(
+        other_seats
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("the other epic's TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM seat"),
+    )
+    .expect("a seat binding id");
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET lifecycle='retired' WHERE id=?1",
+            [other_tpm.to_string()],
+        )
+        .unwrap();
+    let unbound_role = scoped_completion(tpm, 1, project, &composed.epic)
+        .send(world)
+        .await;
+    assert_eq!(
+        unbound_role.status, 403,
+        "an unbound role in another epic is that epic's staffing: {}",
+        unbound_role.body
+    );
+    assert_eq!(unbound_role.code(), "forbidden");
+    assert!(unbound_role.json().get("phase").is_none());
+    let foreign_project = ensure_project(
+        world,
+        "completion-read-foreign-project",
+        "Other project",
+        "/tmp/kontor-completion-read-foreign",
+    )
+    .await;
+    assert_eq!(foreign_project.status, 200, "{}", foreign_project.body);
+    let foreign_project_id = foreign_project.json()["project_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for actor in [lsa, tpm] {
+        let cross_project = scoped_completion(actor, 1, &foreign_project_id, &epic)
+            .send(world)
+            .await;
+        assert_eq!(cross_project.status, 403, "{}", cross_project.body);
+        assert!(cross_project.json().get("phase").is_none());
+    }
+    // The epic-id form resolves without any store lookup. A Jira key does not:
+    // the resolver reads the addressed project's binding tables first, and the
+    // store tells a missing key, an unconfirmed one and a task-kind one apart.
+    // A seat of another project must be refused before any of that is read.
+    let foreign_epic_key = test_jira_key("foreign completion epic");
+    let foreign_task_key = test_jira_key("foreign completion task");
+    let absent_key = test_jira_key("foreign completion absent");
+    let mut foreign_body = epic_body(
+        foreign_project.json()["revision"]
+            .as_u64()
+            .expect("a foreign project revision"),
+        "Foreign completion epic",
+        &first_category(world).await,
+        serde_json::json!([{"title": "A foreign task"}]),
+    );
+    foreign_body["execution_scope"]["external_epic_key"] = serde_json::json!(foreign_epic_key);
+    foreign_body["tasks"][0]["ticket_links"] = serde_json::json!([{
+        "connector": "connector.jira",
+        "external_issue_key": foreign_task_key,
+    }]);
+    let foreign_applied = Call::post(
+        format!("/v1/projects/{foreign_project_id}/epics:apply"),
+        &foreign_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("completion-read-foreign-epic")
+    .send(world)
+    .await;
+    assert_eq!(foreign_applied.status, 200, "{}", foreign_applied.body);
+    let foreign_epic = foreign_applied.json()["epic_id"]
+        .as_str()
+        .expect("a foreign epic id")
+        .to_owned();
+    // The open-question and remediation routes resolve the same selector, so a
+    // foreign seat must be refused there before the binding tables are read.
+    let foreign_question = serde_json::json!({
+        "question_id": kontor_core::id::OpenQuestionId::generate(),
+        "expected_revision": 0,
+        "action": {
+            "action": "raise",
+            "subject": "A foreign project binding probe",
+            "scope": "architecture",
+            "attachment": {"record": {"kind": "mini_project", "mini_project_id": foreign_epic}},
+            "why_ambiguous": "A seat of another project must not learn this project's binding state.",
+            "options": ["First answer", "Second answer"]
+        }
+    });
+    let foreign_remediation = serde_json::json!({
+        "expected_revision": 1,
+        "action": {
+            "action": "lsa_proposal",
+            "round": 1,
+            "failed_round_evidence": ContentHash::of(b"foreign-probe-evidence").as_str(),
+            "proposal": ContentHash::of(b"foreign-probe-proposal").as_str()
+        }
+    });
+    let foreign_seat = |actor: SeatBindingId| {
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(actor, 1)
+    };
+    async fn assert_foreign_seat_refused(
+        world: &World,
+        project: &str,
+        key: &str,
+        token: String,
+        question: &serde_json::Value,
+        remediation: &serde_json::Value,
+    ) {
+        let listed = Call::get(format!("/v1/projects/{project}/epics/{key}/open-questions"))
+            .with_token(token.clone())
+            .send(world)
+            .await;
+        assert_eq!(
+            listed.status, 403,
+            "a seat of another project must not learn an open-question binding state: {}",
+            listed.body
+        );
+        assert_eq!(listed.code(), "forbidden");
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/open-questions:record"),
+            question,
+        )
+        .with_token(token.clone())
+        .with_key(format!("foreign-open-question-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            recorded.status, 403,
+            "a seat of another project must not record into its question ledger: {}",
+            recorded.body
+        );
+        assert_eq!(recorded.code(), "forbidden");
+        let remediated = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/completion:remediate"),
+            remediation,
+        )
+        .with_token(token.clone())
+        .with_key(format!("foreign-remediate-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            remediated.status, 403,
+            "a seat of another project must not remediate its completion: {}",
+            remediated.body
+        );
+        assert_eq!(remediated.code(), "forbidden");
+        let invoked = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/planning-pair-runs:invoke"),
+            &serde_json::json!({
+                "protocol": "planning_pair@1",
+                "profile": {
+                    "id": "planning_pair",
+                    "version": 1,
+                    "definition_hash": ContentHash::of(b"foreign-planning-pair-profile").as_str()
+                },
+                "topic": "A foreign project binding probe",
+                "question": "A seat of another project must not learn this project's binding state.",
+                "members": [
+                    {"slot": "seat-a", "binding_key": "seat-a"},
+                    {"slot": "seat-b", "binding_key": "seat-b"}
+                ],
+                "expected_revision": 1
+            }),
+        )
+        .with_token(token)
+        .with_key(format!("foreign-planning-pair-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            invoked.status, 403,
+            "a seat of another project must not invoke its planning pair: {}",
+            invoked.body
+        );
+        assert_eq!(invoked.code(), "forbidden");
+    }
+    for actor in [lsa, tpm] {
+        for key in [absent_key.as_str(), foreign_epic_key.as_str()] {
+            let probe = scoped_completion(actor, 1, &foreign_project_id, key)
+                .send(world)
+                .await;
+            assert_eq!(
+                probe.status, 403,
+                "a seat of another project must not learn a binding state: {}",
+                probe.body
+            );
+            assert_eq!(probe.code(), "forbidden");
+            assert!(probe.json().get("phase").is_none());
+            assert_foreign_seat_refused(
+                world,
+                &foreign_project_id,
+                key,
+                foreign_seat(actor),
+                &foreign_question,
+                &foreign_remediation,
+            )
+            .await;
+        }
+    }
+    confirm_test_epic_identity_as(
+        world,
+        &foreign_project_id,
+        &foreign_epic,
+        None,
+        &foreign_epic_key,
+    );
+    for actor in [lsa, tpm] {
+        for key in [foreign_task_key.as_str(), foreign_epic_key.as_str()] {
+            let task_key_probe = scoped_completion(actor, 1, &foreign_project_id, key)
+                .send(world)
+                .await;
+            assert_eq!(
+                task_key_probe.status, 403,
+                "a key in another project is not this reader's to resolve: {}",
+                task_key_probe.body
+            );
+            assert_eq!(task_key_probe.code(), "forbidden");
+            assert!(task_key_probe.json().get("phase").is_none());
+            assert_foreign_seat_refused(
+                world,
+                &foreign_project_id,
+                key,
+                foreign_seat(actor),
+                &foreign_question,
+                &foreign_remediation,
+            )
+            .await;
+        }
+    }
+    // A real epic that was never applied has no control plane at all. The
+    // membership fence refuses a seat of another epic before any placement is
+    // read, so the reader learns neither its staffing nor its advice.
+    let ungoverned_epic = MiniProjectId::generate();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_mini_project(&NewMiniProject {
+                id: ungoverned_epic,
+                project_id,
+                name: name("Unapplied epic"),
+                created_at: at("2026-08-18T09:00:00Z"),
+            })
+        })
+        .expect("the unapplied epic is created");
+    let ungoverned_epic = ungoverned_epic.to_string();
+    for actor in [lsa, tpm] {
+        let ungoverned_read = scoped_completion(actor, 1, project, &ungoverned_epic)
+            .send(world)
+            .await;
+        assert_eq!(
+            ungoverned_read.status, 403,
+            "an unapplied epic's placement is not this reader's to learn: {}",
+            ungoverned_read.body
+        );
+        assert_eq!(ungoverned_read.code(), "forbidden");
+        assert!(ungoverned_read.json().get("phase").is_none());
+    }
+    // A second epic of this project is applied, so it has its own control
+    // plane, its own leadership and no completion run.
+    let project_read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let second_epic = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"]
+                .as_u64()
+                .expect("a project revision"),
+            "Second epic",
+            &first_category(world).await,
+            serde_json::json!([{"title": "A task whose completion has not started"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-second-epic")
+    .send(world)
+    .await;
+    assert_eq!(second_epic.status, 200, "{}", second_epic.body);
+    let second_epic = second_epic.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let second_epic_id = MiniProjectId::parse(&second_epic).expect("an epic id");
+    let second_lsa = world.daemon.state().with_store(|store| {
+        let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+        let control = store
+            .list_topology_nodes(project_id, Some(second_epic_id))
+            .expect("the second epic's nodes read")
+            .into_iter()
+            .find(|node| node.kind == domain.delivery.control_kind)
+            .expect("the applied epic has a control plane");
+        store
+            .list_seat_bindings(project_id, control.id)
+            .expect("the second epic's seats read")
+            .into_iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA")
+            .expect("the applied epic has an LSA")
+            .id
+    });
+    // Its own LSA resolves an epic that exists but never started completion.
+    // The daemon reports that absence, and writes no receipt for the refusal.
+    let receipts_before_unstarted = read_receipts();
+    let unstarted = Call::post(
+        format!("/v1/projects/{project}/epics/{second_epic}/completion:remediate"),
+        &foreign_remediation,
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(second_lsa, 1),
+    )
+    .with_key("op06-remediate-unstarted")
+    .send(world)
+    .await;
+    assert_eq!(
+        unstarted.status, 404,
+        "an epic with no completion run has nothing to remediate: {}",
+        unstarted.body
+    );
+    assert_eq!(unstarted.code(), "not_found");
+    assert!(unstarted.json().get("receipt_id").is_none());
+    assert_eq!(
+        read_receipts(),
+        receipts_before_unstarted,
+        "a refused remediation writes no receipt"
+    );
+    // A seat of the first epic is refused before the second epic's run is
+    // looked up, so it learns nothing about whether that run exists.
+    let cross_epic_remediate = Call::post(
+        format!("/v1/projects/{project}/epics/{second_epic}/completion:remediate"),
+        &foreign_remediation,
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(lsa, 1),
+    )
+    .with_key("op06-remediate-cross-epic")
+    .send(world)
+    .await;
+    assert_eq!(
+        cross_epic_remediate.status, 403,
+        "another epic's leadership must not remediate this epic: {}",
+        cross_epic_remediate.body
+    );
+    assert_eq!(cross_epic_remediate.code(), "forbidden");
+    assert!(cross_epic_remediate.json().get("receipt_id").is_none());
+    assert_eq!(
+        read_receipts(),
+        receipts_before_unstarted,
+        "a refused remediation writes no receipt"
+    );
+
     let calls_before_advance_replay = world.fake.calls().len();
 
     // The same key and the same expected revision replay to the same receipt and
@@ -54034,6 +54578,51 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             )
         })
         .expect("the LSA occupancy is replaced");
+
+    let stale_read = scoped_completion(lsa, 1, project, &epic).send(world).await;
+    assert_eq!(stale_read.status, 409, "{}", stale_read.body);
+    assert_eq!(stale_read.code(), "stale_binding");
+    assert!(stale_read.json().get("phase").is_none());
+    let successor_read = scoped_completion(lsa, 2, project, &epic).send(world).await;
+    assert_eq!(successor_read.status, 200, "{}", successor_read.body);
+
+    // A reader of its own epic keeps the true refusal when that epic's staffing
+    // cannot be read. Break the pinned Team Definition hash so the control
+    // plane lookup fails, and check the failure is reported as a placement
+    // error rather than as "not this epic's leadership".
+    let pinned_definition_hash: String = completion_reads_db
+        .query_row(
+            "SELECT canonical_hash FROM mini_project_team_definition_snapshots \
+             WHERE project_id=?1 AND mini_project_id=?2",
+            [&project_id.to_string(), &epic],
+            |row| row.get(0),
+        )
+        .expect("the epic's leadership definition is pinned");
+    let mut broken_hash = pinned_definition_hash.clone().into_bytes();
+    broken_hash[0] = if broken_hash[0] == b'a' { b'b' } else { b'a' };
+    let broken_hash = String::from_utf8(broken_hash).expect("the hash stays ASCII");
+    completion_reads_db
+        .execute(
+            "UPDATE mini_project_team_definition_snapshots SET canonical_hash=?1 \
+             WHERE project_id=?2 AND mini_project_id=?3",
+            [&broken_hash, &project_id.to_string(), &epic],
+        )
+        .unwrap();
+    let unreadable_staffing = scoped_completion(lsa, 2, project, &epic).send(world).await;
+    assert_eq!(
+        unreadable_staffing.status, 409,
+        "a broken leadership definition is this epic's placement failure: {}",
+        unreadable_staffing.body
+    );
+    assert_eq!(unreadable_staffing.code(), "placement_blocked");
+    assert!(unreadable_staffing.json().get("phase").is_none());
+    completion_reads_db
+        .execute(
+            "UPDATE mini_project_team_definition_snapshots SET canonical_hash=?1 \
+             WHERE project_id=?2 AND mini_project_id=?3",
+            [&pinned_definition_hash, &project_id.to_string(), &epic],
+        )
+        .unwrap();
 
     let stale_predecessor = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
@@ -54454,6 +55043,29 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         recorded_recovery["authorization"]["lsa_actor"]["seat_binding_id"],
         recorded_recovery["authorization"]["tpm_actor"]["seat_binding_id"]
     );
+    let tpm_binding = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project_id, tpm))
+        .unwrap()
+        .unwrap();
+    let retired=Call::post(format!("/v1/projects/{project}/seat-bindings/{tpm}/retire"),
+        &serde_json::json!({"expected_revision":tpm_binding.revision,"reason":"Complete the scoped reader retirement regression"}))
+        .signed_as(world,"operator").with_key("completion-read-retire-tpm").send(world).await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let retired_read = scoped_completion(tpm, 1, project, &epic).send(world).await;
+    assert_eq!(retired_read.status, 403, "{}", retired_read.body);
+    assert!(retired_read.json().get("phase").is_none());
+    // A legacy archived row without a release timestamp is still historical.
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET lifecycle='archived', released_at=NULL WHERE id=?1",
+            [tpm.to_string()],
+        )
+        .unwrap();
+    let archived_read = scoped_completion(tpm, 1, project, &epic).send(world).await;
+    assert_eq!(archived_read.status, 403, "{}", archived_read.body);
+    assert!(archived_read.json().get("phase").is_none());
 }
 
 /// Integration advances on a typed operator receipt, and only the right one.
@@ -54921,9 +55533,10 @@ async fn the_closeout_receipts_carry_an_epic_to_done() {
     );
 }
 
-/// `:remediate` on an epic that never started completion is an absence.
+/// A seat credential that names no seat of the addressed project is refused
+/// before any epic or completion is looked up, and leaves no receipt.
 #[tokio::test]
-async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
+async fn remediate_with_a_foreign_seat_refuses_without_a_receipt() {
     let world = World::open().await;
     let project = world.project;
     let epic = MiniProjectId::generate();
@@ -54946,7 +55559,8 @@ async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
     .with_key("op06-remediate-nothing")
     .send(&world)
     .await;
-    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert_eq!(answer.status, 403, "{}", answer.body);
+    assert_eq!(answer.code(), "forbidden");
     assert!(
         answer.json().get("receipt_id").is_none(),
         "a refusal must not carry a receipt: {}",

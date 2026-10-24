@@ -17145,6 +17145,12 @@ export interface operations {
                 };
                 content?: never;
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description The owning application service is not composed */
             503: {
                 headers: {

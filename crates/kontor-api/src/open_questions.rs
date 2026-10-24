@@ -86,6 +86,10 @@ pub async fn list_open_questions(
         caller.require(&state, CallerCapability::Observer)?;
     }
     let project = crate::control::parse_id(&state, kontor_core::id::ProjectId::parse(&project))?;
+    // The selector reads this project's Jira bindings, and the store tells a
+    // missing key from an unconfirmed one from a task-kind one. A seat
+    // credential names no project, so membership is decided first.
+    crate::applications::require_scoped_seat_membership(&state, project, caller)?;
     let epic = crate::applications::resolve_epic_selector(&state, project, &epic)?;
     Ok(Json(
         state.applications().open_questions(project, epic, actor)?,
@@ -138,6 +142,10 @@ pub async fn record_open_question(
         }
     };
     let project = crate::control::parse_id(&state, kontor_core::id::ProjectId::parse(&project))?;
+    // The selector reads this project's Jira bindings, and the store tells a
+    // missing key from an unconfirmed one from a task-kind one. A seat
+    // credential names no project, so membership is decided first.
+    crate::applications::require_scoped_seat_membership(&state, project, caller)?;
     let epic = crate::applications::resolve_epic_selector(&state, project, &epic)?;
     let key = crate::control::idempotency_key(&state, &headers)?;
     Ok(Json(state.applications().record_open_question(
