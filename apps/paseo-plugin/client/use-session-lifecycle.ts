@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRpc } from "@getpaseo/plugin/client";
-import { ARCHIVE_BATCH_LIMIT, archiveSummary, DEFAULT_RECOVERY_TARGET, executeLifecycleItem, reconcileLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, type LifecycleReview, type LifecycleRow, type RecoveryTarget, type UnresolvedRef } from "../shared/session-lifecycle";
+import { ARCHIVE_BATCH_LIMIT, archiveSummary, DEFAULT_RECOVERY_TARGET, deriveSessionProjection, executeLifecycleItem, freshAvailability, nativeArchiveMembership, reconcileLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, unresolvedArchive, type ArchiveIntentObservation, type LifecycleReview, type LifecycleRow, type ProjectionConflict, type ProjectionSource, type RecoveryTarget, type ScopeClaim, type SessionProjection, type UnresolvedRef } from "../shared/session-lifecycle";
+import type { DirectoryEntry, DirectoryState } from "./session-directory";
+import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
 export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
@@ -134,4 +136,167 @@ export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleR
   };
   return { review, action, error, busy, running, batch, target, setTarget, capabilities, loadCapabilities, selected, setSelected, prepare, restore, run, stop, reconcile,
     clear: () => { if (active.current) return; cancel.current = true; setReview(null); setSelected([]); setBatch(null); setAction("resume"); } };
+}
+
+type ProjectionReceipts = {
+  readonly hostId: string;
+  readonly state: "idle" | "reading" | "ready" | "partial" | "unknown";
+  readonly reviews: Readonly<Record<string, LifecycleReview>>;
+  readonly unknownIntent: ReadonlySet<string>;
+  readonly error: string | null;
+  readonly readAt: string | null;
+};
+
+const emptyReceipts = (hostId: string): ProjectionReceipts => ({ hostId, state: "idle", reviews: {}, unknownIntent: new Set(), error: null, readAt: null });
+const failureText = (failure: unknown) => failure instanceof Error ? failure.message : String(failure);
+
+export type SessionProjectionHookInput = {
+  readonly entries: readonly DirectoryEntry[];
+  readonly directory: Pick<DirectoryState, "status" | "live" | "lastUpdatedAt" | "inventoryComplete" | "includeArchived">;
+  readonly sources?: readonly ReadSourceSummary[];
+  readonly reads?: Readonly<Record<string, SourceRead>>;
+  /** Exact plan associations by native session ID; an association is a claim, never a scope grant. */
+  readonly associations?: Readonly<Record<string, readonly string[]>>;
+  readonly enabled?: boolean;
+};
+
+/**
+ * Read-only retention projection over the existing native directory, configured source reads and the existing
+ * archive receipt read. It never mounts the action hook and never calls preview, execute, reconcile, resume,
+ * archive, send, create or a provider timeline read. Receipt reads are deduplicated by exact review ID; one
+ * failed read keeps every successful receipt and marks only its affected sessions' coverage unknown.
+ */
+export function useSessionRetirementProjection(hostId: string, input: SessionProjectionHookInput): {
+  readonly projections: ReadonlyMap<string, SessionProjection>;
+  readonly receipts: { readonly state: ProjectionReceipts["state"]; readonly complete: boolean; readonly error: string | null; readonly readAt: string | null };
+  readonly reload: () => void;
+} {
+  const read = useRpc(readLifecycleReview);
+  const [receipts, setReceipts] = useState<ProjectionReceipts>(() => emptyReceipts(hostId));
+  const receiptsRef = useRef(receipts);
+  receiptsRef.current = receipts;
+  const live = useRef(false), owner = useRef(hostId), token = useRef(0);
+  owner.current = hostId;
+  const load = useCallback(async () => {
+    const host = hostId, current = ++token.current;
+    const stale = () => !live.current || owner.current !== host || token.current !== current;
+    if (stale()) return;
+    setReceipts((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
+    try {
+      const latest = await read({});
+      if (stale()) return;
+      if (latest && !Array.isArray(latest.unresolved)) {
+        setReceipts((value) => value.hostId === host ? { ...value, state: "unknown", error: "The host did not report its current archive fences.", readAt: new Date().toISOString() } : value);
+        return;
+      }
+      const refs = latest?.unresolved ?? [];
+      const prior = receiptsRef.current.hostId === host ? receiptsRef.current : emptyReceipts(host);
+      const reviews: Record<string, LifecycleReview> = { ...prior.reviews };
+      const unknown = new Set<string>();
+      const pending = new Map<string, Promise<LifecycleReview | null>>();
+      let partial = false;
+      for (const ref of refs) {
+        if (stale()) return;
+        let promise = pending.get(ref.reviewId);
+        if (!promise) {
+          promise = read({ reviewId: ref.reviewId });
+          pending.set(ref.reviewId, promise);
+        }
+        try {
+          const review = await promise;
+          if (stale()) return;
+          if (review?.id === ref.reviewId && review.action === "archive" && review.rows.some((row) => row.id === ref.agentId)) reviews[review.id] = review;
+          else {
+            partial = true;
+            if (!reviews[ref.reviewId]) unknown.add(ref.agentId);
+          }
+        } catch {
+          if (stale()) return;
+          partial = true;
+          if (!reviews[ref.reviewId]) unknown.add(ref.agentId);
+        }
+      }
+      const listed = new Set(refs.map((ref) => ref.reviewId));
+      for (const reviewId of Object.keys(reviews)) if (!listed.has(reviewId)) delete reviews[reviewId];
+      setReceipts((value) => value.hostId === host ? { hostId: host, state: partial ? "partial" : "ready", reviews, unknownIntent: unknown, error: null, readAt: new Date().toISOString() } : value);
+    } catch (failure) {
+      if (!stale()) setReceipts((value) => value.hostId === host ? { ...value, state: "unknown", error: failureText(failure) } : value);
+    }
+  }, [hostId, read]);
+  useEffect(() => {
+    live.current = true;
+    owner.current = hostId;
+    token.current += 1;
+    setReceipts((value) => value.hostId === hostId ? value : emptyReceipts(hostId));
+    if (input.enabled === false) return;
+    void load();
+    return () => { live.current = false; token.current += 1; };
+  }, [hostId, input.enabled]);
+  const projections = useMemo(() => {
+    const hosted = receipts.hostId === hostId;
+    const unknownAll = !hosted || receipts.state === "idle" || receipts.state === "reading" || receipts.state === "unknown";
+    const inventoryObservedAt = input.directory.lastUpdatedAt === null ? null : new Date(input.directory.lastUpdatedAt).toISOString();
+    const inventory: "complete" | "partial" | "unknown" = !input.directory.includeArchived ? "unknown" : input.directory.status === "ready" && input.directory.inventoryComplete === true ? "complete" : "partial";
+    const coverage = { archiveInventory: inventory, observedAt: inventoryObservedAt,
+      detail: `${input.directory.status}${input.directory.live ? ", live" : ", no live updates"}${input.directory.includeArchived ? ", archive scope requested" : ", archive scope not requested"}` };
+    const summaryOf = (sourceId: string): ReadSourceSummary | null => input.sources?.find((source) => source.id === sourceId) ?? input.reads?.[sourceId]?.source ?? null;
+    const sourceOf = (summary: ReadSourceSummary): ProjectionSource => {
+      const readResult = input.reads?.[summary.id];
+      return { id: `source:${summary.id}`, kind: summary.kind === "plan" ? "plan" : summary.kind === "jira" ? "jira" : "source",
+        detail: `${summary.title} · ${readResult?.status ?? "not read"}`, observedAt: readResult?.readAt ?? null,
+        revision: readResult?.revision ?? summary.expectedSha256 ?? null, fresh: readResult?.status === "ready" ? "current" : "unknown" };
+    };
+    const intentOf = (id: string): ArchiveIntentObservation => {
+      if (hosted) for (const review of Object.values(receipts.reviews)) {
+        const row = review.rows.find((entry) => entry.id === id);
+        if (row && unresolvedArchive(row)) return { state: "unsettled", reviewId: review.id, sessionId: id, observedAt: review.createdAt, detail: `${row.outcome}: ${row.message ?? row.reason}` };
+      }
+      return unknownAll || hosted && receipts.unknownIntent.has(id)
+        ? { state: "unknown", reviewId: null, sessionId: id, observedAt: null, detail: receipts.error ?? "Archive receipt coverage is unknown." }
+        : { state: "none", reviewId: null, sessionId: id, observedAt: null, detail: "No unresolved archive receipt is recorded." };
+    };
+    const projections = new Map<string, SessionProjection>();
+    for (const entry of input.entries) {
+      const observedAt = inventoryObservedAt ?? entry.updatedAt, archive = nativeArchiveMembership(entry), availability = freshAvailability(entry);
+      const nativeSource: ProjectionSource = { id: `native:${entry.id}`, kind: "native", detail: `native ${entry.status}; ${archive.archived ? "archived" : "not archived"}`, observedAt, revision: entry.updatedAt, fresh: "current" };
+      const workClaims: ScopeClaim[] = [], roleClaims: ScopeClaim[] = [], evidenceConflicts: ProjectionConflict[] = [];
+      const claim = (kind: ScopeClaim["kind"], value: string, binding: ScopeClaim["binding"], source: ProjectionSource): ScopeClaim => ({ kind, value, binding, source });
+      if (entry.projectKey) workClaims.push(claim("project", entry.projectKey, "placement", { id: `placement:project:${entry.id}`, kind: "project", detail: `native project ${entry.projectKey}`, observedAt, revision: entry.updatedAt, fresh: "current" }));
+      if (entry.workspaceId) workClaims.push(claim("workspace", entry.workspaceId, "placement", { id: `placement:workspace:${entry.id}`, kind: "workspace", detail: `native workspace ${entry.workspaceId}`, observedAt, revision: entry.updatedAt, fresh: "current" }));
+      const label = (key: string, kind: ScopeClaim["kind"], target: ScopeClaim[]) => {
+        const value = entry.labels[key];
+        if (typeof value !== "string" || !value.trim()) return;
+        target.push(claim(kind, value.trim(), "claimed", { id: `label:${key}:${entry.id}`, kind: "label", detail: `native label ${key}`, observedAt, revision: entry.updatedAt, fresh: "current" }));
+      };
+      for (const key of ["epic", "jira.epic", "origin.epic"]) label(key, "epic", workClaims);
+      for (const key of ["ticket", "jira.issue"]) label(key, "ticket", workClaims);
+      label("desk", "desk", workClaims);
+      label("workstream", "workstream", workClaims);
+      for (const key of ["role", "kontor.role"]) label(key, "role", roleClaims);
+      const [titleRole = "", ...titleRest] = entry.title.split("•").map((part) => part.trim());
+      if (titleRest.length > 0 && titleRole.length > 0) roleClaims.push(claim("role", titleRole, "claimed", { id: `title:${entry.id}`, kind: "title", detail: "native title prefix", observedAt, revision: entry.updatedAt, fresh: "current" }));
+      const capturedEpic = entry.jira?.epics.get(entry.id), capturedAt = entry.jira?.observed[0] ?? null;
+      if (capturedEpic === null) evidenceConflicts.push({ kind: "stale-or-mismatched-evidence", detail: "Historical Jira captures disagree about this session's epic; neither is a binding.", sources: [{ id: `jira:capture:${entry.id}`, kind: "jira", detail: "captured epics disagree", observedAt: capturedAt, revision: null, fresh: "unknown" }] });
+      else if (capturedEpic) workClaims.push(claim("epic", capturedEpic, "claimed", { id: `jira:capture:${entry.id}`, kind: "jira", detail: "historical Jira capture", observedAt: capturedAt, revision: null, fresh: capturedAt ? "current" : "unknown" }));
+      for (const sourceId of input.associations?.[entry.id] ?? []) {
+        const summary = summaryOf(sourceId);
+        if (summary?.epic) workClaims.push(claim("epic", summary.epic, "claimed", sourceOf(summary)));
+      }
+      if (entry.availability && (entry.availability.agentId !== entry.id || entry.availability.revision !== entry.updatedAt)) {
+        evidenceConflicts.push({ kind: "stale-or-mismatched-evidence", detail: "An exact-ID read belongs to another native identity or revision.", sources: [{ id: `availability:${entry.id}`, kind: "native", detail: entry.availability.reason, observedAt: entry.availability.checkedAt, revision: entry.availability.revision, fresh: "stale" }] });
+      }
+      projections.set(entry.id, deriveSessionProjection({
+        hostId, workClaims, roleClaims, evidenceConflicts, coverage, receiptObservedAt: hosted ? receipts.readAt : null, intent: intentOf(entry.id),
+        session: { id: entry.id, status: entry.status, archived: archive.archived, archivedAt: entry.archivedAt ?? availability?.archivedAt ?? null,
+          activeTurn: entry.activeTurn === true || entry.activeTurnStartedAt !== null && entry.activeTurnStartedAt !== undefined,
+          pendingInteraction: entry.pendingPermissionCount > 0 || entry.attentionReason === "permission", title: entry.title,
+          workspaceId: entry.workspaceId, projectKey: entry.projectKey, provider: entry.provider, model: entry.model, updatedAt: entry.updatedAt,
+          observedAt },
+        evidence: [nativeSource, ...(entry.jira ? [{ id: `jira:${entry.id}`, kind: "jira" as const, detail: "historical Jira capture", observedAt: entry.jira.observed[0] ?? null, revision: null, fresh: "unknown" as const }] : [])],
+      }));
+    }
+    return projections;
+  }, [hostId, input.entries, input.directory, input.sources, input.reads, input.associations, receipts]);
+  const current = receipts.hostId === hostId ? receipts : emptyReceipts(hostId);
+  return { projections, receipts: { state: current.state, complete: current.state === "ready", error: current.error, readAt: current.readAt }, reload: () => { void load(); } };
 }

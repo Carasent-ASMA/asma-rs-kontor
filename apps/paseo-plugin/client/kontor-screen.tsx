@@ -80,7 +80,7 @@ function HostScreen(props: PluginScreenProps) {
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   // The Teams page is controlled by its view in the navigation store, which does not render by itself.
   const [, setTeamsViewRevision] = useState(0);
-  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
+  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived: route.tab === "Sessions" || includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
   const responsibility = useResponsibility(host.id, hostStatus);
   // kontord is optional: its line never changes the native host status, and Sessions never waits for it.

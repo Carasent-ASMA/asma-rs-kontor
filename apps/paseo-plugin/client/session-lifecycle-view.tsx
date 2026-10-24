@@ -4,8 +4,10 @@ import { ScrollView, Icon } from "@getpaseo/plugin/client/react-native";
 import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { useControlHelp } from "./control-help";
-import { RESUME_PROMPT, TAKEOVER_LIMIT, unresolvedArchive } from "../shared/session-lifecycle";
+import { RESUME_PROMPT, TAKEOVER_LIMIT, unresolvedArchive, type ProjectionConflict, type SessionProjection } from "../shared/session-lifecycle";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
+import { SessionDetailSection } from "./session-detail-section";
+import type { DetailValue } from "./session-metadata-content";
 
 export function ArchiveSessionButton({ session, onPress, colors, disabled = false, pending = false, compact = false, buttonRef }: { session: { id: string; title: string }; onPress: () => void; colors: Colors; disabled?: boolean; pending?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
   const help = useControlHelp("Archive session", buttonRef);
@@ -92,4 +94,65 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
       {lifecycle.error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{lifecycle.error}</Text> : null}
     </ScrollView>
   </AnchoredMenu>;
+}
+
+const RETIREMENT_LABELS = { retain: "Retain", ready: "Ready", unknown: "Unknown" } as const;
+export function retirementDispositionLabel(disposition: SessionProjection["retirement"]["disposition"]): string {
+  return RETIREMENT_LABELS[disposition];
+}
+
+/** One read-only row: disposition, exact reason, native status/membership and any archived conflict. */
+export function SessionRetirementSummary({ projection, colors }: { readonly projection: SessionProjection; readonly colors: Colors }) {
+  const label = retirementDispositionLabel(projection.retirement.disposition);
+  return <View testID={`session-retirement-summary-${projection.sessionId}`} style={{ gap: 3 }}>
+    <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{`Retirement: ${label}`}</Text>
+    <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{projection.retirement.reason}</Text>
+    <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{`Native ${projection.native.status} · ${projection.native.archiveMembership === "archived" ? "Archived" : "Not archived"}`}</Text>
+    {projection.retirement.attention ? <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>Attention is required; no automatic effect runs.</Text> : null}
+    <SessionRetirementConflict conflicts={projection.conflicts} colors={colors} />
+  </View>;
+}
+
+/** Read-only details beside the existing row controls; it reuses the shared named detail section. */
+export function SessionRetirementDetails({ projection, colors }: { readonly projection: SessionProjection; readonly colors: Colors }) {
+  const label = retirementDispositionLabel(projection.retirement.disposition);
+  const scope = projection.scope.claims.length
+    ? projection.scope.claims.map((claim) => `${claim.kind}: ${claim.value} (${claim.binding}; ${claim.source.kind})`).join("; ")
+    : "No scope association observed";
+  const responsibility = projection.responsibility.status === "verified"
+    ? `${projection.responsibility.role ?? "unknown role"} · ${projection.responsibility.owner ?? "owner unknown"} · ${projection.responsibility.duty ?? "duty unknown"}`
+    : `${projection.responsibility.claimedRole ? `Claimed role: ${projection.responsibility.claimedRole}. ` : ""}Responsibility unknown; ${projection.responsibility.missing.join(" ") || "no owner source verifies it"}`;
+  const intent = projection.intent.state === "none" ? "None recorded" : `${projection.intent.state}${projection.intent.reviewId ? ` · review ${projection.intent.reviewId}` : ""}${projection.intent.observedAt ? ` · observed ${projection.intent.observedAt}` : ""}`;
+  const values: DetailValue[] = [
+    { label: "Retirement", value: label },
+    { label: "Reason", value: projection.retirement.reason },
+    { label: "Native status", value: projection.native.status },
+    { label: "Archive membership", value: projection.native.archiveMembership === "archived" ? "Archived" : "Not archived" },
+    { label: "Scope", value: scope },
+    { label: "Role responsibility", value: responsibility },
+    { label: "Archive intent", value: intent },
+  ];
+  return <SessionDetailSection title="Retirement evidence" values={values} colors={colors}>
+    <View style={{ paddingHorizontal: 6, paddingVertical: 3, gap: 3 }}>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Missing evidence</Text>
+      <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{projection.retirement.missing.length ? projection.retirement.missing.join(" ") : "No missing evidence recorded."}</Text>
+    </View>
+    <View style={{ paddingHorizontal: 6, paddingVertical: 3, gap: 3 }}>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Evidence sources</Text>
+      {projection.sources.length ? projection.sources.map((source) => <Text key={source.id} selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>
+        {`${source.kind} · ${source.detail} · ${source.observedAt ?? "time unknown"} · revision ${source.revision ?? "unknown"} · ${source.fresh}`}
+      </Text>) : <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No source evidence was read.</Text>}
+    </View>
+    <SessionRetirementConflict conflicts={projection.conflicts} colors={colors} />
+  </SessionDetailSection>;
+}
+
+/** A conflict is shown separately from ordinary membership and status; nothing here archives or revives. */
+export function SessionRetirementConflict({ conflicts, colors }: { readonly conflicts: readonly ProjectionConflict[]; readonly colors: Colors }) {
+  if (!conflicts.length) return null;
+  const archived = conflicts.some((conflict) => conflict.kind.startsWith("archived-with-"));
+  return <View testID="session-retirement-conflicts" style={{ gap: 2 }}>
+    <Text accessibilityRole="header" style={{ color: colors.statusWarning, fontSize: 12, fontWeight: "600" }}>{archived ? "Archived conflict" : "Evidence conflict"}</Text>
+    {conflicts.map((conflict) => <Text key={`${conflict.kind}:${conflict.detail}`} selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>{`${conflict.kind}: ${conflict.detail}`}</Text>)}
+  </View>;
 }

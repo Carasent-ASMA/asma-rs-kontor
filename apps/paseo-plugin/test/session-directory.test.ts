@@ -344,6 +344,29 @@ describe("collectDirectory", () => {
 
     await expect(collectDirectory(fake.client, false)).rejects.toThrow(/no next cursor/);
   });
+
+  it("rejects a malformed blank cursor instead of returning a partial inventory", async () => {
+    const fake = fakeDirectory([Array.from({ length: 200 }, (_, index) => entry(`a-${index}`))]);
+    fake.setPageInfo(() => ({ hasMore: true, nextCursor: "   ", prevCursor: null }));
+
+    await expect(collectDirectory(fake.client, false)).rejects.toThrow(/no next cursor/);
+  });
+
+  it("walks more than one thousand sessions and keeps one row per exact native ID", async () => {
+    const rows = Array.from({ length: 1_237 }, (_, index) => entry(`bulk-${String(index).padStart(4, "0")}`));
+    const pages = Array.from({ length: 7 }, (_, page) => rows.slice(page * 200, page * 200 + 200));
+    pages[1] = [entry("bulk-0000", { title: "Updated between pages" }), ...(pages[1] ?? [])];
+    const fake = fakeDirectory(pages);
+
+    const collected = await collectDirectory(fake.client, true);
+
+    expect(collected.pages).toBe(7);
+    expect(collected.entries).toHaveLength(1_237);
+    expect(new Set(collected.entries.map((item) => item.id)).size).toBe(1_237);
+    expect(collected.entries.find((item) => item.id === "bulk-0000")?.title).toBe("Updated between pages");
+    expect(collected.entries.some((item) => item.id === "bulk-1236")).toBe(true);
+    expect(fake.listCalls.every((call) => call.page?.limit === 200 && call.filter?.includeArchived === true)).toBe(true);
+  });
 });
 
 describe("SessionDirectory", () => {
@@ -462,15 +485,17 @@ describe("SessionDirectory", () => {
     expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
     await directory.dispose();
   });
-  it("keeps prompt and current-turn times separate from metadata updates, and clears a lost turn start", () => {
+  it("keeps prompt and current-turn times separate from metadata updates, and keeps a turn without a start time", () => {
     const seed = entry("times", { status: "running" });
     const prompt = "2026-10-18T08:00:00.000Z";
     const startedAt = "2026-10-18T08:01:00.000Z";
     const first = toDirectoryEntry({ ...seed, agent: { ...seed.agent, lastUserMessageAt: prompt, activeTurn: { turnId: "turn-times", startedAt } } });
-    expect(first).toMatchObject({ updatedAt: seed.agent.updatedAt, lastUserMessageAt: prompt, activeTurnStartedAt: startedAt });
+    expect(first).toMatchObject({ updatedAt: seed.agent.updatedAt, lastUserMessageAt: prompt, activeTurn: true, activeTurnStartedAt: startedAt });
+    const unstarted = toDirectoryEntry({ ...seed, agent: { ...seed.agent, status: "idle", activeTurn: { turnId: "turn-without-start", startedAt: null } } });
+    expect(unstarted).toMatchObject({ activeTurn: true, activeTurnStartedAt: null });
     const renamed = toDirectoryEntry({ ...seed, agent: { ...seed.agent, title: "Renamed", updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurn: undefined } }, first);
-    expect(renamed).toMatchObject({ updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurnStartedAt: null });
-    expect(toDirectoryEntry(seed).lastUserMessageAt).toBeNull();
+    expect(renamed).toMatchObject({ updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurn: false, activeTurnStartedAt: null });
+    expect(toDirectoryEntry(seed)).toMatchObject({ lastUserMessageAt: null, activeTurn: false });
   });
 
   it("retains closed unarchived history across pages, subscriptions, stale cache and archive toggles", async () => {
@@ -937,6 +962,28 @@ describe("SessionDirectory", () => {
     expect(latest.live).toBe(false);
     expect(latest.error).toMatch(/daemon unavailable/);
 
+    await directory.dispose();
+  });
+
+  it("refuses to report an inventory when a mid-walk page fails", async () => {
+    const fake = fakeDirectory([
+      Array.from({ length: 200 }, (_, index) => entry(`partial-${index}`)),
+      [entry("partial-tail")],
+    ]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({ client: () => fake.client, includeArchived: true, onChange: (state) => { latest = state; } });
+    const held = fake.holdNextPage();
+    const starting = directory.start();
+    await held.started;
+    fake.failNext();
+    held.release();
+    await starting;
+
+    expect(latest.status).toBe("error");
+    expect(latest.inventoryComplete).toBe(false);
+    expect(latest.lastUpdatedAt).toBeNull();
+    expect(latest.entries).toHaveLength(0);
+    expect(latest.error).toMatch(/daemon unavailable/);
     await directory.dispose();
   });
 

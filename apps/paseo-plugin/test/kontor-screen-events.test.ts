@@ -17,6 +17,7 @@ const model = vi.hoisted(() => ({
   workspaces: [] as import("@getpaseo/client").PaseoWorkspace[],
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
+  directoryInputs: [] as Array<{ hostId: string; includeArchived: boolean }>, sourceCalls: 0,
   keyboardSave: vi.fn(async () => true),
   kontorStatus: null as import("../shared/kontor-status").KontorStatus | null,
   keyboard: { status: "loading" } as { status: "loading" } | { status: "ready"; values: { backShortcut: "off" | "cmd-backquote" } },
@@ -42,11 +43,11 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
   Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError, show: model.toastShow }),
   copyText: (text: string) => model.copyText(text),
 }));
-vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
+vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived }, refresh: () => {} }; } }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
-vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true, demand: () => {} }) }));
+vi.mock("../client/use-read-sources", () => ({ useReadSources: () => { model.sourceCalls++; return { sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true, demand: () => {} }; } }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: model.workspaces, error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
 vi.mock("../client/keyboard-shortcuts", async (original) => ({
@@ -82,7 +83,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; });
+beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directoryInputs = []; model.sourceCalls = 0; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -186,6 +187,18 @@ describe("Kontor shell native actions", () => {
     expect(elements(pickerField(screen.picker()!)).find((node) => node.props.testID === "kontor-context-epic")?.props.children).toBe("All projects");
     screen.openPicker("Source");
     expect(screen.menuItems().find((node) => node.props.label === "Source")?.props).toMatchObject({ accessibilityLabel: "Plan: Source, unconfirmed", detail: null });
+  });
+  it("requests the full native archive scope while Sessions is active and reuses the one host directory", () => {
+    const screen = mount(true, { tab: "Overview" });
+    expect(model.directoryInputs.length).toBeGreaterThan(0);
+    expect(model.directoryInputs.every((input) => input.hostId === screen.props.host.id && input.includeArchived === false)).toBe(true);
+    const sources = model.sourceCalls;
+    screen.click("Sessions");
+    expect(model.directoryInputs.at(-1)).toMatchObject({ hostId: screen.props.host.id, includeArchived: true });
+    expect(model.directoryInputs.every((input) => input.hostId === screen.props.host.id)).toBe(true);
+    expect(model.sourceCalls).toBe(sources + 1);
+    screen.click("Overview");
+    expect(model.directoryInputs.at(-1)).toMatchObject({ hostId: screen.props.host.id, includeArchived: false });
   });
   it("forwards actual SDK host status to the shared native freshness pill", () => {
     const screen = mount(true);
