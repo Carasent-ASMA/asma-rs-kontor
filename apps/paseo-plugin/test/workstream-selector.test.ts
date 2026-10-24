@@ -105,6 +105,25 @@ describe("association selector", () => {
     expect(byTestID(tree, "workstream-option-gamma")!.props.accessibilityLabel).toBe("Gamma, 2 sessions, 0 in My work");
   });
 
+  it("counts the choices My work leaves out without listing them, and offers All work", () => {
+    const hidden = [option("access", "Access & login", { sessions: 0, workspaces: 0 }), option("qnr-v2", "QNR v2", { sessions: 0, workspaces: 0 })];
+    const onShowAll = vi.fn();
+    let { tree } = render({ hidden, onShowAll });
+    expect(text(byTestID(tree, "sessions-associations-hidden"))).toContain("2 workstreams have no sessions here.");
+    expect(byTestID(tree, "workstream-option-qnr-v2")).toBeUndefined();
+    (byTestID(tree, "sessions-associations-show-all")!.props.onPress as () => void)();
+    expect(onShowAll).toHaveBeenCalledTimes(1);
+    state.values = []; state.values[0] = "qnr";
+    ({ tree } = render({ hidden, onShowAll }));
+    expect(text(tree)).toContain("No other association matches.");
+    expect(text(byTestID(tree, "sessions-associations-hidden"))).toContain("1 matching workstream has no sessions here.");
+    state.values = []; state.values[0] = "alp";
+    ({ tree } = render({ hidden, onShowAll }));
+    expect(byTestID(tree, "sessions-associations-hidden")).toBeUndefined();
+    state.values = [];
+    expect(byTestID(render().tree, "sessions-associations-hidden")).toBeUndefined();
+  });
+
   it("closes on compact Back before Filters handles it", () => {
     const { onOpen } = render({ compact: true });
     expect(state.back).toHaveLength(1);

@@ -8,26 +8,49 @@ export function declaredPlanWorkstream(source: ReadSourceSummary, read?: SourceR
   if (read.status !== "ready" && (!read.planMetadata || read.content === null)) return null;
   return read.planMetadata ? read.planMetadata.workstream : source.workstream;
 }
-/** Display-only fallback. Never written to settings or native labels, and never inferred from names. */
-export function planWorkstreamMappings(sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, entries: readonly DirectoryEntry[], workspaces: readonly OrganizationWorkspace[], mappings: OrganizationInput["displayMappings"], associations: Readonly<Record<string, readonly string[]>>) {
+/** Each epic's `ws:` label across the ready Jira captures; null where captures disagree, absent where none names one. */
+export function capturedWorkstreams(reads: readonly SourceRead[]): Map<string, string | null> {
+  const result = new Map<string, string | null>();
+  for (const read of reads) {
+    if (read.source.kind !== "jira" || read.status !== "ready") continue;
+    for (const epic of read.jiraHistory?.epics ?? []) {
+      if (epic.ws === undefined) continue;
+      const known = result.get(epic.key);
+      result.set(epic.key, known === undefined || known === epic.ws ? epic.ws : null);
+    }
+  }
+  return result;
+}
+/**
+ * Display-only fallback. Never written to settings or native labels, and never inferred from names. A session's
+ * known epic takes the workstream its ready plans declare or its captured Jira `ws:` label names; a disagreement
+ * between them links nothing. Explicit plan links use plans alone. A native desk holds its sessions unless the
+ * registry calls it a `fallback` desk, whose sessions follow a bound epic's workstream.
+ */
+export function planWorkstreamMappings(sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, entries: readonly DirectoryEntry[], workspaces: readonly OrganizationWorkspace[], mappings: OrganizationInput["displayMappings"], associations: Readonly<Record<string, readonly string[]>>, registry?: WorkstreamRegistry) {
   const result = { ...mappings };
+  const captured = capturedWorkstreams(Object.values(reads));
+  const fallback = new Set(Object.values(registry?.desks ?? {}).flatMap((desk) => desk.match === "fallback" ? [nativeDesk(desk.paseo_project)] : []));
+  const holds = (projectName: string | null | undefined) => { const desk = nativeDesk(projectName); return desk !== null && !fallback.has(desk); };
   const choose = (epic: string | null, projectId: string | null, ids?: readonly string[]) => {
     const plans = sources.filter((source) => source.kind === "plan" && (source.projectId === null || source.projectId === projectId) && (ids?.length ? ids.includes(source.id) : epic !== null && sourceEpic(source, reads[source.id]) === epic));
     if (ids?.length && plans.length !== new Set(ids).size) return null;
     if (epic !== null && plans.some((source) => sourceEpic(source, reads[source.id]) !== null && sourceEpic(source, reads[source.id]) !== epic)) return null;
     const keys = plans.map((source) => reads[source.id]?.status === "ready" ? declaredPlanWorkstream(source, reads[source.id]) : null);
+    const label = ids?.length || epic === null ? undefined : captured.get(epic);
+    if (label !== undefined) return label !== null && keys.every((key) => key === null || key === label) ? label : null;
     return keys.length && keys.every((key) => key !== null && key === keys[0]) ? keys[0]! : null;
   };
   for (const entry of entries) {
     const scope = declaredScope(entry, mappings);
-    if (scope.workstream !== null || nativeDesk(entry.projectName) !== null) continue;
+    if (scope.workstream !== null || holds(entry.projectName)) continue;
     const epic = scope.epic && /^ASMA-[1-9]\d*$/.test(scope.epic.toUpperCase()) ? scope.epic.toUpperCase() : null;
     const key = choose(epic, entry.projectKey, associations[entry.id]);
     if (key) result[`session:${entry.id}`] = { ...result[`session:${entry.id}`], workstream: key };
   }
   for (const workspace of workspaces) {
     const mapping = result[`workspace:${workspace.id}`];
-    if (mapping?.workstream?.trim() || nativeDesk(workspace.projectName) !== null) continue;
+    if (mapping?.workstream?.trim() || holds(workspace.projectName)) continue;
     const key = choose(mapping?.epic?.toUpperCase() ?? null, workspace.projectKey ?? null);
     if (key) result[`workspace:${workspace.id}`] = { ...mapping, workstream: key };
   }
@@ -106,21 +129,30 @@ export function workstreamOptionLabel(option: WorkstreamOption, registryLoaded: 
     unlinked || option.desk || !registryLoaded ? null : option.registered ? "registered" : "unregistered"].filter((part): part is string => !!part).join(" · ");
 }
 
-/** Why the plan fallback links nothing to an unlinked session, from the plans it weighs; null with no catalog. */
+/**
+ * Why the fallback links nothing to an unlinked session, from the plans it weighs and, when a ready Jira capture
+ * is configured, that capture's `ws:` label for the epic; null with no catalog.
+ */
 export function planFallbackNote(sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, epic: string | null, projectId: string | null, linked: readonly string[] = []): string | null {
   if (!sources.length) return null;
   if (linked.length) return "Its explicit plan links do not resolve to ready plans that declare one workstream.";
+  const captures = Object.values(reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" && read.jiraHistory ? [read.jiraHistory] : []);
   const key = epic && /^ASMA-[1-9]\d*$/i.test(epic) ? epic.toUpperCase() : null;
-  if (key === null) return "No known ASMA epic, so no plan applies.";
+  if (key === null) return `No known ASMA epic, so no plan${captures.length ? " or Jira ws: label" : ""} applies.`;
   const declaring = sources.filter((source) => source.kind === "plan" && sourceEpic(source, reads[source.id]) === key);
   const plans = declaring.filter((source) => source.projectId === null || source.projectId === projectId);
-  if (!declaring.length) return `No configured plan declares ${key}.`;
-  if (!plans.length) return `Plans for ${key} are bound to other projects.`;
+  const observed = `the Jira capture of ${captures.map((capture) => capture.generated).join(" / ")}`;
+  const label = capturedWorkstreams(Object.values(reads)).get(key);
+  const jira = !captures.length ? "" : label === null ? ` Jira captures disagree on the ws: label of ${key}.`
+    : label !== undefined ? ` ${observed[0]!.toUpperCase()}${observed.slice(1)} labels ${key} ws:${label}, which a plan contradicts.`
+    : captures.some((capture) => capture.epics.some((captured) => captured.key === key)) ? ` ${key} has no ws: label in ${observed}.` : ` ${key} is not in ${observed}.`;
+  if (!declaring.length) return `No configured plan declares ${key}.${jira}`;
+  if (!plans.length) return `Plans for ${key} are bound to other projects.${jira}`;
   const states = new Map<string | null, number>();
   for (const source of plans) {
     const state = reads[source.id]?.status === "ready" ? declaredPlanWorkstream(source, reads[source.id]) ?? "no workstream" : null;
     states.set(state, (states.get(state) ?? 0) + 1);
   }
   const parts = [...states].map(([state, n]) => state === null ? `${n} ${n === 1 ? "is" : "are"} not ready` : `${n} ${n === 1 ? "declares" : "declare"} ${state}`);
-  return `Of ${counted(plans.length, "plan")} for ${key}, ${parts.join(", ")}, so none applies.`;
+  return `Of ${counted(plans.length, "plan")} for ${key}, ${parts.join(", ")}, so none applies.${jira}`;
 }

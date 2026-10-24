@@ -29,15 +29,18 @@ export const recordsSchema = z.object({
   delivery: z.array(deliverySchema).default([]),
 }).strict();
 const jiraKey = z.string().regex(/^ASMA-[1-9]\d*$/);
+/** The plan front-matter workstream grammar; the capture writes only registered `ws:<key>` labels. */
+export const workstreamKey = z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
 export const jiraIssueSchema = z.object({ key: jiraKey, status: z.string().min(1).max(160), cat: z.enum(["new", "indeterminate", "done"]) }).strict();
-export const jiraEpicSchema = jiraIssueSchema.extend({ children: z.array(jiraIssueSchema).max(2000) }).strict();
+/** `ws` is the epic's Jira `ws:<key>` label as captured; absent when the capture names none. */
+export const jiraEpicSchema = jiraIssueSchema.extend({ ws: workstreamKey.optional(), children: z.array(jiraIssueSchema).max(2000) }).strict();
 /** Bounded field projection of the existing historical source, never a live feed. */
 export const jiraHistorySchema = z.object({
   schema: z.literal("consumption/data@2"),
   generated: z.string().refine((value) => Number.isFinite(Date.parse(value)), "Invalid observation time"),
   provenance: z.object({ path: z.string().min(1).max(4096), sha256: z.string().regex(/^[a-f0-9]{64}$/), capturedEpics: z.number().int().nonnegative().max(2000) }).strict(),
-  selection: z.array(jiraKey).min(1).max(64),
-  epics: z.array(jiraEpicSchema).max(64),
+  selection: z.array(jiraKey).min(1).max(2000),
+  epics: z.array(jiraEpicSchema).max(2000),
 }).strict().superRefine((value, context) => {
   const keys = new Set<string>();
   for (const epic of value.epics) {
@@ -53,7 +56,8 @@ export type JiraIssue = z.infer<typeof jiraIssueSchema>;
 export const workstreamRegistrySchema = z.object({
   path: z.string().nullable(), revision: z.string().nullable(),
   workstreams: z.record(z.string(), z.object({ name: z.string() })),
-  desks: z.record(z.string(), z.object({ name: z.string() })), diagnostics: z.array(z.string()),
+  // A `fallback` desk holds only sessions not bound to an epic with a workstream; `paseo_project` names its native project.
+  desks: z.record(z.string(), z.object({ name: z.string(), match: z.enum(["first", "fallback"]).optional(), paseo_project: z.string().optional() })), diagnostics: z.array(z.string()),
 });
 export type WorkstreamRegistry = z.infer<typeof workstreamRegistrySchema>;
 export const sourceReadSchema = z.object({
