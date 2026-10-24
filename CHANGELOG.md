@@ -203,7 +203,9 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   requested summary and the current summary is still ready, so a replacement
   path, a repin or a late older revision never surfaces as current. A current
   unavailable or repinned summary always takes precedence over an older cached
-  exact read. Each Teams snapshot is bound to the summaries catalog source
+  exact read. A completed exact failure for the current policy stays visibly
+  unavailable with its diagnostics and is retried only after the next summaries
+  refresh, never as pending Reading or older content. Each Teams snapshot is bound to the summaries catalog source
   identity, and a final catalog identity read rejects a refresh whose catalog
   changed under it. `sources.read` is unchanged and still returns the
   exact content. A source whose summary is

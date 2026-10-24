@@ -198,4 +198,48 @@ describe("QA1-PR477 current summary policy controls", () => {
       expect(shown.source.expectedSha256).toBe("b".repeat(64));
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+  it("shows a same-policy exact read failure as unavailable, not Reading, without a busy retry", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "qa1-477-exact-unavailable-"));
+    try {
+      const path = join(directory, "plan.md");
+      await writeFile(path, "# Readable summary then removed");
+      const before = await readConfiguredSummary({ ...planSource, path });
+      await rm(path);
+      const read = vi.fn(async ({ sourceId }: { sourceId: string }) => readConfiguredSource({ ...planSource, path, id: sourceId }));
+      const { react, render } = deferredReact();
+      const readerModules: Record<string, unknown> = {
+        react,
+        "@tanstack/react-query": { useQuery: () => ({ data: { sources: [before.source], reads: { plan: before }, diagnostics: [] },
+          isError: false, isFetching: false, error: null, refetch: async () => ({}) }) },
+        "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => contract.name === "sources.read" ? read : async () => ({}) },
+        "../shared/read-sources": readSources, "../shared/teams-source-snapshot": teamsSnapshot, "../shared/teams-source-bindings": teamsBindings,
+      };
+      const { useReadSources } = loadHermesScoped<{ useReadSources: typeof Hook }>("../client/use-read-sources.ts", readerModules);
+      const draw = () => render(() => useReadSources("fixture-host", "online"));
+      draw().demand(["plan"]); draw(); await raceSettle();
+      const shown = draw().reads.plan!;
+      expect(shown.status).toBe("unavailable");
+      expect(shown.content).toBeNull();
+      expect(shown.diagnostics.join(" ")).toContain("ENOENT");
+      expect(readSources.sourceReadPending(shown)).toBe(false);
+      expect(read).toHaveBeenCalledTimes(1);
+      for (let index = 0; index < 5; index++) { draw(); await raceSettle(); }
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("treats a policy-only approval while an unpinned read is in flight as a new identity", async () => {
+    const revision = "a".repeat(64), initial = raceSummary(revision), harness = raceHarness(initial);
+    harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+    expect(harness.read).toHaveBeenCalledTimes(1);
+    const approved = { ...initial, source: { ...planSource, revisionKind: "approved revision" as const, expectedSha256: revision } };
+    harness.set(approved); harness.draw(); await raceSettle();
+    expect(harness.read).toHaveBeenCalledTimes(2);
+    harness.pending[1]!({ ...summary(approved.source, revision), content: "# approved" }); await raceSettle();
+    expect(harness.draw().reads.plan!.source.expectedSha256).toBe(revision);
+    harness.pending[0]!({ ...summary(planSource, revision), content: "# old policy" }); await raceSettle();
+    const shown = harness.draw().reads.plan!;
+    expect(shown.content).not.toBeNull();
+    expect(shown.source.expectedSha256).toBe(revision);
+    expect(harness.read).toHaveBeenCalledTimes(2);
+  });
 });

@@ -31,10 +31,10 @@ function currentFullRead(summary: SourceRead, loaded: FullSourceRead | undefined
   if (summary.status !== "ready" || !loaded || loaded.hostId !== hostId || loaded.path !== summary.source.path
     || loaded.kind !== summary.source.kind || loaded.revision !== summary.revision) return false;
   const read = loaded.read;
-  if ((read.status !== "ready" && read.status !== "partial") || read.source.id !== summary.source.id
-    || read.source.path !== summary.source.path || read.source.kind !== summary.source.kind) return false;
-  return read.revision !== null && read.revision === summary.revision
-    && sourceIdentity(read.source) === sourceIdentity(summary.source);
+  if (read.source.id !== summary.source.id || read.source.path !== summary.source.path
+    || read.source.kind !== summary.source.kind || sourceIdentity(read.source) !== sourceIdentity(summary.source)) return false;
+  // A completed same-policy exact failure stays visible; a successful read must prove its revision.
+  return read.status === "unavailable" || (read.revision !== null && read.revision === summary.revision);
 }
 
 /** Summaries overlaid by full reads of the same host, source identity and revision; Teams adapter IDs stay on their snapshots. */
@@ -58,7 +58,9 @@ export function pendingDemandIds(demanded: readonly string[], summaries: Readonl
     if (adapterIds.has(id)) continue;
     const summary = summaries[id];
     if (!summary || !sourceReadPending(summary)) continue;
-    if (currentFullRead(summary, full[id], hostId)) continue;
+    const loaded = full[id];
+    // An unavailable exact read is shown, but the next summaries refresh retries it.
+    if (loaded && currentFullRead(summary, loaded, hostId) && loaded.read.status !== "unavailable") continue;
     ids.push(id);
   }
   return ids;

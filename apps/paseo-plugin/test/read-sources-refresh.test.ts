@@ -89,7 +89,10 @@ describe("source summaries and demanded full reads", () => {
     const unavailable: SourceRead = { ...approved, status: "unavailable", diagnostics: ["Configured revision mismatch"] };
     expect(overlaySourceReads({ plan: unavailable }, { plan: approvedFull }, "host", new Set())).toEqual({ plan: unavailable });
     const failedFull: FullSourceRead = { ...approvedFull, read: { ...approvedFull.read, status: "unavailable", revision: null, content: null } };
+    // A same-policy exact failure is visible and retried after the next summaries refresh.
+    expect(overlaySourceReads({ plan: approved }, { plan: failedFull }, "host", new Set())).toEqual({ plan: failedFull.read });
     expect(pendingDemandIds(["plan"], { plan: approved }, { plan: failedFull }, "host", new Set())).toEqual(["plan"]);
+    expect(overlaySourceReads({ plan: unavailable }, { plan: failedFull }, "host", new Set())).toEqual({ plan: unavailable });
   });
   it("demands only summary-present exact reads at the current revision", () => {
     expect(pendingDemandIds(["plan", "delivery", "jira", "authoring"], { plan, delivery, jira, authoring: summary(authoringSource, "d") }, {}, "host", new Set(["authoring"]))).toEqual(["plan", "delivery"]);
