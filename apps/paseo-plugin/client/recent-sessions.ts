@@ -1,15 +1,15 @@
+import { useSyncExternalStore } from "react";
 import { isArchivedSession, type DirectoryEntry } from "./session-directory";
 import type { ProfileStorage } from "./viewer-profile";
 
 /**
  * Recent records user opens accepted by native navigation from Kontor, per host and app storage profile.
+ * It keeps the last 500 distinct sessions opened, with no age limit; visits an older build trimmed are not recoverable.
  * Only opaque session IDs and times are stored; titles and places are read live from the directory.
  * shortcut: native sidebar views and other devices need a public host view-event/history API.
  */
-export const RECENT_KEPT = 20;
+export const RECENT_KEPT = 500;
 export const RECENT_SHOWN = 8;
-export const RECENT_DAYS = 14;
-const DAY = 24 * 60 * 60 * 1000;
 const LEGACY_KEY = "kontor.recent@1";
 export const recentStorageKey = (hostId: string) => "kontor.recent@2 " + JSON.stringify([hostId]);
 
@@ -23,11 +23,28 @@ export type RecentRow = { readonly entry: DirectoryEntry; readonly at: number; r
 const EMPTY: RecentRecord = { clearedAt: null, visits: [] };
 let storage: ProfileStorage | null = null;
 const states = new Map<string, RecentState>();
+const listeners = new Set<() => void>();
+
+/** Opens, Clear and a new device store notify; reads never do, so a render can read safely. */
+export function subscribeRecent(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function notify(): void {
+  for (const listener of [...listeners]) listener();
+}
+
+/** This host's Recent, current after every open or Clear on this device. */
+export function useRecent(hostId: string): RecentState {
+  return useSyncExternalStore(subscribeRecent, () => readRecent(hostId));
+}
 
 /** The Kontor screen module sets the device store when the plugin loads; null keeps Recent for this app session. */
 export function configureRecentStorage(next: ProfileStorage | null): void {
   storage = next;
   states.clear();
+  notify();
 }
 
 const store = () => storage;
@@ -62,6 +79,16 @@ export function readSavedHistory(): { readonly ids: readonly string[]; readonly 
   }
 }
 
+/**
+ * Saved legacy IDs to list after a host's verified visits, in stored order. Their time and host are unknown, so
+ * they carry neither, are never counted or ordered as visits, and an ID this host has a verified visit for is left out.
+ */
+export function readSavedEntries(record: RecentRecord): { readonly ids: readonly string[]; readonly unreadable: boolean } {
+  const saved = readSavedHistory();
+  const verified = new Set(record.visits.map((visit) => visit.id));
+  return { ids: saved.ids.filter((id) => !verified.has(id)), unreadable: saved.unreadable };
+}
+
 function loadRecent(hostId: string): RecentState {
   const device = store();
   if (!device) return remember(hostId, { record: EMPTY, persistence: "session" });
@@ -76,12 +103,14 @@ function loadRecent(hostId: string): RecentState {
   return remember(hostId, { record: EMPTY, persistence: "unreadable" });
 }
 
-/** Retention applies on reads too, even if no new session is opened for weeks. */
-export function readRecent(hostId: string, now = Date.now()): RecentState {
+/**
+ * The stored sequence, trimmed only past the newest 500 sessions; age never removes a visit.
+ * The clock argument is unused and stays only for existing callers.
+ */
+export function readRecent(hostId: string, _now?: number): RecentState {
   const current = states.get(hostId) ?? loadRecent(hostId);
-  const visits = current.record.visits.filter((visit) => visit.at > now - RECENT_DAYS * DAY).slice(0, RECENT_KEPT);
-  if (visits.length === current.record.visits.length) return current;
-  const record = { ...current.record, visits };
+  if (current.record.visits.length <= RECENT_KEPT) return current;
+  const record = { ...current.record, visits: current.record.visits.slice(0, RECENT_KEPT) };
   return current.persistence === "unreadable" ? remember(hostId, { record, persistence: "unreadable" }) : write(hostId, record);
 }
 
@@ -96,31 +125,35 @@ function write(hostId: string, record: RecentRecord): RecentState {
   }
 }
 
-/** Most recent first, one per ID, at most 20 within 14 days. An unreadable stored value is never overwritten by a visit. */
+/** Most recent first, one per ID, at most 500. An unreadable stored value is never overwritten by a visit. */
 export function recordVisit(hostId: string, id: string, now = Date.now()): RecentState {
-  const current = readRecent(hostId, now);
-  const visits = [{ id, at: now }, ...current.record.visits.filter((visit) => visit.id !== id && visit.at > now - RECENT_DAYS * DAY)].slice(0, RECENT_KEPT);
+  const current = readRecent(hostId);
+  const visits = [{ id, at: now }, ...current.record.visits.filter((visit) => visit.id !== id)].slice(0, RECENT_KEPT);
   const record = { ...current.record, visits };
-  return current.persistence === "unreadable" ? remember(hostId, { record, persistence: "unreadable" }) : write(hostId, record);
+  const next = current.persistence === "unreadable" ? remember(hostId, { record, persistence: "unreadable" }) : write(hostId, record);
+  notify();
+  return next;
 }
 
 /** Clears this host in this app profile. Legacy saved history stays untouched. */
 export function clearRecent(hostId: string, now = Date.now()): RecentState {
-  return write(hostId, { clearedAt: now, visits: [] });
+  const next = write(hostId, { clearedAt: now, visits: [] });
+  notify();
+  return next;
 }
 
 /**
- * Follow the recorded MRU sequence; wall times determine age and retention, never open order.
+ * Follow the recorded MRU sequence; wall times are shown as age, never used for open order.
  * A visited session absent from the directory is not shown, and its visit is kept,
  * so a partial read or an outage never erases it. Clear already empties the sequence.
+ * The clock argument is unused and stays only for existing callers.
  */
-export function recentRows(entries: readonly DirectoryEntry[], record: RecentRecord, now: number): RecentRow[] {
+export function recentRows(entries: readonly DirectoryEntry[], record: RecentRecord, _now?: number): RecentRow[] {
   const available = new Map(entries.map((entry) => [entry.id, entry]));
-  const floor = now - RECENT_DAYS * DAY;
   const rows: RecentRow[] = [];
   for (const { id, at } of record.visits) {
     const entry = available.get(id);
-    if (!entry || isArchivedSession(entry) || at <= floor) continue;
+    if (!entry || isArchivedSession(entry)) continue;
     rows.push({ entry, at, reason: "Opened" });
     available.delete(id);
   }
