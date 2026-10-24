@@ -3,7 +3,7 @@ import type { FlatList as NativeFlatList } from "react-native";
 import { Pressable, Text, View } from "react-native";
 import { FlatList, ScrollView } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import type { JiraIssue, ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { sourceReadPending, type JiraIssue, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import { PlanGraph, createPlanGraphStore, planGraphViewKey, type PlanGraphStore } from "./plan-graph/graph";
 import { validatePlanGraph } from "./plan-graph/contract";
 import { SourceDetails } from "./source-details";
@@ -96,6 +96,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const store = useMemo(() => retainedStore(hostId), [hostId]);
   const colors = theme.colors;
   const read = selectedId ? reads[selectedId] : undefined;
+  const pending = read ? sourceReadPending(read) : false;
   const graph = read?.graph;
   const validated = useMemo(() => graph && read?.revision ? validatePlanGraph(graph, {
     source: graph.source, source_sha256: read.revision, graph_sha256: graph.graph_sha256,
@@ -148,6 +149,8 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
     else if (plans.length > 1) sourceNote = "Several plans are linked here. Choose an exact source.";
     else sourceNote = epic ? "No plan selected. Plan declarations and dependencies are unavailable." : "No plan or epic in this context. Select a plan in the top context picker.";
   }
+  else if (pending) sourceNote = "Reading…";
+  else if (read.status === "unavailable") sourceNote = "Selected source unavailable. See source diagnostics.";
   else if (!valid) sourceNote = "No valid exact-source canonical graph available. No legacy text extraction or inferred task state.";
   let jiraNote: string | null = null;
   if (!epic) jiraNote = read ? "No epic linked to this plan; captured Jira tasks cannot be matched." : null;
@@ -157,7 +160,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   else if (!captured.records.length) jiraNote = `No child task records were captured for ${epic}. This is not evidence that the epic has no tasks.`;
 
   if (mode === "Graph") return <ScrollView contentContainerStyle={{ padding: 12, gap: 8 }}>
-    <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 15 }}>Dependency graph unavailable{read ? ` · ${read.source.title}` : ""}</Text>
+    <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 15 }}>{pending ? "Reading…" : `Dependency graph unavailable${read ? ` · ${read.source.title}` : ""}`}</Text>
     {notices}
     {sourceNote ? <Copy colors={colors}>{sourceNote}</Copy> : null}
     {!read && plans.length > 1 ? <Copy colors={colors}>Several explicitly linked plans; select an exact source.</Copy> : null}
@@ -214,9 +217,9 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const header = <View style={{ paddingHorizontal: compact ? 8 : 12, paddingVertical: compact ? 8 : 10, gap: 4 }}>
     <Text accessibilityRole="header" accessibilityLabel={title} numberOfLines={1} style={{ color: colors.foreground, fontWeight: "600", fontSize: 15 }}>Board</Text>
     {notices}
-    <Text testID="board-meta" numberOfLines={1} accessibilityLabel={`Read-only capture. ${captured.records.length} captured Jira tasks. ${valid ? `${valid.nodes.length} plan tasks` : "Plan graph unavailable"}.${captureTimes.length ? ` Captured ${captureTimes.join(" / ")}.` : ""} ${truth}`}
+    <Text testID="board-meta" numberOfLines={1} accessibilityLabel={`Read-only capture. ${captured.records.length} captured Jira tasks. ${valid ? `${valid.nodes.length} plan tasks` : pending ? "Reading the exact source" : "Plan graph unavailable"}.${captureTimes.length ? ` Captured ${captureTimes.join(" / ")}.` : ""} ${truth}`}
       style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>
-      {`${jiraCount} · ${valid ? `${valid.nodes.length} plan tasks` : "no plan graph"}${days ? ` · captured ${days}` : ""}`}
+      {`${jiraCount} · ${valid ? `${valid.nodes.length} plan tasks` : pending ? "Reading…" : "no plan graph"}${days ? ` · captured ${days}` : ""}`}
     </Text>
     {items.length ? null : noteCopy(notes)}
     {actions}

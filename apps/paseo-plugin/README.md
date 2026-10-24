@@ -59,6 +59,27 @@ pill is the in-session return control where the composer supports it.
   subscription's bootstrap page is one row, since the walk reads every row. A
   workspace and project read under 30 s old is reused with its own read time.
   Plugin cleanup releases the subscriptions.
+- **Metadata-first source reads.** One `sources.summaries` request on the
+  existing 30-second source cadence returns the configured catalog, workstream
+  registry, per-source status, revision, read and modification times, frontmatter
+  metadata and diagnostics without Markdown content, a canonical graph or JSON
+  records. The historical Jira projection stays complete, because Sessions reads
+  captured epics at mount. Plan, Board and Graph demand the selected source and
+  its explicitly linked plan associations; Overview, Search, Delivery, Decisions
+  and AI teams & sessions demand their context sources progressively. Full
+  reads keep at most three workers and are keyed by source ID, catalog policy,
+  path and revision, so a changed revision, pin or replacement path is read
+  again and an unchanged identity is reused. A returned read is accepted only
+  when its own source ID, path, revision and catalog policy match the requested
+  summary, and the current summary is still ready. The current summary's status,
+  expected hash and catalog metadata take precedence: an unavailable or repinned
+  summary is never hidden by an older cached exact read, and a late older
+  revision never replaces the current one. A completed exact failure for the
+  current policy remains visibly unavailable with its diagnostics; it is retried
+  only after the next summaries refresh, never shown as **Reading…** and never
+  replaced by older content. `sources.read` is unchanged. A source whose summary
+  is present while its exact read is pending shows **Reading…**, distinctly from
+  an unavailable source. Sessions demands no exact source read.
 - **Token counts.** Row input/output and separate cache-read counts use stable
   compact units across device locales: K = 1,000 and M = 1,000,000, with at most
   one decimal (300K, 1.2M). Rounding carries across unit boundaries. The arrows,
@@ -449,8 +470,11 @@ mapping fields and associations are retained. Invalid stored preferences are
 reported and preserved until an explicit reset. These are host-shared values,
 not per-user settings.
 
-Plan, Board and Graph read only configured plan sources. A Plan page renders the
-actual Markdown, headings and search. Source state and time stay visible; the
+Plan, Board and Graph read only configured plan sources. Their catalog metadata
+arrives with the 30-second summaries refresh; the selected source and its linked
+associations are read exactly on demand, and the page shows **Reading…** until
+that exact read arrives. A Plan page renders the actual Markdown, headings and
+search. Source state and time stay visible; the
 expandable **Source details** holds paths, full SHA-256 and diagnostics. Board and Graph require a fresh `asma plan export` of that exact source.
 The file hash is checked before and after export. Export/schema/source failures
 stay visible; no ASCII, Mermaid, prose extraction or cached graph index is used.
@@ -485,13 +509,15 @@ home configuration and the same JSON entry validation, unique IDs and maximum
 of 512 entries. The file must be regular and at most 2 MiB. An absent file leaves
 an honest no-sources state; malformed or unreadable files report diagnostics.
 
-The server rereads the catalog for each list, read and association request. An
-operator can atomically replace the file; Settings → Refresh sources or the
-30-second source refresh picks up additions, edits and removals without a daemon
-restart. A catalog changed during a refresh fails that refresh rather than mixing
-bindings and replacement paths. Failed requests retain previous client reads with
-a stale warning; invalid or missing catalogs return their own diagnostics and no
-sources. The plugin never writes the catalog or accepts its path from a client.
+The server rereads the catalog for each list, summaries, read and association
+request. An operator can atomically replace the file; Settings → Refresh sources
+or the 30-second summaries refresh picks up additions, edits and removals without
+a daemon restart. A summaries request reads one catalog snapshot, binds every
+Teams snapshot to that catalog's source identity and re-reads the catalog
+identity before publishing; a catalog changed during the refresh fails that
+refresh rather than mixing bindings, replacement paths or snapshots. Failed
+requests retain previous client reads with a stale warning; invalid or missing
+catalogs return their own diagnostics and no sources. The plugin never writes the catalog or accepts its path from a client.
 Presentation settings do not store catalog paths or source contents. This file
 only declares read sources; it does not activate teams or grant execution.
 
@@ -532,8 +558,10 @@ values stay unknown; titles never supply identity. Graph-bearing plans still use
 `asma plan export` and exact path/hash validation. Graph failures stay diagnostic,
 with readable Markdown and independent frontmatter retained. No graph is invented.
 
-Every source read parses metadata from the exact file bytes after the configured
-pin check. This repairs omitted catalog metadata in the read projection without
+A summaries request reads each configured file once after the same pin check and
+parses its frontmatter, without running `asma plan export` and without returning
+Markdown, a graph or records. Every exact `sources.read` parses the same exact
+file bytes. This repairs omitted catalog metadata in both projections without
 editing the catalog. A catalog/frontmatter workstream conflict disables automatic
 association and appears in Source details. The registry is read separately from
 `config/orchestration/workstreams.json` in `KONTOR_PLUGIN_ASMA_WORKSPACE` on each
@@ -623,7 +651,8 @@ plan text without a graph, while missing files and revision mismatches stay
 unavailable. No source cache or fallback graph hides these changes.
 
 The existing `sources.read` RPC keeps its explicit JSON-record format (including
-Teams JSON records); it does not infer text/YAML:
+Teams JSON records); it does not infer text/YAML. The metadata-only
+`sources.summaries` RPC never changes that format or returns record contents:
 
 ```json
 {"teams":[{"id":"example","title":"Configured example","roles":[{"role":"SWE","chain":["provider/model"]}]}]}
@@ -682,7 +711,8 @@ conversation and save. The host-scoped **Open plan** composer pill uses only thi
 association, not a title, epic-key guess or conversation prose. One link opens
 the exact source; multiple links open a chooser. The view retains a return action
 to the originating conversation. Associations are reconciled every 15 seconds;
-source and empty-workspace snapshots refresh every 30 seconds. A source-service
+source summaries and empty-workspace snapshots refresh every 30 seconds, and
+pages read their exact sources on demand. A source-service
 failure marks retained data/preferences unavailable or stale and disables editing.
 
 ### Historical Jira field projection
