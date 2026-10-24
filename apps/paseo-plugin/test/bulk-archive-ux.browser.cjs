@@ -95,6 +95,7 @@ async function check(width, height, theme, largeText, earlyClose = false) {
     assert.ok(await page.getByRole('heading', { name: 'Archive 5 sessions?', exact: true }).isVisible());
     const text = await dialog().innerText();
     assert.equal(text.split('There is no undo.').length, 2, 'one consequence line');
+    assert.ok(text.includes('A new child session created just before a selected session archives may be archived with it, even if unselected.'), 'child scope before About opens');
     assert.ok(!text.includes('agt_lead'), 'IDs wait in details');
     assert.ok(text.includes('2 active children not selected · 1 running'));
     assert.ok(text.includes('Finish running children in their own workflow, then review again.'));

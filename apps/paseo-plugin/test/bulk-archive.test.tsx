@@ -166,6 +166,7 @@ describe("bulk archive blocked reasons", () => {
 });
 
 describe("bulk archive confirmation", () => {
+  const SCOPE = "A new child session created just before a selected session archives may be archived with it, even if unselected.";
   const parent = row("parent", { title: "TPM • ASMA-7675 • QNR-P1", eligible: false, category: "excluded", reason: "Archive blocked: native archive can cascade to these children. Preserve or finish them through the owning workflow first.",
     children: [child("idle-child"), child("running-child", "running")] });
   it("opens compact: title, one ready/blocked summary, one consequence, grouped rows and Archive counting only ready rows", () => {
@@ -184,7 +185,7 @@ describe("bulk archive confirmation", () => {
     const archive = labelled(tree, "Archive 2 sessions"); expect(archive).toHaveLength(1); expect(archive[0]!.props.disabled).toBe(false);
     expect(labelled(tree, "Cancel")).toHaveLength(1);
   });
-  it("keeps the preflight rule and the non-atomic cascade caveat verbatim in About archive, and adds a child-scope line when a parent is ready", () => {
+  it("keeps the preflight rule and the non-atomic cascade caveat verbatim in About archive, and leads the scope line with child order when a parent is ready", () => {
     const tree = dialog({ review: review([row("c"), row("p", { children: [child("c")], reason: "All active managed children are selected." })]) as never }).render();
     const about = walk(tree).find((element) => element.type === Disclosure && element.props.label === "About archive")!;
     const inside = texts(about).join("\n");
@@ -192,8 +193,21 @@ describe("bulk archive confirmation", () => {
     expect(inside).toContain("At preflight, a parent is blocked unless every active managed child is selected.");
     expect(inside).toContain("The child check and parent archive are not atomic: a new child created between the final check and parent archive may be archived by the host with its parent, even if unselected.");
     expect(texts(tree).join("\n")).not.toContain("Unselected sessions are never archived");
-    expect(texts(tree)).toContain("Children archive before their parents. A child started during the run may be archived with its parent.");
+    expect(texts(tree)).toContain(`Children archive before their parents. ${SCOPE}`);
     expect(texts(tree)).toContain("Archives after its 1 child");
+  });
+  it("AUD PR476 states the unselected-child scope before confirm with every disclosure closed, even when no selected session has children", () => {
+    // Renders each Disclosure as the host does, closed: only what shows before About opens counts as consent.
+    const shown = (node: unknown): unknown => Array.isArray(node) ? node.map(shown) : !node || typeof node !== "object" ? node
+      : (node as Element).type === Disclosure ? shown(Disclosure((node as Element).props as never))
+      : { ...(node as Element), props: { ...(node as Element).props, children: shown((node as Element).props.children), header: shown((node as Element).props.header) } };
+    for (const [rows, line] of [[[row("leaf")], SCOPE], [[row("c"), row("p", { children: [child("c")] })], `Children archive before their parents. ${SCOPE}`]] as const) {
+      harness.fresh();
+      const view = dialog({ review: review([...rows]) as never }), copy = texts(harness.current.render(() => shown(BulkArchiveDialog(view.props))));
+      expect(copy).toContain(line); expect(copy).toContain("▸ About archive");
+      expect(copy.join("\n")).not.toContain("are not atomic");
+      expect(labelled(harness.current.render(() => BulkArchiveDialog(view.props)), `Archive ${rows.length} session${rows.length > 1 ? "s" : ""}`)[0]!.props.disabled).toBe(false);
+    }
   });
   it("shows a session's ID, full reason and exact children only in its details", () => {
     const view = dialog({ review: review([parent]) as never });

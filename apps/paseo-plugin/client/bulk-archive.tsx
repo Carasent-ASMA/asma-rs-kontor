@@ -213,7 +213,8 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
         </View> : null}
         {batch ? null : <>
           <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>Archive stops active work and keeps history and files. There is no undo.</Text>
-          {ready.some((row) => row.children.length) ? <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>Children archive before their parents. A child started during the run may be archived with its parent.</Text> : null}
+          {/* Material scope before consent: any selected session can gain a child after its final check, so this never waits in About. */}
+          <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{`${ready.some((row) => row.children.length) ? "Children archive before their parents. " : ""}A new child session created just before a selected session archives may be archived with it, even if unselected.`}</Text>
         </>}
         {SECTIONS.map((section) => {
           const entries = rows.filter((row) => sectionOf(row) === section);

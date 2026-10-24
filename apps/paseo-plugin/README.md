@@ -1378,9 +1378,11 @@ sessions and is disabled when they exceed the cap. A batch contains at most
 
 **Archive N…** opens a review; nothing is archived until its confirm button.
 The review title states the count, one line states that active work stops,
-history and files remain and there is no undo, and a child-order line appears
-only when a ready parent is selected. The preflight rule and the concurrent-child
-caveat below sit in **About archive**. Sessions are grouped once by state
+history and files remain and there is no undo, and one line always states that a
+new child session created just before a selected session archives may be archived
+with it, even if unselected. That line starts with the child order when a ready
+parent is selected. The preflight rule and the full concurrent-child caveat below
+sit in **About archive**. Sessions are grouped once by state
 (Blocked, Not confirmed, Ready, Archived, Already archived, Not on host), titles
 first with one short note; the info button shows the ID, full server reason and
 any active children. The confirm button counts only ready sessions.
