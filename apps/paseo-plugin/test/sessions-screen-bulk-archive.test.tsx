@@ -60,11 +60,11 @@ const walk = (node: unknown): Element[] => !node || typeof node !== "object" ? [
 const all = () => walk(harness.flush());
 const toolbar = () => all().find((element) => element.type === BulkArchiveToolbar)!;
 const sheet = () => all().find((element) => element.type === BulkArchiveDialog);
-const confirm = () => {
-  const tree = BulkArchiveDialog(sheet()!.props as Parameters<typeof BulkArchiveDialog>[0]);
-  const button = walk(tree).find((element) => typeof element.props.label === "string" && /^Archive \d+ sessions?$/.test(element.props.label))!;
-  void (button.props.onPress as () => Promise<void>)();
-};
+const dialog = () => { const tree = BulkArchiveDialog(sheet()!.props as Parameters<typeof BulkArchiveDialog>[0]) as Element; return [...walk(tree), ...walk(tree.props.header)]; };
+const pressIn = (tree: Element[], label: string | RegExp) => { const button = tree.find((element) => typeof element.props.label === "string" && (typeof label === "string" ? element.props.label === label : label.test(element.props.label)))!; void (button.props.onPress as () => unknown)(); };
+/** Presses Archive in one drawn dialog and returns that drawing, so a later Close belongs to the same dialog. */
+const confirm = () => { const tree = dialog(); pressIn(tree, /^Archive \d+ sessions?$/); return tree; };
+const summary = () => dialog().find((element) => element.props.testID === "bulk-archive-summary")?.props.children;
 type Selection = { start(): void; toggle(id: string): void; selected: string[] };
 const selection = () => all().find((element) => element.type === ArchiveSelectionToggle)!.props.selection as Selection;
 const list = () => all().find((element) => element.props.testID === "sessions-list")!;
@@ -115,7 +115,8 @@ describe.each(["full", "slim", "compact"] as const)("bulk archive on the %s Sess
     expect(listed()).not.toContain("a"); expect(listed()).toEqual(expect.arrayContaining(["b", "other"]));
     executing.shift()!(row("b", { outcome: "blocked", message: "Unselected managed child" })); await settle();
     expect(listed()).toEqual(expect.arrayContaining(["b", "other"]));
-    expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith("Archived 1 · 1 blocked");
+    // The open dialog states the outcome once; no toast repeats it.
+    expect(summary()).toBe("Archived 1 · 1 blocked"); expect(fake.toast.show).not.toHaveBeenCalled();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item").map(([, input]) => input.agentId)).toEqual(["a", "b"]);
     expect(fake.refresh).not.toHaveBeenCalled();
   });
@@ -153,12 +154,57 @@ describe.each(["full", "slim", "compact"] as const)("bulk archive on the %s Sess
     mount(); await settle(); selection().toggle("a"); harness.flush();
     (toolbar().props.onReview as () => void)(); await settle(); confirm(); await settle();
     executing.shift()!(row("a", { outcome: "uncertain", message: "Lost acknowledgement; do not resend" })); await settle();
-    expect(listed()).toContain("a"); expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith("Archived 0 · 1 not confirmed");
+    expect(listed()).toContain("a"); expect(summary()).toBe("Archived 0 · 1 not confirmed"); expect(fake.toast.show).not.toHaveBeenCalled();
     expect((drawnRow("a").props.lifecycleFeedback as Element).props.row).toMatchObject({ outcome: "uncertain" });
     (sheet()!.props.onClose as () => void)(); await settle();
     fake.rpc["sessions.lifecycle-reconcile-item"] = async () => row("a", { outcome: "archived", runtime: "closed", availability: { agentId: "a", state: "readable", checkedAt: new Date().toISOString(), revision: sessionEntry("a").updatedAt, reason: "Archived", archivedAt: "now" } });
     ((drawnRow("a").props.lifecycleAction as Element).props.onCheck as () => void)(); await settle();
     expect(listed()).not.toContain("a"); expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item")).toHaveLength(1);
     expect(fake.calls.find(([name]) => name === "sessions.lifecycle-reconcile-item")?.[1]).toMatchObject({ agentId: "a", reviewId: review(["a"]).id });
+  });
+  it("toasts once for a batch that finishes after its dialog closed, and the closed dialog stops before the next session", async () => {
+    mount(); await settle(); selection().toggle("a"); selection().toggle("b"); harness.flush();
+    (toolbar().props.onReview as () => void)(); await settle();
+    const drawn = confirm(); await settle();
+    pressIn(drawn, "Close"); await settle(); expect(sheet()).toBeUndefined();
+    executing.shift()!(row("a", { outcome: "archived", runtime: "closed", availability: { agentId: "a", state: "readable", checkedAt: new Date().toISOString(), revision: sessionEntry("a").updatedAt, reason: "Archived", archivedAt: "now" } })); await settle();
+    expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item").map(([, input]) => input.agentId)).toEqual(["a"]);
+    expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith("Stopped before the next session. Archived 1 · 1 not attempted");
+    expect(toolbar().props.lifecycle).toMatchObject({ batch: { announcement: "Stopped before the next session. Archived 1 · 1 not attempted" } });
+  });
+  it("adds only an idle child by exact ID for a second review, never a running one, and sends nothing before confirmation", async () => {
+    const children = [{ id: "idle-child", title: "Idle child", status: "idle", workspaceId: null }, { id: "busy-child", title: "Busy child", status: "running", workspaceId: null }];
+    fake.rpc["sessions.lifecycle-preview"] = async (input) => ({ ...review([]), rows: (input.agentIds as string[]).map((id) => id === "b"
+      ? row("b", { eligible: false, category: "excluded", reason: "Archive blocked: native archive can cascade to these children. Preserve or finish them through the owning workflow first.", children }) : row(id)) });
+    mount(); await settle(); selection().toggle("a"); selection().toggle("b"); harness.flush();
+    (toolbar().props.onReview as () => void)(); await settle();
+    expect(summary()).toBe("1 ready · 1 blocked");
+    pressIn(dialog(), "Add 1 idle child"); await settle();
+    expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-preview").map(([, input]) => input.agentIds)).toEqual([["a", "b"], ["a", "b", "idle-child"]]);
+    const second = dialog();
+    expect(second.some((element) => element.props.label === "Add 1 idle child")).toBe(false);
+    expect(second.some((element) => element.type === "Text" && element.props.children === "1 active child not selected · 1 running")).toBe(true);
+    expect(second.find((element) => element.props.label === "Archive 2 sessions")).toBeDefined();
+    expect(fake.calls.some(([name]) => name === "sessions.lifecycle-execute-item")).toBe(false);
+    expect(selection().selected).toEqual(["a", "b"]);
+  });
+  it("reviews only blocked rows again, then deselects them or dismisses results without any archive request", async () => {
+    mount(); await settle(); selection().toggle("a"); selection().toggle("b"); harness.flush();
+    (toolbar().props.onReview as () => void)(); await settle(); confirm(); await settle();
+    executing.shift()!(row("a", { outcome: "archived", runtime: "closed", availability: { agentId: "a", state: "readable", checkedAt: new Date().toISOString(), revision: sessionEntry("a").updatedAt, reason: "Archived", archivedAt: "now" } })); await settle();
+    executing.shift()!(row("b", { outcome: "blocked", message: "Session changed or disappeared while review was open. Nothing dispatched; create a fresh review." })); await settle();
+    pressIn(dialog(), "Review 1 again"); await settle();
+    expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-preview").at(-1)?.[1]).toMatchObject({ agentIds: ["b"] });
+    (sheet()!.props.onClose as () => void)(); await settle();
+    // A second batch: b blocked again, then the toolbar's selection-only actions.
+    selection().toggle("b"); selection().toggle("b"); harness.flush(); (toolbar().props.onReview as () => void)(); await settle(); confirm(); await settle();
+    executing.shift()!(row("b", { outcome: "blocked", message: "Still blocked." })); await settle();
+    (sheet()!.props.onClose as () => void)(); await settle();
+    const bar = () => walk(BulkArchiveToolbar(toolbar().props as Parameters<typeof BulkArchiveToolbar>[0]));
+    expect((drawnRow("b").props.lifecycleFeedback as Element).props.row).toMatchObject({ outcome: "blocked" });
+    pressIn(bar(), "Deselect blocked"); harness.flush(); expect(selection().selected).toEqual([]); expect(listed()).toContain("b");
+    pressIn(bar(), "Dismiss"); harness.flush();
+    expect((drawnRow("b").props.lifecycleFeedback as Element).props.row).toBeUndefined();
+    expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-execute-item").map(([, input]) => input.agentId)).toEqual(["a", "b", "b"]);
   });
 });

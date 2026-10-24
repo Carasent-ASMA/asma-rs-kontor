@@ -85,7 +85,7 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
           </Disclosure>
           {row.children.map((child) => text(`Protected child: ${child.title} · ${child.id} · ${child.status} · ${child.workspaceId ?? "no workspace"}`, true))}
           {row.outcome !== "pending" ? <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{`${row.outcome}: ${row.message ?? "Read receipt before retry."}`}</Text> : null}
-          {archive && (unresolvedArchive(row) || row.reconcileReviewId || lifecycle.error) ? <Action colors={colors} label="Check native outcome" disabled={busy || running} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
+          {archive && (unresolvedArchive(row) || row.reconcileReviewId || lifecycle.error) ? <Action colors={colors} label="Refresh status" disabled={busy || running} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
         </View>)}
         {!archive ? text("Unselected and blocked sessions remain unchanged. Preflight blocks can be reviewed again; an uncertain dispatch is held for native reconciliation. Close/cancel does not undo a request already sent.", true) : null}
       </>}

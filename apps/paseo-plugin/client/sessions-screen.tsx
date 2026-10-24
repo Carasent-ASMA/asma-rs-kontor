@@ -37,7 +37,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
-import { openSessionById } from "./session-actions";
+import { openRecoveredSession, openSessionById } from "./session-actions";
 import { type DirectoryEntry, type DirectoryState } from "./session-directory";
 import {
   attentionLabel,
@@ -126,7 +126,8 @@ import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
 import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
 import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
-import { notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery } from "./archive-feedback";
+import { archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
+import { ArchiveRecoverySheet } from "./archive-recovery";
 import { hideNotices, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
 
@@ -139,6 +140,7 @@ function listRowKey(row: ListRow): string {
 
 // Working as is remembered in this device's store where the runtime offers one, before the first read; otherwise for this app session.
 configureWorkingAsStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
+configureArchiveNoticeStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
 
 /** Status dot colour of a session: its highest-priority state, as on group badges. */
 export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
@@ -1523,6 +1525,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  // The notice's Review archive in whichever tray shows it; closing the sheet returns focus there.
+  const reviewArchiveRef = useRef<View | null>(null);
   const bulkToggleRef = useRef<View | null>(null);
   const bulkReviewRef = useRef<View | null>(null);
   const bulkReturnFocusRef = useRef(false);
@@ -1534,7 +1539,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const noticesHide = useRef<View | null>(null);
   const slimNoticesHide = useRef<View | null>(null);
   const archiveButtons = useRef(new Map<string, View>());
-  useEffect(() => { setLifecycleOpen(false); setBulkOpen(false); }, [host.id]);
+  useEffect(() => { setLifecycleOpen(false); setBulkOpen(false); setRecoveryOpen(false); }, [host.id]);
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
   const shortcut = view.shortcut ?? null;
   const { layout: sessionLayout, grouping } = sessionPresentation(view, preferences);
@@ -2432,7 +2437,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const noticeProps = compact ? {} : focusProps;
   const settingsUnavailable = organization !== undefined && organization.state.status !== "ready";
   const settingsAlert = saveMessage ?? organization?.state.saveError ?? null;
-  // One lifecycle action at a time: every Resume, Details, the X and Check again wait while another runs.
+  // One lifecycle action at a time: every Resume, the X and Refresh status wait while another runs.
   const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
   const canStart = hostOnline && lifecycleIdle && state.status === "ready";
   useLayoutEffect(() => {
@@ -2444,16 +2449,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [bulkOpen]);
   const selectForArchive = (entry: DirectoryEntry) => { if (canStart && !bulkOpen) bulkSelection.toggle(entry.id); };
   const openOrSelect = (entry: DirectoryEntry) => { if (bulkSelection.selecting) selectForArchive(entry); else handleOpen(entry); };
+  const reviewCount = recovery.items.length;
+  // One compact line (NN/g: one notice, its action beside it): Review archive opens every unresolved item; Retry only re-reads a failed list.
   const recoveryLine = recovery.line ? <View key="archive" testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
     <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, flexShrink: 1 }}>{recovery.line}</Text>
-    {recovery.unresolved.length ? <Action small colors={colors} label={recovery.checking ? "Checking…" : "Check again"} accessibilityLabel="Check unconfirmed archives again" disabled={!lifecycleIdle} onPress={() => { if (lifecycleIdle) void recovery.check(); }} />
+    {reviewCount ? <Action ref={reviewArchiveRef} small colors={colors} label={reviewCount === 1 ? "Review archive" : "Review archives"} expanded={recoveryOpen}
+      accessibilityLabel={reviewCount === 1 ? "Review unconfirmed archive" : `Review ${reviewCount} unconfirmed archives`} onPress={() => setRecoveryOpen(true)} />
       : <Action small colors={colors} label="Retry" accessibilityLabel="Read archive checks again" disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
-    {/* ponytail: Details opens the first unconfirmed archive's own review and Check covers every ref; add a per-ref picker if each one needs its own view. */}
-    {recovery.unresolved.length ? <Action small colors={colors} label="Details" accessibilityLabel="Archive details" disabled={!lifecycleIdle}
-      onPress={() => { if (!lifecycleIdle) return; lifecycleAnchor.current = recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; void lifecycle.restore(recovery.unresolved[0]!).then((result) => {
-        // Only the exact owner review opens; a failed read never shows another review.
-        if (typeof result === "string") toast.error(`Archive details could not be read: ${result}`); else if (result) setLifecycleOpen(true); }); }} /> : null}
   </View> : null;
+  const openRecovered = (item: RecoveryItem) => {
+    const result = openRecoveredSession({ row: item.row, id: item.ref.agentId, serverId: host.id, navigation });
+    if (result.ok) setRecoveryOpen(false); else toast.error(result.message);
+  };
   // Each notice's keys name what it reports; a hidden tray opens again for any key it has not hidden.
   const banners = ([
     showBanner && staleMessage ? { keys: [`source:${state.status}:${staleMessage}`], summary: state.status === "error" ? "Session read failed" : "Sessions not live",
@@ -2486,32 +2493,38 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     settingsAlert ? { keys: [`save:${settingsAlert}`], summary: "Organization not saved", tone: "warning",
       node: <Text key="save" accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{settingsAlert}</Text> } : null,
   ] satisfies (Notice | null)[]).filter((notice) => notice !== null);
-  // One key per unconfirmed archive, so a confirmed one leaves the tray hidden and a new one opens it; a read error is a new notice too.
-  const archiveNotice: Notice | null = recoveryLine ? { summary: archiveSummary(recovery.unresolved, null) ?? "Archive checks could not be read", tone: "warning", node: recoveryLine,
-    keys: [...recovery.unresolved.map((ref) => `archive:${ref.reviewId}:${ref.agentId}`), ...(recovery.error ? [`archive-error:${recovery.error}`] : [])] } : null;
+  // One key per exact review, session and state, so a confirmed one leaves the tray hidden and a new or changed one opens it; a read error is a new notice too.
+  const archiveNotice: Notice | null = recoveryLine ? { summary: archiveSummary(recovery.items, null) ?? "Archive checks could not be read", tone: "warning", node: recoveryLine,
+    keys: [...recovery.items.map(archiveNoticeKey), ...(recovery.error ? [`archive-error:${recovery.error}`] : [])] } : null;
   const allNotices = archiveNotice ? [...banners, archiveNotice] : banners;
-  const hiddenNotices = view.noticesHidden ?? [];
-  // A notice missing while its source reads (first load, refresh, save, Check) is unread, not absent; navigation is always read.
+  // Hidden archive items persist per host on this device; every other hidden notice stays with the view for this app session.
+  const hiddenNotices = useMemo(() => [...(view.noticesHidden ?? []).filter((key) => !key.startsWith("archive:")), ...recovery.hidden], [view.noticesHidden, recovery.hidden]);
+  const saveHidden = (keys: readonly string[]) => {
+    updateView({ noticesHidden: keys.filter((key) => !key.startsWith("archive:")) });
+    recovery.setHidden(keys.filter((key) => key.startsWith("archive:")));
+  };
+  // A notice missing while its source reads (first load, refresh, save, Refresh status) is unread, not absent; navigation is always read.
   const noticeRead: Readonly<Record<string, boolean>> = {
     source: state.status !== "idle" && state.status !== "loading",
     settings: organization?.state.status !== "loading",
     save: !organization?.state.saving,
-    // The archive state still names the previous host for one render after a switch, so only this host's list counts.
-    archive: recovery.listed === host.id && !recovery.checking,
+    // The archive state still names the previous host for one render after a switch, so only this host's list counts,
+    // and only a list whose every owner review was read may forget a hidden archive.
+    archive: recovery.listed === host.id && recovery.complete && !recovery.checking,
     "archive-error": recovery.listed === host.id && !recovery.checking,
   };
   // A hidden notice a completed reading no longer reports is forgotten, so its return opens the tray; one continuously present stays hidden.
   const presentNotices = presentHidden(allNotices, hiddenNotices, (key) => noticeRead[key.split(":")[0]!] ?? true);
-  useEffect(() => { if (presentNotices !== hiddenNotices) updateView({ noticesHidden: presentNotices }); }, [presentNotices, hiddenNotices, updateView]);
+  useEffect(() => { if (presentNotices !== hiddenNotices) saveHidden(presentNotices); }, [presentNotices, hiddenNotices]);
   const OptionsContainer = compact ? View : ScrollView;
   const toolbar = toolbarLayout({ collapsed: toolbarCollapsed, compact });
   // Hide and Show change presentation only: no action runs, and focus moves to the control that replaces the pressed one.
   const hideNoticeTray = (shown: readonly Notice[]) => {
-    updateView({ noticesHidden: hideNotices(shown, hiddenNotices) });
+    saveHidden(hideNotices(shown, hiddenNotices));
     setTimeout(() => focusControl(noticesButton.current), 0);
   };
   const showNoticeTray = (shown: readonly Notice[], hide: RefObject<View | null>) => {
-    updateView({ noticesHidden: showNotices(shown, hiddenNotices) });
+    saveHidden(showNotices(shown, hiddenNotices));
     setTimeout(() => focusControl(hide.current), 0);
   };
   const noticeTray = (shown: readonly Notice[], hide: RefObject<View | null>, testID: string, disabled = false) => shown.length > 0 && !noticesHidden(shown, hiddenNotices) ? (
@@ -3123,14 +3136,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
-          const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && (item.kind === "result" || item.kind === "session") ? lifecycle.review.rows.find((row) => row.id === item.entry.id) : undefined;
-          const lifecycleFeedback = <ArchiveRowFeedback row={outcome} colors={colors} />;
+          const id = item.kind === "result" || item.kind === "session" ? item.entry.id : null;
+          const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && id ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
+          // A row still listed keeps its unresolved archive's state after the batch that sent it is gone.
+          const lifecycleFeedback = <ArchiveRowFeedback row={outcome ?? recovery.items.find((entry) => entry.ref.agentId === id)?.row ?? undefined} colors={colors} />;
           const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? bulkSelection.selecting ? <ArchiveSelectionCheckbox session={item.entry} colors={colors}
                 checked={bulkSelection.selected.includes(item.entry.id)} pending={lifecycle.running && lifecycle.batch?.currentId === item.entry.id}
                 disabled={!canStart || bulkOpen || !bulkScopeIds.includes(item.entry.id) || (!bulkSelection.selected.includes(item.entry.id) && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT)}
                 outcome={outcome} onCheck={() => { if (canStart) void lifecycle.reconcile(item.entry.id); }} onPress={() => selectForArchive(item.entry)} /> : <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
-                // One X, one status line: no sheet and no focus move. Details on the recovery line opens the review.
+                // One X, one status line: no sheet and no focus move. Review archive on the recovery line opens what stays unresolved.
                 onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
           if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} />;
           const key = listRowKey(item);
@@ -3218,6 +3233,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} anchor={bulkReviewRef} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { bulkReturnFocusRef.current = true; setBulkOpen(false); }}
         onFinished={(summary) => toast.show(summary)} /> : null}
+      {recoveryOpen ? <ArchiveRecoverySheet recovery={recovery} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
+        canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered}
+        onClose={() => { setRecoveryOpen(false); recovery.clearNotes(); setTimeout(() => focusControl(reviewArchiveRef.current ?? noticesButton.current ?? rootRef.current), 0); }} /> : null}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); lifecycleHelp.dismiss(); }} /> : null}
     </View>

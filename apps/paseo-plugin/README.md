@@ -1124,9 +1124,27 @@ archive scope, session count and pages read).
    Flat** on compact, and where the tray was on compact **Filters**) that names them and shows the tray again. Hiding runs nothing
    and resolves nothing; any new or changed notice opens the tray again, and so
    does a notice that returns after a completed read reported it gone, while one
-   that stays present stays hidden. The choice is kept for the view until the
-   app restarts. Escape hides the tray
+   that stays present stays hidden. Hidden source, navigation and settings
+   notices are kept for the view until the app restarts. A hidden archive is
+   remembered per host on this device (iOS user defaults; web and desktop local
+   storage) by its exact review, session and state, so a changed state shows
+   again; it is forgotten only after a complete read no longer lists it. Without
+   a device store (Android) or when the store fails, hiding lasts this app
+   session and the review sheet says so. Escape hides the tray
    while focus is in it.
+6. The archive notice is one line: a single archive names its session and
+   state, several are counted. Each is classified from its own archive review,
+   read by exact ID: **Archive result unknown** (the request was sent and the
+   host has not confirmed it archived), **Archived · runtime stop not
+   confirmed**, or **Couldn't check** (the host or that review could not be
+   read). Blocked and preflight outcomes stay in the bulk review.
+   **Review archive** opens one sheet listing every unresolved archive with a
+   plain reason, when it was last checked and what the host reported. **Refresh
+   status** reads that exact session again and reports checking, unchanged,
+   changed, confirmed (the notice clears) or couldn't check; it never sends
+   another archive request. **Open session** opens the exact ID that read
+   confirmed. IDs and the host's full messages stay in **Technical details**.
+   Nothing refreshes on reconnect or a timer.
 
 ## Configuration
 
@@ -1333,7 +1351,7 @@ own rows; without one, the directory is read again in full.
 History and files are retained. Success requires an exact-ID read showing the
 session archived with no active turn; whether its runtime closed is reported
 separately. A lost acknowledgement stays uncertain until
-**Check native outcome** verifies retirement using metadata only. It never
+**Refresh status** verifies retirement using metadata only. It never
 resends the archive or removes the original no-replay fence.
 
 A confirmed null native record permits only a host-local stale-row disposition,
@@ -1350,12 +1368,25 @@ long-press, hover and keyboard help;
 all three targets are at least 44 pt. The layout group uses a subtle fill and
 check mark, with no enclosing frame. **Select** enters bulk
 archive selection on desktop and mobile; a row long press
-also enters selection. Checkboxes support Space on web and have 44-point targets.
-**Select all shown** covers only the filtered sessions. A batch contains at most
+also enters selection. Checkboxes draw a 22 px box inside a 44-point target:
+an outlined box when clear and a filled box with a check mark when selected,
+at least 3:1 against every Paseo surface in light and dark themes. They support
+Space on web. The batch bar shows a three-state select-all checkbox (all, some,
+none), the selected count and **Archive N…**. Select all covers only the filtered
+sessions and is disabled when they exceed the cap. A batch contains at most
 50 exact IDs and always needs one confirmation, including a one-item selection.
-The confirmation keeps its session list collapsed and explains that history and
-files remain, active work stops, and no undo is exposed here.
-Closing the confirmation returns focus to its enabled bulk control, or the screen
+
+**Archive N…** opens a review; nothing is archived until its confirm button.
+The review title states the count, one line states that active work stops,
+history and files remain and there is no undo, and one line always states that a
+new child session created just before a selected session archives may be archived
+with it, even if unselected. That line starts with the child order when a ready
+parent is selected. The preflight rule and the full concurrent-child caveat below
+sit in **About archive**. Sessions are grouped once by state
+(Blocked, Not confirmed, Ready, Archived, Already archived, Not on host), titles
+first with one short note; the info button shows the ID, full server reason and
+any active children. The confirm button counts only ready sessions.
+Closing the review returns focus to its enabled bulk control, or the screen
 while an operation is pending. On short compact screens the bulk controls and
 status scroll within a bounded frame so they leave room for the sessions list.
 
@@ -1374,8 +1405,17 @@ Requests remain sequential, with the existing durable per-session fences and
 exact-ID readback.
 **Stop before next session** lets the current request settle; it does not undo
 or retry it. Pending rows stay visible, uncertain outcomes offer a metadata-only
-Check, and blocked rows keep their reasons. The final status and one summary
-toast distinguish archived, blocked, unconfirmed, absent and unattempted rows.
+**Refresh status**, and blocked rows keep their reasons. One summary distinguishes archived,
+blocked, unconfirmed, absent and unattempted rows: in the review while it is
+open, or as one toast when it was closed before the batch finished.
+
+A blocked parent with unselected active children names them. **Add N idle
+children** previews again with those exact IDs for a new confirmation, within
+the cap; running children are never added and are finished in their own
+workflow. **Review N again** previews only blocked and not-attempted sessions.
+After the review closes, the batch bar keeps the summary with **Deselect
+blocked**, which changes only the selection, and **Dismiss**. Blocked sessions
+stay ordinary live sessions and are never counted as archived.
 There is no whole-host bulk archive or automatic provider-history load.
 
 Archive does not require provider history. Resume requires its separate history
