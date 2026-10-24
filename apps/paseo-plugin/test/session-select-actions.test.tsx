@@ -262,6 +262,22 @@ describe("select action bar", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["answers a new revision", yes("a", { revision: "rev-a2" })],
+    ["withdraws its answer", undefined],
+    ["now refuses", no("a", "Owner or retirement evidence is missing.")],
+    ["answers a new consequence", yes("a", { consequence: "Another route." })],
+  ] as const)("asks the owner again at Confirm: when it %s after the confirmation was drawn, no owner run happens", (_case, later) => {
+    let answer: OwnerAnswer | undefined = yes("a");
+    const { render } = setup({ selected: [session("a")], owners: { takeOver: { answer: () => answer, run } } });
+    press(action(render(), "takeOver"));
+    const drawn = render();
+    expect(textButton(drawn, "Take over").props.disabled).toBe(false);
+    answer = later;
+    press(textButton(drawn, "Take over"));
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("keeps several replies for one session unknown rather than picking one", async () => {
     const { render } = setup({ owners: { takeOver: lookup(yes("a")) } });
     run.mockResolvedValueOnce([{ hostId: "host-a", agentId: "a", text: "Taken over." }, { hostId: "host-a", agentId: "a", text: "Refused." }]);

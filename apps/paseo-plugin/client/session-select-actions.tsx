@@ -161,7 +161,9 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
   const token = useRef(0);
   const scope = `${hostId}\n${selected.map((session) => session.id).join("\n")}`;
   useEffect(() => { token.current++; setConfirm(null); setPending(false); setResult(null); }, [scope]);
-  const states = blocked ? { open: off(blocked), archive: off(blocked), resume: off(blocked), takeOver: off(blocked) } : selectActions(hostId, selected, owners);
+  // Asks each owner again on every call: a render's answers can be stale by the time Confirm is pressed.
+  const read = () => blocked ? { open: off(blocked), archive: off(blocked), resume: off(blocked), takeOver: off(blocked) } : selectActions(hostId, selected, owners);
+  const states = read();
   const press = (action: SelectAction) => {
     const state = states[action];
     if (!state.enabled) return;
@@ -170,9 +172,10 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     else { setResult(null); setConfirm({ action, line: state.line, requests: state.answers.map(({ hostId, agentId, revision }) => ({ hostId, agentId, revision })) }); }
   };
   /** An open confirmation holds only while its action still applies to the same answers it showed: same hosts,
-   *  sessions, revisions and consequence. Otherwise it shows the current reason and calls no owner. */
-  const invalid = (open: Confirm): string | null => {
-    const state = states[open.action];
+   *  sessions, revisions and consequence. Otherwise it shows the current reason and calls no owner. `run` checks a
+   *  fresh owner answer, not the one this render drew. */
+  const invalid = (open: Confirm, now = states): string | null => {
+    const state = now[open.action];
     if (!state.enabled) return state.line;
     const same = state.line === open.line && state.answers.length === open.requests.length && state.answers.every((answer, index) => {
       const request = open.requests[index]!;
@@ -181,7 +184,7 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     return same ? null : "This changed after you opened it. Cancel and choose the action again.";
   };
   const run = async (current: Confirm) => {
-    if (invalid(current)) return;
+    if (invalid(current, read())) return;
     const mine = ++token.current;
     setPending(true);
     let lines: string[];
