@@ -2,7 +2,8 @@
 // Supply PREVIEW_ORIGIN, PLAYWRIGHT_MODULE and EVIDENCE_DIR. The fixture must render the Sessions
 // screen with read-only retirement projections (or the real KontorScreen whose only lifecycle call
 // is sessions.lifecycle-review) and at least one ordinary row, one archived conflict and one missing
-// evidence row. It must not perform or answer preview/execute/reconcile/archive/send/resume actions.
+// evidence row. It must expose the normal search, Filters and Archived history controls used below,
+// and it must not perform or answer preview/execute/reconcile/archive/send/resume actions.
 // No native-device or screen-reader acceptance is claimed.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -38,6 +39,26 @@ async function openDetails(page, trigger) {
   assert.ok(text.includes('Retirement') && /\b(Retain|Ready|Unknown)\b/.test(text), 'details name the disposition');
 }
 
+// The full-screen regression covers archived-empty and project/epic scopes. This browser
+// check keeps the same contract on the desktop surface: a filtered Archived membership must
+// not hide the known archived conflict.
+async function checkArchivedConflictRetention(page) {
+  const search = page.getByTestId('sessions-search');
+  await search.fill('nothing-matches-archived-conflict');
+  const archived = page.getByTestId('sessions-advanced-archived');
+  if (!(await archived.isVisible().catch(() => false))) {
+    const toggle = page.getByTestId('sessions-advanced-toggle');
+    if (await toggle.isVisible().catch(() => false)) await toggle.click();
+  }
+  assert.ok(await archived.isVisible().catch(() => false), 'fixture exposes Archived membership');
+  await archived.click();
+  await conflicts(page).first().waitFor();
+  assert.ok(await conflicts(page).count(), 'empty Archived search keeps the known conflict reachable');
+  assert.ok(/archived-with-/.test(await conflicts(page).first().innerText()), 'retained conflict names its exact kind');
+  await archived.click();
+  await search.fill('');
+}
+
 async function check(width, height, theme, touch) {
   const name = `${width}x${height}-${theme}`;
   const context = await browser.newContext({ viewport: { width, height }, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
@@ -61,6 +82,7 @@ async function check(width, height, theme, touch) {
     await dialog(page).waitFor({ state: 'detached' });
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'sessions-row-details', 'closing details returns focus to its trigger');
 
+    if (!touch) await checkArchivedConflictRetention(page);
     if (touch) {
       await trigger.tap();
       await dialog(page).waitFor();

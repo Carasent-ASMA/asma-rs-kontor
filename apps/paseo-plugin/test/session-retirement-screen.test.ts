@@ -104,11 +104,18 @@ const retirement = (projections: readonly SessionProjection[]): SessionRetiremen
 
 const ready = (entries: DirectoryState["entries"] = [sessionEntry("ordinary"), sessionEntry("retired", { status: "running", archivedAt: "2026-10-24T08:02:00.000Z", activeTurn: true })], patch: Partial<DirectoryState> = {}): DirectoryState =>
   ({ entries, status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: true, ...patch });
-function mount(retirementValue: SessionRetirementRead | undefined = retirement([ordinaryProjection, retiredProjection])) {
-  harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Fixture host" }, layout: { compact: false, platform: "web" },
-    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {}, retirement: retirementValue } as Parameters<typeof SessionsScreen>[0]));
+function renderScreen(props: Parameters<typeof SessionsScreen>[0]) {
+  harness.render(() => SessionsScreen(props));
   const list = byTestID("sessions-list")[0];
   if (list) (list.props.ref as { current: unknown }).current = { scrollToOffset: () => undefined, scrollToIndex: () => undefined };
+}
+function mount(retirementValue: SessionRetirementRead | undefined = retirement([ordinaryProjection, retiredProjection]), propsPatch: Partial<Parameters<typeof SessionsScreen>[0]> = {}) {
+  renderScreen({ host: { id: "host-a", label: "Fixture host" }, layout: { compact: false, platform: "web" },
+    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {}, retirement: retirementValue, ...propsPatch } as Parameters<typeof SessionsScreen>[0]);
+}
+function mountWithoutRetirement() {
+  renderScreen({ host: { id: "host-a", label: "Fixture host" }, layout: { compact: false, platform: "web" },
+    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as Parameters<typeof SessionsScreen>[0]);
 }
 const list = () => byTestID("sessions-list")[0]!;
 const row = (id: string) => {
@@ -162,6 +169,46 @@ describe("Sessions retirement integration", () => {
     expect(text).toContain("Native status running");
     expect(text).toContain("Archive membership Archived");
     expect(text).toContain("archived-with-active-execution");
+  });
+
+  it("keeps the archived conflict reachable when the Archived search is empty", () => {
+    patchSessionView("host-a", { query: "nothing-matches", membership: "archived", includeArchived: true, status: "all" });
+    mount();
+    expect(list().props.data).toHaveLength(0);
+    expect(byTestID("sessions-retirement-conflicts")).toHaveLength(1);
+    const conflict = byTestID("sessions-retirement-conflict-retired")[0]!;
+    expect(textOf(conflict)).toContain("retired · native running");
+    const details = all().find((element) => element.type === SessionDetailsButton && element.props.title === "retired")!;
+    (details.props.onPress as () => void)(); harness.flush();
+    const retirementDetails = all().find((element) => element.type === SessionRetirementDetails)!;
+    const text = pureText(retirementDetails);
+    expect(text).toContain("Native status running");
+    expect(text).toContain("Archive membership Archived");
+    expect(text).toContain("archived-with-active-execution");
+  });
+
+  it("keeps the archived conflict reachable across a nonmatching project scope", () => {
+    mount(retirement([ordinaryProjection, retiredProjection]), { projectId: "another-project" });
+    expect(list().props.data).toHaveLength(0);
+    expect(byTestID("sessions-retirement-conflict-retired")).toHaveLength(1);
+  });
+
+  it("keeps the archived conflict reachable across a nonmatching epic scope", () => {
+    mount(retirement([ordinaryProjection, retiredProjection]), { epicKey: "ASMA-OTHER" });
+    expect(list().props.data).toHaveLength(0);
+    expect(byTestID("sessions-retirement-conflict-retired")).toHaveLength(1);
+  });
+
+  it("does not show a conflict index for an unarchived projection or without a retirement read", () => {
+    const unarchivedConflict = deriveSessionProjection({
+      ...projectionInput("ordinary"),
+      evidenceConflicts: [{ kind: "archived-with-active-execution", detail: "Synthetic evidence conflict for an unarchived session.", sources: [] }],
+    });
+    mount(retirement([unarchivedConflict]));
+    expect(byTestID("sessions-retirement-conflicts")).toHaveLength(0);
+    harness.unmount();
+    mountWithoutRetirement();
+    expect(byTestID("sessions-retirement-conflicts")).toHaveLength(0);
   });
 
   it("counts ordinary matches from the archive-inclusive read and says excluding archived", () => {
