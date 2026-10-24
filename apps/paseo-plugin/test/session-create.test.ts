@@ -1,11 +1,11 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
-import { adamDesks, createSessionCreateService, createSwitchProblem, PERSONA_VERSION, type CreateClient } from "../server/session-create";
+import { adamDesks, createProviders, createSessionCreateService, createSwitchProblem, PERSONA_VERSION, type CreateClient } from "../server/session-create";
 import { adhocTitle, deskName, isAdamWorkspace, normalizeTopic, topicProblem, type CreateRequest } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -30,7 +30,7 @@ const WORKSPACES = [
   workspace("wks-dev", "DESK • ADAM", "DEV"),
   workspace("wks-closing", "DESK • OPS", "ADAM", { archivingAt: "2026-10-22" } as Partial<PaseoWorkspace>),
 ];
-const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-22", entries: [
+const SNAPSHOT: Awaited<ReturnType<CreateClient["providers"]["snapshot"]>> = { requestId: "fixture", generatedAt: "2026-10-22", entries: [
   { provider: "claude", label: "Claude", enabled: true, status: "ready", defaultModeId: "default",
     models: [{ provider: "claude", id: "opus", label: "Opus", isDefault: true, defaultThinkingOptionId: "high", thinkingOptions: [{ id: "high", label: "High" }, { id: "max", label: "Max" }] },
       { provider: "claude", id: "legacy", label: "Legacy", isSelectable: false }],
@@ -42,7 +42,7 @@ const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-22", entries: [
 const dirs: string[] = [];
 afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function setup({ switchText = '{"create":"on"}' as string | null, answerMs = 5_000, existing = [] as Agent[] } = {}) {
+async function setup({ switchText = null as string | null, answerMs = 5_000, existing = [] as Agent[] } = {}) {
   const root = await mkdtemp(join(tmpdir(), "kontor-create-test-")); dirs.push(root);
   const switchFile = join(root, "create.json"), stateRoot = join(root, "state");
   if (switchText !== null) await writeFile(switchFile, switchText);
@@ -58,7 +58,7 @@ async function setup({ switchText = '{"create":"on"}' as string | null, answerMs
   });
   const list = vi.fn<CreateClient["agents"]["list"]>(async (options) => ({ requestId: "fixture", pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
     entries: [...agents.values()].filter((value) => Object.entries(options?.filter?.labels ?? {}).every(([key, label]) => value.labels?.[key] === label)).map((value) => ({ agent: value, project: PROJECT })) }));
-  const snapshot = vi.fn(async () => SNAPSHOT);
+  const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
   const client = {
     workspaces: {
       list: vi.fn(async () => ({ requestId: "fixture", entries: WORKSPACES, pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } })),
@@ -69,7 +69,7 @@ async function setup({ switchText = '{"create":"on"}' as string | null, answerMs
     config: { get: vi.fn(async () => ({ requestId: "fixture", config: MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false }, agentProfiles: [{ id: "profile-1", name: "lsa", provider: "claude", model: "opus", modeId: "default", thinkingOptionId: "max" }] }) })) },
   } as CreateClient;
   const service = createSessionCreateService(client, stateRoot, switchFile, answerMs);
-  return { service, client, create, list, snapshot, agents, intents, stateRoot, setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; } };
+  return { service, client, create, list, snapshot, agents, intents, stateRoot, switchFile, setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; } };
 }
 const request = (patch: Partial<CreateRequest> = {}): CreateRequest => ({ requestId: randomUUID(), topic: "  Route  review ", workspaceId: "wks-adam", provider: "claude", model: "opus", effort: "max", modeId: "default", ...patch });
 
@@ -94,7 +94,7 @@ describe("ad-hoc LSA title grammar", () => {
 describe("create switch", () => {
   it.each([
     ['{"create":"on"}', null],
-    [null, "off on this host"],
+    [null, null],
     ['{"create":"off"}', "switched off"],
     ['{"create":true}', "not valid"],
     ['{"create":"on","extra":1}', "not valid"],
@@ -108,9 +108,95 @@ describe("create switch", () => {
     const problem = createSwitchProblem(file);
     if (expected === null) expect(problem).toBeNull(); else expect(problem).toContain(expected);
   });
+
+  it.skipIf(process.getuid?.() === 0)("keeps an unreadable switch disabled", async () => {
+    const s = await setup({ switchText: '{"create":"on"}' });
+    await chmod(s.switchFile, 0o000);
+    expect(createSwitchProblem(s.switchFile)).toContain("not valid");
+    expect(await s.service.options()).toMatchObject({ enabled: false });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused" });
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps a dangling switch symlink disabled", async () => {
+    const s = await setup();
+    await symlink(join(s.stateRoot, "missing.json"), s.switchFile);
+    expect(createSwitchProblem(s.switchFile)).toContain("not valid");
+    expect(await s.service.options()).toMatchObject({ enabled: false });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused" });
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps a directory at the switch path disabled without intent or dispatch", async () => {
+    const s = await setup();
+    await mkdir(s.switchFile);
+    expect(await s.service.options()).toMatchObject({ enabled: false, disabledReason: expect.stringContaining("not valid") });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused", message: expect.stringContaining("not valid") });
+    expect(s.intents).toEqual([]);
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["plugin-config", "plugin-config/kontor"])("refuses a dangling %s directory symlink before intent or native reads/dispatch", async (component) => {
+    const s = await setup(), root = dirname(s.switchFile), link = join(root, component);
+    await mkdir(dirname(link), { recursive: true });
+    await symlink(join(root, "missing-directory"), link);
+    const service = createSessionCreateService(s.client, s.stateRoot, join(root, "plugin-config", "kontor", "create.json"));
+    const workspaceRead = vi.spyOn(s.client.workspaces, "ref"), agentRead = vi.spyOn(s.client.agents, "ref");
+    const options = await service.options();
+    vi.clearAllMocks();
+    const outcome = await service.create(request());
+    expect(options).toMatchObject({ enabled: false, disabledReason: expect.stringContaining("not valid") });
+    expect(outcome).toMatchObject({ state: "refused", message: expect.stringContaining("not valid") });
+    expect(s.intents).toEqual([]);
+    for (const call of [s.client.workspaces.list, workspaceRead, s.snapshot, s.client.config.get, s.list, agentRead, s.create]) expect(call).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("is available when normal configuration directories are absent", async () => {
+    const s = await setup();
+    const service = createSessionCreateService(s.client, s.stateRoot, join(dirname(s.switchFile), "plugin-config", "kontor", "create.json"));
+    expect(await service.options()).toMatchObject({ enabled: true, disabledReason: null });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(await service.create(request())).toMatchObject({ state: "verified" });
+  });
+
+  it("is available through a resolved directory symlink with no switch", async () => {
+    const s = await setup(), root = dirname(s.switchFile), target = join(root, "config-target");
+    await mkdir(target);
+    await symlink(target, join(root, "plugin-config"));
+    const service = createSessionCreateService(s.client, s.stateRoot, join(root, "plugin-config", "kontor", "create.json"));
+    expect(await service.options()).toMatchObject({ enabled: true, disabledReason: null });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(await service.create(request())).toMatchObject({ state: "verified" });
+  });
 });
 
 describe("create options", () => {
+  it("scopes the catalog to the chosen desk and never falls back from a missing desk", async () => {
+    const s = await setup();
+    expect(await s.service.options()).toMatchObject({ catalogWorkspaceId: "wks-adam" });
+    expect(s.snapshot).toHaveBeenLastCalledWith({ cwd: "/fixtures/wks-adam" });
+    expect(await s.service.options("wks-pr")).toMatchObject({ catalogWorkspaceId: "wks-pr" });
+    expect(s.snapshot).toHaveBeenLastCalledWith({ cwd: "/fixtures/wks-pr" });
+    s.snapshot.mockClear();
+    expect(await s.service.options("missing")).toMatchObject({ catalogWorkspaceId: null, providers: [] });
+    expect(s.snapshot).not.toHaveBeenCalled();
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [null, true],
+    ['{"create":"on"}', true],
+    ['{"create":"off"}', false],
+    ["not json", false],
+  ])("reports availability for switch %s without creating a session", async (switchText, enabled) => {
+    const s = await setup({ switchText });
+    expect(await s.service.options()).toMatchObject({ enabled, disabledReason: enabled ? null : expect.any(String) });
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toThrow();
+  });
+
   it("offers desk ADAM workspaces, providers with reasons, and the host's LSA profile", async () => {
     const options = await (await setup()).service.options();
     expect(options).toMatchObject({ enabled: true, disabledReason: null, pending: null, notes: [],
@@ -127,16 +213,64 @@ describe("create options", () => {
     expect(codex).toMatchObject({ available: false, persona: "supported", note: "Disabled on this host." });
   });
 
-  it("is off without the operator's switch, and notes an unreadable profile list", async () => {
+  it("is available without the operator's switch, and notes an unreadable profile list", async () => {
     const s = await setup({ switchText: null });
     vi.mocked(s.client.config.get).mockRejectedValueOnce(new Error("config unavailable"));
-    expect(await s.service.options()).toMatchObject({ enabled: false, disabledReason: expect.stringContaining("off on this host"), profile: null, notes: ["Agent profiles unavailable: config unavailable."] });
+    expect(await s.service.options()).toMatchObject({ enabled: true, disabledReason: null, profile: null, notes: ["Agent profiles unavailable: config unavailable."] });
+  });
+});
+
+describe("host provider eligibility", () => {
+  it.each([
+    [true, "ready", "ready", true],
+    [false, "ready", "disabled", false],
+    [true, "loading", "loading", false],
+    [true, "error", "error", false],
+    [true, "unavailable", "unavailable", false],
+    [undefined, "ready", "unknown", false],
+    [true, undefined, "unknown", false],
+  ])("keeps enabled=%s status=%s distinct", (enabled, status, expected, available) => {
+    const snapshot = { ...SNAPSHOT, entries: [{ ...SNAPSHOT.entries[0]!, enabled, status }] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>;
+    expect(createProviders(snapshot)[0]).toMatchObject({ status: expected, available });
+  });
+
+  it("uses the host's selectable model list without inventing credential or account eligibility", () => {
+    const [provider] = createProviders(SNAPSHOT as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
+    expect(provider!.models.map((model) => model.id)).toEqual(["opus"]);
+    expect(provider!.defaultModel).toBe("opus");
   });
 });
 
 describe("create", () => {
-  it("dispatches one idempotent create with the exact title, labels and config, then verifies the readback", async () => {
-    const s = await setup(), input = request();
+  it.each(["disabled provider", "unselectable model"])("revalidates a %s after options were read, without intent or dispatch", async (change) => {
+    const s = await setup();
+    expect(await s.service.options()).toMatchObject({ providers: [expect.objectContaining({ available: true }), expect.anything(), expect.anything()] });
+    const provider = { ...SNAPSHOT.entries[0]!, ...(change === "disabled provider" ? { enabled: false } : { models: [] }) };
+    s.snapshot.mockResolvedValueOnce({ ...SNAPSHOT, entries: [provider] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
+    expect(await s.service.create(request())).toMatchObject({ state: "refused" });
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("checks duplicates after a slow catalog read and before intent", async () => {
+    const s = await setup();
+    let catalog!: (value: Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>) => void;
+    s.snapshot.mockImplementationOnce(() => new Promise((resolve) => { catalog = resolve; }));
+    const creating = s.service.create(request());
+    await vi.waitFor(() => expect(s.snapshot).toHaveBeenCalledWith({ cwd: "/fixtures/wks-adam" }));
+    expect(s.list).not.toHaveBeenCalled();
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    s.agents.set("agent-concurrent", agent("agent-concurrent", { title: "LSA • ADHOC • Route review" }));
+    catalog(SNAPSHOT as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
+    expect(await creating).toMatchObject({ state: "refused", message: expect.stringContaining("already names a session") });
+    expect(s.list).toHaveBeenCalledWith({ page: { limit: 200 } });
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([null, '{"create":"on"}'])("dispatches one idempotent create with switch %s, the exact title, labels and config, then verifies the readback", async (switchText) => {
+    const s = await setup({ switchText }), input = request();
     const outcome = await s.service.create(input);
     const title = "LSA • ADHOC • Route review";
     expect(s.create).toHaveBeenCalledTimes(1);
@@ -175,6 +309,7 @@ describe("create", () => {
 
   it.each([
     ["the switch is off", { switchText: '{"create":"off"}' }, {}, "switched off"],
+    ["the switch is invalid", { switchText: "not json" }, {}, "not valid"],
     ["the topic forges a segment", {}, { topic: "A • B" }, "cannot contain"],
     ["the workspace is not a desk ADAM", {}, { workspaceId: "wks-repo" }, "no longer a desk's ADAM workspace"],
     ["the provider is unavailable", {}, { provider: "gemini", model: "x", effort: null, modeId: null }, "not signed in"],
@@ -187,6 +322,16 @@ describe("create", () => {
     const outcome = await s.service.create(request(patch));
     expect(outcome).toMatchObject({ state: "refused", agentId: null, message: expect.stringContaining(message) });
     expect(outcome.message).toContain("Nothing was created.");
+    expect(s.create).not.toHaveBeenCalled();
+    await expect(readdir(s.stateRoot)).rejects.toThrow();
+  });
+
+  it("rechecks operator-off at dispatch after options were available by default", async () => {
+    const s = await setup();
+    expect(await s.service.options()).toMatchObject({ enabled: true });
+    await writeFile(s.switchFile, '{"create":"off"}');
+    expect(await s.service.options()).toMatchObject({ enabled: false });
+    expect(await s.service.create(request())).toMatchObject({ state: "refused", message: expect.stringContaining("switched off") });
     expect(s.create).not.toHaveBeenCalled();
     await expect(readdir(s.stateRoot)).rejects.toThrow();
   });

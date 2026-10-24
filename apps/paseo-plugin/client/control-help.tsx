@@ -1,24 +1,25 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
-import { BackHandler, Platform, ScrollView, Text, View } from "react-native";
+import { BackHandler, Platform, ScrollView, Text, View, type GestureResponderEvent } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { anchoredPanelOpen, menuFrame, type MenuFrame, type MenuSize } from "./anchored-menu";
 
 type Anchor = RefObject<View | null>;
-type Help = { anchor: Anchor; text: string; focused: boolean };
-type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
+type Help = { anchor: Anchor; text: string; focused: boolean; held?: boolean };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean, held?: boolean): void; refresh(anchor: Anchor, text: string): void; fit(help: Help, size: MenuSize): void; press(touch: boolean, target?: unknown): void; leave(anchor: Anchor, blur?: boolean): void; forget(anchor: Anchor): void; enter(help: Help): void; exit(help: Help): void; dismiss(): void };
 const HelpContext = createContext<Controller | null>(null);
 type KeyEvent = { key?: string; pointerType?: string; clientX?: number; clientY?: number; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
 type Contains = { contains?(target: unknown): boolean };
 
 /** One screen-level, noninteractive overlay using the existing menu's bounds calculation.
- * Paseo 0.12 supplies no tooltip primitive. There are no row effects, polling, DOM
- * portals or new dependencies. Touch keeps action labels and opens metadata in Details.
+ * Paseo 0.12 supplies no tooltip primitive. Icon actions opt in to Pressable's long
+ * press; metadata remains in Details. No gesture timer, polling, portal or dependency.
  */
 export function ControlHelpProvider({ children, colors }: { children: ReactNode; colors: PluginTheme["colors"] }) {
   const helpId = `kontor-help-${useId()}`;
   const root = useRef<View | null>(null), panel = useRef<View | null>(null);
   const current = useRef<Help | null>(null);
+  const overPanel = useRef<Help | null>(null);
   const input = useRef<"keyboard" | "pointer" | "touch">("keyboard");
   const pressedAt = useRef<{ x?: number; y?: number } | null>(null);
   const fitted = useRef<{ text: string; size: MenuSize } | null>(null);
@@ -28,9 +29,18 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const [frame, setFrame] = useState<MenuFrame | null>(null);
   const controller = useMemo<Controller>(() => {
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
-    const dismiss = () => { cancel(); revision.current++; current.current = null; fitted.current = null; setHelp(null); setFrame(null); };
+    const dismiss = () => { cancel(); revision.current++; current.current = null; overPanel.current = null; fitted.current = null; setHelp(null); setFrame(null); };
+    // Source hover-out can arrive after panel pointer-enter on React Native Web.
+    const leave = (anchor: Anchor, blur = false) => {
+      if (current.current?.anchor !== anchor) return;
+      if (blur) current.current.focused = false;
+      if (current.current.focused || current.current.held || overPanel.current?.anchor === anchor) return;
+      cancel(); timer.current = setTimeout(dismiss, 160);
+    };
     const place = (next: Help) => {
       const token = ++revision.current;
+      // Hover belongs to this panel, not to the next control that reuses the overlay.
+      if (current.current?.anchor !== next.anchor || current.current.text !== next.text) overPanel.current = null;
       current.current = next;
       root.current?.measureInWindow((rootX, rootY, width, height) => next.anchor.current?.measureInWindow((x, y, w, h) => {
         if (token !== revision.current || !w || !h || !width || !height) return;
@@ -42,13 +52,21 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
       }));
     };
     return {
-      id: helpId, dismiss, enter: cancel,
-      show(anchor, text, focused = false) {
+      id: helpId, dismiss, leave,
+      enter(help) {
+        if (current.current?.anchor !== help.anchor || current.current.text !== help.text) return;
+        overPanel.current = help; cancel();
+      },
+      exit(help) {
+        if (overPanel.current?.anchor !== help.anchor || overPanel.current.text !== help.text) return;
+        overPanel.current = null; leave(help.anchor);
+      },
+      show(anchor, text, focused = false, held = false) {
         // Native keyboard/accessibility focus has no document keydown to reset touch mode.
         if (focused && Platform.OS !== "web") input.current = "keyboard";
-        if (!text || input.current === "touch" || (focused && input.current === "pointer") || (!focused && pressedAt.current) || (current.current?.focused && !focused)) return;
+        if (!text || (!held && (input.current === "touch" || (focused && input.current === "pointer") || (!focused && pressedAt.current) || (current.current?.focused && !focused)))) return;
         cancel();
-        place({ anchor, text, focused });
+        place({ anchor, text, focused, held });
       },
       refresh(anchor, text) {
         const value = current.current;
@@ -70,12 +88,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         input.current = touch ? "touch" : "pointer";
         if (!(panel.current as Contains | null)?.contains?.(target)) dismiss();
       },
-      leave(anchor, blur = false) {
-        if (current.current?.anchor !== anchor) return;
-        if (blur) current.current.focused = false;
-        if (current.current.focused) return;
-        cancel(); timer.current = setTimeout(dismiss, 160);
-      },
+      forget(anchor) { if (current.current?.anchor === anchor) dismiss(); },
     };
   }, [helpId]);
   useEffect(() => {
@@ -113,15 +126,16 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     document?.addEventListener("keydown", key, true); document?.addEventListener("scroll", scroll, true);
     document?.addEventListener("pointerdown", press, true); document?.addEventListener("pointerover", pointer, true);
     document?.addEventListener("pointermove", pointer, true);
+    document?.addEventListener("pointercancel", moved, true);
     window?.addEventListener("resize", moved);
     const back = BackHandler.addEventListener("hardwareBackPress", () => { if (!current.current) return false; controller.dismiss(); return true; });
-    return () => { controller.dismiss(); document?.removeEventListener("keydown", key, true); document?.removeEventListener("scroll", scroll, true); document?.removeEventListener("pointerdown", press, true); document?.removeEventListener("pointerover", pointer, true); document?.removeEventListener("pointermove", pointer, true); window?.removeEventListener("resize", moved); back.remove(); };
+    return () => { controller.dismiss(); document?.removeEventListener("keydown", key, true); document?.removeEventListener("scroll", scroll, true); document?.removeEventListener("pointerdown", press, true); document?.removeEventListener("pointerover", pointer, true); document?.removeEventListener("pointermove", pointer, true); document?.removeEventListener("pointercancel", moved, true); window?.removeEventListener("resize", moved); back.remove(); };
   }, [controller]);
   return <HelpContext.Provider value={controller}>
-    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss} onTouchStart={() => controller.press(true)}>
+    <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss} onTouchStart={() => controller.press(true)} onTouchCancel={controller.dismiss}>
       {children}
       {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
-        <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={controller.enter} onPointerLeave={() => controller.leave(help.anchor)}
+        <View key={help.text} ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={() => controller.enter(help)} onPointerLeave={() => controller.exit(help)}
           onLayout={({ nativeEvent }) => controller.fit(help, nativeEvent.layout)}
           style={{ position: "absolute", left: frame.left, maxWidth: frame.width, opacity: fitted.current?.text === help.text ? 1 : 0, ...(frame.bottom === null ? { top: frame.top ?? 0 } : { bottom: frame.bottom }), maxHeight: frame.maxHeight,
             padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 7, backgroundColor: colors.surface2, elevation: 12, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8 }}>
@@ -153,5 +167,29 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
       onBlur: () => { focused.current = false; controller?.leave(anchor, true); },
     },
     dismiss: () => controller?.dismiss(),
+    hold: () => controller?.show(anchor, text, false, true),
+    forget: () => controller?.forget(anchor),
   };
+}
+
+/** Long-press discovery is opt-in for icon actions; ordinary row help has no cleanup effect. */
+export function useActionHelp(text: string, forwarded?: Ref<View>) {
+  const help = useControlHelp(text, forwarded);
+  const gesture = useRef<{ x: number; y: number } | null>(null);
+  const latestForget = useRef(help.forget); latestForget.current = help.forget;
+  const cancelHold = () => { gesture.current = null; help.forget(); };
+  useEffect(() => () => { gesture.current = null; latestForget.current(); }, []);
+  return { ...help, bindings: {
+    ...help.bindings,
+    // Pressable owns the 500ms recognizer, movement cancellation and suppression of release activation.
+    onPressIn: (event: GestureResponderEvent) => { gesture.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY }; },
+    onPressOut: () => { gesture.current = null; },
+    onLongPress: () => { if (gesture.current) help.hold(); },
+    onTouchMove: (event: GestureResponderEvent) => {
+      const start = gesture.current;
+      if (!start || Math.hypot(event.nativeEvent.pageX - start.x, event.nativeEvent.pageY - start.y) > 10) cancelHold();
+    },
+    onTouchCancel: cancelHold,
+    onPointerCancel: cancelHold,
+  } };
 }

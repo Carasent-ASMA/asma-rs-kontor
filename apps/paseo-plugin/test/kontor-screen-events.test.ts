@@ -6,6 +6,8 @@ import { WorkspaceDescriptorPayloadSchema } from "@getpaseo/protocol/messages";
 import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
+import type { CreateOutcome } from "../shared/session-create";
+import { readRecent } from "../client/recent-sessions";
 import { confirmedEpic } from "../client/page-data";
 import { canonicalGraphSchema, jiraHistorySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import { Linking } from "react-native";
@@ -44,7 +46,7 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => (
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
-vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true }) }));
+vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true, demand: () => {} }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: model.workspaces, error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
 vi.mock("../client/keyboard-shortcuts", async (original) => ({
@@ -791,6 +793,31 @@ it("finds a graphless plan by its explicit workstream and shows exact Plan conte
 });
 
 describe("Start or switch entry", () => {
+  const created: CreateOutcome = { requestId: "00000000-0000-4000-8000-000000000001", state: "verified", title: "LSA • ADHOC • Fixture", agentId: "new-exact-id", workspaceId: "wks-adam",
+    message: "Created and verified.", differences: [], persona: "supported", checkedAt: "2026-10-23" };
+
+  it("opens a created exact ID absent from the directory, records the accepted visit and closes the sheet", () => {
+    const screen = mount(false, { tab: "Overview" });
+    screen.click("Start or switch");
+    const sheet = screen.elements().find((node) => node.type === StartSwitchSheet)!;
+    const result = (sheet.props.onOpenCreated as (outcome: CreateOutcome) => { ok: boolean })(created); screen.render();
+    expect(result).toEqual({ ok: true });
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "new-exact-id", serverId: screen.props.host.id });
+    expect(readRecent(screen.props.host.id).record.visits.map((visit) => visit.id)).toEqual(["new-exact-id"]);
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
+  });
+
+  it("keeps the creation sheet open and records no visit when navigation fails", () => {
+    const screen = mount(false, { tab: "Overview" });
+    vi.mocked(screen.props.navigation!.openAgent).mockImplementation(() => { throw new Error("navigation failed"); });
+    screen.click("Start or switch");
+    const sheet = screen.elements().find((node) => node.type === StartSwitchSheet)!;
+    expect((sheet.props.onOpenCreated as (outcome: CreateOutcome) => { ok: boolean })(created)).toMatchObject({ ok: false }); screen.render();
+    expect(readRecent(screen.props.host.id).record.visits).toEqual([]);
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(true);
+    expect(model.toastError).not.toHaveBeenCalled();
+  });
+
   it.each([[true, "Start or switch session"], [false, "Start or switch"]])("opens one sheet from the context row and closes it (compact=%s)", (compact, label) => {
     const screen = mount(compact, { tab: "Overview" });
     expect(screen.action(label).props).toMatchObject({ icon: "History", expanded: false });
@@ -819,7 +846,7 @@ describe("Start or switch entry", () => {
     patchSessionView(scope, { query: "old query", status: "favorites", task: { jira: "ASMA-2", kontorId: null, label: "Unrelated task" },
       shortcut: "desk-unrelated", streams: ["unrelated-workstream"], epic: { kind: "known", key: "ASMA-2" }, work: "mine", assignment: "me", membership: "archived", includeArchived: true,
       layout: "flat", grouping: "role", sort: "title", sortDirection: "desc", advancedOpen: true, toolbarOpen: true, legendOpen: true, scrollOffset: 123, peek: { sessionId: "other", resultsOffset: 10 } });
-    const promised = switchRows(model.entries, "route review", Date.now());
+    const promised = switchRows(model.entries, "route review", Date.now(), { clearedAt: null, visits: [] });
     expect(promised.total).toBe(23);
     screen.click(compact ? "Start or switch session" : "Start or switch");
     (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();

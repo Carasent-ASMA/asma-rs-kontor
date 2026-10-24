@@ -19,6 +19,8 @@ export type HostEvent = {
     | "simulated.update"
     | "simulated.review"
     | "simulated.lifecycle"
+    | "sources.summaries"
+    | "sources.read"
     | "paseo.unsupported";
   readonly detail: string;
 };

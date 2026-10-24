@@ -190,6 +190,27 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Kontor's Paseo plugin now refreshes configured sources as metadata summaries
+  (ASMA-8541, P2). One `sources.summaries` request per 30 seconds returns the
+  catalog, registry, per-source status, revision, read time, frontmatter
+  metadata and diagnostics without Markdown content, a canonical graph or JSON
+  records; the historical Jira projection stays complete because Sessions
+  reads captured epics at mount. Pages demand exact reads for their own context
+  (the selected plan and its linked associations on Plan, Board and Graph;
+  context sources on Overview, Search, Delivery, Decisions and AI teams), at
+  most three at a time and keyed by source ID, path and revision. A read is
+  accepted only when the returned source identity and revision match the
+  requested summary and the current summary is still ready, so a replacement
+  path, a repin or a late older revision never surfaces as current. A current
+  unavailable or repinned summary always takes precedence over an older cached
+  exact read. A completed exact failure for the current policy stays visibly
+  unavailable with its diagnostics and is retried only after the next summaries
+  refresh, never as pending Reading or older content. Each Teams snapshot is bound to the summaries catalog source
+  identity, and a final catalog identity read rejects a refresh whose catalog
+  changed under it. `sources.read` is unchanged and still returns the
+  exact content. A source whose summary is
+  present while its exact read is pending shows **Reading…**, distinct from
+  unavailable. Sessions performs no exact source read.
 - The publication check, pre-push hook and fast/heavy test lanes read the
   project key, base branch and check name from the selected project
   configuration (`KONTOR_CONFIG_DIR` / `KONTOR_CONFIG_FILE`). The pre-push hook
@@ -288,6 +309,17 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The dev profile builds with `debug = "line-tables-only"`.
 
 ### Fixed
+
+- Fixed personal Recently viewed for sessions opened through Kontor on the
+  selected host and this device: most recent first; A → B → A gives A, B.
+  Prompts and worker activity do not count as visits, and legacy saved history
+  is preserved without invented opening times. Source:
+  [3b16f79e](https://github.com/Carasent-ASMA/asma-rs-kontor/commit/3b16f79ec2cf1f81cd01e5fef5c63e87fc1ff2e3).
+  As of 2026-10-23, installed/readback **PASS**, recorded in
+  `2026-10-23-personal-mru-install-3b16f79e-r1/RECEIPT.json`
+  (SHA256 `656b5e840cea40f8ef5b0f8a3d9f9373100a6c9a42f7a6f89fb1276328ff4830`).
+  Physical acceptance remains pending. Cumulative prototype and TEST delivery
+  are separate and unscheduled (ASMA-8541).
 
 - Desk seat MCP configuration is published, journaled, into the non-Git desk
   directory. A fresh desk reservation commits atomically with its two

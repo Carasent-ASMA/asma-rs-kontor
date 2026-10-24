@@ -26,6 +26,8 @@ export type AttentionReason = (typeof ATTENTION_REASONS)[number];
 export const DIRECTORY_PAGE_LIMIT = 200;
 export const DIRECTORY_MAX_PAGES = 1_000;
 export const PENDING_UPDATE_LIMIT = 256;
+export const DEFAULT_RETRY_DELAY_MS = 500;
+export const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
 
 /**
  * Structured labels that carry workflow identifiers and PR references. They are
@@ -141,6 +143,12 @@ export interface SessionDirectoryOptions {
   readonly client: () => DirectoryClient;
   readonly includeArchived: boolean;
   readonly onChange: (state: DirectoryState) => void;
+  /** Rows of the first subscription page shown while a cold directory walks; default 1 keeps the minimal page. */
+  readonly bootstrapLimit?: number;
+  /** Delay before retrying a directory that has never completed a walk; default 500 ms. */
+  readonly retryDelayMs?: number;
+  /** Maximum exponential retry delay; default 30 s. */
+  readonly maxRetryDelayMs?: number;
 }
 
 export function emptyDirectoryState(includeArchived = false): DirectoryState {
@@ -419,6 +427,20 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let pendingUpdates: PendingUpdate[] = [];
   let pendingOverflow = false;
   let hostOnline = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  const bootstrapLimit = Math.min(
+    DIRECTORY_PAGE_LIMIT,
+    Math.max(1, Math.floor(options.bootstrapLimit ?? 1)),
+  );
+  const initialRetryDelay = Math.max(
+    0,
+    options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS,
+  );
+  const maxRetryDelay = Math.max(
+    initialRetryDelay,
+    options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS,
+  );
+  let retryDelay = initialRetryDelay;
   let subscriptionAttempt: {
     readonly generation: number;
     readonly promise: Promise<void>;
@@ -461,6 +483,40 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     // never be replayed over a newer connection's reconciled snapshot.
     pendingUpdates = [];
     pendingOverflow = false;
+  }
+
+  function clearRetryTimer(): void {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  }
+
+  function resetRetry(): void {
+    clearRetryTimer();
+    retryDelay = initialRetryDelay;
+  }
+
+  /**
+   * Only a directory that has never completed a walk retries. A failed routine
+   * refresh keeps its last complete inventory and waits for a reconnect or an
+   * explicit refresh instead of polling the host.
+   */
+  function scheduleRetry(): void {
+    if (
+      disposed ||
+      !hostOnline ||
+      retryTimer !== null ||
+      lastUpdatedAt !== null
+    ) {
+      return;
+    }
+    const delay = retryDelay;
+    retryDelay = Math.min(Math.max(retryDelay * 2, 1), maxRetryDelay);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void refresh("Retrying the session directory read.");
+    }, delay);
   }
 
   function applyUpdate(update: PaseoAgentUpdate): void {
@@ -538,6 +594,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       status = entries.size > 0 ? "stale" : "error";
       live = false;
       emit();
+      scheduleRetry();
       return;
     }
     if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
@@ -562,6 +619,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       pendingOverflow = false;
       refreshQueued = true;
     }
+    resetRetry();
     emit();
   }
 
@@ -594,11 +652,14 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       subscriptionId: string;
       subscription: OwnedSubscription<PaseoAgentListResult>;
     };
+    // Only a cold directory hydrates from a larger first page. Every later
+    // subscription keeps the minimal page; its rows come from the walk instead.
+    const hydrationLimit = entries.size === 0 ? bootstrapLimit : 1;
     try {
       result = await options.client().agents.list({
         filter: filterOptions(includeArchived),
         sort: AGENT_SORT,
-        page: { limit: DIRECTORY_PAGE_LIMIT },
+        page: { limit: hydrationLimit },
         subscribe: {},
       });
     } catch (subscriptionError) {
@@ -611,6 +672,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       status = entries.size > 0 ? "stale" : "error";
       staleReason = entries.size > 0 ? "Live updates are unavailable." : null;
       emit();
+      scheduleRetry();
       return;
     }
     if (expectedGeneration !== generation || disposed) {
@@ -620,6 +682,17 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
 
     subscription = result.subscription;
     subscriptionActive = true;
+    // The page is evidence, not a completed inventory: render it now, keep the
+    // status "loading" and lastUpdatedAt null until the full walk finishes.
+    if (hydrationLimit > 1 && result.entries.length > 0) {
+      for (const entry of result.entries) {
+        if (!includeArchived && (entry.agent.archivedAt ?? null) !== null) {
+          continue;
+        }
+        entries.set(entry.agent.id, toDirectoryEntry(entry));
+      }
+      emit();
+    }
     let snapshots = 0;
     try {
       unsubscribe = result.subscription.subscribe({
@@ -658,20 +731,27 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           }
           subscriptionActive = false;
           live = false;
+          // Buffered updates belong to the subscription that just failed. A
+          // walk still in flight must not replay them over its fresh rows.
+          releaseSubscription();
           error = describeDirectoryError(subscriptionError);
           status = entries.size > 0 ? "stale" : "error";
           staleReason = entries.size > 0 ? "Live updates stopped." : null;
           emit();
+          scheduleRetry();
         },
       });
     } catch (subscriptionError) {
       subscriptionActive = false;
       live = false;
+      pendingUpdates = [];
+      pendingOverflow = false;
       await result.subscription.release().catch(() => undefined);
       error = describeDirectoryError(subscriptionError);
       status = entries.size > 0 ? "stale" : "error";
       staleReason = entries.size > 0 ? "Live updates are unavailable." : null;
       emit();
+      scheduleRetry();
     }
   }
 
@@ -679,6 +759,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     if (disposed || !hostOnline) {
       return;
     }
+    clearRetryTimer();
     // Every connection attempt gets a new generation. A queued update from the
     // previous subscription and an in-flight page walk from before the
     // reconnect are both fenced by this value.
@@ -706,14 +787,16 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       markHostOffline();
       return;
     }
+    clearRetryTimer();
     if (refreshing) {
       refreshQueued = true;
       return refreshPromise ?? Promise.resolve();
     }
     refreshing = true;
-    // A routine refresh of a live, complete, ready directory stays calm; every
-    // other state keeps today's stale marking.
-    if (entries.size > 0 && !(status === "ready" && subscriptionActive && inventoryComplete && staleReason === null)) {
+    // Provisional bootstrap rows are not stale: they never completed a walk.
+    // A routine refresh of a live, complete, ready directory also stays calm;
+    // every other completed state keeps today's stale marking.
+    if (entries.size > 0 && lastUpdatedAt !== null && !(status === "ready" && subscriptionActive && inventoryComplete && staleReason === null)) {
       status = "stale";
       staleReason = staleReason ?? reason;
       emit();
@@ -762,6 +845,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     reason = "The Paseo host is disconnected. Showing the last inventory.",
   ): void {
     hostOnline = false;
+    clearRetryTimer();
     generation += 1;
     live = false;
     subscriptionActive = false;
@@ -783,6 +867,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     includeArchived = nextIncludeArchived;
+    clearRetryTimer();
     // The new scope applies immediately, including while its replacement read waits or fails.
     if (!includeArchived) {
       for (const [id, entry] of entries) if (isArchivedSession(entry)) entries.delete(id);
@@ -819,6 +904,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     disposed = true;
     directoryAbort.abort();
+    clearRetryTimer();
     generation += 1;
     live = false;
     subscriptionActive = false;

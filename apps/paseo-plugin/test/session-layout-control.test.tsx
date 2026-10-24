@@ -7,7 +7,8 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useRef: (current: unknown) => ({ current }), useEffect: (effect: () => void | (() => void)) => fixture.effects.push(effect),
 }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return fixture.native ? "ios" : "web"; } }, Pressable: "Pressable", Text: "Text", View: "View" }));
-vi.mock("../client/control-help", () => ({ useControlHelp: (_text: string, ref: { current: unknown }) => ({ bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss }) }));
+vi.mock("../client/control-help", () => ({ useActionHelp: (_text: string, ref: { current: unknown }) => ({ bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss }) }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { SessionLayoutControl } from "../client/session-layout-control";
 
 type Element = { props: Record<string, unknown> };
@@ -38,6 +39,8 @@ describe("visible session layout segments", () => {
     const { tree, segments, onChange } = mount(value);
     expect(tree.props).toMatchObject({ accessibilityRole: "radiogroup", accessibilityLabel: "Session layout" });
     expect(segments.map((node) => node.props.accessibilityLabel)).toEqual(["Grouped", "Flat"]);
+    expect(walk(tree).filter(node => typeof node.props.children === "string")).toEqual([]);
+    expect(walk(tree).filter(node => node.props.name === "Check")).toHaveLength(1);
     expect(segments.map((node) => node.props["aria-checked"])).toEqual([value === "grouped", value === "flat"]);
     expect(segments.map((node) => node.props.accessibilityState)).toEqual([{ checked: value === "grouped" }, { checked: value === "flat" }]);
     expect(segments.map((node) => node.props.tabIndex)).toEqual(value === "grouped" ? [0, -1] : [-1, 0]);

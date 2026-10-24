@@ -1,12 +1,16 @@
 import { useEffect, useRef } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
-import { useControlHelp } from "./control-help";
+import { Platform, Pressable, View } from "react-native";
+import { Icon } from "@getpaseo/plugin/client/react-native";
+import { useActionHelp } from "./control-help";
 import type { Colors } from "./page-controls";
 import type { SessionLayout } from "./session-view-store";
 
 type Key = { key: string; target?: unknown; defaultPrevented?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; preventDefault(): void; stopPropagation(): void };
 type KeyTarget = { addEventListener(type: "keydown", listener: (event: Key) => void): void; removeEventListener(type: "keydown", listener: (event: Key) => void): void };
-const HELP = "Grouped shows sessions in their groups. Flat shows one list. Search, filters and sort stay the same. Your layout is remembered.";
+const HELP = {
+  grouped: "Grouped. Show sessions in their groups. Search, filters and sort stay the same.",
+  flat: "Flat. Show sessions in one list. Search, filters and sort stay the same.",
+};
 
 /** One labelled radio segment per layout, independent of the collapsing filters. */
 export function SessionLayoutControl({ value, colors, onChange }: {
@@ -14,7 +18,7 @@ export function SessionLayoutControl({ value, colors, onChange }: {
 }) {
   const root = useRef<View | null>(null);
   const grouped = useRef<View | null>(null), flat = useRef<View | null>(null);
-  const groupedHelp = useControlHelp(HELP, grouped), flatHelp = useControlHelp(HELP, flat);
+  const groupedHelp = useActionHelp(HELP.grouped, grouped), flatHelp = useActionHelp(HELP.flat, flat);
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const target = root.current as unknown as KeyTarget | null;
@@ -35,21 +39,21 @@ export function SessionLayoutControl({ value, colors, onChange }: {
     return () => target?.removeEventListener("keydown", keydown);
   }, [value, onChange]);
   return <View ref={root} testID="sessions-layout" accessibilityRole="radiogroup" accessibilityLabel="Session layout"
-    style={{ flexDirection: "row", alignSelf: "flex-start", flexShrink: 0, padding: 2, borderWidth: 1, borderColor: colors.border, borderRadius: 9, backgroundColor: colors.surface1 }}>
+    style={{ flexDirection: "row", flexWrap: "wrap", alignSelf: "flex-start", gap: 2, flexShrink: 1 }}>
     {(["grouped", "flat"] as const).map((layout) => {
       const selected = value === layout;
       const help = layout === "grouped" ? groupedHelp : flatHelp;
       return <Pressable key={layout} {...help.bindings} testID={`sessions-layout-${layout}`}
         accessibilityRole="radio" accessibilityLabel={layout === "grouped" ? "Grouped" : "Flat"}
-        accessibilityHint={HELP} accessibilityState={{ checked: selected }} aria-checked={selected}
+        accessibilityHint={HELP[layout]} accessibilityState={{ checked: selected }} aria-checked={selected}
         tabIndex={Platform.OS === "web" ? selected ? 0 : -1 : undefined}
         onPress={() => { help.dismiss(); if (!selected) onChange(layout); }}
-        style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 60, paddingHorizontal: 8,
-          flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, borderWidth: 2, borderRadius: 6,
-          borderColor: selected || focused ? colors.accent : "transparent", backgroundColor: selected || pressed ? colors.surface2 : colors.surface1,
+        style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, paddingHorizontal: 8, paddingVertical: 6,
+          alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 6,
+          borderColor: focused ? colors.foreground : selected ? colors.accent : "transparent", backgroundColor: selected || pressed ? colors.surface2 : undefined,
           ...(focused && Platform.OS === "web" ? { outlineStyle: "solid", outlineWidth: 2, outlineColor: colors.foreground } : {}) })}>
-        <Text accessibilityElementsHidden importantForAccessibility="no" style={{ width: 12, color: colors.foreground, fontSize: 12 }}>{selected ? "✓" : ""}</Text>
-        <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{layout === "grouped" ? "Grouped" : "Flat"}</Text>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={layout === "grouped" ? "ListTree" : "List"} size={18} color={selected ? colors.foreground : colors.foregroundMuted} /></View>
+        {selected ? <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ position: "absolute", right: 3, top: 3 }}><Icon name="Check" size={9} color={colors.foreground} /></View> : null}
       </Pressable>;
     })}
   </View>;

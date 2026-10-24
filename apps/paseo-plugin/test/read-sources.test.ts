@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
-import { contributeReadSources, readConfiguredSource, readWorkstreamRegistry, sourceCatalog } from "../server/read-sources";
+import { contributeReadSources, readConfiguredSource, readConfiguredSummary, readWorkstreamRegistry, sourceCatalog } from "../server/read-sources";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema } from "../shared/organization";
-import { listReadSources, readSource, readPlanAssociations, type ReadSourceSummary } from "../shared/read-sources";
+import { listReadSources, readSource, readPlanAssociations, readSourceSummaries, type ReadSourceSummary } from "../shared/read-sources";
 
 const catalogFailure = vi.hoisted(() => ({ denyOpen: false }));
 vi.mock("node:fs", async (original) => {
@@ -97,6 +97,55 @@ describe("configured read sources", () => {
     listener?.({ status: "invalid", revision: "3", error: "invalid stored preferences" });
     expect(await handlers.get(readPlanAssociations.name)?.({})).toMatchObject({ status: "invalid", associations: {} });
     cleanup(); expect(stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("metadata-only source summaries", () => {
+  it("returns status, revision, plan metadata and diagnostics without Markdown, a graph or records", async () => {
+    const { source, content } = await fixture("---\nworkstream: access\nepic: ASMA-1\n---\n# Plan\n\n```plan-graph\nfixture\n```\n" + "x".repeat(100_000));
+    const summary = await readConfiguredSummary(source);
+    expect(summary).toMatchObject({ status: "ready", content: null, graph: null, records: null,
+      revision: createHash("sha256").update(content).digest("hex"), planMetadata: { workstream: "access", epic: "ASMA-1" } });
+    expect(summary.modifiedAt).not.toBeNull();
+    // No canonical export runs for a summary, and the metadata projection stays far below the Markdown size.
+    expect(summary.diagnostics).toEqual([]);
+    expect(JSON.stringify(summary).length).toBeLessThan(4_096);
+    expect(JSON.stringify(summary).length).toBeLessThan(content.length);
+  });
+  it("keeps the historical Jira projection complete because Sessions reads captured epics at mount", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "kontor-source-")); temporary.push(directory);
+    const path = join(directory, "jira.json");
+    const history = { schema: "consumption/data@2", generated: "2026-10-18T10:00:00Z",
+      provenance: { path: "/capture.json", sha256: "a".repeat(64), capturedEpics: 1 }, selection: ["ASMA-1"],
+      epics: [{ key: "ASMA-1", status: "In Progress", cat: "indeterminate", children: [{ key: "ASMA-2", status: "Done", cat: "done" }] }] };
+    await writeFile(path, JSON.stringify(history));
+    const source: ReadSourceSummary = { id: "jira", title: "Historical Jira", kind: "jira", path, workstream: null, epic: "ASMA-1", projectId: null, revisionKind: "working copy" };
+    const summary = await readConfiguredSummary(source);
+    expect(summary.status).toBe("ready"); expect(summary.content).toBeNull(); expect(summary.graph).toBeNull();
+    expect(summary.jiraHistory).toEqual(history);
+  });
+  it("validates record documents without returning their records and honors the revision pin", async () => {
+    const { source } = await fixture(JSON.stringify({ delivery: [{ id: "pr", title: "Pull request", kind: "pull request", state: "merged" }] }));
+    const delivery = await readConfiguredSummary({ ...source, kind: "delivery" });
+    expect(delivery).toMatchObject({ status: "ready", content: null, graph: null, records: null });
+    const pinned = await readConfiguredSummary({ ...source, kind: "delivery", revisionKind: "approved revision", expectedSha256: "f".repeat(64) });
+    expect(pinned.status).toBe("unavailable"); expect(pinned.diagnostics.join()).toContain("Configured revision mismatch");
+    const invalid = await readConfiguredSummary({ ...source, kind: "decisions" });
+    expect(invalid.status).toBe("unavailable"); expect(invalid.diagnostics.join()).toContain("Expected a decisions records document");
+  });
+  it("registers one summaries request alongside the unchanged read and list requests", async () => {
+    const { source } = await fixture("---\nworkstream: tokenomics\n---\n# No graph");
+    const server = { handle: vi.fn() };
+    const settings: PluginSettings<typeof organizationSettingsSchema> = { read: async () => ({ status: "ready", revision: "1", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} };
+    const stop = contributeReadSources(server, settings, { sources: [source], diagnostics: [] });
+    const handler = (name: string) => server.handle.mock.calls.find(([rpc]) => rpc.name === name)![1];
+    const summaries = await handler(readSourceSummaries.name)({});
+    expect(summaries.sources).toEqual([source]); expect(summaries.diagnostics).toEqual([]);
+    expect(summaries.registry).toBeDefined();
+    expect(summaries.reads[source.id]).toMatchObject({ status: "ready", content: null, graph: null, records: null, planMetadata: { workstream: "tokenomics" } });
+    // The existing exact read still returns the Markdown.
+    expect(await handler(readSource.name)({ sourceId: source.id })).toMatchObject({ content: expect.stringContaining("# No graph"), status: "ready" });
+    stop();
   });
 });
 

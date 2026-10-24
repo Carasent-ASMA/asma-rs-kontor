@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstatSync, statSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -36,13 +37,26 @@ function createStateRoot(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-create-v1");
 }
 
-/** Off unless the file says exactly `{"create":"on"}`: absent, off, unreadable or malformed all keep creation off. */
+/** Available by default when absent; explicit off, unreadable or malformed switches keep creation off. */
 export function createSwitchProblem(file: string): string | null {
   const mode = readFloor(file, "create");
   if (mode.reason === "explicit-on") return null;
   if (mode.reason === "explicit-off") return "New LSA is switched off on this host.";
-  if (mode.reason === "invalid") return "New LSA is off: the host's create switch is not valid. The operator corrects it on the host computer.";
-  return "New LSA is off on this host. The operator turns it on at the host computer.";
+  if (mode.reason === "not-configured") {
+    // Missing descendants are valid only when the nearest existing ancestor resolves to a directory.
+    try {
+      if (!lstatSync(file, { throwIfNoEntry: false })) {
+        let path = dirname(file);
+        while (!lstatSync(path, { throwIfNoEntry: false })) {
+          const parent = dirname(path);
+          if (parent === path) break;
+          path = parent;
+        }
+        if (statSync(path).isDirectory()) return null;
+      }
+    } catch {}
+  }
+  return "New LSA is off: the host's create switch is not valid. The operator corrects it on the host computer.";
 }
 
 const PERSONA_TEMPLATE = [
@@ -103,12 +117,14 @@ export function createProviders(snapshot: Awaited<ReturnType<PaseoApi["providers
     const selectable = (entry.models ?? []).filter((model) => model.isSelectable !== false);
     const models = selectable.map((model) => ({ id: model.id, label: model.label, efforts: (model.thinkingOptions ?? []).map((option) => ({ id: option.id, label: option.label })),
       defaultEffort: model.defaultThinkingOptionId ?? model.thinkingOptions?.find((option) => option.isDefault)?.id ?? null }));
-    const enabled = entry.enabled !== false, ready = entry.status === "ready";
+    const status: CreateProvider["status"] = entry.enabled === false ? "disabled" : entry.enabled !== true ? "unknown"
+      : ["ready", "loading", "error", "unavailable"].includes(entry.status) ? entry.status : "unknown";
     let note: string | null = null;
-    if (!enabled) note = "Disabled on this host.";
-    else if (!ready) note = `Provider ${entry.status}${entry.error ? `: ${entry.error}` : ""}.`;
+    if (status === "disabled") note = "Disabled on this host.";
+    else if (status === "unknown") note = "Provider availability is unknown.";
+    else if (status !== "ready") note = `Provider ${status}${entry.error ? `: ${entry.error}` : ""}.`;
     else if (!models.length) note = "No selectable model on this host.";
-    return { id: entry.provider, label: entry.label ?? entry.provider, available: note === null, note, persona: personaSupport(entry.provider), models,
+    return { id: entry.provider, label: entry.label ?? entry.provider, available: note === null, status, note, persona: personaSupport(entry.provider), models,
       defaultModel: selectable.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null,
       modes: (entry.modes ?? []).map((mode) => ({ id: mode.id, label: mode.label, dangerous: mode.colorTier === "dangerous" })),
       defaultMode: entry.defaultModeId ?? null };
@@ -202,18 +218,20 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       : outcome(record, "verified", agentId, "Created and verified: the host's readback matches the request.");
   }
 
-  async function options(): Promise<CreateOptions> {
+  async function options(workspaceId?: string): Promise<CreateOptions> {
     const notes: string[] = [];
     const disabledReason = createSwitchProblem(switchFile);
-    const [workspaces, snapshot, config] = await Promise.all([
+    const [workspaces, config] = await Promise.all([
       allPages((cursor) => client.workspaces.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } })),
-      client.providers.snapshot(),
       client.config.get().catch((error: unknown) => { notes.push(`Agent profiles unavailable: ${errorText(error)}.`); return null; }),
     ]);
+    const desks = adamDesks(workspaces), desk = workspaceId ? desks.find((entry) => entry.workspaceId === workspaceId) : desks[0];
+    const cwd = workspaces.find((entry) => entry.id === desk?.workspaceId)?.workspaceDirectory;
+    const providers = cwd ? createProviders(await client.providers.snapshot({ cwd })) : [];
     const profile = config?.config.agentProfiles?.find((entry) => [entry.name, entry.id].some((value) => value.trim().toUpperCase() === CREATE_ROLE));
     let pending: CreateOutcome | null = null;
-    try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], providers: [], profile: null, pending: null, notes }; }
-    return { enabled: disabledReason === null, disabledReason, desks: adamDesks(workspaces), providers: createProviders(snapshot),
+    try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogWorkspaceId: null, providers: [], profile: null, pending: null, notes }; }
+    return { enabled: disabledReason === null, disabledReason, desks, catalogWorkspaceId: desk?.workspaceId ?? null, providers,
       profile: profile ? { name: profile.name, provider: profile.provider, model: profile.model ?? null, modeId: profile.modeId ?? null, effort: profile.thinkingOptionId ?? null } : null,
       pending, notes };
   }
@@ -291,7 +309,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
 
 export function contributeSessionCreate(server: PluginServerContext): void {
   const root = createStateRoot(), file = createSwitchFile();
-  server.handle(readCreateOptions, (_input, { paseo }) => createSessionCreateService(paseo, root, file).options());
+  server.handle(readCreateOptions, (input, { paseo }) => createSessionCreateService(paseo, root, file).options(input.workspaceId));
   server.handle(executeCreate, (input, { paseo }) => createSessionCreateService(paseo, root, file).create(input));
   server.handle(checkCreate, (input, { paseo }) => createSessionCreateService(paseo, root, file).check(input.requestId));
 }

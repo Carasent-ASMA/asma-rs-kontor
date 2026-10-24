@@ -1,3 +1,4 @@
+import { sessionStateCounts, type SessionStateCount } from "./session-state-counts";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { SessionLayoutControl } from "./session-layout-control";
 import { useHosts } from "@getpaseo/plugin/client";
@@ -36,7 +37,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
-import { openSessionById } from "./session-actions";
+import { openRecoveredSession, openSessionById } from "./session-actions";
 import { type DirectoryEntry, type DirectoryState } from "./session-directory";
 import {
   attentionLabel,
@@ -123,7 +124,11 @@ import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
-import { notifyArchive, useArchiveRecovery } from "./archive-feedback";
+import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
+import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
+import { archiveAckKey, archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
+import { ArchiveRecoverySheet } from "./archive-recovery";
+import { hideNotices, NoticeAction, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
 
 type ThemeColors = PluginTheme["colors"];
@@ -135,6 +140,7 @@ function listRowKey(row: ListRow): string {
 
 // Working as is remembered in this device's store where the runtime offers one, before the first read; otherwise for this app session.
 configureWorkingAsStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
+configureArchiveNoticeStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
 
 /** Status dot colour of a session: its highest-priority state, as on group badges. */
 export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
@@ -352,7 +358,7 @@ export function matchingCount({ count, state, includeArchived, freshness, blocke
       ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
       : { text: "…", label: "Reading matching sessions" };
   }
-  const sessions = `${count} session${count === 1 ? "" : "s"}`;
+  const sessions = `${count} matching session${count === 1 ? "" : "s"}`;
   if (freshness === "Live") {
     return state.inventoryComplete === true
       ? { text: sessions, label: `${count} matching session${count === 1 ? "" : "s"}` }
@@ -367,6 +373,9 @@ type SessionRowProps = {
   readonly colors: ThemeColors;
   readonly compact: boolean;
   readonly onPress: (entry: DirectoryEntry) => void;
+  readonly onLongPress?: (entry: DirectoryEntry) => void;
+  readonly selectionMode?: boolean;
+  readonly lifecycleFeedback?: ReactNode;
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
@@ -394,6 +403,9 @@ export const SessionRow = memo(function SessionRow({
   colors,
   compact,
   onPress,
+  onLongPress,
+  selectionMode = false,
+  lifecycleFeedback,
   displayTitle,
   displayContext,
   compactContext,
@@ -448,8 +460,9 @@ export const SessionRow = memo(function SessionRow({
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityHint="Opens the existing Paseo session"
+      accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
       onPress={() => { stateHint.dismiss(); onPress(entry); }}
+      onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
         minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
@@ -480,6 +493,7 @@ export const SessionRow = memo(function SessionRow({
             {age}
           </View>
           <SessionUsage entry={entry} colors={colors} />
+          {lifecycleFeedback}
           </View>
           <SessionStateMarker state={state} colors={colors} />
         </>
@@ -503,6 +517,7 @@ export const SessionRow = memo(function SessionRow({
             {age}
             <SessionUsage entry={entry} colors={colors} />
           </View>
+          {lifecycleFeedback}
           </View>
       ) : (
         <>
@@ -521,6 +536,7 @@ export const SessionRow = memo(function SessionRow({
                 {meta}
               </Text>
             ) : null}
+            {lifecycleFeedback}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
           <View style={{ alignItems: "flex-end", gap: 2 }}>
@@ -673,6 +689,9 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
 
 type SessionResultRowProps = {
   readonly lifecycleAction?: ReactNode;
+  readonly lifecycleFeedback?: ReactNode;
+  readonly onLongPress?: (entry: DirectoryEntry) => void;
+  readonly selectionMode?: boolean;
   readonly entry: DirectoryEntry;
   readonly provenance: SessionProvenance;
   readonly colors: ThemeColors;
@@ -687,7 +706,7 @@ type SessionResultRowProps = {
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details, lifecycleAction }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
   const state = sessionState(entry);
@@ -701,8 +720,9 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
-        accessibilityHint="Opens the existing Paseo session"
+        accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
         onPress={() => { stateHint.dismiss(); onPress(entry); }}
+        onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
           flex: 1,
           minWidth: 0,
@@ -730,6 +750,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
         {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
+        {lifecycleFeedback}
         {compact ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
           <SessionStateMarker state={state} colors={colors} />
           {time ? rowAge(time, compact, colors) : null}
@@ -976,6 +997,7 @@ export function SlimActionButton({
  */
 export function SlimToolbar({
   action,
+  notice,
   hostLabel,
   activeCount,
   colors,
@@ -987,6 +1009,8 @@ export function SlimToolbar({
   onHide,
 }: {
   readonly action?: ReactNode;
+  /** The status button a hidden notice tray leaves beside Resume. */
+  readonly notice?: ReactNode;
   readonly hostLabel: string;
   readonly activeCount: number;
   readonly colors: ThemeColors;
@@ -1023,6 +1047,7 @@ export function SlimToolbar({
         </Text>
       </View>
       {action}
+      {notice}
       <SlimActionButton
         testID="sessions-slim-search"
         label="Search"
@@ -1166,7 +1191,7 @@ export function FilterChip({
   colors: ThemeColors;
   compact?: boolean;
   /** Matching sessions under the other active filters. */
-  count?: number;
+  count?: number | SessionStateCount;
   /** Same shape as session rows; the existing label supplies its meaning. */
   status?: StatusFilter;
   /** Multi-select choice rather than one of a set. */
@@ -1184,7 +1209,7 @@ export function FilterChip({
       accessibilityRole={checkbox ? "checkbox" : "button"}
       accessibilityState={checkbox ? { checked: active, disabled } : { selected: active, disabled }}
       {...(checkbox ? { "aria-checked": active } : { "aria-pressed": active })}
-      accessibilityLabel={count === undefined ? label : `${label}, ${count}`}
+      accessibilityLabel={count === undefined ? label : `${label}, ${typeof count === "number" ? count : count.label}`}
       onBlur={onBlur}
       onFocus={onFocus}
       onPress={onPress}
@@ -1209,7 +1234,7 @@ export function FilterChip({
       </Text>
       {count !== undefined ? (
         <Text style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, fontVariant: ["tabular-nums"] }}>
-          {count}
+          {typeof count === "number" ? count : count.text}
         </Text>
       ) : null}
     </Pressable>
@@ -1499,11 +1524,22 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const recovery = useArchiveRecovery(host.id, lifecycle, lifecycleChanged);
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  // The notice's Review archive in whichever tray shows it; closing the sheet returns focus there.
+  const reviewArchiveRef = useRef<View | null>(null);
+  const bulkToggleRef = useRef<View | null>(null);
+  const bulkReviewRef = useRef<View | null>(null);
+  const bulkReturnFocusRef = useRef(false);
   const lifecycleAnchor = useRef<View | null>(null);
   const recoveryButton = useRef<View | null>(null);
   const slimRecoveryButton = useRef<View | null>(null);
+  // The status button a hidden notice tray leaves beside Resume, and each tray's Hide, so focus moves between them.
+  const noticesButton = useRef<View | null>(null);
+  const noticesHide = useRef<View | null>(null);
+  const slimNoticesHide = useRef<View | null>(null);
   const archiveButtons = useRef(new Map<string, View>());
-  useEffect(() => { setLifecycleOpen(false); }, [host.id]);
+  useEffect(() => { setLifecycleOpen(false); setBulkOpen(false); setRecoveryOpen(false); }, [host.id]);
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
   const shortcut = view.shortcut ?? null;
   const { layout: sessionLayout, grouping } = sessionPresentation(view, preferences);
@@ -2102,8 +2138,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
     return counts;
   }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
-  const statusCounts = useMemo(() => Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => [status, candidates.filter((entry) => matchesStatus(entry, status, favorites)).length])) as Record<StatusFilter, number>,
-    [candidates, favorites]);
+  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
+  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
+  // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
+  const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
+  const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, refined, state, includeArchived,
+    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null }),
+    [scoped, candidates, favorites, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
@@ -2157,20 +2198,24 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
   }, [compact, rowSignature]);
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
+  const bulkScopeIds = useMemo(() => shown.filter((entry) => entry.archivedAt === null).map((entry) => entry.id), [shown]);
+  const bulkSelection = useArchiveSelection(host.id, bulkScopeIds);
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
-  // The full count and read statement; Filters shows it, the visible count line only when it adds something.
-  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
-  const sessionCount = assignmentBlocked ? `${assignmentPart} not evaluated · ${scoped.length} session${scoped.length === 1 ? "" : "s"} on this host`
-    : `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
+  const resultWorkspaces = new Set(shown.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
+  const unplaced = shown.filter((entry) => !inWorkspace(entry)).length;
+  // Inventory and placement are secondary facts in Filters; the matching count has one primary home per page.
+  const sessionCount = `Inventory: ${scoped.length} session${scoped.length === 1 ? "" : "s"} in this host context${state.includeArchived ? ", including archived" : ", excluding archived"}`;
   const inventoryRead = state.lastUpdatedAt === null
     ? "not read yet"
     : state.inventoryComplete
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
-  const countSummary = `${sessionCount} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"} · ${inventoryRead}`;
+  const countSummary = state.includeArchived !== includeArchived || state.lastUpdatedAt === null
+    ? "Inventory for this membership has not been read yet."
+    : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
   const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
-    freshness: nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) });
+    freshness: countFreshness });
   const setExpansion = (patch: Readonly<Record<string, boolean>>) => {
     const local = patchLocalExpansion(host.id, patch);
     setExpansionRevision((revision) => revision + 1);
@@ -2392,25 +2437,43 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const noticeProps = compact ? {} : focusProps;
   const settingsUnavailable = organization !== undefined && organization.state.status !== "ready";
   const settingsAlert = saveMessage ?? organization?.state.saveError ?? null;
-  const hasNotices = (showBanner && !!staleMessage) || navigationMissing || settingsUnavailable || !!settingsAlert || !!recovery.line;
-  // One lifecycle action at a time: every Resume, Details, the X and Check again wait while another runs.
+  // One lifecycle action at a time: every Resume, the X and Refresh status wait while another runs.
   const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
   const canStart = hostOnline && lifecycleIdle && state.status === "ready";
-  // One placement per layout: compact notices, the wide full toolbar, or the wide slim row.
-  const recoveryLine = recovery.line ? <View testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-    <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, flexShrink: 1 }}>{recovery.line}</Text>
-    {recovery.unresolved.length ? <Action small colors={colors} label={recovery.checking ? "Checking…" : "Check again"} accessibilityLabel="Check unconfirmed archives again" disabled={!lifecycleIdle} onPress={() => { if (lifecycleIdle) void recovery.check(); }} />
-      : <Action small colors={colors} label="Retry" accessibilityLabel="Read archive checks again" disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
-    {/* ponytail: Details opens the first unconfirmed archive's own review and Check covers every ref; add a per-ref picker if each one needs its own view. */}
-    {recovery.unresolved.length ? <Action small colors={colors} label="Details" accessibilityLabel="Archive details" disabled={!lifecycleIdle}
-      onPress={() => { if (!lifecycleIdle) return; lifecycleAnchor.current = recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; void lifecycle.restore(recovery.unresolved[0]!).then((result) => {
-        // Only the exact owner review opens; a failed read never shows another review.
-        if (typeof result === "string") toast.error(`Archive details could not be read: ${result}`); else if (result) setLifecycleOpen(true); }); }} /> : null}
+  useLayoutEffect(() => {
+    if (bulkOpen || !bulkReturnFocusRef.current) return;
+    bulkReturnFocusRef.current = false;
+    // The dialog disables its trigger; restore only after the closed render re-enables it.
+    const origin = bulkSelection.selected.length ? bulkReviewRef.current : null;
+    focusControl(canStart && !includeArchived ? origin ?? bulkToggleRef.current ?? rootRef.current : rootRef.current);
+  }, [bulkOpen]);
+  const selectForArchive = (entry: DirectoryEntry) => { if (canStart && !bulkOpen) bulkSelection.toggle(entry.id); };
+  const openOrSelect = (entry: DirectoryEntry) => { if (bulkSelection.selecting) selectForArchive(entry); else handleOpen(entry); };
+  // Acknowledged items are out of the line, its count and the review; their rows keep their archive feedback.
+  const reviewCount = recovery.attention.length;
+  // One compact line (NN/g: one notice, its action beside it): the text wraps in its own column and the icon action follows
+  // it, so no width gives the action a row of its own. Review archive opens every unresolved item; Retry only re-reads a failed list.
+  const reviewName = reviewCount === 1 ? "Review archive" : `Review ${reviewCount} archives`;
+  const recoveryLine = recovery.line ? <View key="archive" testID="sessions-archive-recovery" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+    <Text role="status" accessibilityLiveRegion="polite" style={{ flexShrink: 1, minWidth: 0, color: colors.statusWarning, fontSize: 12 }}>{recovery.line}</Text>
+    {reviewCount ? <NoticeAction ref={reviewArchiveRef} icon="ClipboardList" colors={colors} accessibilityLabel={reviewName} expanded={recoveryOpen}
+      help={`${reviewName}. Shows its state, Refresh status and details; nothing is archived again.`} onPress={() => setRecoveryOpen(true)} />
+      : <NoticeAction icon="RefreshCw" colors={colors} accessibilityLabel="Retry archive checks" help="Retry archive checks. Reads the archive list again; nothing is archived."
+        disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
   </View> : null;
-  const notices = (
-    <>
-      {showBanner && staleMessage ? (
+  const openRecovered = (item: RecoveryItem) => {
+    const result = openRecoveredSession({ row: item.row, id: item.ref.agentId, serverId: host.id, navigation });
+    if (result.ok) setRecoveryOpen(false); else toast.error(result.message);
+  };
+  const closeRecovery = () => { setRecoveryOpen(false); recovery.clearNotes(); setTimeout(() => focusControl(reviewArchiveRef.current ?? noticesButton.current ?? rootRef.current), 0); };
+  // The acknowledged item's own key, persisted per host like a hidden tray: the same state stays out, a changed one is a new notice.
+  const hideRecovered = (item: RecoveryItem) => { saveHidden([...new Set([...hiddenNotices, archiveAckKey(item)])]); closeRecovery(); };
+  // Each notice's keys name what it reports; a hidden tray opens again for any key it has not hidden.
+  const banners = ([
+    showBanner && staleMessage ? { keys: [`source:${state.status}:${staleMessage}`], summary: state.status === "error" ? "Session read failed" : "Sessions not live",
+      tone: state.status === "error" ? "danger" : "warning", node: (
         <Banner
+          key="source"
           testID="sessions-source-banner"
           message={`${staleMessage} ${
             state.inventoryComplete ? "Last complete read" : "Inventory read attempt"
@@ -2421,30 +2484,67 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           colors={colors}
           {...noticeProps}
         />
-      ) : null}
-
-      {navigationMissing ? (
+      ) } : null,
+    navigationMissing ? { keys: ["navigation"], summary: "Session navigation unavailable", tone: "warning", node: (
         <Banner
+          key="navigation"
           testID="sessions-navigation-banner"
           message="This Paseo app does not expose native session navigation to plugins. Update Paseo to open sessions from this screen."
           tone="warning"
           colors={colors}
           {...noticeProps}
         />
-      ) : null}
-
-      {organization && organization.state.status !== "ready" ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Organization settings {organization.state.status}; saved preferences are unavailable. Native sessions remain visible and branches still open and close here.</Text> : null}
-      {saveMessage || organization?.state.saveError ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{saveMessage ?? organization?.state.saveError}</Text> : null}
-    </>
-  );
-  const compactNotices = compact && hasNotices ? (
-    <View testID="sessions-notices" style={{ gap: 8 }}>
-      {notices}
-      {recoveryLine}
-    </View>
-  ) : null;
+      ) } : null,
+    organization && settingsUnavailable ? { keys: [`settings:${organization.state.status}`], summary: `Organization settings ${organization.state.status}`, tone: "warning",
+      node: <Text key="settings" style={{ color: colors.statusWarning, fontSize: 12 }}>Organization settings {organization.state.status}; saved preferences are unavailable. Native sessions remain visible and branches still open and close here.</Text> } : null,
+    settingsAlert ? { keys: [`save:${settingsAlert}`], summary: "Organization not saved", tone: "warning",
+      node: <Text key="save" accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{settingsAlert}</Text> } : null,
+  ] satisfies (Notice | null)[]).filter((notice) => notice !== null);
+  // One key per exact review, session and state, so a confirmed one leaves the tray hidden and a new or changed one opens it; a read error is a new notice too.
+  const archiveNotice: Notice | null = recoveryLine ? { summary: archiveSummary(recovery.attention, null) ?? "Archive checks could not be read", tone: "warning", node: recoveryLine,
+    keys: [...recovery.attention.map(archiveNoticeKey), ...(recovery.error ? [`archive-error:${recovery.error}`] : [])] } : null;
+  const allNotices = archiveNotice ? [...banners, archiveNotice] : banners;
+  // Hidden archive items persist per host on this device; every other hidden notice stays with the view for this app session.
+  const hiddenNotices = useMemo(() => [...(view.noticesHidden ?? []).filter((key) => !key.startsWith("archive:")), ...recovery.hidden], [view.noticesHidden, recovery.hidden]);
+  const saveHidden = (keys: readonly string[]) => {
+    updateView({ noticesHidden: keys.filter((key) => !key.startsWith("archive:")) });
+    recovery.setHidden(keys.filter((key) => key.startsWith("archive:")));
+  };
+  // A notice missing while its source reads (first load, refresh, save, Refresh status) is unread, not absent; navigation is always read.
+  const noticeRead: Readonly<Record<string, boolean>> = {
+    source: state.status !== "idle" && state.status !== "loading",
+    settings: organization?.state.status !== "loading",
+    save: !organization?.state.saving,
+    // The archive state still names the previous host for one render after a switch, so only this host's list counts,
+    // and only a list whose every owner review was read may forget a hidden archive.
+    archive: recovery.listed === host.id && recovery.complete && !recovery.checking,
+    "archive-error": recovery.listed === host.id && !recovery.checking,
+  };
+  // A hidden notice a completed reading no longer reports is forgotten, so its return opens the tray; one continuously present stays hidden.
+  // An acknowledged item still listed keeps its key; once a complete read lists it no longer, or in another state, it is forgotten.
+  const presentNotices = presentHidden(allNotices, hiddenNotices, (key) => noticeRead[key.split(":")[0]!] ?? true, recovery.items.map(archiveAckKey));
+  useEffect(() => { if (presentNotices !== hiddenNotices) saveHidden(presentNotices); }, [presentNotices, hiddenNotices]);
   const OptionsContainer = compact ? View : ScrollView;
   const toolbar = toolbarLayout({ collapsed: toolbarCollapsed, compact });
+  // Hide and Show change presentation only: no action runs, and focus moves to the control that replaces the pressed one.
+  const hideNoticeTray = (shown: readonly Notice[]) => {
+    saveHidden(hideNotices(shown, hiddenNotices));
+    setTimeout(() => focusControl(noticesButton.current), 0);
+  };
+  const showNoticeTray = (shown: readonly Notice[], hide: RefObject<View | null>) => {
+    saveHidden(showNotices(shown, hiddenNotices));
+    setTimeout(() => focusControl(hide.current), 0);
+  };
+  const noticeTray = (shown: readonly Notice[], hide: RefObject<View | null>, testID: string, disabled = false) => shown.length > 0 && !noticesHidden(shown, hiddenNotices) ? (
+    <NoticeTray testID={testID} colors={colors} compact={compact} disabled={disabled} hideRef={hide} onHide={() => hideNoticeTray(shown)}>{shown.map((notice) => notice.node)}</NoticeTray>
+  ) : null;
+  const noticesTrigger = (shown: readonly Notice[], hide: RefObject<View | null>) => noticesHidden(shown, hiddenNotices) ? (
+    <NoticesButton ref={noticesButton} notices={shown} colors={colors} compact={compact} onPress={() => showNoticeTray(shown, hide)} />
+  ) : null;
+  // One placement per layout: compact notices, the wide full toolbar (the slim row takes the archive line while it shows), or the wide slim row.
+  const slimNotices = archiveNotice && toolbar.showSlimRow ? [archiveNotice] : [];
+  const fullNotices = toolbar.showSlimRow ? banners : allNotices;
+  const compactNotices = compact ? noticeTray(allNotices, noticesHide, "sessions-notices") : null;
   const scopeRemovals = [
     shortcut !== null ? { id: "desk", label: `Desk / workspace: ${scopeChoiceLabel}${shortcut.startsWith("desk-project:") ? ` · ${shortcut.slice("desk-project:".length)}` : ""}`, patch: { shortcut: null } } : null,
     streams !== null ? { id: "streams", label: `Workstreams: ${streams.length ? streams.map((key) => workstreamOptions.find((option) => option.key === key)?.label ?? `Unavailable (${key})`).slice(0, 2).join(", ") + (streams.length > 2 ? ` +${streams.length - 2}` : "") : "None"}`, patch: { streams: null } } : null,
@@ -2462,11 +2562,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       onLayout={handleToolbarLayout}
       style={{ gap: 8 }}
     >
-      {compact ? null : notices}
-      {compact || toolbar.showSlimRow ? null : recoveryLine}
+      {compact ? null : noticeTray(fullNotices, noticesHide, "sessions-top-notices", focusProps.disabled)}
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
         {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
           onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
+        {!toolbar.showSlimRow ? noticesTrigger(fullNotices, noticesHide) : null}
         {view.status === "attention" ? <>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{availability.checking ? "Checking exact session IDs…" : "Attention includes unread results. Native record checks do not verify provider history."}</Text>
           <Action small={!compact} colors={colors} label="Check availability" onPress={() => { availability.refresh(); refresh(); }} />
@@ -2653,7 +2753,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Action small={!compact} colors={colors} label="↑ Move up" accessibilityLabel="Move selected row up" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(-1)} />
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
-          <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
+          <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? ` ${workspaceNote}.` : ""}</Text>
           <SessionsLegend colors={colors} compact={compact} contextual={peek !== null} open={view.legendOpen ?? false} onToggle={(legendOpen) => updateView({ legendOpen })} />
         </OptionsContainer>
       ) : null}
@@ -2744,10 +2844,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <View style={{ flex: 1, minWidth: 0 }}>
     <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
     query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
-    summary={[scopeLabel, ...summaryParts, `Layout: ${sessionLayout}`, sessionLayout === "grouped" && grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null, sortPart].filter(Boolean).join(" · ")}
     searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
     onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
-    onClear={handleClearFilters}
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
     <View style={{ width: 80, alignItems: "flex-end" }}>
@@ -2790,6 +2888,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <SlimToolbar
         action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
           onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
+        notice={noticesTrigger(slimNotices, slimNoticesHide)}
         hostLabel={host.label}
         activeCount={slimActiveCount}
         colors={colors}
@@ -2809,7 +2908,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           onClearScope={onClearScope}
         />
       ) : null}
-      {toolbar.showSlimRow ? recoveryLine : null}
+      {noticeTray(slimNotices, slimNoticesHide, "sessions-slim-notices")}
     </View>
   );
   // Desktop keeps its existing inline toolbar; compact mounts these controls only on the filter page.
@@ -2861,10 +2960,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     return () => clearTimeout(timer);
   }, [compact]);
 
+  // Filters has no Resume, so a hidden tray leaves its button where the tray was.
+  const filtersNoticesTrigger = noticesTrigger(allNotices, noticesHide);
   if (mobileFiltersOpen) return (
     <View ref={rootRef} onLayout={handleRootLayout} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
       <MobileFiltersPage colors={colors} onBack={closeMobileFilters} count={filterCount} menuOpen={optionMenu !== null || (view.associationsOpen ?? false) || view.scopeOpen != null}>
         {compactNotices}
+        {filtersNoticesTrigger ? <View style={{ alignItems: "flex-start" }}>{filtersNoticesTrigger}</View> : null}
         {activeScopeSummary}
         <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>Changes apply immediately. Back keeps your choices.</Text>
         {fullToolbar}
@@ -2916,22 +3018,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       : state.status === "error"
         ? "No sessions could be read from this host."
         : "No sessions in this host's scope.";
-  // Shown only when narrowed or when the read is partial or missing; group rows already carry the
-  // counts. The workspace count stays in the label and, with the complete read, in Filters.
-  const hasResultFilter = tokens.length > 0 || !!task || (view.status !== "all" && view.status !== "current");
-  const countLine = shown.length === 0 || state.entries.length === 0 || (!hasResultFilter && shown.length === scoped.length && state.inventoryComplete && state.lastUpdatedAt !== null) ? null : (
-    <Text testID="sessions-count" accessibilityRole="text" accessibilityLiveRegion="polite" accessibilityLabel={countSummary} style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
-      {hasResultFilter ? `${shown.length} matching session${shown.length === 1 ? "" : "s"} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}` : sessionCount}{state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
-    </Text>
-  );
-  const resultWorkspaces = new Set(results.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
-  const unplaced = results.filter((entry) => !inWorkspace(entry)).length;
-  const resultLine = resultMode && results.length > 0 ? (
-    <Text testID="sessions-count" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
-      {`${results.length} matching session${results.length === 1 ? "" : "s"} · ${resultWorkspaces} workspace${resultWorkspaces === 1 ? "" : "s"}${unplaced ? ` · ${unplaced} without a workspace` : ""}`}
-      {state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
-    </Text>
-  ) : null;
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
   const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
   const shortPeek = peek !== null && shortScreen;
@@ -2950,7 +3036,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </View>
   ) : null;
   // A peek pins its way back above the list, so scrolling to the session never hides it.
-  const listLine = peek ? null : resultMode ? resultLine : countLine;
   const plural = (count: number) => `${count} session${count === 1 ? "" : "s"}`;
   const reasonText = workTally ? [...workTally.reasons].map(([reason, count]) => `${count} ${MATCH_REASONS[reason].toLocaleLowerCase()}`).join(", ") : "";
   // Always reachable outside Filters: the scope, any assignment filter and why it shows what it shows, and the ways back.
@@ -2965,20 +3050,38 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const workMessage = assignmentMessage === null ? `${scopeMessage}.` : `${work === "mine" ? "My work" : "All work"} · ${assignmentMessage}`;
   const workLine = (
     <View testID="sessions-work" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, paddingHorizontal: 4, paddingBottom: 6 }}>
-      <Text testID="sessions-work-message" accessibilityLiveRegion="polite" style={{ flexShrink: 1, color: assignmentBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 11 }}>{workMessage}</Text>
+      <Text testID="sessions-work-message" accessibilityLiveRegion="polite" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }}>{workMessage}</Text>
       {work === "all" ? <TextAction testID="sessions-work-show-mine" label="My work" accessibilityLabel="Show My work" colors={colors} compact={compact} onPress={() => chooseWork("mine")} />
         : <TextAction testID="sessions-work-show-all" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />}
       {assignment !== "any" ? <TextAction testID="sessions-assignment-show-any" label="Any assignment" accessibilityLabel="Show any assignment" colors={colors} compact={compact} onPress={() => chooseAssignment("any")} /> : null}
       {assignmentState === "no-profile" ? <TextAction testID="sessions-work-choose" label="Choose Working as" colors={colors} compact={compact} onPress={handleRevealFilters} /> : null}
       {assignmentState === "ready" && assignment !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-assignment-show-unknown" label="Show unknown assignment" accessibilityLabel="Show sessions whose assignment is unknown" colors={colors} compact={compact} onPress={() => chooseAssignment("unknown")} /> : null}
+      {compact ? <Pressable testID="sessions-mobile-clear-filters" accessibilityRole="button" accessibilityLabel="Clear filters"
+        accessibilityState={{ disabled: activeCount === 0 }} aria-disabled={activeCount === 0} disabled={activeCount === 0}
+        accessibilityHint="Clears all search and filter choices; keeps this context and view preferences" onPress={handleClearFilters}
+        style={{ minHeight: FILTERS_TOUCH_TARGET, paddingHorizontal: 6, justifyContent: "center", opacity: activeCount === 0 ? 0.45 : 1 }}>
+        <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>Clear filters</Text>
+      </Pressable> : null}
     </View>
   );
   // On short screens the utility row must scroll, so it cannot consume the list's last usable pixels.
-  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-    <View style={{ flex: 1, minWidth: 80 }}>
-      {listLine ?? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4 }}>Layout</Text>}
+  // One canonical readback of applied refinements. State and layout have their own selected controls.
+  const appliedParts = [...new Set([scopeLabel, work === "mine" ? "My work" : null,
+    assignmentPart && (assignment === "me" || assignment === "unknown") ? `${assignmentPart}${subjectLabel ? ` (${subjectLabel})` : ""}` : assignmentPart,
+    view.query.trim() ? `“${view.query.trim().replace(/\s+/g, " ")}”` : null, task?.label,
+    compact ? scopeChoiceLabel : null, !compact || streams === null ? null : streams.length ? streams.map((key) => workstreamOptions.find((option) => option.key === key)?.label ?? `Unavailable (${key})`).join(", ") : "No associations",
+    compact && view.epic ? `${epicScopeLabel(view.epic)}${epicChoices.some((choice) => choice.key === epicScopeKey(view.epic)) ? "" : " (unavailable)"}` : null, includeArchived ? "Archived" : null, sortPart,
+  ].filter((part): part is string => !!part))];
+  const appliedSummary = appliedParts.length ? <Text testID="sessions-applied-filters" accessibilityLiveRegion="polite"
+    accessibilityLabel={`${appliedParts.join(". ")}. ${filterCount.label}`} numberOfLines={2}
+    style={{ color: assignmentBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: 4 }}>{appliedParts.join(" • ")}</Text> : null;
+  const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap", alignItems: compact ? "stretch" : "center", gap: 4 }}>
+    {appliedSummary ? <View style={{ flexGrow: compact ? 0 : 1 }}>{appliedSummary}</View> : null}
+    <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10 }}>
+      {!includeArchived || lifecycle.batch ? <ArchiveSelectionToggle selection={bulkSelection} disabled={!canStart || bulkOpen || includeArchived} colors={colors} toggleRef={bulkToggleRef} /> : null}
+      <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+      {compact ? noticesTrigger(allNotices, noticesHide) : null}
     </View>
-    <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
   </View>;
   const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
 
@@ -2986,6 +3089,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <View
       ref={rootRef}
       onLayout={handleRootLayout}
+      tabIndex={-1}
       style={{
         flex: 1,
         backgroundColor: colors.surface0,
@@ -2998,10 +3102,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {/* A short-screen peek keeps only its Back row; Back brings the toolbar and filters back. */}
       {shortPeek ? null : slimSlot}
       {compactNotices}
-      {activeScopeSummary}
+      {compact ? null : activeScopeSummary}
       {compact ? null : fullToolbarSlot}
       {peekBar}
       {shortScreen ? null : layoutBar}
+      {bulkSelection.selecting || lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} shownCount={bulkScopeIds.length} disabled={!canStart || bulkOpen || includeArchived}
+        lifecycle={lifecycle} colors={colors} reviewRef={bulkReviewRef} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} onReview={() => {
+          if (!canStart || !bulkSelection.selected.length) return;
+          lifecycle.clear(); setBulkOpen(true); void lifecycle.prepare("archive", "filtered", [...bulkSelection.selected], true);
+        }} /> : null}
       <FlatList
         ref={listRef}
         testID="sessions-list"
@@ -3035,11 +3144,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
-          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
+          const id = item.kind === "result" || item.kind === "session" ? item.entry.id : null;
+          const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && id ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
+          // A row still listed keeps its unresolved archive's state after the batch that sent it is gone.
+          const lifecycleFeedback = <ArchiveRowFeedback row={outcome ?? recovery.items.find((entry) => entry.ref.agentId === id)?.row ?? undefined} colors={colors} />;
+          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? bulkSelection.selecting ? <ArchiveSelectionCheckbox session={item.entry} colors={colors}
+                checked={bulkSelection.selected.includes(item.entry.id)} pending={lifecycle.running && lifecycle.batch?.currentId === item.entry.id}
+                disabled={!canStart || bulkOpen || !bulkScopeIds.includes(item.entry.id) || (!bulkSelection.selected.includes(item.entry.id) && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT)}
+                outcome={outcome} onCheck={() => { if (canStart) void lifecycle.reconcile(item.entry.id); }} onPress={() => selectForArchive(item.entry)} /> : <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
-                // One X, one status line: no sheet and no focus move. Details on the recovery line opens the review.
+                // One X, one status line: no sheet and no focus move. Review archive on the recovery line opens what stays unresolved.
                 onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} />;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -3065,7 +3181,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             compact={compact}
             highlighted={peek?.sessionId === item.entry.id}
             live={timesLive}
-            onPress={handleOpen}
+            onPress={openOrSelect}
+            onLongPress={selectForArchive}
+            selectionMode={bulkSelection.selecting}
+            lifecycleFeedback={lifecycleFeedback}
           /> : null}
           </OrganizationRowView>;
         }}
@@ -3119,6 +3238,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionMenuLayer}
       {detailsLayer}
       {quickChooserLayer}
+      {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} anchor={bulkReviewRef} rootSize={rootSize} colors={colors} compact={compact}
+        onClose={() => { bulkReturnFocusRef.current = true; setBulkOpen(false); }}
+        onFinished={(summary) => toast.show(summary)} /> : null}
+      {recoveryOpen ? <ArchiveRecoverySheet recovery={{ ...recovery, items: recovery.attention }} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
+        canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered} onHide={hideRecovered} onClose={closeRecovery} /> : null}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); lifecycleHelp.dismiss(); }} /> : null}
     </View>

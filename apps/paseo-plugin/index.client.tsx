@@ -1,13 +1,19 @@
+import { useEffect } from "react";
 import type {
   PluginClientContext,
   PluginSidebarItemProps,
 } from "@getpaseo/plugin/client";
+import { useHosts } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { contributeReturnControl } from "./client/return-control";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
-import { recordVisit } from "./client/recent-sessions";
 import { SWITCH_SHEET } from "./client/start-switch-sheet";
+import {
+  disposeRetainedDirectories,
+  startHostDirectory,
+} from "./client/use-session-directory";
+import { forgetWorkspaceDirectories } from "./client/use-workspace-directory";
 
 export const SESSIONS_SCREEN_ID = "sessions";
 export const SESSIONS_SIDEBAR_ID = "sessions";
@@ -15,10 +21,28 @@ export const SESSIONS_COMMAND_ID = "sessions";
 export const BACK_COMMAND_ID = "back-to-kontor";
 export const SWITCH_COMMAND_ID = "start-or-switch";
 
+function runCleanup(
+  label: string,
+  action: () => void | Promise<void>,
+): void {
+  try {
+    void Promise.resolve(action()).catch((error) => {
+      console.error(`Kontor ${label} cleanup failed`, error);
+    });
+  } catch (error) {
+    console.error(`Kontor ${label} cleanup failed`, error);
+  }
+}
+
 function SessionsSidebarItem({
+  host,
   currentScreen,
   openScreen,
 }: PluginSidebarItemProps) {
+  const hostStatus = useHosts().find((candidate) => candidate.serverId === host.id)?.status ?? "offline";
+  useEffect(() => {
+    startHostDirectory(host.id, hostStatus);
+  }, [host.id, hostStatus]);
   return (
     <SidebarRow
       icon="Building2"
@@ -58,8 +82,7 @@ export default function contribute(client: PluginClientContext): () => void {
       icon: "ArrowLeft",
       keywords: ["back", "return", "kontor", "sessions"],
       context: "agent",
-      onSelect({ openScreen, agent }) {
-        recordVisit(agent.id);
+      onSelect({ openScreen }) {
         openScreen({ screenId: SESSIONS_SCREEN_ID });
       },
     }),
@@ -77,10 +100,12 @@ export default function contribute(client: PluginClientContext): () => void {
   const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID);
   const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
   return () => {
-    stopPlanControl();
-    stopReturnControl();
+    runCleanup("retained directories", () => disposeRetainedDirectories());
+    runCleanup("workspace directories", forgetWorkspaceDirectories);
+    runCleanup("plan control", stopPlanControl);
+    runCleanup("return control", stopReturnControl);
     for (const cleanup of cleanups) {
-      void cleanup();
+      runCleanup("contribution", cleanup);
     }
   };
 }

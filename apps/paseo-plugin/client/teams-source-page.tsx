@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 import { View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry } from "./session-directory";
-import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { sourceReadPending, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import { composeTeamsSourceView, type TeamsBindingMetadata, type TeamsFleetData, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { Action, Card, Copy, Disclosure, type Colors } from "./page-controls";
@@ -131,7 +131,7 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
   const diagnostics = bindingDiagnostics.length ? bindingDiagnostics : bindings.diagnostics;
   const problems = [
     ...configured.flatMap((source) => { const problem = sourceProblem(snapshots[source.id], errors[source.id], available); return problem ? [{ id: source.id, text: `${source.title} · ${bindings.formats[source.id]}: ${problem}` }] : []; }),
-    ...records.flatMap((source) => { const read = reads[source.id]; return !read || read.status !== "ready" ? [{ id: source.id, text: `${source.title} · JSON record source: ${read ? read.status : "unavailable or not read"}` }] : []; }),
+    ...records.flatMap((source) => { const read = reads[source.id]; const reading = read !== undefined && sourceReadPending(read); return !read || (read.status !== "ready" && !reading) ? [{ id: source.id, text: `${source.title} · JSON record source: ${read ? read.status : "unavailable or not read"}` }] : reading ? [{ id: source.id, text: `${source.title} · JSON record source: Reading…` }] : []; }),
   ];
   // How native sessions relate to configuration: inside the configuration disclosure when there is one, otherwise shown.
   const observations = <View testID="teams-observations" style={{ gap: 4 }}>
@@ -169,11 +169,12 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
           })}
           {records.map((source) => {
             const read = reads[source.id];
+            const reading = read !== undefined && sourceReadPending(read);
             const item = sourceView(source.id);
             const teams = read?.records?.teams.filter((team) => filterMatches(current.filter, team.title, ...team.roles.map((role) => role.role))) ?? [];
             return <Card key={source.id} title={`${source.title} · JSON record source`} colors={colors}>
               {read ? <>
-                <Copy colors={colors} small>{read.status} · {read.source.revisionKind} · Read {read.readAt}</Copy>
+                <Copy colors={colors} small>{reading ? "Reading…" : `${read.status} · ${read.source.revisionKind} · Read ${read.readAt}`}</Copy>
                 {teams.map((team) => <Copy key={team.id} colors={colors}>{team.title}: {team.roles.map((role) => `${role.role}: ${role.chain.join(" → ") || "Not captured"}`).join("; ")}</Copy>)}
                 <Disclosure label="Source details" colors={colors} open={item.details} onToggle={(open) => updateSource(source.id)({ details: open })}>
                   <Copy colors={colors}>{read.source.path}</Copy>

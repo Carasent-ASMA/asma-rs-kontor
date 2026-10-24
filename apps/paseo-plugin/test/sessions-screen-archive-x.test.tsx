@@ -54,6 +54,8 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => (
 
 import { SessionsScreen, SlimToolbar } from "../client/sessions-screen";
 import { SessionLifecycleDialog } from "../client/session-lifecycle-view";
+import { ArchiveRecoverySheet } from "../client/archive-recovery";
+import { configureArchiveNoticeStorage } from "../client/archive-feedback";
 import { createLifecycleService, type LifecycleClient } from "../server/session-lifecycle";
 import { DEFAULT_RECOVERY_TARGET, TAKEOVER_LIMIT, type LifecycleRow, type UnresolvedRef } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
@@ -68,7 +70,8 @@ const walk = (node: unknown): Element[] => {
 };
 const all = () => walk(harness.flush());
 const byTestID = (testID: string) => all().filter((element) => element.props.testID === testID);
-const settle = async () => { for (let n = 0; n < 10; n++) await new Promise((resolve) => setTimeout(resolve, 0)); harness.flush(); };
+// Two rounds: a read an effect starts in the first round's render (each listed ref's owner review) lands before the second.
+const settle = async () => { for (let round = 0; round < 2; round++) { for (let n = 0; n < 10; n++) await new Promise((resolve) => setTimeout(resolve, 0)); harness.flush(); } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
 const colors = { accent: "#05f", accentForeground: "#fff", border: "#ccc", foreground: "#111", foregroundMuted: "#666", surface0: "#fff", surface1: "#f4f4f4", surface2: "#eee", statusDanger: "#c00", statusSuccess: "#080", statusWarning: "#c80" } as unknown as PluginTheme["colors"];
 const SA = "fixture-sa", SWE = "fixture-swe", OTHER = "fixture-other";
@@ -80,6 +83,7 @@ const row = (id: string, patch: Partial<LifecycleRow> = {}) => ({ id, title: `Se
 const archived = (id: string, runtime: LifecycleRow["runtime"], message: string) => row(id, { outcome: "archived", runtime, message,
   availability: { agentId: id, state: "readable", reason: "Fixture read.", checkedAt: new Date().toISOString(), revision: "2026-10-22", archivedAt: "2026-10-22", nativeStatus: runtime === "closed" ? "closed" : "idle" } });
 const UNCONFIRMED = "Archived. The archive reply did not confirm completion (Timeout), so stopping its runtime is not confirmed.";
+const ONE = `Session ${SA}: archived, runtime stop not confirmed`;
 
 function mount(layout: "full" | "slim" | "compact") {
   const compact = layout === "compact";
@@ -105,9 +109,13 @@ function archiveX(id: string): Element {
 const resumeControls = () => all().flatMap((element) => element.type === SlimToolbar && element.props.action ? [element.props.action as Element] : element.props.accessibilityLabel === "Resume sessions" ? [element] : []);
 const recoveryLine = () => { const found = byTestID("sessions-archive-recovery"); expect(found.length).toBeLessThanOrEqual(1); return found[0]; };
 const lineText = () => { const line = recoveryLine(); return line ? walk(line.props.children).filter((element) => element.type === "Text").map((element) => element.props.children).join("") : null; };
-const checkAgain = () => walk(recoveryLine()?.props.children).find((element) => element.props.label === "Check again" || element.props.label === "Checking…");
+const reviewButton = () => walk(recoveryLine()?.props.children).find((element) => element.props.icon === "ClipboardList");
 const count = (name: string) => fake.calls.filter(([called]) => called === name).length;
-const details = () => walk(recoveryLine()?.props.children).find((element) => element.props.accessibilityLabel === "Archive details");
+const sheet = () => all().find((element) => element.type === ArchiveRecoverySheet);
+type Recovery = { items: Array<{ ref: UnresolvedRef; state: string; row: LifecycleRow | null; error: string | null }>; refreshing: string | null; refresh(only?: UnresolvedRef): Promise<void>; reload(): Promise<void> };
+const recovery = () => sheet()!.props.recovery as Recovery;
+/** Review archive opens the sheet; its own presses are covered by archive-recovery.test, so these call what they call. */
+const openSheet = async () => { press(reviewButton()); await settle(); expect(sheet()).toBeDefined(); return recovery(); };
 const dialog = () => all().find((element) => element.type === SessionLifecycleDialog);
 const press = (element: Element | undefined) => (element!.props.onPress as () => void)();
 
@@ -117,7 +125,7 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
   let durable: Map<string, ReturnType<typeof review>>;
   beforeEach(() => {
     clearSessionViews(); patchSessionView("host-a", { layout: "flat" });
-    unresolved = []; executing = []; durable = new Map(); fake.calls = []; fake.host = "host-a"; fake.refresh = vi.fn(() => new Promise(() => {}));
+    unresolved = []; executing = []; durable = new Map(); fake.calls = []; fake.host = "host-a"; fake.refresh = vi.fn(() => new Promise(() => {})); configureArchiveNoticeStorage(null);
     fake.toast.show.mockReset(); fake.toast.error.mockReset();
     fake.state = { entries: [SA, SWE, OTHER].map((id) => sessionEntry(id, { status: "idle" })), status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false };
     fake.rpc = {
@@ -130,39 +138,44 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
   });
   afterEach(() => harness.unmount());
 
-  it("archives quietly, keeps SA recoverable through SWE, a Resume review and a remount, then checks SA exactly", async () => {
+  it("archives quietly, keeps SA recoverable through SWE, a Resume review and a remount, then refreshes SA exactly", async () => {
     mount(layout); await settle();
     expect(recoveryLine()).toBeUndefined(); expect(listedIds()).toEqual(expect.arrayContaining([SA, SWE]));
     (archiveX(SA).props.onPress as () => void)(); await settle();
-    // Pending: no sheet, no Resume or Check, no stale banner, nothing refreshed, and the pressed X reports busy.
+    // Pending: no sheet, no Resume or Refresh status, no stale banner, nothing refreshed, and the pressed X reports busy.
     expect(all().some((element) => element.type === SessionLifecycleDialog)).toBe(false);
     expect(resumeControls().length).toBeGreaterThan(0); expect(resumeControls().every((control) => control.props.disabled === true)).toBe(true);
     expect(recoveryLine()).toBeUndefined(); expect(byTestID("sessions-source-banner")).toHaveLength(0);
     expect(archiveX(SA).props).toMatchObject({ pending: true, disabled: true }); expect(archiveX(SWE).props).toMatchObject({ pending: false, disabled: true });
     expect(fake.refresh).not.toHaveBeenCalled(); expect(listedIds()).toContain(SA); expect(count("sessions.lifecycle-execute-item")).toBe(1);
-    unresolved = [{ reviewId: review("archive", [SA]).id, agentId: SA }];
+    const owner = review("archive", [SA]);
+    unresolved = [{ reviewId: owner.id, agentId: SA }]; durable.set(owner.id, { ...owner, rows: [archived(SA, "unconfirmed", UNCONFIRMED)] });
     executing.shift()!(archived(SA, "unconfirmed", UNCONFIRMED)); await settle();
-    expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith(UNCONFIRMED); expect(fake.toast.show).not.toHaveBeenCalled();
+    // The toast names the state plainly; the host's own wording waits in the sheet's technical details.
+    expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith(`${ONE}.`); expect(fake.toast.show).not.toHaveBeenCalled();
     // Settled: only SA leaves; the live, complete directory is not walked again.
     expect(listedIds()).not.toContain(SA); expect(listedIds()).toEqual(expect.arrayContaining([SWE, OTHER])); expect(fake.refresh).not.toHaveBeenCalled();
-    expect(lineText()).toBe("1 archive not confirmed"); expect(checkAgain()?.props.disabled).toBe(false);
+    expect(lineText()).toBe(ONE); expect(reviewButton()?.props.accessibilityLabel).toBe("Review archive");
 
     (archiveX(SWE).props.onPress as () => void)(); await settle();
-    expect(checkAgain()?.props.disabled).toBe(true); expect(all().some((element) => element.type === SessionLifecycleDialog)).toBe(false);
+    // Reading stays open while another archive runs; only Refresh status waits.
+    await openSheet(); expect(sheet()!.props.canRefresh).toBe(false); (sheet()!.props.onClose as () => void)(); await settle();
+    expect(all().some((element) => element.type === SessionLifecycleDialog)).toBe(false);
     executing.shift()!(archived(SWE, "closed", "Archived. An exact-ID read shows its runtime closed. Durable history and files remain with the host.")); await settle();
     expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith(`Archived Session ${SWE}.`); expect(listedIds()).not.toContain(SWE);
-    expect(lineText()).toBe("1 archive not confirmed");
+    expect(lineText()).toBe(ONE);
 
     (resumeControls()[0]!.props.onPress as () => void)(); harness.flush();
     const dialog = all().find((element) => element.type === SessionLifecycleDialog)!;
     await (dialog.props.lifecycle as { prepare(action: string, scope: string, ids: string[]): Promise<unknown> }).prepare("resume", "filtered", [OTHER]); await settle();
     (all().find((element) => element.type === SessionLifecycleDialog)!.props.onClose as () => void)(); await settle();
-    expect(lineText()).toBe("1 archive not confirmed");
+    expect(lineText()).toBe(ONE);
 
     harness.unmount(); mount(layout); await settle();
-    expect(lineText()).toBe("1 archive not confirmed");
+    expect(lineText()).toBe(ONE);
     const before = count("sessions.lifecycle-execute-item");
-    (checkAgain()!.props.onPress as () => void)(); await settle();
+    const shown = await openSheet(); expect(sheet()!.props.canRefresh).toBe(true);
+    await shown.refresh(shown.items[0]!.ref); await settle();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item").map(([, input]) => input)).toEqual([{ reviewId: review("archive", [SA]).id, agentId: SA }]);
     expect(count("sessions.lifecycle-execute-item")).toBe(before); expect(before).toBe(2);
     expect(recoveryLine()).toBeUndefined();
@@ -191,55 +204,54 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith(`Archived Session ${SA}.`); expect(fake.toast.error).not.toHaveBeenCalled(); expect(dialog()).toBeUndefined();
   });
 
-  // SA's X leaves an unconfirmed archive; the durable owner review is what Details and Check both name.
+  // SA's X leaves an unconfirmed archive; the durable owner review is what the sheet and Refresh status both name.
   async function unconfirmedSA() {
     mount(layout); await settle();
     press(archiveX(SA)); await settle();
     const owner = review("archive", [SA]);
     unresolved = [{ reviewId: owner.id, agentId: SA }]; durable.set(owner.id, { ...owner, rows: [archived(SA, "unconfirmed", UNCONFIRMED)] });
     executing.shift()!(archived(SA, "unconfirmed", UNCONFIRMED)); await settle();
-    expect(lineText()).toBe("1 archive not confirmed");
+    expect(lineText()).toBe(ONE);
     return owner.id;
   }
 
-  it("holds every Resume, Details and the X while a Check runs, then frees them (QA P2 / AUD P2-02)", async () => {
+  it("holds every Resume, the X and Refresh status while a Refresh status runs, then frees them (QA P2 / AUD P2-02)", async () => {
     await unconfirmedSA();
     expect(resumeControls().length).toBeGreaterThan(0); expect(resumeControls().every((control) => control.props.disabled === false)).toBe(true);
-    expect(details()?.props.disabled).toBe(false); expect(archiveX(SWE).props.disabled).toBe(false);
+    expect(archiveX(SWE).props.disabled).toBe(false);
+    const shown = await openSheet(); expect(sheet()!.props.canRefresh).toBe(true);
     const checked = deferred<LifecycleRow>(); fake.rpc["sessions.lifecycle-reconcile-item"] = () => checked.promise;
-    press(checkAgain()); await settle();
+    void shown.refresh(shown.items[0]!.ref); await settle();
     const before = { preview: count("sessions.lifecycle-preview"), execute: count("sessions.lifecycle-execute-item"), read: count("sessions.lifecycle-review") };
-    expect(checkAgain()?.props).toMatchObject({ label: "Checking…", disabled: true });
-    expect(resumeControls().every((control) => control.props.disabled === true)).toBe(true);
-    expect(details()?.props.disabled).toBe(true); expect(archiveX(SWE).props.disabled).toBe(true);
-    for (const control of [...resumeControls(), details(), archiveX(SWE), checkAgain()]) press(control);
-    await settle();
+    expect(sheet()!.props.canRefresh).toBe(false); expect(recovery().refreshing).toBe(`${shown.items[0]!.ref.reviewId}:${SA}`);
+    expect(resumeControls().every((control) => control.props.disabled === true)).toBe(true); expect(archiveX(SWE).props.disabled).toBe(true);
+    for (const control of [...resumeControls(), archiveX(SWE)]) press(control);
+    void recovery().refresh(); await settle();
     expect(dialog()).toBeUndefined(); expect(archiveX(SWE).props.pending).toBe(false);
     expect([count("sessions.lifecycle-preview"), count("sessions.lifecycle-execute-item"), count("sessions.lifecycle-review"), count("sessions.lifecycle-reconcile-item")]).toEqual([before.preview, before.execute, before.read, 1]);
     unresolved = []; checked.resolve(archived(SA, "closed", "Archived. An exact-ID read shows its runtime closed. No additional archive request was sent.")); await settle();
-    expect(recoveryLine()).toBeUndefined(); expect(archiveX(SWE).props.disabled).toBe(false);
+    expect(recoveryLine()).toBeUndefined(); expect(archiveX(SWE).props.disabled).toBe(false); expect(sheet()!.props.canRefresh).toBe(true);
     expect(resumeControls().every((control) => control.props.disabled === false)).toBe(true);
+    (sheet()!.props.onClose as () => void)(); await settle(); expect(sheet()).toBeUndefined();
     press(resumeControls()[0]); harness.flush(); expect(dialog()).toBeDefined();
   });
 
-  it("opens SA's own review from Details after SWE's X and after a remount (AUD P2-01)", async () => {
+  it("lists SA from its own owner review after SWE's X and after a remount (AUD P2-01)", async () => {
     const owner = await unconfirmedSA();
     press(archiveX(SWE)); await settle();
     executing.shift()!(archived(SWE, "closed", "Archived. An exact-ID read shows its runtime closed. Durable history and files remain with the host.")); await settle();
-    expect(lineText()).toBe("1 archive not confirmed");
+    expect(lineText()).toBe(ONE);
     for (const remount of [false, true]) {
-      if (remount) { harness.unmount(); mount(layout); await settle(); expect(lineText()).toBe("1 archive not confirmed"); }
       fake.calls = [];
-      press(details()); await settle();
-      expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-review").map(([, input]) => input)).toContainEqual({ reviewId: owner });
-      const shown = (dialog()!.props.lifecycle as { review: ReturnType<typeof review> | null }).review;
-      expect(shown?.id).toBe(owner); expect(shown?.rows.map((entry) => [entry.id, entry.runtime])).toEqual([[SA, "unconfirmed"]]);
-      (dialog()!.props.onClose as () => void)(); await settle();
+      if (remount) { harness.unmount(); mount(layout); await settle(); expect(lineText()).toBe(ONE); expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-review").map(([, input]) => input)).toContainEqual({ reviewId: owner }); }
+      const shown = await openSheet();
+      expect(shown.items.map((item) => [item.ref.reviewId, item.row?.id, item.row?.runtime, item.state])).toEqual([[owner, SA, "unconfirmed", "unconfirmed"]]);
+      expect(dialog()).toBeUndefined(); (sheet()!.props.onClose as () => void)(); await settle();
     }
     expect(count("sessions.lifecycle-execute-item")).toBe(0); expect(count("sessions.lifecycle-reconcile-item")).toBe(0);
   });
 
-  it("never opens SWE's or any other review when Details cannot read SA's own review (QA1-ARCHIVE-B-P2-02)", async () => {
+  it("never shows SWE's or any other review when SA's own review cannot be read (QA1-ARCHIVE-B-P2-02)", async () => {
     const owner = await unconfirmedSA(), kept = durable.get(owner)!;
     press(archiveX(SWE)); await settle();
     executing.shift()!(archived(SWE, "closed", "Archived. An exact-ID read shows its runtime closed. Durable history and files remain with the host.")); await settle();
@@ -252,34 +264,38 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
       [async () => ({ ...review("resume", [SA]), id: "00000000-0000-4000-8000-0000000000e5", rows: [archived(SA, "unconfirmed", UNCONFIRMED)] }), "The host did not return this archive's own review."],
       [async () => ({ ...kept, rows: [archived(SWE, "closed", "Fixture.")] }), "The host did not return this archive's own review."],
     ];
+    await openSheet();
     for (const [answer, message] of answers) {
       fake.rpc["sessions.lifecycle-review"] = (input) => input.reviewId ? answer() : latestRead(input);
       fake.toast.error.mockReset();
-      press(details()); await settle();
-      expect(dialog()).toBeUndefined();
-      expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith(`Archive details could not be read: ${message}`);
-      expect(lineText()).toBe("1 archive not confirmed"); expect(details()?.props.disabled).toBe(false);
+      await recovery().reload(); await settle();
+      // The last known state and row stay; this read's failure is named beside it.
+      expect(recovery().items.map((item) => [item.ref.agentId, item.state, item.row?.id, item.error])).toEqual([[SA, "unconfirmed", SA, message]]);
+      expect(dialog()).toBeUndefined(); expect(fake.toast.error).not.toHaveBeenCalled(); expect(lineText()).toBe(ONE);
     }
     fake.rpc["sessions.lifecycle-review"] = (input) => input.reviewId === owner ? Promise.resolve(kept) : latestRead(input);
-    press(details()); await settle();
-    expect((dialog()!.props.lifecycle as { review: ReturnType<typeof review> | null }).review?.id).toBe(owner);
+    await recovery().reload(); await settle();
+    expect(recovery().items.map((item) => [item.ref.reviewId, item.error])).toEqual([[owner, null]]);
     expect(count("sessions.lifecycle-execute-item")).toBe(2); expect(count("sessions.lifecycle-reconcile-item")).toBe(0);
   });
 
-  it("drops a Details read the earlier host view started, after A→B and after A→B→A (AUD r4)", async () => {
+  it("drops an owner read the earlier host view started, after A→B and after A→B→A (AUD r4)", async () => {
     const owner = await unconfirmedSA(), kept = durable.get(owner)!, latestRead = fake.rpc["sessions.lifecycle-review"]!;
     fake.toast.error.mockReset();
-    // A late success or a late failure from the earlier view: neither opens, nor reports on the current view.
+    // A late success or a late failure from the earlier view: neither lists on, nor reports on, the current view. Host B lists none.
     for (const [path, fails] of [[["host-b"], false], [["host-b", "host-a"], false], [["host-b"], true], [["host-b", "host-a"], true]] as const) {
+      fake.rpc["sessions.lifecycle-review"] = (input) => input.reviewId ? Promise.resolve(kept) : latestRead(input);
+      fake.host = "host-a"; harness.flush(); await settle();
+      expect(lineText()).toBe(ONE);
       let finish!: () => void;
       const held = new Promise<unknown>((resolve, reject) => { finish = () => fails ? reject(new Error("Fixture late failure.")) : resolve(kept); });
-      fake.rpc["sessions.lifecycle-review"] = (input) => input.reviewId ? held : latestRead(input);
-      fake.host = "host-a"; harness.flush(); await settle();
-      expect(lineText()).toBe("1 archive not confirmed");
-      press(details()); await settle();
+      fake.rpc["sessions.lifecycle-review"] = (input) => input.reviewId ? held : fake.host === "host-b" ? Promise.resolve(review("resume", [OTHER], [])) : latestRead(input);
+      void (await openSheet()).reload(); await settle(); (sheet()!.props.onClose as () => void)(); await settle();
       for (const next of path) { fake.host = next; harness.flush(); await settle(); }
       finish(); await settle();
       expect(dialog()).toBeUndefined(); expect(fake.toast.error).not.toHaveBeenCalled();
+      if (path.at(-1) === "host-b") expect(recoveryLine()).toBeUndefined();
+      else expect(lineText()).toBe(fails ? "An archived session: couldn't check archive" : ONE);
     }
     expect(count("sessions.lifecycle-execute-item")).toBe(1); expect(count("sessions.lifecycle-reconcile-item")).toBe(0);
   });
@@ -291,15 +307,15 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
   }
   const quiet = () => { expect(dialog()).toBeUndefined(); expect(fake.toast.error).not.toHaveBeenCalled(); expect(fake.toast.show).not.toHaveBeenCalled(); };
 
-  it("acts on nothing an unmounted host view's Details, X or Check finishes later (QA1-ARCHIVE-B-P2-03)", async () => {
+  it("acts on nothing an unmounted host view's owner read, X or Refresh status finishes later (QA1-ARCHIVE-B-P2-03)", async () => {
     const owner = await unconfirmedSA(), kept = durable.get(owner)!, latestRead = fake.rpc["sessions.lifecycle-review"]!, saRef = [{ reviewId: owner, agentId: SA }];
     for (const fails of [true, false]) {
       let finish!: () => void;
       const held = new Promise<unknown>((resolve, reject) => { finish = () => fails ? reject(new Error("Fixture read on unmounted host A.")) : resolve(kept); });
       fake.rpc["sessions.lifecycle-review"] = (input) => input.reviewId ? held : latestRead(input);
-      await onHost("host-a", saRef); press(details()); await settle();
+      await onHost("host-a", saRef); expect(recoveryLine()).toBeUndefined();
       await onHost("host-b", []); expect(recoveryLine()).toBeUndefined();
-      finish(); await settle(); quiet();
+      finish(); await settle(); quiet(); expect(recoveryLine()).toBeUndefined();
     }
     fake.rpc["sessions.lifecycle-review"] = latestRead;
     await onHost("host-a", saRef); press(archiveX(SWE)); await settle();
@@ -320,13 +336,13 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     quiet(); expect(count("sessions.lifecycle-execute-item")).toBe(dispatched);
     fake.rpc["sessions.lifecycle-preview"] = preview;
     const checked = deferred<LifecycleRow>(); fake.rpc["sessions.lifecycle-reconcile-item"] = () => checked.promise;
-    await onHost("host-a", [...saRef, { reviewId: review("archive", [OTHER]).id, agentId: OTHER }]); press(checkAgain()); await settle();
+    await onHost("host-a", [...saRef, { reviewId: review("archive", [OTHER]).id, agentId: OTHER }]); void (await openSheet()).refresh(); await settle();
     await onHost("host-b", []); const reconciled = count("sessions.lifecycle-reconcile-item"), refreshedB = fake.refresh.mock.calls.length;
     checked.resolve(archived(SA, "closed", "Archived. An exact-ID read shows its runtime closed. No additional archive request was sent.")); await settle();
     quiet(); expect(reconciled).toBe(1); expect(count("sessions.lifecycle-reconcile-item")).toBe(1); expect(fake.refresh).toHaveBeenCalledTimes(refreshedB);
   });
 
-  it("acts on nothing an unmounted host view's Resume batch or row Check finishes later (QA1-ARCHIVE-B-P2-03 class)", async () => {
+  it("acts on nothing an unmounted host view's Resume batch or row Refresh status finishes later (QA1-ARCHIVE-B-P2-03 class)", async () => {
     type Lifecycle = { prepare(action: string, scope: string, ids: string[]): Promise<unknown>; run(): Promise<void>; reconcile(id: string): Promise<void> };
     for (const step of ["run", "reconcile"] as const) {
       await onHost("host-a", []);

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
-import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { sourceReadPending, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import type { DirectoryEntry } from "./session-directory";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { SourceDetails } from "./source-details";
@@ -117,7 +117,8 @@ export function PlanReader(props: Props) {
   const matches = needle ? blocks.filter((block) => block.text.toLocaleLowerCase().includes(needle)).length : 0;
   const width = { maxWidth: 900, width: "100%" as const, alignSelf: "center" as const };
   const workstream = selected.planMetadata ? selected.planMetadata.workstream : selected.source.workstream;
-  const tasks = `${workstream ? `Workstream: ${workstream}` : "Workstream: unknown"} · ${selected.graph ? `${selected.graph.nodes.length} plan tasks` : "task graph unavailable"}`;
+  const pending = sourceReadPending(selected);
+  const tasks = pending ? "Reading…" : `${workstream ? `Workstream: ${workstream}` : "Workstream: unknown"} · ${selected.graph ? `${selected.graph.nodes.length} plan tasks` : "task graph unavailable"}`;
   const linked = `${props.entries.length} linked session${props.entries.length === 1 ? "" : "s"}`;
   const notInferred = "A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.";
   const status = view.target ? declaration
@@ -175,7 +176,8 @@ export function PlanReader(props: Props) {
       </View>
       <View testID="plan-article" onLayout={(event) => { geometry.current.article = event.nativeEvent.layout.y; reveal(); }} style={{ ...width, paddingTop: 10 }}>
         {linkMessage ? <Copy colors={colors}>{linkMessage}</Copy> : null}
-        {content === null ? <Copy colors={colors}>This configured plan is unavailable.</Copy> : mode === "source"
+        {content === null ? pending ? <Text selectable testID="plan-reading" style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>Reading…</Text>
+          : <Copy colors={colors}>This configured plan is unavailable.</Copy> : mode === "source"
           ? declaration ? <>
             {declaration.line > 0 ? <Text selectable testID="plan-exact-source" style={sourceStyle(colors)}>{lines.slice(0, declaration.line).join("\n")}</Text> : null}
             <View testID="plan-source-target" onLayout={(event) => { geometry.current.source = event.nativeEvent.layout.y; reveal(); }} style={{ backgroundColor: colors.surface2, borderLeftWidth: 3, borderColor: colors.accent }}>

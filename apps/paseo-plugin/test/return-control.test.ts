@@ -1,4 +1,5 @@
 import type {
+  PaseoAgentListOptions,
   PaseoAgentListResult,
   PaseoAgentUpdate,
 } from "@getpaseo/client";
@@ -8,13 +9,11 @@ import type {
 } from "@getpaseo/plugin/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { collectDirectory } = vi.hoisted(() => ({ collectDirectory: vi.fn() }));
+const { getPaseoClient } = vi.hoisted(() => ({ getPaseoClient: vi.fn() }));
 
-vi.mock("../client/session-directory", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../client/session-directory")>();
-  return { ...actual, collectDirectory };
-});
+vi.mock("@getpaseo/plugin/client", () => ({ getPaseoClient }));
 
+import { contributePlanControl } from "../client/plan-control";
 import {
   contributeReturnControl,
   RETURN_CONTROL_ICON,
@@ -22,26 +21,165 @@ import {
   RETURN_CONTROL_LABEL,
   RETURN_CONTROL_TITLE,
 } from "../client/return-control";
+import type {
+  AgentDirectoryPage,
+  DirectoryState,
+} from "../client/session-directory";
+import {
+  bindHostDirectory,
+  disposeRetainedDirectories,
+  startHostDirectory,
+} from "../client/use-session-directory";
+import {
+  configureRecentStorage,
+  readRecent,
+  recordVisit,
+} from "../client/recent-sessions";
 import {
   clearSessionViews,
   patchSessionView,
   readSessionView,
 } from "../client/session-view-store";
-import { configureRecentStorage, readRecent } from "../client/recent-sessions";
-import { sessionEntry } from "./session-fixtures";
-
-type ReadyAgent = {
-  readonly id: string;
-  readonly workspaceId: string | null;
-  readonly status?: string;
-  readonly archivedAt?: string | null;
-};
 
 type Observer = {
   snapshot: () => void;
   update: (message: { type: "agent_update"; payload: PaseoAgentUpdate }) => void;
-  error?: () => void;
+  error?: (error: unknown) => void;
 };
+
+type HostPageOverrides = {
+  readonly workspaceId?: string | null;
+  readonly status?: "initializing" | "idle" | "running" | "error" | "closed";
+  readonly archivedAt?: string | null;
+  readonly title?: string;
+  readonly updatedAt?: string;
+};
+
+function agentPage(
+  id: string,
+  overrides: HostPageOverrides = {},
+): AgentDirectoryPage {
+  return {
+    agent: {
+      id,
+      title: overrides.title ?? `Session ${id}`,
+      status: overrides.status ?? "idle",
+      provider: "fixture",
+      cwd: "/fixture",
+      workspaceId:
+        overrides.workspaceId === undefined ? `wks-${id}` : overrides.workspaceId,
+      model: null,
+      labels: {},
+      createdAt: "2026-10-22T09:00:00.000Z",
+      updatedAt: overrides.updatedAt ?? "2026-10-22T10:00:00.000Z",
+      archivedAt: overrides.archivedAt ?? null,
+      pendingPermissions: [],
+      requiresAttention: false,
+      attentionReason: null,
+      attentionTimestamp: null,
+    },
+    project: null,
+  } as unknown as AgentDirectoryPage;
+}
+
+const hosts = new Map<string, ReturnType<typeof fakeHost>>();
+
+function fakeHost(hostId: string, initialRows: readonly AgentDirectoryPage[]) {
+  let rows = initialRows;
+  let gate: Promise<void> | null = null;
+  let unsubscribed = 0;
+  let releases = 0;
+  const calls: PaseoAgentListOptions[] = [];
+  const observers: Observer[] = [];
+  const list = async (options: PaseoAgentListOptions = {}) => {
+    calls.push(options);
+    if (!options.subscribe && gate) await gate;
+    const visible = rows.filter(
+      (row) =>
+        options.filter?.includeArchived === true ||
+        (row.agent.archivedAt ?? null) === null,
+    );
+    if (options.subscribe) {
+      const limit = options.page?.limit ?? 200;
+      const entries = visible.slice(0, limit);
+      const snapshot = {
+        requestId: "fixture",
+        subscriptionId: "sub-1",
+        entries,
+        pageInfo: {
+          hasMore: visible.length > entries.length,
+          nextCursor: visible.length > entries.length ? String(entries.length) : null,
+          prevCursor: null,
+        },
+      } as PaseoAgentListResult;
+      const subscription = {
+        subscriptionId: "sub-1",
+        ready: Promise.resolve(snapshot),
+        subscribe: (observer: Observer) => {
+          observers.push(observer);
+          observer.snapshot();
+          return () => {
+            unsubscribed += 1;
+          };
+        },
+        release: async () => {
+          releases += 1;
+        },
+      };
+      return { ...snapshot, subscription };
+    }
+    const start = Number(options.page?.cursor ?? 0);
+    const end = start + (options.page?.limit ?? 200);
+    return {
+      requestId: "fixture",
+      entries: visible.slice(start, end),
+      pageInfo: {
+        hasMore: end < visible.length,
+        nextCursor: end < visible.length ? String(end) : null,
+        prevCursor: null,
+      },
+    };
+  };
+  const host = {
+    hostId,
+    client: { agents: { list } },
+    calls,
+    observers,
+    get subscribes() {
+      return calls.filter((call) => call.subscribe);
+    },
+    get walks() {
+      return calls.filter((call) => !call.subscribe);
+    },
+    get unsubscribed() {
+      return unsubscribed;
+    },
+    get releases() {
+      return releases;
+    },
+    setRows(next: readonly AgentDirectoryPage[]) {
+      rows = next;
+    },
+    holdWalk() {
+      let release!: () => void;
+      gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        gate = null;
+        release();
+      };
+    },
+    emitUpdate(update: PaseoAgentUpdate) {
+      observers.at(-1)?.update({ type: "agent_update", payload: update });
+    },
+    emitError(error: unknown) {
+      observers.at(-1)?.error?.(error);
+    },
+  };
+  hosts.set(hostId, host);
+  return host;
+}
 
 type PillContribution = {
   id: string;
@@ -64,66 +202,12 @@ type Pill = {
   active: boolean;
 };
 
-function agentSnapshot(
-  id: string,
-  workspaceId: string | null,
-  status = "idle",
-  archivedAt: string | null = null,
-): ReadyAgent {
-  return { id, workspaceId, status, archivedAt };
-}
-
-function readyAgent(
-  id: string,
-  workspaceId: string | null,
-  status = "idle",
-  archivedAt: string | null = null,
-): PaseoAgentListResult["entries"][number] {
-  return {
-    agent: agentSnapshot(id, workspaceId, status, archivedAt),
-  } as unknown as PaseoAgentListResult["entries"][number];
-}
-
-function fakeClient(
-  readyEntries: readonly PaseoAgentListResult["entries"][number][] = [],
-  bufferedUpdates: readonly PaseoAgentUpdate[] = [],
-  options: { failFirstObservation?: boolean } = {},
+function fakeControls(
+  beforeAdd?: (contribution: PillContribution) => void,
 ) {
   const pills: Pill[] = [];
-  const observers: Observer[] = [];
-  const release = vi.fn(async () => undefined);
-  const unsubscribe = vi.fn();
-  let signal: AbortSignal | undefined;
-  let observationAttempts = 0;
-  const subscription = {
-    subscribe(observer: Observer) {
-      observers.push(observer);
-      observer.snapshot();
-      for (const payload of bufferedUpdates) {
-        observer.update({ type: "agent_update", payload });
-      }
-      return unsubscribe;
-    },
-    release,
-  };
-  const list = vi.fn(async (listOptions?: { subscribe?: unknown; signal?: AbortSignal }) => {
-    if (!listOptions?.subscribe) {
-      throw new Error("the return-control test only walks through the mocked collectDirectory");
-    }
-    signal = listOptions.signal;
-    observationAttempts += 1;
-    if (options.failFirstObservation && observationAttempts === 1) {
-      throw new Error("observation bootstrap unavailable");
-    }
-    return {
-      requestId: "request-subscribe",
-      subscriptionId: "sub-1",
-      entries: readyEntries,
-      pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
-      subscription,
-    };
-  });
   const addComposerPill = vi.fn((contribution: PillContribution) => {
+    beforeAdd?.(contribution);
     let pill!: Pill;
     const registration = {
       update: vi.fn(),
@@ -136,72 +220,88 @@ function fakeClient(
     return registration;
   });
   const openScreen = vi.fn();
+  const rpc = vi.fn(async () => ({
+    status: "ready",
+    associations: {} as Record<string, string[]>,
+    sources: [] as { id: string }[],
+    error: null,
+  }));
   const client = {
-    paseo: { agents: { list } },
+    paseo: {},
+    rpc,
     addComposerPill,
     openScreen,
   } as unknown as PluginClientContext;
   return {
     client,
-    list,
+    pills,
     addComposerPill,
     openScreen,
-    pills,
-    observers,
-    release,
-    unsubscribe,
-    get signal() {
-      return signal;
-    },
-    get observationAttempts() {
-      return observationAttempts;
-    },
-    pillFor(agentId: string): Pill | undefined {
+    rpc,
+    activePills: () => pills.filter((pill) => pill.active),
+    pillFor(agentId: string, id?: string): Pill | undefined {
       return [...pills]
         .reverse()
-        .find((pill) => pill.active && pill.contribution.agentId === agentId);
+        .find(
+          (pill) =>
+            pill.active &&
+            pill.contribution.agentId === agentId &&
+            (id === undefined || pill.contribution.id === id),
+        );
     },
   };
 }
 
-function updateAgent(agent: ReadyAgent): PaseoAgentUpdate {
-  return {
-    kind: "upsert",
-    agent,
-  } as PaseoAgentUpdate;
+async function settle(): Promise<void> {
+  for (let index = 0; index < 50; index += 1) {
+    await Promise.resolve();
+  }
 }
 
-describe("Kontor return control", () => {
-  beforeEach(() => {
+function installHosts(): void {
+  getPaseoClient.mockImplementation((hostId: string) => {
+    const host = hosts.get(hostId);
+    if (!host) {
+      throw new Error(`No fixture host for ${hostId}`);
+    }
+    return host.client;
+  });
+}
+
+describe("Kontor composer controls share one host directory", () => {
+  beforeEach(async () => {
+    await disposeRetainedDirectories();
     clearSessionViews();
-    vi.resetAllMocks();
+    hosts.clear();
+    getPaseoClient.mockReset();
+    installHosts();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await disposeRetainedDirectories();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
-  it("registers a Kontor pill for each live agent and opens the screen on press", async () => {
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory.mockResolvedValueOnce({
-      entries: [
-        sessionEntry("agent-a", { workspaceId: "wks-a" }),
-        sessionEntry("agent-b", { workspaceId: "wks-b", status: "running" }),
-      ],
-      pages: 1,
-    });
-
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(fake.pills).toHaveLength(2));
-
-    expect(fake.list).toHaveBeenCalledWith(
-      expect.objectContaining({ subscribe: {}, signal: expect.any(AbortSignal) }),
+  it("registers pills from the 25-row bootstrap and removes only after a complete walk", async () => {
+    const rows = Array.from({ length: 60 }, (_, index) =>
+      agentPage(`s-${index}`, { workspaceId: `wks-${index}` }),
     );
-    expect(fake.addComposerPill).toHaveBeenCalledTimes(2);
-    expect(fake.pillFor("agent-a")?.contribution).toMatchObject({
+    const host = fakeHost("host-a", rows);
+    const releaseWalk = host.holdWalk();
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(1);
+    expect(controls.activePills()).toHaveLength(25);
+    expect(controls.pillFor("s-0")?.contribution).toMatchObject({
       id: RETURN_CONTROL_ID,
-      workspaceId: "wks-a",
-      agentId: "agent-a",
+      workspaceId: "wks-0",
+      agentId: "s-0",
       button: {
         title: RETURN_CONTROL_TITLE,
         icon: RETURN_CONTROL_ICON,
@@ -209,6 +309,17 @@ describe("Kontor return control", () => {
         behavior: { kind: "action" },
       },
     });
+
+    host.setRows(rows.slice(1));
+    expect(controls.pillFor("s-0")).toBeDefined();
+
+    releaseWalk();
+    await settle();
+
+    expect(controls.activePills()).toHaveLength(59);
+    expect(controls.pillFor("s-0")).toBeUndefined();
+    expect(host.walks).toHaveLength(1);
+    expect(host.subscribes).toHaveLength(1);
 
     patchSessionView("host-a", {
       query: "ASMA-8540",
@@ -219,419 +330,464 @@ describe("Kontor return control", () => {
       scrollOffset: 240,
     });
     configureRecentStorage(null);
-    fake.pillFor("agent-a")?.contribution.button.behavior.onPress();
-    expect(fake.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
-    // The conversation left for Kontor is this device's latest visit.
-    expect(readRecent().record.visits.map((visit) => visit.id)).toEqual(["agent-a"]);
-    expect(readSessionView("host-a")).toMatchObject({
-      query: "ASMA-8540",
-      status: "running",
-      shortcut: "Adam",
-      includeArchived: true,
-      advancedOpen: true,
-      scrollOffset: 240,
-    });
+    recordVisit("host-a", "s-1", Date.now() - 60_000);
+    const beforeReturn = readRecent("host-a");
+    const beforeView = readSessionView("host-a");
+
+    controls.pillFor("s-1")?.contribution.button.behavior.onPress();
+    expect(controls.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
+    expect(readRecent("host-a")).toEqual(beforeReturn);
+    expect(readSessionView("host-a")).toEqual(beforeView);
 
     stop();
   });
 
-  it("reconciles snapshots and update lifecycle without duplicate registrations", async () => {
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory
-      .mockResolvedValueOnce({
-        entries: [
-          sessionEntry("agent-a", { workspaceId: "wks-a" }),
-          sessionEntry("agent-b", { workspaceId: "wks-b" }),
-        ],
-        pages: 1,
-      })
-      .mockResolvedValueOnce({
-        entries: [
-          sessionEntry("agent-a", { workspaceId: "wks-a" }),
-          sessionEntry("agent-c", { workspaceId: "wks-c" }),
-        ],
-        pages: 1,
-      });
+  it("follows native updates and removes closed, archived and removed sessions", async () => {
+    const rows = [agentPage("agent-a", { workspaceId: "wks-a" })];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
 
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(fake.pills).toHaveLength(2));
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const initialPill = controls.pillFor("agent-a");
+    expect(initialPill).toBeDefined();
 
-    const pillA = fake.pillFor("agent-a");
-    const pillB = fake.pillFor("agent-b");
-    expect(pillA).toBeDefined();
-    expect(pillB).toBeDefined();
+    host.emitUpdate({
+      kind: "upsert",
+      agent: { ...rows[0]!.agent, workspaceId: "wks-a2" },
+    } as PaseoAgentUpdate);
+    expect(initialPill?.registration.remove).toHaveBeenCalledTimes(1);
+    expect(controls.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a2");
 
-    fake.observers[0]!.snapshot();
-    await vi.waitFor(() => expect(pillB!.registration.remove).toHaveBeenCalledTimes(1));
-    expect(pillA!.registration.remove).not.toHaveBeenCalled();
-    expect(fake.pillFor("agent-c")).toBeDefined();
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[0]!.agent,
+        workspaceId: "wks-a2",
+        archivedAt: "2026-10-22T11:00:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+    expect(controls.pillFor("agent-a")).toBeUndefined();
 
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: { kind: "remove", agentId: "agent-a" },
-    });
-    expect(pillA!.registration.remove).toHaveBeenCalledTimes(1);
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[0]!.agent,
+        id: "agent-b",
+        workspaceId: "wks-b",
+      },
+    } as PaseoAgentUpdate);
+    expect(controls.pillFor("agent-b")).toBeDefined();
 
-    const pillC = fake.pillFor("agent-c")!;
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-c", "wks-c2")),
-    });
-    expect(pillC.registration.remove).toHaveBeenCalledTimes(1);
-    const pillC2 = fake.pillFor("agent-c");
-    expect(pillC2?.contribution.workspaceId).toBe("wks-c2");
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[0]!.agent,
+        id: "agent-b",
+        workspaceId: "wks-b",
+        status: "closed",
+      },
+    } as PaseoAgentUpdate);
+    expect(controls.pillFor("agent-b")).toBeUndefined();
 
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-c", "wks-c2", "idle", "2026-10-18T12:00:00.000Z")),
-    });
-    expect(pillC2!.registration.remove).toHaveBeenCalledTimes(1);
-
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-d", "wks-d")),
-    });
-    const pillD = fake.pillFor("agent-d");
-    expect(pillD).toBeDefined();
-
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-d", "wks-d", "closed")),
-    });
-    expect(pillD!.registration.remove).toHaveBeenCalledTimes(1);
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[0]!.agent,
+        id: "agent-c",
+        workspaceId: "wks-c",
+      },
+    } as PaseoAgentUpdate);
+    expect(controls.pillFor("agent-c")).toBeDefined();
+    host.emitUpdate({ kind: "remove", agentId: "agent-c" } as PaseoAgentUpdate);
+    expect(controls.pillFor("agent-c")).toBeUndefined();
 
     stop();
   });
 
-  it("recovers observation after a failed bootstrap and follows later agents", async () => {
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")], [], {
-      failFirstObservation: true,
+  it("lets the plan control read sessions from the same directory without another walk", async () => {
+    vi.useFakeTimers();
+    const rows = [
+      agentPage("fixture-a", { workspaceId: "wks-a" }),
+      agentPage("fixture-b", { workspaceId: "wks-b" }),
+      agentPage("fixture-c", { workspaceId: "wks-c" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    controls.rpc.mockResolvedValue({
+      status: "ready",
+      associations: { "fixture-a": ["plan-a"], "fixture-b": ["plan-b", "plan-c"] },
+      sources: [{ id: "plan-a" }, { id: "plan-b" }, { id: "plan-c" }],
+      error: null,
     });
-    collectDirectory.mockResolvedValueOnce({
-      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
-      pages: 1,
+
+    const stopPlan = contributePlanControl(controls.client, "sessions");
+    const stopReturn = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(1);
+    expect(controls.pillFor("fixture-a", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-b", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-c", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("fixture-a", RETURN_CONTROL_ID)).toBeDefined();
+    expect(controls.rpc).toHaveBeenCalledTimes(1);
+
+    controls.pillFor("fixture-a", "open-linked-plan")?.contribution.button.behavior.onPress();
+    expect(controls.openScreen).toHaveBeenCalledWith({
+      screenId: "sessions",
+      params: { tab: "Plan", agentId: "fixture-a", sourceId: "plan-a" },
     });
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 100 });
-    await vi.waitFor(() => expect(fake.pillFor("agent-a")).toBeDefined(), { interval: 5 });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(controls.rpc).toHaveBeenCalledTimes(2);
+    expect(host.walks).toHaveLength(1);
+    expect(host.subscribes).toHaveLength(1);
 
-    collectDirectory.mockResolvedValue({
-      entries: [
-        sessionEntry("agent-a", { workspaceId: "wks-a" }),
-        sessionEntry("agent-b", { workspaceId: "wks-b" }),
-      ],
-      pages: 1,
-    });
-    await vi.waitFor(() => expect(fake.observers).toHaveLength(1), { interval: 5 });
-
-    expect(fake.observationAttempts).toBe(2);
-    expect(errorSpy).toHaveBeenCalledWith(
-      "Kontor return control could not observe agents",
-      expect.any(Error),
-    );
-    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined());
-    expect(fake.observers).toHaveLength(1);
-
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: { kind: "remove", agentId: "agent-b" },
-    });
-    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeUndefined());
-
-    expect(fake.observers).toHaveLength(1);
-    stop();
+    stopPlan();
+    stopReturn();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("re-establishes observation after an owned subscription error", async () => {
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory.mockResolvedValue({
-      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
-      pages: 1,
-    });
-
-    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 100 });
-    await vi.waitFor(() => expect(fake.observers).toHaveLength(1), { interval: 5 });
-
-    fake.observers[0]!.error?.();
-    await vi.waitFor(() => expect(fake.observers).toHaveLength(2), { interval: 5 });
-    expect(fake.release).toHaveBeenCalledTimes(1);
-
-    fake.observers[1]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-b", "wks-b")),
-    });
-    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined());
-
-    stop();
-  });
-
-  it("drops buffered updates on subscription error instead of restoring a wrong-workspace pill", async () => {
-    let releaseWalk!: (value: {
-      entries: ReturnType<typeof sessionEntry>[];
-      pages: number;
-    }) => void;
-    const heldWalk = new Promise<{
-      entries: ReturnType<typeof sessionEntry>[];
-      pages: number;
-    }>((resolve) => {
-      releaseWalk = resolve;
-    });
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory.mockReturnValueOnce(heldWalk);
-
-    const stop = contributeReturnControl(fake.client, "sessions", {
-      retryDelayMs: 1000,
-    });
-    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(1), {
-      interval: 5,
-    });
-
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-a", "wks-b")),
-    });
-    expect(fake.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
-
-    fake.observers[0]!.error?.();
-    releaseWalk({
-      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
-      pages: 1,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(fake.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
-
-    stop();
-  });
-
-  it("drops buffered updates on a reconnect snapshot before the fresh walk", async () => {
-    let releaseWalk!: (value: {
-      entries: ReturnType<typeof sessionEntry>[];
-      pages: number;
-    }) => void;
-    const heldWalk = new Promise<{
-      entries: ReturnType<typeof sessionEntry>[];
-      pages: number;
-    }>((resolve) => {
-      releaseWalk = resolve;
-    });
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory
-      .mockReturnValueOnce(heldWalk)
-      .mockRejectedValueOnce(new Error("fresh reconciliation failed"));
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const stop = contributeReturnControl(fake.client, "sessions", {
-      retryDelayMs: 1000,
-    });
-    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(1), {
-      interval: 5,
-    });
-
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-a", "wks-b")),
-    });
-    fake.observers[0]!.snapshot();
-    releaseWalk({
-      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
-      pages: 1,
-    });
-    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(2), {
-      interval: 5,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(fake.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
-    expect(errorSpy).toHaveBeenCalledWith(
-      "Kontor return control could not walk the agent directory",
-      expect.any(Error),
-    );
-
-    stop();
-  });
-
-  it("retries a failed directory walk while the subscription is healthy", async () => {
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory
-      .mockRejectedValueOnce(new Error("transient walk failure"))
-      .mockResolvedValueOnce({
-        entries: [
-          sessionEntry("agent-a", { workspaceId: "wks-a" }),
-          sessionEntry("agent-b", { workspaceId: "wks-b" }),
-        ],
-        pages: 1,
-      });
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 20 });
-    await vi.waitFor(() => expect(fake.observers).toHaveLength(1), { interval: 5 });
-    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined(), { interval: 5 });
-
-    expect(collectDirectory).toHaveBeenCalledTimes(2);
-    expect(errorSpy).toHaveBeenCalledWith(
-      "Kontor return control could not walk the agent directory",
-      expect.any(Error),
-    );
-
-    stop();
-  });
-
-  it("bounds updates buffered during a walk and reconciles with a follow-up walk", async () => {
-    let releaseWalk!: (value: {
-      entries: ReturnType<typeof sessionEntry>[];
-      pages: number;
-    }) => void;
-    const heldWalk = new Promise<{
-      entries: ReturnType<typeof sessionEntry>[];
-      pages: number;
-    }>((resolve) => {
-      releaseWalk = resolve;
-    });
-    collectDirectory
-      .mockReturnValueOnce(heldWalk)
-      .mockResolvedValueOnce({
-        entries: [
-          sessionEntry("agent-a", { workspaceId: "wks-a" }),
-          sessionEntry("agent-b", { workspaceId: "wks-b" }),
-        ],
-        pages: 1,
-      });
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(1), { interval: 5 });
-    for (let index = 0; index < 300; index += 1) {
-      fake.observers[0]!.update({
-        type: "agent_update",
-        payload: updateAgent(agentSnapshot(`buffered-${index}`, `wks-${index}`)),
-      });
-    }
-    releaseWalk({
-      entries: [
-        sessionEntry("agent-a", { workspaceId: "wks-a" }),
-        sessionEntry("agent-b", { workspaceId: "wks-b" }),
-      ],
-      pages: 1,
-    });
-
-    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(2), { interval: 5 });
-    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined(), { interval: 5 });
-    expect(fake.pillFor("buffered-0")).toBeUndefined();
-
-    stop();
-  });
-
-  it("does not retry observation after cleanup", async () => {
-    const fake = fakeClient([], [], { failFirstObservation: true });
-    collectDirectory.mockResolvedValue({ entries: [], pages: 1 });
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 100 });
-    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled(), { interval: 5 });
-    stop();
-
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    expect(fake.observationAttempts).toBe(1);
-    expect(fake.observers).toHaveLength(0);
-    expect(fake.signal?.aborted).toBe(true);
-  });
-
-  it("cleans every registration and ignores late work after cleanup", async () => {
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-    collectDirectory.mockResolvedValue({
-      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
-      pages: 1,
-    });
-
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(fake.pills).toHaveLength(1));
-    const pillA = fake.pillFor("agent-a")!;
-
-    stop();
-
-    expect(pillA.registration.remove).toHaveBeenCalledTimes(1);
-    expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(fake.release).toHaveBeenCalledTimes(1);
-    expect(fake.signal?.aborted).toBe(true);
-
-    fake.observers[0]!.snapshot();
-    fake.observers[0]!.update({
-      type: "agent_update",
-      payload: updateAgent(agentSnapshot("agent-b", "wks-b")),
-    });
-    await Promise.resolve();
-    expect(fake.addComposerPill).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not publish a late bootstrap walk after cleanup", async () => {
-    let resolveWalk!: (value: { entries: ReturnType<typeof sessionEntry>[]; pages: number }) => void;
-    collectDirectory.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveWalk = resolve;
+  it("excludes archived sessions from plan pills even when history is in scope", async () => {
+    const rows = [
+      agentPage("archived", {
+        workspaceId: "wks-archived",
+        archivedAt: "2026-10-22T11:00:00.000Z",
       }),
-    );
-    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
-
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(fake.pills).toHaveLength(1));
-    stop();
-
-    resolveWalk({
-      entries: [sessionEntry("agent-b", { workspaceId: "wks-b" })],
-      pages: 1,
+      agentPage("live", { workspaceId: "wks-live" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    controls.rpc.mockResolvedValue({
+      status: "ready",
+      associations: {
+        archived: ["plan-archived"],
+        live: ["plan-live"],
+      },
+      sources: [{ id: "plan-archived" }, { id: "plan-live" }],
+      error: null,
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(fake.addComposerPill).toHaveBeenCalledTimes(1);
-    expect(fake.pills).toHaveLength(1);
+    const stopPlan = contributePlanControl(controls.client, "sessions");
+    await settle();
+    const stopReturn = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a", "online", true);
+    await settle();
+
+    expect(controls.pillFor("archived", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("live", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("archived", RETURN_CONTROL_ID)).toBeUndefined();
+    expect(controls.pillFor("live", RETURN_CONTROL_ID)).toBeDefined();
+
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[1]!.agent,
+        archivedAt: "2026-10-22T12:00:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+    await settle();
+
+    expect(controls.pillFor("live", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("live", RETURN_CONTROL_ID)).toBeUndefined();
+
+    stopPlan();
+    stopReturn();
   });
 
-  it("lets a buffered remove win over the ready bootstrap page", async () => {
-    const fake = fakeClient(
-      [readyAgent("agent-a", "wks-a")],
-      [{ kind: "remove", agentId: "agent-a" }],
+  it("drops a buffered workspace update when the subscription fails during the held walk", async () => {
+    const rows = [agentPage("agent-a", { workspaceId: "wks-a" })];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+
+    startHostDirectory("host-a", "offline");
+    const releaseWalk = host.holdWalk();
+    startHostDirectory("host-a", "online");
+    await settle();
+    expect(host.observers).toHaveLength(2);
+
+    host.emitUpdate({
+      kind: "upsert",
+      agent: { ...rows[0]!.agent, workspaceId: "wks-b" },
+    } as PaseoAgentUpdate);
+    host.emitError(new Error("stream closed"));
+    releaseWalk();
+    await settle();
+
+    expect(controls.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+    stop();
+  });
+
+  it("lets a buffered remove win over the bootstrap page and the held walk", async () => {
+    const rows = [
+      agentPage("keep", { workspaceId: "wks-keep" }),
+      agentPage("remove", { workspaceId: "wks-remove" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const releaseWalk = host.holdWalk();
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.pillFor("remove")).toBeDefined();
+
+    host.emitUpdate({ kind: "remove", agentId: "remove" } as PaseoAgentUpdate);
+    releaseWalk();
+    await settle();
+
+    expect(controls.pillFor("remove")).toBeUndefined();
+    expect(controls.pillFor("keep")).toBeDefined();
+    stop();
+  });
+
+  it("registers pills only for sessions with a usable workspace in a mixed inventory", async () => {
+    const rows = [
+      agentPage("no-workspace", { workspaceId: null }),
+      agentPage("empty-workspace", { workspaceId: "" }),
+      agentPage("live", { workspaceId: "wks-live" }),
+      agentPage("closed", { workspaceId: "wks-closed", status: "closed" }),
+      agentPage("archived", {
+        workspaceId: "wks-archived",
+        archivedAt: "2026-10-22T11:00:00.000Z",
+      }),
+    ];
+    fakeHost("host-a", rows);
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+
+    expect(controls.activePills()).toHaveLength(1);
+    expect(controls.pillFor("live")).toBeDefined();
+    expect(controls.pillFor("no-workspace")).toBeUndefined();
+    expect(controls.pillFor("empty-workspace")).toBeUndefined();
+    expect(controls.pillFor("closed")).toBeUndefined();
+    expect(controls.pillFor("archived")).toBeUndefined();
+    stop();
+  });
+
+  it("keeps the remaining plan pills and both controls when one registration throws", async () => {
+    const rows = ["fixture-a", "fixture-b", "fixture-c"].map((id) =>
+      agentPage(id, { workspaceId: `wks-${id}` }),
     );
-    collectDirectory.mockResolvedValueOnce({
-      entries: [sessionEntry("agent-b", { workspaceId: "wks-b" })],
-      pages: 1,
+    const host = fakeHost("host-a", rows);
+    let failFixtureB = true;
+    const controls = fakeControls((contribution) => {
+      if (
+        failFixtureB &&
+        contribution.id === "open-linked-plan" &&
+        contribution.agentId === "fixture-b"
+      ) {
+        throw new Error("registration boom");
+      }
     });
+    controls.rpc.mockResolvedValue({
+      status: "ready",
+      associations: {
+        "fixture-a": ["plan-a"],
+        "fixture-b": ["plan-b"],
+        "fixture-c": ["plan-c"],
+        "fixture-d": ["plan-d"],
+      },
+      sources: ["plan-a", "plan-b", "plan-c", "plan-d"].map((id) => ({ id })),
+      error: null,
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(fake.pills.some((pill) => pill.contribution.agentId === "agent-b")).toBe(true));
+    const stopPlan = contributePlanControl(controls.client, "sessions");
+    await settle();
+    const stopReturn = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
 
-    const removed = fake.pills.find((pill) => pill.contribution.agentId === "agent-a");
-    expect(removed?.registration.remove).toHaveBeenCalledTimes(1);
-    expect(fake.pillFor("agent-a")).toBeUndefined();
+    expect(controls.pillFor("fixture-a", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-b", "open-linked-plan")).toBeUndefined();
+    expect(controls.pillFor("fixture-c", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-a", RETURN_CONTROL_ID)).toBeDefined();
+    expect(controls.pillFor("fixture-c", RETURN_CONTROL_ID)).toBeDefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor plan control could not reconcile a composer pill",
+      expect.any(Error),
+    );
+
+    failFixtureB = false;
+    host.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...rows[0]!.agent,
+        id: "fixture-d",
+        workspaceId: "wks-fixture-d",
+      },
+    } as PaseoAgentUpdate);
+    await settle();
+
+    expect(controls.pillFor("fixture-b", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-d", "open-linked-plan")).toBeDefined();
+    expect(controls.pillFor("fixture-d", RETURN_CONTROL_ID)).toBeDefined();
+
+    stopPlan();
+    stopReturn();
+  });
+
+  it("keeps later listeners and pending bindings when one listener throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = vi.fn(() => {
+      throw new Error("listener boom");
+    });
+    const second = vi.fn();
+    const releaseFirst = bindHostDirectory(first);
+    const releaseSecond = bindHostDirectory(second);
+    const rows = [agentPage("agent-a", { workspaceId: "wks-a" })];
+    const host = fakeHost("host-a", rows);
+
+    expect(() => startHostDirectory("host-a")).not.toThrow();
+    await settle();
+
+    expect(first).toHaveBeenCalled();
+    expect(second).toHaveBeenCalled();
+    const beforeUpdate = second.mock.calls.length;
+    host.emitUpdate({
+      kind: "upsert",
+      agent: { ...rows[0]!.agent, title: "Renamed" },
+    } as PaseoAgentUpdate);
+    await settle();
+    expect(second.mock.calls.length).toBeGreaterThan(beforeUpdate);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor host directory listener failed for host-a",
+      expect.any(Error),
+    );
+
+    const third = vi.fn();
+    const releaseThird = bindHostDirectory(third);
+    expect(third).toHaveBeenCalled();
+
+    fakeHost("host-b", [agentPage("b-only", { workspaceId: "wks-b" })]);
+    startHostDirectory("host-b");
+    await settle();
+
+    const fourth = vi.fn<(state: DirectoryState) => void>();
+    const releaseFourth = bindHostDirectory(fourth);
+    expect(fourth).toHaveBeenCalled();
+    expect(
+      fourth.mock.calls[0]![0].entries.map((entry) => entry.id),
+    ).not.toContain("b-only");
+
+    releaseFirst();
+    releaseSecond();
+    releaseThird();
+    releaseFourth();
+  });
+
+  it("binds the controls to the first HostScreen host and never to a later host", async () => {
+    const a = fakeHost("host-a", [agentPage("a-only", { workspaceId: "wks-a" })]);
+    const b = fakeHost("host-b", [agentPage("b-only", { workspaceId: "wks-b" })]);
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.pillFor("a-only")).toBeDefined();
+
+    startHostDirectory("host-b");
+    await settle();
+
+    expect(b.subscribes).toHaveLength(1);
+    expect(b.walks).toHaveLength(1);
+    expect(controls.pillFor("b-only")).toBeUndefined();
+    expect(controls.pillFor("a-only")).toBeDefined();
+    expect(a.subscribes).toHaveLength(1);
 
     stop();
   });
 
-  it("skips ad-hoc sessions without a workspace, closed sessions and archived sessions", async () => {
-    const fake = fakeClient();
-    collectDirectory.mockResolvedValueOnce({
-      entries: [
-        sessionEntry("no-workspace", { workspaceId: null }),
-        sessionEntry("closed", { status: "closed" }),
-        sessionEntry("archived", {
-          workspaceId: "wks-archived",
-          archivedAt: "2026-10-18T12:00:00.000Z",
-        }),
-        sessionEntry("live", { workspaceId: "wks-live" }),
-      ],
-      pages: 1,
-    });
+  it("registers one pill for each of 283 sessions and clears every registration once", async () => {
+    const rows = Array.from({ length: 283 }, (_, index) =>
+      agentPage(`bulk-${index}`, { workspaceId: `wks-${index}` }),
+    );
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
 
-    const stop = contributeReturnControl(fake.client, "sessions");
-    await vi.waitFor(() => expect(fake.pills).toHaveLength(1));
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
 
-    expect(fake.pillFor("no-workspace")).toBeUndefined();
-    expect(fake.pillFor("closed")).toBeUndefined();
-    expect(fake.pillFor("archived")).toBeUndefined();
-    expect(fake.pillFor("live")?.contribution.workspaceId).toBe("wks-live");
+    expect(controls.activePills()).toHaveLength(283);
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
 
     stop();
+    expect(controls.activePills()).toHaveLength(0);
+  });
+
+  it("releases the subscription and the retained directory exactly once on cleanup", async () => {
+    const host = fakeHost("host-a", [agentPage("agent-a", { workspaceId: "wks-a" })]);
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const pill = controls.pillFor("agent-a");
+    const observer = host.observers.at(-1)!;
+    expect(pill).toBeDefined();
+
+    stop();
+    expect(pill?.active).toBe(false);
+
+    await disposeRetainedDirectories();
+    expect(host.unsubscribed).toBe(1);
+    expect(host.releases).toBe(1);
+
+    const adds = controls.addComposerPill.mock.calls.length;
+    observer.snapshot();
+    observer.update({
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: agentPage("late", { workspaceId: "wks-late" }).agent,
+      } as PaseoAgentUpdate,
+    });
+    observer.error?.(new Error("late error"));
+    await settle();
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(adds);
+    expect(controls.activePills()).toHaveLength(0);
+
+    await disposeRetainedDirectories();
+    expect(host.unsubscribed).toBe(1);
+    expect(host.releases).toBe(1);
+  });
+
+  it("publishes nothing from a late bootstrap walk after cleanup", async () => {
+    const rows = [
+      agentPage("agent-a", { workspaceId: "wks-a" }),
+      agentPage("agent-b", { workspaceId: "wks-b" }),
+    ];
+    const host = fakeHost("host-a", rows);
+    const releaseWalk = host.holdWalk();
+    const controls = fakeControls();
+
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    expect(controls.activePills()).toHaveLength(2);
+
+    const adds = controls.addComposerPill.mock.calls.length;
+    stop();
+    await disposeRetainedDirectories();
+    releaseWalk();
+    await settle();
+
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(adds);
+    expect(controls.activePills()).toHaveLength(0);
   });
 });

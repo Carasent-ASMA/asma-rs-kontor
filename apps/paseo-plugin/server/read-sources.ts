@@ -7,8 +7,8 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { parseDocument } from "yaml";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
-import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, recordsSchema,
-  sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
+import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, readSourceSummaries, recordsSchema,
+  sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type SourceSummaryRead, type WorkstreamRegistry } from "../shared/read-sources";
 import { GRAPH_FENCE, planMetadata } from "./plan-metadata";
 import type { organizationSettingsSchema } from "../shared/organization";
 import { readConfig } from "./config";
@@ -161,6 +161,47 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
   }
   return result;
 }
+/** One bounded metadata read: no Markdown content, no graph export and no JSON records; the Jira projection is complete. */
+export async function readConfiguredSummary(source: ReadSourceSummary): Promise<SourceSummaryRead> {
+  const result: SourceSummaryRead = { source, status: "unavailable", revision: null, readAt: new Date().toISOString(),
+    modifiedAt: null, content: null, graph: null, records: null, diagnostics: [] };
+  try {
+    // Resolving symlinks is diagnostic/binding only; settings can never supply this path.
+    const path = await realpath(source.path);
+    const content = await boundedRead(path);
+    const revision = sha256(content);
+    result.revision = revision;
+    if (source.expectedSha256 && source.expectedSha256 !== revision) throw new Error(`Configured revision mismatch: expected ${source.expectedSha256}, read ${revision}`);
+    result.modifiedAt = (await stat(path)).mtime.toISOString();
+    if (source.kind === "jira") {
+      const history = jiraHistorySchema.parse(JSON.parse(content));
+      if (source.epic !== null && !history.epics.some((epic) => epic.key === source.epic)) throw new Error("Configured epic is absent from historical Jira projection");
+      result.jiraHistory = history;
+      result.status = "ready";
+      return result;
+    }
+    if (source.kind !== "plan") {
+      const raw: unknown = JSON.parse(content);
+      if (typeof raw !== "object" || raw === null || !(source.kind in raw)) throw new Error(`Expected a ${source.kind} records document`);
+      // Validate the record document without returning it; the page reads it on demand.
+      recordsSchema.parse(raw);
+      result.status = "ready";
+      return result;
+    }
+    result.planMetadata = planMetadata(content);
+    result.diagnostics.push(...result.planMetadata.diagnostics);
+    if (source.workstream !== null && result.planMetadata.workstream !== null && source.workstream !== result.planMetadata.workstream) {
+      result.diagnostics.push("Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.");
+      result.planMetadata.workstream = null;
+    }
+    if (source.epic !== null && result.planMetadata.epic !== null && source.epic !== result.planMetadata.epic) throw new Error("Configured epic differs from frontmatter epic");
+    if (!GRAPH_FENCE.test(content)) result.diagnostics.push("No canonical task graph declared; Markdown and explicit metadata only.");
+    result.status = "ready";
+  } catch (error) {
+    result.diagnostics.push(`${source.id} (${source.path}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return result;
+}
 export function contributeReadSources(server: Pick<PluginServerContext, "handle">, settings: PluginSettings<typeof organizationSettingsSchema>, catalog: SourceCatalog | (() => SourceCatalog) = sourceCatalog): () => void {
   const currentCatalog = () => typeof catalog === "function" ? catalog() : catalog;
   let latest: Awaited<ReturnType<typeof settings.read>> | null = null;
@@ -169,6 +210,22 @@ export function contributeReadSources(server: Pick<PluginServerContext, "handle"
   const firstRead = settings.read().then((state) => { if (latest === null && !stopped) latest = state; }, (error: unknown) => { readError = error instanceof Error ? error.message : String(error); });
   const stop = settings.subscribe((state) => { latest = state; readError = null; });
   server.handle(listReadSources, async () => ({ ...currentCatalog(), registry: await readWorkstreamRegistry() }));
+  server.handle(readSourceSummaries, async () => {
+    const sources = currentCatalog();
+    const reads: Record<string, SourceSummaryRead> = {};
+    const registry = readWorkstreamRegistry();
+    let cursor = 0;
+    // Bounded parallel file reads; each source is read exactly once and never exported.
+    async function worker() {
+      while (cursor < sources.sources.length) {
+        const source = sources.sources[cursor++];
+        if (!source) return;
+        reads[source.id] = await readConfiguredSummary(source);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(8, sources.sources.length) }, () => worker()));
+    return { ...sources, registry: await registry, reads };
+  });
   server.handle(readSource, ({ sourceId }) => {
     const source = currentCatalog().sources.find((entry) => entry.id === sourceId);
     if (!source) throw new Error("Source ID is not in the configured host catalog");

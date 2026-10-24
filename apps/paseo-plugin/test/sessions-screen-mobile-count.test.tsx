@@ -57,6 +57,9 @@ import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { SessionLayoutControl } from "../client/session-layout-control";
 import { DEFAULT_RECOVERY_TARGET, TAKEOVER_LIMIT, type LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
+import { responsibilitySchema } from "../shared/responsibility";
+import { QUICK_STATUS_FILTERS, MORE_STATUS_FILTERS } from "../client/session-view";
+import type { SessionStateCount } from "../client/session-state-counts";
 import { clearSessionViews, patchSessionView } from "../client/session-view-store";
 
 type Element = { readonly type?: unknown; readonly props: Record<string, unknown> };
@@ -80,9 +83,9 @@ const ENTRIES = [
 ];
 const ready = (patch: Partial<DirectoryState> = {}): DirectoryState => ({ entries: ENTRIES, status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false, ...patch });
 
-function mount() {
+function mount(props: Partial<Parameters<typeof SessionsScreen>[0]> = {}) {
   harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Fixture host" }, layout: { compact: true, platform: "ios" },
-    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as Parameters<typeof SessionsScreen>[0]));
+    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {}, ...props } as Parameters<typeof SessionsScreen>[0]));
   const list = byTestID("sessions-list")[0];
   if (list) (list.props.ref as { current: unknown }).current = { scrollToOffset: () => undefined, scrollToIndex: () => undefined };
 }
@@ -101,7 +104,7 @@ const row = (id: string, patch: Partial<LifecycleRow> = {}) => ({ id, title: `Se
 const review = (ids: string[]) => ({ id: "00000000-0000-4000-8000-000000000001", createdAt: "2026-10-22", action: "archive", scope: "filtered", target: DEFAULT_RECOVERY_TARGET, rows: ids.map((id) => row(id)), limitation: TAKEOVER_LIMIT });
 /** The header names exactly the sessions the flat list draws after Back. */
 function expectCount(ids: readonly string[]) {
-  expect(header()).toEqual({ text: `${ids.length} session${ids.length === 1 ? "" : "s"}`, label: `${ids.length} matching session${ids.length === 1 ? "" : "s"}` });
+  expect(header()).toEqual({ text: `${ids.length} matching session${ids.length === 1 ? "" : "s"}`, label: `${ids.length} matching session${ids.length === 1 ? "" : "s"}` });
   back(); expect(listedIds().sort()).toEqual([...ids].sort()); open();
 }
 
@@ -118,12 +121,12 @@ describe("mobile Filters & view matching count", () => {
     expectCount(["alpha-idle", "alpha-closed"]);
     press("sessions-filter-error");
     // A complete, live read with nothing left is a confirmed 0.
-    expect(header()).toEqual({ text: "0 sessions", label: "0 matching sessions" });
+    expect(header()).toEqual({ text: "0 matching sessions", label: "0 matching sessions" });
     (all().find((element) => element.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
     expectCount(["alpha-idle", "beta-running", "alpha-closed", "delta-error", "gamma-input"]);
     press("sessions-reset-view");
     // Reset returns to collapsed Grouped: the list draws group rows, the count still names the sessions.
-    expect(header()).toEqual({ text: "3 sessions", label: "3 matching sessions" });
+    expect(header()).toEqual({ text: "3 matching sessions", label: "3 matching sessions" });
     back(); expect(listedIds()).toEqual([]);
     layout("flat"); open();
     expectCount(["alpha-idle", "beta-running", "gamma-input"]);
@@ -132,7 +135,7 @@ describe("mobile Filters & view matching count", () => {
   it("keeps the count when only layout, sort or group disclosure changes", () => {
     mount(); open(); press("sessions-filter-all"); search("a");
     const before = header();
-    expect(before?.text).toBe("5 sessions");
+    expect(before?.text).toBe("5 matching sessions");
     back(); layout("grouped");
     open(); expect(header()).toEqual(before);
     press("sessions-sort");
@@ -143,9 +146,9 @@ describe("mobile Filters & view matching count", () => {
   it.each<[string, Partial<DirectoryState>, string, string]>([
     ["nothing read yet", { entries: [], status: "loading", live: false, lastUpdatedAt: null, inventoryComplete: false }, "…", "Reading matching sessions"],
     ["a failed first read", { entries: [], status: "error", live: false, lastUpdatedAt: null, inventoryComplete: false }, "—", "Matching sessions unavailable: the session list could not be read"],
-    ["a partial live read", { inventoryComplete: false }, "3 sessions · partial", "3 sessions match a partial read; the count may be incomplete"],
-    ["a stale read", { status: "stale", live: false }, "3 sessions · stale", `3 sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
-    ["a ready read without its live stream", { live: false }, "3 sessions · stale", `3 sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
+    ["a partial live read", { inventoryComplete: false }, "3 matching sessions · partial", "3 matching sessions match a partial read; the count may be incomplete"],
+    ["a stale read", { status: "stale", live: false }, "3 matching sessions · stale", `3 matching sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
+    ["a ready read without its live stream", { live: false }, "3 matching sessions · stale", `3 matching sessions matched the read at ${new Date(0).toLocaleTimeString()}; Stale`],
     ["a stale read with no current match", { status: "stale", live: false, entries: ENTRIES.filter((entry) => entry.status === "closed") }, "…", "Matching sessions updating: Stale"],
   ])("qualifies %s instead of claiming an exact or empty count", (_, patch, text, label) => {
     mount(); open();
@@ -156,9 +159,9 @@ describe("mobile Filters & view matching count", () => {
   it("names the host state when the host is offline, and treats a read at time 0 as read", () => {
     fake.hostStatus = "offline";
     mount(); open();
-    expect(header()?.text).toBe("3 sessions · host offline");
+    expect(header()?.text).toBe("3 matching sessions · host offline");
     fake.hostStatus = "online";
-    expect(header()?.text).toBe("3 sessions");
+    expect(header()?.text).toBe("3 matching sessions");
   });
 
   it("shows Reading, never 0, while the Archived read has not replaced the ordinary one", () => {
@@ -194,10 +197,65 @@ describe("mobile Filters & view matching count", () => {
 describe("matchingCount", () => {
   it("is exact only for a live, complete read of the membership in view", () => {
     const count = (patch: Partial<DirectoryState>, includeArchived = false, freshness = "Live") => matchingCount({ count: 1, state: ready(patch), includeArchived, freshness, blocked: null }).text;
-    expect(count({})).toBe("1 session");
+    expect(count({})).toBe("1 matching session");
     expect(count({}, true)).toBe("…");
     expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("…");
-    expect(count({ inventoryComplete: undefined })).toBe("1 session · partial");
-    expect(count({}, false, "Reconnecting")).toBe("1 session · reconnecting");
+    expect(count({ inventoryComplete: undefined })).toBe("1 matching session · partial");
+    expect(count({}, false, "Reconnecting")).toBe("1 matching session · reconnecting");
+  });
+});
+
+
+describe("state ratios and applied-filter readback", () => {
+  const counts = () => all().find((element) => element.type === MobileQuickToolbar)!.props.counts as Record<string, SessionStateCount>;
+  const summary = () => byTestID("sessions-applied-filters")[0];
+  it("uses the same route universe before refinements for every state and preserves same-set and zero", () => {
+    fake.state = ready({ entries: [...ENTRIES, sessionEntry("outside-project", { projectKey: "outside", status: "running" })] });
+    patchSessionView("host-a", { status: "running", work: "all", query: "alpha" });
+    mount({ projectId: "prj_1" });
+    expect(counts().running!.text).toBe("0/2"); expect(counts().current!.text).toBe("1/3"); expect(counts().all!.text).toBe("2/5");
+    expect(summary()!.props.children).toBe("“alpha”");
+    expect(summary()!.props.accessibilityLabel).toContain("0 matching sessions");
+    // Active state never zeroes the alternatives; changing layout does not change either side.
+    const before = counts(); layout("grouped"); expect(counts()).toEqual(before); layout("flat");
+    open(); search("a"); back();
+    expect(counts().all!.text).toBe("5/5");
+    press("sessions-mobile-clear-filters");
+    expect(counts().all!.text).toBe("5"); expect(summary()).toBeUndefined();
+    open(); press("sessions-reset-view"); back();
+    expect(counts().current!.text).toBe("3"); expect(summary()!.props.children).toBe("My work");
+    expect(byTestID("sessions-mobile-count")).toHaveLength(0);
+  });
+
+  it("combines search, person, association, task, desk and epic with one membership/route universe", () => {
+    const labels = { workstream: "alpha", epic: "DEMO-1", "asma.task": "DEMO-2" };
+    fake.state = ready({ entries: [sessionEntry("match", { title: "Review topic", status: "running", labels }),
+      sessionEntry("other-topic", { title: "Different", labels }), sessionEntry("other-association", { title: "Review topic", labels: { ...labels, workstream: "beta" } }),
+      sessionEntry("other-person", { title: "Review topic", labels: { ...labels, epic: "DEMO-3" } }),
+      sessionEntry("archive", { title: "Review topic", labels, archivedAt: "2026-10-20" })] });
+    const projection = responsibilitySchema.parse({ schema: "kontor/responsibility@1", realm: "tracker.example", generatedAt: "2026-10-21T12:00:00Z", expiresAt: "2099-10-22T12:00:00Z",
+      provenance: { collector: "fixture", selection: ["DEMO-1", "DEMO-3"], complete: true, workstreams: null },
+      people: [{ accountId: "person-a", displayName: "Alex Example", active: true, accountType: "atlassian" }],
+      issues: [{ key: "DEMO-1", type: "Epic", level: 1, parent: null, assignee: "person-a", workstreams: [] }, { key: "DEMO-3", type: "Epic", level: 1, parent: null, assignee: null, workstreams: [] }], workstreams: [] });
+    patchSessionView("host-a", { query: "Review   topic", work: "mine", assignment: "person:person-a", streams: ["alpha"], shortcut: "desk-project:prj_1", epic: { kind: "known", key: "DEMO-1" }, task: { jira: "DEMO-2", kontorId: null, label: "DEMO-2" } });
+    mount({ projectId: "prj_1", responsibility: { status: "ready", projection, revision: "r1", readAt: "2026-10-21", diagnostics: [] } });
+    expect(counts().all!.text).toBe("1/4"); expect(counts().running!.text).toBe("1/1"); expect(counts().idle!.text).toBe("0/3");
+    const text = String(summary()!.props.children);
+    for (const part of ["My work", "Assigned to Alex Example", "“Review topic”", "DEMO-2", "alpha", "DEMO-1"]) expect(text).toContain(part);
+    expect(text).not.toMatch(/Current|matching sessions|Grouped|Flat/);
+    // The archive and other project's sessions cannot enter the denominator.
+    expect(counts().all!.label).toContain("1 of 4 sessions");
+    for (const status of [...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS]) expect(counts()[status]).toBeDefined();
+  });
+
+  it("isolates the same IDs in another host and keeps archive transitions unknown until a matching read", () => {
+    patchSessionView("host-a", { query: "alpha" }); mount(); expect(counts().all!.text).toBe("2/5");
+    harness.unmount();
+    fake.state = ready({ entries: [sessionEntry("alpha-idle", { title: "Other host session" })] });
+    mount({ host: { id: "host-b", label: "Other fixture host" } });
+    expect(counts().all!.text).toBe("…"); // Host B has no online host summary in this fixture.
+    expect(counts().all!.label).toContain("1 sessions"); expect(counts().all!.label).not.toContain("of 5");
+    open(); press("sessions-advanced-archived"); back();
+    expect(counts().all!.text).toBe("…"); expect(counts().all!.label).toContain("Reading");
   });
 });

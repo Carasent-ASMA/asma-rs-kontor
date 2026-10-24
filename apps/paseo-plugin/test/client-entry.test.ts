@@ -1,6 +1,14 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const reactEffects = vi.hoisted(() => ({ current: [] as Array<() => void> }));
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useEffect: (run: () => void) => {
+    reactEffects.current.push(run);
+  },
+}));
+
 const { contributeReturnControl, stopReturnControl } = vi.hoisted(() => {
   const stopReturnControl = vi.fn();
   return {
@@ -71,6 +79,7 @@ type CommandContribution = {
 describe("Kontor client entry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    reactEffects.current = [];
   });
 
   it("registers the Kontor screen, native sidebar entry, Open Kontor, Back to Kontor and Start or switch commands", () => {
@@ -113,8 +122,12 @@ describe("Kontor client entry", () => {
     expect(sidebar.id).toBe(SESSIONS_SIDEBAR_ID);
     expect(sidebar.title).toBe("Kontor");
     expect(typeof sidebar.Component).toBe("function");
-    const row = (sidebar.Component as (props: object) => { props: { icon: string } })({});
+    const row = (sidebar.Component as (props: object) => { props: { icon: string } })({
+      host: { id: "host-a", label: "Host A" },
+    });
     expect(row.props.icon).toBe("Building2");
+    expect(reactEffects.current).toHaveLength(1);
+    reactEffects.current[0]!();
 
     const command = calls[2]!.value as CommandContribution;
     expect(command.id).toBe(SESSIONS_COMMAND_ID);
@@ -135,8 +148,8 @@ describe("Kontor client entry", () => {
     const returned: unknown[] = [];
     backCommand.onSelect({ openScreen: (input) => returned.push(input), agent: { id: "agent-left" } });
     expect(returned).toEqual([{ screenId: SESSIONS_SCREEN_ID }]);
-    // Leaving a conversation for Kontor records it as this device's latest visit.
-    expect(recordVisit).toHaveBeenCalledWith("agent-left");
+    // Returning to Kontor never rewrites an opening time.
+    expect(recordVisit).not.toHaveBeenCalled();
 
     const switchCommand = calls[4]!.value as CommandContribution;
     expect(switchCommand.id).toBe(SWITCH_COMMAND_ID);
@@ -147,7 +160,7 @@ describe("Kontor client entry", () => {
     switchCommand.onSelect({ openScreen: (input) => switched.push(input as { screenId: string; params: Record<string, string> }) });
     expect(switched).toEqual([{ screenId: SESSIONS_SCREEN_ID, params: { sheet: "switch", at: expect.stringMatching(/^\d+$/) } }]);
     // Opening the sheet records nothing: only an open is a visit.
-    expect(recordVisit).toHaveBeenCalledTimes(1);
+    expect(recordVisit).not.toHaveBeenCalled();
 
     expect(contributeReturnControl).toHaveBeenCalledTimes(1);
     expect(contributeReturnControl).toHaveBeenCalledWith(client, SESSIONS_SCREEN_ID);

@@ -47,6 +47,8 @@ export type SessionViewState = SessionFilters & {
   readonly sortDirection?: SortDirection;
   /** Association selector disclosure; local view state only. */
   readonly associationsOpen?: boolean;
+  /** Keys of the top notices this view hid; local view state only, never saved to settings. */
+  readonly noticesHidden?: readonly string[];
 };
 
 export function workScopeOf(view: SessionViewState): WorkScope {

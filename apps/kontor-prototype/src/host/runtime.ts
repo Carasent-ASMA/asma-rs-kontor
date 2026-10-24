@@ -148,9 +148,13 @@ export async function invokeRpc(method: string, input: unknown): Promise<unknown
   if (method === "sessions.create-options" || method === "sessions.create" || method === "sessions.create-check") return createRpc(method, input);
   if (method.startsWith("sessions.")) return lifecycleRpc(method, input);
   const reads = scenario.sources ? SOURCE_READS : [];
+  const catalog = { sources: reads.map((read) => read.source), diagnostics: [], registry: { path: "fixtures/workstreams.json", revision: "fixture-registry-1", workstreams: { kontor: { name: "Kontor" } }, desks: { review: { name: "Review desk" } }, diagnostics: [] } };
   switch (method) {
     case "sources.list":
-      return { sources: reads.map((read) => read.source), diagnostics: [], registry: { path: "fixtures/workstreams.json", revision: "fixture-registry-1", workstreams: { kontor: { name: "Kontor" } }, desks: { review: { name: "Review desk" } }, diagnostics: [] } };
+      return catalog;
+    case "sources.summaries":
+      logHostEvent("sources.summaries", `${reads.length} metadata-only fixture reads`);
+      return { ...catalog, reads: Object.fromEntries(reads.map(read => [read.source.id, { ...read, content: null, graph: null, records: null }])) };
     case "responsibility.read":
       return responsibilityFixture();
     case "kontor.status":
@@ -159,6 +163,7 @@ export async function invokeRpc(method: string, input: unknown): Promise<unknown
       const id = (input as { sourceId: string }).sourceId;
       const read = reads.find((value) => value.source.id === id);
       if (!read) throw new Error(`Unknown fixture source ${id}`);
+      logHostEvent("sources.read", id);
       return { ...read, readAt: new Date().toISOString() };
     }
     case "sources.associations":
@@ -230,4 +235,8 @@ Object.assign(window, { __kontorP1Fixtures: {
     sessions.set(id, { ...row, agent: { ...row.agent, labels: { ...row.agent.labels, "fixture.availability": state } } });
   },
   read(id: string) { const a = sessions.get(id)?.agent; return a ? { id: a.id, archivedAt: a.archivedAt, status: a.status, persistence: a.persistence } : null; },
+  settle(id: string) {
+    if (id !== "agt_recovery_archive_failure") throw new Error("Fictional close-failure ID only");
+    simulateUpdate(id, { status: "closed" }, "SIMULATED runtime retirement observed");
+  },
 } });

@@ -3,7 +3,7 @@ import type {
   PaseoAgentListOptions,
   PaseoAgentListResult,
 } from "@getpaseo/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   collectDirectory,
   deriveNeedsInput,
@@ -138,7 +138,8 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
         held.markStarted();
         await held.gate;
       }
-      const first = visible[0] ?? [];
+      const limit = options.page?.limit ?? 200;
+      const first = (visible[0] ?? []).slice(0, limit);
       const snapshot: PaseoAgentListResult & { subscriptionId: string } = {
         requestId: "request-subscribe",
         subscriptionId: "sub-1",
@@ -194,6 +195,9 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
     },
     failAlways() {
       failure = "always";
+    },
+    recover() {
+      failure = "none";
     },
     failSubscription(value = true) {
       subscribeFailure = value;
@@ -343,6 +347,104 @@ describe("collectDirectory", () => {
 });
 
 describe("SessionDirectory", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("applies the bootstrap page provisionally and keeps the inventory count unknown until the walk completes", async () => {
+    const rows = Array.from({ length: 60 }, (_, index) => entry(`bootstrap-${index}`));
+    const fake = fakeDirectory([rows.slice(0, 40), rows.slice(40)]);
+    const held = fake.holdNextPage();
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      bootstrapLimit: 25,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    const starting = directory.start();
+    await held.started;
+
+    expect(latest).toMatchObject({
+      status: "loading",
+      live: false,
+      pages: 0,
+      lastUpdatedAt: null,
+      inventoryComplete: false,
+    });
+    expect(latest.entries).toHaveLength(25);
+    expect(new Set(latest.entries.map((item) => item.id))).toEqual(
+      new Set(rows.slice(0, 25).map((item) => item.agent.id)),
+    );
+    // The count guard in matchingCount stays "…" until a completed walk sets lastUpdatedAt.
+    expect(latest.lastUpdatedAt).toBeNull();
+
+    held.release();
+    await starting;
+
+    expect(latest).toMatchObject({
+      status: "ready",
+      live: true,
+      pages: 2,
+      inventoryComplete: true,
+    });
+    expect(latest.entries).toHaveLength(60);
+    expect(latest.lastUpdatedAt).not.toBeNull();
+
+    await directory.dispose();
+  });
+
+  it("keeps a failed first walk retrying with a bounded delay until it succeeds", async () => {
+    vi.useFakeTimers();
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    fake.failAlways();
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      retryDelayMs: 100,
+      maxRetryDelayMs: 150,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    expect(latest).toMatchObject({ status: "error", entries: [] });
+
+    fake.recover();
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(latest).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
+    expect(latest.entries.map((item) => item.id)).toEqual(["agent-a"]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await directory.dispose();
+  });
+
+  it("clears a pending retry on dispose and does not read again", async () => {
+    vi.useFakeTimers();
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    fake.failAlways();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      retryDelayMs: 100,
+      onChange: () => undefined,
+    });
+
+    await directory.start();
+    const calls = fake.listCalls.length;
+    await directory.dispose();
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fake.listCalls).toHaveLength(calls);
+  });
+
   it("drops archived rows immediately when leaving history even while the replacement read waits or fails", async () => {
     const fake = fakeDirectory([[entry("live"), entry("archived", { archivedAt: "2026-10-18T11:00:00Z" })]]);
     const directory = new SessionDirectory({ client: () => fake.client, includeArchived: true, onChange: () => {} });

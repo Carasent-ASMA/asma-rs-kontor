@@ -40,9 +40,10 @@ export function StateBadge({ state, aggregate, colors, compact, stale = false }:
   const count = leadingStates(aggregate, 1)[0]!.count;
   return <View testID="organization-state-counts" style={{ alignItems: "flex-end", flexShrink: 0 }}>
     {stale ? <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>Last known</Text> : null}
+    <Text style={{ color: colors.foreground, fontSize: compact ? 11 : 12, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{`${aggregate.total} session${aggregate.total === 1 ? "" : "s"}`}</Text>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
       <SessionStateMarker state={state} colors={colors} />
-      <Text style={{ color: colors.foregroundMuted, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{`${STATE_LABELS[state]} ${count}/${aggregate.total}`}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{`${STATE_LABELS[state]} ${count}`}</Text>
     </View>
   </View>;
 }
@@ -133,6 +134,9 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   const roleView = group.kind === "role" && group.parentKey === ROLE_ROOT_KEY;
   const name = roleView && group.shortCode === null ? label : `${KIND_NAMES[group.kind]} ${label}`;
   const summary = `${stale ? "Last known: " : ""}${groupStateSummary(group.aggregate)}`;
+  // Session visibility is already the badge's primary count. Workspaces and the prefilter total are different facts.
+  const secondaryCount = group.unit === "workspaces" ? `${groupCount(group)} workspace${group.unitTotal === 1 ? "" : "s"}`
+    : group.unitVisible !== group.unitTotal ? `${group.unitTotal} sessions before filters` : null;
   const title = <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: top ? 13 : 12.5, fontWeight: "600", fontFamily: group.kind === "workspace-kind" || (group.kind === "role" && group.shortCode !== null) ? "monospace" : undefined }}>{label}</Text>;
   return <View style={{ paddingLeft: indent, borderTopWidth: top ? 1 : 0, borderColor: colors.border }}>
     <Guides depth={row.depth} compact={compact} colors={colors} />
@@ -145,17 +149,14 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
         style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ flex: 1, minWidth: 0, minHeight: height, flexDirection: "row", alignItems: "center", gap: compact ? 5 : 8, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.foreground : "transparent", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
         <Text style={{ width: 10, color: colors.foregroundMuted, fontSize: 13 }}>{row.expanded ? "⌄" : "›"}</Text>
         {icon ? <Icon name={icon} size={compact ? 14 : 16} color={colors.foregroundMuted} /> : null}
-        {compact && group.detail ? <View style={{ flexShrink: 1, minWidth: 0, paddingVertical: 4 }}>
+        <View style={{ flexShrink: 1, minWidth: 0, paddingVertical: 4 }}>
           {title}
           {/* A phone has no room beside the label, so the detail takes up to two lines under it. */}
-          <Text numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text>
-        </View> : title}
-        {group.detail && !compact ? <Text numberOfLines={1} style={{ flexShrink: 2, color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text> : null}
+          {group.detail ? <Text numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text> : null}
+          {secondaryCount ? <Text testID="organization-unit-count" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{secondaryCount}</Text> : null}
+        </View>
         <View style={{ flex: 1 }} />
         <StateBadge state={state} aggregate={group.aggregate} colors={colors} compact={compact} stale={stale} />
-        {/* "No sessions" already says zero; the empty slot keeps the count column aligned. */}
-        {state === null && groupCount(group) === "0" ? <View style={{ minWidth: compact ? 22 : 28 }} />
-          : <Text style={{ minWidth: compact ? 22 : 28, textAlign: "center", color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{groupCount(group)}</Text>}
       </Pressable>
     </View>
     {row.expanded && actions ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingLeft: compact ? 22 : 34, paddingBottom: 6 }}>{actions}</View> : null}

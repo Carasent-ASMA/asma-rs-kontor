@@ -61,7 +61,9 @@ Use an installed Playwright-compatible module and Chromium executable. The
 checker launches its own browser with a fresh profile, accepts only the isolated
 loopback preview and blocks every request except GETs to that exact origin.
 It checks every scenario, current profile/sort controls, synthetic lifecycle
-outcomes, overflow and six screenshots. Evidence stays outside the repository.
+outcomes, selected child-first bulk archive, exact-owner recovery acknowledgement,
+metadata-only source loading, K/M/model-route labels and responsive screenshots.
+Evidence stays outside the repository.
 
 ```sh
 node apps/kontor-prototype/scripts/browser-check.mjs \

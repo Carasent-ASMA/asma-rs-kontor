@@ -50,6 +50,41 @@ pill is the in-session return control where the composer supports it.
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
   rows visible with the failure and a Retry action.
+- **Returning to Kontor.** Opening a session closes the Kontor screen, but the
+  plugin runtime lives as long as the host connection. The host's directory and
+  its subscription live with it, so a return shows the live rows at once
+  without reading a page. Updates and reconnects that arrive meanwhile still
+  apply. A return walks every page again only when the directory is new,
+  offline or no longer live, or when the archive scope differs. The
+  subscription's bootstrap page is one row, since the walk reads every row. A
+  workspace and project read under 30 s old is reused with its own read time.
+  Plugin cleanup releases the subscriptions.
+- **Metadata-first source reads.** One `sources.summaries` request on the
+  existing 30-second source cadence returns the configured catalog, workstream
+  registry, per-source status, revision, read and modification times, frontmatter
+  metadata and diagnostics without Markdown content, a canonical graph or JSON
+  records. The historical Jira projection stays complete, because Sessions reads
+  captured epics at mount. Plan, Board and Graph demand the selected source and
+  its explicitly linked plan associations; Overview, Search, Delivery, Decisions
+  and AI teams & sessions demand their context sources progressively. Full
+  reads keep at most three workers and are keyed by source ID, catalog policy,
+  path and revision, so a changed revision, pin or replacement path is read
+  again and an unchanged identity is reused. A returned read is accepted only
+  when its own source ID, path, revision and catalog policy match the requested
+  summary, and the current summary is still ready. The current summary's status,
+  expected hash and catalog metadata take precedence: an unavailable or repinned
+  summary is never hidden by an older cached exact read, and a late older
+  revision never replaces the current one. A completed exact failure for the
+  current policy remains visibly unavailable with its diagnostics; it is retried
+  only after the next summaries refresh, never shown as **Reading…** and never
+  replaced by older content. `sources.read` is unchanged. A source whose summary
+  is present while its exact read is pending shows **Reading…**, distinctly from
+  an unavailable source. Sessions demands no exact source read.
+- **Token counts.** Row input/output and separate cache-read counts use stable
+  compact units across device locales: K = 1,000 and M = 1,000,000, with at most
+  one decimal (300K, 1.2M). Rounding carries across unit boundaries. The arrows,
+  ≥ lower-bound mark, missing values and provider-report scope stay the same.
+  Details and spoken/help text retain exact localized values.
 - **Search and filters.** Search matches every token against the full original
   session title, workspace name, project name/key, cwd and recognized
   structured labels (`epic`, `workstream`, PR and ticket identifiers). Native
@@ -57,7 +92,10 @@ pill is the in-session return control where the composer supports it.
   permission waits. The advanced area shows an active-filter count and a clear
   action. On compact layouts the Filters button has a visible down/up chevron,
   an active-count badge and a 44x44 pt target; Clear filters is a separate
-  control.
+  44 pt control in the work line at the top of the list. The compact header has
+  no summary row: one count row beside **Grouped / Flat** says the matching
+  count the Filters header says, followed only by what no visible control says
+  (the context, search, Task, Archived history, Group and sort).
 - **Open the existing session.** Each row shows its native agent ID and opens
   by that ID through the host's navigation API. Duplicate titles never select
   by name. Missing sessions, older hosts without plugin navigation and host
@@ -125,31 +163,80 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
   the query to Sessions unscoped. A row opens by native ID through the same
   path as Sessions. Rows carry no archive control.
-- **Recent.** Paseo keeps no visit history a plugin can read, so Kontor records
-  its own. Opening a session from Kontor, the **← Kontor** pill and **Back to
-  Kontor** each record that session's ID and time on this device (iOS settings
-  or web local storage, key `kontor.recent@1`; no titles). It keeps 20 visits
-  for 14 days (pruned on reads and writes), merged with the host's `lastUserMessageAt` ("Prompted", from any
-  device on the host). Archived and absent sessions are hidden, and their
-  visits kept. **Clear recent on this device** empties the visits and hides
-  prompts up to that moment, on this device only. Without a device store Recent
-  lasts until Paseo restarts; an unreadable stored value is left untouched until
-  Clear; the sheet says which. The plugin client is given no stable host
-  identity, so the store is per device rather than per host; native agent IDs
-  do not collide.
-- **New LSA (bounded create).** Off unless the operator writes exactly
-  `{"create":"on"}` to `$PASEO_HOME/plugin-config/kontor/create.json`
-  (default `~/.paseo/plugin-config/kontor/create.json`) on the host computer.
-  Any other content, an unreadable file or no file keeps it off, and the sheet
-  says why. The file is read on every request and never written by the plugin.
-  When on, **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
+- **Recently viewed (supported scope).** A user opening a session
+  through Kontor's native navigation records that exact session ID and time.
+  Most recent opens come first, one row per session; A → B → A shows A, B.
+  The saved sequence determines order even when wall times tie or the clock moves
+  backwards. Recorded times are used only for age and retention; Clear empties
+  the sequence without filtering later opens against its wall time.
+  Prompts, worker activity, creation/change times, **← Kontor** and **Back to
+  Kontor** never add or reorder visits. Storage is scoped by the surface's
+  `host.id` and the local app/browser storage profile (iOS settings or web local
+  storage, key `kontor.recent@2 ` followed by the JSON host tuple; no titles).
+  This is local user storage, not a detected signed-in identity; **Working as**
+  is an assignment filter and never determines ownership of visits. People
+  sharing one app/browser profile share its history.
+  It keeps 20 visits for 14 days, pruned on reads and writes. Archived and
+  absent sessions are hidden while their unexpired visits are kept, including
+  during partial/offline reads. **Clear recent on this device** clears the
+  selected host only. Without a device store it lasts until Paseo restarts;
+  an unreadable new record stays untouched until Clear; the sheet says which.
+  Source and install evidence: [Unreleased release note](../../CHANGELOG.md#unreleased).
+- **Saved history.** The old `kontor.recent@1` value mixed opens and returns
+  without recording their source or host. Its bytes are preserved, including
+  on Clear. **Show saved history** exposes its session IDs separately, with
+  unknown original host and opening times. Old timestamps are never imported
+  as opens or used to order Recently viewed. No earlier opening times can be
+  recovered from this record.
+- **DEFERRED FUTURE WORK — native Paseo session views (Igor, 2026-10-23).**
+  Openings through the native sidebar or other Paseo screens are outside the
+  supported Kontor-initiated scope. This enhancement is not completed and is
+  not a release prerequisite for the delivered personal Recently viewed list.
+  As of 2026-10-23, the Paseo 0.12.0 plugin contract and the
+  [public plugin reference](https://paseo.sh/docs/plugins/reference#screens-and-sidebar-items)
+  expose navigation commands and snapshots by supplied ID, without a global
+  session-view notification. A returned `openAgent(...): void` call confirms
+  navigation acceptance, not that a session was actually brought into view.
+  This is a current interface limit, not a permanent API-absence claim.
+
+  Future delivery needs a public Paseo app session-view event/API usable while
+  Kontor is not mounted. It must report actual views with exact host/session
+  IDs and truthful viewer/device scope, and define repeat opens, background
+  updates and failed navigation without treating activity as a view. It then
+  needs a reviewed compatible desktop/mobile Paseo release, a capability-gated
+  Kontor consumer, and native-device proof of those semantics on desktop and
+  mobile.
+- **Optional future work — shared phone/desktop history.** Synchronizing
+  Kontor-initiated visits across devices is a separate optional feature, not
+  part of this delivery. It needs an explicit user requirement, supported
+  viewer identity, and a storage/synchronization design covering host/user
+  isolation, duplicates, deterministic order, offline/reconnect behavior,
+  privacy and cross-device acceptance. A Paseo change is not automatically
+  required to synchronize visits initiated through Kontor. Native views from
+  outside Kontor still need the separate view-event capability above.
+- **New LSA (bounded create).** Available by default when
+  `$PASEO_HOME/plugin-config/kontor/create.json`
+  (default `~/.paseo/plugin-config/kontor/create.json`) is absent on the host
+  computer. The operator can write exactly `{"create":"off"}` to disable it
+  or `{"create":"on"}` to enable it explicitly. Any other content or an
+  unreadable path (including a dangling symlink in any component) keeps it off.
+  The sheet says why. The file is read on every request and never written by
+  the plugin.
+  Submitting **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
   project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
   to 48 characters after NFC normalization and never contains `•`, `·` or a
   control character. The labels are `role=LSA`, `title.auto=<title>`,
   `persona=kontor-lsa-adhoc@<hash>` and `create.request=<request ID>`; never a
   `kontor.*` or orchestration label. Provider, model, effort and mode default
   to the host's `LSA` agent profile, else the provider's own defaults; a
-  dangerous mode is marked. No first prompt is sent.
+  dangerous mode is marked. The provider catalog is read from the selected
+  desk's working directory. Pickers show only enabled, ready providers and
+  their selectable models. Loading, unknown, unavailable and failed reads
+  have separate messages and a **Refresh choices** action. An empty catalog
+  blocks creation. A saved or selected choice that disappears stays invalid
+  until the operator chooses again; refresh never silently substitutes it.
+  Submit revalidates workspace, catalog and duplicate title before recording
+  intent. No first prompt is sent.
 - **Truthful outcome.** The request is recorded on the host, under
   `$PASEO_HOME/plugin-state/kontor/session-create-v1/`, before one idempotent
   native create. Success is claimed only from an exact readback: **Created and
@@ -160,9 +247,20 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   leaves the outcome unknown because a delayed creation may still complete.
   An unknown outcome stays blocked until a correlated readback confirms it;
   otherwise the operator must reconcile it on the host. An unsettled or
-  unreadable record blocks the next create until it is settled. **Open
-  session** appears only once the session list shows the new session and the
-  app exposes plugin navigation. Nothing is created while the host is offline.
+  unreadable record blocks the next create until it is settled. **Created and
+  verified** and **Created with differences** show the exact returned native
+  session ID and an explicit **Open session** button. Creating alone never
+  navigates or records Recently viewed. Open uses supported app navigation
+  without waiting for the full session directory; differences stay visible. If
+  opening fails, the created ID stays visible with **Open session** to retry;
+  retrying Open never creates another session. Closing the form or changing
+  hosts invalidates old Open actions and late replies; it cannot cancel an
+  already dispatched create. Recently viewed is recorded by the existing
+  device-local helper only after a successful user-initiated Open of that exact
+  host and session ID. The SDK does not acknowledge that a native conversation
+  finished rendering. When the app lacks plugin navigation, use Sessions to
+  find the displayed ID. Nothing is
+  created while the host is offline.
 - **Persona and rename.** The LSA persona goes in the system prompt. Its
   delivery is confirmed only for Claude and Codex; other providers show
   "Persona delivery unverified". A plugin cannot rename a session, so the
@@ -198,8 +296,14 @@ filters; the native **← Kontor** control returns to the last host-local view.
 Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
 lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
 **Desks & workspaces** and **Role**; switching back restores the last grouping.
-The labelled **Grouped / Flat** segments stay above the scrolling list on mobile
-and desktop, beside the result count when present. In short compact windows,
+The icon-only **Grouped / Flat** choices stay above the scrolling list on mobile
+and desktop, alongside one explicitly labelled matching-session count (below
+it on compact screens). The same row includes the separate Select action and
+notice icon/count. All have at least 44 pt targets. The selected layout has a
+check mark, fill and thin border. A deliberate long press opens the action title
+and explanation without activating it; hover and keyboard focus show the same
+help. Escape, outside touch, scroll or cancellation dismisses it. Pressable owns
+the gesture recognizer; no gesture timer is added. In short compact windows,
 that row scrolls at the top of the list so session rows retain usable space.
 Their checked state, keyboard focus outline and hover/focus help make the choice
 visible. Use Tab to reach the
@@ -209,8 +313,11 @@ remembered through the existing host view and saved organization preferences;
 On mobile, the fixed Filters & view header shows how many sessions match every
 active filter, beside the heading, while its controls scroll. The number is the
 final matching session set, so layout, grouping, sort and collapsed groups never
-change it. It is exact only from a ready, live and complete read of the chosen
-Sessions or Archived history; a partial or stale read is marked, and a read in
+change it. Inventory totals sit below the filters with their host context and
+archive membership. Workspace/folder group totals are labelled as groups, since
+working directories without native workspaces also form groups; Grouped can
+retain empty native workspaces. The matching count is exact only from a ready,
+live and complete read of the chosen Sessions or Archived history; a partial or stale read is marked, and a read in
 progress, a failed first read or an assignment that cannot be evaluated shows
 **…**, **—** or **Not evaluated**, never 0.
 Search, state, task, assignment and association filters apply in both layouts,
@@ -238,12 +345,13 @@ Adam, Outside). Their full names and scope explanations appear on hover or
 keyboard focus and in accessible names/hints; touch keeps the captions. Counts
 describe the current project/epic context before search and other filters.
 Each shortcut has a 44 pt target, a pressed state, a focus border and an
-underlined selected caption. Group rows show the primary displayed state as
-count/total, such as **Running 2/85**, at every tree depth. The denominator counts
-descendant sessions represented in the displayed tree, including collapsed
-branches. In normal Grouped view, these are only the current search/filter
-matches. **Show in tree** from Flat results retains surrounding context, so its
-denominator can also include sessions outside the results' search, task or
+underlined selected caption. Group rows label the descendant total once, such
+as **85 sessions**, with the leading displayed state below it, **Running 2**.
+A different total before filters is labelled separately; workspace-kind rows
+retain a labelled workspace count even when it equals the session count.
+The session total includes collapsed branches. In normal Grouped view, these
+are only the current search/filter matches. **Show in tree** from Flat results retains surrounding context, so its
+total can also include sessions outside the results' search, task or
 explicit state filter. Project, desk, workstream, epic and assignment scopes
 still apply, as does **Current** when selected. **Back to results** restores the
 matching results. Empty groups say **No sessions**. Hover/focus help and accessible hints
@@ -362,8 +470,11 @@ mapping fields and associations are retained. Invalid stored preferences are
 reported and preserved until an explicit reset. These are host-shared values,
 not per-user settings.
 
-Plan, Board and Graph read only configured plan sources. A Plan page renders the
-actual Markdown, headings and search. Source state and time stay visible; the
+Plan, Board and Graph read only configured plan sources. Their catalog metadata
+arrives with the 30-second summaries refresh; the selected source and its linked
+associations are read exactly on demand, and the page shows **Reading…** until
+that exact read arrives. A Plan page renders the actual Markdown, headings and
+search. Source state and time stay visible; the
 expandable **Source details** holds paths, full SHA-256 and diagnostics. Board and Graph require a fresh `asma plan export` of that exact source.
 The file hash is checked before and after export. Export/schema/source failures
 stay visible; no ASCII, Mermaid, prose extraction or cached graph index is used.
@@ -398,13 +509,15 @@ home configuration and the same JSON entry validation, unique IDs and maximum
 of 512 entries. The file must be regular and at most 2 MiB. An absent file leaves
 an honest no-sources state; malformed or unreadable files report diagnostics.
 
-The server rereads the catalog for each list, read and association request. An
-operator can atomically replace the file; Settings → Refresh sources or the
-30-second source refresh picks up additions, edits and removals without a daemon
-restart. A catalog changed during a refresh fails that refresh rather than mixing
-bindings and replacement paths. Failed requests retain previous client reads with
-a stale warning; invalid or missing catalogs return their own diagnostics and no
-sources. The plugin never writes the catalog or accepts its path from a client.
+The server rereads the catalog for each list, summaries, read and association
+request. An operator can atomically replace the file; Settings → Refresh sources
+or the 30-second summaries refresh picks up additions, edits and removals without
+a daemon restart. A summaries request reads one catalog snapshot, binds every
+Teams snapshot to that catalog's source identity and re-reads the catalog
+identity before publishing; a catalog changed during the refresh fails that
+refresh rather than mixing bindings, replacement paths or snapshots. Failed
+requests retain previous client reads with a stale warning; invalid or missing
+catalogs return their own diagnostics and no sources. The plugin never writes the catalog or accepts its path from a client.
 Presentation settings do not store catalog paths or source contents. This file
 only declares read sources; it does not activate teams or grant execution.
 
@@ -445,8 +558,10 @@ values stay unknown; titles never supply identity. Graph-bearing plans still use
 `asma plan export` and exact path/hash validation. Graph failures stay diagnostic,
 with readable Markdown and independent frontmatter retained. No graph is invented.
 
-Every source read parses metadata from the exact file bytes after the configured
-pin check. This repairs omitted catalog metadata in the read projection without
+A summaries request reads each configured file once after the same pin check and
+parses its frontmatter, without running `asma plan export` and without returning
+Markdown, a graph or records. Every exact `sources.read` parses the same exact
+file bytes. This repairs omitted catalog metadata in both projections without
 editing the catalog. A catalog/frontmatter workstream conflict disables automatic
 association and appears in Source details. The registry is read separately from
 `config/orchestration/workstreams.json` in `KONTOR_PLUGIN_ASMA_WORKSPACE` on each
@@ -536,7 +651,8 @@ plan text without a graph, while missing files and revision mismatches stay
 unavailable. No source cache or fallback graph hides these changes.
 
 The existing `sources.read` RPC keeps its explicit JSON-record format (including
-Teams JSON records); it does not infer text/YAML:
+Teams JSON records); it does not infer text/YAML. The metadata-only
+`sources.summaries` RPC never changes that format or returns record contents:
 
 ```json
 {"teams":[{"id":"example","title":"Configured example","roles":[{"role":"SWE","chain":["provider/model"]}]}]}
@@ -595,7 +711,8 @@ conversation and save. The host-scoped **Open plan** composer pill uses only thi
 association, not a title, epic-key guess or conversation prose. One link opens
 the exact source; multiple links open a chooser. The view retains a return action
 to the originating conversation. Associations are reconciled every 15 seconds;
-source and empty-workspace snapshots refresh every 30 seconds. A source-service
+source summaries and empty-workspace snapshots refresh every 30 seconds, and
+pages read their exact sources on demand. A source-service
 failure marks retained data/preferences unavailable or stale and disables editing.
 
 ### Historical Jira field projection
@@ -883,7 +1000,7 @@ Evidence checklist:
       scroll and reveals on a short reverse scroll or Search/Filters without a
       blank gap or visible row jump.
 - [ ] The Filters button has a chevron, active count, 44x44 pt target and a
-      separate Clear filters control.
+      separate Clear filters control (in the work line on compact).
 - [ ] Missing-session and reconnect cases use controlled/disposable data only.
 - [x] Desktop pass/fail, iPhone pass/fail, tester and timestamp: desktop pass,
       iPhone pass, Igor, 2026-10-19 (candidate `e7006612`, test host
@@ -1031,6 +1148,33 @@ archive scope, session count and pages read).
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
    wait for reconnect; the next subscription snapshot reconciles every page
    before the screen reports **Live** again.
+5. The notices at the top (source, navigation, settings and unconfirmed
+   archives) form one tray with a **Hide notices** button. Hidden notices leave
+   one status button beside **Resume** (in the count row before **Grouped /
+   Flat** on compact, and where the tray was on compact **Filters**) that names them and shows the tray again. Hiding runs nothing
+   and resolves nothing; any new or changed notice opens the tray again, and so
+   does a notice that returns after a completed read reported it gone, while one
+   that stays present stays hidden. Hidden source, navigation and settings
+   notices are kept for the view until the app restarts. A hidden archive is
+   remembered per host on this device (iOS user defaults; web and desktop local
+   storage) by its exact review, session and state, so a changed state shows
+   again; it is forgotten only after a complete read no longer lists it. Without
+   a device store (Android) or when the store fails, hiding lasts this app
+   session and the review sheet says so. Escape hides the tray
+   while focus is in it.
+6. The archive notice is one line: a single archive names its session and
+   state, several are counted. Each is classified from its own archive review,
+   read by exact ID: **Archive result unknown** (the request was sent and the
+   host has not confirmed it archived), **Archived · runtime stop not
+   confirmed**, or **Couldn't check** (the host or that review could not be
+   read). Blocked and preflight outcomes stay in the bulk review.
+   **Review archive** opens one sheet listing every unresolved archive with a
+   plain reason, when it was last checked and what the host reported. **Refresh
+   status** reads that exact session again and reports checking, unchanged,
+   changed, confirmed (the notice clears) or couldn't check; it never sends
+   another archive request. **Open session** opens the exact ID that read
+   confirmed. IDs and the host's full messages stay in **Technical details**.
+   Nothing refreshes on reconnect or a timer.
 
 ## Configuration
 
@@ -1111,6 +1255,11 @@ pnpm --filter @carasent/kontor-paseo-plugin test
 apps/paseo-plugin/scripts/closure-suite.sh
 ```
 
+`test/session-create.test.ts` pins New LSA availability with no switch or
+explicit `on`, refusal for explicit `off` or invalid/unreadable switches,
+and the workspace, provider, duplicate-request, intent and readback guards.
+Availability alone never creates a session or sends a first prompt.
+
 `test/plan-workstreams.test.ts` reconciles every workstream choice with the tree:
 desk-held sessions are named, each session counts once, and choosing a choice shows
 exactly its count. It also pins choice wording and the unlinked-session plan notes.
@@ -1118,6 +1267,10 @@ exactly its count. It also pins choice wording and the unlinked-session plan not
 and missing cursors, native upserts/removals, attention, archival scope,
 recognized epic/workstream label search, disconnect staleness, reconnect
 reconciliation, obsolete-generation update fencing and source failures.
+`test/session-reentry.test.ts` covers returning to Kontor: live rows without a
+read, updates and reconnects while closed, an unfinished first walk, stopped or
+offline directories, host isolation, archive scope, cleanup, reorder-stable
+removal receipts and workspace reuse.
 `test/session-actions.test.ts` covers duplicate-name open by native ID and the
 missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
 screen, sidebar and the **Open Kontor** and **Back to Kontor** commands.
@@ -1138,7 +1291,9 @@ covers the filters affordance, slim toolbar actions, touch targets and saved
 settings. `test/sessions-screen-events.test.ts` exercises the actual
 SessionsScreen scroll/layout path for compact collapse and near-bottom reveal
 compensation (including the parent gap and post-reveal range), bottom
-bounce/return, top reveal and saved-settings preservation. That is code/model
+bounce/return, top reveal and saved-settings preservation, and the compact
+count row (the Filters count, no summary row, Clear filters at 44 pt in the work
+line). That is code/model
 evidence with analytical geometry, not a native no-jump claim.
 `test/toolbar-visibility.test.ts` covers the single compact scroll/collapse
 variant, pins, suppression, bounce handling and compensation helpers.
@@ -1149,7 +1304,12 @@ workflow-write call.
 the repeated-member rule and both log lines. `test/floor-growth.test.ts` covers a
 file that grows past 2 MiB after it is opened, and `test/floor-close.test.ts` a
 failed read or close of the file, including a server start under a failed
-close. `test/server-entry.test.ts` starts
+close. `test/sessions-notice-tray.test.tsx` covers hiding and showing the top
+notices on the wide, slim and 320/390 compact layouts: placement beside
+Resume or in the compact count row, no RPC or toast on hide, persistence across a remount, reopening for a
+new archive or read error, continuous presence through in-flight and failed reads,
+reopening when the same notice returns after a completed read without it, focus
+moves, Escape and touch targets. `test/server-entry.test.ts` starts
 the server entry for each file state and checks which hooks it registers: none
 when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
 that `KONTOR_PLUGIN_FLOOR` has no effect, one read per start, and that the file
@@ -1212,8 +1372,8 @@ and stays unknown, never missing.
 
 The per-session X performs one exact-session Archive after native preflight.
 Native archive requests cancellation and closes the runtime, including an active
-turn and its provider tools. Managed child sessions block this action to prevent
-an unseen cascade. Only active children block, so that check reads the active
+turn and its provider tools. Managed child sessions observed by preflight block
+this action. Only active children block, so that check reads the active
 inventory and never archived history. Native identity/placement and child impact
 are rechecked; activity updates alone do not make a running session impossible to stop.
 While the directory has a complete live stream, a settled action changes only its
@@ -1221,7 +1381,7 @@ own rows; without one, the directory is read again in full.
 History and files are retained. Success requires an exact-ID read showing the
 session archived with no active turn; whether its runtime closed is reported
 separately. A lost acknowledgement stays uncertain until
-**Check native outcome** verifies retirement using metadata only. It never
+**Refresh status** verifies retirement using metadata only. It never
 resends the archive or removes the original no-replay fence.
 
 A confirmed null native record permits only a host-local stale-row disposition,
@@ -1231,6 +1391,62 @@ hide a present session. Availability evidence still expires after one minute;
 a settled action reconciles its exact stale list snapshot until it changes.
 The action outcome remains visible when its row disappears.
 The Current default is part of the combined Sessions view.
+
+**Select** shares a wrapping row with the mutually exclusive **Grouped** and
+**Flat** layout choices. The row uses icons with accessible names and
+long-press, hover and keyboard help;
+all three targets are at least 44 pt. The layout group uses a subtle fill and
+check mark, with no enclosing frame. **Select** enters bulk
+archive selection on desktop and mobile; a row long press
+also enters selection. Checkboxes draw a 22 px box inside a 44-point target:
+an outlined box when clear and a filled box with a check mark when selected,
+at least 3:1 against every Paseo surface in light and dark themes. They support
+Space on web. The batch bar shows a three-state select-all checkbox (all, some,
+none), the selected count and **Archive N…**. Select all covers only the filtered
+sessions and is disabled when they exceed the cap. A batch contains at most
+50 exact IDs and always needs one confirmation, including a one-item selection.
+
+**Archive N…** opens a review; nothing is archived until its confirm button.
+The review title states the count, one line states that active work stops,
+history and files remain and there is no undo, and one line always states that a
+new child session created just before a selected session archives may be archived
+with it, even if unselected. That line starts with the child order when a ready
+parent is selected. The preflight rule and the full concurrent-child caveat below
+sit in **About archive**. Sessions are grouped once by state
+(Blocked, Not confirmed, Ready, Archived, Already archived, Not on host), titles
+first with one short note; the info button shows the ID, full server reason and
+any active children. The confirm button counts only ready sessions.
+Closing the review returns focus to its enabled bulk control, or the screen
+while an operation is pending. On short compact screens the bulk controls and
+status scroll within a bounded frame so they leave room for the sessions list.
+
+At preflight, a parent is blocked unless every active managed child is selected.
+Selected children run first; the server requires their confirmed saved archive outcomes
+and rechecks native child impact before dispatching the parent. A new child
+observed by that check, a blocked child or an unconfirmed child prevents a parent
+archive.
+
+Only selected session IDs are directly requested for archive. The child check
+and parent archive are not atomic: a new child created between the final check
+and parent archive may be archived by the host with its parent, even if unselected.
+The host exposes no atomic precondition to prevent this concurrent-child cascade.
+
+Requests remain sequential, with the existing durable per-session fences and
+exact-ID readback.
+**Stop before next session** lets the current request settle; it does not undo
+or retry it. Pending rows stay visible, uncertain outcomes offer a metadata-only
+**Refresh status**, and blocked rows keep their reasons. One summary distinguishes archived,
+blocked, unconfirmed, absent and unattempted rows: in the review while it is
+open, or as one toast when it was closed before the batch finished.
+
+A blocked parent with unselected active children names them. **Add N idle
+children** previews again with those exact IDs for a new confirmation, within
+the cap; running children are never added and are finished in their own
+workflow. **Review N again** previews only blocked and not-attempted sessions.
+After the review closes, the batch bar keeps the summary with **Deselect
+blocked**, which changes only the selection, and **Dismiss**. Blocked sessions
+stay ordinary live sessions and are never counted as archived.
+There is no whole-host bulk archive or automatic provider-history load.
 
 Archive does not require provider history. Resume requires its separate history
 and route preflight. Provider-history

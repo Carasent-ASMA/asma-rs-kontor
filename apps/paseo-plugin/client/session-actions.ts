@@ -1,4 +1,5 @@
-import { freshAvailability } from "../shared/session-lifecycle";
+import { freshAvailability, type LifecycleRow } from "../shared/session-lifecycle";
+import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
 import { recordVisit } from "./recent-sessions";
@@ -9,7 +10,7 @@ export type OpenSessionResult =
   | { readonly ok: true }
   | {
       readonly ok: false;
-      readonly reason: "missing" | "navigation" | "failed";
+      readonly reason: "missing" | "archived" | "navigation" | "failed";
       readonly message: string;
     };
 
@@ -36,6 +37,46 @@ export function openSessionById(input: {
   if (freshAvailability(entry)?.state === "missing") {
     return { ok: false, reason: "missing", message: "The host could not find this exact session ID at the last availability check. Refresh availability before opening it again." };
   }
+  return openNativeSession({ ...input, id: entry.id });
+}
+
+/** A successful correlated creation readback supplies the exact native ID without a full directory walk. */
+export function openCreatedSession(input: {
+  readonly outcome: CreateOutcome;
+  readonly serverId: string;
+  readonly navigation: SessionNavigation | undefined;
+}): OpenSessionResult {
+  if (!["verified", "differences"].includes(input.outcome.state) || !input.outcome.agentId) {
+    return { ok: false, reason: "missing", message: "The host has not confirmed this creation's exact session ID. Check its outcome before opening it." };
+  }
+  return openNativeSession({ ...input, id: input.outcome.agentId });
+}
+
+/** An archive's own exact-ID read names the native ID after its row left the directory; nothing else does. */
+export function openRecoveredSession(input: {
+  readonly row: LifecycleRow | null;
+  readonly id: string;
+  readonly serverId: string;
+  readonly navigation: SessionNavigation | undefined;
+}): OpenSessionResult {
+  if (input.row?.id !== input.id || input.row.availability?.agentId !== input.id || input.row.availability.state !== "readable") {
+    return { ok: false, reason: "missing", message: "The host has not confirmed this exact session ID. Refresh status before opening it." };
+  }
+  if (archivedByRead(input.row, input.id)) {
+    return { ok: false, reason: "archived", message: "This session is archived. Refresh status settles its archive; opening it would ask Paseo to restore its workspace." };
+  }
+  return openNativeSession(input);
+}
+
+/**
+ * The archive's own exact-ID read shows it in the archive. Recovery never opens it: Paseo opens an archived session
+ * through its workspace restore, which settling an archive does not need. The Archived list still opens it.
+ */
+export function archivedByRead(row: LifecycleRow | null, id: string): boolean {
+  return row?.id === id && row.availability?.agentId === id && row.availability.state === "readable" && !!row.availability.archivedAt;
+}
+
+function openNativeSession(input: { readonly id: string; readonly serverId: string; readonly navigation: SessionNavigation | undefined }): OpenSessionResult {
   if (!input.navigation) {
     return {
       ok: false,
@@ -44,8 +85,8 @@ export function openSessionById(input: {
     };
   }
   try {
-    input.navigation.openAgent({ agentId: entry.id, serverId: input.serverId });
-    recordVisit(entry.id);
+    input.navigation.openAgent({ agentId: input.id, serverId: input.serverId });
+    recordVisit(input.serverId, input.id);
     return { ok: true };
   } catch (error) {
     return {

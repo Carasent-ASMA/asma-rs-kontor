@@ -1,3 +1,4 @@
+import type { SessionStateCount } from "./session-state-counts";
 import { sessionStatusInk } from "./session-status-ink";
 import { useRef, type RefObject } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -12,7 +13,7 @@ import { QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
 /** The same seven choices as desktop, with touch-readable names, counts and a noninteractive legend. */
 export function MobileQuickChooser({ root, rootSize, anchor, colors, status, counts, onStatus, onClose }: {
   root: RefObject<View | null>; rootSize: MenuSize; anchor: RefObject<View | null>; colors: Colors;
-  status: StatusFilter; counts: Readonly<Record<StatusFilter, number>>; onStatus(status: StatusFilter): void; onClose(): void;
+  status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>; onStatus(status: StatusFilter): void; onClose(): void;
 }) {
   const closeRef = useRef<View | null>(null);
   const focused = useRef(false);
@@ -26,17 +27,17 @@ export function MobileQuickChooser({ root, rootSize, anchor, colors, status, cou
       <Action ref={closeRef} colors={colors} label="Close" onPress={close} />
     </View>}>
     <ScrollView testID="sessions-mobile-quick-choices" keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 6, gap: 8 }}>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>Choose one filter. Counts use your current search and scope. Opening this legend changes nothing.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>Counts show sessions in this host and archive scope. With refinements, the ratio means matching sessions of the same-state total before refinements. “…” means the total is updating; exact read details are in each accessible label.</Text>
       {QUICK_STATUS_FILTERS.map((choice) => <Pressable key={choice} testID={`sessions-choose-${choice}`} accessibilityRole="button"
-        accessibilityLabel={`${quickFilterLabel(choice)}, ${counts[choice]} sessions. ${QUICK_FILTER_MEANINGS[choice]}`}
+        accessibilityLabel={`${quickFilterLabel(choice)}, ${counts[choice].label}. ${QUICK_FILTER_MEANINGS[choice]}`}
         accessibilityState={{ selected: choice === status }} aria-pressed={choice === status}
         onPress={() => { onStatus(choice); close(); }}
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 7,
           borderWidth: 1, borderColor: choice === status || focused ? colors.accent : colors.border, backgroundColor: choice === status || pressed ? colors.surface2 : colors.surface1 })}>
         <Icon name={QUICK_FILTER_ICONS[choice]} size={20} color={sessionStatusInk(choice, colors)} />
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{quickFilterLabel(choice)} · {counts[choice]}{choice === status ? " · Selected" : ""}</Text>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{QUICK_FILTER_MEANINGS[choice]}</Text>
+          <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{quickFilterLabel(choice)} · {counts[choice].text}{choice === status ? " · Selected" : ""}</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{counts[choice].label}. {QUICK_FILTER_MEANINGS[choice]}</Text>
         </View>
         {choice === status ? <Icon name="Check" size={16} color={colors.foreground} /> : null}
       </Pressable>)}

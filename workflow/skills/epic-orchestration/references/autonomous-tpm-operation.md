@@ -132,6 +132,22 @@ delivery wakes before the new writer acts. Blocked delivery keeps the
 seat-finished wakes of its dependencies; a liveness pass may report an unchanged
 blocker but cannot retry it. Never alter another epic's registrations.
 
+**Pause is a hold.** A Paseo-direct pause is not an absence of work and does not
+extend itself by silence. Before the pause takes effect the plan or checkpoint
+records a `hold:` block with the same four fields a plan hold carries:
+
+- `reason`: one of `waiting_on_dependency`, `waiting_on_capacity`,
+  `waiting_on_decision`, `waiting_on_external_party` or `deprioritised` (by
+  {{ project.owner }});
+- `owner`: the person or seat that acts when the hold lifts;
+- `lifts_when`: an observable condition `kontord` or a human can check;
+- `review_by`: an ISO date at most 30 days ahead.
+
+A pause with a missing field is refused, and a pause whose `review_by` has
+passed is expired: the owner resumes, closes it with a reason, or renews it once
+with new evidence. Silence never extends a hold. The plan-file form of the same
+block is checked by the pack's `check` command.
+
 An explicit, dated, user-approved execution-method exception:
 
 - may give the operator combined LSA/TPM/lead responsibility and consolidate

@@ -6,7 +6,8 @@ export function fixtureCreate(enabled: boolean, add: (request: CreateRequest, ti
   const options: CreateOptions = {
     enabled, disabledReason: enabled ? null : "SIMULATED: this scenario has no Adam desk. Use Combined navigator review.",
     desks: enabled ? [{ workspaceId: "wks_proof_adam", projectId: "prj_proof_adam", desk: "ADAM", project: "DESK • ADAM" }] : [],
-    providers: [{ id: "codex", label: "Codex (simulated)", available: true, note: "Synthetic provider; no account or model is contacted.", persona: "supported",
+    catalogWorkspaceId: enabled ? "wks_proof_adam" : null,
+    providers: [{ id: "codex", label: "Codex (simulated)", available: true, status: "ready", note: "Synthetic provider; no account or model is contacted.", persona: "supported",
       models: [{ id: "gpt-6.1-sol", label: "Fixture model", efforts: [{ id: "xhigh", label: "Extra high" }], defaultEffort: "xhigh" }],
       defaultModel: "gpt-6.1-sol", modes: [{ id: "fixture-mode", label: "Fixture permissions", dangerous: false }], defaultMode: "fixture-mode" }],
     profile: { name: "LSA (fictional)", provider: "codex", model: "gpt-6.1-sol", modeId: "fixture-mode", effort: "xhigh" },

@@ -8,9 +8,10 @@ const supplied = (value: string | null | undefined) => value?.trim() || null;
 export function modelSourceHelp(entry: SessionUsageEntry): string {
   const model = modelPresentation(entry);
   if (model.model === null) return "Paseo did not supply a model.";
-  if (model.source === "Last reported runtime model") return "Last reported runtime model; may precede a switch and does not confirm the active call.";
-  if (model.source === "Runtime model selection") return "Runtime model selection; active execution is not confirmed.";
-  return "Configured model; active execution is not confirmed.";
+  const route = model.route ? ` Route: ${model.route.account} · ${model.route.model}.` : "";
+  if (model.source === "Last reported runtime model") return `Last reported runtime model; may precede a switch and does not confirm the active call.${route}`;
+  if (model.source === "Runtime model selection") return `Runtime model selection; active execution is not confirmed.${route}`;
+  return `Configured model; active execution is not confirmed.${route}`;
 }
 
 /** Explain applicable counters and missing/invalid fields without a repeated symbol legend. */

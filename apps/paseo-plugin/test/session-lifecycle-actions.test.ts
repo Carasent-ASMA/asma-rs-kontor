@@ -212,11 +212,13 @@ describe("reviewed exact-ID effects and durable replay", () => {
     const good = await setup(), ready = await good.preview("archive"); expect((await good.service.execute(ready.id, "a")).outcome).toBe("archived"); expect(good.records.has("a")).toBe(true);
     const files = await readdir(good.root); expect(files.some((file) => file.startsWith("result-"))).toBe(true); expect(await readFile(join(good.root, "latest.json"), "utf8")).toContain(ready.id);
   });
-  it("keeps scope explicit, missing IDs visible and archive limited to one session", async () => {
+  it("keeps scope explicit, missing IDs visible and archive bounded to selected IDs", async () => {
     const s = await setup(); expect((await s.preview()).rows.map((row) => row.id)).toEqual(["a"]);
     expect((await s.preview("resume", [], "host")).rows).toHaveLength(2);
     expect((await s.preview("resume", ["missing"])).rows[0]).toMatchObject({ id: "missing", eligible: false, nativeStatus: "missing" });
-    await expect(s.preview("archive", ["a", "b"])).rejects.toThrow("one exact session");
+    expect((await s.preview("archive", ["a", "b"])).rows.map((row) => row.id)).toEqual(["a", "b"]);
+    for (const ids of [[], Array.from({ length: 51 }, (_, n) => `fixture-${n}`)]) await expect(s.preview("archive", ids)).rejects.toThrow("1–50");
+    await expect(s.preview("archive", ["a"], "host")).rejects.toThrow("filtered scope");
     expect(previewLifecycle.input.safeParse({ action: "archive", scope: "filtered", agentIds: ["a"], target, arbitraryPath: "/etc/passwd" }).success).toBe(false);
     expect(executeLifecycleItem.input.safeParse({ reviewId: "../../x", agentId: "a" }).success).toBe(false);
   });
@@ -231,6 +233,42 @@ describe("reviewed exact-ID effects and durable replay", () => {
     expect((await reloaded.execute(review.id, "a")).outcome).toBe("uncertain");
     expect((await reloaded.execute((await s.preview("archive")).id, "a")).outcome).toBe("blocked");
     expect(s.archive).toHaveBeenCalledExactlyOnceWith("a"); expect(s.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("bounded bulk archive and managed children", () => {
+  const family = () => [agent("parent"), agent("child", { labels: { "paseo.parent-agent-id": "parent" } }), agent("grandchild", { parentAgentId: "child" } as Partial<Agent>), agent("other")];
+  it("previews without effects, orders all selected descendants first, and archives only exact selected IDs", async () => {
+    const s = await setup(family()), review = await s.preview("archive", ["parent", "child", "grandchild"]);
+    expect(review.rows.map((row) => row.id)).toEqual(["grandchild", "child", "parent"]);
+    expect(review.rows.every((row) => row.eligible)).toBe(true); expect(s.archive).not.toHaveBeenCalled();
+    for (const row of review.rows) expect(await s.service.execute(review.id, row.id)).toMatchObject({ outcome: "archived", runtime: "closed" });
+    expect(s.archive.mock.calls.map(([id]) => id)).toEqual(["grandchild", "child", "parent"]);
+    expect(s.records.get("other")!.archivedAt).toBeNull(); expect(s.send).not.toHaveBeenCalled();
+  });
+  it("blocks an unselected child, an out-of-order parent, and a newly attached child", async () => {
+    const s = await setup(family()), partial = await s.preview("archive", ["parent", "other"]);
+    expect(partial.rows.find((row) => row.id === "parent")!.eligible).toBe(false);
+    expect(await s.service.execute(partial.id, "parent")).toMatchObject({ outcome: "blocked" });
+    const full = await s.preview("archive", ["parent", "child", "grandchild"]);
+    expect(await s.service.execute(full.id, "parent")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("children") });
+    await s.service.execute(full.id, "grandchild");
+    s.records.set("new", agent("new", { labels: { "paseo.parent-agent-id": "child" } }));
+    expect(await s.service.execute(full.id, "child")).toMatchObject({ outcome: "blocked" });
+    expect(s.archive.mock.calls.map(([id]) => id)).toEqual(["grandchild"]);
+  });
+  it("keeps an unconfirmed child's parent blocked even if archive membership was saved", async () => {
+    const s = await setup(family().filter((row) => row.id !== "grandchild")), review = await s.preview("archive", ["parent", "child"]);
+    s.archive.mockImplementationOnce(async (id) => { s.records.set(id, { ...s.records.get(id)!, archivedAt: "now", status: "idle" }); throw new Error("Lost acknowledgement"); });
+    expect(await s.service.execute(review.id, "child")).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
+    expect(await s.service.execute(review.id, "parent")).toMatchObject({ outcome: "blocked" });
+    expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+  it("accepts exactly 50 and rejects a cyclic child graph without dispatch", async () => {
+    const s = await setup(Array.from({ length: 50 }, (_, n) => agent(`fixture-${n}`)));
+    expect((await s.preview("archive", [...s.records.keys()])).rows).toHaveLength(50);
+    const cycle = await setup([agent("a", { labels: { "paseo.parent-agent-id": "b" } }), agent("b", { labels: { "paseo.parent-agent-id": "a" } })]);
+    await expect(cycle.preview("archive", ["a", "b"])).rejects.toThrow("cycle"); expect(cycle.archive).not.toHaveBeenCalled();
   });
 });
 describe("Attention availability evidence", () => {
@@ -791,5 +829,142 @@ describe("20 reconcile saves before it releases, and releases only the fence it 
     expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed", message: expect.stringContaining("so this result was not recorded") });
     expect(await savedRow(s, review.id)).toEqual(saved);
     expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("21 a legacy dispatch receipt outlives a Check that replaced the saved row", () => {
+  type Saved = Record<string, unknown> & { fingerprint: string; availability: Record<string, unknown> };
+  const receiptPath = (root: string, fingerprint: string) => join(root, `done-${sha(`a:${fingerprint}`)}.json`);
+  const UNCONFIRMED = "Archived, but an exact-ID read does not show its runtime closed, so stopping it is still not confirmed. The fence is kept; no additional archive request was sent.";
+  const LATER: [string, Record<string, unknown>][] = [
+    ["a pre-split Check's uncertain text", { outcome: "uncertain", message: "Archive outcome remains uncertain. The original no-replay fence is preserved." }],
+    ["a later archived/unconfirmed Check", { outcome: "archived", runtime: "unconfirmed", message: UNCONFIRMED }],
+  ];
+  /** Every dispatch receipt by name and bytes: reconcile never writes, rewrites or migrates one. */
+  const doneFiles = async (s: Setup) => Object.fromEntries(await Promise.all((await readdir(s.root)).filter((name) => name.startsWith("done-")).map(async (name) => [name, await nativeFs.readFile(join(s.root, name), "utf8")])));
+  const fence = async (s: Setup, value: Record<string, unknown>) => { const bytes = JSON.stringify(value); await writeFile(fencePath(s.root, "a"), bytes); return bytes; };
+  /** The legacy fence and its dispatch receipt as written, then the saved row as a later Check replaced it. */
+  async function overwritten(s: Setup, review: LifecycleReview, receipt: ((row: Saved) => string) | null = JSON.stringify, later = LATER[1]![1]) {
+    const held = await legacyFence(s, review), file = resultFile(s.root, review.id, "a"), saved = JSON.parse(await nativeFs.readFile(file, "utf8")) as Saved;
+    if (receipt) await writeFile(receiptPath(s.root, saved.fingerprint), receipt(saved));
+    await writeFile(file, JSON.stringify({ ...saved, ...later }));
+    return { held, fingerprint: saved.fingerprint, row: await nativeFs.readFile(file, "utf8"), done: await doneFiles(s) };
+  }
+  /** Nothing was sent or created and every receipt is byte-identical; the fence is exactly the expected bytes. */
+  async function kept(s: Setup, c: Awaited<ReturnType<typeof overwritten>>, bytes: string | null = c.held) {
+    expect(await fenceBytes(s.root, "a")).toBe(bytes);
+    expect(await doneFiles(s)).toEqual(c.done);
+    expect(s.archive).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled();
+  }
+  it.each(LATER)("settles after %s: archived/not-observed, own fence released, nothing sent", async (_label, later) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review, JSON.stringify, later);
+    const remounted = createLifecycleService(s.client, s.root);
+    expect((await remounted.read())?.unresolved).toEqual([{ reviewId: review.id, agentId: "a" }]);
+    const row = await remounted.reconcile(review.id, "a");
+    expect(row).toMatchObject({ outcome: "archived", runtime: "not-observed", nativeStatus: "idle", message: "Archived. The archive had returned; the host did not report its runtime as closed. No additional archive request was sent." });
+    expect(unresolvedArchive(row)).toBe(false);
+    expect(JSON.parse(await nativeFs.readFile(resultFile(s.root, review.id, "a"), "utf8"))).toEqual(row);
+    expect((await remounted.read())?.unresolved).toEqual([]);
+    await kept(s, c, null);
+  });
+  it.each(LATER)("keeps the fence after %s with no receipt: saved text and age alone never release", async (_label, later) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review, null, later);
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "unconfirmed", message: UNCONFIRMED });
+    await kept(s, c);
+  });
+  it.each<[string, (row: Saved) => string]>([
+    ["a corrupt receipt", () => "not json"],
+    ["a receipt outside the row schema", () => JSON.stringify({ id: "a", outcome: "uncertain", message: LEGACY })],
+    ["a receipt naming another ID", (row) => JSON.stringify({ ...row, id: "b" })],
+    ["a receipt naming another revision", (row) => JSON.stringify({ ...row, fingerprint: "other-revision" })],
+    ["a receipt without its exact-ID read", (row) => JSON.stringify({ ...row, availability: undefined })],
+    ["a receipt read for another ID", (row) => JSON.stringify({ ...row, availability: { ...row.availability, agentId: "b" } })],
+    ["a receipt read without a state", (row) => JSON.stringify({ ...row, availability: { ...row.availability, state: undefined } })],
+    ...(["unknown", "missing"] as const).map((state): [string, (row: Saved) => string] => [`a receipt read ${state} that still names archivedAt`, (row) => JSON.stringify({ ...row, availability: { ...row.availability, state } })]),
+    ["a receipt without post-dispatch archivedAt", (row) => JSON.stringify({ ...row, availability: { ...row.availability, archivedAt: null } })],
+    ["a receipt with near-miss text", (row) => JSON.stringify({ ...row, message: LEGACY.replace("do not retry", "do not resend") })],
+    ["a receipt with generic uncertain text", (row) => JSON.stringify({ ...row, message: "Archive not confirmed: Lost transport" })],
+    ["a receipt whose outcome is not uncertain", (row) => JSON.stringify({ ...row, outcome: "archived", runtime: "unconfirmed" })],
+  ])("keeps the fence with %s", async (_label, receipt) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review, receipt);
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "unconfirmed", message: UNCONFIRMED });
+    await kept(s, c);
+  });
+  it.each(["EACCES", "EIO"])("keeps the fence when the receipt read fails with %s", async (code) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review), file = receiptPath(s.root, c.fingerprint);
+    vi.mocked(readFile).mockImplementation(async (...args) => {
+      if (args[0] === file) throw Object.assign(new Error("fixture read fault"), { code });
+      return nativeFs.readFile(...args);
+    });
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "unconfirmed", message: UNCONFIRMED });
+    expect(vi.mocked(readFile).mock.calls.some(([path]) => path === file)).toBe(true);
+    await kept(s, c);
+  });
+  it.each<[string, (s: Setup, review: LifecycleReview, fingerprint: string) => Promise<string | null>]>([
+    ["another review's fence", async (s) => { const other = await s.preview("archive"); return fence(s, { reviewId: other.id, agentId: "a", action: "archive", phase: "unconfirmed", fingerprint: other.rows[0]!.fingerprint }); }],
+    ["a fence for another revision", (s, review) => fence(s, { reviewId: review.id, agentId: "a", action: "archive", phase: "uncertain", fingerprint: "other-revision" })],
+    ["a Resume fence", (s, review, fingerprint) => fence(s, { reviewId: review.id, agentId: "a", action: "resume", phase: "uncertain", fingerprint })],
+    ...["intent", "unconfirmed"].map((phase): [string, (s: Setup, review: LifecycleReview, fingerprint: string) => Promise<string>] => [`an owned ${phase} fence`, (s, review, fingerprint) => fence(s, { reviewId: review.id, agentId: "a", action: "archive", phase, fingerprint, token: "fixture" })]),
+    ["a corrupt fence", async (s) => { await writeFile(fencePath(s.root, "a"), "not json"); return "not json"; }],
+    ["no fence", async (s) => { await nativeFs.unlink(fencePath(s.root, "a")); return null; }],
+  ])("never settles or releases with %s, even with a legacy receipt", async (_label, swap) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review), bytes = await swap(s, review, c.fingerprint);
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
+    await kept(s, c, bytes);
+  });
+  it.each<[string, (s: Setup) => void]>([
+    ["running again", (s) => s.records.set("a", { ...s.records.get("a")!, status: "running" })],
+    ["an active turn", (s) => s.records.set("a", { ...s.records.get("a")!, activeTurn: turn })],
+    ["not archived", (s) => s.records.set("a", { ...s.records.get("a")!, archivedAt: null })],
+    ["no native record", (s) => { s.records.delete("a"); }],
+    ["a read error", (s) => { s.refresh.mockRejectedValueOnce(new Error("Host unavailable")); }],
+    ["a reply for another session", (s) => { s.refresh.mockResolvedValueOnce({ agent: agent("b", { status: "idle", archivedAt: "2026-10-21" }), project: null }); }],
+  ])("keeps the fence when the exact-ID read now shows %s", async (_label, change) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review); change(s);
+    const row = await s.service.reconcile(review.id, "a");
+    expect(row).toMatchObject({ outcome: "uncertain", message: expect.stringContaining("Archive outcome remains uncertain") }); expect(unresolvedArchive(row)).toBe(true);
+    await kept(s, c);
+  });
+  it.each<[string, (s: Setup) => Promise<string | null>]>([
+    ["a successor takes the fence", (s) => fence(s, { reviewId: randomUUID(), agentId: "a", action: "resume", phase: "preflight", fingerprint: "other", token: "fixture" })],
+    ["the fence is released", async (s) => { await nativeFs.unlink(fencePath(s.root, "a")); return null; }],
+  ])("reports its read unsaved when %s during the read", async (_label, race) => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review);
+    let bytes: string | null = null;
+    s.refresh.mockImplementationOnce(async (id) => { bytes = await race(s); return { agent: s.records.get(id)!, project: null }; });
+    expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "not-observed", message: expect.stringContaining("so this result was not recorded") });
+    expect(await nativeFs.readFile(resultFile(s.root, review.id, "a"), "utf8")).toBe(c.row);
+    await kept(s, c, bytes);
+  });
+  it("two concurrent Refreshes settle once and release only the fence they read", async () => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review);
+    const rows = await Promise.all([s.service.reconcile(review.id, "a"), createLifecycleService(s.client, s.root).reconcile(review.id, "a")]);
+    for (const row of rows) expect(row).toMatchObject({ outcome: "archived", runtime: "not-observed" });
+    expect(JSON.parse(await nativeFs.readFile(resultFile(s.root, review.id, "a"), "utf8"))).toMatchObject({ outcome: "archived", runtime: "not-observed" });
+    await kept(s, c, null);
+  });
+  it.each(["preflight", "uncertain"])("a pending row's %s fence never borrows an earlier dispatch's legacy receipt", async (phase) => {
+    const s = await setup(), review = await s.preview("archive"), row = review.rows[0]!;
+    await writeFile(receiptPath(s.root, row.fingerprint), JSON.stringify({ ...row, outcome: "uncertain", message: LEGACY, availability: { ...row.availability!, archivedAt: "2026-10-21" } }));
+    const bytes = await fence(s, { reviewId: review.id, agentId: "a", action: "archive", phase, fingerprint: row.fingerprint, token: "fixture" });
+    s.records.set("a", { ...s.records.get("a")!, status: "idle", archivedAt: "2026-10-21" });
+    expect((await s.service.reconcile(review.id, "a")).runtime).not.toBe("not-observed");
+    expect(await fenceBytes(s.root, "a")).toBe(bytes); expect(s.archive).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled();
+  });
+  it("a failed save keeps the fence and the row; the next Refresh settles it, and a replay sends nothing", async () => {
+    const s = await setup(), review = await s.preview("archive"), c = await overwritten(s, review), temp = `${resultFile(s.root, review.id, "a")}.`;
+    let fault = true;
+    vi.mocked(open).mockImplementation(async (...args) => {
+      if (fault && String(args[0]).startsWith(temp)) { fault = false; throw Object.assign(new Error("fixture write fault"), { code: "EIO" }); }
+      return nativeFs.open(...args);
+    });
+    await expect(s.service.reconcile(review.id, "a")).rejects.toThrow("fixture write fault");
+    expect(await nativeFs.readFile(resultFile(s.root, review.id, "a"), "utf8")).toBe(c.row);
+    await kept(s, c);
+    const settled = await s.service.reconcile(review.id, "a");
+    expect(settled).toMatchObject({ outcome: "archived", runtime: "not-observed" });
+    expect(await s.service.reconcile(review.id, "a")).toEqual(settled);
+    expect(await s.service.execute(review.id, "a")).toEqual(settled);
+    await kept(s, c, null);
   });
 });

@@ -4,6 +4,7 @@ import { useHosts } from "@getpaseo/plugin/client";
 import { copyText, Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { KeyboardAvoidingView, Linking, Platform, Pressable, SafeAreaView, ScrollView, Settings, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
+import type { ReadSourceSummary } from "../shared/read-sources";
 import { ControlHelpProvider } from "./control-help";
 import { declaredScope } from "./session-organization";
 import { SessionsScreen } from "./sessions-screen";
@@ -26,7 +27,7 @@ import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
 import { OrganizationSettingsPage } from "./organization-settings-page";
-import { openSessionById } from "./session-actions";
+import { openCreatedSession, openSessionById } from "./session-actions";
 import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
 import { useWorkspaceDirectory } from "./use-workspace-directory";
@@ -40,7 +41,7 @@ import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
 import { declaredPlanWorkstream, planWorkstreamMappings } from "./plan-workstreams";
 import { taskTeamReader } from "./task-team-source";
 
-// Set at plugin load, before Back to Kontor or the composer pill records a visit.
+// One device store; Recent uses a separate key for each host.
 configureRecentStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
@@ -50,6 +51,12 @@ function appearanceColors(colors: Colors, appearance: string): Colors {
   if (appearance === "system") return colors;
   if (appearance === "dark") return { ...colors, foreground: "#ecedf0", foregroundMuted: "#a8adb7", surface0: "#15171c", surface1: "#1f222a", surface2: "#2e333e", border: "#414754", accent: "#9cbfff" };
   return { ...colors, foreground: "#20242c", foregroundMuted: "#5e6570", surface0: "#ffffff", surface1: "#f5f6f8", surface2: "#e6ebf2", border: "#c7cdd7", accent: "#245bba" };
+}
+/** Exact sources a page demands; Sessions reads none and never triggers Markdown, a graph or records. */
+export function demandedSourceIdsFor(route: Pick<KontorRoute, "tab" | "sourceId">, sources: readonly ReadSourceSummary[], associationIds: readonly string[] | null): string[] {
+  if (route.tab === "Plan" || route.tab === "Board" || route.tab === "Graph") return [...new Set([route.sourceId, ...(associationIds ?? [])].filter((id): id is string => id !== null))];
+  if (route.tab === "Overview" || route.tab === "Search" || route.tab === "Delivery" || route.tab === "Decisions" || route.tab === "AI teams & sessions") return sources.map((source) => source.id);
+  return [];
 }
 export function KontorScreen(props: PluginScreenProps) {
   // Remount all host-local hooks on a host switch; routes remain host-scoped.
@@ -142,6 +149,12 @@ function HostScreen(props: PluginScreenProps) {
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
+  // Pages demand exact reads for their own context: the selected plan and its linked associations on Plan,
+  // Board and Graph; the context sources on the recorded and overview pages; none on Sessions.
+  const demandedSourceIds = useMemo(() => demandedSourceIdsFor(route, sources, associationIds),
+    [route.tab, route.sourceId, associationIds, sources]);
+  const demandKey = demandedSourceIds.join("\u0000");
+  useEffect(() => { sourceState.demand(demandedSourceIds); }, [demandKey]);
   const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceEpic(source, sourceState.reads[source.id]))].filter((key): key is string => key !== null))].sort();
   const projectName = route.projectId === null ? null : projects.find(([id]) => id === route.projectId)?.[1] ?? null;
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projectName ?? "Project unavailable");
@@ -252,8 +265,9 @@ function HostScreen(props: PluginScreenProps) {
       {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
-  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostStatus={hostStatus} directory={directory.state}
+  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
+    onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
     onShowAll={(text) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
       const scope = sessionScopeKey(host.id, next);
       const current = readSessionView(scope);
