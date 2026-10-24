@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  failureAt, observeRefusal, quietAfterRefusal, recoveredAfterRefusal, refusalAsOf, refusalKind, refusalState, type ProviderRefusalRead, type RefusalObservation,
+  failureAt, observeRefusal, quietAfterRefusal, recoveredAfterRefusal, refusalAsOf, refusalKind, refusalObservationSchema, refusalState, type ProviderRefusalRead, type RefusalObservation,
 } from "../shared/provider-block";
 
 // Synthetic refusal shaped like an OpenCode APIError: the response date is the only zoned time; the reset has no zone.
@@ -121,4 +121,12 @@ describe("timeline recovery (G7), bound to the stored observation", () => {
     ["a retry start with no answer", [ok(-1_000), user(1_000)], false],
     ["a turn answered after the observation", [ok(-1_000), user(1_000), ok(2_000)], true],
   ] as const).map(([name, entries, expected]) => [kind, name, entries, expected] as const)))("%s, bound by time only: %s", (kind, _name, entries, expected) => expect(recoveredAfterRefusal(entries, { kind, observedAt })).toBe(expected));
+});
+
+describe("refusal observation time", () => {
+  const observation = { kind: "quota", failureAt: "unknown", observedAt: "2026-10-24T10:00:00.000Z", route: { provider: "codex", model: null }, message: null };
+  it("accepts only a strict ISO 8601 host time (AUD-R6-02)", () => {
+    expect(refusalObservationSchema.safeParse(observation).success).toBe(true);
+    for (const observedAt of ["not-a-timestamp", "", "2026-10-24", "Tue, 20 Oct 2026 21:30:52 GMT", "2026-10-24T10:00:00"]) expect(refusalObservationSchema.safeParse({ ...observation, observedAt }).success, observedAt).toBe(false);
+  });
 });

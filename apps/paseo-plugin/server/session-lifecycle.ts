@@ -59,7 +59,7 @@ const memorySchema = z.object({
    *  Its kind is `unknown` while the memory is unresolved, and only a later successful provider turn releases it. */
   refusal: refusalObservationSchema.extend({ seq: z.number().int().nonnegative() }).nullable(),
   /** Attempts with no recorded outcome: each one's seq, the snapshot seq it was opened on (`revision`) and its start. */
-  open: z.array(z.object({ seq: z.number().int().positive(), revision: z.number().int().nonnegative(), start: z.string() }).strict()),
+  open: z.array(z.object({ seq: z.number().int().positive(), revision: z.number().int().nonnegative(), start: z.iso.datetime() }).strict()),
   /** A clean read or a recovery is durably recorded. Absence is never clean. */
   clean: z.boolean(),
   /** The final read of the last recovery: a read that started before it cannot reopen what it released. */
@@ -97,13 +97,21 @@ const UNRESOLVED = "An earlier read of this session left no recorded outcome, or
 const PENDING = "Another exact read of this session has not recorded its outcome yet.";
 /** An open read later than the last release: until it records its outcome, the memory is not clean. */
 const pending = (memory: RefusalMemory, after = memory.cleared) => memory.open.some((entry) => entry.seq > after);
-/** An unresolved memory: an open refusal loses its kind and binds no earlier than `at`. */
-/** Whether `memory` accounts for an older record's refusal: it still holds one bound no earlier, or a recovery whose
- *  final read started after that refusal was named released it. */
-const covers = (memory: RefusalMemory, refusal: OpenRefusal) => memory.refusal
-  ? Date.parse(memory.refusal.observedAt) >= Date.parse(refusal.observedAt) : memory.cleared > refusal.seq;
+const bound = (next: { observedAt: string }, prior: { observedAt: string }) => Date.parse(next.observedAt) >= Date.parse(prior.observedAt);
+const identity = ({ observedAt: _at, seq: _seq, ...rest }: OpenRefusal) => JSON.stringify(rest);
+/** Whether `memory` accounts for everything an older snapshot holds. Each read that snapshot left open is still open,
+ *  named the open refusal or was the last recovery's final read. Its refusal is still open, named by the same read with
+ *  the same evidence or by a later read, and bound no earlier; or a recovery whose final read started after that refusal
+ *  was named released it, bound no earlier. */
+const covers = (memory: RefusalMemory, older: RefusalMemory) => {
+  const held = memory.refusal, refusal = older.refusal, recovered = memory.recovered;
+  return older.open.every((entry) => memory.open.some((open) => open.seq === entry.seq) || held?.seq === entry.seq || memory.cleared === entry.seq)
+    && (!refusal || (held ? (held.seq > refusal.seq || (held.seq === refusal.seq && identity(held) === identity(refusal))) && bound(held, refusal)
+      : !!recovered && memory.cleared > refusal.seq && bound(recovered, refusal)));
+};
+/** An unresolved memory: an open refusal loses its kind, counts as named by read `seq` and binds no earlier than `at`. */
 const unresolved = (memory: RefusalMemory, at: string, seq: number): OpenRefusal => memory.refusal
-  ? { ...memory.refusal, kind: "unknown", observedAt: later(memory.refusal.observedAt, at) } : { ...unknownRefusal(at, UNRESOLVED), seq };
+  ? { ...memory.refusal, kind: "unknown", seq: Math.max(memory.refusal.seq, seq), observedAt: later(memory.refusal.observedAt, at) } : { ...unknownRefusal(at, UNRESOLVED), seq };
 type RefusalRead = { agent?: Agent; availability: SessionAvailability; attempt: number; seen: RefusalObservation | null; memory?: RefusalMemory; problem?: Error | null; fence?: Error };
 export function lifecycleRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.status, agent.archivedAt, agent.updatedAt, agent.provider, agent.model,
@@ -303,7 +311,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   /** This ID's refusal memory, in the path's queue. On first use it adopts the valid snapshot with the highest seq among
    *  the record, a held record and complete temps. An attempt that snapshot left open, a partial, corrupt, inconsistent
    *  or foreign artifact, a different snapshot of the same seq, a snapshot this worker did not write and does not
-   *  outrank, or an older refusal the memory neither holds nor released leaves the memory unresolved: a refusal of
+   *  outrank, or an older snapshot the memory does not cover leaves the memory unresolved: a refusal of
    *  unknown kind bound to now, so neither a stale kind, a cleared error nor a turn before this read can release it.
    *  Evidence that cannot be read is an error. */
   async function adopt(id: string, path: string): Promise<RefusalMemory> {
@@ -325,7 +333,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const base = known ?? top?.memory ?? { seq: 0, refusal: null, open: [], clean: false, cleared: 0, recovered: null };
     for (const other of found) {
       if (known ? other.memory.seq >= known.seq : other.memory.seq === base.seq && JSON.stringify(other) !== JSON.stringify(top)) unsure = true;
-      else if (other.memory.refusal && !covers(base, other.memory.refusal)) unsure = true;
+      else if (!covers(base, other.memory)) unsure = true;
     }
     let memory = { ...base, seq: Math.max(base.seq, ...found.map((other) => other.memory.seq)) };
     if (!known && memory.open.length) { unsure = true; memory = { ...memory, open: [] }; }

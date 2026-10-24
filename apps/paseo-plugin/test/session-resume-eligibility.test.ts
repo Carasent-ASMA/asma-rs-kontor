@@ -714,6 +714,12 @@ describe("Provider refusal on an exact read (R1)", () => {
     ["two records of the same seq that name different refusals (AUD-R5-01)", [["", snapshot("refusal", 4, { refusal: auth(3) })], [".held", snapshot("refusal", 4, { refusal: { ...auth(3), kind: "quota", message: "usage limit reached" } })]]],
     ["a newer clean record without a recovery beside an older held auth refusal (AUD-R5-01)", [["", snapshot("clean", 6)], [".held", snapshot("refusal", 4, { refusal: auth(3) })]]],
     ["a newer recovery whose final read precedes a held auth refusal (AUD-R5-01)", [["", snapshot("recovery", 8, { cleared: 2, recovered: { ...auth(0), seq: undefined } })], [".held", snapshot("refusal", 6, { refusal: auth(5) })]]],
+    ["a newer clean record beside an older held read that never recorded its outcome (AUD-R6-01)", [["", snapshot("clean", 6)], [".held", snapshot("attempt", 5, { open: [{ seq: 5, revision: 4, start: "2026-10-24T10:00:00.000Z" }] })]]],
+    ["a newer recovery bound before an older held refusal it never released (AUD-R6-01)", [["", snapshot("recovery", 8, { cleared: 7, recovered: { ...auth(0), seq: undefined, observedAt: "2026-10-24T09:00:00.000Z" } })], [".held", snapshot("refusal", 6, { refusal: auth(5) })]]],
+    ["a newer record whose refusal was named before an older held refusal, though bound later (AUD-R6-01)", [["", snapshot("refusal", 8, { refusal: { ...auth(3), kind: "quota", message: "usage limit reached", observedAt: "2026-10-24T10:00:05.000Z" } })], [".held", snapshot("refusal", 6, { refusal: auth(5) })]]],
+    ["a recovery record whose release has no valid time (AUD-R6-02)", [["", snapshot("recovery", 4, { cleared: 3, recovered: { ...auth(0), seq: undefined, observedAt: "not-a-timestamp" } })]]],
+    ["a refusal record bound to no valid time (AUD-R6-02)", [["", snapshot("refusal", 4, { refusal: { ...auth(3), observedAt: "not-a-timestamp" } })]]],
+    ["an attempt record whose read has no valid start (AUD-R6-02)", [["", snapshot("attempt", 4, { open: [{ seq: 4, revision: 3, start: "not-a-timestamp" }] })]]],
     ["a refusal record without a refusal (AUD-R5-02)", [["", snapshot("refusal", 4)]]],
     ["an attempt record without an attempt (AUD-R5-02)", [["", snapshot("attempt", 4)]]],
     ["a recovery record without its release (AUD-R5-02)", [["", snapshot("recovery", 4)]]],
@@ -750,6 +756,20 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect(review.rows[0]?.eligible).toBe(true);
     expect(await refusalFiles(h.root)).toEqual([basename(refusalFile(h.root, "a"))]);
     expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "submitted" });
+  });
+
+  it("a refusal kind named before an older held refusal never confirms a recovery of that kind (AUD-R6-01)", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], ...quiet })], [ready("codex-fixture-account")]), bound = "2026-10-24T10:00:05.000Z";
+    await writeFile(refusalFile(h.root, "a"), snapshot("refusal", 8, { refusal: { ...auth(3), kind: "quota", message: "usage limit reached", observedAt: bound } }));
+    await writeFile(`${refusalFile(h.root, "a")}.held`, snapshot("refusal", 6, { refusal: auth(5) }));
+    // A quota recovery after the earlier-named quota's binding: it proves nothing about the auth refusal named later.
+    h.timeline.mockResolvedValue(recoveredTail(bound));
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ kind: "unknown", recovery: "not-confirmed" });
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("(unknown) has no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(h.send).not.toHaveBeenCalled();
   });
 
   it("a session first read in a native error with no clean stored is unresolved: Resume stays closed, across a restart, until a later successful turn", async () => {

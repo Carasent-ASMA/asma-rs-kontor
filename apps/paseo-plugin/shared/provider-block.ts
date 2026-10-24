@@ -22,8 +22,8 @@ export const refusalObservationSchema = z.object({
   /** From the refusal text only, else "unknown"; never a host timestamp. */
   failureAt: z.string(),
   /** Host time after the exact-ID read that saw the refusal returned: recovery counts only turns after it. Not a failure
-   *  time and not provider health. */
-  observedAt: z.string(),
+   *  time and not provider health. Only a strict ISO 8601 time, so no record without one can bind or release. */
+  observedAt: z.iso.datetime(),
   route: z.object({ provider: z.string(), model: z.string().nullable() }),
   message: z.string().nullable(),
 });
