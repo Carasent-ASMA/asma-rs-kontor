@@ -49,11 +49,14 @@ vi.mock("@getpaseo/plugin/client", () => ({
 }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", Icon: "Icon", ScrollView: "ScrollView", TextInput: "TextInput", useToast: () => fake.toast }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: fake.state, refresh: fake.refresh }) }));
+// Menus and dialogs are not mounted by this harness, so none is open unless a test says so.
+const panel = vi.hoisted(() => ({ open: false }));
+vi.mock("../client/anchored-menu", async (original) => ({ ...(await original<typeof import("../client/anchored-menu")>()), anchoredPanelOpen: () => panel.open }));
 
 import { SessionsScreen, SlimToolbar } from "../client/sessions-screen";
 import { ArchiveRecoverySheet } from "../client/archive-recovery";
 import { configureArchiveNoticeStorage, hiddenArchivesKey, readHiddenArchives } from "../client/archive-feedback";
-import { NoticesButton, NoticeTray, presentHidden, type Notice } from "../client/notice-tray";
+import { NoticeAction, NoticesButton, NoticeTray, presentHidden, type Notice } from "../client/notice-tray";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileFiltersPage } from "../client/mobile-filters";
 import { DEFAULT_RECOVERY_TARGET, TAKEOVER_LIMIT, type LifecycleRow, type UnresolvedRef } from "../shared/session-lifecycle";
@@ -82,6 +85,7 @@ const owner = (patch: (id: string) => Partial<LifecycleRow> = () => ({})) => asy
     availability: { agentId: id, state: "readable", nativeStatus: "idle", archivedAt: "2026-10-24T08:00:00.000Z", reason: "Fixture read.", checkedAt: "2026-10-24T08:01:00.000Z", revision: "r1" }, ...patch(id) })) });
 const ONE = "Session fixture-sa: archived, runtime stop not confirmed", TWO = "2 archives need attention";
 const archiveKey = (id: string, state = "unconfirmed") => `archive:${ref(id).reviewId}:${id}:${state}`;
+const ackKey = (id: string, state = "unconfirmed") => `archive:ack:${ref(id).reviewId}:${id}:${state}`;
 
 type Layout = "full" | "slim" | "compact-320" | "compact-390";
 function mount(layout: Layout, options: { navigation?: boolean; host?: string; openAgent?: (input: unknown) => void } = {}) {
@@ -169,8 +173,10 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
     press(trigger()); await settle();
     expect(trigger()).toBeUndefined(); expect(lineText()).toBe(ONE);
     expect(action("Archive details")).toBeUndefined(); expect(action("Check unconfirmed archives again")).toBeUndefined();
-    const review = action("Review unconfirmed archive")!;
-    expect(review.props).toMatchObject({ label: "Review archive", expanded: false });
+    // AR-03: an icon beside the line, named "Review archive", never a text button on a row of its own.
+    const review = action("Review archive")!;
+    expect(review.type).toBe(NoticeAction); expect(review.props).toMatchObject({ icon: "ClipboardList", expanded: false });
+    expect(review.props.help).toContain("Review archive.");
     press(review); await settle();
     const open = sheet()!;
     expect(open.props).toMatchObject({ compact: layout.startsWith("compact"), canRefresh: true, hostOnline: true });
@@ -194,11 +200,11 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
     expect(trays()).toHaveLength(0); expect(summaries(trigger())).toEqual([ONE]);
     harness.unmount(); unresolved = [ref(SA), { reviewId: reviewId("archive:new"), agentId: "fixture-new" }]; mount(layout); await settle();
     expect(trigger()).toBeUndefined(); expect(lineText()).toBe(TWO);
-    expect(action("Review 2 unconfirmed archives")?.props.label).toBe("Review archives");
+    expect(action("Review 2 archives")?.props).toMatchObject({ icon: "ClipboardList" });
     (tray()!.props.onHide as () => void)(); await settle();
     harness.unmount(); fake.rpc["sessions.lifecycle-review"] = async () => { throw new Error("Fixture read failure."); }; mount(layout); await settle();
     expect(trigger()).toBeUndefined(); expect(lineText()).toBe("Archive checks could not be read: Fixture read failure.");
-    expect(action("Read archive checks again")?.props.label).toBe("Retry");
+    expect(action("Retry archive checks")).toMatchObject({ type: NoticeAction, props: { icon: "RefreshCw", disabled: false } });
   });
 
   it("moves focus from Hide to the status button, and from Show to Hide", async () => {
@@ -335,12 +341,12 @@ describe("Notice tray occurrences", () => {
     harness.unmount(); clearSessionViews(); patchSessionView("host-a", { layout: "flat" }); configureArchiveNoticeStorage(device);
     mount("full"); await settle();
     expect(trays()).toHaveLength(0); expect(summaries(trigger())).toEqual([ONE]);
-    press(trigger()); await settle(); press(action("Review unconfirmed archive")); await settle();
+    press(trigger()); await settle(); press(action("Review archive")); await settle();
     expect((sheet()!.props.recovery as { persistence: string }).persistence).toBe("device");
     // Confirmed while closed: a complete read forgets it on the device too.
     unresolved = []; await remount(); expect(values.size).toBe(0);
     configureArchiveNoticeStorage(null); unresolved = [ref(SA)]; await remount(); await hide();
-    press(trigger()); await settle(); press(action("Review unconfirmed archive")); await settle();
+    press(trigger()); await settle(); press(action("Review archive")); await settle();
     expect((sheet()!.props.recovery as { persistence: string }).persistence).toBe("session");
   });
 
@@ -358,17 +364,76 @@ describe("Notice tray occurrences", () => {
 
   it("U4 Open session uses the archive's own exact-ID read, and reports when there is none", async () => {
     const openAgent = vi.fn();
+    // AR-01: a read showing it archived never opens it, so the host is never asked to restore its workspace.
     harness.unmount(); mount("full", { openAgent }); await settle();
-    press(action("Review unconfirmed archive")); await settle();
+    press(action("Review archive")); await settle();
+    (sheet()!.props.onOpen as (item: unknown) => void)((sheet()!.props.recovery as { items: unknown[] }).items[0]); await settle();
+    expect(openAgent).not.toHaveBeenCalled(); expect(fake.toast.error).toHaveBeenCalledWith(expect.stringContaining("This session is archived.")); expect(sheet()).toBeDefined();
+    fake.rpc["sessions.lifecycle-review"] = async (input) => input.reviewId ? owner((id) => ({ outcome: "uncertain", runtime: undefined, availability: { agentId: id, state: "readable", nativeStatus: "idle", archivedAt: null, reason: "Fixture read.", checkedAt: "2026-10-24T08:01:00.000Z", revision: "r1" } }))(input) : latest([...unresolved]);
+    harness.unmount(); mount("full", { openAgent }); await settle();
+    press(action("Review archive")); await settle();
     const open = sheet()!, [item] = (open.props.recovery as { items: unknown[] }).items;
     (open.props.onOpen as (item: unknown) => void)(item); await settle();
     expect(openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: SA, serverId: "host-a" }); expect(sheet()).toBeUndefined();
     fake.rpc["sessions.lifecycle-review"] = async (input) => input.reviewId ? owner(() => ({ availability: undefined }))(input) : latest([...unresolved]);
     harness.unmount(); mount("full", { openAgent }); await settle();
-    press(action("Review unconfirmed archive")); await settle();
+    press(action("Review archive")); await settle();
     (sheet()!.props.onOpen as (item: unknown) => void)((sheet()!.props.recovery as { items: unknown[] }).items[0]); await settle();
     expect(openAgent).toHaveBeenCalledTimes(1); expect(fake.toast.error).toHaveBeenCalledWith("The host has not confirmed this exact session ID. Refresh status before opening it.");
     expect(sheet()).toBeDefined();
+  });
+
+  it("AR-02 Hide notice acknowledges that archive on the device: the last visible one removes the notice; nothing is archived or reconciled", async () => {
+    const values = new Map<string, string>(), device = { read: (key: string) => values.get(key) ?? null, write: (key: string, value: string | null) => { if (value === null) values.delete(key); else values.set(key, value); } };
+    configureArchiveNoticeStorage(device); await remount();
+    press(action("Review archive")); await settle();
+    const before = fake.calls.length;
+    (sheet()!.props.onHide as (item: unknown) => void)((sheet()!.props.recovery as { items: unknown[] }).items[0]); await settle();
+    // Acknowledged, not hidden: no line and no Show notices for it.
+    expect(sheet()).toBeUndefined(); expect(trays()).toHaveLength(0); expect(trigger()).toBeUndefined();
+    expect(JSON.parse(values.get(hiddenArchivesKey("host-a"))!)).toEqual([ackKey(SA)]);
+    expect(fake.calls.slice(before).map(([name]) => name).filter((name) => name !== "sessions.lifecycle-review")).toEqual([]);
+    await remount(); expect(trays()).toHaveLength(0); expect(trigger()).toBeUndefined(); expect(hidden()).toEqual([ackKey(SA)]);
+    // A changed state is a new notice and shows again.
+    fake.rpc["sessions.lifecycle-review"] = async (input) => input.reviewId ? owner(() => ({ outcome: "uncertain", runtime: undefined, availability: undefined }))(input) : latest([...unresolved]);
+    await remount(); expect(trigger()).toBeUndefined(); expect(lineText()).toBe("Session fixture-sa: archive result unknown");
+    configureArchiveNoticeStorage(null);
+  });
+
+  it("AR-02 AUD acknowledging one of two archives leaves only the other in the line, its count and the review, now and after a reload", async () => {
+    unresolved = [ref(SA), ref(SX)];
+    const sxUnknown = () => { fake.rpc["sessions.lifecycle-review"] = async (input) => input.reviewId ? owner((id) => id === SX ? { outcome: "uncertain", runtime: undefined, availability: undefined } : {})(input) : latest([...unresolved]); };
+    const listed = () => (sheet()!.props.recovery as { items: Array<{ ref: UnresolvedRef }> }).items.map((item) => item.ref.agentId);
+    const SX_LINE = "Session fixture-sx: archive result unknown";
+    sxUnknown(); await remount();
+    expect(lineText()).toBe(TWO); press(action("Review 2 archives")); await settle(); expect(listed()).toEqual([SA, SX]);
+    (sheet()!.props.onHide as (item: unknown) => void)((sheet()!.props.recovery as { items: unknown[] }).items[0]); await settle();
+    expect(sheet()).toBeUndefined(); expect(hidden()).toEqual([ackKey(SA)]);
+    expect(lineText()).toBe(SX_LINE); expect(action("Review 2 archives")).toBeUndefined();
+    press(action("Review archive")); await settle(); expect(listed()).toEqual([SX]);
+    (sheet()!.props.onClose as () => void)(); await settle();
+    await remount(); expect(lineText()).toBe(SX_LINE); expect(hidden()).toEqual([ackKey(SA)]);
+    // Hide and Show of the tray act on the visible item only; the acknowledgement stays.
+    await hide(); expect(summaries(trigger())).toEqual([SX_LINE]); expect(hidden()).toEqual([ackKey(SA), archiveKey(SX, "unknown")]);
+    press(trigger()); await settle(); expect(lineText()).toBe(SX_LINE); expect(hidden()).toEqual([ackKey(SA)]);
+    // The other one settles: the acknowledged one alone shows nothing, stays unresolved, and is not forgotten.
+    unresolved = [ref(SA)]; await remount();
+    expect(trays()).toHaveLength(0); expect(trigger()).toBeUndefined(); expect(hidden()).toEqual([ackKey(SA)]);
+    expect(count("sessions.lifecycle-reconcile-item")).toBe(0); expect(count("sessions.lifecycle-execute-item")).toBe(0);
+    // A changed state is a new notice; a complete read forgets the old acknowledgement.
+    fake.rpc["sessions.lifecycle-review"] = async (input) => input.reviewId ? owner(() => ({ outcome: "uncertain", runtime: undefined, availability: undefined }))(input) : latest([...unresolved]);
+    await remount(); expect(lineText()).toBe("Session fixture-sa: archive result unknown"); expect(hidden()).toEqual([]);
+  });
+
+  it("AR-02 AUD acknowledging the last visible archive removes the notice while both stay unresolved", async () => {
+    unresolved = [ref(SA), ref(SX)]; await remount();
+    const items = () => (sheet()!.props.recovery as { items: unknown[] }).items;
+    press(action("Review 2 archives")); await settle(); (sheet()!.props.onHide as (item: unknown) => void)(items()[0]); await settle();
+    expect(lineText()).toBe("Session fixture-sx: archived, runtime stop not confirmed");
+    press(action("Review archive")); await settle(); (sheet()!.props.onHide as (item: unknown) => void)(items()[0]); await settle();
+    expect(trays()).toHaveLength(0); expect(trigger()).toBeUndefined(); expect(hidden()).toEqual([ackKey(SA), ackKey(SX)]);
+    await remount(); expect(trays()).toHaveLength(0); expect(hidden()).toEqual([ackKey(SA), ackKey(SX)]);
+    expect(count("sessions.lifecycle-reconcile-item")).toBe(0); expect(count("sessions.lifecycle-execute-item")).toBe(0);
   });
 
   it("opens again for a new key while the hidden ones stay present", async () => {
@@ -388,6 +453,9 @@ describe("Notice tray occurrences", () => {
     expect(presentHidden([notice], list, (key) => key.startsWith("archive"))).toEqual(["archive:a", "source:stale:x"]);
     const present = ["archive:a"];
     expect(presentHidden([notice], present, () => true)).toBe(present);
+    // A key reported outside any notice (an acknowledged item) is kept like a present one.
+    expect(presentHidden([notice], ["archive:a", "archive:ack:b"], () => true, ["archive:ack:b"])).toEqual(["archive:a", "archive:ack:b"]);
+    expect(presentHidden([notice], ["archive:a", "archive:ack:b"], () => true)).toEqual(["archive:a"]);
   });
 });
 
@@ -411,6 +479,8 @@ describe("NoticeTray keyboard and outside presses", () => {
     };
     expect(key("Escape", outside).preventDefault).not.toHaveBeenCalled(); expect(key("Enter", inside).preventDefault).not.toHaveBeenCalled();
     expect(key("Escape", inside, true).preventDefault).not.toHaveBeenCalled(); expect(onHide).not.toHaveBeenCalled();
+    // An open dialog (the Review archive sheet before its focus moved in) keeps its Escape.
+    panel.open = true; expect(key("Escape", inside).preventDefault).not.toHaveBeenCalled(); expect(onHide).not.toHaveBeenCalled(); panel.open = false;
     const handled = key("Escape", inside);
     expect(onHide).toHaveBeenCalledTimes(1); expect(handled.preventDefault).toHaveBeenCalled(); expect(handled.stopPropagation).toHaveBeenCalled();
     harness.unmount(); expect(listeners).toHaveLength(0);
@@ -440,5 +510,21 @@ describe("NoticesButton pointer sizes", () => {
       for (const compact of [false, true]) sizes[`${pointer}:${compact ? "compact" : "wide"}`] = ((Button({ notices: [notice], colors, compact, onPress: () => undefined }) as unknown as Element).props.style as (state: object) => { minHeight: number })({}).minHeight;
     }
     expect(sizes).toEqual({ "fine:wide": 44, "fine:compact": 44, "coarse:wide": 44, "coarse:compact": 44 });
+  });
+  it("AR-03 NoticeAction stays an icon in a 44pt target on fine and coarse pointers, named, with hover, focus and long-press help", async () => {
+    for (const pointer of ["fine", "coarse"] as const) {
+      vi.resetModules(); vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)" && pointer === "coarse" }));
+      const { NoticeAction: Act } = await import("../client/notice-tray");
+      const onPress = vi.fn(), help = "Review archive. Fixture help.";
+      const element = Act({ icon: "ClipboardList", accessibilityLabel: "Review archive", help, colors, onPress, expanded: false }) as unknown as Element;
+      expect(element.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Review archive", accessibilityHint: help, "aria-expanded": false, accessibilityState: { disabled: false, expanded: false } });
+      for (const binding of ["onHoverIn", "onFocus", "onLongPress", "onPressIn"]) expect(typeof element.props[binding]).toBe("function");
+      expect((element.props.style as (state: object) => Record<string, unknown>)({ pressed: false })).toMatchObject({ width: 44, height: 44 });
+      expect(walk(element).filter((child) => child.type === "Text")).toEqual([]);
+      expect(walk(element).find((child) => child.type === "Icon")?.props.name).toBe("ClipboardList");
+      (element.props.onPress as () => void)(); expect(onPress).toHaveBeenCalledTimes(1);
+      const off = Act({ icon: "RefreshCw", accessibilityLabel: "Retry archive checks", help, colors, onPress, disabled: true }) as unknown as Element;
+      expect(off.props).toMatchObject({ disabled: true, "aria-disabled": true, accessibilityState: { disabled: true } }); expect(off.props.accessibilityState).not.toHaveProperty("expanded");
+    }
   });
 });

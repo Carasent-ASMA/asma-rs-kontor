@@ -126,9 +126,9 @@ import { useSessionLifecycle } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
 import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
 import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
-import { archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
+import { archiveAckKey, archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
 import { ArchiveRecoverySheet } from "./archive-recovery";
-import { hideNotices, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
+import { hideNotices, NoticeAction, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
 
 type ThemeColors = PluginTheme["colors"];
@@ -2449,18 +2449,25 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [bulkOpen]);
   const selectForArchive = (entry: DirectoryEntry) => { if (canStart && !bulkOpen) bulkSelection.toggle(entry.id); };
   const openOrSelect = (entry: DirectoryEntry) => { if (bulkSelection.selecting) selectForArchive(entry); else handleOpen(entry); };
-  const reviewCount = recovery.items.length;
-  // One compact line (NN/g: one notice, its action beside it): Review archive opens every unresolved item; Retry only re-reads a failed list.
-  const recoveryLine = recovery.line ? <View key="archive" testID="sessions-archive-recovery" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-    <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.statusWarning, fontSize: 12, flexShrink: 1 }}>{recovery.line}</Text>
-    {reviewCount ? <Action ref={reviewArchiveRef} small colors={colors} label={reviewCount === 1 ? "Review archive" : "Review archives"} expanded={recoveryOpen}
-      accessibilityLabel={reviewCount === 1 ? "Review unconfirmed archive" : `Review ${reviewCount} unconfirmed archives`} onPress={() => setRecoveryOpen(true)} />
-      : <Action small colors={colors} label="Retry" accessibilityLabel="Read archive checks again" disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
+  // Acknowledged items are out of the line, its count and the review; their rows keep their archive feedback.
+  const reviewCount = recovery.attention.length;
+  // One compact line (NN/g: one notice, its action beside it): the text wraps in its own column and the icon action follows
+  // it, so no width gives the action a row of its own. Review archive opens every unresolved item; Retry only re-reads a failed list.
+  const reviewName = reviewCount === 1 ? "Review archive" : `Review ${reviewCount} archives`;
+  const recoveryLine = recovery.line ? <View key="archive" testID="sessions-archive-recovery" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+    <Text role="status" accessibilityLiveRegion="polite" style={{ flexShrink: 1, minWidth: 0, color: colors.statusWarning, fontSize: 12 }}>{recovery.line}</Text>
+    {reviewCount ? <NoticeAction ref={reviewArchiveRef} icon="ClipboardList" colors={colors} accessibilityLabel={reviewName} expanded={recoveryOpen}
+      help={`${reviewName}. Shows its state, Refresh status and details; nothing is archived again.`} onPress={() => setRecoveryOpen(true)} />
+      : <NoticeAction icon="RefreshCw" colors={colors} accessibilityLabel="Retry archive checks" help="Retry archive checks. Reads the archive list again; nothing is archived."
+        disabled={recovery.checking} onPress={() => { void recovery.reload(); }} />}
   </View> : null;
   const openRecovered = (item: RecoveryItem) => {
     const result = openRecoveredSession({ row: item.row, id: item.ref.agentId, serverId: host.id, navigation });
     if (result.ok) setRecoveryOpen(false); else toast.error(result.message);
   };
+  const closeRecovery = () => { setRecoveryOpen(false); recovery.clearNotes(); setTimeout(() => focusControl(reviewArchiveRef.current ?? noticesButton.current ?? rootRef.current), 0); };
+  // The acknowledged item's own key, persisted per host like a hidden tray: the same state stays out, a changed one is a new notice.
+  const hideRecovered = (item: RecoveryItem) => { saveHidden([...new Set([...hiddenNotices, archiveAckKey(item)])]); closeRecovery(); };
   // Each notice's keys name what it reports; a hidden tray opens again for any key it has not hidden.
   const banners = ([
     showBanner && staleMessage ? { keys: [`source:${state.status}:${staleMessage}`], summary: state.status === "error" ? "Session read failed" : "Sessions not live",
@@ -2494,8 +2501,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       node: <Text key="save" accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{settingsAlert}</Text> } : null,
   ] satisfies (Notice | null)[]).filter((notice) => notice !== null);
   // One key per exact review, session and state, so a confirmed one leaves the tray hidden and a new or changed one opens it; a read error is a new notice too.
-  const archiveNotice: Notice | null = recoveryLine ? { summary: archiveSummary(recovery.items, null) ?? "Archive checks could not be read", tone: "warning", node: recoveryLine,
-    keys: [...recovery.items.map(archiveNoticeKey), ...(recovery.error ? [`archive-error:${recovery.error}`] : [])] } : null;
+  const archiveNotice: Notice | null = recoveryLine ? { summary: archiveSummary(recovery.attention, null) ?? "Archive checks could not be read", tone: "warning", node: recoveryLine,
+    keys: [...recovery.attention.map(archiveNoticeKey), ...(recovery.error ? [`archive-error:${recovery.error}`] : [])] } : null;
   const allNotices = archiveNotice ? [...banners, archiveNotice] : banners;
   // Hidden archive items persist per host on this device; every other hidden notice stays with the view for this app session.
   const hiddenNotices = useMemo(() => [...(view.noticesHidden ?? []).filter((key) => !key.startsWith("archive:")), ...recovery.hidden], [view.noticesHidden, recovery.hidden]);
@@ -2514,7 +2521,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     "archive-error": recovery.listed === host.id && !recovery.checking,
   };
   // A hidden notice a completed reading no longer reports is forgotten, so its return opens the tray; one continuously present stays hidden.
-  const presentNotices = presentHidden(allNotices, hiddenNotices, (key) => noticeRead[key.split(":")[0]!] ?? true);
+  // An acknowledged item still listed keeps its key; once a complete read lists it no longer, or in another state, it is forgotten.
+  const presentNotices = presentHidden(allNotices, hiddenNotices, (key) => noticeRead[key.split(":")[0]!] ?? true, recovery.items.map(archiveAckKey));
   useEffect(() => { if (presentNotices !== hiddenNotices) saveHidden(presentNotices); }, [presentNotices, hiddenNotices]);
   const OptionsContainer = compact ? View : ScrollView;
   const toolbar = toolbarLayout({ collapsed: toolbarCollapsed, compact });
@@ -3233,9 +3241,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} anchor={bulkReviewRef} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { bulkReturnFocusRef.current = true; setBulkOpen(false); }}
         onFinished={(summary) => toast.show(summary)} /> : null}
-      {recoveryOpen ? <ArchiveRecoverySheet recovery={recovery} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
-        canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered}
-        onClose={() => { setRecoveryOpen(false); recovery.clearNotes(); setTimeout(() => focusControl(reviewArchiveRef.current ?? noticesButton.current ?? rootRef.current), 0); }} /> : null}
+      {recoveryOpen ? <ArchiveRecoverySheet recovery={{ ...recovery, items: recovery.attention }} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
+        canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered} onHide={hideRecovered} onClose={closeRecovery} /> : null}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
         onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); lifecycleHelp.dismiss(); }} /> : null}
     </View>

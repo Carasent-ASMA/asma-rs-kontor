@@ -109,7 +109,7 @@ function archiveX(id: string): Element {
 const resumeControls = () => all().flatMap((element) => element.type === SlimToolbar && element.props.action ? [element.props.action as Element] : element.props.accessibilityLabel === "Resume sessions" ? [element] : []);
 const recoveryLine = () => { const found = byTestID("sessions-archive-recovery"); expect(found.length).toBeLessThanOrEqual(1); return found[0]; };
 const lineText = () => { const line = recoveryLine(); return line ? walk(line.props.children).filter((element) => element.type === "Text").map((element) => element.props.children).join("") : null; };
-const reviewButton = () => walk(recoveryLine()?.props.children).find((element) => element.props.label === "Review archive" || element.props.label === "Review archives");
+const reviewButton = () => walk(recoveryLine()?.props.children).find((element) => element.props.icon === "ClipboardList");
 const count = (name: string) => fake.calls.filter(([called]) => called === name).length;
 const sheet = () => all().find((element) => element.type === ArchiveRecoverySheet);
 type Recovery = { items: Array<{ ref: UnresolvedRef; state: string; row: LifecycleRow | null; error: string | null }>; refreshing: string | null; refresh(only?: UnresolvedRef): Promise<void>; reload(): Promise<void> };
@@ -155,7 +155,7 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith(`${ONE}.`); expect(fake.toast.show).not.toHaveBeenCalled();
     // Settled: only SA leaves; the live, complete directory is not walked again.
     expect(listedIds()).not.toContain(SA); expect(listedIds()).toEqual(expect.arrayContaining([SWE, OTHER])); expect(fake.refresh).not.toHaveBeenCalled();
-    expect(lineText()).toBe(ONE); expect(reviewButton()?.props.accessibilityLabel).toBe("Review unconfirmed archive");
+    expect(lineText()).toBe(ONE); expect(reviewButton()?.props.accessibilityLabel).toBe("Review archive");
 
     (archiveX(SWE).props.onPress as () => void)(); await settle();
     // Reading stays open while another archive runs; only Refresh status waits.

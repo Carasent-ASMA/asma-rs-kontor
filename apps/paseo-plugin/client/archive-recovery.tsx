@@ -4,6 +4,7 @@ import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Action, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { RECOVERY_STATES, recoveryKey, type RecoveryItem, type RefreshNote, type useArchiveRecovery } from "./archive-feedback";
+import { archivedByRead } from "./session-actions";
 import { ageInWords, parseTime } from "./session-time";
 
 type Recovery = ReturnType<typeof useArchiveRecovery>;
@@ -25,12 +26,14 @@ export function observedFacts(item: RecoveryItem, now: number): string {
 
 /**
  * Every unresolved archive in one dialog (NN/g error messages: name the problem in plain words, next to its recovery).
- * Refresh status reads the host by the exact session ID and never sends another archive request; Open session uses
- * the ID that read confirmed. IDs and the full host messages wait in Technical details.
+ * Refresh status reads the host by the exact session ID and never sends another archive request; it is the only
+ * recovery. Open session is offered only while that read does not show the session archived. Archive membership and
+ * the runtime stop are separate facts. An unchanged Refresh of an archived session can be acknowledged by hiding its
+ * notice, which takes it out of this review until its state changes. IDs and the full host messages wait in Technical details.
  */
-export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact, canRefresh, hostOnline, onOpen, onClose }: {
+export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact, canRefresh, hostOnline, onOpen, onHide, onClose }: {
   recovery: Recovery; root: RefObject<View | null>; rootSize: MenuSize; colors: Colors; compact: boolean;
-  canRefresh: boolean; hostOnline: boolean; onOpen: (item: RecoveryItem) => void; onClose: () => void;
+  canRefresh: boolean; hostOnline: boolean; onOpen: (item: RecoveryItem) => void; onHide: (item: RecoveryItem) => void; onClose: () => void;
 }) {
   const closeButton = useRef<View | null>(null);
   useEffect(() => { const timer = setTimeout(() => (closeButton.current as View & { focus?: () => void } | null)?.focus?.(), 0); return () => clearTimeout(timer); }, []);
@@ -41,21 +44,33 @@ export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact
   const item = (entry: RecoveryItem, index: number) => {
     const key = recoveryKey(entry.ref), copy = RECOVERY_STATES[entry.state], note = recovery.notes[key], name = entry.row?.title ?? "Unknown session";
     const refreshing = recovery.refreshing === key || recovery.refreshing === "all";
+    // Opening an archived session asks Paseo to restore its workspace, which can fail and is not needed to settle the archive.
+    const archived = archivedByRead(entry.row, entry.ref.agentId);
+    // Refresh status found nothing new for a session already in the archive: nothing here can change it.
+    const acknowledge = archived && entry.state === "unconfirmed" && note?.outcome === "unchanged";
+    const fact = (icon: string, ink: string, label: string) => <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <Icon name={icon} size={14} color={ink} />
+      <Text style={{ flexShrink: 1, color: ink, fontSize: 13, fontWeight: "600" }}>{label}</Text>
+    </View>;
     return <View key={key} role="listitem" testID={`archive-recovery-item-${entry.ref.agentId}`}
       style={{ paddingVertical: 8, paddingHorizontal: 12, gap: 4, borderTopWidth: index ? 1 : 0, borderTopColor: colors.border, backgroundColor: colors.surface0 }}>
       <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 14, lineHeight: 19, fontWeight: "600" }}>{name}</Text>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Icon name="CircleAlert" size={14} color={colors.statusWarning} />
-        <Text style={{ flexShrink: 1, color: colors.statusWarning, fontSize: 13, fontWeight: "600" }}>{copy.label}</Text>
-      </View>
+      {entry.state === "unconfirmed" ? <>
+        {fact("Check", colors.foreground, "Archived")}
+        {fact("CircleAlert", colors.statusWarning, "Runtime stop not confirmed")}
+      </> : fact("CircleAlert", colors.statusWarning, copy.label)}
       <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{copy.reason}</Text>
       <Text style={muted}>{observedFacts(entry, now)}</Text>
       {entry.error ? <Text style={muted}>{`Its latest record could not be read: ${entry.error}`}</Text> : null}
       {note ? <Text testID={`archive-recovery-note-${entry.ref.agentId}`} role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>{noteLine(note, now)}</Text> : null}
+      {acknowledge ? <Text testID={`archive-recovery-ack-${entry.ref.agentId}`} style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>
+        Still archived, and the host still does not report its runtime stopped. Refreshing will not change that; you can hide this notice. It returns if its state changes.</Text> : null}
+      {archived ? <Text style={muted}>Not opened here: opening an archived session asks Paseo to restore its workspace, which this archive does not need. The Archived list still opens it.</Text> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <Action colors={colors} label={refreshing ? "Checking…" : "Refresh status"} accessibilityLabel={`Refresh archive status: ${name}`} disabled={!canRefresh}
           onPress={() => { if (canRefresh) void recovery.refresh(entry.ref); }} />
-        <Action colors={colors} label="Open session" accessibilityLabel={`Open session: ${name}`} onPress={() => onOpen(entry)} />
+        {archived ? null : <Action colors={colors} label="Open session" accessibilityLabel={`Open session: ${name}`} onPress={() => onOpen(entry)} />}
+        {acknowledge ? <Action colors={colors} label="Hide notice" accessibilityLabel={`Hide archive notice: ${name}`} onPress={() => onHide(entry)} /> : null}
       </View>
       <Disclosure small colors={colors} label="Technical details" accessibilityLabel={`Technical details for ${name}`}>
         <View style={{ gap: 2, paddingTop: 2 }}>

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { modelPresentation, shortModel, formatTokens, validTokenCount, latestReport, usagePresentation, sessionUsageLabel, sessionUsageLines, type SessionUsageEntry } from "../client/session-usage";
+import { compactUsage } from "../client/session-usage-density";
 import { sessionEntry } from "./session-fixtures";
 
 const configured: SessionUsageEntry = { provider: "codex", model: "gpt-6.1-sol" };
@@ -39,6 +40,21 @@ describe("native model presentation", () => {
     ["glm-unknown-flash", "glm-unknown-flash"], ["private-account-fable", "private-account-fable"],
     ["custom/model-with-a-long-specific-version-123456789", "custom/model-with-a-long-specific-version-123456789"],
   ])("labels only recognized IDs: %s", (model, label) => expect(shortModel(model)).toBe(label));
+
+  it("AR-ADJ labels an [account, model] route by its model element and keeps the full route in Details and help", () => {
+    const route = '["fixture-account","deepseek-flash"]';
+    for (const entry of [{ provider: "fixture-harness", model: route }, { provider: "fixture-harness", model: null, telemetry: { runtimeInfo: { sessionId: null, provider: "fixture-harness", model: route } } }]) {
+      expect(modelPresentation(entry)).toMatchObject({ model: route, short: "ds-flash", label: "ds-flash · configured", route: { account: "fixture-account", model: "deepseek-flash" } });
+      expect(compactUsage(entry).model).toBe("ds-flash");
+      expect(compactUsage(entry).modelHelp).toContain("Route: fixture-account · deepseek-flash.");
+      expect(lines(entry)[entry.model ? "Configured model" : "Runtime selection"]).toBe(route);
+      expect(sessionUsageLabel(entry)).toContain(route);
+    }
+    expect(modelPresentation({ provider: "fixture-harness", model: '["fixture-account","custom-model"]' }).short).toBe("custom-model");
+    // Anything but a two-string array stays verbatim: never a guessed model.
+    for (const model of ["[not json", '["one"]', '["a","b","c"]', '["a",""]', '[1,"deepseek-flash"]', '{"model":"deepseek-flash"}'])
+      expect(modelPresentation({ provider: "fixture-harness", model })).toMatchObject({ short: model, route: null });
+  });
 
   it("keeps exact model, route, version and both effort sources accessible", () => {
     const entry = { ...report, provider: "private-route", telemetry: { ...report.telemetry, thinkingOptionId: "high", effectiveThinkingOptionId: "xhigh", runtimeInfo: { sessionId: null, provider: "codex", model: "gpt-6.1-sol" } } };
@@ -143,6 +159,20 @@ describe("latest report, without invented session totals", () => {
     expect(formatTokens(1_234_567, "en")).toBe("1.2M");
     expect(lines({ ...configured, telemetry: { lastUsage: { outputTokens: 1_234_567 } } })["Reported output tokens"]).toBe("1,234,567");
     expect(formatTokens(12_400, "nb")).toBe("12.4K");
+  });
+
+  it("AR-ADJ compact units do not depend on Intl compact notation, which iOS Hermes ignores, and match it exactly", async () => {
+    // As on the phone: notation is ignored, so Intl alone printed "≥4,078 ↓ · 314 ↑ · 135,552 cached".
+    const Real = Intl.NumberFormat, intl = new Real("en", { notation: "compact", maximumFractionDigits: 1 });
+    vi.stubGlobal("Intl", { ...Intl, NumberFormat: function (locale?: string, options?: Intl.NumberFormatOptions) { return new Real(locale, { ...options, notation: "standard" }); } });
+    vi.resetModules();
+    try {
+      const fresh = await import("../client/session-usage");
+      expect(fresh.usagePresentation(routed("opaque-route", { inputTokens: 4_078, outputTokens: 314, cachedInputTokens: 135_552 })).label).toBe("Last report ≥4.1K ↓ · 314 ↑ · 135.6K cached");
+      const values = [0, 1, 999, 1_000, 1_049, 1_050, 1_150, 9_950, 99_950, 135_552, 999_949, 999_950, 1_049_999, 1_050_000, 999_949_999, 999_950_000, 1_234_567_890, 999_950_000_000, 2 ** 53 - 1];
+      for (let seed = 7, n = 0; n < 2_000; n++) { seed = (seed * 48_271) % 2_147_483_647; values.push(Math.floor(seed / 2_147_483_647 * 10 ** (1 + (n % 13)))); }
+      for (const value of values) expect(fresh.formatTokens(value)).toBe(intl.format(value));
+    } finally { vi.unstubAllGlobals(); vi.resetModules(); }
   });
 
   it.each([undefined, "en", "nb-NO", "de-DE"])("uses the same precision and threshold rounding in %s", locale => {
