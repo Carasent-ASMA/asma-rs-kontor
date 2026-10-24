@@ -8,7 +8,7 @@ export function deskIcon(key: string): string {
     case "pr-review": return "GitPullRequest";
     case "adam": return "Bot";
     case "qa": return "FlaskConical";
-    case "qsw": return "Zap";
+    case "tickets": return "Ticket";
     default: return "Armchair";
   }
 }
