@@ -67,10 +67,14 @@ pill is the in-session return control where the composer supports it.
   captured epics at mount. Plan, Board and Graph demand the selected source and
   its explicitly linked plan associations; Overview, Search, Delivery, Decisions
   and AI teams & sessions demand their context sources progressively. Full
-  reads keep at most three workers and are keyed by source ID, path and revision, so
-  a changed revision or replacement path is read again and an unchanged identity is
-  reused. A returned read is accepted only when its own source ID, path and revision
-  match the requested summary; a late older revision never replaces the current one. `sources.read`
+  reads keep at most three workers and are keyed by source ID, catalog policy, path
+  and revision, so a changed revision, pin or replacement path is read again and an
+  unchanged identity is reused. A returned read is accepted only when its own source
+  ID, path, revision and catalog policy match the requested summary, and the current
+  summary is still ready. The current summary's status, expected hash and catalog
+  metadata take precedence: an unavailable or repinned summary is never hidden by
+  an older cached exact read, and a late older revision never replaces the current
+  one. `sources.read`
   is unchanged. A source whose summary is present while its exact read is
   pending shows **Reading…**, distinctly from an unavailable source. Sessions
   demands no exact source read.

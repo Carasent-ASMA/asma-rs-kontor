@@ -200,10 +200,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   context sources on Overview, Search, Delivery, Decisions and AI teams), at
   most three at a time and keyed by source ID, path and revision. A read is
   accepted only when the returned source identity and revision match the
-  requested summary, so a replacement path or a late older revision never
-  surfaces as current. Each Teams snapshot is bound to the summaries catalog
-  source identity, and a final catalog identity read rejects a refresh whose
-  catalog changed under it. `sources.read` is unchanged and still returns the
+  requested summary and the current summary is still ready, so a replacement
+  path, a repin or a late older revision never surfaces as current. A current
+  unavailable or repinned summary always takes precedence over an older cached
+  exact read. Each Teams snapshot is bound to the summaries catalog source
+  identity, and a final catalog identity read rejects a refresh whose catalog
+  changed under it. `sources.read` is unchanged and still returns the
   exact content. A source whose summary is
   present while its exact read is pending shows **Reading…**, distinct from
   unavailable. Sessions performs no exact source read.

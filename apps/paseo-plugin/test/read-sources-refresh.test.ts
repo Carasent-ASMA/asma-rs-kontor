@@ -80,6 +80,17 @@ describe("source summaries and demanded full reads", () => {
     expect(overlaySourceReads({ plan }, { plan: fullPlan }, "other", new Set()).plan).toBe(plan);
     expect(overlaySourceReads({ plan, authoring: summary(authoringSource, "d") }, {}, "host", new Set(["authoring"]))).toEqual({ plan });
   });
+  it("lets the current summary policy override a cached full read", () => {
+    const approved: SourceRead = { ...plan, source: { ...planSource, revisionKind: "approved revision", expectedSha256: "a".repeat(64) } };
+    const approvedFull: FullSourceRead = { ...fullPlan, read: { ...fullPlan.read, source: approved.source } };
+    expect(overlaySourceReads({ plan: approved }, { plan: approvedFull }, "host", new Set())).toEqual({ plan: approvedFull.read });
+    const repinned: SourceRead = { ...approved, source: { ...approved.source, expectedSha256: "b".repeat(64) } };
+    expect(overlaySourceReads({ plan: repinned }, { plan: approvedFull }, "host", new Set())).toEqual({ plan: repinned });
+    const unavailable: SourceRead = { ...approved, status: "unavailable", diagnostics: ["Configured revision mismatch"] };
+    expect(overlaySourceReads({ plan: unavailable }, { plan: approvedFull }, "host", new Set())).toEqual({ plan: unavailable });
+    const failedFull: FullSourceRead = { ...approvedFull, read: { ...approvedFull.read, status: "unavailable", revision: null, content: null } };
+    expect(pendingDemandIds(["plan"], { plan: approved }, { plan: failedFull }, "host", new Set())).toEqual(["plan"]);
+  });
   it("demands only summary-present exact reads at the current revision", () => {
     expect(pendingDemandIds(["plan", "delivery", "jira", "authoring"], { plan, delivery, jira, authoring: summary(authoringSource, "d") }, {}, "host", new Set(["authoring"]))).toEqual(["plan", "delivery"]);
     expect(pendingDemandIds(["plan", "delivery"], { plan, delivery }, { plan: fullPlan }, "host", new Set())).toEqual(["delivery"]);

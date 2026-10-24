@@ -7,7 +7,7 @@ import { listReadSources, readSource, readSourceSummaries, sourceReadPending, ty
 
 /** One exact full read kept for the summary identity and revision it was read at. */
 export type FullSourceRead = { hostId: string; path: string; kind: SourceRead["source"]["kind"]; revision: string | null; read: SourceRead };
-type QueueItem = { key: string; hostId: string; path: string; kind: SourceRead["source"]["kind"]; id: string; revision: string | null };
+type QueueItem = { key: string; hostId: string; path: string; kind: SourceRead["source"]["kind"]; id: string; revision: string | null; sourceIdentity: string };
 
 /** The catalog identity a summaries transaction must still match before it is published. */
 function catalogIdentity(value: { sources: readonly ReadSourceSummary[]; diagnostics: readonly string[]; registry?: unknown }): string {
@@ -18,20 +18,23 @@ function sourceIdentity(source: ReadSourceSummary): string {
   return JSON.stringify([source.id, source.kind, source.path, source.title, source.workstream, source.epic, source.projectId,
     source.revisionKind, source.logicalPlanId, source.expectedSha256]);
 }
-/** The request identity, including path and kind, so a same-byte replacement is a new demand. */
+/** The request identity, including path, kind and catalog policy, so a same-byte replacement or repin is a new demand. */
 function requestKey(item: Omit<QueueItem, "key">): string {
-  return [item.hostId, item.id, item.kind, item.path, item.revision ?? ""].join("\u0000");
+  return [item.hostId, item.id, item.sourceIdentity, item.revision ?? ""].join("\u0000");
 }
 /**
  * A full read may stand in for this summary only when its own returned identity and the
  * cached request identity both match. A request label is never proof of the returned bytes.
  */
 function currentFullRead(summary: SourceRead, loaded: FullSourceRead | undefined, hostId: string): boolean {
-  if (!loaded || loaded.hostId !== hostId || loaded.path !== summary.source.path || loaded.kind !== summary.source.kind
-    || loaded.revision !== summary.revision) return false;
+  // The current summary's status and catalog policy always win over an older exact read.
+  if (summary.status !== "ready" || !loaded || loaded.hostId !== hostId || loaded.path !== summary.source.path
+    || loaded.kind !== summary.source.kind || loaded.revision !== summary.revision) return false;
   const read = loaded.read;
-  if (read.source.id !== summary.source.id || read.source.path !== summary.source.path || read.source.kind !== summary.source.kind) return false;
-  return read.status === "unavailable" || (read.revision !== null && read.revision === summary.revision);
+  if ((read.status !== "ready" && read.status !== "partial") || read.source.id !== summary.source.id
+    || read.source.path !== summary.source.path || read.source.kind !== summary.source.kind) return false;
+  return read.revision !== null && read.revision === summary.revision
+    && sourceIdentity(read.source) === sourceIdentity(summary.source);
 }
 
 /** Summaries overlaid by full reads of the same host, source identity and revision; Teams adapter IDs stay on their snapshots. */
@@ -141,17 +144,21 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
       void readRef.current({ sourceId: item.id }).then((result) => {
         if (!mounted.current) return;
         const summary = state.current.data?.reads[item.id];
-        // A completion for an identity the summaries have left is stale and must not replace
-        // the current revision/path. A later summaries refresh will raise the new demand.
-        if (!summary || summary.source.id !== item.id || summary.source.path !== item.path
-          || summary.source.kind !== item.kind || summary.revision !== item.revision) {
+        // A completion for an identity or policy the summaries have left is stale and must not
+        // replace the current result. A later summaries refresh raises the new demand.
+        if (!summary || summary.status !== "ready" || summary.source.id !== item.id || summary.source.path !== item.path
+          || summary.source.kind !== item.kind || summary.revision !== item.revision
+          || sourceIdentity(summary.source) !== item.sourceIdentity) {
           attempted.current.delete(item.key);
           return;
         }
         // The returned identity, not this request's label, decides whether the read is usable.
         if (result.source.id !== item.id || result.source.path !== item.path || result.source.kind !== item.kind
+          || sourceIdentity(result.source) !== item.sourceIdentity
           || (result.status !== "unavailable" && (result.revision === null || result.revision !== item.revision))) return;
-        attempted.current.delete(item.key);
+        // An unavailable exact read remains retryable after the next summaries refresh; a
+        // successful one satisfies its identity and may be re-read if that identity returns.
+        if (result.status !== "unavailable") attempted.current.delete(item.key);
         setFull((previous) => ({ ...previous, [item.id]: { hostId: item.hostId, path: item.path, kind: item.kind, revision: item.revision, read: result } }));
       }, () => undefined).finally(() => {
         running.current -= 1;
@@ -171,7 +178,8 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
     for (const id of pendingDemandIds(demanded.current, data.reads, current.full, current.hostId, current.adapterIds)) {
       const summary = data.reads[id]!;
       const revision = summary.revision;
-      const request = { hostId: current.hostId, path: summary.source.path, kind: summary.source.kind, id, revision };
+      const request = { hostId: current.hostId, path: summary.source.path, kind: summary.source.kind, id, revision,
+        sourceIdentity: sourceIdentity(summary.source) };
       const key = requestKey(request);
       // A failed or rejected attempt waits for a new summaries object, never the same request again.
       if (inFlight.current.has(key) || attempted.current.get(key) === summary) continue;

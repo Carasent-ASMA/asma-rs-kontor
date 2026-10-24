@@ -167,3 +167,35 @@ describe("QA1-PR477 exact source demand races", () => {
     expect(harness.read).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("QA1-PR477 current summary policy controls", () => {
+  it("does not let an older ready full cache override a current pin-mismatch summary", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "qa1-477-pin-"));
+    try {
+      const path = join(directory, "plan.md");
+      await writeFile(path, "# Exact fixture revision A");
+      const unpinned = { ...planSource, path };
+      const bytes = await readConfiguredSummary(unpinned);
+      expect(bytes.status).toBe("ready");
+      const approved = { ...unpinned, revisionKind: "approved revision" as const, expectedSha256: bytes.revision! };
+      const current = await readConfiguredSummary(approved);
+      const loaded = await readConfiguredSource(approved);
+      expect(loaded.status).toBe("ready");
+      const harness = raceHarness(current);
+      harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+      harness.pending[0]!(loaded); await raceSettle();
+      expect(harness.draw().reads.plan!.status).toBe("ready");
+      const replaced = { ...approved, expectedSha256: "b".repeat(64) };
+      const failed = await readConfiguredSummary(replaced);
+      expect(failed.status).toBe("unavailable");
+      expect(failed.revision).toBe(loaded.revision);
+      expect(failed.diagnostics.join(" ")).toContain("Configured revision mismatch");
+      harness.set(failed); harness.draw(); await raceSettle();
+      const shown = harness.draw().reads.plan!;
+      expect(shown.status).toBe("unavailable");
+      expect(shown.content).toBeNull();
+      expect(shown.diagnostics.join(" ")).toContain("Configured revision mismatch");
+      expect(shown.source.expectedSha256).toBe("b".repeat(64));
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
