@@ -9,7 +9,7 @@ assert.ok(origin && output, 'Supply an isolated synthetic fixture origin and evi
 fs.mkdirSync(output, { recursive: true });
 const report = { cases: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 let browser;
-const primary = page => page.getByTestId('sessions-mobile-count');
+const primary = page => page.getByTestId('sessions-applied-filters');
 async function back(page) {
   await page.getByRole('button', { name: 'Back to sessions, keep filter choices', exact: true }).click();
   await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'sessions-mobile-filters-trigger');
@@ -106,8 +106,9 @@ async function check(width, height, theme, largeText = false, source = 'live') {
     await page.goto(`${origin}/?layout=compact&theme=${theme}&source=${source}&rows=12`);
     await page.getByTestId('sessions-layout-flat').waitFor();
     const initial = await primary(page).innerText();
-    assert.match(initial, /^15 matching sessions/);
-    if (source === 'stale') assert.match(initial, /stale/);
+    assert.equal(initial, 'My work');
+    assert.match(await page.getByTestId('sessions-quick-current').getAttribute('aria-label'), /15 sessions/);
+    if (source === 'stale') assert.match(await page.getByTestId('sessions-quick-current').getAttribute('aria-label'), /retained read/);
     await page.getByTestId('sessions-layout-flat').click();
     assert.equal(await page.getByTestId('sessions-layout-flat').getAttribute('aria-checked'), 'true', 'layout checked state');
     assert.equal(await page.getByTestId('sessions-layout-grouped').getAttribute('aria-checked'), 'false', 'unchecked choice');
@@ -123,13 +124,14 @@ async function check(width, height, theme, largeText = false, source = 'live') {
       assert.equal(await page.getByTestId('sessions-selection-toggle').getAttribute('aria-pressed'), 'false', 'selection cancelled');
     }
     await page.getByTestId('sessions-mobile-filters-trigger').click();
-    assert.equal(await page.getByTestId('sessions-mobile-filters-count').innerText(), initial);
+    assert.match(await page.getByTestId('sessions-mobile-filters-count').innerText(), /^15 matching sessions/);
     await page.getByTestId('sessions-search').fill('Verify results');
     assert.match(await page.getByTestId('sessions-mobile-filters-count').innerText(), /^1 matching session/);
     await back(page);
-    assert.match(await primary(page).innerText(), /^1 matching session/);
+    assert.equal(await primary(page).innerText(), 'My work • “Verify results”');
+    assert.match(await primary(page).getAttribute('aria-label'), /1 matching session/);
     await page.getByTestId('sessions-mobile-clear-filters').click();
-    assert.equal(await primary(page).innerText(), initial);
+    assert.equal(await primary(page).count(), 0, 'Clear removes the applied-filter summary');
     await page.getByTestId('sessions-mobile-filters-trigger').click();
     await page.getByTestId('sessions-reset-view').click();
     await back(page);

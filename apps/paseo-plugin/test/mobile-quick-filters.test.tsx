@@ -6,6 +6,7 @@ vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "Vi
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ dismiss() {} }) }));
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
+import type { SessionStateCount } from "../client/session-state-counts";
 import { QUICK_FILTER_ICONS, visibleQuickFilters } from "../client/mobile-quick-filter-options";
 import { QUICK_STATUS_FILTERS, type StatusFilter } from "../client/session-view";
 
@@ -29,7 +30,7 @@ describe("mobile quick filter discovery", () => {
 
   it("opening/reading/closing the named legend never filters; only pressing a choice applies it once", () => {
     const onStatus = vi.fn(), onClose = vi.fn();
-    const counts = Object.fromEntries(QUICK_STATUS_FILTERS.map((status, index) => [status, index])) as Record<StatusFilter, number>;
+    const counts = Object.fromEntries(QUICK_STATUS_FILTERS.map((status, index) => [status, { text: String(index), label: `${index} sessions` }])) as Record<StatusFilter, SessionStateCount>;
     const ref = { current: null };
     const tree = MobileQuickChooser({ root: ref, rootSize: { width: 320, height: 320 }, anchor: ref, colors: { foreground: "#111111", foregroundMuted: "#555555", surface0: "#ffffff", surface1: "#f8f8f8", surface2: "#eeeeee", accent: "#0060c0", statusDanger: "#b00020", statusWarning: "#805000", statusSuccess: "#006b3c" } as PluginTheme["colors"], status: "needs_input", counts, onStatus, onClose });
     const choices = walk(tree).filter((node) => String(node.props.testID).startsWith("sessions-choose-"));
