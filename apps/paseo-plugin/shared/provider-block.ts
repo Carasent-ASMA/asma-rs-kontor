@@ -16,7 +16,8 @@ export type RefusalAgent = { provider: string; model?: string | null; runtimeInf
   activeTurn?: unknown; lastError?: string | null; providerUnavailable?: boolean };
 const id = z.string().min(1).max(200);
 export const refusalObservationSchema = z.object({
-  kind: z.enum(["quota", "auth", "unavailable"]),
+  /** `unknown`: refusal memory that is unresolved or unreadable; like `unavailable`, it binds only by time. */
+  kind: z.enum(["quota", "auth", "unavailable", "unknown"]),
   /** From the refusal text only, else "unknown"; never a host timestamp. */
   failureAt: z.string(),
   /** Host time after the exact-ID read that saw the refusal returned: recovery counts only turns after it. Not a failure
@@ -77,8 +78,8 @@ const itemText = (item: Item) => typeof item.text === "string" ? item.text : typ
 const failed = (item: Item) => item.type === "error" || (item.type === "notification" && item.level === "error") || (item.type === "assistant_message" && SYSTEM_ERROR.test(itemText(item)));
 /** The timeline half (G7), bound to one stored observation by host time. Before `observedAt`, the last failure is a
  *  refusal of the stored kind with no turn started after it (the turn whose lastError was observed); an unavailable
- *  flag names no turn, so only its time binds it. After `observedAt`, a new turn got a provider answer and no failure
- *  followed. An entry without a host timestamp, or out of order, proves nothing. */
+ *  flag or an unknown kind names no turn, so only its time binds it. After `observedAt`, a new turn got a provider
+ *  answer and no failure followed. An entry without a host timestamp, or out of order, proves nothing. */
 export function recoveredAfterRefusal(entries: readonly unknown[], { kind, observedAt }: Pick<RefusalObservation, "kind" | "observedAt">): boolean {
   const seen = Date.parse(observedAt), items: (Item & { at: number })[] = [];
   if (!Number.isFinite(seen)) return false;
@@ -90,7 +91,7 @@ export function recoveredAfterRefusal(entries: readonly unknown[], { kind, obser
   }
   const split = items.findIndex((item) => item.at > seen), before = split < 0 ? items : items.slice(0, split), after = split < 0 ? [] : items.slice(split);
   const refusal = before.findLastIndex(failed);
-  if (kind !== "unavailable" && (refusal < 0 || refusalKind({ lastError: itemText(before[refusal]!) }) !== kind || before.slice(refusal).some((item) => item.type === "user_message"))) return false;
+  if ((kind === "quota" || kind === "auth") && (refusal < 0 || refusalKind({ lastError: itemText(before[refusal]!) }) !== kind || before.slice(refusal).some((item) => item.type === "user_message"))) return false;
   const lastFailure = after.findLastIndex(failed), turn = after.findIndex((item, index) => index > lastFailure && item.type === "user_message");
   return turn >= 0 && after.some((item, index) => index > turn && item.type === "assistant_message" && !failed(item));
 }

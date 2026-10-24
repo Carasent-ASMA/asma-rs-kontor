@@ -116,9 +116,9 @@ describe("timeline recovery (G7), bound to the stored observation", () => {
   it("proves nothing against an unreadable observation time", () => expect(recoveredAfterRefusal([refused(-1_000), user(1_000), ok(2_000)], { kind: "quota", observedAt: "unknown" })).toBe(false));
   it("needs the stored kind: a quota refusal in the tail does not recover a stored auth refusal", () =>
     expect(recoveredAfterRefusal([refused(-1_000), user(1_000), ok(2_000)], { kind: "auth", observedAt })).toBe(false));
-  it.each([
+  it.each((["unavailable", "unknown"] as const).flatMap((kind) => ([
     ["an older quota-recovery tail after only a readiness change", [refused(-day), user(-day + 1_000), ok(-day + 2_000)], false],
     ["a retry start with no answer", [ok(-1_000), user(1_000)], false],
     ["a turn answered after the observation", [ok(-1_000), user(1_000), ok(2_000)], true],
-  ] as const)("unavailable, bound by time only: %s", (_name, entries, expected) => expect(recoveredAfterRefusal(entries, { kind: "unavailable", observedAt })).toBe(expected));
+  ] as const).map(([name, entries, expected]) => [kind, name, entries, expected] as const)))("%s, bound by time only: %s", (kind, _name, entries, expected) => expect(recoveredAfterRefusal(entries, { kind, observedAt })).toBe(expected));
 });
