@@ -29,6 +29,8 @@ export const recordsSchema = z.object({
   delivery: z.array(deliverySchema).default([]),
 }).strict();
 const jiraKey = z.string().regex(/^ASMA-[1-9]\d*$/);
+/** A plan read's diagnostic when its catalog and front-matter workstreams differ; the read then declares none. */
+export const WORKSTREAM_CONFLICT = "Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.";
 /** The plan front-matter workstream grammar; the capture writes only registered `ws:<key>` labels. */
 export const workstreamKey = z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
 export const jiraIssueSchema = z.object({ key: jiraKey, status: z.string().min(1).max(160), cat: z.enum(["new", "indeterminate", "done"]) }).strict();

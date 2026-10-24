@@ -1,8 +1,12 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { jiraHistorySchema, type JiraHistory, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
+import { jiraHistorySchema, WORKSTREAM_CONFLICT, type JiraHistory, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
 import { projectJiraHistory } from "../server/jira-history";
+import { readConfiguredSource } from "../server/read-sources";
 import { jiraCapture } from "../client/page-data";
-import { capturedWorkstreams, planFallbackNote, planWorkstreamMappings, planWorkstreamOptions } from "../client/plan-workstreams";
+import { capturedWorkstreams, derivedWorkstreamNote, planFallbackNote, planWorkstreamMappings, planWorkstreamOptions } from "../client/plan-workstreams";
 import { buildOrganizationTree, organizationScope, visibleSessions } from "../client/session-organization";
 import { sessionEntry } from "./session-fixtures";
 
@@ -123,7 +127,40 @@ describe("epic workstreams from the Jira capture's ws: labels", () => {
     expect(planFallbackNote(sources, reads, "ASMA-8701", null)).toBe(`No configured plan declares ASMA-8701. ASMA-8701 has no ws: label in the Jira capture of ${generated}.`);
     expect(planFallbackNote(sources, reads, "ASMA-9999", null)).toBe(`No configured plan declares ASMA-9999. ASMA-9999 is not in the Jira capture of ${generated}.`);
     expect(planFallbackNote(sources, { ...reads, qnr: qnrRead("reporting") }, "ASMA-7675", null))
-      .toBe(`Of 1 plan for ASMA-7675, 1 declares reporting, so none applies. The Jira capture of ${generated} labels ASMA-7675 ws:qnr-v2, which a plan contradicts.`);
+      .toBe(`Of 1 plan for ASMA-7675, 1 declares reporting, so none applies. Sources disagree: the Jira capture of ${generated} labels ASMA-7675 ws:qnr-v2, which a ready plan contradicts.`);
     expect(planFallbackNote([qnrPlan], { qnr: qnrRead(null) }, null, null)).toBe("No known ASMA epic, so no plan applies.");
+  });
+
+  it("lets Jira supply the key past a plan the read does not associate, says so, and links nothing where an applicable plan disagrees", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kontor-epic-ws-"));
+    try {
+      const file = join(dir, "plan.md");
+      await writeFile(file, "---\nepic: ASMA-8633\nworkstream: access\n---\n\n# Desk layout\n");
+      const plan: ReadSourceSummary = { id: "desk", title: "Desk layout", kind: "plan", path: file, workstream: "kontor", epic: "ASMA-8633", projectId: null, revisionKind: "working copy" };
+      const conflicted = await readConfiguredSource(plan);
+      expect([conflicted.status, conflicted.planMetadata?.workstream, conflicted.diagnostics.includes(WORKSTREAM_CONFLICT)]).toEqual(["ready", null, true]);
+      const lsa = entries.filter((entry) => entry.id === "lsa-8633");
+      expect(planWorkstreamMappings([plan], { jira: jiraRead, desk: conflicted }, lsa, [], {}, {}, registry)).toEqual({ "session:lsa-8633": { workstream: "kontor" } });
+      expect(derivedWorkstreamNote([plan, jiraSource], { jira: jiraRead, desk: conflicted }, "ASMA-8633", "prj_adam", "kontor"))
+        .toBe(`Workstream from the Jira ws:kontor label of ASMA-8633 (capture of ${generated}). 1 plan for ASMA-8633 is not associated (catalog and frontmatter workstreams conflict), so Jira supplied the key.`);
+      // The same plan without the catalog key is an applicable ready plan declaring access: the sources disagree.
+      const applicable = await readConfiguredSource({ ...plan, workstream: null });
+      expect([applicable.status, applicable.planMetadata?.workstream]).toEqual(["ready", "access"]);
+      expect(planWorkstreamMappings([{ ...plan, workstream: null }], { jira: jiraRead, desk: applicable }, lsa, [], {}, {}, registry)).toEqual({});
+      expect(planFallbackNote([{ ...plan, workstream: null }, jiraSource], { jira: jiraRead, desk: applicable }, "ASMA-8633", "prj_adam"))
+        .toBe(`Of 1 plan for ASMA-8633, 1 declares access, so none applies. Sources disagree: the Jira capture of ${generated} labels ASMA-8633 ws:kontor, which a ready plan contradicts.`);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("names the plans and capture behind a derived key", () => {
+    const sources = [qnrPlan, jiraSource];
+    expect(derivedWorkstreamNote(sources, reads, "ASMA-7675", null, "qnr-v2"))
+      .toBe(`Workstream from the Jira ws:qnr-v2 label of ASMA-7675 (capture of ${generated}). 1 plan for ASMA-7675 is not associated (no workstream declared), so Jira supplied the key.`);
+    expect(derivedWorkstreamNote(sources, { ...reads, qnr: qnrRead("qnr-v2") }, "asma-7675", null, "qnr-v2"))
+      .toBe(`Workstream from 1 ready plan for ASMA-7675 declaring qnr-v2, confirmed by the Jira ws:qnr-v2 label of ASMA-7675 (capture of ${generated}).`);
+    expect(derivedWorkstreamNote(sources, { ...reads, qnr: { ...qnrRead(null), status: "partial" } }, "ASMA-7675", null, "qnr-v2")).toContain("(not ready), so Jira supplied the key.");
+    expect(derivedWorkstreamNote(sources, reads, "ASMA-8639", null, "kontor")).toBe(`Workstream from the Jira ws:kontor label of ASMA-8639 (capture of ${generated}).`);
+    expect(derivedWorkstreamNote(sources, reads, "ASMA-7675", null, "reporting", ["qnr"])).toBe("Workstream from its explicit plan links, which declare reporting.");
+    expect([derivedWorkstreamNote(sources, reads, "ASMA-8701", null, "kontor"), derivedWorkstreamNote(sources, reads, null, null, "kontor")]).toEqual([null, null]);
   });
 });

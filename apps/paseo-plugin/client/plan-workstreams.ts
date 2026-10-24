@@ -1,4 +1,4 @@
-import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
+import { WORKSTREAM_CONFLICT, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
 import type { DirectoryEntry } from "./session-directory";
 import { declaredScope, nativeDesk, organizationScope, OTHER_WORKSTREAM, type OrganizationInput, type OrganizationWorkspace } from "./session-organization";
 import { sourceEpic } from "./source-scope";
@@ -144,7 +144,7 @@ export function planFallbackNote(sources: readonly ReadSourceSummary[], reads: R
   const observed = `the Jira capture of ${captures.map((capture) => capture.generated).join(" / ")}`;
   const label = capturedWorkstreams(Object.values(reads)).get(key);
   const jira = !captures.length ? "" : label === null ? ` Jira captures disagree on the ws: label of ${key}.`
-    : label !== undefined ? ` ${observed[0]!.toUpperCase()}${observed.slice(1)} labels ${key} ws:${label}, which a plan contradicts.`
+    : label !== undefined ? ` Sources disagree: ${observed} labels ${key} ws:${label}, which a ready plan contradicts.`
     : captures.some((capture) => capture.epics.some((captured) => captured.key === key)) ? ` ${key} has no ws: label in ${observed}.` : ` ${key} is not in ${observed}.`;
   if (!declaring.length) return `No configured plan declares ${key}.${jira}`;
   if (!plans.length) return `Plans for ${key} are bound to other projects.${jira}`;
@@ -155,4 +155,28 @@ export function planFallbackNote(sources: readonly ReadSourceSummary[], reads: R
   }
   const parts = [...states].map(([state, n]) => state === null ? `${n} ${n === 1 ? "is" : "are"} not ready` : `${n} ${n === 1 ? "declares" : "declare"} ${state}`);
   return `Of ${counted(plans.length, "plan")} for ${key}, ${parts.join(", ")}, so none applies.${jira}`;
+}
+
+/**
+ * Where the display-only fallback found a session's derived workstream `key`: the applicable ready plans declaring it,
+ * the epic's captured Jira `ws:` label, and each applicable plan it did not associate. Null when neither supplied `key`.
+ */
+export function derivedWorkstreamNote(sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, epic: string | null, projectId: string | null, key: string, linked: readonly string[] = []): string | null {
+  if (linked.length) return `Workstream from its explicit plan links, which declare ${key}.`;
+  const upper = epic && /^ASMA-[1-9]\d*$/i.test(epic) ? epic.toUpperCase() : null;
+  if (upper === null) return null;
+  const plans = sources.filter((source) => source.kind === "plan" && (source.projectId === null || source.projectId === projectId) && sourceEpic(source, reads[source.id]) === upper);
+  const declaring = plans.filter((source) => reads[source.id]?.status === "ready" && declaredPlanWorkstream(source, reads[source.id]) === key).length;
+  const captures = Object.values(reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" && read.jiraHistory ? [read.jiraHistory.generated] : []);
+  const jira = capturedWorkstreams(Object.values(reads)).get(upper) === key ? `the Jira ws:${key} label of ${upper} (capture of ${captures.join(" / ")})` : null;
+  if (!declaring && !jira) return null;
+  const from = [declaring ? `${counted(declaring, "ready plan")} for ${upper} declaring ${key}` : null, jira].filter((part): part is string => !!part).join(", confirmed by ");
+  const reasons = [...new Set(plans.flatMap((source) => {
+    const read = reads[source.id];
+    if (read?.status !== "ready") return ["not ready"];
+    if (declaredPlanWorkstream(source, read) !== null) return [];
+    return [read.diagnostics.includes(WORKSTREAM_CONFLICT) ? "catalog and frontmatter workstreams conflict" : "no workstream declared"];
+  }))];
+  const skipped = plans.length - declaring;
+  return `Workstream from ${from}.${skipped ? ` ${counted(skipped, "plan")} for ${upper} ${skipped === 1 ? "is" : "are"} not associated (${reasons.join("; ")})${declaring ? "" : ", so Jira supplied the key"}.` : ""}`;
 }

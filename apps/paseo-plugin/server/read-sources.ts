@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { parseDocument } from "yaml";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
-import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, readSourceSummaries, recordsSchema,
+import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, readSourceSummaries, recordsSchema, WORKSTREAM_CONFLICT,
   sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type SourceSummaryRead, type WorkstreamRegistry } from "../shared/read-sources";
 import { GRAPH_FENCE, planMetadata } from "./plan-metadata";
 import type { organizationSettingsSchema } from "../shared/organization";
@@ -135,7 +135,7 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
     result.planMetadata = planMetadata(content);
     result.diagnostics.push(...result.planMetadata.diagnostics);
     if (source.workstream !== null && result.planMetadata.workstream !== null && source.workstream !== result.planMetadata.workstream) {
-      result.diagnostics.push("Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.");
+      result.diagnostics.push(WORKSTREAM_CONFLICT);
       result.planMetadata.workstream = null;
     }
     result.status = "partial";
@@ -191,7 +191,7 @@ export async function readConfiguredSummary(source: ReadSourceSummary): Promise<
     result.planMetadata = planMetadata(content);
     result.diagnostics.push(...result.planMetadata.diagnostics);
     if (source.workstream !== null && result.planMetadata.workstream !== null && source.workstream !== result.planMetadata.workstream) {
-      result.diagnostics.push("Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.");
+      result.diagnostics.push(WORKSTREAM_CONFLICT);
       result.planMetadata.workstream = null;
     }
     if (source.epic !== null && result.planMetadata.epic !== null && source.epic !== result.planMetadata.epic) throw new Error("Configured epic differs from frontmatter epic");
