@@ -7,12 +7,73 @@ import { recordVisit } from "./recent-sessions";
 export type SessionNavigation = NonNullable<PluginScreenProps["navigation"]>;
 
 export type OpenSessionResult =
-  | { readonly ok: true }
+  /** `handoff`: the Kontor screen received the request; nothing has opened yet. */
+  | { readonly ok: true; readonly handoff?: true }
   | {
       readonly ok: false;
-      readonly reason: "missing" | "archived" | "navigation" | "failed";
+      readonly reason: "missing" | "archived" | "navigation" | "failed" | "stale";
       readonly message: string;
     };
+
+/** What a composer popover asks the Kontor screen to open; plugin popovers get no session navigation of their own. */
+export type HandOffTarget =
+  | { readonly kind: "session"; readonly agentId: string }
+  | { readonly kind: "created"; readonly outcome: CreateOutcome }
+  | { readonly kind: "search"; readonly query: string };
+
+/**
+ * The one request in flight from a popover to the Kontor screen. It lives in memory only and the screen URL
+ * carries just its key, so Back, history, a remount and a reload find nothing to replay. Any take consumes it.
+ */
+let handOff: { readonly hostId: string; readonly key: string; readonly target: HandOffTarget } | null = null;
+let handOffCount = 0;
+
+/** Replaces any earlier request and returns the key the screen must present. */
+export function handOffOpen(hostId: string, target: HandOffTarget): string {
+  const key = `${Date.now().toString(36)}-${++handOffCount}`;
+  handOff = { hostId, key, target };
+  return key;
+}
+
+/** Consumes the request: the target for its own host and key, otherwise nothing, and the request is gone either way. */
+export function takeHandOff(hostId: string, key: string): HandOffTarget | null {
+  const current = handOff;
+  handOff = null;
+  return current?.hostId === hostId && current.key === key ? current.target : null;
+}
+
+/** Drops a request the screen never received, or every request when the plugin is disposed. */
+export function withdrawHandOff(key?: string): void {
+  if (key === undefined || handOff?.key === key) handOff = null;
+}
+
+/**
+ * The Kontor screen's half of a hand-off: consumes the request before navigating, then opens through the shared
+ * path below. Null when the screen was opened without a request; a used, replaced or foreign key opens nothing.
+ */
+export function openHandOff(input: {
+  readonly hostId: string;
+  readonly key: string | undefined;
+  readonly entries: readonly DirectoryEntry[];
+  readonly navigation: SessionNavigation | undefined;
+  readonly onSearch: (query: string) => void;
+}): OpenSessionResult | null {
+  if (!input.key) return null;
+  const target = takeHandOff(input.hostId, input.key);
+  if (!target) {
+    return { ok: false, reason: "stale", message: "This Kontor request was already handled or has expired. Nothing was opened; choose the session again." };
+  }
+  if (target.kind === "search") {
+    input.onSearch(target.query);
+    return { ok: true };
+  }
+  if (target.kind === "session") {
+    return openSessionById({ entries: input.entries, id: target.agentId, serverId: input.hostId, navigation: input.navigation });
+  }
+  const result = openCreatedSession({ outcome: target.outcome, serverId: input.hostId, navigation: input.navigation });
+  // The creation itself succeeded; keep its exact identity in the refusal so it can still be found.
+  return result.ok ? result : { ...result, message: `Created “${target.outcome.title}” (session ID ${target.outcome.agentId}). ${result.message}` };
+}
 
 /**
  * Opens the existing native session by its host ID. A display title is never an

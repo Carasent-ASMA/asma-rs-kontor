@@ -9,6 +9,10 @@ const model = vi.hoisted(() => ({
   rpc: {} as Record<string, ReturnType<typeof vi.fn>>,
   focusControl: vi.fn(),
   platform: "web",
+  hosts: [] as { serverId: string; label: string; status: string }[],
+  toast: { error: vi.fn(), show: vi.fn() },
+  directory: null as unknown as DirectoryState,
+  directoryArgs: [] as object[],
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
@@ -29,13 +33,15 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps) }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
-vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name] }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
+vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
+vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
 
-import { createAvailability, StartSwitchSheet, switchRows, type CreateOptionsState } from "../client/start-switch-sheet";
+import { createAvailability, StartSwitchPopover, StartSwitchSheet, switchRows, type CreateOptionsState } from "../client/start-switch-sheet";
 import { NewLsaForm, newRequestId, personaLine, resolveDraft } from "../client/new-lsa-form";
-import { openCreatedSession, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
+import { openCreatedSession, openHandOff, takeHandOff, withdrawHandOff, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
+import { AnchoredMenu } from "../client/anchored-menu";
 import { configureRecentStorage, recordVisit, readRecent } from "../client/recent-sessions";
 import { Action, Copy } from "../client/page-controls";
 import { sessionEntry } from "./session-fixtures";
@@ -78,6 +84,10 @@ beforeEach(() => {
   model.slots = []; model.cursor = 0; model.effect = 0; model.deps = [];
   model.focusControl.mockClear();
   model.platform = "web";
+  model.hosts = [{ serverId: "host-a", label: "Host A", status: "online" }];
+  model.toast = { error: vi.fn(), show: vi.fn() };
+  model.directoryArgs = [];
+  withdrawHandOff();
   model.rpc = { "sessions.create-options": vi.fn(async () => OPTIONS), "sessions.create": vi.fn(), "sessions.create-check": vi.fn() };
   configureRecentStorage(null);
 });
@@ -262,6 +272,126 @@ describe("Start or switch sheet", () => {
     expect(row.props.role).toBe("menuitem");
     expect(row.props.accessibilityLabel).toMatch(/^LSA .*Opened/);
     expect((row.props.style as (state: { pressed: boolean }) => object)({ pressed: false })).toMatchObject({ minHeight: 44 });
+  });
+});
+
+describe("Start or switch popover from the composer pill", () => {
+  function pop(patch: { compact?: boolean; entries?: DirectoryEntry[]; live?: boolean } = {}) {
+    recordVisit("host-a", "agent-a", Date.now() - 60_000);
+    model.directory = directory(patch.entries ?? [prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" }), sessionEntry("agent-b", { title: "QA • ASMA-1 • Review" })], patch.live ?? true);
+    const openScreen = vi.fn(), close = vi.fn();
+    const all = { host: { id: "host-a", label: "Host A" }, theme: { colors: COLORS }, layout: { compact: patch.compact ?? false, platform: "web" as const },
+      context: "agent" as const, workspaceId: "wks-adam", agentId: "agent-current", close, openScreen, screenId: "sessions" } as unknown as Parameters<typeof StartSwitchPopover>[0];
+    let tree: Element[] = [];
+    const render = () => { model.cursor = 0; model.effect = 0; tree = elements(StartSwitchPopover(all)); return tree; };
+    render();
+    const search = (value: string) => { (byTestId(tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)(value); render(); };
+    return { render, search, openScreen, close, get tree() { return tree; } };
+  }
+  const navigation = () => ({ openAgent: vi.fn(), openWorkspace: vi.fn() }) as unknown as SessionNavigation & { openAgent: ReturnType<typeof vi.fn> };
+
+  it("draws the shared body in the host's surface: no nested sheet, title, Close or second scroller, with Open Kontor inside", async () => {
+    const p = pop();
+    await settle(); p.render();
+    expect(p.tree.some((node) => node.type === AnchoredMenu)).toBe(false);
+    expect(text(p.tree)).not.toContain("Start or switch");
+    expect(action(p.tree, "Close")).toBeUndefined();
+    expect(action(p.tree, "Open Kontor")?.props).toMatchObject({ icon: "Building2" });
+    expect(action(p.tree, "New LSA")).toBeDefined();
+    expect(byTestId(p.tree, "kontor-switch-list")).toMatchObject({ type: "View", props: { role: "menu", accessibilityLabel: "Recent sessions" } });
+    expect(p.tree.some((node) => node.type === "ScrollView")).toBe(false);
+    expect(byTestId(p.tree, "kontor-switch-search")?.props.autoFocus).toBe(true);
+    expect(pop({ compact: true }).tree.find((node) => node.props.testID === "kontor-switch-search")?.props.autoFocus).toBe(false);
+  });
+
+  it("draws the same Recent rows, search and footnotes as the Kontor screen's sheet", () => {
+    const p = pop();
+    const sheetTree = elements(StartSwitchSheet({ anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online",
+      directory: model.directory, canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(), onShowAll: vi.fn(), onClose: vi.fn() }));
+    const rows = (tree: Element[]) => tree.filter((node) => String(node.props.testID).startsWith("kontor-switch-row-")).map((node) => node.props.accessibilityLabel);
+    expect(rows(p.tree)).toEqual(rows(sheetTree));
+    expect(rows(p.tree)).toHaveLength(1);
+    for (const line of ["Opened from Kontor · this host and app profile only", "Native sidebar opens and other devices are not included."]) {
+      expect(text(p.tree)).toContain(line);
+      expect(text(sheetTree)).toContain(line);
+    }
+  });
+
+  it("reads the shared directory without setting its Archived choice", () => {
+    pop();
+    expect(model.directoryArgs[0]).toEqual({ hostId: "host-a", hostStatus: "online" });
+    expect(model.directoryArgs[0]).not.toHaveProperty("includeArchived");
+  });
+
+  it("opens Kontor without a request and closes", () => {
+    const p = pop();
+    (action(p.tree, "Open Kontor")!.props.onPress as () => void)();
+    expect(p.openScreen).toHaveBeenCalledExactlyOnceWith({ screenId: "sessions" });
+    expect(p.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands a row's exact ID to the Kontor screen and closes; only the screen's successful open records a visit", () => {
+    const p = pop();
+    p.search("review qa");
+    const before = readRecent("host-a").record.visits.map((visit) => visit.id);
+    (byTestId(p.tree, "kontor-switch-row-agent-b")!.props.onPress as () => void)();
+    expect(p.close).toHaveBeenCalledTimes(1);
+    const input = p.openScreen.mock.calls[0]![0] as { screenId: string; params: { target: string } };
+    expect(input).toEqual({ screenId: "sessions", params: { target: expect.any(String) } });
+    expect(JSON.stringify(input)).not.toContain("agent-b");
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(before);
+    const nav = navigation();
+    expect(openHandOff({ hostId: "host-a", key: input.params.target, entries: model.directory.entries, navigation: nav, onSearch: vi.fn() })).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-b", serverId: "host-a" });
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-b", ...before]);
+  });
+
+  it("hands a long search to Sessions through the same request", () => {
+    const entries = Array.from({ length: 22 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
+    const p = pop({ entries });
+    p.search(" route ");
+    (action(p.tree, "Show all 22 in Sessions")!.props.onPress as () => void)();
+    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
+    expect(takeHandOff("host-a", key)).toEqual({ kind: "search", query: "route" });
+  });
+
+  it("keeps the popover open, withdraws the request and says why when Kontor cannot open", () => {
+    const p = pop();
+    p.openScreen.mockImplementation(() => { throw new Error("Plugin screen is unavailable: sessions"); });
+    (byTestId(p.tree, "kontor-switch-row-agent-a")!.props.onPress as () => void)();
+    expect(p.close).not.toHaveBeenCalled();
+    expect(model.toast.error).toHaveBeenCalledExactlyOnceWith("Plugin screen is unavailable: sessions");
+    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
+    expect(takeHandOff("host-a", key)).toBeNull();
+  });
+
+  it("hands a created session to Kontor as a hand-off, not an open, and keeps the outcome when Kontor cannot open", async () => {
+    const p = pop();
+    await settle(); p.render();
+    (action(p.tree, "New LSA")!.props.onPress as () => void)(); p.render();
+    const form = p.tree.find((node) => node.type === NewLsaForm)!;
+    expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" } });
+    expect(text(p.tree)).toContain("New LSA");
+    expect(action(p.tree, "Close")).toBeUndefined();
+    const onOpenCreated = form.props.onOpenCreated as (outcome: CreateOutcome) => OpenSessionResult;
+    expect(onOpenCreated(outcome("verified"))).toEqual({ ok: true, handoff: true });
+    expect(p.close).toHaveBeenCalledTimes(1);
+    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
+    expect(takeHandOff("host-a", key)).toMatchObject({ kind: "created", outcome: { agentId: "agent-new" } });
+    p.openScreen.mockImplementation(() => { throw new Error("router busy"); });
+    expect(onOpenCreated(outcome("verified"))).toEqual({ ok: false, reason: "navigation", message: "router busy" });
+    expect(p.close).toHaveBeenCalledTimes(1);
+    expect(model.toast.error).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing of an offline host and shows its last known rows", () => {
+    model.hosts = [{ serverId: "host-a", label: "Host A", status: "offline" }];
+    const p = pop({ live: false });
+    expect(model.directoryArgs[0]).toMatchObject({ hostStatus: "offline" });
+    expect(model.rpc["sessions.create-options"]).not.toHaveBeenCalled();
+    expect(byTestId(p.tree, "kontor-switch-create-status")?.props.children).toContain("host offline");
+    expect(byTestId(p.tree, "kontor-switch-freshness")).toBeDefined();
+    expect(byTestId(p.tree, "kontor-switch-row-agent-a")).toBeDefined();
   });
 });
 
@@ -593,6 +723,17 @@ describe("New LSA form", () => {
     expect(f.onOpenCreated).toHaveBeenCalledTimes(2);
     expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
     expect(text(f.tree)).toContain("Opened in Paseo.");
+  });
+
+  it("says a hand-off to Kontor is opening there, never that Paseo opened it, and offers no second Open", async () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const f = form(undefined, { onOpenCreated: vi.fn<(outcome: CreateOutcome) => OpenSessionResult>(() => ({ ok: true, handoff: true })) });
+    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    f.press("Open session");
+    expect(byTestId(f.tree, "kontor-new-lsa-open-status")?.props.children).toBe("Opening in Kontor…");
+    expect(text(f.tree)).not.toContain("Opened in Paseo.");
+    expect(text(f.tree)).toContain("Session ID: agent-new");
+    expect(action(f.tree, "Open session")).toBeUndefined();
   });
 
   it("records Recently viewed only after a successful user Open, never creation", async () => {

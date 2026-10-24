@@ -12,8 +12,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { getPaseoClient } = vi.hoisted(() => ({ getPaseoClient: vi.fn() }));
 
 vi.mock("@getpaseo/plugin/client", () => ({ getPaseoClient }));
+// The popover body is drawn by the host; this suite checks only what the pill hands it.
+vi.mock("../client/start-switch-sheet", () => ({ StartSwitchPopover: function StartSwitchPopover() { return null; } }));
 
+import type { ReactElement } from "react";
 import { contributePlanControl } from "../client/plan-control";
+import { handOffOpen, takeHandOff } from "../client/session-actions";
+import { StartSwitchPopover } from "../client/start-switch-sheet";
 import {
   contributeReturnControl,
   RETURN_CONTROL_ICON,
@@ -189,9 +194,23 @@ type PillContribution = {
     title: string;
     icon: string;
     label?: string;
-    behavior: { kind: "action"; onPress(): void };
+    behavior:
+      | { kind: "action"; onPress(): void }
+      | { kind: "popover"; Content(props: object): ReactElement<{ screenId: string; openScreen(input: object): void }> };
   };
 };
+
+function press(pill: Pill | undefined): void {
+  const behavior = pill?.contribution.button.behavior;
+  if (behavior?.kind !== "action") throw new Error("not an action pill");
+  behavior.onPress();
+}
+
+function popover(pill: Pill | undefined) {
+  const behavior = pill?.contribution.button.behavior;
+  if (behavior?.kind !== "popover") throw new Error("not a popover pill");
+  return behavior.Content;
+}
 
 type Pill = {
   readonly contribution: PillContribution;
@@ -306,7 +325,7 @@ describe("Kontor composer controls share one host directory", () => {
         title: RETURN_CONTROL_TITLE,
         icon: RETURN_CONTROL_ICON,
         label: RETURN_CONTROL_LABEL,
-        behavior: { kind: "action" },
+        behavior: { kind: "popover" },
       },
     });
 
@@ -334,12 +353,21 @@ describe("Kontor composer controls share one host directory", () => {
     const beforeReturn = readRecent("host-a");
     const beforeView = readSessionView("host-a");
 
-    controls.pillFor("s-1")?.contribution.button.behavior.onPress();
+    // Every pill shares one body, bound to this installation's openScreen and the Kontor screen.
+    const Content = popover(controls.pillFor("s-1"));
+    expect(popover(controls.pillFor("s-2"))).toBe(Content);
+    const body = Content({ host: { id: "host-a", label: "Host A" }, close: vi.fn() });
+    expect(body.type).toBe(StartSwitchPopover);
+    expect(body.props).toMatchObject({ screenId: "sessions", host: { id: "host-a" } });
+    body.props.openScreen({ screenId: "sessions" });
     expect(controls.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
     expect(readRecent("host-a")).toEqual(beforeReturn);
     expect(readSessionView("host-a")).toEqual(beforeView);
 
+    // A disposed plugin leaves no request for a later Kontor screen to open.
+    const key = handOffOpen("host-a", { kind: "session", agentId: "s-1" });
     stop();
+    expect(takeHandOff("host-a", key)).toBeNull();
   });
 
   it("follows native updates and removes closed, archived and removed sessions", async () => {
@@ -435,7 +463,7 @@ describe("Kontor composer controls share one host directory", () => {
     expect(controls.pillFor("fixture-a", RETURN_CONTROL_ID)).toBeDefined();
     expect(controls.rpc).toHaveBeenCalledTimes(1);
 
-    controls.pillFor("fixture-a", "open-linked-plan")?.contribution.button.behavior.onPress();
+    press(controls.pillFor("fixture-a", "open-linked-plan"));
     expect(controls.openScreen).toHaveBeenCalledWith({
       screenId: "sessions",
       params: { tab: "Plan", agentId: "fixture-a", sourceId: "plan-a" },

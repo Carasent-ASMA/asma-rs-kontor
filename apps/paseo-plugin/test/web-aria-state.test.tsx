@@ -1,6 +1,6 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}] }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}], useEffect: () => undefined }));
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { MenuItem } from "../client/anchored-menu";
@@ -39,6 +39,15 @@ describe("control state on the web", () => {
     const back = (disabled: boolean) => pressable(<IconButton label="Back" icon="ChevronLeft" colors={colors} disabled={disabled} onPress={() => {}} />);
     expect(back(true)).toMatchObject({ disabled: true, accessibilityState: { disabled: true }, "aria-disabled": true });
     expect(back(false)).toMatchObject({ disabled: false, accessibilityState: { disabled: false }, "aria-disabled": false });
+  });
+
+  it("gives an icon button long-hold help, so a held press shows its label instead of activating on release", () => {
+    const onPress = vi.fn();
+    const back = pressable(<IconButton label="Back" icon="ChevronLeft" colors={colors} onPress={onPress} />);
+    // Pressable skips onPress after it has called onLongPress.
+    for (const binding of ["onLongPress", "onPressIn", "onPressOut", "onHoverIn", "onFocus"]) expect(typeof back[binding]).toBe("function");
+    (back.onLongPress as () => void)();
+    expect(onPress).not.toHaveBeenCalled();
   });
 
   it("marks only the current menu item", () => {

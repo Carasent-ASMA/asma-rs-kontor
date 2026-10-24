@@ -226,28 +226,30 @@ export async function disposeRetainedDirectories(): Promise<void> {
 export function useSessionDirectory(input: {
   readonly hostId: string;
   readonly hostStatus: HostStatus;
-  readonly includeArchived: boolean;
+  /** Omit to read the shared directory as it is set, never changing another view's Archived choice. */
+  readonly includeArchived?: boolean;
   readonly enabled?: boolean;
 }): {
   readonly state: DirectoryState;
   readonly refresh: () => void;
 } {
   const { hostId, hostStatus, includeArchived, enabled = true } = input;
+  const initialArchived = includeArchived ?? false;
   const [stateForHost, setStateForHost] = useState<{
     readonly hostId: string;
     readonly state: DirectoryState;
-  }>(() => ({ hostId, state: retained.get(hostId)?.state ?? emptyDirectoryState(includeArchived) }));
+  }>(() => ({ hostId, state: retained.get(hostId)?.state ?? emptyDirectoryState(initialArchived) }));
   const state =
     stateForHost.hostId === hostId
       ? stateForHost.state
-      : retained.get(hostId)?.state ?? emptyDirectoryState(includeArchived);
+      : retained.get(hostId)?.state ?? emptyDirectoryState(initialArchived);
   const directoryRef = useRef<RetainedDirectory | null>(null);
   const includeArchivedRef = useRef(includeArchived);
   includeArchivedRef.current = includeArchived;
 
   useEffect(() => {
     if (!enabled) return;
-    const record = retain(hostId, includeArchivedRef.current);
+    const record = retain(hostId, includeArchivedRef.current ?? false);
     const listener = (next: DirectoryState) => setStateForHost({ hostId, state: next });
     record.listeners.add(listener);
     directoryRef.current = record;
@@ -269,6 +271,7 @@ export function useSessionDirectory(input: {
   }, [hostId, hostStatus, enabled]);
 
   useEffect(() => {
+    if (includeArchived === undefined) return;
     void directoryRef.current?.directory.setIncludeArchived(includeArchived);
   }, [includeArchived, hostId, enabled]);
 

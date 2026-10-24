@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureRecentStorage, readRecent, recentRows } from "../client/recent-sessions";
-import { archivedByRead, openCreatedSession, openRecoveredSession, openSessionById, type SessionNavigation } from "../client/session-actions";
+import { archivedByRead, handOffOpen, openCreatedSession, openHandOff, openRecoveredSession, openSessionById, takeHandOff, withdrawHandOff, type SessionNavigation } from "../client/session-actions";
 import type { CreateOutcome } from "../shared/session-create";
 import type { LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
@@ -204,5 +204,93 @@ describe("openRecoveredSession", () => {
     const nav = navigation();
     expect(openRecoveredSession({ row, id, serverId: "host-a", navigation: nav })).toMatchObject({ ok: false, reason: "missing" });
     expect(nav.openAgent).not.toHaveBeenCalled(); expect(readRecent("host-a").record.visits).toEqual([]);
+  });
+});
+
+describe("composer hand-off to the Kontor screen", () => {
+  const created: CreateOutcome = { requestId: "req-1", state: "verified", title: "LSA • ADHOC • Route review", agentId: "agent-new", workspaceId: "wks", message: "Created.", differences: [], persona: "supported", checkedAt: "2026-10-24" };
+  const entries = [sessionEntry("agent-a"), sessionEntry("agent-b", { title: "agent-a" })];
+  /** `null` is an app that gives plugins no session navigation. */
+  const screen = (hostId: string, key: string | undefined, nav: SessionNavigation | null = navigation(), onSearch = vi.fn()) =>
+    openHandOff({ hostId, key, entries, navigation: nav ?? undefined, onSearch });
+  beforeEach(() => { configureRecentStorage(null); withdrawHandOff(); });
+
+  it("opens the exact host and session ID once; Back, a remount or a StrictMode rerun replays nothing", () => {
+    const nav = navigation();
+    const key = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    expect(screen("host-a", key, nav)).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-a", serverId: "host-a" });
+    for (let again = 0; again < 3; again++) expect(screen("host-a", key, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).toHaveBeenCalledTimes(1);
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-a"]);
+  });
+
+  it("does nothing for a Kontor screen opened without a request", () => {
+    const nav = navigation();
+    const key = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    expect(screen("host-a", undefined, nav)).toBeNull();
+    expect(nav.openAgent).not.toHaveBeenCalled();
+    expect(takeHandOff("host-a", key)).toEqual({ kind: "session", agentId: "agent-a" });
+  });
+
+  it("gives another host nothing, and the request does not wait for its own host afterwards", () => {
+    const nav = navigation();
+    const key = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    expect(screen("host-b", key, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(screen("host-a", key, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
+    expect(readRecent("host-b").record.visits).toEqual([]);
+  });
+
+  it("lets a newer request replace an older one", () => {
+    const older = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    const newer = handOffOpen("host-a", { kind: "session", agentId: "agent-b" });
+    expect(takeHandOff("host-a", older)).toBeNull();
+    const nav = navigation();
+    expect(screen("host-a", newer, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).not.toHaveBeenCalled();
+  });
+
+  it("withdraws a request whose screen never opened, and a dispose clears any request", () => {
+    const failed = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    withdrawHandOff("some-other-key");
+    withdrawHandOff(failed);
+    expect(takeHandOff("host-a", failed)).toBeNull();
+    const pending = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    withdrawHandOff();
+    expect(takeHandOff("host-a", pending)).toBeNull();
+  });
+
+  it("consumes the request before navigating, so a refusal or a throwing host cannot be retried by a replay", () => {
+    const missing = handOffOpen("host-a", { kind: "session", agentId: "agent-gone" });
+    expect(screen("host-a", missing)).toMatchObject({ ok: false, reason: "missing" });
+    expect(takeHandOff("host-a", missing)).toBeNull();
+    const nav = navigation();
+    nav.openAgent.mockImplementation(() => { throw new Error("router busy"); });
+    const thrown = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    expect(screen("host-a", thrown, nav)).toEqual({ ok: false, reason: "failed", message: "router busy" });
+    expect(screen("host-a", thrown, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).toHaveBeenCalledTimes(1);
+    expect(screen("host-a", handOffOpen("host-a", { kind: "session", agentId: "agent-a" }), null)).toMatchObject({ ok: false, reason: "navigation" });
+    expect(readRecent("host-a").record.visits).toEqual([]);
+  });
+
+  it("opens a created session by its readback ID and keeps that identity when it cannot", () => {
+    const nav = navigation();
+    expect(screen("host-a", handOffOpen("host-a", { kind: "created", outcome: created }), nav)).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-new", serverId: "host-a" });
+    const refused = screen("host-a", handOffOpen("host-a", { kind: "created", outcome: created }), null);
+    expect(refused).toMatchObject({ ok: false, reason: "navigation" });
+    expect(refused?.ok === false && refused.message).toBe("Created “LSA • ADHOC • Route review” (session ID agent-new). This Paseo app does not expose native session navigation to plugins.");
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-new"]);
+  });
+
+  it("hands a search to Sessions without opening or recording anything", () => {
+    const nav = navigation(), onSearch = vi.fn();
+    expect(screen("host-a", handOffOpen("host-a", { kind: "search", query: "route" }), nav, onSearch)).toEqual({ ok: true });
+    expect(onSearch).toHaveBeenCalledExactlyOnceWith("route");
+    expect(nav.openAgent).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
   });
 });

@@ -1,14 +1,18 @@
+import { createElement } from "react";
 import type {
+  PluginButtonContentProps,
   PluginButtonRegistration,
   PluginClientContext,
 } from "@getpaseo/plugin/client";
+import { withdrawHandOff } from "./session-actions";
+import { StartSwitchPopover } from "./start-switch-sheet";
 import { bindHostDirectory } from "./use-session-directory";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 
 export const RETURN_CONTROL_ID = "return-to-kontor";
-export const RETURN_CONTROL_TITLE = "Open Kontor";
+export const RETURN_CONTROL_TITLE = "Start or switch session";
 export const RETURN_CONTROL_LABEL = "Kontor";
-export const RETURN_CONTROL_ICON = "ArrowLeft";
+export const RETURN_CONTROL_ICON = "Building2";
 
 type RegisteredPill = {
   readonly workspaceId: string;
@@ -16,9 +20,10 @@ type RegisteredPill = {
 };
 
 /**
- * Adds one understated return pill to each live agent's composer track. The
- * host owns the pill's styling, spacing, touch target and ordering; this module
- * only supplies the Lucide arrow and the short Kontor label.
+ * Adds one understated Kontor pill to each live agent's composer track. It opens
+ * the Start or switch popover, whose Open Kontor action keeps the old return.
+ * The host owns the pill's styling, spacing, touch target, ordering and the
+ * popover or bottom sheet; this module supplies the icon, label and body.
  *
  * Pills follow the host's one shared session directory. The first bootstrap
  * page registers them at the first round-trip; only a complete inventory walk
@@ -31,6 +36,13 @@ export function contributeReturnControl(
 ): () => void {
   const pills = new Map<string, RegisteredPill>();
   let stopped = false;
+  // One body for every pill. This installation's client opens screens on its own host, the pill's host.
+  const Content = (props: PluginButtonContentProps) =>
+    createElement(StartSwitchPopover, {
+      ...props,
+      openScreen: (input) => client.openScreen(input),
+      screenId,
+    });
 
   function removePill(agentId: string): void {
     const current = pills.get(agentId);
@@ -76,12 +88,7 @@ export function contributeReturnControl(
           title: RETURN_CONTROL_TITLE,
           icon: RETURN_CONTROL_ICON,
           label: RETURN_CONTROL_LABEL,
-          behavior: {
-            kind: "action",
-            onPress() {
-              client.openScreen({ screenId });
-            },
-          },
+          behavior: { kind: "popover", Content },
         },
       });
       pills.set(entry.id, { workspaceId, registration });
@@ -119,5 +126,7 @@ export function contributeReturnControl(
     stopped = true;
     releaseDirectory();
     removeAll();
+    // A disposed plugin keeps no request for a later screen to open.
+    withdrawHandOff();
   };
 }
