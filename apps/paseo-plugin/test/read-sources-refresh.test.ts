@@ -20,7 +20,7 @@ const plan = summary(planSource, "a");
 const delivery = summary(deliverySource, "b");
 const jira: SourceRead = { ...summary({ ...deliverySource, id: "jira", title: "Jira", kind: "jira", path: "/configured/jira.json" }, "c"),
   jiraHistory: { schema: "consumption/data@2", generated: "2026-10-18T10:00:00Z", provenance: { path: "/capture.json", sha256: "a".repeat(64), capturedEpics: 0 }, selection: ["ASMA-1"], epics: [] } };
-const fullPlan: FullSourceRead = { hostId: "host", path: planSource.path, revision: "a", read: { ...plan, content: "# Plan", graph: null, planMetadata: { workstream: "access", epic: "ASMA-1", diagnostics: [] } } };
+const fullPlan: FullSourceRead = { hostId: "host", path: planSource.path, kind: "plan", revision: "a", read: { ...plan, content: "# Plan", graph: null, planMetadata: { workstream: "access", epic: "ASMA-1", diagnostics: [] } } };
 
 describe("source summaries and demanded full reads", () => {
   it("requests summaries once, keeps Teams adapter IDs on their snapshots and never reads every source", async () => {

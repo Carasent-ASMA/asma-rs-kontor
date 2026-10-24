@@ -6,10 +6,26 @@ import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import { readSource, readSourceSummaries, sourceReadPending, type SourceRead } from "../shared/read-sources";
 
 /** One exact full read kept for the summary identity and revision it was read at. */
-export type FullSourceRead = { hostId: string; path: string; revision: string | null; read: SourceRead };
-type QueueItem = { key: string; hostId: string; path: string; id: string; revision: string | null };
+export type FullSourceRead = { hostId: string; path: string; kind: SourceRead["source"]["kind"]; revision: string | null; read: SourceRead };
+type QueueItem = { key: string; hostId: string; path: string; kind: SourceRead["source"]["kind"]; id: string; revision: string | null };
 
-/** Summaries overlaid by full reads of the same host and revision; Teams adapter IDs stay on their snapshots. */
+/** The request identity, including path and kind, so a same-byte replacement is a new demand. */
+function requestKey(item: Omit<QueueItem, "key">): string {
+  return [item.hostId, item.id, item.kind, item.path, item.revision ?? ""].join("\u0000");
+}
+/**
+ * A full read may stand in for this summary only when its own returned identity and the
+ * cached request identity both match. A request label is never proof of the returned bytes.
+ */
+function currentFullRead(summary: SourceRead, loaded: FullSourceRead | undefined, hostId: string): boolean {
+  if (!loaded || loaded.hostId !== hostId || loaded.path !== summary.source.path || loaded.kind !== summary.source.kind
+    || loaded.revision !== summary.revision) return false;
+  const read = loaded.read;
+  if (read.source.id !== summary.source.id || read.source.path !== summary.source.path || read.source.kind !== summary.source.kind) return false;
+  return read.status === "unavailable" || (read.revision !== null && read.revision === summary.revision);
+}
+
+/** Summaries overlaid by full reads of the same host, source identity and revision; Teams adapter IDs stay on their snapshots. */
 export function overlaySourceReads(summaries: Readonly<Record<string, SourceRead>>, full: Readonly<Record<string, FullSourceRead>>,
   hostId: string, adapterIds: ReadonlySet<string>): Record<string, SourceRead> {
   const reads: Record<string, SourceRead> = {};
@@ -17,12 +33,12 @@ export function overlaySourceReads(summaries: Readonly<Record<string, SourceRead
     if (adapterIds.has(id)) continue;
     const summary = summaries[id]!;
     const loaded = full[id];
-    reads[id] = loaded && loaded.hostId === hostId && loaded.path === summary.source.path && loaded.revision === summary.revision ? loaded.read : summary;
+    reads[id] = currentFullRead(summary, loaded, hostId) ? loaded!.read : summary;
   }
   return reads;
 }
 
-/** Demanded summaries that still need their exact Markdown, graph or records read at the current revision. */
+/** Demanded summaries that still need their exact Markdown, graph or records read at the current identity. */
 export function pendingDemandIds(demanded: readonly string[], summaries: Readonly<Record<string, SourceRead>>,
   full: Readonly<Record<string, FullSourceRead>>, hostId: string, adapterIds: ReadonlySet<string>): string[] {
   const ids: string[] = [];
@@ -30,8 +46,7 @@ export function pendingDemandIds(demanded: readonly string[], summaries: Readonl
     if (adapterIds.has(id)) continue;
     const summary = summaries[id];
     if (!summary || !sourceReadPending(summary)) continue;
-    const loaded = full[id];
-    if (loaded && loaded.hostId === hostId && loaded.path === summary.source.path && loaded.revision === summary.revision) continue;
+    if (currentFullRead(summary, full[id], hostId)) continue;
     ids.push(id);
   }
   return ids;
@@ -78,7 +93,7 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
   const queue = useRef<QueueItem[]>([]);
   const inFlight = useRef(new Set<string>());
   const running = useRef(0);
-  const attempted = useRef(new Map<string, string>());
+  const attempted = useRef(new Map<string, SourceRead>());
   const mounted = useRef(true);
   const readRef = useRef(read);
   readRef.current = read;
@@ -102,7 +117,19 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
       running.current += 1;
       void readRef.current({ sourceId: item.id }).then((result) => {
         if (!mounted.current) return;
-        setFull((previous) => ({ ...previous, [item.id]: { hostId: item.hostId, path: item.path, revision: item.revision, read: result } }));
+        const summary = state.current.data?.reads[item.id];
+        // A completion for an identity the summaries have left is stale and must not replace
+        // the current revision/path. A later summaries refresh will raise the new demand.
+        if (!summary || summary.source.id !== item.id || summary.source.path !== item.path
+          || summary.source.kind !== item.kind || summary.revision !== item.revision) {
+          attempted.current.delete(item.key);
+          return;
+        }
+        // The returned identity, not this request's label, decides whether the read is usable.
+        if (result.source.id !== item.id || result.source.path !== item.path || result.source.kind !== item.kind
+          || (result.status !== "unavailable" && (result.revision === null || result.revision !== item.revision))) return;
+        attempted.current.delete(item.key);
+        setFull((previous) => ({ ...previous, [item.id]: { hostId: item.hostId, path: item.path, kind: item.kind, revision: item.revision, read: result } }));
       }, () => undefined).finally(() => {
         running.current -= 1;
         inFlight.current.delete(item.key);
@@ -121,12 +148,13 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
     for (const id of pendingDemandIds(demanded.current, data.reads, current.full, current.hostId, current.adapterIds)) {
       const summary = data.reads[id]!;
       const revision = summary.revision;
-      const key = `${id}@${revision}`;
-      // A failed attempt waits for the next summaries refresh, which carries a new read time.
-      if (inFlight.current.has(key) || attempted.current.get(key) === summary.readAt) continue;
-      attempted.current.set(key, summary.readAt);
+      const request = { hostId: current.hostId, path: summary.source.path, kind: summary.source.kind, id, revision };
+      const key = requestKey(request);
+      // A failed or rejected attempt waits for a new summaries object, never the same request again.
+      if (inFlight.current.has(key) || attempted.current.get(key) === summary) continue;
+      attempted.current.set(key, summary);
       inFlight.current.add(key);
-      queue.current.push({ key, hostId: current.hostId, path: summary.source.path, id, revision });
+      queue.current.push({ ...request, key });
     }
     pumpRef.current!();
   };

@@ -198,8 +198,11 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reads captured epics at mount. Pages demand exact reads for their own context
   (the selected plan and its linked associations on Plan, Board and Graph;
   context sources on Overview, Search, Delivery, Decisions and AI teams), at
-  most three at a time and keyed by source ID and revision. `sources.read` is
-  unchanged and still returns the exact content. A source whose summary is
+  most three at a time and keyed by source ID, path and revision. A read is
+  accepted only when the returned source identity and revision match the
+  requested summary, so a replacement path or a late older revision never
+  surfaces as current. `sources.read` is unchanged and still returns the exact
+  content. A source whose summary is
   present while its exact read is pending shows **Reading…**, distinct from
   unavailable. Sessions performs no exact source read.
 - The publication check, pre-push hook and fast/heavy test lanes read the

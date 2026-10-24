@@ -1,9 +1,13 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as readSources from "../shared/read-sources";
 import * as teamsSnapshot from "../shared/teams-source-snapshot";
 import * as teamsBindings from "../shared/teams-source-bindings";
 import { deferredReact, loadHermesScoped } from "./hermes-scoping";
 import type { useReadSources as Hook } from "../client/use-read-sources";
+import { readConfiguredSource, readConfiguredSummary } from "../server/read-sources";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 
 const planSource: ReadSourceSummary = { id: "plan", title: "Plan", kind: "plan", path: "/configured/plan.md", epic: "ASMA-1", projectId: null, workstream: null, revisionKind: "working copy" };
@@ -86,5 +90,80 @@ describe("demanded source reads under the iOS (Hermes) scoping of plugin bundles
     hook = draw();
     expect(peak).toBe(3);
     expect(Object.values(hook.reads).filter((entry) => entry.content !== null)).toHaveLength(8);
+  });
+});
+
+/** QA1-PR477 race harness: mutable summaries and a full read resolved by the test. */
+function raceHarness(initial: SourceRead) {
+  let current = initial;
+  const pending: Array<(value: SourceRead) => void> = [];
+  const read = vi.fn((_input: { sourceId: string }) => new Promise<SourceRead>((resolve) => pending.push(resolve)));
+  const { react, render } = deferredReact();
+  const modules: Record<string, unknown> = {
+    react,
+    "@tanstack/react-query": { useQuery: () => ({ data: { sources: [current.source], reads: { plan: current }, diagnostics: [] },
+      isError: false, isFetching: false, error: null, refetch: async () => ({}) }) },
+    "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => contract.name === "sources.read" ? read : async () => ({}) },
+    "../shared/read-sources": readSources, "../shared/teams-source-snapshot": teamsSnapshot, "../shared/teams-source-bindings": teamsBindings,
+  };
+  const { useReadSources } = loadHermesScoped<{ useReadSources: typeof Hook }>("../client/use-read-sources.ts", modules);
+  return { draw: () => render(() => useReadSources("fixture-host", "online")), set: (value: SourceRead) => { current = value; }, read, pending };
+}
+const raceSettle = async () => { for (let n = 0; n < 4; n++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+const raceSummary = (revision: string, path = planSource.path): SourceRead => ({ ...summary(planSource, revision), source: { ...planSource, path } });
+const raceFull = (revision: string, path = planSource.path): SourceRead => ({ ...raceSummary(revision, path), content: `# ${revision}` });
+
+describe("QA1-PR477 exact source demand races", () => {
+  it("does not cache a file changed after summaries under its old revision", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "qa1-477-revision-"));
+    try {
+      const path = join(directory, "plan.md"), configured = { ...planSource, path };
+      await writeFile(path, "# Revision A");
+      const first = await readConfiguredSummary(configured);
+      const harness = raceHarness(first);
+      harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+      await writeFile(path, "# Revision B");
+      const later = await readConfiguredSource(configured);
+      expect(later.revision).not.toBe(first.revision);
+      harness.pending[0]!(later); await raceSettle();
+      expect(harness.draw().reads.plan!.content).toBeNull();
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("control: a matching full read overlays its summary", async () => {
+    const harness = raceHarness(raceSummary("a"));
+    harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+    harness.pending[0]!(raceFull("a")); await raceSettle();
+    expect(harness.draw().reads.plan!.content).toBe("# a");
+  });
+  it("does not label a different returned revision as the requested revision", async () => {
+    const harness = raceHarness(raceSummary("a"));
+    harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+    harness.pending[0]!(raceFull("b")); await raceSettle();
+    const seen = harness.draw().reads.plan!;
+    expect(seen.content).toBeNull(); expect(seen.revision).toBe("a");
+  });
+  it("does not overlay a replacement path returned under the same source ID", async () => {
+    const harness = raceHarness(raceSummary("a"));
+    harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+    harness.pending[0]!(raceFull("a", "/fixture/replacement.md")); await raceSettle();
+    const seen = harness.draw().reads.plan!;
+    expect(seen.source.path).toBe(planSource.path); expect(seen.content).toBeNull();
+  });
+  it("keeps the current revision when an older revision completes late", async () => {
+    const harness = raceHarness(raceSummary("a"));
+    harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+    harness.set(raceSummary("b")); harness.draw(); await raceSettle();
+    expect(harness.read).toHaveBeenCalledTimes(2);
+    harness.pending[1]!(raceFull("b")); await raceSettle();
+    expect(harness.draw().reads.plan!.content).toBe("# b");
+    harness.pending[0]!(raceFull("a")); await raceSettle();
+    const seen = harness.draw().reads.plan!;
+    expect(seen.content).toBe("# b"); expect(seen.revision).toBe("b");
+  });
+  it("treats a same-byte replacement path as a distinct demand while the old path is in flight", async () => {
+    const harness = raceHarness(raceSummary("a"));
+    harness.draw().demand(["plan"]); harness.draw(); await raceSettle();
+    harness.set(raceSummary("a", "/fixture/replacement.md")); harness.draw(); await raceSettle();
+    expect(harness.read).toHaveBeenCalledTimes(2);
   });
 });
