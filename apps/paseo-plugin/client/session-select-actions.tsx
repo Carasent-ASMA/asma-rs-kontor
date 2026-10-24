@@ -169,16 +169,30 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     else if (action === "archive") onArchive(state.ids);
     else { setResult(null); setConfirm({ action, line: state.line, requests: state.answers.map(({ hostId, agentId, revision }) => ({ hostId, agentId, revision })) }); }
   };
+  /** An open confirmation holds only while its action still applies to the same answers it showed: same hosts,
+   *  sessions, revisions and consequence. Otherwise it shows the current reason and calls no owner. */
+  const invalid = (open: Confirm): string | null => {
+    const state = states[open.action];
+    if (!state.enabled) return state.line;
+    const same = state.line === open.line && state.answers.length === open.requests.length && state.answers.every((answer, index) => {
+      const request = open.requests[index]!;
+      return answer.hostId === request.hostId && answer.agentId === request.agentId && answer.revision === request.revision;
+    });
+    return same ? null : "This changed after you opened it. Cancel and choose the action again.";
+  };
   const run = async (current: Confirm) => {
+    if (invalid(current)) return;
     const mine = ++token.current;
     setPending(true);
     let lines: string[];
     try {
       const replies = await owners[current.action]!.run(current.requests);
       lines = current.requests.map((request) => {
-        const reply = replies.find((value) => value.hostId === request.hostId && value.agentId === request.agentId);
+        // One reply per requested session; several for the same one stay unknown rather than picking a winner.
+        const replied = replies.filter((value) => value.hostId === request.hostId && value.agentId === request.agentId);
         const title = selected.find((session) => session.id === request.agentId)?.title ?? request.agentId;
-        const text = reply?.text ?? "No result reported. Check the session before trying again.";
+        const text = replied.length === 1 ? replied[0]!.text : replied.length ? "Result unknown: more than one reply for this session. Check the session before trying again."
+          : "No result reported. Check the session before trying again.";
         return current.requests.length === 1 ? text : `${title}: ${text}`;
       });
     } catch (error) {
@@ -187,6 +201,7 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     if (mine !== token.current) return;
     setPending(false); setConfirm(null); setResult(lines);
   };
+  const stale = confirm && !pending ? invalid(confirm) : null;
   const title = confirm?.action === "takeOver" ? `Take over ${selected[0]?.title ?? ""}?` : confirm ? `Resume ${confirm.requests.length === 1 ? `${selected.find((session) => session.id === confirm.requests[0]!.agentId)?.title ?? ""}?` : `${confirm.requests.length} sessions?`}` : "";
   return <View testID="sessions-select-actions" role="toolbar" accessibilityLabel="Selected session actions" style={{ gap: 6 }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
@@ -199,10 +214,10 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     {selected.length === 1 && refusal !== undefined ? <ProviderStateLine refusal={refusal} zone={zone} colors={colors} /> : null}
     {confirm ? <View testID="sessions-select-confirm" style={{ gap: 6, padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{title}</Text>
-      <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{confirm.line}</Text>
+      <Text style={{ color: stale ? colors.statusWarning : colors.foreground, fontSize: 13, lineHeight: 19 }}>{stale ?? confirm.line}</Text>
       <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
         <TextButton label="Cancel" colors={colors} disabled={pending} onPress={() => { token.current++; setConfirm(null); }} />
-        <TextButton primary label={pending ? "Sending…" : confirm.action === "takeOver" ? "Take over" : "Resume"} colors={colors} disabled={pending} onPress={() => { void run(confirm); }} />
+        <TextButton primary label={pending ? "Sending…" : confirm.action === "takeOver" ? "Take over" : "Resume"} colors={colors} disabled={pending || !!stale} onPress={() => { void run(confirm); }} />
       </View>
     </View> : null}
     {result ? <Text testID="sessions-select-result" role="status" accessibilityLiveRegion="polite" selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>{result.join("\n")}</Text> : null}

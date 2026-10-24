@@ -240,6 +240,38 @@ describe("select action bar", () => {
     expect(texts(render())).toContain("Result unknown: reply lost. Check the session before trying again.");
   });
 
+  it.each([
+    ["the same session starts running", { selected: [session("a", { status: "running" })] }, "This session is running; v1 cannot take it over. Stop it in the session or archive it first."],
+    ["the same session starts initializing", { selected: [session("a", { status: "initializing" })] }, "This session is starting; v1 cannot take it over."],
+    ["the host goes offline", { blocked: "This host is offline." }, "This host is offline."],
+    ["the archive review opens", { blocked: "Close the archive review first." }, "Close the archive review first."],
+    ["the owner goes away", { owners: {} }, "Take over needs a qualified handoff profile, and none is available yet."],
+    ["the owner withdraws its answer", { owners: { takeOver: lookup() } }, "Checking whether it can be taken over."],
+    ["the owner now refuses", { owners: { takeOver: lookup(no("a", "Owner or retirement evidence is missing.")) } }, "Owner or retirement evidence is missing."],
+    ["the owner answers a new revision", { owners: { takeOver: lookup(yes("a", { revision: "rev-a2" })) } }, "This changed after you opened it. Cancel and choose the action again."],
+    ["the owner answers a new consequence", { owners: { takeOver: lookup(yes("a", { consequence: "Another route." })) } }, "This changed after you opened it. Cancel and choose the action again."],
+  ] as const)("rechecks an open confirmation when %s, shows the current reason and calls no owner", (_case, patch, reason) => {
+    const { props, render } = setup({ selected: [session("a")], owners: { takeOver: lookup(yes("a")) } });
+    press(action(render(), "takeOver"));
+    Object.assign(props, patch);
+    const tree = render();
+    expect(walk(tree).some((node) => node.props.testID === "sessions-select-confirm")).toBe(true);
+    expect(texts(tree)).toContain(reason);
+    expect(textButton(tree, "Take over").props.disabled).toBe(true);
+    press(textButton(tree, "Take over"));
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("keeps several replies for one session unknown rather than picking one", async () => {
+    const { render } = setup({ owners: { takeOver: lookup(yes("a")) } });
+    run.mockResolvedValueOnce([{ hostId: "host-a", agentId: "a", text: "Taken over." }, { hostId: "host-a", agentId: "a", text: "Refused." }]);
+    press(action(render(), "takeOver")); press(textButton(render(), "Take over"));
+    await Promise.resolve(); await Promise.resolve();
+    const shown = texts(render());
+    expect(shown).toContain("Result unknown: more than one reply for this session. Check the session before trying again.");
+    expect(shown).not.toContain("Taken over.");
+  });
+
   it("drops an open confirmation and a late reply when the selection changes", async () => {
     let reply!: (value: readonly OwnerReply[]) => void;
     const { props, render } = setup({ owners: { takeOver: lookup(yes("a")) } });
