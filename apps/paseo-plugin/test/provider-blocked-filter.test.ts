@@ -7,7 +7,7 @@ import { sessionEntry } from "./session-fixtures";
 const now = Date.parse("2026-10-18T10:00:30.000Z");
 const revision = "2026-10-18T10:00:00.000Z";
 type Refusal = { state: "current" | "history"; read: "fresh" | "stale" | "unreadable" } | null;
-const read = (agentId: string, refusal: Refusal, patch: { checkedAt?: string; revision?: string } = {}) => ({
+const read = (agentId: string, refusal: Refusal, patch: { checkedAt?: string; revision?: string; state?: "readable" | "missing" | "unknown" } = {}) => ({
   availability: { agentId, state: "readable" as const, reason: "Exact read", checkedAt: "2026-10-18T10:00:10.000Z", revision, ...patch }, refusal });
 const current = { state: "current", read: "fresh" } as const;
 const error = (id: string, patch: Partial<DirectoryEntry> = {}) => ({ ...sessionEntry(id, { status: "error", requiresAttention: true, attentionReason: "error" }), ...patch });
@@ -16,7 +16,7 @@ const settled = { state, includeArchived: false, freshness: "Live", blocked: nul
 const view = (candidates: readonly DirectoryEntry[], reads: ProviderRefusalReads, at = now) => providerBlockedView({ ...settled, candidates, reads, now: at });
 
 describe("provider-blocked predicate", () => {
-  it("is blocked only on a fresh exact read of this ID and revision that saw a current refusal", () => {
+  it("is blocked only on a fresh readable exact read of this ID and revision that saw a current refusal", () => {
     expect(providerBlock(error("a"), new Map([["a", read("a", current)]]), now)).toEqual({ state: "blocked" });
     expect(providerBlock(error("a"), new Map([["a", read("a", null)]]), now)).toEqual({ state: "none" });
   });
@@ -29,6 +29,10 @@ describe("provider-blocked predicate", () => {
       [new Map([["a", read("a", null, { revision: "2026-10-18T10:00:20.000Z" })]]), "read-not-current"],
       [new Map([["a", read("a", current, { checkedAt: "2026-10-18T09:59:30.000Z" })]]), "read-not-current"],
       [new Map([["a", read("a", null, { checkedAt: "2026-10-18T10:00:40.000Z" })]]), "read-not-current"],
+      [new Map([["a", read("a", null, { state: "missing" })]]), "not-readable"],
+      [new Map([["a", read("a", null, { state: "unknown" })]]), "not-readable"],
+      [new Map([["a", read("a", current, { state: "missing" })]]), "not-readable"],
+      [new Map([["a", read("a", current, { state: "unknown" })]]), "not-readable"],
       [new Map([["a", read("a", { state: "history", read: "stale" })]]), "unresolved"],
       [new Map([["a", read("a", { state: "history", read: "unreadable" })]]), "unresolved"],
       [new Map([["a", read("a", { state: "current", read: "stale" })]]), "unresolved"],
@@ -73,6 +77,14 @@ describe("provider-blocked view", () => {
     expect(later).toMatchObject({ sessions: [], blocked: 0, unknown: 3, none: 0 });
     expect(later.notice).toBe("3 error sessions not checked: provider state unknown, so not listed as blocked. Error shows them.");
     expect(later.empty).toBe("No provider block observed among the 3 error sessions here; 3 not checked. This is not a provider health check.");
+  });
+
+  it("counts a fresh missing or unknown read as not checked, never free of refusals", () => {
+    for (const state of ["missing", "unknown"] as const) {
+      const result = view([error("a")], new Map([["a", read("a", null, { state })]]));
+      expect(result).toMatchObject({ sessions: [], blocked: 0, unknown: 1, none: 0, count: { text: "…" } });
+      expect(result.notice).toBe("1 error session not checked: provider state unknown, so not listed as blocked. Error shows it.");
+    }
   });
 
   it("is a subset of Error that Current never shows, and follows search and scope through its candidates", () => {

@@ -12,11 +12,11 @@ export type ProviderRefusalReads = ReadonlyMap<string, "failed" | {
   readonly refusal: { readonly state: "current" | "history"; readonly read: "fresh" | "stale" | "unreadable" } | null;
 }>;
 
-export type UnknownReason = "not-read" | "read-failed" | "read-not-current" | "unresolved";
+export type UnknownReason = "not-read" | "read-failed" | "read-not-current" | "not-readable" | "unresolved";
 export type ProviderBlock =
-  /** A fresh read of this ID and revision saw a classified refusal on its native error (PR482 `current`). */
+  /** A fresh readable read of this ID and revision saw a classified refusal on its native error (PR482 `current`). */
   | { readonly state: "blocked" }
-  /** A fresh read stored no refusal. Not provider health, and never Resume eligibility. */
+  /** A fresh readable read stored no refusal. Not provider health, and never Resume eligibility. */
   | { readonly state: "none" }
   | { readonly state: "unknown"; readonly reason: UnknownReason };
 
@@ -27,7 +27,10 @@ export function providerBlock(entry: DirectoryEntry, reads: ProviderRefusalReads
   if (result === undefined) return unknown("not-read");
   if (result === "failed") return unknown("read-failed");
   // As PR482 `refusalAsOf`: another ID, another revision, a negative age or expiry is not a read of this session now.
-  if (!freshAvailability({ ...entry, availability: result.availability }, now)) return unknown("read-not-current");
+  const fresh = freshAvailability({ ...entry, availability: result.availability }, now);
+  if (!fresh) return unknown("read-not-current");
+  // A fresh `missing` or `unknown` read did not read the session, so its refusal field is no evidence either way.
+  if (fresh.state !== "readable") return unknown("not-readable");
   const { refusal } = result;
   return !refusal ? { state: "none" } : refusal.state === "current" && refusal.read === "fresh" ? { state: "blocked" } : unknown("unresolved");
 }
