@@ -120,3 +120,56 @@ describe("read-only retirement projection under the iOS (Hermes) scoping of plug
     expect(h.calls.some(([name]) => /preview|execute|reconcile|resume|archive|send|timeline|provider/.test(name))).toBe(false);
   });
 });
+
+describe("projection regressions for running execution and exact receipt coverage", () => {
+  it("retains an archived running snapshot with no activeTurn object and marks the archive conflict", async () => {
+    const h = harness(() => "host", () => [sessionEntry("running-archived", { status: "running", activeTurn: false, archivedAt: "2026-10-24T08:00:30.000Z" })], {
+      "sessions.lifecycle-review": async () => null,
+    });
+    h.draw(); await settle(); const projection = h.draw().projections.get("running-archived")!;
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.native).toEqual({ status: "running", archiveMembership: "archived" });
+    expect(projection.conflicts.map((entry) => entry.kind)).toContain("archived-with-active-execution");
+  });
+
+  it("retains an unarchived running snapshot with no activeTurn object", async () => {
+    const h = harness(() => "host", () => [sessionEntry("running-live", { status: "running", activeTurn: false })], {
+      "sessions.lifecycle-review": async () => null,
+    });
+    h.draw(); await settle(); const projection = h.draw().projections.get("running-live")!;
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.native).toEqual({ status: "running", archiveMembership: "unarchived" });
+    expect(projection.conflicts).toEqual([]);
+  });
+
+  it("keeps exact review and agent coverage when a cached review cannot be refreshed", async () => {
+    const cached = reviewId("cached"), unrelated = reviewId("unrelated");
+    let phase = 0, failCached = false;
+    const h = harness(() => "host", () => [sessionEntry(A), sessionEntry(B), sessionEntry(C), sessionEntry(D)], {
+      "sessions.lifecycle-review": async (input) => {
+        if (!input.reviewId) return phase === 0
+          ? review("00000000-0000-4000-8000-0000000000aa", [], [{ reviewId: cached, agentId: A }, { reviewId: unrelated, agentId: C }])
+          : review("00000000-0000-4000-8000-0000000000aa", [], [{ reviewId: cached, agentId: B }, { reviewId: unrelated, agentId: C }]);
+        if (input.reviewId === cached) {
+          if (failCached) throw new Error("cached review read failed");
+          return review(cached, [row(A), row(B, "pending")]);
+        }
+        return review(unrelated, [row(C)]);
+      },
+    });
+    h.draw(); await settle(); h.draw();
+    expect(h.draw().projections.get(A)?.intent.state).toBe("unsettled");
+    expect(h.draw().projections.get(B)?.intent.state).toBe("none");
+    expect(h.draw().projections.get(C)?.intent.state).toBe("unsettled");
+    phase = 1; failCached = true; h.draw().reload(); await settle(); h.draw();
+    expect(h.draw().receipts.state).toBe("partial");
+    expect(h.draw().projections.get(A)?.intent.state).toBe("unsettled");
+    expect(h.draw().projections.get(B)?.intent.state).toBe("unknown");
+    expect(h.draw().projections.get(C)?.intent.state).toBe("unsettled");
+    expect(h.draw().projections.get(D)?.intent.state).toBe("none");
+    failCached = false; h.draw().reload(); await settle(); h.draw();
+    expect(h.draw().receipts.state).toBe("ready");
+    expect(h.draw().projections.get(B)?.intent.state).toBe("unknown");
+    expect(h.draw().projections.get(C)?.intent.state).toBe("unsettled");
+  });
+});

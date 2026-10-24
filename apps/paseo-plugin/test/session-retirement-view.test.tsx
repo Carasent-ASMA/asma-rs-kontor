@@ -8,7 +8,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", ScrollVie
 import { SessionRetirementConflict, SessionRetirementDetails, SessionRetirementSummary, retirementDispositionLabel } from "../client/session-lifecycle-view";
 
 const colors = { accent: "#05f", accentForeground: "#fff", border: "#ccc", foreground: "#111", foregroundMuted: "#666", surface0: "#fff", surface1: "#f4f4f4", surface2: "#eee", statusDanger: "#c00", statusSuccess: "#080", statusWarning: "#c80" } as unknown as Parameters<typeof SessionRetirementSummary>[0]["colors"];
-const source = (id: string, kind: "native" | "label" | "archive" = "label") => ({ id, kind, detail: `fixture ${id}`, observedAt: "2026-10-24T08:00:00.000Z", revision: "rev-fixture", fresh: "current" as const });
+const source = (id: string, kind: "native" | "label" | "archive" | "owner" = "label") => ({ id, kind, detail: `fixture ${id}`, observedAt: "2026-10-24T08:00:00.000Z", revision: "rev-fixture", fresh: "current" as const });
 const input = (patch: Partial<SessionProjectionInput> = {}): SessionProjectionInput => ({
   hostId: "host", coverage: { archiveInventory: "complete", observedAt: "2026-10-24T08:00:02.000Z", detail: "complete fixture inventory" },
   intent: { state: "none", reviewId: null, sessionId: "fix-session", observedAt: null, detail: "No unresolved archive receipt." },
@@ -64,7 +64,11 @@ describe("read-only retirement view", () => {
   });
 
   it("shows a ready projection as descriptive and keeps native facts unchanged", () => {
-    const projection = deriveSessionProjection(input({ release: { state: "available", owner: "fixture owner", accepted: true, dutiesSettled: true, descendantsSettled: true, wakesSettled: true, executor: "verified", source: source("owner:fixture") } }));
+    const projection = deriveSessionProjection(input({
+      workClaims: [{ kind: "epic", value: "ASMA-9", binding: "verified", source: source("owner:binding", "owner") }],
+      responsibilities: [{ owner: "fixture owner", sessionId: "fix-session", role: "SWE", responsibility: "fixture duty", source: source("responsibility:fixture", "owner") }],
+      release: { state: "available", owner: "fixture owner", sessionId: "fix-session", accepted: true, dutiesSettled: true, descendantsSettled: true, wakesSettled: true, executor: "verified", source: source("owner:fixture", "owner") },
+    }));
     const drawn = SessionRetirementDetails({ projection, colors });
     expect(textOf(drawn)).toContain("Ready");
     expect(textOf(drawn)).toContain(READY_IS_DESCRIPTIVE);

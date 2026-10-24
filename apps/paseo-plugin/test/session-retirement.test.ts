@@ -20,13 +20,18 @@ const input = (patch: Partial<SessionProjectionInput> = {}): SessionProjectionIn
   intent: intentNone, release: { state: "unavailable", reason: MISSING_OWNER_ADAPTER }, now: "2026-10-24T08:05:00.000Z", ...patch,
 });
 const claim = (kind: ScopeClaimKind, value: string, binding: ScopeBinding = "claimed", source: ProjectionSource = src(`claim:${kind}:${value}`, "label")): ScopeClaim => ({ kind, value, binding, source });
+const verifiedBinding = (kind: ScopeClaimKind = "epic", value = "ASMA-1"): ScopeClaim => claim(kind, value, "verified", src(`binding:${kind}:${value}`, "owner"));
 const duty = (name: string, state: DutyObservation["state"] = "open", source = src(`duty:${name}`)): DutyObservation => ({ duty: name, state, source });
 const hold = (patch: Partial<HoldObservation> = {}): HoldObservation => ({ reason: "awaiting an operator decision", owner: "operator-fixture", liftsWhen: "the decision is recorded", reviewBy: "2026-10-24T09:00:00.000Z", source: src("hold:fixture"), ...patch });
 type Available = Extract<OwnerReleaseObservation, { state: "available" }>;
-const owner = (patch: Partial<Available> = {}): Available => ({ state: "available", owner: "fixture owner", accepted: true, dutiesSettled: true, descendantsSettled: true, wakesSettled: true, executor: "verified", source: src("owner:fixture"), ...patch });
+const owner = (patch: Partial<Available> = {}): Available => ({ state: "available", owner: "fixture owner", sessionId: "fix-session", accepted: true, dutiesSettled: true, descendantsSettled: true, wakesSettled: true, executor: "verified", source: src("owner:fixture"), ...patch });
+const responsibility = (patch: Partial<NonNullable<SessionProjectionInput["responsibilities"]>[number]> = {}): NonNullable<SessionProjectionInput["responsibilities"]>[number] =>
+  ({ owner: "fixture owner", sessionId: "fix-session", role: "SWE", responsibility: "fixture duty", source: src("responsibility:fixture"), ...patch });
+const ready = (patch: Partial<SessionProjectionInput> = {}): Partial<SessionProjectionInput> =>
+  ({ workClaims: [verifiedBinding()], responsibilities: [responsibility()], release: owner(), ...patch });
 const conflict = (kind: ProjectionConflict["kind"] = "stale-or-mismatched-evidence"): ProjectionConflict => ({ kind, detail: "fixture conflict", sources: [src("conflict:fixture")] });
 const ticket = (patch: Partial<NonNullable<SessionProjectionInput["ticket"]>> = {}): NonNullable<SessionProjectionInput["ticket"]> =>
-  ({ kind: "delivery", seats: [duty("delivery", "settled")], pullRequest: "merged", escalation: "none", ...patch });
+  ({ kind: "delivery", seats: [duty("delivery", "settled")], pullRequest: "merged", pullRequestSource: src("ticket:pull-request", "ticket"), escalation: "none", escalationSource: src("ticket:escalation", "ticket"), ...patch });
 const peer = () => ({ role: "tpm", shutdownObservedAt: "2026-10-24T08:03:00.000Z", source: src("peer:tpm", "native") });
 
 describe("installation boundary", () => {
@@ -79,7 +84,7 @@ describe("evidenced obligations retain", () => {
 
   it("retains an exact durable desk but not a same-named association", () => {
     const exact = deriveSessionProjection(input({ durable: { match: "exact", source: src("desk:exact", "desk") } }));
-    const named = deriveSessionProjection(input({ durable: { match: "name-only", source: src("desk:name", "desk") }, release: owner() }));
+    const named = deriveSessionProjection(input(ready({ durable: { match: "name-only", source: src("desk:name", "desk") } })));
     expect(exact.retirement.disposition).toBe("retain");
     expect(exact.retirement.reason).toContain("durable");
     expect(named.retirement.disposition).toBe("unknown");
@@ -132,7 +137,7 @@ describe("evidenced obligations retain", () => {
 
 describe("a hold protects but never grants release", () => {
   it("retains a complete hold even when release facts are also supplied", () => {
-    const projection = deriveSessionProjection(input({ hold: hold(), release: owner() }));
+    const projection = deriveSessionProjection(input(ready({ hold: hold() })));
     expect(projection.retirement.disposition).toBe("retain");
     expect(projection.retirement.reason).toContain("awaiting an operator decision");
   });
@@ -144,7 +149,7 @@ describe("a hold protects but never grants release", () => {
     ["malformed review_by", hold({ reviewBy: "not-a-date" })],
     ["expired review_by", hold({ reviewBy: "2026-10-24T08:04:00.000Z" })],
   ])("never releases on a %s hold, even with complete owner facts", (_label, value) => {
-    const projection = deriveSessionProjection(input({ hold: value, release: owner() }));
+    const projection = deriveSessionProjection(input(ready({ hold: value })));
     expect(projection.retirement.disposition).toBe("unknown");
     expect(projection.retirement.attention).toBe(true);
     expect(projection.retirement.reason).not.toContain(READY_IS_DESCRIPTIVE);
@@ -186,8 +191,8 @@ describe("conflicts and uncertainty remain Unknown", () => {
   });
 
   it("keeps a missing external executor or circular finalizer Unknown", () => {
-    const missing = deriveSessionProjection(input({ release: owner({ executor: "missing" }) }));
-    const circular = deriveSessionProjection(input({ release: owner({ executor: "circular" }) }));
+    const missing = deriveSessionProjection(input(ready({ release: owner({ executor: "missing" }) })));
+    const circular = deriveSessionProjection(input(ready({ release: owner({ executor: "circular" }) })));
     for (const projection of [missing, circular]) {
       expect(projection.retirement.disposition).toBe("unknown");
       expect(projection.retirement.reason).not.toContain(READY_IS_DESCRIPTIVE);
@@ -214,21 +219,123 @@ describe("tickets desk", () => {
   });
 
   it("treats an explicit spike without a pull request as complete and an unknown one as attention", () => {
-    const explicit = deriveSessionProjection(input({ ticket: ticket({ kind: "spike", seats: [], pullRequest: "none-explicit" }), release: owner() }));
-    const unknown = deriveSessionProjection(input({ ticket: ticket({ kind: "spike", seats: [], pullRequest: "unknown" }), release: owner() }));
+    const explicit = deriveSessionProjection(input(ready({ ticket: ticket({ kind: "spike", seats: [], pullRequest: "none-explicit" }) })));
+    const unknown = deriveSessionProjection(input(ready({ ticket: ticket({ kind: "spike", seats: [], pullRequest: "unknown" }) })));
     expect(explicit.retirement.disposition).toBe("ready");
     expect(unknown.retirement.disposition).toBe("unknown");
     expect(unknown.retirement.attention).toBe(true);
   });
 
   it("lets declared complete facts release an ordinary ticket container", () => {
-    expect(deriveSessionProjection(input({ ticket: ticket(), release: owner() })).retirement.disposition).toBe("ready");
+    expect(deriveSessionProjection(input(ready({ ticket: ticket() }))).retirement.disposition).toBe("ready");
+  });
+});
+
+describe("current, consistent owner evidence", () => {
+  it("never marks a stale release source as current", () => {
+    const projection = deriveSessionProjection(input(ready({ release: owner({ source: src("owner:stale", "owner", "stale") }) })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.attention).toBe(true);
+    expect(projection.retirement.missing.join(" ")).toContain("Release evidence is stale");
+  });
+
+  it("never releases on an unobserved release source", () => {
+    const projection = deriveSessionProjection(input(ready({ release: owner({ source: { ...src("owner:unobserved", "owner", "unknown"), observedAt: null, revision: null } }) })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.missing.join(" ")).toContain("lacks an observation time and revision");
+  });
+
+  it("rejects same-role owners that disagree", () => {
+    const projection = deriveSessionProjection(input(ready({ responsibilities: [responsibility(), responsibility({ owner: "owner-b", responsibility: "other duty", source: src("responsibility:other") })] })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.responsibility.status).toBe("unknown");
+    expect(projection.conflicts.map((entry) => entry.kind)).toContain("conflicting-role-claims");
+  });
+
+  it("never verifies a stale responsibility", () => {
+    const projection = deriveSessionProjection(input(ready({ responsibilities: [responsibility({ source: src("responsibility:stale", "responsibility", "stale") })] })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.responsibility.status).toBe("unknown");
+    expect(projection.responsibility.missing.join(" ")).toContain("stale");
+  });
+
+  it("does not release without a current verified binding", () => {
+    const projection = deriveSessionProjection(input(ready({ workClaims: [] })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.missing.join(" ")).toContain("No current verified work binding");
+  });
+
+  it("does not treat stale settled duty evidence as settlement", () => {
+    const projection = deriveSessionProjection(input(ready({ duties: [duty("delivery", "settled", src("duty:stale", "owner", "stale"))] })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.missing.join(" ")).toContain("Duty settlement evidence is stale");
+  });
+
+  it("requires the release and responsibility to name the same exact session and owner", () => {
+    const otherSession = deriveSessionProjection(input(ready({ release: owner({ sessionId: "other-session" }) })));
+    const otherOwner = deriveSessionProjection(input(ready({ release: owner({ owner: "other owner" }) })));
+    expect(otherSession.retirement.disposition).toBe("unknown");
+    expect(otherSession.retirement.missing.join(" ")).toContain("does not name this exact native session");
+    expect(otherOwner.retirement.disposition).toBe("unknown");
+    expect(otherOwner.retirement.missing.join(" ")).toContain("disagree on the owner");
+  });
+});
+
+describe("running execution evidence", () => {
+  const archivedAt = "2026-10-24T08:02:00.000Z";
+  it("retains an unarchived running snapshot without an activeTurn object", () => {
+    const projection = deriveSessionProjection(input(ready({ session: session({ status: "running", activeTurn: false }) })));
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.retirement.reason).toContain("Native running status is present.");
+  });
+
+  it("retains and marks an archived running snapshot without an activeTurn object", () => {
+    const projection = deriveSessionProjection(input(ready({ session: session({ status: "running", archived: true, archivedAt, activeTurn: false }) })));
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.native).toEqual({ status: "running", archiveMembership: "archived" });
+    expect(projection.conflicts.map((entry) => entry.kind)).toContain("archived-with-active-execution");
+    expect(projection.retirement.attention).toBe(true);
+  });
+
+  it("keeps a turn without a start time as execution evidence", () => {
+    const projection = deriveSessionProjection(input(ready({ session: session({ status: "idle", archived: true, archivedAt, activeTurn: true }) })));
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.conflicts.map((entry) => entry.kind)).toContain("archived-with-active-execution");
+  });
+});
+
+describe("archived ticket obligations keep their provenance", () => {
+  const archivedAt = "2026-10-24T08:02:00.000Z";
+  const archivedTicket = (patch: Partial<NonNullable<SessionProjectionInput["ticket"]>> = {}) => input(ready({
+    session: session({ archived: true, archivedAt }), ticket: ticket(patch),
+  }));
+
+  it("marks an archived open pull request as an archive conflict", () => {
+    const projection = deriveSessionProjection(archivedTicket({ pullRequest: "open" }));
+    expect(projection.retirement.disposition).toBe("retain");
+    const conflict = projection.conflicts.find((entry) => entry.kind === "archived-with-open-obligation");
+    expect(conflict?.detail).toContain("pull request");
+    expect(projection.native.archiveMembership).toBe("archived");
+  });
+
+  it("marks an archived operator escalation as an archive conflict", () => {
+    const projection = deriveSessionProjection(archivedTicket({ escalation: "open" }));
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.conflicts.find((entry) => entry.kind === "archived-with-open-obligation")?.detail).toContain("escalation");
+  });
+
+  it("classifies obligations independently of the source kind", () => {
+    const projection = deriveSessionProjection(archivedTicket({ escalation: "open", pullRequest: "open",
+      escalationSource: src("ticket:escalation", "native"), pullRequestSource: src("ticket:pull-request", "native") }));
+    const conflict = projection.conflicts.find((entry) => entry.kind === "archived-with-open-obligation");
+    expect(conflict?.detail).toContain("escalation");
+    expect(conflict?.detail).toContain("pull request");
   });
 });
 
 describe("declared complete owner facts", () => {
   it("are the only path to Ready and remain descriptive", () => {
-    const projection = deriveSessionProjection(input({ release: owner() }));
+    const projection = deriveSessionProjection(input(ready()));
     expect(projection.retirement.disposition).toBe("ready");
     expect(projection.retirement.reason).toContain(READY_IS_DESCRIPTIVE);
     expect(projection.native).toEqual({ status: "idle", archiveMembership: "unarchived" });
@@ -245,7 +352,7 @@ describe("MUT-001 release invariants", () => {
   });
   it("MUT-001(c): an expired or malformed hold never grants release", () => {
     for (const value of [hold({ reviewBy: "2026-10-24T08:04:00.000Z" }), hold({ reviewBy: "bad" }), hold({ owner: null })]) {
-      expect(deriveSessionProjection(input({ hold: value, release: owner() })).retirement.disposition).toBe("unknown");
+      expect(deriveSessionProjection(input(ready({ hold: value }))).retirement.disposition).toBe("unknown");
     }
   });
   it("MUT-001(d): a historical Jira Done never grants release", () => {

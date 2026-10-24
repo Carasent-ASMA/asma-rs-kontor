@@ -205,15 +205,18 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
         try {
           const review = await promise;
           if (stale()) return;
-          if (review?.id === ref.reviewId && review.action === "archive" && review.rows.some((row) => row.id === ref.agentId)) reviews[review.id] = review;
-          else {
+          if (review?.id === ref.reviewId && review.action === "archive") {
+            reviews[review.id] = review;
+            const row = review.rows.find((entry) => entry.id === ref.agentId);
+            if (!row || !unresolvedArchive(row)) unknown.add(ref.agentId);
+          } else {
             partial = true;
-            if (!reviews[ref.reviewId]) unknown.add(ref.agentId);
+            unknown.add(ref.agentId);
           }
         } catch {
           if (stale()) return;
           partial = true;
-          if (!reviews[ref.reviewId]) unknown.add(ref.agentId);
+          unknown.add(ref.agentId);
         }
       }
       const listed = new Set(refs.map((ref) => ref.reviewId));

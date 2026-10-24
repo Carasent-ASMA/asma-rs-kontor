@@ -103,15 +103,19 @@ export type MilestoneObservation = { readonly state: "open" | "complete" | "unkn
 export type ExternalExecutorObservation = "verified" | "missing" | "circular" | "unknown";
 export type OwnerReleaseObservation =
   | { readonly state: "unavailable"; readonly reason: string }
-  | { readonly state: "available"; readonly owner: string; readonly accepted: boolean; readonly dutiesSettled: boolean; readonly descendantsSettled: boolean; readonly wakesSettled: boolean; readonly executor: ExternalExecutorObservation; readonly source: ProjectionSource };
-export type OwnerResponsibilityObservation = { readonly owner: string; readonly role: string; readonly responsibility: string; readonly source: ProjectionSource };
+  | { readonly state: "available"; readonly owner: string; readonly sessionId: string; readonly accepted: boolean; readonly dutiesSettled: boolean; readonly descendantsSettled: boolean; readonly wakesSettled: boolean; readonly executor: ExternalExecutorObservation; readonly source: ProjectionSource };
+export type OwnerResponsibilityObservation = { readonly owner: string; readonly sessionId: string; readonly role: string; readonly responsibility: string; readonly source: ProjectionSource };
 export type DurableObservation = { readonly match: "exact" | "name-only"; readonly source: ProjectionSource };
 export type OwnerPausedObservation = { readonly paused: boolean; readonly verified: boolean; readonly source: ProjectionSource };
 export type TicketObservation = {
   readonly kind: "delivery" | "spike";
   readonly seats: readonly DutyObservation[];
   readonly pullRequest: "merged" | "closed" | "open" | "none-explicit" | "unknown";
+  /** Provenance of the pull-request fact; an absent source stays unproven, never native status. */
+  readonly pullRequestSource?: ProjectionSource;
   readonly escalation: "none" | "open" | "unknown";
+  /** Provenance of the escalation fact; an absent source stays unproven, never native status. */
+  readonly escalationSource?: ProjectionSource;
 };
 export type ArchiveIntentObservation = { readonly state: "none" | "unsettled" | "unknown"; readonly reviewId: string | null; readonly sessionId: string | null; readonly observedAt: string | null; readonly detail: string };
 export type ProjectionConflictKind = "archived-with-active-execution" | "archived-with-pending-interaction" | "archived-with-open-obligation" | "archived-with-unsettled-intent" | "conflicting-work-claims" | "conflicting-role-claims" | "stale-or-mismatched-evidence";
@@ -202,14 +206,31 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   if (staleBindings.length) conflicts.push({ kind: "stale-or-mismatched-evidence", detail: "A verified placement or binding is stale or was read for another identity.", sources: staleBindings.map((claim) => claim.source) });
 
   const responsibilities = [...(input.responsibilities ?? [])];
-  const verifiedRoles = [...new Set(responsibilities.map((entry) => entry.role.trim()).filter(Boolean))];
-  if (verifiedRoles.length > 1) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the role: ${verifiedRoles.join(", ")}.`, sources: responsibilities.map((entry) => entry.source) });
+  const currentResponsibilities = responsibilities.filter((entry) => entry.sessionId === session.id && entry.source.fresh === "current" && entry.source.observedAt !== null && entry.source.revision !== null);
+  const staleResponsibilities = responsibilities.filter((entry) => !currentResponsibilities.includes(entry));
+  if (staleResponsibilities.length) { missing.push("Responsibility evidence is stale, incomplete or names another session; it cannot verify responsibility."); attention = true; }
+  const roleOwners = new Map<string, Set<string>>();
+  for (const entry of currentResponsibilities) {
+    const role = entry.role.trim();
+    if (!role) continue;
+    const owners = roleOwners.get(role) ?? new Set<string>();
+    owners.add(entry.owner.trim());
+    roleOwners.set(role, owners);
+  }
+  const conflictingRoles = [...roleOwners].filter(([, owners]) => owners.size > 1);
+  if ([...roleOwners.keys()].length > 1) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the role: ${[...roleOwners.keys()].join(", ")}.`, sources: currentResponsibilities.map((entry) => entry.source) });
+  for (const [role, owners] of conflictingRoles) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the owner for role ${role}: ${[...owners].join(", ")}.`, sources: currentResponsibilities.filter((entry) => entry.role.trim() === role).map((entry) => entry.source) });
+  const verifiedResponsibility = responsibilities.length > 0 && staleResponsibilities.length === 0 && conflictingRoles.length === 0 && [...roleOwners.keys()].length === 1 ? currentResponsibilities[0] ?? null : null;
 
-  if (session.activeTurn) blocking.push({ reason: "Native active execution is present.", source: nativeSource });
+  const obligations: Array<{ readonly reason: string; readonly source: ProjectionSource }> = [];
+  const execution = session.status === "running" || session.activeTurn;
+  const block = (reason: string, source: ProjectionSource) => { blocking.push({ reason, source }); obligations.push({ reason, source }); };
+  if (execution) blocking.push({ reason: session.activeTurn ? "Native active execution is present." : "Native running status is present.", source: nativeSource });
   if (session.pendingInteraction) blocking.push({ reason: "A native pending interaction is present.", source: nativeSource });
   for (const duty of input.duties ?? []) {
     evidence.push(duty.source);
-    if (duty.state === "open") blocking.push({ reason: `Open duty: ${duty.duty}.`, source: duty.source });
+    if (duty.state === "open") block(`Open duty: ${duty.duty}.`, duty.source);
+    else if (duty.state === "settled" && (duty.source.fresh !== "current" || duty.source.observedAt === null || duty.source.revision === null)) { missing.push(`Duty settlement evidence is stale or incomplete: ${duty.duty}.`); attention = true; }
     else if (duty.state === "unknown") { missing.push(`Duty state is unknown: ${duty.duty}.`); attention = true; }
   }
   if (input.hold) {
@@ -218,21 +239,21 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
     const incomplete = !hold.reason?.trim() || !hold.owner?.trim() || !hold.liftsWhen?.trim() || !hold.reviewBy?.trim();
     if (incomplete || Number.isNaN(reviewAt)) { missing.push("Hold metadata is missing or malformed; hold fields are reason, owner, lifts_when and review_by. Attention required, never release."); attention = true; }
     else if (reviewAt <= Date.parse(now)) { missing.push(`Hold review date passed (${hold.reviewBy}); attention required, never release.`); attention = true; }
-    else blocking.push({ reason: `Hold: ${hold.reason} until ${hold.liftsWhen} with owner ${hold.owner}.`, source: hold.source });
+    else block(`Hold: ${hold.reason} until ${hold.liftsWhen} with owner ${hold.owner}.`, hold.source);
   }
   if (input.milestone) {
     evidence.push(input.milestone.source);
-    if (input.milestone.state === "open") blocking.push({ reason: "An authorized next milestone remains open.", source: input.milestone.source });
+    if (input.milestone.state === "open") block("An authorized next milestone remains open.", input.milestone.source);
     else if (input.milestone.state === "unknown") { missing.push("The next milestone state is unknown."); attention = true; }
   }
   if (input.durable) {
     evidence.push(input.durable.source);
-    if (input.durable.match === "exact") blocking.push({ reason: "An exact durable desk or workspace placement protects this session.", source: input.durable.source });
+    if (input.durable.match === "exact") block("An exact durable desk or workspace placement protects this session.", input.durable.source);
     else { missing.push("Durable placement is name-only, not an exact native match; no protection is established."); attention = true; }
   }
   if (input.ownerPaused?.paused) {
     evidence.push(input.ownerPaused.source);
-    if (input.ownerPaused.verified) blocking.push({ reason: "This session's owner is intentionally paused; no automatic effect may run.", source: input.ownerPaused.source });
+    if (input.ownerPaused.verified) block("This session's owner is intentionally paused; no automatic effect may run.", input.ownerPaused.source);
     else { missing.push("A paused owner is claimed by name only; no exact owner match establishes that protection."); attention = true; }
   }
   if (input.ticket) {
@@ -240,12 +261,17 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
     if (ticket.kind === "delivery" && ticket.seats.length === 0) { missing.push("Ticket seats were not read."); attention = true; }
     for (const seat of ticket.seats) {
       evidence.push(seat.source);
-      if (seat.state === "open") blocking.push({ reason: `Ticket seat is not released: ${seat.duty}.`, source: seat.source });
+      if (seat.state === "open") block(`Ticket seat is not released: ${seat.duty}.`, seat.source);
       else if (seat.state === "unknown") { missing.push(`Ticket seat state is unknown: ${seat.duty}.`); attention = true; }
     }
-    if (ticket.escalation === "open") blocking.push({ reason: "An operator escalation is open for this ticket.", source: nativeSource });
+    const pullRequestSource = ticket.pullRequestSource ?? { id: `ticket:pull-request:${session.id}`, kind: "ticket" as const, detail: "ticket pull request fact without a separate source", observedAt: null, revision: null, fresh: "unknown" as const };
+    const escalationSource = ticket.escalationSource ?? { id: `ticket:escalation:${session.id}`, kind: "ticket" as const, detail: "ticket escalation fact without a separate source", observedAt: null, revision: null, fresh: "unknown" as const };
+    evidence.push(escalationSource, pullRequestSource);
+    if (!ticket.pullRequestSource) { missing.push("Ticket pull request evidence has no source provenance."); attention = true; }
+    if (!ticket.escalationSource) { missing.push("Ticket escalation evidence has no source provenance."); attention = true; }
+    if (ticket.escalation === "open") block("An operator escalation is open for this ticket.", escalationSource);
     else if (ticket.escalation === "unknown") { missing.push("Ticket escalation state is unknown."); attention = true; }
-    if (ticket.pullRequest === "open") blocking.push({ reason: "The ticket pull request is open.", source: nativeSource });
+    if (ticket.pullRequest === "open") block("The ticket pull request is open.", pullRequestSource);
     else if (ticket.pullRequest === "unknown") { missing.push("Ticket pull request state is unknown."); attention = true; }
     else if (ticket.kind === "spike" && ticket.pullRequest !== "none-explicit") { missing.push("A spike must explicitly declare that it has no pull request."); attention = true; }
   }
@@ -258,9 +284,8 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   if (coverage.archiveInventory !== "complete") missing.push(`Native archive inventory is ${coverage.archiveInventory}: ${coverage.detail}.`);
 
   if (session.archived) {
-    if (session.activeTurn) conflicts.push({ kind: "archived-with-active-execution", detail: "The session is in the native archive while an active turn is observed; membership and execution disagree.", sources: [nativeSource] });
+    if (execution) conflicts.push({ kind: "archived-with-active-execution", detail: "The session is in the native archive while execution is observed; membership and execution disagree.", sources: [nativeSource] });
     if (session.pendingInteraction) conflicts.push({ kind: "archived-with-pending-interaction", detail: "The session is in the native archive while a native interaction is pending.", sources: [nativeSource] });
-    const obligations = blocking.filter((entry) => entry.source.kind !== "native");
     if (obligations.length) conflicts.push({ kind: "archived-with-open-obligation", detail: `The session is archived while obligations remain: ${obligations.map((entry) => entry.reason).join(" ")}`, sources: obligations.map((entry) => entry.source) });
     if (intent.state === "unsettled") conflicts.push({ kind: "archived-with-unsettled-intent", detail: "The session is in the native archive while an earlier archive outcome remains unsettled.", sources: [nativeSource] });
   }
@@ -271,12 +296,20 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   if (release.state === "unavailable") missing.push(release.reason);
   else {
     evidence.push(release.source);
+    const releaseCurrent = release.source.fresh === "current" && release.source.observedAt !== null && release.source.revision !== null;
+    if (!releaseCurrent) { missing.push("Release evidence is stale, incomplete or lacks an observation time and revision."); attention = true; }
+    if (release.sessionId !== session.id) missing.push("Release evidence does not name this exact native session.");
     if (!release.accepted) missing.push("An authoritative owner has not accepted its final duties.");
     if (!release.dutiesSettled) missing.push("An authoritative owner has not reported its duties settled.");
     if (!release.descendantsSettled) missing.push("Descendant obligations are not settled.");
     if (!release.wakesSettled) missing.push("Owned wakes and callbacks are not settled.");
     if (release.executor !== "verified") missing.push(release.executor === "circular" ? "The external executor route is circular." : "A verified external executor is missing.");
-    releaseComplete = release.accepted && release.dutiesSettled && release.descendantsSettled && release.wakesSettled && release.executor === "verified";
+    const verifiedBinding = work.find((claim) => claim.binding === "verified" && claim.source.fresh === "current" && claim.source.observedAt !== null && claim.source.revision !== null) ?? null;
+    if (!verifiedBinding) missing.push("No current verified work binding supports release.");
+    if (!verifiedResponsibility) missing.push("No current verified owner responsibility supports release.");
+    else if (release.owner.trim() !== verifiedResponsibility.owner.trim()) missing.push("Owner responsibility and release evidence disagree on the owner.");
+    releaseComplete = releaseCurrent && release.sessionId === session.id && release.accepted && release.dutiesSettled && release.descendantsSettled && release.wakesSettled && release.executor === "verified"
+      && verifiedBinding !== null && verifiedResponsibility !== null && release.owner.trim() === verifiedResponsibility.owner.trim();
   }
 
   const uniqueMissing = [...new Set(missing)], hard = conflicts.filter((conflict) => HARD_CONFLICTS.includes(conflict.kind));
@@ -290,9 +323,14 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
 
   const placement = work.find((claim) => claim.kind === "project" && claim.binding === "placement") ?? work.find((claim) => claim.binding === "placement") ?? null;
   const claimedRole = roles.find((claim) => claim.value.trim().length > 0)?.value.trim() ?? null;
-  const responsibility: SessionProjection["responsibility"] = verifiedRoles.length
-    ? { status: "verified", role: verifiedRoles[0] ?? null, owner: responsibilities[0]?.owner ?? null, duty: responsibilities[0]?.responsibility ?? null, claimedRole, evidence: uniqueSources(responsibilities.map((entry) => entry.source)), missing: [] }
-    : { status: "unknown", role: null, owner: null, duty: null, claimedRole, evidence: uniqueSources(roles.map((claim) => claim.source)), missing: [MISSING_OWNER_ADAPTER] };
+  const responsibilityMissing: string[] = [];
+  if (responsibilities.length === 0) responsibilityMissing.push(MISSING_OWNER_ADAPTER);
+  else if (staleResponsibilities.length) responsibilityMissing.push("Responsibility evidence is stale, incomplete or names another session; it cannot verify responsibility.");
+  else if (conflictingRoles.length || [...roleOwners.keys()].length > 1) responsibilityMissing.push("Conflicting owner responsibility evidence cannot verify a responsibility.");
+  else if (!verifiedResponsibility) responsibilityMissing.push("No current, consistent owner responsibility was supplied.");
+  const responsibility: SessionProjection["responsibility"] = verifiedResponsibility
+    ? { status: "verified", role: verifiedResponsibility.role.trim(), owner: verifiedResponsibility.owner.trim(), duty: verifiedResponsibility.responsibility, claimedRole, evidence: uniqueSources(currentResponsibilities.map((entry) => entry.source)), missing: [] }
+    : { status: "unknown", role: null, owner: null, duty: null, claimedRole, evidence: uniqueSources(responsibilities.length ? responsibilities.map((entry) => entry.source) : roles.map((claim) => claim.source)), missing: [...new Set(responsibilityMissing)] };
   return {
     hostId: input.hostId, sessionId: session.id, nativeRevision: session.updatedAt, observedAt: session.observedAt,
     native: { status: session.status, archiveMembership: session.archived ? "archived" : "unarchived" },
