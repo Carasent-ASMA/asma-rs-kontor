@@ -44,6 +44,11 @@ export type RefreshNote = { readonly at: number; readonly outcome: "unchanged" |
 export const recoveryKey = (ref: UnresolvedRef) => `${ref.reviewId}:${ref.agentId}`;
 /** A notice key per exact review, session and state, so a changed state is a new notice; hidden keys of this shape persist. */
 export const archiveNoticeKey = (item: RecoveryItem) => `archive:${recoveryKey(item.ref)}:${item.state}`;
+/**
+ * Hide notice after an unchanged Refresh status acknowledges that exact item and state. Unlike a hidden tray, it takes
+ * the item out of the notice, its count and the review; it stays unresolved and returns as a new notice if its state changes.
+ */
+export const archiveAckKey = (item: RecoveryItem) => `archive:ack:${recoveryKey(item.ref)}:${item.state}`;
 const titleOf = (item: RecoveryItem | undefined) => item?.row?.title ?? "An archived session";
 
 /** One compact line: a single item names its session and state, several are counted. Known items stay beside a failed lookup. */
@@ -192,8 +197,10 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
     }
   };
   const hidden = readHiddenArchives(hostId);
-  return { items, unresolved: items.map((item) => item.ref), error, checking: refreshing !== null, refreshing, notes, listed, complete, refresh, reload: load,
-    line: recoveryLine(items, error), hidden: hidden.keys, persistence: hidden.persistence,
+  // What still needs attention: every listed item the operator has not acknowledged. `items` keeps them all.
+  const attention = items.filter((item) => !hidden.keys.includes(archiveAckKey(item)));
+  return { items, attention, unresolved: items.map((item) => item.ref), error, checking: refreshing !== null, refreshing, notes, listed, complete, refresh, reload: load,
+    line: recoveryLine(attention, error), hidden: hidden.keys, persistence: hidden.persistence,
     setHidden: (keys: readonly string[]) => { writeHiddenArchives(hostId, keys); setRevision((value) => value + 1); },
     clearNotes: () => setNotes({}) };
 }

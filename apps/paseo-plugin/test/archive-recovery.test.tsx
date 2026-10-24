@@ -9,7 +9,7 @@ vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ bindings: {}, dismiss() {} }) }));
 
 import { ArchiveRecoverySheet, noteLine, observedFacts } from "../client/archive-recovery";
-import { archiveNoticeKey, recoveryKey, type RecoveryItem, type useArchiveRecovery } from "../client/archive-feedback";
+import { recoveryKey, type RecoveryItem, type useArchiveRecovery } from "../client/archive-feedback";
 import { Action, Disclosure } from "../client/page-controls";
 import type { LifecycleRow } from "../shared/session-lifecycle";
 
@@ -97,7 +97,7 @@ describe("U4 Review archive sheet", () => {
       expect(actions(tree, "Open session")).toHaveLength(1); expect(texts(tree)).not.toContain(NOT_OPENED);
     }
   });
-  it("AR-02 offers Hide notice only after an unchanged Refresh status of an archived session, and only until it is hidden", () => {
+  it("AR-02 offers Hide notice only after an unchanged Refresh status of an archived session", () => {
     const one = item("aud", "unconfirmed", { outcome: "archived", runtime: "unconfirmed" }), key = recoveryKey(one.ref);
     const ACK = "Still archived, and the host still does not report its runtime stopped. Refreshing will not change that; you can hide this notice. It returns if its state changes.";
     const unchanged = { [key]: { at: NOW, outcome: "unchanged", title: "A", state: "unconfirmed" } } as const;
@@ -107,7 +107,6 @@ describe("U4 Review archive sheet", () => {
     expect(hide.props).toMatchObject({ accessibilityLabel: "Hide archive notice: SWE • DEMO • aud" });
     (hide.props.onPress as () => void)();
     expect(props.onHide).toHaveBeenCalledExactlyOnceWith(one); expect(props.recovery.refresh).not.toHaveBeenCalled(); expect(props.onOpen).not.toHaveBeenCalled();
-    expect(actions(sheet({ items: [one], notes: unchanged, hidden: [archiveNoticeKey(one)] }).tree, "Hide notice")).toEqual([]);
     // Not before a Refresh, not after a failed or changed one, and never for a result that is still unknown.
     for (const [entry, notes] of [[one, {}], [one, { [key]: { at: NOW, outcome: "failed", title: "A", error: "Fixture read failed." } }],
       [one, { [key]: { at: NOW, outcome: "changed", title: "A", state: "unconfirmed" } }],

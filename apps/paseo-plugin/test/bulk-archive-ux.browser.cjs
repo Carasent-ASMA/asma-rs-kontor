@@ -181,7 +181,8 @@ async function check(width, height, theme, largeText, earlyClose = false) {
   } finally { await context.close(); }
 }
 // Archive recovery: the one-line notice, the Review archive sheet by keyboard, Refresh status feedback, details on
-// demand, focus back to Review on Escape, and a hide this device keeps across a reload (web local storage).
+// demand, focus back to Review on Escape, a hide this device keeps across a reload (web local storage), and an
+// acknowledgement that takes the item out of the notice.
 async function recovery(width, height, theme, largeText) {
   const touch = width < 600, name = `${width}x${height}-${theme}${largeText ? '-text200' : ''}-recovery`;
   const context = await browser.newContext({ viewport: { width, height }, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
@@ -244,21 +245,80 @@ async function recovery(width, height, theme, largeText) {
     await page.getByTestId('control-help').filter({ hasText: 'Review archive. Shows its state' }).waitFor();
     await fit('sessions-archive-recovery');
     await shot('3-notice');
-    // AR-02: an unchanged Refresh status of an archived session offers Hide notice, which persists on this device.
-    await page.keyboard.press('Enter');
+    // A hidden tray is presentation only: this device keeps it across a reload, and Show notices brings the line back.
+    await page.getByRole('button', { name: 'Hide notices', exact: true }).click();
+    await notice.waitFor({ state: 'detached' });
+    await page.reload();
+    const show = page.getByRole('button', { name: `Show notices: ${A}: archived, runtime stop not confirmed`, exact: true });
+    await show.waitFor();
+    assert.equal(await notice.count(), 0, 'hidden on this device across a reload');
+    await shot('4-hidden-after-reload');
+    await show.click();
+    await notice.waitFor();
+    // AR-02: an unchanged Refresh status of an archived session offers Hide notice. Acknowledged, it leaves the notice
+    // entirely, with no Show notices for it, on this device across a reload.
+    await page.getByRole('button', { name: 'Review archive', exact: true }).click();
     await sheet().waitFor();
     await page.getByRole('button', { name: `Refresh archive status: ${A}`, exact: true }).click();
     await page.getByTestId('archive-recovery-ack-agt_rec_a').waitFor();
     await fit('archive-recovery-sheet');
-    await shot('4-acknowledge');
+    await shot('5-acknowledge');
     await page.getByRole('button', { name: `Hide archive notice: ${A}`, exact: true }).click();
     await sheet().waitFor({ state: 'detached' });
     await notice.waitFor({ state: 'detached' });
+    assert.equal(await page.getByRole('button', { name: /^Show notices/ }).count(), 0, 'acknowledged, not merely hidden');
     assert.ok(!(await calls(page)).some(([rpc]) => rpc === 'sessions.lifecycle-execute-item' || rpc === 'sessions.lifecycle-preview'), 'hiding never archives');
     await page.reload();
-    await page.getByRole('button', { name: `Show notices: ${A}: archived, runtime stop not confirmed`, exact: true }).waitFor();
-    assert.equal(await notice.count(), 0, 'hidden on this device across a reload');
-    await shot('5-hidden-after-reload');
+    await ownerRead(page);
+    assert.equal(await notice.count(), 0, 'acknowledged on this device across a reload');
+    assert.equal(await page.getByRole('button', { name: /^Show notices/ }).count(), 0);
+    await shot('6-acknowledged-after-reload');
+    assert.deepEqual(errors, []);
+    report.cases.push({ name, status: 'PASS' });
+    console.log(`${name}: PASS`);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack, errors });
+    await page.screenshot({ path: path.join(output, `${name}-failure.png`) });
+  } finally { await context.close(); }
+}
+// The archive list and its owner reviews were read after a load, so an absent notice is absent, not unread.
+async function ownerRead(page) {
+  await page.waitForFunction(() => (window.rpcCalls ?? []).some(([rpc, input]) => rpc === 'sessions.lifecycle-review' && input?.reviewId), null, { timeout: 5000 });
+  await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+}
+// AR-02 (AUD): acknowledging one of two archives leaves only the other in the line, its count and the review, across a reload.
+async function acknowledgeOne(width, height, theme) {
+  const name = `${width}x${height}-${theme}-acknowledge-one`;
+  const context = await browser.newContext({ viewport: { width, height }, hasTouch: true, isMobile: true });
+  const page = await context.newPage(), errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const sheet = () => page.getByTestId('archive-recovery-sheet'), notice = page.getByTestId('sessions-archive-recovery');
+  const A = 'AUD • DEMO-5 • Audit whose stop reply was lost', B = 'SWE • DEMO-6 • Archive acknowledgement lost';
+  try {
+    await page.goto(`${origin}/?layout=compact&theme=${theme}&recovery=1`);
+    await notice.filter({ hasText: '2 archives need attention' }).waitFor();
+    await page.getByRole('button', { name: 'Review 2 archives', exact: true }).click();
+    await sheet().waitFor();
+    await page.getByRole('button', { name: `Refresh archive status: ${A}`, exact: true }).click();
+    await page.getByTestId('archive-recovery-ack-agt_rec_a').waitFor();
+    await page.getByRole('button', { name: `Hide archive notice: ${A}`, exact: true }).click();
+    await sheet().waitFor({ state: 'detached' });
+    for (const step of ['1-after-hide', '2-after-reload']) {
+      if (step === '2-after-reload') { await page.reload(); await ownerRead(page); }
+      await notice.filter({ hasText: `${B}: archive result unknown` }).waitFor();
+      assert.ok(!(await notice.innerText()).includes('2 archives'), 'the count leaves the acknowledged archive out');
+      assert.equal(await page.getByRole('button', { name: 'Review 2 archives', exact: true }).count(), 0);
+      await layout(page, 'sessions-archive-recovery', 44);
+      await page.screenshot({ path: path.join(output, `${name}-${step}.png`) });
+      await page.getByRole('button', { name: 'Review archive', exact: true }).click();
+      await sheet().waitFor();
+      assert.ok(await page.getByRole('heading', { name: 'Archive needs attention', exact: true }).isVisible());
+      assert.equal(await sheet().getByRole('listitem').count(), 1, 'the review lists only what still needs attention');
+      assert.equal(await page.getByTestId('archive-recovery-item-agt_rec_a').count(), 0);
+      await page.keyboard.press('Escape');
+      await sheet().waitFor({ state: 'detached' });
+      assert.ok(!(await calls(page)).some(([rpc]) => rpc === 'sessions.lifecycle-execute-item' || rpc === 'sessions.lifecycle-preview'), 'never archives');
+    }
     assert.deepEqual(errors, []);
     report.cases.push({ name, status: 'PASS' });
     console.log(`${name}: PASS`);
@@ -274,6 +334,7 @@ async function recovery(width, height, theme, largeText) {
     for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) for (const largeText of [false, true]) await check(width, height, theme, largeText);
     await check(390, 844, 'dark', false, true);
     for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) for (const largeText of [false, true]) await recovery(width, height, theme, largeText);
+    for (const [width, height] of [[320, 568], [390, 844]]) for (const theme of ['light', 'dark']) await acknowledgeOne(width, height, theme);
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

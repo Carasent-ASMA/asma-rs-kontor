@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Action, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
-import { archiveNoticeKey, RECOVERY_STATES, recoveryKey, type RecoveryItem, type RefreshNote, type useArchiveRecovery } from "./archive-feedback";
+import { RECOVERY_STATES, recoveryKey, type RecoveryItem, type RefreshNote, type useArchiveRecovery } from "./archive-feedback";
 import { archivedByRead } from "./session-actions";
 import { ageInWords, parseTime } from "./session-time";
 
@@ -29,7 +29,7 @@ export function observedFacts(item: RecoveryItem, now: number): string {
  * Refresh status reads the host by the exact session ID and never sends another archive request; it is the only
  * recovery. Open session is offered only while that read does not show the session archived. Archive membership and
  * the runtime stop are separate facts. An unchanged Refresh of an archived session can be acknowledged by hiding its
- * notice. IDs and the full host messages wait in Technical details.
+ * notice, which takes it out of this review until its state changes. IDs and the full host messages wait in Technical details.
  */
 export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact, canRefresh, hostOnline, onOpen, onHide, onClose }: {
   recovery: Recovery; root: RefObject<View | null>; rootSize: MenuSize; colors: Colors; compact: boolean;
@@ -70,7 +70,7 @@ export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact
         <Action colors={colors} label={refreshing ? "Checking…" : "Refresh status"} accessibilityLabel={`Refresh archive status: ${name}`} disabled={!canRefresh}
           onPress={() => { if (canRefresh) void recovery.refresh(entry.ref); }} />
         {archived ? null : <Action colors={colors} label="Open session" accessibilityLabel={`Open session: ${name}`} onPress={() => onOpen(entry)} />}
-        {acknowledge && !recovery.hidden.includes(archiveNoticeKey(entry)) ? <Action colors={colors} label="Hide notice" accessibilityLabel={`Hide archive notice: ${name}`} onPress={() => onHide(entry)} /> : null}
+        {acknowledge ? <Action colors={colors} label="Hide notice" accessibilityLabel={`Hide archive notice: ${name}`} onPress={() => onHide(entry)} /> : null}
       </View>
       <Disclosure small colors={colors} label="Technical details" accessibilityLabel={`Technical details for ${name}`}>
         <View style={{ gap: 2, paddingTop: 2 }}>

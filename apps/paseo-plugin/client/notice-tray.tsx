@@ -3,6 +3,7 @@ import { Platform, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Action, type Colors } from "./page-controls";
 import { useActionHelp } from "./control-help";
+import { anchoredPanelOpen } from "./anchored-menu";
 
 /** One top-of-screen notice. Its keys name what it reports, so a changed or new notice is never one the operator hid. */
 export type Notice = { readonly keys: readonly string[]; readonly summary: string; readonly tone: "warning" | "danger"; readonly node: ReactNode };
@@ -24,10 +25,11 @@ export function showNotices(notices: readonly Notice[], hidden: readonly string[
 /**
  * Hidden keys still reported, or not yet re-read: `read(key)` says its source completed a reading. A key a completed
  * reading no longer reports is forgotten, so the same notice coming back is a new occurrence and opens the tray.
+ * `reported` are keys still reported outside any notice, such as an acknowledged item's.
  * Returns `hidden` itself when nothing is forgotten, so a caller writes only on a real change.
  */
-export function presentHidden(notices: readonly Notice[], hidden: readonly string[], read: (key: string) => boolean): readonly string[] {
-  const present = new Set(notices.flatMap((notice) => notice.keys));
+export function presentHidden(notices: readonly Notice[], hidden: readonly string[], read: (key: string) => boolean, reported: readonly string[] = []): readonly string[] {
+  const present = new Set([...notices.flatMap((notice) => notice.keys), ...reported]);
   const kept = hidden.filter((key) => present.has(key) || !read(key));
   return kept.length === hidden.length ? hidden : kept;
 }
@@ -38,7 +40,8 @@ type KeyDocument = { activeElement?: unknown; addEventListener(type: "keydown", 
 /**
  * Top notices as one non-modal disclosure region (WAI-ARIA APG Disclosure). Hide is presentation only: it never
  * runs, cancels or resolves anything. Escape hides it only while focus is inside, in the capture phase, so a menu,
- * dialog or page that owns focus keeps its own Escape. No outside-press dismissal: a status is never lost by accident.
+ * dialog or page that owns focus keeps its own Escape; an open menu or dialog keeps it even before its focus moves in.
+ * No outside-press dismissal: a status is never lost by accident.
  */
 export function NoticeTray({ colors, compact, disabled = false, onHide, hideRef, testID, children }: {
   colors: Colors; compact: boolean; disabled?: boolean; onHide: () => void; hideRef?: Ref<View>; testID?: string; children: ReactNode;
@@ -49,7 +52,7 @@ export function NoticeTray({ colors, compact, disabled = false, onHide, hideRef,
     if (Platform.OS !== "web") return;
     const document = (globalThis as { document?: KeyDocument }).document;
     const key = (event: EscapeKey) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.key !== "Escape" || event.defaultPrevented || anchoredPanelOpen()) return;
       if (!(tray.current as unknown as { contains?: (node: unknown) => boolean } | null)?.contains?.(document?.activeElement)) return;
       event.preventDefault(); event.stopPropagation(); hide.current();
     };
