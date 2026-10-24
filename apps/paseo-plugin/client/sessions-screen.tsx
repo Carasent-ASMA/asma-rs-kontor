@@ -36,6 +36,7 @@ import {
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ViewStyle,
 } from "react-native";
 import { openRecoveredSession, openSessionById } from "./session-actions";
 import { type DirectoryEntry, type DirectoryState } from "./session-directory";
@@ -603,6 +604,12 @@ export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeo
 
 /** The page's document on web; native has none, and keeps its own focus rules. */
 const pageDocument = () => (globalThis as { document?: { activeElement?: unknown; body?: unknown } }).document;
+
+/**
+ * Web only: the browser's scroll anchoring keeps the first visible row in place, so a live update that
+ * re-sorts that row to the top carries the list back to the start. Native gets no anchoring prop either.
+ */
+const NO_SCROLL_ANCHOR: ViewStyle & { readonly overflowAnchor: "none" } = { overflowAnchor: "none" };
 
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
@@ -1666,9 +1673,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       return;
     }
     previousOrderRef.current = order;
-    // A live reorder can adjust the list offset. Do not read that as a
-    // deliberate scroll and toggle the toolbar. Ordinary status updates that
-    // keep the order do not suppress scrolling.
+    // A live reorder that shortens the list can clamp its offset. Do not read
+    // that as a deliberate scroll and toggle the toolbar. Ordinary status
+    // updates that keep the order do not suppress scrolling.
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     programmaticUntilRef.current = Math.max(
       programmaticUntilRef.current,
@@ -2190,9 +2197,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       return;
     }
     previousRowSignatureRef.current = rowSignature;
-    // Rows inserted above the viewport move the native offset
-    // (maintainVisibleContentPosition). That is not a gesture: the next
-    // compact sample re-anchors instead of closing the toolbar.
+    // New rows move the content under the offset, and a shorter list clamps
+    // it. That is not a gesture: the next compact sample re-anchors instead
+    // of closing the toolbar.
     if (compact) {
       compactAnchorRef.current = Number.NaN;
     }
@@ -3137,7 +3144,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         onScrollBeginDrag={handleScrollBeginDrag}
         // Session taps remain usable while the compact search keyboard is open.
         keyboardShouldPersistTaps={compact ? "handled" : undefined}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        // No platform anchoring: it follows the first visible row, so a live re-sort of that row jumps the list.
+        style={pageDocument() ? NO_SCROLL_ANCHOR : undefined}
         scrollEventThrottle={16}
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader}
