@@ -544,10 +544,12 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
       if (!await whileOwned(lockPath, ours, async () => { await saveRow(reviewId, row); await writeFile(lockPath, intent, { mode: 0o600 }); }))
         throw new Error("Another action took this session's fence before dispatch. Nothing was sent; review again.");
+      ours = intent;
       // A refusal, or a read that has not recorded its outcome, after the final decision contradicts it. Checked in this
-      // worker's memory with no await before the send, so nothing records in between; nothing has been sent yet.
+      // worker's memory with no await before the send, so nothing records in between. Nothing has been sent, so this
+      // call's own intent is settled as blocked and its fence released below.
       if (review.action === "resume" && !cleanNow(agentId)) throw new Error("A provider refusal, or a read without a recorded outcome, came after the final check. Nothing was sent; review again.");
-      ours = intent; dispatchStarted = true;
+      dispatchStarted = true;
       if (review.action === "resume") {
         await agent.send(RESUME_PROMPT, { messageId: `kontor-resume-${review.id}-${hash(agentId).slice(0, 12)}`, activeTurnBehavior: "steer" });
         row.outcome = "submitted"; row.message = "Resume prompt accepted in the same session. Completion and resolution of the original failure are not verified.";

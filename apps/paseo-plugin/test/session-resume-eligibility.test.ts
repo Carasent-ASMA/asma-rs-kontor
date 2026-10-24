@@ -949,6 +949,65 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining(`(${kind}) has no confirmed recovery`) });
   });
 
+  /** A Resume blocked at dispatch: once its intent is saved, the session changes and another read observes it. */
+  async function blockedAtDispatch(change: Partial<Agent>, open: boolean) {
+    const h = await host([agent("a", routes["account-suffixed"])], [ready("codex-fixture-account")]);
+    await readClean(h);
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]?.eligible).toBe(true);
+    let other: Promise<ProviderRefusalRead> | undefined, slow: ReturnType<typeof holdNextRead> | undefined;
+    fsHook.beforeSave = async (from) => {
+      if (!(await readFile(from, "utf8")).includes('"outcome":"intent"')) return;
+      fsHook.beforeSave = undefined;
+      h.update("a", { ...change, updatedAt: "2026-10-24T10:00:09Z" });
+      if (open) { slow = holdNextRead(h); other = h.service.providerRefusal("a"); await slow.reached; }
+      else await h.service.providerRefusal("a");
+    };
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("Nothing was sent") });
+    expect(h.send).not.toHaveBeenCalled();
+    // This call settled its own intent: the row is blocked and the session's fence is released.
+    expect((await h.service.read(review.id))?.rows[0]).toMatchObject({ outcome: "blocked" });
+    expect((await readdir(h.root)).filter((name) => name.startsWith("intent-"))).toEqual([]);
+    return { h, settle: async () => { if (slow) { slow.finish(); await other; } } };
+  }
+  const intents = [
+    ["records a current auth refusal", { lastError: "401 Unauthorized" }, false, "auth"],
+    ["records a current unavailable refusal", { providerUnavailable: true }, false, "unavailable"],
+    ["has not recorded its outcome yet", {}, true, null],
+  ] as const;
+  it.each(intents.flatMap(([name, change, open, kind]) => [false, true].map((reload) => [name, reload ? "after a reload" : "in the same worker", change, open, kind, reload] as const)))(
+    "a Resume blocked at dispatch because another read %s leaves no fence: %s, once that read settles or recovers, Resume sends once (AUD R8)", async (_name, _where, change, open, kind, reload) => {
+      const { h, settle } = await blockedAtDispatch(change, open);
+      await settle();
+      const service = reload ? await restarted(h) : h.service;
+      if (kind) {
+        h.update("a", { ...quiet, providerUnavailable: false });
+        const held = (await service.providerRefusal("a")).refusal!;
+        expect(held).toMatchObject({ kind, recovery: "not-confirmed" });
+        const o = held.observedAt;
+        h.timeline.mockResolvedValue({ entries: [entry(kind === "auth" ? authItem : refusedItem, o, -1_000), entry(retryItem, o, 1_000), entry(answeredItem, o, 2_000)], error: null });
+        expect((await service.providerRefusal("a")).refusal).toMatchObject({ recovery: "confirmed" });
+        h.timeline.mockResolvedValue({ entries: [{ type: "user_message", text: "Fictional task context" }], error: null });
+      }
+      h.update("a", transport);
+      const review = await resumeReview(service);
+      expect(review.rows[0]?.eligible).toBe(true);
+      expect(await service.execute(review.id, "a")).toMatchObject({ outcome: "submitted" });
+      expect(h.send).toHaveBeenCalledTimes(1);
+    });
+
+  it("an Archive after a Resume blocked at dispatch is not held by that Resume's fence (AUD R8)", async () => {
+    const { h, settle } = await blockedAtDispatch({ lastError: "401 Unauthorized" }, false);
+    await settle();
+    h.update("a", { ...quiet });
+    const review = await h.preview("archive");
+    expect(review.rows[0]?.eligible).toBe(true);
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "archived" });
+    expect(h.archive).toHaveBeenCalledTimes(1);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
   it("every Resume-path exact read starts only after its attempt is on disk; Archive and probes write no refusal memory", async () => {
     const h = await host([agent("a", routes["account-suffixed"]), agent("b", { ...routes["account-suffixed"], status: "idle" })], [ready("codex-fixture-account")]);
     await readClean(h);
