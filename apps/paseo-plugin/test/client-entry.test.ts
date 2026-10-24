@@ -1,6 +1,14 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const reactEffects = vi.hoisted(() => ({ current: [] as Array<() => void> }));
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useEffect: (run: () => void) => {
+    reactEffects.current.push(run);
+  },
+}));
+
 const { contributeReturnControl, stopReturnControl } = vi.hoisted(() => {
   const stopReturnControl = vi.fn();
   return {
@@ -71,6 +79,7 @@ type CommandContribution = {
 describe("Kontor client entry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    reactEffects.current = [];
   });
 
   it("registers the Kontor screen, native sidebar entry, Open Kontor, Back to Kontor and Start or switch commands", () => {
@@ -113,8 +122,12 @@ describe("Kontor client entry", () => {
     expect(sidebar.id).toBe(SESSIONS_SIDEBAR_ID);
     expect(sidebar.title).toBe("Kontor");
     expect(typeof sidebar.Component).toBe("function");
-    const row = (sidebar.Component as (props: object) => { props: { icon: string } })({});
+    const row = (sidebar.Component as (props: object) => { props: { icon: string } })({
+      host: { id: "host-a", label: "Host A" },
+    });
     expect(row.props.icon).toBe("Building2");
+    expect(reactEffects.current).toHaveLength(1);
+    reactEffects.current[0]!();
 
     const command = calls[2]!.value as CommandContribution;
     expect(command.id).toBe(SESSIONS_COMMAND_ID);
