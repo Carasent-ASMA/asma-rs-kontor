@@ -7739,6 +7739,7 @@ pub trait ApplicationOperations: Send + Sync {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        reader: Option<crate::auth::ScopedSeatSubject>,
     ) -> Result<CompletionStateDto, ApiError>;
     /// Advance one epic's completion.
     async fn advance_completion(
@@ -11347,7 +11348,7 @@ pub async fn apply_completion_profile(
     ),
     responses(
         (status = 200, body = CompletionStateDto),
-        (status = 401), (status = 403), (status = 404),
+        (status = 401), (status = 403), (status = 404), (status = 409),
         (status = 503, description = "The owning application service is not composed")
     )
 )]
@@ -11356,10 +11357,27 @@ pub async fn completion(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
 ) -> Result<Json<CompletionStateDto>, ApiError> {
-    caller.require(&state, CallerCapability::Observer)?;
+    let reader = if let Some(seat_binding_id) = caller.seat() {
+        Some(crate::auth::ScopedSeatSubject {
+            seat_binding_id,
+            occupancy_generation: caller.occupancy_generation().ok_or_else(|| {
+                state.refuse(
+                    ApiErrorCode::Forbidden,
+                    "the completion reader credential has no occupancy generation",
+                )
+            })?,
+        })
+    } else {
+        caller.require(&state, CallerCapability::Observer)?;
+        None
+    };
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
-    Ok(Json(state.applications().completion(project_id, epic_id)?))
+    Ok(Json(
+        state
+            .applications()
+            .completion(project_id, epic_id, reader)?,
+    ))
 }
 
 /// Advance one epic's completion.
