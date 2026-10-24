@@ -72,6 +72,29 @@ describe("Recent visit store", () => {
     expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toEqual(stored.slice(0, 500));
   });
 
+  it("reads a repeated stored ID once, at its first place, so it never takes a kept place", () => {
+    const stored = [...Array.from({ length: RECENT_KEPT }, (_, index) => ({ id: "agent-a", at: NOW - index })), { id: "agent-b", at: NOW - 600 }];
+    const raw = JSON.stringify({ clearedAt: null, visits: stored });
+    const { storage, values } = memory({ [recentStorageKey("host-a")]: raw });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits).toEqual([{ id: "agent-a", at: NOW }, { id: "agent-b", at: NOW - 600 }]);
+    expect(values.get(recentStorageKey("host-a"))).toBe(raw);
+    recordVisit("host-a", "agent-c", NOW + 1);
+    expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toEqual([{ id: "agent-c", at: NOW + 1 }, { id: "agent-a", at: NOW }, { id: "agent-b", at: NOW - 600 }]);
+  });
+
+  it("keeps all 500 distinct sessions of a stored record of 501 with one repeat", () => {
+    const distinct = Array.from({ length: RECENT_KEPT }, (_, index) => ({ id: `agent-${index}`, at: NOW - index }));
+    const raw = JSON.stringify({ clearedAt: null, visits: [...distinct.slice(0, 10), { id: "agent-3", at: NOW - 3 }, ...distinct.slice(10)] });
+    const { storage, values } = memory({ [recentStorageKey("host-a")]: raw });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits).toEqual(distinct);
+    expect(values.get(recentStorageKey("host-a"))).toBe(raw);
+    recordVisit("host-a", "agent-new", NOW + 1);
+    const ids = JSON.parse(values.get(recentStorageKey("host-a"))!).visits.map((visit: { id: string }) => visit.id);
+    expect(ids).toEqual(["agent-new", ...distinct.slice(0, RECENT_KEPT - 1).map((visit) => visit.id)]);
+  });
+
   it("moves a repeated open to the top without a duplicate: A, B, A lists A, B", () => {
     configureRecentStorage(memory().storage);
     recordVisit("host-a", "agent-a", NOW);

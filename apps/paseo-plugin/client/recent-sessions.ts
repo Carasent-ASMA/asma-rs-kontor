@@ -56,7 +56,17 @@ function parseRecord(value: unknown): RecentRecord | null {
     const clearedAt = parsed.clearedAt ?? null;
     if ((clearedAt !== null && (typeof clearedAt !== "number" || !Number.isFinite(clearedAt))) || !Array.isArray(parsed.visits)) return null;
     const visits = parsed.visits.filter((visit): visit is RecentVisit => typeof visit?.id === "string" && typeof visit?.at === "number" && Number.isFinite(visit.at));
-    return visits.length === parsed.visits.length ? { clearedAt, visits } : null;
+    if (visits.length !== parsed.visits.length) return null;
+    // A repeated ID keeps its first, most recent, position, so a duplicate never takes one of the 500 kept places.
+    const seen = new Set<string>();
+    return {
+      clearedAt,
+      visits: visits.filter((visit) => {
+        if (seen.has(visit.id)) return false;
+        seen.add(visit.id);
+        return true;
+      }),
+    };
   } catch {
     return null;
   }
