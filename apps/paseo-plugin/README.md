@@ -1124,9 +1124,27 @@ archive scope, session count and pages read).
    Flat** on compact, and where the tray was on compact **Filters**) that names them and shows the tray again. Hiding runs nothing
    and resolves nothing; any new or changed notice opens the tray again, and so
    does a notice that returns after a completed read reported it gone, while one
-   that stays present stays hidden. The choice is kept for the view until the
-   app restarts. Escape hides the tray
+   that stays present stays hidden. Hidden source, navigation and settings
+   notices are kept for the view until the app restarts. A hidden archive is
+   remembered per host on this device (iOS user defaults; web and desktop local
+   storage) by its exact review, session and state, so a changed state shows
+   again; it is forgotten only after a complete read no longer lists it. Without
+   a device store (Android) or when the store fails, hiding lasts this app
+   session and the review sheet says so. Escape hides the tray
    while focus is in it.
+6. The archive notice is one line: a single archive names its session and
+   state, several are counted. Each is classified from its own archive review,
+   read by exact ID: **Archive result unknown** (the request was sent and the
+   host has not confirmed it archived), **Archived · runtime stop not
+   confirmed**, or **Couldn't check** (the host or that review could not be
+   read). Blocked and preflight outcomes stay in the bulk review.
+   **Review archive** opens one sheet listing every unresolved archive with a
+   plain reason, when it was last checked and what the host reported. **Refresh
+   status** reads that exact session again and reports checking, unchanged,
+   changed, confirmed (the notice clears) or couldn't check; it never sends
+   another archive request. **Open session** opens the exact ID that read
+   confirmed. IDs and the host's full messages stay in **Technical details**.
+   Nothing refreshes on reconnect or a timer.
 
 ## Configuration
 
@@ -1333,7 +1351,7 @@ own rows; without one, the directory is read again in full.
 History and files are retained. Success requires an exact-ID read showing the
 session archived with no active turn; whether its runtime closed is reported
 separately. A lost acknowledgement stays uncertain until
-**Check native outcome** verifies retirement using metadata only. It never
+**Refresh status** verifies retirement using metadata only. It never
 resends the archive or removes the original no-replay fence.
 
 A confirmed null native record permits only a host-local stale-row disposition,
@@ -1385,7 +1403,7 @@ Requests remain sequential, with the existing durable per-session fences and
 exact-ID readback.
 **Stop before next session** lets the current request settle; it does not undo
 or retry it. Pending rows stay visible, uncertain outcomes offer a metadata-only
-Check, and blocked rows keep their reasons. One summary distinguishes archived,
+**Refresh status**, and blocked rows keep their reasons. One summary distinguishes archived,
 blocked, unconfirmed, absent and unattempted rows: in the review while it is
 open, or as one toast when it was closed before the batch finished.
 

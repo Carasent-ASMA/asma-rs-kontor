@@ -6,6 +6,7 @@ import { ARCHIVE_BATCH_LIMIT, archiveSummary, unresolvedArchive, type LifecycleR
 import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
+import { RECOVERY_STATES, recoveryState } from "./archive-feedback";
 
 type Lifecycle = ReturnType<typeof useSessionLifecycle>;
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -35,7 +36,7 @@ export function useArchiveSelection(hostId: string, shown: readonly string[]) {
  * are exact: idle ones can be added for one more confirmation, running ones are never added (no force-retire).
  */
 export function archiveIssue(row: LifecycleRow, rows?: readonly LifecycleRow[]): { text: string; add: string[]; running: number; check: boolean } {
-  const result = { text: row.outcome === "archived" && row.runtime === "unconfirmed" ? "Archived, but stopping its runtime is not confirmed" : firstSentence(row.message ?? row.reason),
+  const result = { text: unresolvedArchive(row) ? RECOVERY_STATES[recoveryState(row)].label : firstSentence(row.message ?? row.reason),
     add: [] as string[], running: 0, check: !!row.reconcileReviewId || unresolvedArchive(row) };
   if (result.check || !row.children.length) return result;
   if (!row.eligible) {
@@ -82,7 +83,7 @@ export function ArchiveSelectionCheckbox({ session, checked, disabled, pending, 
 }) {
   const checkbox = <Checkbox testID={`sessions-select-${session.id}`} label={`Select ${session.title} (${session.id}) for archive`} checked={checked} disabled={disabled} pending={pending} colors={colors} onPress={onPress} />;
   return outcome && (unresolvedArchive(outcome) || outcome.reconcileReviewId) ? <View style={{ alignItems: "center" }}>{checkbox}
-    <Action colors={colors} label="Check" accessibilityLabel={`Check archive outcome: ${session.title} (${session.id})`} disabled={disabled} onPress={() => onCheck?.()} />
+    <Action colors={colors} label="Refresh status" accessibilityLabel={`Refresh archive status: ${session.title} (${session.id})`} disabled={disabled} onPress={() => onCheck?.()} />
   </View> : checkbox;
 }
 
@@ -91,7 +92,7 @@ export function ArchiveRowFeedback({ row, colors }: { row: LifecycleRow | undefi
   if (!row || !(row.outcome === "blocked" || unresolvedArchive(row))) return null;
   return <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
     <Icon name="CircleAlert" size={12} color={colors.statusWarning} />
-    <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>{`${row.outcome === "blocked" ? "Archive blocked" : "Archive not confirmed"} · ${archiveIssue(row).text}`}</Text>
+    <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>{row.outcome === "blocked" ? `Archive blocked · ${archiveIssue(row).text}` : archiveIssue(row).text}</Text>
   </View>;
 }
 
@@ -161,7 +162,7 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
   const archive = async () => { setStopping(false); const summary = await lifecycle.run(); if (summary && closed.current) onFinished(summary); };
   const reading = busy && !batch, rows = reading ? [] : review?.rows ?? [], done = !!batch && !running;
   const ready = rows.filter((row) => sectionOf(row) === "ready"), blocked = rows.filter((row) => sectionOf(row) === "blocked");
-  // Blocked and unattempted rows can be read again; an unconfirmed archive keeps its exact-ID Check and is never resent.
+  // Blocked and unattempted rows can be read again; an unconfirmed archive keeps its exact-ID Refresh status and is never resent.
   const again = rows.filter((row) => row.outcome === "pending" || row.outcome === "blocked" && !row.reconcileReviewId).map((row) => row.id);
   const preview = (ids: string[]) => { setDetails(null); setStopping(false); void lifecycle.prepare("archive", "filtered", ids, true); };
   const title = reading || !review ? "Archive selected sessions" : running ? "Archiving…" : done ? stopping ? "Archive stopped" : "Archive finished" : `Archive ${plural(rows.length, "session")}?`;
@@ -187,7 +188,7 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
       {issue && !running && (issue.add.length || issue.check) ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         {issue.add.length && !overCap ? <Action small colors={colors} label={`Add ${plural(issue.add.length, "idle child", "idle children")}`} accessibilityLabel={`Add ${plural(issue.add.length, "idle child", "idle children")} of ${row.title} and review again`}
           disabled={busy} onPress={() => preview([...again, ...issue.add])} /> : null}
-        {issue.check ? <Action small colors={colors} label="Check" accessibilityLabel={`Check outcome: ${row.title}`} disabled={busy} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
+        {issue.check ? <Action small colors={colors} label="Refresh status" accessibilityLabel={`Refresh archive status: ${row.title}`} disabled={busy} onPress={() => { void lifecycle.reconcile(row.id); }} /> : null}
       </View> : null}
       {issue && overCap ? <Text style={muted}>{`Adding its children would exceed the ${ARCHIVE_BATCH_LIMIT}-session batch cap.`}</Text> : null}
       {issue?.running ? <Text style={muted}>Finish running children in their own workflow, then review again.</Text> : null}

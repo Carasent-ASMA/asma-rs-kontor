@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureRecentStorage, readRecent, recentRows } from "../client/recent-sessions";
-import { openCreatedSession, openSessionById, type SessionNavigation } from "../client/session-actions";
+import { openCreatedSession, openRecoveredSession, openSessionById, type SessionNavigation } from "../client/session-actions";
 import type { CreateOutcome } from "../shared/session-create";
+import type { LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
 
 function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn> } {
@@ -161,5 +162,30 @@ describe("openCreatedSession", () => {
     openCreatedSession({ outcome: created({ agentId: "a" }), serverId: "host-a", navigation: nav });
     configureRecentStorage(storage);
     expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("openRecoveredSession", () => {
+  beforeEach(() => configureRecentStorage(null));
+  const recovered = (availability: Partial<NonNullable<LifecycleRow["availability"]>> | null = {}, id = "archived-exact-id") => ({ id, title: "SWE • DEMO-4 • Fixture", outcome: "archived", runtime: "unconfirmed",
+    availability: availability && { agentId: id, state: "readable", archivedAt: "2026-10-24T08:00:00.000Z", reason: "Fixture read.", checkedAt: "2026-10-24T08:01:00.000Z", revision: "r1", ...availability } }) as LifecycleRow;
+
+  it("opens the archive's own exact-ID read after its row left the directory", () => {
+    const nav = navigation();
+    expect(openRecoveredSession({ row: recovered(), id: "archived-exact-id", serverId: "host-a", navigation: nav })).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "archived-exact-id", serverId: "host-a" });
+  });
+
+  it.each([
+    ["no row", null, "archived-exact-id"],
+    ["another row", recovered({}, "other-id"), "archived-exact-id"],
+    ["a read naming another ID", recovered({ agentId: "other-id" }), "archived-exact-id"],
+    ["an unknown read", recovered({ state: "unknown" }), "archived-exact-id"],
+    ["a missing session", recovered({ state: "missing" }), "archived-exact-id"],
+    ["no read", recovered(null), "archived-exact-id"],
+  ] as const)("never opens or records %s", (_, row, id) => {
+    const nav = navigation();
+    expect(openRecoveredSession({ row, id, serverId: "host-a", navigation: nav })).toMatchObject({ ok: false, reason: "missing" });
+    expect(nav.openAgent).not.toHaveBeenCalled(); expect(readRecent("host-a").record.visits).toEqual([]);
   });
 });

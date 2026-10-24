@@ -1,4 +1,4 @@
-import { freshAvailability } from "../shared/session-lifecycle";
+import { freshAvailability, type LifecycleRow } from "../shared/session-lifecycle";
 import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
@@ -50,6 +50,19 @@ export function openCreatedSession(input: {
     return { ok: false, reason: "missing", message: "The host has not confirmed this creation's exact session ID. Check its outcome before opening it." };
   }
   return openNativeSession({ ...input, id: input.outcome.agentId });
+}
+
+/** An archive's own exact-ID read names the native ID after its row left the directory; nothing else does. */
+export function openRecoveredSession(input: {
+  readonly row: LifecycleRow | null;
+  readonly id: string;
+  readonly serverId: string;
+  readonly navigation: SessionNavigation | undefined;
+}): OpenSessionResult {
+  if (input.row?.id !== input.id || input.row.availability?.agentId !== input.id || input.row.availability.state !== "readable") {
+    return { ok: false, reason: "missing", message: "The host has not confirmed this exact session ID. Refresh status before opening it." };
+  }
+  return openNativeSession(input);
 }
 
 function openNativeSession(input: { readonly id: string; readonly serverId: string; readonly navigation: SessionNavigation | undefined }): OpenSessionResult {

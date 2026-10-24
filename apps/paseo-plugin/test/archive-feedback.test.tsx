@@ -4,6 +4,7 @@ import type { useSessionLifecycle as Hook } from "../client/use-session-lifecycl
 import * as lifecycle from "../shared/session-lifecycle";
 import type { LifecycleReview, LifecycleRow, UnresolvedRef } from "../shared/session-lifecycle";
 import { deferredReact, loadHermesScoped } from "./hermes-scoping";
+import { configureArchiveNoticeStorage, hiddenArchivesKey, readHiddenArchives, recoveryKey, recoveryLine, recoveryState, refreshNote, writeHiddenArchives, type RecoveryItem } from "../client/archive-feedback";
 
 const settle = async () => { for (let n = 0; n < 10; n++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
@@ -12,6 +13,12 @@ const sa: UnresolvedRef = { reviewId: "00000000-0000-4000-8000-0000000000a1", ag
 const other: UnresolvedRef = { reviewId: "00000000-0000-4000-8000-0000000000b2", agentId: "fixture-other" };
 const latest = (unresolved?: UnresolvedRef[]): LifecycleReview => ({ id: "00000000-0000-4000-8000-0000000000c3", createdAt: "2026-10-22", action: "resume", scope: "filtered",
   target: lifecycle.DEFAULT_RECOVERY_TARGET, rows: [], limitation: lifecycle.TAKEOVER_LIMIT, ...(unresolved ? { unresolved } : {}) });
+/** A listed ref's own archive review, as its exact-ID read returns it. */
+const ownerReview = (ref: UnresolvedRef, ...rows: LifecycleRow[]): LifecycleReview => ({ ...latest(), id: ref.reviewId, action: "archive",
+  rows: rows.length ? rows : [row(ref.agentId, { outcome: "archived", runtime: "unconfirmed" })] });
+const seen = (id: string, patch: Partial<NonNullable<LifecycleRow["availability"]>> = {}) => ({ agentId: id, state: "readable", archivedAt: null, reason: "Fixture read.",
+  checkedAt: "2026-10-24T08:00:00.000Z", revision: "r1", ...patch }) as NonNullable<LifecycleRow["availability"]>;
+const ONE = "Fixture fixture-sa: archived, runtime stop not confirmed";
 
 /** Both hooks under Hermes scoping, as the iOS app runs them; each call is one fresh mount, and `unmount` runs its effect cleanups. */
 function mount(rpc: Record<string, (input: Record<string, unknown>) => Promise<unknown>>, host: () => string, changed: (rows: LifecycleRow[]) => void) {
@@ -27,14 +34,17 @@ function mount(rpc: Record<string, (input: Record<string, unknown>) => Promise<u
 }
 function host(reads: Array<() => Promise<unknown>> = []) {
   const calls: Array<[string, Record<string, unknown>]> = [], record = (name: string) => (input: Record<string, unknown>) => { calls.push([name, input]); return handlers[name]!(input); };
+  // The list read pops `reads`; each ref's exact owner-review read answers from `owners`.
+  const owners = new Map<string, () => Promise<unknown>>([[sa.reviewId, async () => ownerReview(sa)], [other.reviewId, async () => ownerReview(other)]]);
   const handlers: Record<string, (input: Record<string, unknown>) => Promise<unknown>> = {
-    "sessions.lifecycle-review": async () => (reads.shift() ?? (async () => latest([sa])))(),
+    "sessions.lifecycle-review": async (input) => input.reviewId ? (owners.get(input.reviewId as string) ?? (async () => null))() : (reads.shift() ?? (async () => latest([sa])))(),
     "sessions.lifecycle-preview": async (input) => ({ id: "00000000-0000-4000-8000-0000000000d4", action: input.action, scope: "filtered", rows: (input.agentIds as string[]).map((id) => row(id)) }),
     "sessions.lifecycle-execute-item": async (input) => row(input.agentId as string, { outcome: "archived", runtime: "closed" }),
     "sessions.lifecycle-reconcile-item": async (input) => row(input.agentId as string, { outcome: "archived", runtime: "closed" }),
   };
   const rpc = Object.fromEntries(Object.keys(handlers).map((name) => [name, record(name)]));
-  return { handlers, rpc, calls, count: (name: string) => calls.filter(([called]) => called === name).length };
+  return { handlers, rpc, calls, owners, count: (name: string) => calls.filter(([called]) => called === name).length,
+    lists: () => calls.filter(([called, input]) => called === "sessions.lifecycle-review" && !input.reviewId).length };
 }
 
 describe("one Archive X", () => {
@@ -61,7 +71,8 @@ describe("one Archive X", () => {
       [row("x", { outcome: "archived", runtime: "not-observed" }), "show", "Archived Fixture x."],
       [row("x", { outcome: "already_archived", message: "Already archived on this host. No archive request was sent." }), "show", "Already archived on this host. No archive request was sent."],
       [unconfirmed("Runtime close failed"), "error"], [unconfirmed("Timeout"), "error"],
-      [row("x", { outcome: "uncertain", message: "Archive not confirmed: the session still reports activity." }), "error", "Archive not confirmed: the session still reports activity."],
+      [row("x", { outcome: "uncertain", message: "Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request." }), "error", "Fixture x: archive result unknown."],
+      [row("x", { outcome: "uncertain", availability: seen("x", { archivedAt: "2026-10-24T07:59:00.000Z" }) }), "error", "Fixture x: archived, runtime stop not confirmed."],
       [row("x", { outcome: "blocked", message: "An earlier archive owns this session." }), "error", "An earlier archive owns this session."],
       [row("x", { eligible: false }), "error", "Fixture reason."],
       ["Native inventory exceeded the bounded page walk.", "error", "Archive did not report a result: Native inventory exceeded the bounded page walk."],
@@ -82,14 +93,14 @@ describe("persistent archive recovery", () => {
     const fake = host(), changed = vi.fn();
     let draw = mount(fake.rpc, () => "host", changed);
     draw(); await settle();
-    expect(draw().recovery).toMatchObject({ unresolved: [sa], error: null, line: "1 archive not confirmed" });
+    expect(draw().recovery).toMatchObject({ unresolved: [sa], error: null, line: ONE });
     await draw().lifecycle.prepare("archive", "filtered", ["fixture-swe"]);
     draw(); await settle(); draw(); await settle();
     expect(draw().recovery.unresolved).toEqual([sa]);
     draw = mount(fake.rpc, () => "host", changed);
     draw(); await settle();
     expect(draw().recovery.unresolved).toEqual([sa]);
-    expect(fake.count("sessions.lifecycle-review")).toBeGreaterThanOrEqual(3);
+    expect(fake.lists()).toBeGreaterThanOrEqual(3);
   });
   it("keeps known refs beside a rejected lookup, and treats an absent field as unknown", async () => {
     const overflow = "More than 100 archives are not confirmed (101 found). The list cannot be shown exactly; no fence was changed.";
@@ -97,9 +108,9 @@ describe("persistent archive recovery", () => {
     const draw = mount(fake.rpc, () => "host", vi.fn());
     draw(); await settle();
     void draw().recovery.reload(); await settle();
-    expect(draw().recovery).toMatchObject({ unresolved: [sa], error: overflow, line: `1 archive not confirmed. ${overflow}` });
+    expect(draw().recovery).toMatchObject({ unresolved: [sa], error: overflow, line: `${ONE}. ${overflow}` });
     void draw().recovery.reload(); await settle();
-    expect(draw().recovery).toMatchObject({ unresolved: [sa], line: "1 archive not confirmed. The host did not report its current list." });
+    expect(draw().recovery).toMatchObject({ unresolved: [sa], line: `${ONE}. The host did not report its current list.` });
     const empty = mount(host([async () => { throw new Error(overflow); }]).rpc, () => "host", vi.fn());
     empty(); await settle();
     expect(empty().recovery.line).toBe(`Archive checks could not be read: ${overflow}`);
@@ -114,21 +125,21 @@ describe("persistent archive recovery", () => {
     slow.resolve(latest([other])); await settle();
     expect(draw().recovery.unresolved).toEqual([other]);
   });
-  it("AUD P2-03 an old host-A Check result after A→B→A changes nothing", async () => {
+  it("AUD P2-03 an old host-A Refresh status result after A→B→A changes nothing", async () => {
     const fake = host([async () => latest([sa]), async () => latest([other]), async () => latest([sa])]), changed = vi.fn(), pending: Array<() => void> = [];
     fake.handlers["sessions.lifecycle-reconcile-item"] = (input) => new Promise((resolve) => pending.push(() => resolve(row(input.agentId as string, { outcome: "archived", runtime: "closed" }))));
     let current = "host-a";
     const draw = mount(fake.rpc, () => current, changed);
     draw(); await settle();
-    const stale = draw().recovery.check(); await settle();
+    const stale = draw().recovery.refresh(); await settle();
     current = "host-b"; draw(); await settle();
     current = "host-a"; draw(); await settle();
     expect(draw().recovery).toMatchObject({ checking: false, unresolved: [sa] });
     pending.shift()!(); await stale; draw(); await settle();
     expect(changed).not.toHaveBeenCalled();
     expect(draw().recovery).toMatchObject({ checking: false, unresolved: [sa], error: null });
-    expect(fake.count("sessions.lifecycle-review")).toBe(3);
-    const fresh = draw().recovery.check(); await settle();
+    expect(fake.lists()).toBe(3);
+    const fresh = draw().recovery.refresh(); await settle();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item")).toHaveLength(2);
     pending.shift()!(); await fresh;
     expect(changed).toHaveBeenCalledTimes(1);
@@ -142,20 +153,20 @@ describe("persistent archive recovery", () => {
     void fresh().recovery.reload(); await settle();
     expect(fresh().recovery).toMatchObject({ unresolved: [], error: null, line: null });
   });
-  it("QA P2-02 a Check pending on host A neither keeps host B checking nor lands on B", async () => {
+  it("QA P2-02 a Refresh status pending on host A neither keeps host B checking nor lands on B", async () => {
     const fake = host([async () => latest([sa]), async () => latest([other])]), changed = vi.fn(), pending: Array<() => void> = [];
     fake.handlers["sessions.lifecycle-reconcile-item"] = (input) => new Promise((resolve) => pending.push(() => resolve(row(input.agentId as string, { outcome: "archived", runtime: "closed" }))));
     let current = "host-a";
     const draw = mount(fake.rpc, () => current, changed);
     draw(); await settle();
-    const a = draw().recovery.check(); await settle();
+    const a = draw().recovery.refresh(); await settle();
     expect(draw().recovery.checking).toBe(true);
     current = "host-b"; draw(); await settle();
     expect(draw().recovery).toMatchObject({ checking: false, unresolved: [other] });
     pending.shift()!(); await a; draw(); await settle();
     expect(draw().recovery).toMatchObject({ checking: false, unresolved: [other], error: null });
-    expect(changed).not.toHaveBeenCalled(); expect(fake.count("sessions.lifecycle-review")).toBe(2);
-    const b = draw().recovery.check(); await settle();
+    expect(changed).not.toHaveBeenCalled(); expect(fake.lists()).toBe(2);
+    const b = draw().recovery.refresh(); await settle();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item").map(([, input]) => input)).toEqual([sa, other]);
     pending.shift()!(); await b;
     expect(changed.mock.calls.map(([rows]) => rows[0].id)).toEqual([other.agentId]);
@@ -173,7 +184,7 @@ describe("persistent archive recovery", () => {
     fake.handlers["sessions.lifecycle-reconcile-item"] = (input) => new Promise((resolve) => pending.push(() => resolve(row(input.agentId as string, { outcome: "archived", runtime: "closed" }))));
     const draw = mount(fake.rpc, () => "host", changed);
     draw(); await settle();
-    const checking = draw().recovery.check(); await settle();
+    const checking = draw().recovery.refresh(); await settle();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item").map(([, input]) => input)).toEqual([sa]);
     pending.shift()!(); await settle();
     expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item").map(([, input]) => input)).toEqual([sa, other]);
@@ -222,7 +233,7 @@ describe("Archive details", () => {
     }
     expect(changed).not.toHaveBeenCalled();
   });
-  it("QA1-ARCHIVE-B-P2-03 / AUD P2-B01-R5 an unmount drops every late result: owner read, X, batch, row Check and recovery Check", async () => {
+  it("QA1-ARCHIVE-B-P2-03 / AUD P2-B01-R5 an unmount drops every late result: owner read, X, batch, row and recovery Refresh status", async () => {
     const owner = { ...latest(), id: sa.reviewId, action: "archive" as const, rows: [row(sa.agentId, { outcome: "archived", runtime: "unconfirmed" })] };
     for (const fails of [false, true]) {
       const fake = host(), changed = vi.fn(), held = deferred<unknown>();
@@ -254,7 +265,7 @@ describe("Archive details", () => {
     fake.handlers["sessions.lifecycle-review"] = async () => latest([sa, other]);
     fake.handlers["sessions.lifecycle-reconcile-item"] = (input) => held.promise.then(() => real(input));
     const draw = mount(fake.rpc, () => "host-a", changed); draw(); await settle();
-    const checking = draw().recovery.check(); await settle();
+    const checking = draw().recovery.refresh(); await settle();
     draw.unmount(); held.resolve(undefined); await checking; await settle();
     expect(changed).not.toHaveBeenCalled(); expect(fake.count("sessions.lifecycle-reconcile-item")).toBe(1);
   });
@@ -268,7 +279,8 @@ describe("AUD P2-B01-R6 a request the earlier host view of a mounted hook starte
       const name = step === "restore" ? "sessions.lifecycle-review" : step === "reconcile" ? "sessions.lifecycle-reconcile-item" : "sessions.lifecycle-execute-item";
       let sent = 0;
       fake.handlers[name] = (input) => {
-        if (step === "restore" && !input.reviewId) return real[name]!(input);
+        // Recovery reads no owner review here: only the restore under test reads one.
+        if (step === "restore" && !input.reviewId) return Promise.resolve(latest([]));
         sent++; return a.promise.then(() => fails ? Promise.reject(new Error("Fixture host A failure.")) : step === "restore" ? owner : real[name]!(input));
       };
       const execute = fake.handlers["sessions.lifecycle-execute-item"]!;
@@ -295,5 +307,132 @@ describe("AUD P2-B01-R6 a request the earlier host view of a mounted hook starte
       expect(changed.mock.calls.map(([rows]) => rows.map((entry: LifecycleRow) => `${entry.id}:${entry.outcome}`))).toEqual([["fixture-b:pending"], ...(fails ? [] : [["fixture-b:submitted"]])]);
       draw.unmount();
     }
+  });
+});
+
+describe("U1 precise archive states", () => {
+  it("names each state from structured fields only; message wording never decides", () => {
+    const legacy = "Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request.";
+    expect(recoveryState(row("x", { outcome: "uncertain", message: legacy }))).toBe("unknown");
+    expect(recoveryState(row("x", { outcome: "pending" }))).toBe("unknown");
+    expect(recoveryState(row("x", { outcome: "uncertain", message: "Archived and stopped.", availability: seen("x") }))).toBe("unknown");
+    expect(recoveryState(row("x", { outcome: "archived", runtime: "unconfirmed" }))).toBe("unconfirmed");
+    expect(recoveryState(row("x", { outcome: "uncertain", message: legacy, availability: seen("x", { archivedAt: "2026-10-24T07:59:00.000Z" }) }))).toBe("unconfirmed");
+    expect(recoveryState(row("x", { outcome: "uncertain", availability: seen("x", { state: "unknown", archivedAt: "2026-10-24T07:59:00.000Z" }) }))).toBe("unavailable");
+    expect(recoveryState(null)).toBe("unavailable");
+  });
+  it("one item names its session and state, several are counted, and a failed list read stays beside them", () => {
+    const item = (id: string, state: RecoveryItem["state"], title: string | null = `Fixture ${id}`): RecoveryItem =>
+      ({ ref: { reviewId: sa.reviewId, agentId: id }, state, row: title === null ? null : row(id, { title }), error: null });
+    expect(recoveryLine([item("a", "unknown")], null)).toBe("Fixture a: archive result unknown");
+    expect(recoveryLine([item("a", "unavailable", null)], null)).toBe("An archived session: couldn't check archive");
+    expect(recoveryLine([item("a", "unknown"), item("b", "unconfirmed")], null)).toBe("2 archives need attention");
+    expect(recoveryLine([item("a", "unknown"), item("b", "unconfirmed")], "Fixture failure.")).toBe("2 archives need attention. Fixture failure.");
+    expect(recoveryLine([], "Fixture failure.")).toBe("Archive checks could not be read: Fixture failure.");
+    expect(recoveryLine([], null)).toBeNull();
+  });
+  it("U5 a refresh result is confirmed, changed or unchanged against the item it started from", () => {
+    const before: RecoveryItem = { ref: sa, state: "unknown", row: row(sa.agentId, { outcome: "uncertain" }), error: null };
+    expect(refreshNote(before, row(sa.agentId, { outcome: "archived", runtime: "not-observed" }), 1)).toEqual({ at: 1, outcome: "confirmed", title: "Fixture fixture-sa" });
+    expect(refreshNote(before, row(sa.agentId, { outcome: "archived", runtime: "unconfirmed" }), 1)).toMatchObject({ outcome: "changed", state: "unconfirmed" });
+    expect(refreshNote(before, row(sa.agentId, { outcome: "uncertain" }), 1)).toMatchObject({ outcome: "unchanged", state: "unknown" });
+    expect(refreshNote(undefined, row(sa.agentId, { outcome: "uncertain" }), 1)).toMatchObject({ outcome: "unchanged" });
+  });
+  it("reads only the listed owner reviews, once per review, and keeps blocked and settled rows out", async () => {
+    const shared: UnresolvedRef = { reviewId: other.reviewId, agentId: "fixture-shared" }, blocked: UnresolvedRef = { reviewId: "00000000-0000-4000-8000-0000000000e5", agentId: "fixture-blocked" };
+    const lost: UnresolvedRef = { reviewId: "00000000-0000-4000-8000-0000000000f6", agentId: "fixture-lost" };
+    const fake = host([async () => latest([sa, other, shared, blocked, lost])]);
+    fake.owners.set(sa.reviewId, async () => ownerReview(sa, row(sa.agentId, { outcome: "uncertain" })));
+    fake.owners.set(other.reviewId, async () => ownerReview(other, row(other.agentId, { outcome: "archived", runtime: "unconfirmed" }), row(shared.agentId, { outcome: "archived", runtime: "not-observed" })));
+    fake.owners.set(blocked.reviewId, async () => ownerReview(blocked, row(blocked.agentId, { outcome: "blocked", message: "Has an active child." })));
+    fake.owners.set(lost.reviewId, async () => { throw new Error("Fixture host read failed."); });
+    const draw = mount(fake.rpc, () => "host", vi.fn());
+    draw(); await settle();
+    const recovery = draw().recovery;
+    expect(recovery.items.map((item) => [item.ref.agentId, item.state, item.error])).toEqual([["fixture-sa", "unknown", null], ["fixture-other", "unconfirmed", null], ["fixture-lost", "unavailable", "Fixture host read failed."]]);
+    expect(recovery).toMatchObject({ line: "3 archives need attention", error: null, listed: "host", complete: false });
+    expect(fake.calls.filter(([, input]) => input.reviewId).map(([, input]) => input.reviewId)).toEqual([sa.reviewId, other.reviewId, blocked.reviewId, lost.reviewId]);
+    expect(fake.count("sessions.lifecycle-reconcile-item") + fake.count("sessions.lifecycle-execute-item") + fake.count("sessions.lifecycle-preview")).toBe(0);
+  });
+  it("a failed owner read keeps the item's last known state and row", async () => {
+    const fake = host([async () => latest([sa]), async () => latest([sa])]), draw = mount(fake.rpc, () => "host", vi.fn());
+    draw(); await settle();
+    expect(draw().recovery).toMatchObject({ complete: true, items: [{ state: "unconfirmed", error: null }] });
+    fake.owners.set(sa.reviewId, async () => { throw new Error("Fixture host offline."); });
+    void draw().recovery.reload(); await settle();
+    expect(draw().recovery).toMatchObject({ complete: false, items: [{ state: "unconfirmed", row: { id: sa.agentId }, error: "Fixture host offline." }] });
+  });
+});
+
+describe("U5 Refresh status feedback", () => {
+  it("reports checking, then unchanged, changed, confirmed or couldn't check per item, and never sends archive", async () => {
+    const third: UnresolvedRef = { reviewId: "00000000-0000-4000-8000-0000000000f7", agentId: "fixture-third" };
+    const fake = host([async () => latest([sa, other, third]), async () => latest([sa, third]), async () => latest([sa, third])]), changed = vi.fn();
+    fake.owners.set(sa.reviewId, async () => ownerReview(sa, row(sa.agentId, { outcome: "uncertain" })));
+    fake.owners.set(third.reviewId, async () => ownerReview(third, row(third.agentId, { outcome: "uncertain" })));
+    const replies: Record<string, Array<() => Promise<LifecycleRow>>> = {
+      [sa.agentId]: [async () => row(sa.agentId, { outcome: "archived", runtime: "unconfirmed" })],
+      [other.agentId]: [async () => row(other.agentId, { outcome: "archived", runtime: "not-observed" })],
+      [third.agentId]: [async () => { throw new Error("Fixture host read failed."); }, async () => row(third.agentId, { outcome: "uncertain" })],
+    };
+    const held = deferred<void>();
+    fake.handlers["sessions.lifecycle-reconcile-item"] = async (input) => { await held.promise; return replies[input.agentId as string]!.shift()!(); };
+    const draw = mount(fake.rpc, () => "host", changed);
+    draw(); await settle();
+    const all = draw().recovery.refresh(); await settle();
+    expect(draw().recovery).toMatchObject({ checking: true, refreshing: "all" });
+    held.resolve(); await all; draw(); await settle();
+    const { notes, items, refreshing } = draw().recovery;
+    expect(refreshing).toBeNull();
+    expect(notes[recoveryKey(sa)]).toMatchObject({ outcome: "changed", state: "unconfirmed" });
+    expect(notes[recoveryKey(other)]).toMatchObject({ outcome: "confirmed", title: "Fixture fixture-other" });
+    expect(notes[recoveryKey(third)]).toMatchObject({ outcome: "failed", error: "Fixture host read failed." });
+    expect(items.map((item) => item.ref.agentId)).toEqual([sa.agentId, third.agentId]);
+    expect(changed.mock.calls.map(([rows]) => rows[0].id)).toEqual([sa.agentId, other.agentId]);
+    const one = draw().recovery.refresh(third);
+    expect(draw().recovery.refreshing).toBe(recoveryKey(third));
+    await one; draw(); await settle();
+    expect(draw().recovery.notes[recoveryKey(third)]).toMatchObject({ outcome: "unchanged", state: "unknown" });
+    expect(fake.calls.filter(([name]) => name === "sessions.lifecycle-reconcile-item").map(([, input]) => input)).toEqual([sa, other, third, third]);
+    draw().recovery.clearNotes(); expect(draw().recovery.notes).toEqual({});
+    expect(fake.count("sessions.lifecycle-execute-item") + fake.count("sessions.lifecycle-preview")).toBe(0);
+  });
+});
+
+describe("U3 hidden archive notices per host", () => {
+  const store = (initial: Record<string, unknown> = {}) => {
+    const values = new Map(Object.entries(initial)), writes: Array<[string, string | null]> = [];
+    return { values, writes, fail: false, read(key: string) { return values.get(key) ?? null; },
+      write(key: string, value: string | null) { if (this.fail) throw new Error("Fixture store full."); writes.push([key, value]); if (value === null) values.delete(key); else values.set(key, value); } };
+  };
+  const keys = ["archive:r1:a1:unconfirmed", "archive:r2:a2:unknown"];
+  it("keeps hidden keys for this app session when the device has no store", () => {
+    configureArchiveNoticeStorage(null);
+    expect(readHiddenArchives("host-a")).toEqual({ keys: [], persistence: "session" });
+    expect(writeHiddenArchives("host-a", keys)).toEqual({ keys, persistence: "session" });
+    expect(readHiddenArchives("host-a").keys).toEqual(keys); expect(readHiddenArchives("host-b").keys).toEqual([]);
+  });
+  it("remembers them per host on the device, across a restart, and forgets with a removal", () => {
+    const device = store();
+    configureArchiveNoticeStorage(device);
+    expect(writeHiddenArchives(" host-a ".trim(), keys)).toEqual({ keys, persistence: "device" });
+    expect(device.values.get(hiddenArchivesKey("host-a"))).toBe(JSON.stringify(keys));
+    expect(writeHiddenArchives("host-a", [...keys].reverse())).toMatchObject({ persistence: "device" }); expect(device.writes).toHaveLength(1);
+    configureArchiveNoticeStorage(device);
+    expect(readHiddenArchives("host-a")).toEqual({ keys, persistence: "device" });
+    expect(readHiddenArchives("host-b")).toEqual({ keys: [], persistence: "device" });
+    writeHiddenArchives("host-a", []);
+    expect(device.writes.at(-1)).toEqual([hiddenArchivesKey("host-a"), null]); expect(device.values.size).toBe(0);
+  });
+  it("an unreadable value hides nothing, and a failed write says it lasts this app session, then retries", () => {
+    for (const value of ["not json", JSON.stringify(["source:error"]), JSON.stringify({ keys })]) {
+      configureArchiveNoticeStorage(store({ [hiddenArchivesKey("host-a")]: value }));
+      expect(readHiddenArchives("host-a")).toEqual({ keys: [], persistence: "unreadable" });
+    }
+    const device = store(); configureArchiveNoticeStorage(device); device.fail = true;
+    expect(writeHiddenArchives("host-a", keys)).toEqual({ keys, persistence: "failed" });
+    device.fail = false;
+    expect(writeHiddenArchives("host-a", keys)).toEqual({ keys, persistence: "device" });
+    configureArchiveNoticeStorage(null);
   });
 });

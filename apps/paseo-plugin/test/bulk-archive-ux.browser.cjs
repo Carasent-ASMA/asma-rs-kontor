@@ -1,7 +1,8 @@
 // Read-only synthetic fixture of the SessionsScreen bulk archive flow through react-native-web.
 // Supply PREVIEW_ORIGIN, PLAYWRIGHT_MODULE and EVIDENCE_DIR. The fixture answers lifecycle RPCs itself; its sessions are
 // agt_lead (children agt_idle idle, agt_run running), agt_a, agt_b (runtime not observed), agt_fence (held fence) and
-// agt_lost (runtime close unconfirmed). No native-device or screen-reader claim.
+// agt_lost (runtime close unconfirmed). With ?recovery=1 it also lists two held archives, agt_rec_a (runtime stop unconfirmed;
+// Refresh status reads it unchanged) and agt_rec_b (result unknown; Refresh status confirms it). No native-device or screen-reader claim.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -143,13 +144,13 @@ async function check(width, height, theme, largeText, earlyClose = false) {
       assert.equal(await summary().innerText(), 'Archived 3 · 1 not confirmed · 2 blocked');
       const result = await dialog().innerText();
       for (const heading of ['Blocked · 2', 'Not confirmed · 1', 'Archived · 3']) assert.ok(result.includes(heading), heading);
-      assert.ok(result.includes('Archived, but stopping its runtime is not confirmed'));
+      assert.ok(result.includes('Archived · runtime stop not confirmed'));
       assert.ok(await page.getByRole('button', { name: 'Review 1 blocked or unattempted session again', exact: true }).isVisible());
       if (largeText) await scale(page);
       await layout(page, 'bulk-archive-dialog', min);
       await shot('7-finished');
 
-      await page.getByRole('button', { name: 'Check outcome: SWE • DEMO-4 • Runtime close reply lost', exact: true }).click();
+      await page.getByRole('button', { name: 'Refresh archive status: SWE • DEMO-4 • Runtime close reply lost', exact: true }).click();
       await summary().filter({ hasText: 'Archived 4 · 2 blocked' }).waitFor();
       await page.getByRole('button', { name: 'Archived · 4', exact: true }).click();
       assert.ok((await page.getByTestId('bulk-archive-row-agt_b').innerText()).includes('Runtime not reported closed'));
@@ -168,10 +169,74 @@ async function check(width, height, theme, largeText, earlyClose = false) {
       const executed = (await calls(page)).filter(([rpc]) => rpc === 'sessions.lifecycle-execute-item').map(([, input]) => input.agentId);
       assert.deepEqual(executed.slice().sort(), ['agt_a', 'agt_b', 'agt_fence', 'agt_idle', 'agt_lead', 'agt_lost'], 'each exact ID once, running child never sent');
       assert.ok(executed.indexOf('agt_idle') < executed.indexOf('agt_lead'), 'child before its parent');
-      assert.equal((await calls(page)).filter(([rpc]) => rpc === 'sessions.lifecycle-reconcile-item').length, 1, 'Check reconciles and never resends');
+      assert.equal((await calls(page)).filter(([rpc]) => rpc === 'sessions.lifecycle-reconcile-item').length, 1, 'Refresh status reconciles and never resends');
     }
     assert.deepEqual(errors, []);
     report.cases.push({ name, status: 'PASS', checkbox: { clear, selected: on } });
+    console.log(`${name}: PASS`);
+  } catch (error) {
+    report.cases.push({ name, status: 'FAIL', error: error.stack, errors });
+    await page.screenshot({ path: path.join(output, `${name}-failure.png`) });
+  } finally { await context.close(); }
+}
+// Archive recovery: the one-line notice, the Review archive sheet by keyboard, Refresh status feedback, details on
+// demand, focus back to Review on Escape, and a hide this device keeps across a reload (web local storage).
+async function recovery(width, height, theme) {
+  const touch = width < 600, name = `${width}x${height}-${theme}-recovery`;
+  const context = await browser.newContext({ viewport: { width, height }, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
+  const page = await context.newPage(), errors = [], min = touch ? 44 : 24;
+  page.on('pageerror', error => errors.push(error.message));
+  const shot = step => page.screenshot({ path: path.join(output, `${name}-${step}.png`) });
+  const sheet = () => page.getByTestId('archive-recovery-sheet'), notice = page.getByTestId('sessions-archive-recovery');
+  const focused = () => page.evaluate(() => document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent);
+  const A = 'AUD • DEMO-5 • Audit whose stop reply was lost', B = 'SWE • DEMO-6 • Archive acknowledgement lost';
+  try {
+    await page.goto(`${origin}/?${touch ? 'layout=compact&' : ''}theme=${theme}&recovery=1`);
+    await notice.filter({ hasText: '2 archives need attention' }).waitFor();
+    await page.getByRole('button', { name: 'Review 2 unconfirmed archives', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await sheet().waitFor();
+    await page.waitForFunction(() => document.activeElement?.textContent === 'Close', null, { timeout: 2000 });
+    assert.ok(await page.getByRole('heading', { name: '2 archives need attention', exact: true }).isVisible());
+    const items = sheet().getByRole('listitem');
+    assert.equal(await items.count(), 2, 'every unresolved archive is listed');
+    const text = await sheet().innerText();
+    for (const fact of ['Archived · runtime stop not confirmed', 'Archive result unknown', 'Another archive request will not be sent while its outcome is uncertain.', 'Last checked', 'host reports idle'])
+      assert.ok(text.includes(fact), fact);
+    for (const jargon of ['terminal retirement', 'Check native', 'fence', 'agt_rec_a']) assert.ok(!text.includes(jargon), `${jargon} waits in Technical details`);
+    await layout(page, 'archive-recovery-sheet', min);
+    await shot('1-sheet');
+
+    // Keyboard: Tab stays in the dialog and reaches the first item's Refresh status; Enter runs one exact-ID read.
+    for (let n = 0; n < 12 && await focused() !== `Refresh archive status: ${A}`; n++) await page.keyboard.press('Tab');
+    assert.equal(await focused(), `Refresh archive status: ${A}`, 'Tab reaches Refresh status');
+    await page.keyboard.press('Enter');
+    await page.getByTestId('archive-recovery-note-agt_rec_a').filter({ hasText: 'Checked just now · unchanged' }).waitFor();
+    await page.getByRole('button', { name: `Refresh archive status: ${B}`, exact: true }).click();
+    await sheet().getByText(`${B}: confirmed archived · notice cleared`, { exact: true }).waitFor();
+    assert.equal(await items.count(), 1, 'a confirmed archive leaves the list');
+    assert.ok(await page.getByRole('heading', { name: 'Archive needs attention', exact: true }).isVisible());
+    await page.getByRole('button', { name: `Technical details for ${A}`, exact: true }).click();
+    const details = await page.getByTestId('archive-recovery-item-agt_rec_a').innerText();
+    for (const fact of ['Session ID agt_rec_a', 'Review ID 00000000-0000-4000-8000-0000000000a1', 'stopping its runtime is not confirmed']) assert.ok(details.includes(fact), fact);
+    await layout(page, 'archive-recovery-sheet', min);
+    await shot('2-refreshed-details');
+    assert.deepEqual((await calls(page)).filter(([rpc]) => rpc === 'sessions.lifecycle-reconcile-item').map(([, input]) => input),
+      [{ reviewId: '00000000-0000-4000-8000-0000000000a1', agentId: 'agt_rec_a' }, { reviewId: '00000000-0000-4000-8000-0000000000b2', agentId: 'agt_rec_b' }], 'one exact-ID read per press');
+    assert.ok(!(await calls(page)).some(([rpc]) => rpc === 'sessions.lifecycle-execute-item' || rpc === 'sessions.lifecycle-preview'), 'never archives again');
+
+    await page.keyboard.press('Escape');
+    await sheet().waitFor({ state: 'detached' });
+    await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Review unconfirmed archive', null, { timeout: 2000 });
+    await notice.filter({ hasText: `${A}: archived, runtime stop not confirmed` }).waitFor();
+    await page.getByRole('button', { name: 'Hide notices', exact: true }).click();
+    await notice.waitFor({ state: 'detached' });
+    await page.reload();
+    await page.getByRole('button', { name: `Show notices: ${A}: archived, runtime stop not confirmed`, exact: true }).waitFor();
+    assert.equal(await notice.count(), 0, 'hidden on this device across a reload');
+    await shot('3-hidden-after-reload');
+    assert.deepEqual(errors, []);
+    report.cases.push({ name, status: 'PASS' });
     console.log(`${name}: PASS`);
   } catch (error) {
     report.cases.push({ name, status: 'FAIL', error: error.stack, errors });
@@ -184,6 +249,7 @@ async function check(width, height, theme, largeText, earlyClose = false) {
   try {
     for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) for (const largeText of [false, true]) await check(width, height, theme, largeText);
     await check(390, 844, 'dark', false, true);
+    for (const [width, height] of [[320, 568], [390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) await recovery(width, height, theme);
   } finally {
     await browser.close();
     fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

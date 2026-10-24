@@ -151,13 +151,16 @@ describe("bulk archive blocked reasons", () => {
     expect(archiveIssue(row("f", { outcome: "blocked", reconcileReviewId: "00000000-0000-4000-8000-000000000002", message: "An earlier archive owns this session. Check its native outcome; no second dispatch was made." })))
       .toMatchObject({ text: "An earlier archive owns this session.", check: true });
     expect(archiveIssue(row("u", { outcome: "archived", runtime: "unconfirmed", message: "Archived. The archive reply did not confirm completion (lost), so stopping its runtime is not confirmed." })))
-      .toMatchObject({ text: "Archived, but stopping its runtime is not confirmed", check: true });
+      .toMatchObject({ text: "Archived · runtime stop not confirmed", check: true });
+    expect(archiveIssue(row("l", { outcome: "uncertain", message: "Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request." })))
+      .toMatchObject({ text: "Archive result unknown", check: true });
     expect(archiveIssue(row("n", { outcome: "blocked", message: "Native read failed: socket closed. Absence is not confirmed." })).text).toBe("Native read failed: socket closed.");
   });
   it("keeps the sessions-list marker to one short line and only for blocked or unconfirmed rows", () => {
     const line = (value: LifecycleRow) => texts(ArchiveRowFeedback({ row: value, colors }));
     expect(line(row("p", { outcome: "blocked", eligible: false, children: [child("a"), child("b")] }))).toEqual(["Archive blocked · Has 2 active children"]);
-    expect(line(row("u", { outcome: "uncertain", message: "Lost acknowledgement; do not resend" }))).toEqual(["Archive not confirmed · Lost acknowledgement; do not resend"]);
+    expect(line(row("u", { outcome: "uncertain", message: "Lost acknowledgement; do not resend" }))).toEqual(["Archive result unknown"]);
+    expect(line(row("v", { outcome: "archived", runtime: "unconfirmed" }))).toEqual(["Archived · runtime stop not confirmed"]);
     for (const settled of [row("a", { outcome: "archived", runtime: "not-observed" }), row("b", { outcome: "absent" }), row("c", { outcome: "already_archived" }), row("d")]) expect(ArchiveRowFeedback({ row: settled, colors })).toBeNull();
   });
 });
@@ -255,7 +258,8 @@ describe("bulk archive confirmation", () => {
     expect(archived.props.open).toBeUndefined(); expect(texts(archived)).toEqual(expect.arrayContaining(["Runtime not reported closed"]));
     expect(texts(archived).filter((value) => value === "Runtime not reported closed")).toHaveLength(1);
     expect(copy.filter((value) => value === "archived" || value === "blocked")).toHaveLength(0);
-    const checks = labelled(tree, "Check"); expect(checks).toHaveLength(2);
+    const checks = labelled(tree, "Refresh status"); expect(checks).toHaveLength(2);
+    expect(checks.map((check) => check.props.accessibilityLabel)).toEqual(["Refresh archive status: Session fence", "Refresh archive status: Session lost"]);
     for (const check of checks) (check.props.onPress as () => void)();
     expect(reconcile.mock.calls).toEqual([["fence"], ["lost"]]); expect(run).not.toHaveBeenCalled();
     (labelled(tree, "Review 2 again")[0]!.props.onPress as () => void)();
@@ -263,10 +267,10 @@ describe("bulk archive confirmation", () => {
     expect(labelled(tree, /^Archive \d+ sessions?$/)).toHaveLength(0);
     (labelled(tree, "Done")[0]!.props.onPress as () => void)(); expect(onClose).toHaveBeenCalledTimes(1);
   });
-  it("keeps results on screen during a Check, shows a fresh read only while previewing, and reports a failed read", () => {
+  it("keeps results on screen during a Refresh status, shows a fresh read only while previewing, and reports a failed read", () => {
     const rows = [row("lost", { outcome: "uncertain" })];
     const checking = dialog({ review: review(rows) as never, busy: true, batch: batch({ summary: "x" }) as never }).render();
-    expect(texts(checking)).not.toContain("Reading selected sessions and managed children…"); expect(labelled(checking, "Check")[0]!.props.disabled).toBe(true);
+    expect(texts(checking)).not.toContain("Reading selected sessions and managed children…"); expect(labelled(checking, "Refresh status")[0]!.props.disabled).toBe(true);
     const reading = dialog({ review: review(rows) as never, busy: true }).render();
     expect(texts(reading).sort()).toEqual(["Archive selected sessions", "Reading selected sessions and managed children…"]); expect(labelled(reading, /^Archive \d/)).toHaveLength(0);
     const failed = dialog({ review: null, error: "Archive requires 1–50 explicitly selected session IDs in filtered scope." }).render();
