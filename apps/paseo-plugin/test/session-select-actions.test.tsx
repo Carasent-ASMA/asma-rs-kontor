@@ -162,7 +162,7 @@ describe("select action button", () => {
 });
 
 describe("select action bar", () => {
-  const setup = (patch: { selected?: SelectedSession[]; owners?: Owners; hostId?: string; refusal?: RefusalView | "unreadable" | null } = {}) => {
+  const setup = (patch: { selected?: SelectedSession[]; owners?: Owners; hostId?: string; blocked?: string; refusal?: RefusalView | "unreadable" | null } = {}) => {
     const props = { hostId: "host-a", selected: [session("a", { status: "error" })], owners: {} as Owners, zone: "UTC", colors,
       onOpen: vi.fn(), onArchive: vi.fn(), onClear: vi.fn(), ...patch };
     const render = () => harness.current.render(() => SelectActionBar(props)) as Element;
@@ -179,6 +179,18 @@ describe("select action bar", () => {
     expect(["open", "archive", "resume", "takeOver", "clear"].map((name) => action(tree, name).props.name))
       .toEqual(["Open session", "Archive sessions", "Resume session", "Take over session", "Clear selection"]);
     expect(action(tree, "takeOver").props).toMatchObject({ enabled: false, line: "Take over needs a qualified handoff profile, and none is available yet." });
+  });
+
+  it("shows why nothing can start while blocked, and runs nothing", () => {
+    const { props, render } = setup({ owners: { takeOver: lookup(yes("a")) }, blocked: "Wait for the archive review to close." });
+    const tree = render();
+    for (const name of ["open", "archive", "resume", "takeOver", "clear"]) {
+      expect(action(tree, name).props).toMatchObject({ enabled: false, line: "Wait for the archive review to close." });
+      press(draw(action(tree, name)));
+    }
+    expect(props.onOpen).not.toHaveBeenCalled(); expect(props.onArchive).not.toHaveBeenCalled(); expect(props.onClear).not.toHaveBeenCalled();
+    expect(help.hold).toHaveBeenCalledTimes(5);
+    expect(walk(render()).some((node) => node.props.testID === "sessions-select-confirm")).toBe(false);
   });
 
   it("opens and archives through the existing paths, and never through Take over", () => {

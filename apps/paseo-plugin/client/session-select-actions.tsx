@@ -147,8 +147,10 @@ type Confirm = { readonly action: "resume" | "takeOver"; readonly requests: read
  * Resume and Take over confirm inline with one consequence line and text buttons; nothing reaches an owner's `run`
  * before Confirm. Changing the selection or host drops an open confirmation and ignores a reply still on its way.
  */
-export function SelectActionBar({ hostId, selected, owners, refusal, zone, colors, archiveRef, onOpen, onArchive, onClear }: {
+export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zone, colors, archiveRef, onOpen, onArchive, onClear }: {
   hostId: string; selected: readonly SelectedSession[]; owners: Owners;
+  /** Why no action can start right now, such as an open review or an offline host; every action shows it instead. */
+  blocked?: string;
   /** The exact read for a single selected session; omit it for none or several. */
   refusal?: RefusalView | "unreadable" | null; zone: string; colors: Colors;
   /** Anchors the existing archive review and receives focus back from it. */
@@ -159,7 +161,7 @@ export function SelectActionBar({ hostId, selected, owners, refusal, zone, color
   const token = useRef(0);
   const scope = `${hostId}\n${selected.map((session) => session.id).join("\n")}`;
   useEffect(() => { token.current++; setConfirm(null); setPending(false); setResult(null); }, [scope]);
-  const states = selectActions(hostId, selected, owners);
+  const states = blocked ? { open: off(blocked), archive: off(blocked), resume: off(blocked), takeOver: off(blocked) } : selectActions(hostId, selected, owners);
   const press = (action: SelectAction) => {
     const state = states[action];
     if (!state.enabled) return;
@@ -192,7 +194,7 @@ export function SelectActionBar({ hostId, selected, owners, refusal, zone, color
       <View style={{ flexGrow: 1 }} />
       {(Object.keys(ACTIONS) as SelectAction[]).map((action) => <SelectActionButton key={action} testID={`sessions-select-action-${action}`} icon={ACTIONS[action].icon} name={ACTIONS[action].name}
         line={states[action].line} enabled={states[action].enabled && !pending} colors={colors} ref={action === "archive" ? archiveRef : undefined} onPress={() => press(action)} />)}
-      <SelectActionButton testID="sessions-select-action-clear" icon="X" name="Clear selection" line="Clear the selection; nothing runs." enabled={!pending} colors={colors} onPress={onClear} />
+      <SelectActionButton testID="sessions-select-action-clear" icon="X" name="Clear selection" line={blocked ?? "Clear the selection; nothing runs."} enabled={!pending && !blocked} colors={colors} onPress={onClear} />
     </View>
     {selected.length === 1 && refusal !== undefined ? <ProviderStateLine refusal={refusal} zone={zone} colors={colors} /> : null}
     {confirm ? <View testID="sessions-select-confirm" style={{ gap: 6, padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
