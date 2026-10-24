@@ -79,7 +79,7 @@ describe("anchored menu keys on web", () => {
   it.each(["Close", "Escape", "backdrop"])("dismisses the actual bulk confirmation through %s without executing archive", (dismiss) => {
     effects.length = 0;
     const onClose = vi.fn(), run = vi.fn(), stop = vi.fn(), anchor = node();
-    const dialog = BulkArchiveDialog({ lifecycle: { review: { rows: [{ id: "fixture-a", title: "A", outcome: "pending", eligible: true }] }, run, stop } as never,
+    const dialog = BulkArchiveDialog({ lifecycle: { review: { rows: [{ id: "fixture-a", title: "A", outcome: "pending", eligible: true, children: [] }] }, run, stop } as never,
       root: { current: { measureInWindow: () => {} } } as never, anchor: refOf(anchor) as never, rootSize: { width: 390, height: 844 }, colors: {} as never,
       compact: true, onClose, onFinished: vi.fn() }) as ReactElement<Record<string, unknown>>;
     expect(dialog.props.anchor).toBe(refOf(anchor));
