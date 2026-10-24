@@ -506,11 +506,12 @@ an honest no-sources state; malformed or unreadable files report diagnostics.
 The server rereads the catalog for each list, summaries, read and association
 request. An operator can atomically replace the file; Settings → Refresh sources
 or the 30-second summaries refresh picks up additions, edits and removals without
-a daemon restart. A summaries request reads one catalog snapshot, and a catalog
-changed during an exact refresh fails that refresh rather than mixing bindings
-and replacement paths. Failed requests retain previous client reads with
-a stale warning; invalid or missing catalogs return their own diagnostics and no
-sources. The plugin never writes the catalog or accepts its path from a client.
+a daemon restart. A summaries request reads one catalog snapshot, binds every
+Teams snapshot to that catalog's source identity and re-reads the catalog
+identity before publishing; a catalog changed during the refresh fails that
+refresh rather than mixing bindings, replacement paths or snapshots. Failed
+requests retain previous client reads with a stale warning; invalid or missing
+catalogs return their own diagnostics and no sources. The plugin never writes the catalog or accepts its path from a client.
 Presentation settings do not store catalog paths or source contents. This file
 only declares read sources; it does not activate teams or grant execution.
 

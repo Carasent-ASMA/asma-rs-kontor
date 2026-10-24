@@ -3,12 +3,21 @@ import { useQuery } from "@tanstack/react-query";
 import { useRpc, type PluginHostSummary } from "@getpaseo/plugin/client";
 import { readTeamsSource, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
-import { readSource, readSourceSummaries, sourceReadPending, type SourceRead } from "../shared/read-sources";
+import { listReadSources, readSource, readSourceSummaries, sourceReadPending, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 
 /** One exact full read kept for the summary identity and revision it was read at. */
 export type FullSourceRead = { hostId: string; path: string; kind: SourceRead["source"]["kind"]; revision: string | null; read: SourceRead };
 type QueueItem = { key: string; hostId: string; path: string; kind: SourceRead["source"]["kind"]; id: string; revision: string | null };
 
+/** The catalog identity a summaries transaction must still match before it is published. */
+function catalogIdentity(value: { sources: readonly ReadSourceSummary[]; diagnostics: readonly string[]; registry?: unknown }): string {
+  return JSON.stringify([value.sources, value.diagnostics, value.registry]);
+}
+/** The exact source identity a Teams snapshot must share with the catalog it is published under. */
+function sourceIdentity(source: ReadSourceSummary): string {
+  return JSON.stringify([source.id, source.kind, source.path, source.title, source.workstream, source.epic, source.projectId,
+    source.revisionKind, source.logicalPlanId, source.expectedSha256]);
+}
 /** The request identity, including path and kind, so a same-byte replacement is a new demand. */
 function requestKey(item: Omit<QueueItem, "key">): string {
   return [item.hostId, item.id, item.kind, item.path, item.revision ?? ""].join("\u0000");
@@ -60,6 +69,7 @@ export function pendingDemandIds(demanded: readonly string[], summaries: Readonl
 export function useReadSources(hostId: string, hostStatus: PluginHostSummary["status"]) {
   const online = hostStatus === "online";
   const summaries = useRpc(readSourceSummaries);
+  const list = useRpc(listReadSources);
   const read = useRpc(readSource);
   const readTeams = useRpc(readTeamsSource);
   const query = useQuery({
@@ -79,11 +89,24 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
         while (!signal.aborted) {
           const source = bound[cursor++];
           if (!source) return;
-          try { teamsSnapshots[source.id] = await readTeams({ sourceId: source.id }); }
+          try {
+            const snapshot = await readTeams({ sourceId: source.id });
+            // A snapshot read through a replacement catalog must not be published under this one.
+            if (sourceIdentity(snapshot.source) !== sourceIdentity(source)) {
+              teamsErrors[source.id] = "Teams source identity changed during read; refresh sources.";
+              continue;
+            }
+            teamsSnapshots[source.id] = snapshot;
+          }
           catch (failure) { teamsErrors[source.id] = failure instanceof Error ? failure.message : String(failure); }
         }
       }
       await Promise.all(Array.from({ length: Math.min(3, bound.length) }, () => worker()));
+      if (signal.aborted) throw new Error("Configured source refresh canceled");
+      // The final catalog re-read proves the summaries and every Teams snapshot share one
+      // catalog transaction; a changed catalog fails this refresh instead of publishing A + B.
+      const current = await list({});
+      if (catalogIdentity(current) !== catalogIdentity(catalog)) throw new Error("Source catalog changed during refresh; refresh again");
       return { ...catalog, teamsSnapshots, teamsErrors, teamsBindingDiagnostics: bindings.diagnostics };
     },
   });

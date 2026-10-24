@@ -3,11 +3,11 @@ import { useReadSources, overlaySourceReads, pendingDemandIds, type FullSourceRe
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 
 const model = vi.hoisted(() => ({ query: null as null | ((context: { signal: AbortSignal }) => Promise<unknown>), options: null as unknown,
-  summaries: vi.fn(), read: vi.fn(), teams: vi.fn() }));
+  summaries: vi.fn(), list: vi.fn(), read: vi.fn(), teams: vi.fn() }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, vi.fn()],
   useRef: (current: unknown) => ({ current }), useEffect: () => {}, useMemo: (factory: () => unknown) => factory() }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (rpc: { name: string }) => rpc.name === "sources.summaries" ? model.summaries
-  : rpc.name === "sources.read" ? model.read : model.teams }));
+  : rpc.name === "sources.list" ? model.list : rpc.name === "sources.read" ? model.read : model.teams }));
 vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryFn: typeof model.query }) => { model.query = options.queryFn; model.options = options;
   return { data: undefined, isError: false, error: null, isFetching: false, refetch: vi.fn() }; } }));
 
@@ -21,12 +21,18 @@ const delivery = summary(deliverySource, "b");
 const jira: SourceRead = { ...summary({ ...deliverySource, id: "jira", title: "Jira", kind: "jira", path: "/configured/jira.json" }, "c"),
   jiraHistory: { schema: "consumption/data@2", generated: "2026-10-18T10:00:00Z", provenance: { path: "/capture.json", sha256: "a".repeat(64), capturedEpics: 0 }, selection: ["ASMA-1"], epics: [] } };
 const fullPlan: FullSourceRead = { hostId: "host", path: planSource.path, kind: "plan", revision: "a", read: { ...plan, content: "# Plan", graph: null, planMetadata: { workstream: "access", epic: "ASMA-1", diagnostics: [] } } };
+const registry = { path: null, revision: null, workstreams: {}, desks: {}, diagnostics: [] };
+const teamsA: ReadSourceSummary = { ...authoringSource, title: "Catalog A", path: "/configured/a.yml" };
+const teamsB: ReadSourceSummary = { ...teamsA, title: "Catalog B", path: "/configured/b.yml" };
+const teamsSnapshot = (source: ReadSourceSummary) => ({ source, status: "ready", readAt: "2026-10-24T10:00:00Z" });
 
 describe("source summaries and demanded full reads", () => {
   it("requests summaries once, keeps Teams adapter IDs on their snapshots and never reads every source", async () => {
-    model.summaries.mockReset().mockResolvedValue({ sources: [planSource, deliverySource, authoringSource], diagnostics: [], registry: { path: null, revision: null, workstreams: {}, desks: {}, diagnostics: [] },
+    const sources = [planSource, deliverySource, authoringSource];
+    model.summaries.mockReset().mockResolvedValue({ sources, diagnostics: [], registry,
       reads: { plan, delivery, authoring: summary(authoringSource, "d") } });
-    model.teams.mockReset().mockResolvedValue({ source: authoringSource, status: "ready", readAt: "2026-10-24T10:00:00Z" });
+    model.list.mockReset().mockResolvedValue({ sources, diagnostics: [], registry });
+    model.teams.mockReset().mockResolvedValue(teamsSnapshot(authoringSource));
     model.read.mockReset();
     useReadSources("host", "online");
     const result = await model.query!({ signal: new AbortController().signal }) as Record<string, unknown>;
@@ -40,11 +46,29 @@ describe("source summaries and demanded full reads", () => {
   });
   it("keeps a Teams adapter failure isolated from summary reads", async () => {
     model.summaries.mockReset().mockResolvedValue({ sources: [authoringSource], diagnostics: ["catalog note"], reads: { authoring: summary(authoringSource, "d") } });
+    model.list.mockReset().mockResolvedValue({ sources: [authoringSource], diagnostics: ["catalog note"] });
     model.teams.mockReset().mockRejectedValue(new Error("authoring unavailable"));
     useReadSources("host", "online");
     const result = await model.query!({ signal: new AbortController().signal }) as Record<string, unknown>;
     expect(result.teamsSnapshots).toEqual({}); expect(result.teamsErrors).toEqual({ authoring: "authoring unavailable" });
     expect(Object.keys(result.reads as object)).toEqual(["authoring"]); expect(result.diagnostics).toEqual(["catalog note"]);
+  });
+  it("AUD P2-03 rejects a catalog changed between summaries and the final identity read", async () => {
+    model.summaries.mockReset().mockResolvedValue({ sources: [teamsA], diagnostics: [], reads: { authoring: summary(teamsA, "a") } });
+    model.teams.mockReset().mockResolvedValue(teamsSnapshot(teamsB));
+    model.list.mockReset().mockResolvedValue({ sources: [teamsB], diagnostics: [] });
+    useReadSources("host", "online");
+    await expect(model.query!({ signal: new AbortController().signal })).rejects.toThrow("Source catalog changed during refresh");
+  });
+  it("AUD P2-03 does not publish a snapshot read through a replacement path under an unchanged catalog", async () => {
+    model.summaries.mockReset().mockResolvedValue({ sources: [teamsA], diagnostics: [], reads: { authoring: summary(teamsA, "a") } });
+    model.teams.mockReset().mockResolvedValue(teamsSnapshot(teamsB));
+    model.list.mockReset().mockResolvedValue({ sources: [teamsA], diagnostics: [] });
+    useReadSources("host", "online");
+    const result = await model.query!({ signal: new AbortController().signal }) as Record<string, unknown>;
+    expect(result.teamsSnapshots).toEqual({});
+    expect(result.teamsErrors).toEqual({ authoring: "Teams source identity changed during read; refresh sources." });
+    expect((result.sources as ReadSourceSummary[])[0]!.path).toBe(teamsA.path);
   });
   it("overlays a full read only at its own revision and skips Teams adapter IDs", () => {
     expect(overlaySourceReads({ plan, delivery }, {}, "host", new Set())).toEqual({ plan, delivery });

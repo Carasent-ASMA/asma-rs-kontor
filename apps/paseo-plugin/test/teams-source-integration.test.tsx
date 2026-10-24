@@ -95,9 +95,10 @@ describe("A-owned Teams source integration", () => {
     const summaryRead = (source: typeof sources[number]) => ({ source, status: "ready" as const, revision: "a", readAt: "2026-10-24T10:00:00Z", modifiedAt: null,
       content: null, graph: null, records: null, diagnostics: [] });
     const summaries = vi.fn(async () => ({ sources, diagnostics: [], reads: Object.fromEntries(sources.map((source) => [source.id, summaryRead(source)])) }));
+    const list = vi.fn(async () => ({ sources, diagnostics: [] }));
     const json = vi.fn(async () => ({ source: legacy, records: { teams: [] } }) as unknown as SourceRead);
     const teams = vi.fn(async ({ sourceId }: { sourceId: string }) => { if (sourceId === "operator") throw new Error("operator unavailable"); return snapshots[sourceId]!; });
-    model.rpc.set("sources.summaries", summaries); model.rpc.set("sources.read", json); model.rpc.set("teams.sources.read", teams);
+    model.rpc.set("sources.summaries", summaries); model.rpc.set("sources.list", list); model.rpc.set("sources.read", json); model.rpc.set("teams.sources.read", teams);
     useReadSources("host-A", "online");
     expect(model.query.queryKey).toEqual(["kontor-read-source-summaries", "host-A"]);
     const result = await model.query.queryFn({ signal: new AbortController().signal });
