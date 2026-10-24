@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "types": [],
+    "paths": {
+      "paseo-sdk/client": ["../paseo-plugin/node_modules/@getpaseo/plugin/dist/client/index.d.ts"],
+      "paseo-sdk/host": ["../paseo-plugin/node_modules/@getpaseo/plugin/dist/client/host.d.ts"],
+      "@getpaseo/plugin": ["../paseo-plugin/node_modules/@getpaseo/plugin/dist/index.d.ts"],
+      "@getpaseo/client": ["../paseo-plugin/node_modules/@getpaseo/client/dist/index.d.ts"],
+      "react-native": ["../paseo-plugin/node_modules/react-native"]
+    }
+  },
+  "include": ["src", "test"]
+}
