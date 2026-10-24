@@ -205,22 +205,28 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   const staleBindings = [...work, ...roles].filter((claim) => claim.binding !== "claimed" && claim.source.fresh !== "current");
   if (staleBindings.length) conflicts.push({ kind: "stale-or-mismatched-evidence", detail: "A verified placement or binding is stale or was read for another identity.", sources: staleBindings.map((claim) => claim.source) });
 
+  const currentEvidence = (source: ProjectionSource) => source.fresh === "current" && source.observedAt !== null && source.revision !== null;
+  const settlement = (label: string, source: ProjectionSource): boolean => {
+    if (currentEvidence(source)) return true;
+    missing.push(`${label} settlement evidence is stale or incomplete.`);
+    attention = true;
+    return false;
+  };
   const responsibilities = [...(input.responsibilities ?? [])];
-  const currentResponsibilities = responsibilities.filter((entry) => entry.sessionId === session.id && entry.source.fresh === "current" && entry.source.observedAt !== null && entry.source.revision !== null);
-  const staleResponsibilities = responsibilities.filter((entry) => !currentResponsibilities.includes(entry));
-  if (staleResponsibilities.length) { missing.push("Responsibility evidence is stale, incomplete or names another session; it cannot verify responsibility."); attention = true; }
+  const validatedResponsibilities = responsibilities.filter((entry) => entry.sessionId === session.id && currentEvidence(entry.source) && entry.owner.trim().length > 0 && entry.role.trim().length > 0);
+  const incompleteResponsibilities = responsibilities.filter((entry) => !validatedResponsibilities.includes(entry));
+  if (incompleteResponsibilities.length) { missing.push("Responsibility evidence is stale, incomplete or names another session; it cannot verify responsibility."); attention = true; }
   const roleOwners = new Map<string, Set<string>>();
-  for (const entry of currentResponsibilities) {
+  for (const entry of validatedResponsibilities) {
     const role = entry.role.trim();
-    if (!role) continue;
     const owners = roleOwners.get(role) ?? new Set<string>();
     owners.add(entry.owner.trim());
     roleOwners.set(role, owners);
   }
   const conflictingRoles = [...roleOwners].filter(([, owners]) => owners.size > 1);
-  if ([...roleOwners.keys()].length > 1) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the role: ${[...roleOwners.keys()].join(", ")}.`, sources: currentResponsibilities.map((entry) => entry.source) });
-  for (const [role, owners] of conflictingRoles) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the owner for role ${role}: ${[...owners].join(", ")}.`, sources: currentResponsibilities.filter((entry) => entry.role.trim() === role).map((entry) => entry.source) });
-  const verifiedResponsibility = responsibilities.length > 0 && staleResponsibilities.length === 0 && conflictingRoles.length === 0 && [...roleOwners.keys()].length === 1 ? currentResponsibilities[0] ?? null : null;
+  if ([...roleOwners.keys()].length > 1) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the role: ${[...roleOwners.keys()].join(", ")}.`, sources: validatedResponsibilities.map((entry) => entry.source) });
+  for (const [role, owners] of conflictingRoles) conflicts.push({ kind: "conflicting-role-claims", detail: `Owner sources disagree about the owner for role ${role}: ${[...owners].join(", ")}.`, sources: validatedResponsibilities.filter((entry) => entry.role.trim() === role).map((entry) => entry.source) });
+  const verifiedResponsibility = responsibilities.length > 0 && incompleteResponsibilities.length === 0 && conflictingRoles.length === 0 && [...roleOwners.keys()].length === 1 ? validatedResponsibilities[0] ?? null : null;
 
   const obligations: Array<{ readonly reason: string; readonly source: ProjectionSource }> = [];
   const execution = session.status === "running" || session.activeTurn;
@@ -230,8 +236,8 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   for (const duty of input.duties ?? []) {
     evidence.push(duty.source);
     if (duty.state === "open") block(`Open duty: ${duty.duty}.`, duty.source);
-    else if (duty.state === "settled" && (duty.source.fresh !== "current" || duty.source.observedAt === null || duty.source.revision === null)) { missing.push(`Duty settlement evidence is stale or incomplete: ${duty.duty}.`); attention = true; }
-    else if (duty.state === "unknown") { missing.push(`Duty state is unknown: ${duty.duty}.`); attention = true; }
+    else if (duty.state === "settled") settlement(`Duty (${duty.duty})`, duty.source);
+    else { missing.push(`Duty state is unknown: ${duty.duty}.`); attention = true; }
   }
   if (input.hold) {
     const hold = input.hold, reviewAt = hold.reviewBy ? Date.parse(hold.reviewBy) : NaN;
@@ -245,6 +251,7 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
     evidence.push(input.milestone.source);
     if (input.milestone.state === "open") block("An authorized next milestone remains open.", input.milestone.source);
     else if (input.milestone.state === "unknown") { missing.push("The next milestone state is unknown."); attention = true; }
+    else settlement("Milestone completion", input.milestone.source);
   }
   if (input.durable) {
     evidence.push(input.durable.source);
@@ -263,6 +270,7 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
       evidence.push(seat.source);
       if (seat.state === "open") block(`Ticket seat is not released: ${seat.duty}.`, seat.source);
       else if (seat.state === "unknown") { missing.push(`Ticket seat state is unknown: ${seat.duty}.`); attention = true; }
+      else settlement(`Ticket seat (${seat.duty})`, seat.source);
     }
     const pullRequestSource = ticket.pullRequestSource ?? { id: `ticket:pull-request:${session.id}`, kind: "ticket" as const, detail: "ticket pull request fact without a separate source", observedAt: null, revision: null, fresh: "unknown" as const };
     const escalationSource = ticket.escalationSource ?? { id: `ticket:escalation:${session.id}`, kind: "ticket" as const, detail: "ticket escalation fact without a separate source", observedAt: null, revision: null, fresh: "unknown" as const };
@@ -271,9 +279,11 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
     if (!ticket.escalationSource) { missing.push("Ticket escalation evidence has no source provenance."); attention = true; }
     if (ticket.escalation === "open") block("An operator escalation is open for this ticket.", escalationSource);
     else if (ticket.escalation === "unknown") { missing.push("Ticket escalation state is unknown."); attention = true; }
+    else settlement("Ticket escalation absence", escalationSource);
     if (ticket.pullRequest === "open") block("The ticket pull request is open.", pullRequestSource);
     else if (ticket.pullRequest === "unknown") { missing.push("Ticket pull request state is unknown."); attention = true; }
     else if (ticket.kind === "spike" && ticket.pullRequest !== "none-explicit") { missing.push("A spike must explicitly declare that it has no pull request."); attention = true; }
+    else settlement("Ticket pull request", pullRequestSource);
   }
   if (input.jira) evidence.push(input.jira.source);
   if (input.peer) evidence.push(input.peer.source);
@@ -296,20 +306,21 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   if (release.state === "unavailable") missing.push(release.reason);
   else {
     evidence.push(release.source);
-    const releaseCurrent = release.source.fresh === "current" && release.source.observedAt !== null && release.source.revision !== null;
+    const releaseCurrent = currentEvidence(release.source), releaseOwner = release.owner.trim();
     if (!releaseCurrent) { missing.push("Release evidence is stale, incomplete or lacks an observation time and revision."); attention = true; }
     if (release.sessionId !== session.id) missing.push("Release evidence does not name this exact native session.");
+    if (!releaseOwner) missing.push("Release owner is empty; it cannot verify an owner identity.");
     if (!release.accepted) missing.push("An authoritative owner has not accepted its final duties.");
     if (!release.dutiesSettled) missing.push("An authoritative owner has not reported its duties settled.");
     if (!release.descendantsSettled) missing.push("Descendant obligations are not settled.");
     if (!release.wakesSettled) missing.push("Owned wakes and callbacks are not settled.");
     if (release.executor !== "verified") missing.push(release.executor === "circular" ? "The external executor route is circular." : "A verified external executor is missing.");
-    const verifiedBinding = work.find((claim) => claim.binding === "verified" && claim.source.fresh === "current" && claim.source.observedAt !== null && claim.source.revision !== null) ?? null;
+    const verifiedBinding = work.find((claim) => claim.binding === "verified" && currentEvidence(claim.source)) ?? null;
     if (!verifiedBinding) missing.push("No current verified work binding supports release.");
     if (!verifiedResponsibility) missing.push("No current verified owner responsibility supports release.");
-    else if (release.owner.trim() !== verifiedResponsibility.owner.trim()) missing.push("Owner responsibility and release evidence disagree on the owner.");
-    releaseComplete = releaseCurrent && release.sessionId === session.id && release.accepted && release.dutiesSettled && release.descendantsSettled && release.wakesSettled && release.executor === "verified"
-      && verifiedBinding !== null && verifiedResponsibility !== null && release.owner.trim() === verifiedResponsibility.owner.trim();
+    else if (releaseOwner !== verifiedResponsibility.owner.trim()) missing.push("Owner responsibility and release evidence disagree on the owner.");
+    releaseComplete = releaseCurrent && release.sessionId === session.id && releaseOwner.length > 0 && release.accepted && release.dutiesSettled && release.descendantsSettled && release.wakesSettled && release.executor === "verified"
+      && verifiedBinding !== null && verifiedResponsibility !== null && releaseOwner === verifiedResponsibility.owner.trim();
   }
 
   const uniqueMissing = [...new Set(missing)], hard = conflicts.filter((conflict) => HARD_CONFLICTS.includes(conflict.kind));
@@ -325,11 +336,11 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   const claimedRole = roles.find((claim) => claim.value.trim().length > 0)?.value.trim() ?? null;
   const responsibilityMissing: string[] = [];
   if (responsibilities.length === 0) responsibilityMissing.push(MISSING_OWNER_ADAPTER);
-  else if (staleResponsibilities.length) responsibilityMissing.push("Responsibility evidence is stale, incomplete or names another session; it cannot verify responsibility.");
+  else if (incompleteResponsibilities.length) responsibilityMissing.push("Responsibility evidence is stale, incomplete or names another session; it cannot verify responsibility.");
   else if (conflictingRoles.length || [...roleOwners.keys()].length > 1) responsibilityMissing.push("Conflicting owner responsibility evidence cannot verify a responsibility.");
   else if (!verifiedResponsibility) responsibilityMissing.push("No current, consistent owner responsibility was supplied.");
   const responsibility: SessionProjection["responsibility"] = verifiedResponsibility
-    ? { status: "verified", role: verifiedResponsibility.role.trim(), owner: verifiedResponsibility.owner.trim(), duty: verifiedResponsibility.responsibility, claimedRole, evidence: uniqueSources(currentResponsibilities.map((entry) => entry.source)), missing: [] }
+    ? { status: "verified", role: verifiedResponsibility.role.trim(), owner: verifiedResponsibility.owner.trim(), duty: verifiedResponsibility.responsibility, claimedRole, evidence: uniqueSources(validatedResponsibilities.map((entry) => entry.source)), missing: [] }
     : { status: "unknown", role: null, owner: null, duty: null, claimedRole, evidence: uniqueSources(responsibilities.length ? responsibilities.map((entry) => entry.source) : roles.map((claim) => claim.source)), missing: [...new Set(responsibilityMissing)] };
   return {
     hostId: input.hostId, sessionId: session.id, nativeRevision: session.updatedAt, observedAt: session.observedAt,

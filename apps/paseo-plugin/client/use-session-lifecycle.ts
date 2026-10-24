@@ -208,7 +208,10 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
           if (review?.id === ref.reviewId && review.action === "archive") {
             reviews[review.id] = review;
             const row = review.rows.find((entry) => entry.id === ref.agentId);
-            if (!row || !unresolvedArchive(row)) unknown.add(ref.agentId);
+            if (!row || !unresolvedArchive(row)) {
+              partial = true;
+              unknown.add(ref.agentId);
+            }
           } else {
             partial = true;
             unknown.add(ref.agentId);

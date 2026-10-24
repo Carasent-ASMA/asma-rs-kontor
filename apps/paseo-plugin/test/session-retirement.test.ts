@@ -268,7 +268,7 @@ describe("current, consistent owner evidence", () => {
   it("does not treat stale settled duty evidence as settlement", () => {
     const projection = deriveSessionProjection(input(ready({ duties: [duty("delivery", "settled", src("duty:stale", "owner", "stale"))] })));
     expect(projection.retirement.disposition).toBe("unknown");
-    expect(projection.retirement.missing.join(" ")).toContain("Duty settlement evidence is stale");
+    expect(projection.retirement.missing.join(" ")).toContain("Duty (delivery) settlement evidence is stale");
   });
 
   it("requires the release and responsibility to name the same exact session and owner", () => {
@@ -278,6 +278,66 @@ describe("current, consistent owner evidence", () => {
     expect(otherSession.retirement.missing.join(" ")).toContain("does not name this exact native session");
     expect(otherOwner.retirement.disposition).toBe("unknown");
     expect(otherOwner.retirement.missing.join(" ")).toContain("disagree on the owner");
+  });
+});
+
+describe("settlement evidence must be current", () => {
+  it("does not release on a stale settled ticket seat", () => {
+    const projection = deriveSessionProjection(input(ready({ ticket: ticket({ seats: [duty("review", "settled", src("ticket:seat", "ticket", "stale"))] }) })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.attention).toBe(true);
+    expect(projection.retirement.missing.join(" ")).toContain("Ticket seat (review) settlement evidence is stale");
+  });
+
+  it("does not release on an unknown merged pull-request source", () => {
+    const projection = deriveSessionProjection(input(ready({ ticket: ticket({ pullRequestSource: { ...src("ticket:pull-request", "ticket", "unknown"), observedAt: null, revision: null } }) })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.missing.join(" ")).toContain("Ticket pull request settlement evidence is stale");
+  });
+
+  it("does not release on stale no-escalation evidence", () => {
+    const projection = deriveSessionProjection(input(ready({ ticket: ticket({ escalationSource: src("ticket:escalation", "ticket", "stale") }) })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.missing.join(" ")).toContain("Ticket escalation absence settlement evidence is stale");
+  });
+
+  it("does not release on a stale completed milestone", () => {
+    const projection = deriveSessionProjection(input(ready({ milestone: { state: "complete", source: src("milestone", "owner", "stale") } })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.retirement.missing.join(" ")).toContain("Milestone completion settlement evidence is stale");
+  });
+
+  it("still retains an open obligation even when its source is stale", () => {
+    const projection = deriveSessionProjection(input(ready({ ticket: ticket({ pullRequest: "open", pullRequestSource: src("ticket:pull-request", "ticket", "stale") }) })));
+    expect(projection.retirement.disposition).toBe("retain");
+    expect(projection.retirement.reason).toContain("pull request is open");
+  });
+});
+
+describe("responsibility identity must be complete", () => {
+  it("does not verify or release an empty owner in release and responsibility", () => {
+    const projection = deriveSessionProjection(input(ready({ release: owner({ owner: " " }), responsibilities: [responsibility({ owner: " " })] })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.responsibility.status).toBe("unknown");
+    expect(projection.responsibility.owner).toBeNull();
+    expect(projection.retirement.missing.join(" ")).toContain("Release owner is empty");
+    expect(projection.retirement.missing.join(" ")).toContain("cannot verify responsibility");
+  });
+
+  it.each([
+    ["incomplete first", [responsibility({ role: "", owner: "other-owner" }), responsibility()]],
+    ["incomplete last", [responsibility(), responsibility({ role: " ", owner: "other-owner" })]],
+  ] as const)("does not select an incomplete record (%s)", (_label, records) => {
+    const projection = deriveSessionProjection(input(ready({ release: owner({ owner: "other-owner" }), responsibilities: records })));
+    expect(projection.retirement.disposition).toBe("unknown");
+    expect(projection.responsibility.status).toBe("unknown");
+    expect(projection.responsibility.role).toBeNull();
+    expect(projection.responsibility.owner).toBeNull();
+    expect(projection.retirement.missing.join(" ")).toContain("cannot verify responsibility");
+  });
+
+  it("keeps a fully validated record verified", () => {
+    expect(deriveSessionProjection(input(ready())).responsibility).toMatchObject({ status: "verified", role: "SWE", owner: "fixture owner" });
   });
 });
 

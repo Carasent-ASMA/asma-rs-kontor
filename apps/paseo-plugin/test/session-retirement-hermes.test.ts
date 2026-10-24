@@ -168,8 +168,20 @@ describe("projection regressions for running execution and exact receipt coverag
     expect(h.draw().projections.get(C)?.intent.state).toBe("unsettled");
     expect(h.draw().projections.get(D)?.intent.state).toBe("none");
     failCached = false; h.draw().reload(); await settle(); h.draw();
-    expect(h.draw().receipts.state).toBe("ready");
+    expect(h.draw().receipts).toMatchObject({ state: "partial", complete: false });
     expect(h.draw().projections.get(B)?.intent.state).toBe("unknown");
     expect(h.draw().projections.get(C)?.intent.state).toBe("unsettled");
+  });
+
+  it("reports partial coverage when a referenced review has no matching row", async () => {
+    const R = reviewId("no-row");
+    const h = harness(() => "host", () => [sessionEntry(A)], {
+      "sessions.lifecycle-review": async (input) => input.reviewId
+        ? review(R, [])
+        : review("00000000-0000-4000-8000-0000000000aa", [], [{ reviewId: R, agentId: A }]),
+    });
+    h.draw(); await settle(); const value = h.draw();
+    expect(value.projections.get(A)?.intent.state).toBe("unknown");
+    expect(value.receipts).toMatchObject({ state: "partial", complete: false });
   });
 });
