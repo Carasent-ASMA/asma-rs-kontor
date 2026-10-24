@@ -243,18 +243,28 @@ describe("composer hand-off to the Kontor screen", () => {
     expect(readRecent("host-b").record.visits).toEqual([]);
   });
 
-  it("lets a newer request replace an older one", () => {
+  it("lets a stale screen for an older request open nothing and leave the newer request to open once", () => {
+    const nav = navigation();
     const older = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
     const newer = handOffOpen("host-a", { kind: "session", agentId: "agent-b" });
-    expect(takeHandOff("host-a", older)).toBeNull();
-    const nav = navigation();
-    expect(screen("host-a", newer, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(screen("host-a", older, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(screen("host-b", older, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(takeHandOff("host-a", "unknown-key")).toBeNull();
     expect(nav.openAgent).not.toHaveBeenCalled();
+    expect(readRecent("host-a").record.visits).toEqual([]);
+    // agent-b is titled "agent-a": the newer request still opens its exact host and ID.
+    expect(screen("host-a", newer, nav)).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-b", serverId: "host-a" });
+    for (const key of [newer, older, newer]) expect(screen("host-a", key, nav)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).toHaveBeenCalledTimes(1);
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-b"]);
   });
 
   it("withdraws a request whose screen never opened, and a dispose clears any request", () => {
-    const failed = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
+    const kept = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
     withdrawHandOff("some-other-key");
+    expect(takeHandOff("host-a", kept)).toEqual({ kind: "session", agentId: "agent-a" });
+    const failed = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });
     withdrawHandOff(failed);
     expect(takeHandOff("host-a", failed)).toBeNull();
     const pending = handOffOpen("host-a", { kind: "session", agentId: "agent-a" });

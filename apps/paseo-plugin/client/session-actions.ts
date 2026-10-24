@@ -23,7 +23,7 @@ export type HandOffTarget =
 
 /**
  * The one request in flight from a popover to the Kontor screen. It lives in memory only and the screen URL
- * carries just its key, so Back, history, a remount and a reload find nothing to replay. Any take consumes it.
+ * carries just its key, so Back, history, a remount and a reload find nothing to replay. Only its own key takes it.
  */
 let handOff: { readonly hostId: string; readonly key: string; readonly target: HandOffTarget } | null = null;
 let handOffCount = 0;
@@ -35,11 +35,15 @@ export function handOffOpen(hostId: string, target: HandOffTarget): string {
   return key;
 }
 
-/** Consumes the request: the target for its own host and key, otherwise nothing, and the request is gone either way. */
+/**
+ * Consumes the request its key names, before any host check or navigation; another host gets nothing from it.
+ * An older or unknown key gets nothing and leaves the current request alone, so a stale screen cannot cancel the latest click.
+ */
 export function takeHandOff(hostId: string, key: string): HandOffTarget | null {
   const current = handOff;
+  if (current?.key !== key) return null;
   handOff = null;
-  return current?.hostId === hostId && current.key === key ? current.target : null;
+  return current.hostId === hostId ? current.target : null;
 }
 
 /** Drops a request the screen never received, or every request when the plugin is disposed. */
