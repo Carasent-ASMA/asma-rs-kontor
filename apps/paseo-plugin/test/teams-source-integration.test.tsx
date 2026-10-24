@@ -15,7 +15,7 @@ import plugin from "../index.server";
 import { sessionEntry } from "./session-fixtures";
 const model = vi.hoisted(() => ({ query: null as any, rpc: new Map<string, ReturnType<typeof vi.fn>>() }));
 // Page state is the explicit TeamsView; local hook state is not used by these renders.
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}] }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}], useEffect: () => {}, useMemo: (factory: () => unknown) => factory() }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc.get(contract.name) }));
@@ -90,20 +90,23 @@ describe("A-owned Teams source integration", () => {
     try { expect((await handlers.get("sources.list")!({})).sources).toEqual([]); await expect(handlers.get("teams.sources.read")!({ sourceId: "authoring" })).rejects.toThrow(); }
     finally { stop(); }
   });
-  it("dispatches ID-only typed reads separately from legacy JSON and isolates a failed source", async () => {
-    const list = vi.fn(async () => ({ sources: [...catalog.sources, legacy], diagnostics: [] }));
-    const json = { source: legacy, records: { teams: [] } } as unknown as SourceRead;
-    const read = vi.fn(async () => json);
+  it("dispatches ID-only typed reads separately from legacy JSON summaries and isolates a failed source", async () => {
+    const sources = [...catalog.sources, legacy];
+    const summaryRead = (source: typeof sources[number]) => ({ source, status: "ready" as const, revision: "a", readAt: "2026-10-24T10:00:00Z", modifiedAt: null,
+      content: null, graph: null, records: null, diagnostics: [] });
+    const summaries = vi.fn(async () => ({ sources, diagnostics: [], reads: Object.fromEntries(sources.map((source) => [source.id, summaryRead(source)])) }));
+    const json = vi.fn(async () => ({ source: legacy, records: { teams: [] } }) as unknown as SourceRead);
     const teams = vi.fn(async ({ sourceId }: { sourceId: string }) => { if (sourceId === "operator") throw new Error("operator unavailable"); return snapshots[sourceId]!; });
-    model.rpc.set("sources.list", list); model.rpc.set("sources.read", read); model.rpc.set("teams.sources.read", teams);
+    model.rpc.set("sources.summaries", summaries); model.rpc.set("sources.read", json); model.rpc.set("teams.sources.read", teams);
     useReadSources("host-A", "online");
-    expect(model.query.queryKey).toEqual(["kontor-read-sources", "host-A"]);
+    expect(model.query.queryKey).toEqual(["kontor-read-source-summaries", "host-A"]);
     const result = await model.query.queryFn({ signal: new AbortController().signal });
+    expect(summaries).toHaveBeenCalledExactlyOnceWith({});
     expect(teams.mock.calls.map(([input]) => input).sort((a, b) => a.sourceId.localeCompare(b.sourceId))).toEqual(Object.keys(AUTHORIZED_TEAMS_FORMATS).sort().map((sourceId) => ({ sourceId })));
-    expect(read).toHaveBeenCalledExactlyOnceWith({ sourceId: "legacy-json" });
+    expect(json).not.toHaveBeenCalled();
     expect(Object.keys(result.teamsSnapshots)).toHaveLength(3); expect(result.teamsErrors).toEqual({ operator: "operator unavailable" });
-    expect(result.reads).toEqual({ "legacy-json": json });
-    useReadSources("host-B", "offline"); expect(model.query.queryKey).toEqual(["kontor-read-sources", "host-B"]); expect(model.query.enabled).toBe(false);
+    expect(Object.keys(result.reads)).toEqual([...Object.keys(AUTHORIZED_TEAMS_FORMATS), "legacy-json"]); expect(result.reads["legacy-json"]!.content).toBeNull();
+    useReadSources("host-B", "offline"); expect(model.query.queryKey).toEqual(["kontor-read-source-summaries", "host-B"]); expect(model.query.enabled).toBe(false);
   });
   it("keeps source states and times visible in the expanded configuration while hiding full paths and hashes behind Source details", () => {
     // Configuration is collapsed by default (TEAMS-01); healthy source states are inside it.
@@ -150,6 +153,16 @@ describe("A-owned Teams source integration", () => {
     expect(text).toContain("No authorized Teams adapter IDs configured"); expect(text).toContain(`${legacy.title} · JSON record source: unavailable or not read`); expect(text).toContain("Native rows retained");
     expect(text).not.toContain(legacy.path); view = { ...DEFAULT_TEAMS_VIEW, diagnostics: true };
     expect(visible(page({ sources: [], snapshots: {} }))).toContain("ID missing from the configured catalog");
+  });
+  it("shows Reading for a summary JSON record source distinctly from unavailable", () => {
+    const summary: SourceRead = { source: legacy, status: "ready", revision: "a", readAt: "2026-10-24T10:00:00Z", modifiedAt: null,
+      content: null, graph: null, records: null, diagnostics: [] };
+    const collapsed = visible(page({ sources: [legacy], snapshots: {}, reads: { "legacy-json": summary } }));
+    expect(collapsed).toContain(`${legacy.title} · JSON record source: Reading…`);
+    view = { ...DEFAULT_TEAMS_VIEW, configured: true };
+    expect(visible(page({ sources: [legacy], snapshots: {}, reads: { "legacy-json": summary } }))).toContain("Reading…");
+    const unavailable = visible(page({ sources: [legacy], snapshots: {}, reads: { "legacy-json": { ...summary, status: "unavailable" } } }));
+    expect(unavailable).toContain("unavailable · working copy"); expect(unavailable).not.toContain("Reading…");
   });
   it.each([["authoring", 38], ["operator", 36]] as const)("preserves actual hashed 38/36 binding counts with a bounded expandable role view (%s)", (sourceId, expectedCount) => {
     expect(snapshots.authoring!.sha256).toBe("8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec");

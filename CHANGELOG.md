@@ -190,6 +190,18 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Kontor's Paseo plugin now refreshes configured sources as metadata summaries
+  (ASMA-8541, P2). One `sources.summaries` request per 30 seconds returns the
+  catalog, registry, per-source status, revision, read time, frontmatter
+  metadata and diagnostics without Markdown content, a canonical graph or JSON
+  records; the historical Jira projection stays complete because Sessions
+  reads captured epics at mount. Pages demand exact reads for their own context
+  (the selected plan and its linked associations on Plan, Board and Graph;
+  context sources on Overview, Search, Delivery, Decisions and AI teams), at
+  most three at a time and keyed by source ID and revision. `sources.read` is
+  unchanged and still returns the exact content. A source whose summary is
+  present while its exact read is pending shows **Reading…**, distinct from
+  unavailable. Sessions performs no exact source read.
 - The publication check, pre-push hook and fast/heavy test lanes read the
   project key, base branch and check name from the selected project
   configuration (`KONTOR_CONFIG_DIR` / `KONTOR_CONFIG_FILE`). The pre-push hook

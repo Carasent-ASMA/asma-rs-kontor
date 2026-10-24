@@ -2,7 +2,7 @@ import { useMemo, useRef, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
-import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { sourceReadPending, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import type { Destination } from "./navigation-state";
 import { confirmedEpic, inboxEntries, readTime, searchRecords, shortDates } from "./page-data";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
@@ -92,6 +92,7 @@ function RecordPage(props: PageProps) {
     </View> : null}
     {reads.map((read) => {
       const records = kind === "delivery" ? read.records?.delivery ?? [] : read.records?.decisions ?? [];
+      const pending = sourceReadPending(read);
       const count = `${records.length} record${records.length === 1 ? "" : "s"}`;
       // The status, revision kind and exact read time are in the meta label and in Source details, which also lists
       // each delivery record's exact state and recorded time. A zero count is left to "No records in this source."
@@ -104,11 +105,13 @@ function RecordPage(props: PageProps) {
             {read.records?.delivery.map((record) => <Copy key={record.id} colors={colors} small>{`${record.title} · ${record.state} · recorded ${record.recordedAt ?? "Unknown"}`}</Copy>)}
           </View> : null}
         </>}
-          summary={<Text testID={`record-meta-${read.source.id}`} accessibilityLabel={`${count} · ${read.status} · ${read.source.revisionKind} · Read ${read.readAt}`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>
+          summary={pending ? <Text testID={`record-meta-${read.source.id}`} accessibilityLabel={`Reading… · ${read.source.revisionKind} · Read ${read.readAt}`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>
+            {`Reading… · read ${readTime(read.readAt)}`}
+          </Text> : <Text testID={`record-meta-${read.source.id}`} accessibilityLabel={`${count} · ${read.status} · ${read.source.revisionKind} · Read ${read.readAt}`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>
             {[records.length ? count : null, read.status === "ready" ? null : read.status, `read ${readTime(read.readAt)}`].filter(Boolean).join(" · ")}
           </Text>} />
-        {read.status === "ready" && read.records && records.length === 0 ? <Copy colors={colors}>No records in this source.</Copy> : null}
-        {kind === "delivery" ? DELIVERY_GROUPS.map(([value, label]) => {
+        {!pending && read.status === "ready" && read.records && records.length === 0 ? <Copy colors={colors}>No records in this source.</Copy> : null}
+        {pending ? null : kind === "delivery" ? DELIVERY_GROUPS.map(([value, label]) => {
           const group = read.records?.delivery.filter((record) => record.kind === value) ?? [];
           return group.length ? <View key={value} style={{ gap: 4 }}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 10, fontWeight: "600", letterSpacing: 0.4 }}>{label.toLocaleUpperCase()} · {group.length}</Text>
@@ -146,6 +149,7 @@ export function ReadOnlyPage(props: PageProps) {
   const scroller = useRef<ScrollView | null>(null);
   const pendingRestore = useRef(props.initialOffset > 0);
   const results = useMemo(() => searchRecords(props.entries, Object.values(props.reads), props.query), [props.entries, props.reads, props.query]);
+  const readingSources = Object.values(props.reads).filter(sourceReadPending).length;
   if (props.tab === "Plan") return <PlanReader {...props} view={props.planView} onView={props.onPlanView} />;
   const { colors } = props;
   const inbox = props.tab === "Inbox" ? inboxEntries(props.entries) : [];
@@ -203,10 +207,11 @@ export function ReadOnlyPage(props: PageProps) {
       {props.tab === "Search" ? <>
         <TextInput accessibilityLabel="Search available records" accessibilityHint={SEARCH_SCOPE} placeholder="Search sessions, plans and tasks" placeholderTextColor={colors.foregroundMuted} value={props.query} onChangeText={props.setQuery} style={{ color: colors.foreground, fontSize: 13, paddingHorizontal: 10, minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }} />
         <AboutPage colors={colors}>{SEARCH_SCOPE}</AboutPage>
+        {readingSources ? <Copy colors={colors} muted small>{`Reading… ${readingSources} configured source${readingSources === 1 ? "" : "s"} in this context.`}</Copy> : null}
         {results.sessions.length ? <Section title="Sessions" detail={String(results.sessions.length)} colors={colors}><SessionRows entries={results.sessions} colors={colors} onOpen={props.onOpen} /></Section> : null}
         {results.plans.length ? <Section title="Plans" detail={String(results.plans.length)} colors={colors}><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{results.plans.map((read) => <Action key={read.source.id} small={!props.compact} colors={colors} label={read.source.title} accessibilityLabel={`Plan: ${read.source.title}`} onPress={() => props.onSource(read.source.id)} />)}</View></Section> : null}
         {results.tasks.length ? <Section title="Plan tasks" detail={String(results.tasks.length)} colors={colors}><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{results.tasks.map(({ node, source }) => <Action key={`${source.id}:${node.id}`} small={!props.compact} colors={colors} label={`${node.jira ?? node.id} · ${node.title}`} onPress={() => props.onSource(source.id)} />)}</View></Section> : null}
-        {!results.sessions.length && !results.plans.length && !results.tasks.length ? <Copy colors={colors}>No matching records.</Copy> : null}
+        {!results.sessions.length && !results.plans.length && !results.tasks.length && !readingSources ? <Copy colors={colors}>No matching records.</Copy> : null}
       </> : null}
     </View>
   </ScrollView>;

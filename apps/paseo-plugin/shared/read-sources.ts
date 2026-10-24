@@ -67,9 +67,25 @@ export const listReadSources = defineRpc({ name: "sources.list", input: z.object
   output: z.object({ sources: z.array(sourceSummarySchema), diagnostics: z.array(z.string()), registry: workstreamRegistrySchema.optional() }) });
 export const readSource = defineRpc({ name: "sources.read", input: z.object({ sourceId: z.string().min(1).max(128) }).strict(),
   output: sourceReadSchema });
+/**
+ * Metadata-only projection: no Markdown content, no canonical graph and no JSON records.
+ * The Jira projection stays complete because the Sessions list reads captured epics at mount.
+ */
+export const sourceSummaryReadSchema = sourceReadSchema.extend({
+  content: z.null(), graph: z.null(), records: z.null(),
+});
+export type SourceSummaryRead = z.infer<typeof sourceSummaryReadSchema>;
+export const readSourceSummaries = defineRpc({ name: "sources.summaries", input: z.object({}).strict(),
+  output: z.object({ sources: z.array(sourceSummarySchema), diagnostics: z.array(z.string()),
+    registry: workstreamRegistrySchema.optional(), reads: z.record(z.string(), sourceSummaryReadSchema) }) });
 export const readPlanAssociations = defineRpc({ name: "sources.associations", input: z.object({}).strict(),
   output: z.object({ status: z.enum(["ready", "invalid", "unavailable"]), associations: z.record(z.string(), z.array(z.string())),
     sources: z.array(sourceSummarySchema), error: z.string().nullable() }) });
 export type ReadSourceSummary = z.infer<typeof sourceSummarySchema>;
 export type SourceRead = z.infer<typeof sourceReadSchema>;
 export type CanonicalGraph = z.infer<typeof canonicalGraphSchema>;
+/** A summary is present but its exact Markdown, graph or JSON records have not been read yet. */
+export function sourceReadPending(read: SourceRead): boolean {
+  return read.status !== "unavailable" && read.content === null && read.graph === null
+    && read.records === null && read.jiraHistory === undefined;
+}

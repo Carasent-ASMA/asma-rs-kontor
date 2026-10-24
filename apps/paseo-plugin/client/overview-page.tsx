@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import type { SourceRead } from "../shared/read-sources";
+import { sourceReadPending, type SourceRead } from "../shared/read-sources";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { confirmedEpic, nativeSummary, portfolioFilter, portfolioRows, readTime, shortDates, type PortfolioFilter, type PortfolioRow } from "./page-data";
 import { inventoryReadLabel } from "./native-freshness";
@@ -41,12 +41,14 @@ export function OverviewPage(props: Props) {
   const shown = rows.filter((row) => portfolioFilter(row, filter));
   const matching = (key: PortfolioFilter) => rows.filter((row) => portfolioFilter(row, key)).length;
   const undecided = rows.filter((row) => row.decisions === null).length;
+  const readingDecisions = reads.some((read) => read.source.kind === "decisions" && sourceReadPending(read));
+  const readingDelivery = reads.some((read) => read.source.kind === "delivery" && sourceReadPending(read));
   // The fourth entry is the tile's full meaning (its label); only a partial-capture qualifier stays visible.
   const tiles: Array<[PortfolioFilter, string, number | string, string, string | null]> = [
     ["all", "Epics", rows.length, "All work", null],
     ["active", "In progress", matching("active"), "Epics with running sessions", null],
     ["review", "Needs attention", matching("review"), "Native attention, input or error", null],
-    ["decisions", "Needs your decision", undecided === rows.length ? "Not captured" : rows.filter((row) => (row.decisions ?? 0) > 0).length, undecided === rows.length ? "Decision records unavailable" : `Recorded open decisions${undecided ? ` · ${undecided} not captured` : ""}`, undecided && undecided < rows.length ? `${undecided} not captured` : null],
+    ["decisions", "Needs your decision", undecided === rows.length ? readingDecisions ? "Reading…" : "Not captured" : rows.filter((row) => (row.decisions ?? 0) > 0).length, undecided === rows.length ? readingDecisions ? "Reading recorded decision sources" : "Decision records unavailable" : `Recorded open decisions${undecided ? ` · ${undecided} not captured` : ""}`, undecided && undecided < rows.length ? `${undecided} not captured` : null],
     ["completed", "Completed epics", rows.some((row) => row.lifecycle) ? matching("completed") : "Unknown", "Recorded epic lifecycle", null],
     ["delivered", "Delivered", "Unknown", "Delivery confirmation not captured", null],
   ];
@@ -93,23 +95,24 @@ export function OverviewPage(props: Props) {
         <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{tiles.find(([key]) => key === filter)![1]}</Text>
         {shown.length !== rows.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{shown.length} of {rows.length} shown</Text> : null}
       </View>
-      {shown.length ? shown.map((row, index) => <PortfolioItem key={row.id} row={row} last={index === shown.length - 1} wide={wide} {...props} />)
+      {shown.length ? shown.map((row, index) => <PortfolioItem key={row.id} row={row} last={index === shown.length - 1} wide={wide} readingDecisions={readingDecisions} readingDelivery={readingDelivery} {...props} />)
         : <View style={{ padding: 14, gap: 8, alignItems: "flex-start" }}><Copy colors={colors}>{rows.length ? "No epics in this group." : "No epics, plans or Jira records in this scope."}</Copy>{rows.length ? <Action small={!props.compact} label="Show all epics" colors={colors} onPress={() => props.setQuery("")} /> : null}</View>}
     </View>
   </View>;
 }
-function PortfolioItem({ row, last, wide, colors, compact, onSource, onEpicTab, sourceError }: Props & { row: PortfolioRow; last: boolean; wide: boolean }) {
+function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, colors, compact, onSource, onEpicTab, sourceError }: Props & { row: PortfolioRow; last: boolean; wide: boolean; readingDecisions: boolean; readingDelivery: boolean }) {
   const single = row.plans.length === 1 ? row.plans[0]!.source.id : null;
   const go = (tab: EpicTab) => row.epicKey === null && tab === "Plan" && single ? onSource(single) : onEpicTab(tab, row.epicKey, tab === "Sessions" ? null : single);
   const sessions = row.sessions;
   // Full statements stay in the row's label; the visible lines keep only what is captured and non-zero.
+  const planReading = row.plans.length === 1 && sourceReadPending(row.plans[0]!);
   const planProblem = row.plans.length === 1 && row.plans[0]!.status !== "ready" ? row.plans[0]!.status === "partial" ? "Plan graph unavailable" : "Plan unavailable" : null;
-  const next = planProblem ?? (row.plans.length === 1 ? "Captured plan available" : row.plans.length > 1 ? `${row.plans.length} configured plans · choose one in the context picker` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured · captured tasks remain available" : "No plan linked");
-  const nextLine = planProblem ?? (row.plans.length === 1 ? null : row.plans.length > 1 ? `${row.plans.length} configured plans` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured" : "No plan linked");
+  const next = planReading ? "Reading plan…" : planProblem ?? (row.plans.length === 1 ? "Captured plan available" : row.plans.length > 1 ? `${row.plans.length} configured plans · choose one in the context picker` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured · captured tasks remain available" : "No plan linked");
+  const nextLine = planReading ? "Reading…" : planProblem ?? (row.plans.length === 1 ? null : row.plans.length > 1 ? `${row.plans.length} configured plans` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured" : "No plan linked");
   const signals = row.epicKey ? `${count(sessions.total, "session")} · ${sessions.running} running · ${sessions.attention} native attention · ${sessions.needsInput} needs input · ${sessions.errors} errors` : "No epic linked · sessions are not attributed to this plan";
-  const records = `Decisions: ${row.decisions === null ? "Not captured" : `${row.decisions} open recorded`} · Delivery: ${row.delivery === null ? "Not captured" : `${row.delivery} recorded, confirmation Unknown`}`;
-  const recordLine = [row.decisions === null ? null : row.decisions ? count(row.decisions, "open decision") : "No open decisions",
-    row.delivery === null ? null : `${row.delivery ? count(row.delivery, "delivery record") : "No delivery records"} · confirmation Unknown`].filter(Boolean).join(" · ");
+  const records = `Decisions: ${row.decisions === null ? readingDecisions ? "Reading…" : "Not captured" : `${row.decisions} open recorded`} · Delivery: ${row.delivery === null ? readingDelivery ? "Reading…" : "Not captured" : `${row.delivery} recorded, confirmation Unknown`}`;
+  const recordLine = [row.decisions === null ? readingDecisions ? "Reading decisions…" : null : row.decisions ? count(row.decisions, "open decision") : "No open decisions",
+    row.delivery === null ? readingDelivery ? "Reading delivery…" : null : `${row.delivery ? count(row.delivery, "delivery record") : "No delivery records"} · confirmation Unknown`].filter(Boolean).join(" · ");
   const stage = row.epicKey === null ? "No epic linked" : row.lifecycle ? `Epic · ${row.lifecycle.status}` : "Epic status unknown";
   const progress = row.tasks && row.tasks.total > 0 ? `${row.tasks.done} / ${row.tasks.total} captured tasks done` : null;
   const cta = row.plans.length ? "Open plan" : "Inspect tasks";
