@@ -196,6 +196,7 @@ fn a_v1_document_reads_the_same_through_both_entry_points() {
 #[test]
 fn the_tickets_basic_team_resolves_both_slots() {
     let snapshot = FleetSnapshot::parse(EXAMPLE).expect("the fleet reader accepts the example");
+    let mut first_vendors = Vec::new();
     for (slot, chain) in [
         ("implement", "open-first-build"),
         ("verify", "open-first-verify"),
@@ -205,7 +206,14 @@ fn the_tickets_basic_team_resolves_both_slots() {
         assert_eq!(resolution.provenance.binding_key, key);
         assert_eq!(resolution.provenance.chain, chain);
         assert!(!resolution.routes.is_empty(), "{key} resolves to a route");
+        let first = resolution.routes.first().expect("a resolved route");
+        first_vendors.push(first.vendor.clone());
     }
+    assert_eq!(first_vendors.len(), 2);
+    assert_ne!(
+        first_vendors[0], first_vendors[1],
+        "the Tickets basic slots resolve their first routes to different vendors"
+    );
     let verify = format!("{TICKETS_BASIC}/verify");
     let implement = format!("{TICKETS_BASIC}/implement");
     assert_eq!(snapshot.independent_of(&verify), Some(implement.as_str()));
