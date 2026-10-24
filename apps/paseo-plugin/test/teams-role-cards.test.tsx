@@ -30,7 +30,7 @@ let snapshots: TeamsSourceSnapshot[]; let fleet: TeamsFleetData; let templates: 
 const colors = {} as Parameters<typeof FleetRoleCards>[0]["colors"];
 beforeAll(async () => {
   const catalog = sourceCatalog(JSON.stringify([
-    { id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec" },
+    { id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "fa82d7a49d12a01a30f0a3b939d605aecf04d784fb80e53b88fcc99ff1f211f7" },
     { id: "templates", title: "Templates", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/mvp-team-pack.json", import.meta.url)), expectedSha256: "2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc" },
   ]));
   const adapter = createTeamsSourceAdapter(catalog, { authoring: "fleet-authoring", templates: "team-templates" });
@@ -63,6 +63,15 @@ describe("typed read-only Teams → role hierarchy", () => {
     expect(screen.text()).toContain("account aliases"); expect(screen.text()).toContain("/bindings/team~1pr-review-desk~1rev-a");
     expect(screen.text()).toContain("unresolved"); expect(screen.text()).toContain("No authorized definition identifies");
     screen.click("All group roles"); expect(screen.labels()).toContain("Role: team/pr-review-desk/swe → desk-fixer");
+  });
+  it("lists the Tickets basic team with its SWE and QA roles", () => {
+    const metadata = composeTeamsSourceView(snapshots, []).metadata;
+    const screen = harness(() => FleetRoleCards({ data: fleet, metadata, colors }));
+    const group = "Roles: team/01936f5a-0000-7000-8000-000000000105";
+    while (!screen.labels().includes(group)) screen.click("Next groups");
+    screen.click(group); expect(screen.text()).toContain("2 declared roles");
+    expect(screen.labels()).toContain("Role: team/01936f5a-0000-7000-8000-000000000105/implement → open-first-build");
+    expect(screen.labels()).toContain("Role: team/01936f5a-0000-7000-8000-000000000105/verify → open-first-verify");
   });
   it("shows template candidates across versions without choosing a latest or assigning sessions", () => {
     const metadata = composeTeamsSourceView(snapshots, []).metadata;
