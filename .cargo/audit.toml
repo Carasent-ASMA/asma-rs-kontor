@@ -5,11 +5,10 @@
 # fails on it (`unsound = "all"`), while cargo audit only reports it as a
 # warning, so it is deliberately not listed here.
 [advisories]
-# zip <9.0.0 extraction advisories: zip 3.0.0 (utoipa-swagger-ui 9.0.2) and
-# zip 8.6.0 (libsodium-sys-stable 1.24.0) are build-script dependencies with no
-# release reaching zip >=9.0.0 as of 2026-10-17.
-# Owner: KR-13 (ASMA-8520). Review by 2026-11-16. Lift: both dependents release
-# with zip >=9.0.0; upgrade them and remove these entries.
+# zip <9.0.0 extraction advisories: zip 3.0.0 (utoipa-swagger-ui 9.0.2) is a
+# build-script dependency with no release reaching zip >=9.0.0 as of 2026-10-17.
+# Owner: KR-13 (ASMA-8520). Review by 2026-11-16. Lift: utoipa-swagger-ui
+# releases with zip >=9.0.0; upgrade it and remove these entries.
 ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
