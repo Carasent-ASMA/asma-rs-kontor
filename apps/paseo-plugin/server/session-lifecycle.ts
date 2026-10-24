@@ -10,6 +10,10 @@ import {
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type UnresolvedRef,
 } from "../shared/session-lifecycle";
+import {
+  RECOVERY_TAIL_ITEMS, observeRefusal, quietAfterRefusal, readProviderRefusal, recoveredAfterRefusal, refusalKind, refusalObservationSchema, refusalState,
+  type ProviderRefusal, type ProviderRefusalRead,
+} from "../shared/provider-block";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 export type LifecycleClient = {
@@ -66,8 +70,9 @@ function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
   // Block every managed child, even one the native cascade would detach today.
   return inventory.filter((child) => child.archivedAt == null && parent(child) === agent.id);
 }
-// Resume is a same-ID retry on the session's own route, so no review target takes part in eligibility.
-export function lifecycleRow(agent: Agent, inventory: Agent[], action: LifecycleReview["action"]): LifecycleRow {
+// Resume is a same-ID retry on the session's own route, so no review target takes part in eligibility. A refusal an
+// earlier exact read saw keeps Resume closed until positive recovery, whatever this read shows.
+export function lifecycleRow(agent: Agent, inventory: Agent[], action: LifecycleReview["action"], refusal: ProviderRefusal | null = null): LifecycleRow {
   const children = childrenOf(agent, inventory).map((child) => ({ id: child.id, title: child.title ?? child.id, status: child.status, workspaceId: child.workspaceId ?? null }));
   const row: LifecycleRow = { id: agent.id, title: agent.title ?? agent.id, workspaceId: agent.workspaceId ?? null, cwd: agent.cwd,
     provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model ?? null,
@@ -83,7 +88,8 @@ export function lifecycleRow(agent: Agent, inventory: Agent[], action: Lifecycle
   else if (agent.pendingPermissions.length || agent.attentionReason === "permission") row.reason = "Waiting for permission/input. Resolve that wait in the native session.";
   else if (agent.activeTurn || agent.status === "running" || agent.status === "initializing") { row.category = "unknown"; row.reason = "Execution may still be progressing or waiting on a dependency. No supported stalled-execution proof; age is not evidence."; }
   else if (agent.status !== "error") { row.category = "unknown"; row.reason = "No current native failure. Idle, old timestamps and earlier error notices do not prove a stuck task."; }
-  else if (agent.providerUnavailable || /quota|usage.?limit|rate.?limit|exhaust|unauthori[sz]ed|authenticat|\b401\b|\b403\b|billing|credit|api.?key|credential|token.expired|permission.denied/i.test(agent.lastError ?? "")) { row.category = "candidate"; row.reason = "Quota/auth/provider restriction: no validated changed account or condition. Open native Accounts/session to resolve it, then review again. Resume alone is not a takeover or a quota fix."; }
+  else if (refusalKind(agent)) { row.category = "candidate"; row.reason = "Quota/auth/provider restriction: no validated changed account or condition. Open native Accounts/session to resolve it, then review again. Resume alone is not a takeover or a quota fix."; }
+  else if (refusal && refusal.recovery !== "confirmed") { row.category = "candidate"; row.reason = `Last provider refusal (${refusal.kind}) has no confirmed recovery: no later turn is shown to have completed. Resolve it in the native session or Accounts, then read it again.`; }
   else if (!agent.capabilities.supportsSessionPersistence || !agent.persistence?.sessionId || !row.mode || !agent.cwd) { row.category = "candidate"; row.reason = "Missing native history/persistence, permission mode or checkout evidence. This screen cannot fabricate a recovery brief."; }
   else { row.category = "candidate"; row.eligible = true; row.reason = `Current native error${agent.lastError ? `: ${agent.lastError}` : ""}. Retry in the same session with existing context and permissions; dispatch is not completion.`; }
   return row;
@@ -110,6 +116,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   const reviewPath = (id: string) => join(root, `${id}.json`);
   const resultPath = (reviewId: string, agentId: string) => join(root, `result-${reviewId}-${hash(agentId)}.json`);
   const removedPath = (agentId: string) => join(root, `local-absence-${hash(agentId)}.json`);
+  const refusalPath = (agentId: string) => join(root, `refusal-${hash(agentId)}.json`);
   async function saveRow(reviewId: string, row: LifecycleRow) {
     const file = resultPath(reviewId, row.id), temporary = `${file}.${randomUUID()}.tmp`;
     const output = await open(temporary, "wx", 0o600);
@@ -186,9 +193,9 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const rows: LifecycleRow[] = [];
     for (const id of selectedIds) {
       const observed = await observe(id), listed = all.find((agent) => agent.id === id);
-      const record = observed.agent ?? listed;
+      const record = observed.agent ?? listed, refusal = input.action === "resume" ? await refusalFor(id, observed) : null;
       // No record: the exact read either confirmed absence ("missing") or failed ("unknown"); only absence reads as missing.
-      const row: LifecycleRow = record ? lifecycleRow(record, all, input.action) : {
+      const row: LifecycleRow = record ? lifecycleRow(record, all, input.action, refusal) : {
         id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null,
         nativeStatus: observed.availability.state, fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
       };
@@ -214,6 +221,32 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         revision: found.agent.updatedAt, nativeStatus: found.agent.status, archivedAt: found.agent.archivedAt ?? null,
         providerHistory: found.agent.persistence?.sessionId ? "unverified" : "not-reported" } };
     } catch (error) { return { availability: { agentId: id, state: "unknown", reason: `Native read failed: ${errorText(error)}. Absence is not confirmed.`, checkedAt, revision: "unknown" } }; }
+  }
+  /** The latest classified refusal an exact read of this ID saw. Expiry, a failed read or a cleared lastError never
+   *  release it; only positive recovery does, and only when `recover` allows the bounded timeline read (G7). */
+  async function refusalFor(id: string, observed: { agent?: Agent; availability: SessionAvailability }, recover = false): Promise<ProviderRefusal | null> {
+    const path = refusalPath(id), agent = observed.agent;
+    const seen = agent && observeRefusal(agent, observed.availability.checkedAt);
+    if (seen) {
+      await ready();
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      await writeFile(temporary, JSON.stringify({ agentId: id, ...seen }), { mode: 0o600 }); await rename(temporary, path);
+      return refusalState(seen, { seen: true, readable: true, error: agent.status === "error", recovered: false });
+    }
+    const bytes = await readFile(path, "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
+    if (bytes === null) return null;
+    const stored = refusalObservationSchema.extend({ agentId: z.literal(id) }).parse(JSON.parse(bytes));
+    let recovered = false;
+    if (recover && agent && quietAfterRefusal(agent)) {
+      // A timeline read can load the provider runtime, so only the explicit refusal read runs it. Unavailable is not recovery.
+      const history = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: RECOVERY_TAIL_ITEMS }).catch(() => null);
+      recovered = !!history && !history.error && recoveredAfterRefusal(history.entries) && await release(path, bytes);
+    }
+    return refusalState(stored, { seen: false, readable: !!agent, error: false, recovered });
+  }
+  async function providerRefusal(id: string): Promise<ProviderRefusalRead> {
+    const observed = await observe(id);
+    return { availability: observed.availability, refusal: await refusalFor(id, observed, true) };
   }
   async function probe(ids: string[]): Promise<Record<string, SessionAvailability>> {
     const result: Record<string, SessionAvailability> = {};
@@ -286,7 +319,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       if (found.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(found.agent) : lifecycleRevision(found.agent)) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
       const all = await inventory(client, review.action);
-      const current = lifecycleRow(found.agent, all, review.action);
+      const current = lifecycleRow(found.agent, all, review.action, review.action === "resume" ? await refusalFor(agentId, observed) : null);
       if (!current.eligible || (review.action === "archive" && current.children.length)) throw new Error(current.reason);
       if (review.action === "resume") {
         // The session's own provider, never the review target.
@@ -306,7 +339,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       alreadyArchived = archivedMembership(final.agent);
       if (final.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
       if ((review.action === "archive" ? archiveRevision(final.agent) : lifecycleRevision(final.agent)) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
-      const finalDecision = lifecycleRow(final.agent, all, review.action);
+      const finalDecision = lifecycleRow(final.agent, all, review.action, review.action === "resume" ? await refusalFor(agentId, latest) : null);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry.";
       const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
@@ -403,7 +436,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (await whileOwned(lockPath, bytes, async () => { await saveRow(reviewId, result); if (settled && row.outcome !== "pending") await unlink(lockPath); })) return result;
     return { ...result, message: `${result.message ?? ""} This session's fence changed during the read, so this result was not recorded.`.trim() };
   }
-  return { capabilities, preview, read, execute, reconcile, probe, dispositions };
+  return { capabilities, preview, read, execute, reconcile, probe, dispositions, providerRefusal };
 }
 
 export function contributeSessionLifecycle(server: PluginServerContext) {
@@ -415,4 +448,5 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(reconcileLifecycleItem, (input, { paseo }) => createLifecycleService(paseo, root).reconcile(input.reviewId, input.agentId));
   server.handle(probeSessionAvailability, (input, { paseo }) => createLifecycleService(paseo, root).probe(input.agentIds));
   server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
+  server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
 }

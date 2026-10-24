@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult } from "@getpaseo/client";
-import { createLifecycleService, lifecycleRow, type LifecycleClient } from "../server/session-lifecycle";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { contributeSessionLifecycle, createLifecycleService, lifecycleRow, type LifecycleClient } from "../server/session-lifecycle";
 import { DEFAULT_RECOVERY_TARGET as target, RESUME_PROMPT } from "../shared/session-lifecycle";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -25,21 +26,23 @@ function agent(id: string, patch: Partial<Agent> = {}): Agent {
 const ready = (provider: string): Entry => ({ provider, enabled: true, status: "ready" });
 const dirs: string[] = [];
 afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
+type Timeline = { entries: readonly unknown[]; error?: string | null };
 async function host(initial: Agent[], entries: Entry[]) {
   const root = await mkdtemp(join(tmpdir(), "kontor-resume-test-")); dirs.push(root);
-  const records = new Map(initial.map((value) => [value.id, value]));
+  const records = new Map(initial.map((value) => [value.id, value])), unreadable = new Set<string>();
+  const timeline = vi.fn(async (_options?: { direction?: "tail"; limit?: number }): Promise<Timeline> => ({ entries: [{ type: "user_message", text: "Fictional task context" }], error: null }));
   const send = vi.fn(async (_id: string, _text: string, _options?: unknown) => {}), archive = vi.fn(async (id: string) => {
     records.set(id, { ...records.get(id)!, status: "closed", archivedAt: "2026-10-24" }); return { archivedAt: "2026-10-24" };
   });
   const snapshot = vi.fn<LifecycleClient["providers"]["snapshot"]>(async () => ({ requestId: "fixture", generatedAt: "now", entries }));
   const client: LifecycleClient = { agents: {
     list: async () => ({ requestId: "fixture", entries: [...records.values()].map((value) => ({ agent: value, project: { projectKey: "fixture", projectName: "Fixture", checkout: { worktreeRoot: null, cwd: "/fixtures/checkout", isGit: false as const, currentBranch: null, remoteUrl: null, isPaseoOwnedWorktree: false as const, mainRepoRoot: null } } })), pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } }),
-    ref: (id) => ({ refresh: async () => { const value = records.get(id); return value ? { agent: value, project: null } : null; },
-      send: (text, options) => send(id, text, options), archive: () => archive(id),
-      timeline: { refetch: async () => ({ entries: [{ type: "user_message", text: "Fictional task context" }], error: null }) } }),
+    ref: (id) => ({ refresh: async () => { if (unreadable.has(id)) throw new Error("fixture transport closed"); const value = records.get(id); return value ? { agent: value, project: null } : null; },
+      send: (text, options) => send(id, text, options), archive: () => archive(id), timeline: { refetch: timeline } }),
   }, providers: { snapshot } };
   const service = createLifecycleService(client, root);
-  return { service, records, send, archive, snapshot, preview: (action: "resume" | "archive") => service.preview({ action, scope: "filtered", agentIds: ["a"], target }) };
+  return { service, root, records, unreadable, send, archive, snapshot, timeline, update: (id: string, patch: Partial<Agent>) => records.set(id, { ...records.get(id)!, ...patch }),
+    preview: (action: "resume" | "archive", ids = ["a"]) => service.preview({ action, scope: "filtered", agentIds: ids, target }) };
 }
 
 describe("Resume retries the same session on its own route", () => {
@@ -83,5 +86,98 @@ describe("Archive is unaffected by the Resume route change", () => {
     expect(h.archive).toHaveBeenCalledTimes(1);
     expect(h.send).not.toHaveBeenCalled();
     expect(h.snapshot).not.toHaveBeenCalled();
+  });
+});
+
+// Synthetic OpenCode-shaped refusal: the response date is its only zoned time; the reset (already passed) has no zone.
+const QUOTA = 'APIError: {"statusCode":429,"responseHeaders":{"date":"Tue, 20 Oct 2026 21:30:52 GMT"},"responseBody":"{\\"error\\":{\\"code\\":\\"1308\\",\\"message\\":\\"5-hour usage limit reached; reset after 2026-10-21 07:45:40\\"}}"}';
+const turn = (type: string, text: string) => ({ item: { type, text } });
+const refused = turn("assistant_message", "[System Error] You've hit your usage limit."), retry = turn("user_message", "Please continue."), answered = turn("assistant_message", "Continued the task.");
+const quiet: Partial<Agent> = { status: "idle", lastError: undefined, activeTurn: null, attentionReason: null, requiresAttention: false, updatedAt: "2026-10-24T10:00:02Z" };
+const transport: Partial<Agent> = { status: "error", lastError: "Turn interrupted by transport failure", activeTurn: null, updatedAt: "2026-10-24T10:00:03Z" };
+async function refusedHost(others: Agent[] = []) {
+  const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA }), ...others], [ready("codex-fixture-account"), ready("claude")]);
+  return { h, first: await h.service.providerRefusal("a") };
+}
+
+describe("Provider refusal on an exact read (R1)", () => {
+  it("current: binds the text's failure time, the read time and the route read; no timeline read; Resume stays closed", async () => {
+    const { h, first } = await refusedHost();
+    expect(first.refusal).toEqual({ kind: "quota", failureAt: "2026-10-20T21:30:52.000Z", observedAt: first.availability.checkedAt,
+      route: { provider: "codex-fixture-account", model: "gpt-6.1-sol" }, message: QUOTA, read: "fresh", state: "current", recovery: "not-confirmed" });
+    expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("Quota/auth") });
+    expect(h.timeline).not.toHaveBeenCalled();
+  });
+
+  it.each([["closed", { status: "closed" }], ["archived", { status: "idle", archivedAt: "2026-10-20T21:31:50Z" }]] as const)("history: a %s session's refusal, native status unchanged", async (_name, patch) => {
+    const h = await host([agent("a", { lastError: QUOTA, attentionReason: null, requiresAttention: false, ...patch })], []), read = await h.service.providerRefusal("a");
+    expect(read.refusal).toMatchObject({ read: "fresh", state: "history", recovery: "not-confirmed", failureAt: "2026-10-20T21:30:52.000Z" });
+    expect(read.availability.nativeStatus).toBe(patch.status);
+  });
+
+  it("absence of lastError at a retry start is not recovery; a different later failure still cannot Resume", async () => {
+    const { h, first } = await refusedHost();
+    h.update("a", { status: "running", lastError: undefined, activeTurn: { turnId: "retry", startedAt: null }, updatedAt: "2026-10-24T10:00:01Z" });
+    h.timeline.mockResolvedValue({ entries: [refused, retry, answered], error: null });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", state: "history", recovery: "not-confirmed", observedAt: first.availability.checkedAt });
+    expect(h.timeline).not.toHaveBeenCalled();
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("a completed later turn, such as the operator's own turn in the native session, confirms recovery and releases the refusal", async () => {
+    const { h } = await refusedHost();
+    h.update("a", quiet);
+    h.timeline.mockResolvedValue({ entries: [refused, retry, answered], error: null });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "history", recovery: "confirmed" });
+    expect(h.timeline).toHaveBeenCalledWith({ direction: "tail", limit: 50 });
+    expect((await h.service.providerRefusal("a")).refusal).toBeNull();
+    h.update("a", transport);
+    expect((await h.preview("resume")).rows[0]?.eligible).toBe(true);
+  });
+
+  it.each([
+    ["a passed reset time and a ready provider without a completed turn", () => ({ entries: [refused, retry], error: null })],
+    ["a failed timeline read (G7)", () => { throw new Error("fixture timeline closed"); }],
+    ["a timeline error (G7)", () => ({ entries: [], error: "history unavailable" })],
+    ["a refusal outside the bounded tail (G7)", () => ({ entries: [retry, answered], error: null })],
+  ] as const)("not recovery: %s", async (_name, reply) => {
+    const { h } = await refusedHost();
+    h.update("a", quiet);
+    h.timeline.mockImplementation(async () => reply());
+    for (let read = 0; read < 2; read++) expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", state: "history", recovery: "not-confirmed" });
+    h.update("a", transport);
+    expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+  });
+
+  it("a failed re-read keeps the refusal as unreadable history; with no observation it is unknown, not clear", async () => {
+    const { h } = await refusedHost([agent("b", routes["account-suffixed"])]);
+    h.unreadable.add("a"); h.unreadable.add("b");
+    expect(await h.service.providerRefusal("a")).toMatchObject({ availability: { state: "unknown" }, refusal: { read: "unreadable", state: "history", recovery: "not-confirmed" } });
+    expect(await h.service.providerRefusal("b")).toMatchObject({ availability: { state: "unknown" }, refusal: null });
+    expect((await h.preview("resume")).rows[0]?.eligible).toBe(false);
+  });
+
+  it("no global inference: another session on the same route shows nothing and can Resume", async () => {
+    const { h } = await refusedHost([agent("b", routes["account-suffixed"]), agent("c", { ...routes["account-suffixed"], status: "running", lastError: undefined })]);
+    expect((await h.service.providerRefusal("b")).refusal).toBeNull();
+    expect((await h.service.providerRefusal("c")).refusal).toBeNull();
+    expect((await h.preview("resume", ["b"])).rows[0]?.eligible).toBe(true);
+  });
+
+  it("archive neither reads nor writes refusal evidence", async () => {
+    const h = await host([agent("a", { lastError: QUOTA })], []), review = await h.preview("archive");
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "archived" });
+    expect((await readdir(h.root)).filter((name) => name.startsWith("refusal-"))).toEqual([]);
+    expect(h.timeline).not.toHaveBeenCalled();
+  });
+
+  it("registers the read-only refusal RPC with the other lifecycle RPCs", () => {
+    const names: string[] = [];
+    contributeSessionLifecycle({ handle: (contract: { name: string }) => { names.push(contract.name); } } as unknown as PluginServerContext);
+    expect(names).toEqual(expect.arrayContaining(["sessions.lifecycle-execute-item", "sessions.provider-refusal"]));
   });
 });
