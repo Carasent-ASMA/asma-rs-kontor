@@ -101,6 +101,9 @@ hex = "=0.4.3"
 secrecy = "=0.10.3"
 zeroize = "=1.9.0"
 keyring = "=4.1.6"
+# Read the OSStatus keyring wraps on macOS (kontor-desktop); existing transitive
+# lockfile version.
+security-framework = "=3.7.0"
 directories = "=6.0.0"
 fs4 = "=1.1.0"
 
