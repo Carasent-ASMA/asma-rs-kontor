@@ -11420,36 +11420,58 @@ async fn an_archive_stamp_without_close_evidence_does_not_retire_a_hosted_seat()
     }
 }
 
+/// Readbacks of a predecessor reopened after this call's own archive: still
+/// archived but working, or unarchived again (a prompt unarchives) while
+/// working or idle.
+const REOPENED_AFTER_ACK: [(Option<&str>, &str); 3] = [
+    (Some("2026-08-20T05:10:00.000Z"), "running"),
+    (None, "running"),
+    (None, "idle"),
+];
+
+/// Asserts a post-acknowledgement reopen refused as no retirement, never as
+/// predecessor absence, after exactly the one intended archive.
+fn assert_reopen_refused(plane: &Plane, refused: RuntimeResult<impl std::fmt::Debug>) {
+    let error = refused.expect_err("a reopened predecessor was accepted as retired");
+    assert!(
+        matches!(error, RuntimeError::ReplacementNotEvidenced { .. }),
+        "{error:?}"
+    );
+    assert!(!error.proves_hosted_predecessor_absent());
+    assert_eq!(
+        plane.daemon.mutations(),
+        vec![PaseoCommand::agent_archive(AGENT_ID).route().to_owned()]
+    );
+}
+
 /// The acknowledgement proves the close happened, not that nothing reopened
-/// the predecessor afterwards. A readback that finds it working again is no
-/// retirement, and the successor must not launch beside it.
+/// the predecessor afterwards. A readback that finds it working or unarchived
+/// again is no retirement, and the successor must not launch beside it.
 #[tokio::test]
 async fn an_acknowledged_archive_that_reads_back_working_does_not_retire_a_hosted_seat() {
-    let seat_binding_id = SeatBindingId::generate();
-    let mut before = v(AGENT);
-    before["agent"]["labels"] = hosted_labels(seat_binding_id);
-    let mut reopened = before.clone();
-    reopened["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
-    reopened["agent"]["status"] = serde_json::json!("running");
-    let plane = Plane::fresh(
-        RecordedPaseo::new()
-            .answering(&PaseoCommand::version(), VERSION)
-            .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
-            .announcing(&v(SERVER_INFO))
-            .then_answering_rpc("fetch_agent_request", before)
-            .answering_rpc("fetch_agent_request", reopened),
-    );
+    for (archived_at, status) in REOPENED_AFTER_ACK {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut before = v(AGENT);
+        before["agent"]["labels"] = hosted_labels(seat_binding_id);
+        let mut reopened = before.clone();
+        reopened["agent"]["archivedAt"] = serde_json::json!(archived_at);
+        reopened["agent"]["status"] = serde_json::json!(status);
+        let plane = Plane::fresh(
+            RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+                .announcing(&v(SERVER_INFO))
+                .then_answering_rpc("fetch_agent_request", before)
+                .answering_rpc("fetch_agent_request", reopened),
+        );
 
-    let refused = plane
-        .adapter
-        .retire_hosted_seat(&hosted_retire_request(seat_binding_id))
-        .await;
+        let refused = plane
+            .adapter
+            .retire_hosted_seat(&hosted_retire_request(seat_binding_id))
+            .await;
 
-    assert!(
-        matches!(refused, Err(RuntimeError::ReplacementNotEvidenced { .. })),
-        "a reopened predecessor was accepted as retired: {refused:?}"
-    );
-    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+        assert_reopen_refused(&plane, refused);
+    }
 }
 
 /// Version boundary. The recorded Paseo 0.8.0 archive readback carries its
@@ -11514,24 +11536,13 @@ async fn a_paseo_0_8_archive_readback_is_not_retirement_evidence() {
 }
 
 /// A consultation recovery follows the same rule after its own archive: a
-/// predecessor reading back working again was reopened and is not retired.
+/// predecessor reading back working or unarchived again was reopened and is
+/// not retired.
 #[tokio::test]
 async fn an_acknowledged_consultation_archive_that_reads_back_working_is_refused() {
     use kontor_runtime::adapter::ConsultationSeatRetireRequest;
     let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
     let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
-    let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
-    before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
-    let mut reopened = before.clone();
-    reopened["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
-    reopened["agent"]["status"] = serde_json::json!("running");
-    let plane = Plane::fresh(
-        RecordedPaseo::new()
-            .answering(&PaseoCommand::version(), VERSION)
-            .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
-            .then_answering_rpc("fetch_agent_request", before)
-            .answering_rpc("fetch_agent_request", reopened),
-    );
     let request = ConsultationSeatRetireRequest {
         seat_binding_id,
         identity: NativeRuntimeIdentity {
@@ -11546,11 +11557,22 @@ async fn an_acknowledged_consultation_archive_that_reads_back_working_is_refused
         ),
         requested_at: kontor_core::id::Timestamp::now(),
     };
-    assert!(matches!(
-        plane.adapter.retire_consultation_seat(&request).await,
-        Err(RuntimeError::ReplacementNotEvidenced { .. })
-    ));
-    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+    for (archived_at, status) in REOPENED_AFTER_ACK {
+        let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
+        before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
+        let mut reopened = before.clone();
+        reopened["agent"]["archivedAt"] = serde_json::json!(archived_at);
+        reopened["agent"]["status"] = serde_json::json!(status);
+        let plane = Plane::fresh(
+            RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+                .then_answering_rpc("fetch_agent_request", before)
+                .answering_rpc("fetch_agent_request", reopened),
+        );
+        let refused = plane.adapter.retire_consultation_seat(&request).await;
+        assert_reopen_refused(&plane, refused);
+    }
 }
 
 /// A legacy alias at the canonical path is retitle-required, not vacancy.
@@ -14654,6 +14676,11 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
         "census-drift",
         "failed-close",
         "reopened",
+        "census-running",
+        "census-idle",
+        "census-permission",
+        "exact-failed-close",
+        "exact-reopened",
     ] {
         let seat_binding_id = SeatBindingId::generate();
         let mut agent = v(AGENT)["agent"].clone();
@@ -14696,8 +14723,8 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
             "generation" => request.identity.generation = 99,
             // The stamp is written before the close; a failed close leaves it
             // beside a live runtime that still reads idle.
-            "failed-close" => agent["status"] = serde_json::json!("idle"),
-            "reopened" => agent["status"] = serde_json::json!("running"),
+            "failed-close" | "exact-failed-close" => agent["status"] = serde_json::json!("idle"),
+            "reopened" | "exact-reopened" => agent["status"] = serde_json::json!("running"),
             "label" => {
                 agent["labels"]["kontor.seat_binding_id"] =
                     serde_json::json!(SeatBindingId::generate())
@@ -14727,6 +14754,22 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
         if case == "census-drift" {
             census["entries"][0]["agent"]["archivedAt"] = serde_json::Value::Null;
         }
+        // The two readbacks diverge: a census-* census contradicts a closed
+        // exact fetch, and an exact-* fetch is contradicted by a closed census.
+        match case {
+            "census-running" => {
+                census["entries"][0]["agent"]["status"] = serde_json::json!("running")
+            }
+            "census-idle" => census["entries"][0]["agent"]["status"] = serde_json::json!("idle"),
+            "census-permission" => {
+                census["entries"][0]["agent"]["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone()
+            }
+            "exact-failed-close" | "exact-reopened" => {
+                census["entries"][0]["agent"]["status"] = serde_json::json!("closed")
+            }
+            _ => {}
+        }
         let mut exact = v(AGENT);
         exact["agent"] = agent;
         let plane = Plane::fresh(
@@ -14742,10 +14785,22 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
             let proof = outcome.expect("the exact archived predecessor is provable");
             assert_eq!(proof.identity, request.identity);
             assert_eq!(proof.archived_at, at("2026-09-20T05:42:26.512Z"));
-        } else if matches!(case, "live" | "permission" | "failed-close" | "reopened") {
-            // A predecessor that is not provably retired is refused as such,
-            // before any census read; a closed but unarchived agent can be
-            // prompted back to life.
+        } else if matches!(
+            case,
+            "live"
+                | "permission"
+                | "failed-close"
+                | "reopened"
+                | "census-drift"
+                | "census-running"
+                | "census-idle"
+                | "census-permission"
+                | "exact-failed-close"
+                | "exact-reopened"
+        ) {
+            // A predecessor that either readback shows not provably retired is
+            // refused as such; a closed but unarchived agent can be prompted
+            // back to life.
             assert!(
                 matches!(outcome, Err(RuntimeError::ReplacementNotEvidenced { .. })),
                 "{case}: {outcome:?}"

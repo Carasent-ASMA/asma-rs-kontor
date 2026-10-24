@@ -1134,7 +1134,7 @@ fn retired_without_execution(agent: &PaseoAgent, acknowledged: bool) -> bool {
 
 /// The refusal for an archive [`retired_without_execution`] does not accept.
 const ARCHIVE_WITHOUT_CLOSE: RuntimeError = RuntimeError::ReplacementNotEvidenced {
-    rule: "the archived predecessor shows no closed runtime, or is working or waiting on a permission",
+    rule: "the predecessor reads back unarchived, without a closed runtime, working or waiting on a permission",
 };
 
 fn provider_originated(item_type: &str) -> bool {
@@ -7114,12 +7114,12 @@ impl RuntimeAdapter for PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         let after = self.fetch_agent_including_archived(native_id).await?;
-        if after.id != before.id
-            || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
-            || !after.is_archived()
+        if after.id != before.id || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        // The exact predecessor reading back unarchived after the
+        // acknowledgement was reopened; that is no retirement, never absence.
         if !retired_without_execution(&after, true) {
             return Err(ARCHIVE_WITHOUT_CLOSE);
         }
@@ -7413,9 +7413,13 @@ impl RuntimeAdapter for PaseoAdapter {
         let census = self.fetch_agents(&labels, true).await?;
         let mut matching = census.iter().filter(|candidate| candidate.id == agent.id);
         let confirmed = matching.next().ok_or(RuntimeError::CorrelationFailed)?;
+        // The census is a second readback of the same native; one that shows
+        // it unarchived or no longer closed contradicts the proof.
+        if !retired_without_execution(confirmed, false) {
+            return Err(ARCHIVE_WITHOUT_CLOSE);
+        }
         if matching.next().is_some()
             || confirmed.archived_at != agent.archived_at
-            || !confirmed.pending_permissions.is_empty()
             || confirmed.workspace_id != agent.workspace_id
             || WorkspaceRoot::parse(&confirmed.cwd)? != placement.canonical_cwd
             || confirmed.provider_session_id() != agent.provider_session_id()
@@ -7517,12 +7521,12 @@ impl RuntimeAdapter for PaseoAdapter {
         }
         let expected_seat = request.seat_binding_id.to_string();
         let after = self.fetch_agent_including_archived(native_id).await?;
-        if after.id != before.id
-            || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
-            || !after.is_archived()
+        if after.id != before.id || after.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        // The exact predecessor reading back unarchived after the
+        // acknowledgement was reopened; that is no retirement, never absence.
         if !retired_without_execution(&after, true) {
             return Err(ARCHIVE_WITHOUT_CLOSE);
         }
