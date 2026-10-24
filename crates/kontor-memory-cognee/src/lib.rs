@@ -20,6 +20,9 @@ use serde_json::Value;
 /// Bound every response before JSON decoding, including chunk text and errors.
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 
+/// Maximum bytes in one authored memory configuration document.
+pub const MAX_CONFIG_BYTES: usize = 8192;
+
 /// No credential values belong in the persisted configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -69,10 +72,10 @@ impl Config {
             Err(_) => return Err(Error(DegradedReason::Unavailable)),
         };
         let mut bytes = Vec::new();
-        file.take(8193)
+        file.take((MAX_CONFIG_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| Error(DegradedReason::Unavailable))?;
-        if bytes.len() > 8192 {
+        if bytes.len() > MAX_CONFIG_BYTES {
             return Err(Error(DegradedReason::Malformed));
         }
         let config: Self =

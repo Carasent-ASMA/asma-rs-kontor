@@ -297,6 +297,8 @@ struct Cache {
 /// One placement decision, written to the decision log and the `info` log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FleetDecision {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) launch_route: Option<kontor_core::launch_route::StoredLaunchRoute>,
     pub(crate) team_run_id: String,
     pub(crate) agent_run_id: String,
     pub(crate) binding_key: String,
@@ -324,6 +326,27 @@ pub(crate) struct FleetDecision {
     pub(crate) eligibility: Option<kontor_fleet::Eligibility>,
 }
 
+impl FleetDecision {
+    fn same_launch_authority(&self, other: &Self) -> bool {
+        self.launch_route == other.launch_route
+            && self.account_profile_id == other.account_profile_id
+            && self.team_run_id == other.team_run_id
+            && self.agent_run_id == other.agent_run_id
+            && self.binding_key == other.binding_key
+            && self.role_slot == other.role_slot
+            && self.fleet_hash == other.fleet_hash
+            && self.source_bundle_hash == other.source_bundle_hash
+            && self.chain == other.chain
+            && self.step == other.step
+            && self.sub_step == other.sub_step
+            && self.provider == other.provider
+            && self.model == other.model
+            && self.effort == other.effort
+            && self.vendor == other.vendor
+            && self.eligibility == other.eligibility
+    }
+}
+
 #[derive(Serialize)]
 struct StatusFile<'a> {
     active_hash: Option<&'a str>,
@@ -343,15 +366,116 @@ struct StatusFile<'a> {
 #[derive(Debug)]
 pub struct FleetSource {
     state_root: PathBuf,
+    authoring: PathBuf,
     cache: Mutex<Cache>,
 }
 
 impl FleetSource {
+    pub(crate) fn host_candidates(
+        &self,
+        host: &kontor_fleet::host_routes::HostRoutes,
+        policy: &FleetSnapshot,
+        resolution: &kontor_fleet::FleetResolution,
+        source_bundle_hash: Option<&ContentHash>,
+        now: Timestamp,
+    ) -> Result<
+        Vec<(
+            kontor_fleet::FleetRoute,
+            kontor_core::launch_route::ResolvedRoute,
+        )>,
+        FleetError,
+    > {
+        if source_bundle_hash.is_none() {
+            return Err(FleetError::Invalid {
+                rule: "host_route_source_unpinned",
+            });
+        }
+        let activated = kontor_fleet_activation::load(&self.state_root)?;
+        if activated.policy.hash() != policy.hash()
+            || source_bundle_hash
+                .is_some_and(|hash| activated.record.source_bundle_hash.as_ref() != Some(hash))
+        {
+            return Err(FleetError::Invalid {
+                rule: "host_route_policy_mismatch",
+            });
+        }
+        let bundle = activated.bundle.as_ref().ok_or(FleetError::Invalid {
+            rule: "host_route_source_unpinned",
+        })?;
+        let matrix =
+            kontor_fleet_activation::routes::read_matrix(&self.state_root, &bundle.manifest)?;
+        let qualifications = kontor_fleet_activation::routes::read_qualifications(
+            &self.state_root,
+            &bundle.manifest,
+            policy,
+            &activated.record,
+        )?;
+        host.candidates(
+            policy,
+            resolution,
+            &matrix,
+            qualifications.as_ref(),
+            &std::collections::BTreeSet::new(),
+            now,
+        )
+    }
+
+    pub(crate) fn freeze_host_route(
+        &self,
+        host: &kontor_fleet::host_routes::HostRoutes,
+        rung: &ModelRung,
+        policy_hash: Option<&ContentHash>,
+        source_bundle_hash: Option<&ContentHash>,
+        now: Timestamp,
+    ) -> Result<kontor_core::launch_route::ResolvedRoute, FleetError> {
+        if policy_hash.is_some() && source_bundle_hash.is_none() {
+            return Err(FleetError::Invalid {
+                rule: "host_route_source_unpinned",
+            });
+        }
+        let activated = kontor_fleet_activation::load(&self.state_root)?;
+        if policy_hash.is_some_and(|hash| hash != activated.policy.hash())
+            || source_bundle_hash
+                .is_some_and(|hash| activated.record.source_bundle_hash.as_ref() != Some(hash))
+        {
+            return Err(FleetError::Invalid {
+                rule: "host_route_policy_mismatch",
+            });
+        }
+        let bundle = activated.bundle.as_ref().ok_or(FleetError::Invalid {
+            rule: "host_route_source_unpinned",
+        })?;
+        let matrix =
+            kontor_fleet_activation::routes::read_matrix(&self.state_root, &bundle.manifest)?;
+        let qualifications = kontor_fleet_activation::routes::read_qualifications(
+            &self.state_root,
+            &bundle.manifest,
+            &activated.policy,
+            &activated.record,
+        )?;
+        host.resolve(
+            &activated.policy,
+            rung,
+            &matrix,
+            qualifications.as_ref(),
+            now,
+        )
+    }
+
     /// A source rooted at `state_root`; nothing is read until first use.
     pub fn at(state_root: &Path) -> Self {
         Self {
             state_root: state_root.to_path_buf(),
+            authoring: state_root.join(FLEET_FILE),
             cache: Mutex::new(Cache::default()),
+        }
+    }
+
+    /// Read authoring from the selected folder; keep activation and pins in the realm.
+    pub fn from_config_folder(state_root: &Path, authoring: &Path) -> Self {
+        Self {
+            authoring: authoring.to_path_buf(),
+            ..Self::at(state_root)
         }
     }
 
@@ -380,6 +504,26 @@ impl FleetSource {
     /// artifact fails.
     pub(crate) fn policy(&self) -> Result<Option<Arc<FleetSnapshot>>, FleetError> {
         Ok(self.placement()?.map(|placement| placement.policy))
+    }
+
+    /// Read publication authority only from the verified activated bundle.
+    /// Authoring edits and unactivated publications never enter this path.
+    pub(crate) fn publication_policy(
+        &self,
+    ) -> Result<Option<(ContentHash, kontor_core::publication::PublicationPolicy)>, FleetError>
+    {
+        if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            return Ok(None);
+        }
+        let activated = kontor_fleet_activation::load(&self.state_root)?;
+        Ok(activated.bundle.and_then(|bundle| {
+            activated
+                .record
+                .source_bundle_hash
+                .zip(bundle.manifest.publication_policy)
+        }))
     }
 
     /// The policy placement reads and, under an aligned activation, the Core
@@ -548,6 +692,71 @@ impl FleetSource {
         &self,
         bundle: &crate::orchestration::ResolvedBundle,
     ) -> Result<PublishedBundle, FleetError> {
+        let manifest = bundle.manifest.canonicalize()?;
+        let project_hash = bundle
+            .manifest
+            .sources
+            .get(kontor_fleet_activation::routes::PROJECT_SOURCE);
+        match (project_hash, bundle.orchestration_source.as_deref()) {
+            (Some(hash), Some(text)) if ContentHash::of(text.as_bytes()) == *hash => {
+                kontor_fleet::host_routes::RuntimeMatrix::parse(text)?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(FleetError::Invalid {
+                    rule: "host_route_source_missing_or_unbound",
+                });
+            }
+        }
+        match (
+            &bundle.manifest.qualification,
+            bundle.qualification_source.as_deref(),
+        ) {
+            (Some(_), Some(text)) => {
+                kontor_fleet_activation::routes::validate_qualifications(
+                    &bundle.manifest,
+                    &bundle.policy,
+                    text,
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(FleetError::Invalid {
+                    rule: "route_qualification_unproven",
+                });
+            }
+        }
+        match (
+            &bundle.manifest.operational_domain,
+            &bundle.operational_domain,
+        ) {
+            (Some(_), Some(text)) => {
+                kontor_fleet_activation::domain::validate_domain(
+                    &bundle.manifest,
+                    &bundle.roster,
+                    text,
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(FleetError::Invalid {
+                    rule: "operational_domain_source_missing_or_unbound",
+                });
+            }
+        }
+        let manifest_path =
+            kontor_fleet_activation::manifest_path(&self.state_root, manifest.hash());
+        if std::fs::symlink_metadata(&manifest_path).is_ok() {
+            // A published identity is verified in place. Re-publication must not
+            // repair missing artifacts from the current authoring candidates.
+            let verified =
+                kontor_fleet_activation::verify_bundle(&self.state_root, manifest.hash())?;
+            return Ok(PublishedBundle {
+                bundle_hash: manifest.hash().clone(),
+                manifest: verified.manifest,
+                created: false,
+            });
+        }
         let policy = self.publish(bundle.policy.raw())?;
         let roster_path =
             kontor_fleet_activation::roster_path(&self.state_root, bundle.roster.hash());
@@ -563,7 +772,58 @@ impl FleetSource {
             .map_err(|source| FleetError::Write { source })?;
             true
         };
-        let manifest = bundle.manifest.canonicalize()?;
+        let domain_created = if let (Some(pin), Some(text)) = (
+            &bundle.manifest.operational_domain,
+            &bundle.operational_domain,
+        ) {
+            let path =
+                kontor_fleet_activation::domain::domain_path(&self.state_root, &pin.source_hash);
+            let created = if std::fs::symlink_metadata(&path).is_ok() {
+                false
+            } else {
+                store_immutable(
+                    &self
+                        .state_root
+                        .join(kontor_fleet_activation::domain::DOMAIN_HISTORY_DIR),
+                    &path,
+                    text.as_bytes(),
+                )
+                .map_err(|source| FleetError::Write { source })?;
+                true
+            };
+            // Verify even a pre-existing artifact before making the manifest visible.
+            kontor_fleet_activation::domain::read_domain(
+                &self.state_root,
+                &bundle.manifest,
+                &bundle.roster,
+            )?;
+            created
+        } else {
+            false
+        };
+        let mut source_created = false;
+        for text in [
+            bundle.orchestration_source.as_deref(),
+            bundle.qualification_source.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let hash = ContentHash::of(text.as_bytes());
+            let path = kontor_fleet_activation::routes::source_path(&self.state_root, &hash);
+            if std::fs::symlink_metadata(&path).is_err() {
+                store_immutable(
+                    &self
+                        .state_root
+                        .join(kontor_fleet_activation::routes::SOURCE_HISTORY_DIR),
+                    &path,
+                    text.as_bytes(),
+                )
+                .map_err(|source| FleetError::Write { source })?;
+                source_created = true;
+            }
+            kontor_fleet_activation::routes::read_source(&self.state_root, &hash)?;
+        }
         let manifest_path =
             kontor_fleet_activation::manifest_path(&self.state_root, manifest.hash());
         let manifest_created = if std::fs::symlink_metadata(&manifest_path).is_ok() {
@@ -581,7 +841,11 @@ impl FleetSource {
         Ok(PublishedBundle {
             bundle_hash: manifest.hash().clone(),
             manifest: verified.manifest,
-            created: policy.created || roster_created || manifest_created,
+            created: policy.created
+                || roster_created
+                || domain_created
+                || source_created
+                || manifest_created,
         })
     }
 
@@ -647,6 +911,53 @@ impl FleetSource {
         kontor_fleet_activation::verify_bundle(&self.state_root, bundle_hash)
     }
 
+    /// New project selections use the one verified active bundle, never authoring.
+    pub(crate) fn active_domain_bundle(&self) -> Result<ContentHash, FleetError> {
+        if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            return Err(FleetError::Invalid {
+                rule: "operational_domain_unpinned",
+            });
+        }
+        kontor_fleet_activation::load(&self.state_root)?
+            .record
+            .source_bundle_hash
+            .ok_or(FleetError::Invalid {
+                rule: "operational_domain_unpinned",
+            })
+    }
+
+    /// Serialize selection with the existing activation writer through its local commit.
+    pub(crate) fn with_active_domain_bundle<T>(
+        &self,
+        expected: &ContentHash,
+        apply: impl FnOnce() -> T,
+    ) -> Result<T, FleetError> {
+        let _activation = self.lock();
+        if self.active_domain_bundle()?.as_str() != expected.as_str() {
+            return Err(FleetError::Invalid {
+                rule: "operational_domain_selection_moved",
+            });
+        }
+        self.operational_domain(expected)?;
+        Ok(apply())
+    }
+
+    /// Existing selections read their immutable context without consulting activation.
+    pub(crate) fn operational_domain(
+        &self,
+        hash: &ContentHash,
+    ) -> Result<(BundleManifest, kontor_profiles::OperationalDomainPack), FleetError> {
+        let verified = self.verify_bundle(hash)?;
+        let domain = kontor_fleet_activation::domain::read_domain(
+            &self.state_root,
+            &verified.manifest,
+            &verified.roster,
+        )?;
+        Ok((verified.manifest, domain))
+    }
+
     /// One published bundle manifest, verified as a canonical manifest at its
     /// content address. The read operation reports it beside the record.
     ///
@@ -695,6 +1006,33 @@ impl FleetSource {
             active,
             refusal,
         }
+    }
+
+    /// Read the original generation's decision without consulting activation.
+    pub(crate) fn leadership_decision(
+        &self,
+        seat: &str,
+        generation: u64,
+    ) -> std::io::Result<Option<LeadershipDecision>> {
+        let path = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(LEADERSHIP_DECISIONS_DIR)
+            .join(format!("{seat}.jsonl"));
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut result = None;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let row: LeadershipDecision =
+                serde_json::from_str(line).map_err(std::io::Error::other)?;
+            if row.seat_binding_id == seat && row.occupancy_generation == generation {
+                result = Some(row);
+            }
+        }
+        Ok(result)
     }
 
     /// Append one leadership placement the activated policy authorised.
@@ -750,6 +1088,16 @@ impl FleetSource {
     /// Returns the I/O failure so the caller can fail the placement: an
     /// unrecorded route would silently break `independent_of`.
     pub(crate) fn record_decision(&self, decision: &FleetDecision) -> std::io::Result<()> {
+        let _guard = self.lock();
+        if decision.launch_route.is_some()
+            && let Some(existing) =
+                self.private_launch_decision(&decision.team_run_id, &decision.agent_run_id)?
+        {
+            if !existing.same_launch_authority(decision) {
+                return Err(std::io::Error::other("host_route_substitution_refused"));
+            }
+            return Ok(());
+        }
         let directory = self.state_root.join(FLEET_DECISIONS_DIR);
         create_private_dir(&directory)?;
         let path = directory.join(format!("{}.jsonl", decision.team_run_id));
@@ -799,6 +1147,37 @@ impl FleetSource {
             .filter(|line| !line.trim().is_empty())
             .filter_map(|line| serde_json::from_str::<FleetDecision>(line).ok())
             .rfind(|decision| decision.agent_run_id == agent_run_id)
+    }
+
+    pub(crate) fn private_launch_decision(
+        &self,
+        team_run_id: &str,
+        agent_run_id: &str,
+    ) -> std::io::Result<Option<FleetDecision>> {
+        let path = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(format!("{team_run_id}.jsonl"));
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut frozen: Option<FleetDecision> = None;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let decision: FleetDecision = serde_json::from_str(line)
+                .map_err(|_| std::io::Error::other("host_route_decision_unreadable"))?;
+            if decision.agent_run_id == agent_run_id && decision.launch_route.is_some() {
+                if frozen
+                    .as_ref()
+                    .is_some_and(|old| !old.same_launch_authority(&decision))
+                {
+                    return Err(std::io::Error::other("host_route_substitution_refused"));
+                }
+                frozen = Some(decision);
+            }
+        }
+        Ok(frozen)
     }
 
     /// Append what one launch requested and what its runtime observed.
@@ -892,7 +1271,7 @@ impl FleetSource {
 
     /// The unmigrated selection: stamp-tracked `fleet.yml` with last-valid.
     fn legacy(&self, cache: &mut Cache) -> Option<Arc<FleetSnapshot>> {
-        let path = self.state_root.join(FLEET_FILE);
+        let path = self.authoring.clone();
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -959,8 +1338,17 @@ impl FleetSource {
     }
 
     /// The published artifact for `hash`, re-read, re-hashed and re-validated.
-    fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
+    pub(crate) fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
         kontor_fleet_activation::verify_policy(&self.state_root, hash)
+    }
+
+    /// Resolve only the exact immutable policy already frozen by admission.
+    /// No authoring, current activation, repair or last-valid fallback.
+    pub(crate) fn consultation_permissions(
+        &self,
+        hash: &ContentHash,
+    ) -> Result<kontor_fleet::ConsultationPermissions, FleetError> {
+        Ok(self.verify_published(hash)?.consultation_permissions())
     }
 
     fn write_history(&self, snapshot: &FleetSnapshot) {
@@ -1090,6 +1478,7 @@ mod tests {
 
     fn decision(binding_key: &str, vendor: &str) -> FleetDecision {
         FleetDecision {
+            launch_route: None,
             team_run_id: "run-1".to_owned(),
             agent_run_id: "agent-1".to_owned(),
             binding_key: binding_key.to_owned(),
@@ -1327,8 +1716,8 @@ mod tests {
         let yaml = "\
 schema_version: 1
 domains:
-  claude: { provider: claude, accounts: [claude-personal, claude-work] }
-  codex: { provider: codex, accounts: [codex-work] }
+  claude: { provider: claude, accounts: [claude-a, claude-b] }
+  codex: { provider: codex, accounts: [codex-b] }
 models:
   opus-5: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
   opus-4.8: { domain: claude, id: claude-opus-4-8, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1356,11 +1745,11 @@ bindings:
         assert_eq!(
             seen,
             vec![
-                ("claude-personal", "claude-opus-5", 1, 1),
-                ("claude-work", "claude-opus-5", 1, 2),
-                ("claude-personal", "claude-opus-4-8", 1, 3),
-                ("claude-work", "claude-opus-4-8", 1, 4),
-                ("codex-work", "gpt-5.6-sol", 2, 1),
+                ("claude-a", "claude-opus-5", 1, 1),
+                ("claude-b", "claude-opus-5", 1, 2),
+                ("claude-a", "claude-opus-4-8", 1, 3),
+                ("claude-b", "claude-opus-4-8", 1, 4),
+                ("codex-b", "gpt-5.6-sol", 2, 1),
             ]
         );
     }
@@ -1370,11 +1759,11 @@ bindings:
         let yaml = "\
 schema_version: 1
 domains:
-  claude: { provider: claude, accounts: [claude-personal, claude-work] }
-  codex: { provider: codex, accounts: [codex-work] }
+  claude: { provider: claude, accounts: [claude-a, claude-b] }
+  codex: { provider: codex, accounts: [codex-b] }
 unavailable:
   domains: [codex]
-  accounts: [claude-work]
+  accounts: [claude-b]
 models:
   opus-5: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
@@ -1388,7 +1777,7 @@ bindings:
         let snapshot = FleetSnapshot::parse(yaml).expect("valid document");
         let routes = snapshot.routes_for("team/t/s").expect("bound");
         assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].rung.provider.0, "claude-personal");
+        assert_eq!(routes[0].rung.provider.0, "claude-a");
         assert_eq!(routes[0].step, 2);
         assert_eq!(routes[0].sub_step, 1);
     }
@@ -1469,12 +1858,12 @@ rules:
     #[test]
     fn without_a_fleet_claude_and_codex_map_to_their_vendor() {
         let claude = ModelRung {
-            provider: ProviderRef("claude-work".to_owned()),
+            provider: ProviderRef("claude-b".to_owned()),
             model: ModelRef("claude-opus-5".to_owned()),
             effort: None,
         };
         let codex = ModelRung {
-            provider: ProviderRef("codex-work".to_owned()),
+            provider: ProviderRef("codex-b".to_owned()),
             model: ModelRef("gpt-5.6-sol".to_owned()),
             effort: None,
         };
@@ -1498,8 +1887,8 @@ rules:
         let first_yaml = "\
 schema_version: 1
 domains:
-  codex: { provider: codex, accounts: [codex-work] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  codex: { provider: codex, accounts: [codex-b] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
   opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1513,8 +1902,8 @@ bindings:
         let second_yaml = "\
 schema_version: 1
 domains:
-  codex: { provider: codex, accounts: [codex-work] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  codex: { provider: codex, accounts: [codex-b] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
   opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1536,7 +1925,7 @@ bindings:
                 .rung
                 .provider
                 .0,
-            "claude-personal"
+            "claude-a"
         );
     }
 
@@ -1832,8 +2221,8 @@ bindings:
     const V1_CLAUDE_FIRST: &str = "\
 schema_version: 1
 domains:
-  codex: { provider: codex, accounts: [codex-work] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  codex: { provider: codex, accounts: [codex-b] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
   opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -1899,13 +2288,13 @@ bindings:
         let source = FleetSource::at(root.path());
         assert_eq!(
             first_provider(&source.current().expect("legacy")),
-            "claude-personal"
+            "claude-a"
         );
 
         let hash = activate(&source, &codex_first());
         let active = source.policy().expect("verified").expect("activated");
         assert_eq!(active.hash(), &hash);
-        assert_eq!(first_provider(&active), "codex-work");
+        assert_eq!(first_provider(&active), "codex-b");
         let status = read_status(root.path());
         assert_eq!(status["active_hash"].as_str(), Some(hash.as_str()));
         assert_eq!(status["selection"].as_str(), Some("activation"));
@@ -1918,7 +2307,7 @@ bindings:
         let checkout = tempfile::tempdir().expect("temporary authoring checkout");
         let authoring = checkout.path().join("fleet.yml");
         std::fs::write(&authoring, codex_first()).expect("author");
-        let source = FleetSource::at(root.path());
+        let source = FleetSource::from_config_folder(root.path(), &authoring);
         let activated = activate(
             &source,
             &std::fs::read_to_string(&authoring).expect("read authoring"),
@@ -1934,9 +2323,18 @@ bindings:
         for _ in 0..2 {
             let active = source.policy().expect("verified").expect("activated");
             assert_eq!(active.hash(), &activated);
-            assert_eq!(first_provider(&active), "codex-work");
+            assert_eq!(first_provider(&active), "codex-b");
             assert_eq!(source.current().expect("activated").hash(), &activated);
         }
+
+        let restarted = FleetSource::from_config_folder(root.path(), &authoring);
+        assert_eq!(
+            restarted
+                .current()
+                .expect("activation survives restart")
+                .hash(),
+            &activated
+        );
 
         // Only activation moves the next placement.
         source
@@ -2143,8 +2541,16 @@ bindings:
             .expect("the bundled domain loads")
             .role_catalogs
             .remove(0);
-        let roster =
-            CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).expect("LSA and TPM");
+        let roster = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM");
         let pinned = roster.canonicalize().expect("canonical roster");
         let keys: Vec<LeadershipKey> = roster
             .seats
@@ -2167,8 +2573,8 @@ bindings:
             "\
 schema_version: 2
 domains:
-  codex: {{ provider: codex, accounts: [codex-work] }}
-  claude: {{ provider: claude, accounts: [claude-personal] }}
+  codex: {{ provider: codex, accounts: [codex-b] }}
+  claude: {{ provider: claude, accounts: [claude-a] }}
 models:
   sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}
   opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}
@@ -2205,11 +2611,11 @@ bindings:
             policy.resolve(&advisor).expect("advisor"),
         ];
         let expected = [
-            (keys[0].as_str(), "codex-first", "codex-work"),
-            (keys[1].as_str(), "claude-first", "claude-personal"),
-            (delivery.as_str(), "claude-first", "claude-personal"),
-            (reviewer.as_str(), "codex-first", "codex-work"),
-            (advisor.as_str(), "claude-first", "claude-personal"),
+            (keys[0].as_str(), "codex-first", "codex-b"),
+            (keys[1].as_str(), "claude-first", "claude-a"),
+            (delivery.as_str(), "claude-first", "claude-a"),
+            (reviewer.as_str(), "codex-first", "codex-b"),
+            (advisor.as_str(), "claude-first", "claude-a"),
         ];
         for (resolution, (key, chain, first)) in resolutions.iter().zip(expected) {
             // Every slot class names the same activated bytes, its own key and
@@ -2316,7 +2722,7 @@ bindings:
             chain: "codex-first".to_owned(),
             step: 1,
             sub_step: 1,
-            provider: "codex-work".to_owned(),
+            provider: "codex-b".to_owned(),
             model: "gpt-5.6-sol".to_owned(),
             effort: Some("xhigh".to_owned()),
             vendor: "openai".to_owned(),
@@ -2370,8 +2776,16 @@ bindings:
             .expect("the bundled domain loads")
             .role_catalogs
             .remove(0);
-        let roster =
-            CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).expect("LSA and TPM");
+        let roster = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM");
         let pinned = roster.canonicalize().expect("canonical roster");
         let leadership: Vec<LeadershipKey> = roster
             .seats
@@ -2387,7 +2801,7 @@ bindings:
         let policy = |first: &str, second: &str| {
             format!(
                 "schema_version: 2\n\
-                 domains:\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+                 domains:\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  claude: {{ provider: claude, accounts: [claude-a] }}\n\
                  models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n\
                  chains:\n  lead:\n    - [{first}@xhigh]\n    - [{second}@xhigh]\n\
                  bindings:\n  {lsa}: lead\n  {tpm}: lead\n  {delivery}: lead\n  {reviewer}: lead\n  {advisor}: lead\n",
@@ -2416,7 +2830,7 @@ bindings:
         let eligibilities = [
             Eligibility::default(),
             Eligibility {
-                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
                 excluded_vendors: BTreeSet::new(),
             },
             Eligibility {
@@ -2473,7 +2887,7 @@ bindings:
                 chosen.step,
                 chosen.sub_step
             ),
-            ("codex-work", 1, 1),
+            ("codex-b", 1, 1),
             "the policy, not the caller, chooses the route"
         );
 
@@ -2513,9 +2927,12 @@ bindings:
         source: &FleetSource,
         authoring: &crate::orchestration::fixture::Authoring,
     ) -> (PublishedBundle, crate::orchestration::ResolvedBundle) {
-        let resolved =
-            crate::orchestration::resolve_bundle(&authoring.sources(), &authoring.catalog)
-                .expect("the bundle resolves");
+        let resolved = crate::orchestration::resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("the bundle resolves");
         (
             source.publish_bundle(&resolved).expect("published"),
             resolved,
@@ -2701,6 +3118,74 @@ bindings:
         assert_eq!(refusal(&source), C07);
         write_private(&roster, &good);
         assert!(source.placement().expect("verified").is_some());
+    }
+
+    #[test]
+    fn route_source_publication_is_immutable_and_activation_replay_reuses_its_event() {
+        use kontor_fleet_activation::routes;
+        let root = tempfile::tempdir().unwrap();
+        let source = FleetSource::at(root.path());
+        let authoring = crate::orchestration::fixture::authoring();
+        let mut resolved = crate::orchestration::resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .unwrap();
+        let text = "schema_version: 1\nrecords: []\n";
+        let hash = ContentHash::of(text.as_bytes());
+        resolved
+            .manifest
+            .sources
+            .insert(routes::QUALIFICATION_SOURCE.into(), hash.clone());
+        resolved.manifest.qualification = Some(routes::QualificationPin {
+            source: routes::QUALIFICATION_SOURCE.into(),
+            source_hash: hash.clone(),
+        });
+        resolved.qualification_source = Some(text.into());
+        let preview = resolved.manifest.canonicalize().unwrap();
+        let published = source.publish_bundle(&resolved).unwrap();
+        assert_eq!(&published.bundle_hash, preview.hash());
+        assert_eq!(published.manifest.canonicalize().unwrap(), preview);
+        let first = source
+            .activate_bundle(&published.bundle_hash, &ActivationFence::default())
+            .unwrap();
+        let replay = source
+            .activate_bundle(
+                &published.bundle_hash,
+                &ActivationFence::of(Some(&first.record)),
+            )
+            .unwrap();
+        assert!(!replay.changed);
+        assert_eq!(replay.record, first.record);
+        assert!(
+            routes::read_qualifications(
+                root.path(),
+                &published.manifest,
+                &resolved.policy,
+                &replay.record
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert_eq!(
+            source.publish_bundle(&resolved).unwrap().bundle_hash,
+            published.bundle_hash
+        );
+        std::fs::remove_file(routes::source_path(root.path(), &hash)).unwrap();
+        assert!(source.publish_bundle(&resolved).is_err());
+        assert!(
+            !routes::source_path(root.path(), &hash).exists(),
+            "republication must not repair a missing artifact from authoring bytes"
+        );
+        assert!(
+            source
+                .activate_bundle(
+                    &published.bundle_hash,
+                    &ActivationFence::of(Some(&first.record))
+                )
+                .is_err()
+        );
     }
 
     #[test]

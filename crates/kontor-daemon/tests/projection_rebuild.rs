@@ -180,6 +180,7 @@ async fn composed_http_success_local_exclusion_idempotent_replay_and_restart() {
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
     // Ordinary startup with no client can still replay durable completed results.
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -196,6 +197,7 @@ async fn composed_http_success_local_exclusion_idempotent_replay_and_restart() {
     )
     .unwrap();
     let world = World {
+        historical_epics,
         router: daemon.router(),
         directory,
         daemon,

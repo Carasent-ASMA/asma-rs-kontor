@@ -138,14 +138,14 @@ pub fn decide(
     }
     // Eligibility first, classification second. A signal set is realm-wide and
     // a deployment names *exact catalog aliases*, so one vendor's wording
-    // appears once per account: `codex-work` and `codex-personal` carry the
+    // appears once per account: `codex-b` and `codex-a` carry the
     // identical sentence under different aliases.
     //
     // Classifying the whole set and rejecting an ineligible answer afterwards
     // -- which is what this did first -- is wrong twice over. It is inert when
     // no signal happens to name an alias this account can select, and worse, it
     // is *masking*: `classify` returns the first signal whose markers match, so
-    // a seat on `codex-personal` matches the `codex-work` entry, gets it thrown
+    // a seat on `codex-a` matches the `codex-b` entry, gets it thrown
     // away, and never reaches its own identical wording. Filtering to what this
     // account may actually select, in the configured order, makes both
     // impossible: every candidate is eligible by construction, and no

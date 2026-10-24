@@ -643,6 +643,7 @@ async fn a_launch_proves_its_account_home_before_it_starts_a_process() {
     let observation = plane
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:01:00Z"),
         })
@@ -1128,6 +1129,7 @@ async fn no_process_ending_becomes_terminal_evidence() {
         let inspected = plane
             .adapter
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T09:05:00Z"),
             })
@@ -1264,6 +1266,7 @@ async fn every_unsupported_operation_fails_typed_with_zero_dispatches() {
             plane
                 .adapter
                 .resume(&ResumeRequest {
+                    resolved_route: None,
                     binding: binding.clone(),
                     requested_at: at("2026-08-10T09:02:00Z"),
                 })

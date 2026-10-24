@@ -793,6 +793,15 @@ pub struct AppliedProfileDto {
     pub receipt: MutationReceiptDto,
 }
 
+fn core_team_purposes_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    serde_json::from_value(serde_json::json!({
+        "type":"array", "uniqueItems":true,
+        "description":"Frozen purposes derived by the server; legacy empty is non-granting. Never accepted as authored seat selections.",
+        "items":{"type":"string", "enum":kontor_core::spec::CoreTeamSeatPurpose::ALL},
+    }))
+    .expect("frozen purpose schema")
+}
+
 /// One Core Team seat: the standard role, the policy it is held under, and the
 /// seat filling it if any.
 ///
@@ -809,6 +818,10 @@ pub struct CoreTeamSeatDto {
     pub presence: EpicPresence,
     /// Whether the role may open a Quick session.
     pub ad_hoc_allowed: bool,
+    /// Frozen derived purposes: architecture_closer, process_closer, control. Legacy empty is non-granting.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[schema(schema_with = core_team_purposes_schema, required = false)]
+    pub purposes: Vec<kontor_core::spec::CoreTeamSeatPurpose>,
     /// The binding filling it, once one has been materialized.
     #[schema(value_type = Option<String>)]
     pub seat_binding_id: Option<SeatBindingId>,
@@ -965,7 +978,7 @@ pub struct CoreTeamSeatSelectionDto {
 }
 
 /// A proposed Core Team composition: the caller's seats, or the Core Team
-/// revision one published orchestration bundle declares (ASMA-8280 S-3).
+/// revision one published orchestration bundle declares.
 /// Exactly one of the two.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1035,7 +1048,7 @@ pub struct CoreTeamMaterializeRequest {
 /// Exactly one of `model_route` and `eligibility`: the caller's exact route,
 /// which the activated fleet policy may admit or refuse but never replaces, or
 /// — when the caller names none — the policy's own choice under the
-/// eligibility the caller states (ASMA-8280).
+/// eligibility the caller states.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamSeatRouteRequest {
@@ -1179,7 +1192,7 @@ pub struct CoreTeamRouteOccupantDto {
 /// recorded is the subject the grant is scoped to — the logical seat and the
 /// occupancy generation — and a digest over exactly that public pair. A reader
 /// can therefore prove which generation-scoped grant the successor derived
-/// without the record ever having held anything secret (ASMA-8187).
+/// without the record ever having held anything secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CoreTeamRouteGrantSubjectDto {
     /// The generation this successor's grant is scoped to.
@@ -2932,7 +2945,7 @@ pub struct CapacityConfigurationPreviewDto {
     pub preview_hash: ContentHash,
 }
 
-/// The Realm's fleet policy selection (ASMA-8280).
+/// The Realm's fleet policy selection.
 ///
 /// Exactly one source decides fleet routing: an activation record naming one
 /// published policy by content hash, or — when none exists — the unmigrated
@@ -3071,7 +3084,7 @@ pub struct FleetPolicyActivatedDto {
     pub applied: AppliedDto,
 }
 
-/// The Realm's orchestration bundle selection (ASMA-8280 S-1).
+/// The Realm's orchestration bundle selection.
 ///
 /// The same single activation pointer [`FleetPolicyDto`] reports, read for its
 /// bundle: a schema_version 1 record names a policy alone; a schema_version 2
@@ -3119,6 +3132,54 @@ pub struct FleetBundleManifestDto {
     /// The bundle's canonical Core Team revision.
     #[schema(value_type = String)]
     pub core_team_revision_hash: ContentHash,
+    /// Publication authority selected only when this bundle is activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_policy: Option<FleetPublicationPolicyDto>,
+    /// Exact selected domain artifact retained by bundle publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain: Option<OperationalDomainPinDto>,
+}
+
+/// Folder-relative authoring provenance and exact immutable domain byte identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct OperationalDomainPinDto {
+    /// Selected-folder-relative YAML path; never a runtime lookup path.
+    pub source: String,
+    /// SHA-256 of the exact authored UTF-8 bytes.
+    #[schema(value_type = String)]
+    pub source_hash: ContentHash,
+}
+
+/// The explicit project publication policy pinned by an orchestration bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPublicationPolicyDto {
+    /// The internal existing Kontor project this policy governs.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The project allowlist; membership alone grants no access.
+    pub repositories: Vec<String>,
+    /// The repository every confirmed binding in the project may publish to.
+    pub root_repository: String,
+    /// Exact durable Task.module keys and their additional repository.
+    pub module_repositories: std::collections::BTreeMap<String, String>,
+    /// The only permitted publication base branch.
+    pub base_branch: String,
+    /// Selected branch templates, effective only with this activated policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_rules: Option<FleetProjectBranchRulesDto>,
+}
+
+/// The project's narrowing of the shared core grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetProjectBranchRulesDto {
+    /// Exact public tracker project key.
+    pub project_key: String,
+    /// Allowed conventional branch types.
+    pub types: Vec<String>,
+    /// Anchored branch template.
+    pub pattern: String,
+    /// Anchored commit template; not evidence of an observed commit message.
+    pub commit_pattern: String,
 }
 
 /// The exact role catalog revision a bundle pins.
@@ -3221,7 +3282,7 @@ pub struct FleetBundleActivateRequest {
     pub expected_active: Option<FleetActivationFenceDto>,
 }
 
-/// A proposed initial orchestration bundle for review (ASMA-8280 S-2).
+/// A proposed initial orchestration bundle for review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct FleetBundleProposalDto {
     /// The Realm it was proposed for.
@@ -3538,6 +3599,14 @@ pub struct ProjectTeamDefinitionSelectionPreviewDto {
     pub current_definition: Option<PinnedTeamDefinitionDto>,
     /// Exact published target.
     pub target_definition: PinnedTeamDefinitionDto,
+    /// Current domain context, absent on historical selections.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_operational_domain_bundle_hash: Option<ContentHash>,
+    /// Verified activated bundle bound to this proposed selection.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_operational_domain_bundle_hash: Option<ContentHash>,
     /// Apply-bound comparison hash.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
@@ -3551,6 +3620,10 @@ pub struct ProjectTeamDefinitionSelectionPreviewDto {
 pub struct AppliedProjectTeamDefinitionSelectionDto {
     /// Exact selected default.
     pub selected_definition: PinnedTeamDefinitionDto,
+    /// Exact selected domain context, absent only on historical readback.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// Durable apply/replay receipt.
     pub receipt: MutationReceiptDto,
 }
@@ -3647,7 +3720,7 @@ pub struct JiraMaterializationPreviewDto {
     pub preview_hash: ContentHash,
 }
 
-/// A confirmed Jira materialization and ASMA activation receipt.
+/// A confirmed Jira materialization and epic activation receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct JiraMaterializationAppliedDto {
     /// The Realm that owns the receipt.
@@ -3662,7 +3735,7 @@ pub struct JiraMaterializationAppliedDto {
     pub items: Vec<JiraMaterializationItemDto>,
     /// The materialization command receipt.
     pub receipt_id: String,
-    /// The separate ASMA activation command receipt.
+    /// The separate epic activation command receipt.
     pub activation_receipt_id: String,
     /// Whether the whole required binding set is activated.
     pub activated: bool,
@@ -4798,8 +4871,8 @@ pub struct EnsureAccountProfileRequest {
     /// approve resolves to nothing.
     pub credential_alias: String,
     /// The runtime provider aliases this account is addressable under, when the
-    /// deployment has registered one alias per login — `codex-work` for one
-    /// Codex account, `codex-personal` for the other. Frozen into the profile's
+    /// deployment has registered one alias per login — `codex-b` for one
+    /// Codex account, `codex-a` for the other. Frozen into the profile's
     /// immutable routing document at creation, because a pin that could move
     /// under a running seat would not be a pin. Empty means the account is not
     /// addressable per provider and no quota walk will select it, which is
@@ -4948,7 +5021,7 @@ pub struct EpicTaskRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EpicExecutionScopeDto {
-    /// The external tracker key, e.g. `ASMA-7869`.
+    /// The confirmed external tracker key.
     #[schema(value_type = String)]
     pub external_epic_key: ExternalId,
     /// The compact title used when a runtime renders the epic container.
@@ -5033,6 +5106,11 @@ pub struct InitialExecutionHoldPreviewDto {
 /// authorization before the epic becomes governable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApplyEpicRequest {
+    /// Optional preview precondition. A different selected/pinned domain refuses.
+    /// Omission resolves the explicitly selected project domain at apply time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub expected_operational_domain_bundle_hash: Option<ContentHash>,
     /// The revision the caller read the project at.
     #[schema(value_type = u64)]
     pub expected_revision: AggregateRevision,
@@ -5216,6 +5294,10 @@ pub struct EpicControlPlaneDto {
 /// One epic after it was applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct AppliedEpicDto {
+    /// Exact immutable domain bundle bound to this epic operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// The Realm it belongs to.
     #[schema(value_type = String)]
     pub realm_id: kontor_core::id::RealmId,
@@ -5296,6 +5378,10 @@ pub struct PreviewEpicTaskDto {
 /// The result of judging an epic with the exact apply rules and no writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct PreviewEpicDto {
+    /// Exact immutable domain bundle bound to this epic operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// The Realm that judged the graph.
     #[schema(value_type = String)]
     pub realm_id: kontor_core::id::RealmId,
@@ -6408,7 +6494,7 @@ pub struct TicketReconcilePlanDto {
     ///
     /// Content is part of this answer deliberately. Reporting `true` while an
     /// issue's description still held only `Kontor <kind> <uuid>: <title>` is
-    /// the defect ASMA-8123 fixes: a caller asking whether a ticket is
+    /// a content-projection defect: a caller asking whether a ticket is
     /// reconciled must not be told yes while its reader sees an internal UUID.
     pub converged: bool,
 }
@@ -6515,7 +6601,7 @@ pub struct WorktreeClaimCorrectionRequest {
     /// Exact currently stored claim; a mismatch refuses rather than overwrites.
     #[schema(value_type = String)]
     pub old_worktree: ExternalName,
-    /// Exact deterministic ASMA catalog-module target.
+    /// Exact deterministic target rendered from the selected layout and durable module.
     #[schema(value_type = String)]
     pub new_worktree: ExternalName,
 }
@@ -6541,7 +6627,7 @@ pub struct WorktreeClaimCorrectionPreviewDto {
     /// Exact derived replacement.
     #[schema(value_type = String)]
     pub new_worktree: ExternalName,
-    /// Catalog module whose repository the target names.
+    /// Exact durable task module used to render the target.
     pub module: String,
     /// Jira-key publication branch the supported materializer must create.
     pub branch: String,
@@ -6589,7 +6675,7 @@ pub struct WorktreeClaimCorrectionAppliedDto {
     /// Exact replacement claim read from immutable evidence.
     #[schema(value_type = String)]
     pub new_worktree: ExternalName,
-    /// Catalog module whose repository the target names.
+    /// Exact durable task module used to render the target.
     pub module: String,
     /// Jira-key publication branch the supported materializer must create.
     pub branch: String,
@@ -7743,6 +7829,15 @@ pub trait ApplicationOperations: Send + Sync {
     /// Routes backed by purpose-built receipts record no command receipt, so a
     /// missing key is a successful no-op.
     fn complete_local_command(&self, key: &IdempotencyKey) -> Result<(), ApiError>;
+
+    /// Read the private launch authority for an issued session without resolving policy.
+    fn session_launch_route(
+        &self,
+        _project_id: ProjectId,
+        _agent_run_id: AgentRunId,
+    ) -> Result<Option<kontor_core::launch_route::ResolvedRoute>, ApiError> {
+        Ok(None)
+    }
 
     /// Persist one exact post-message runtime observation through the shared
     /// AgentRun/TeamRun reducer.
@@ -13345,7 +13440,7 @@ pub async fn recover_gate_rejection(
 /// Catch a stalled workflow up to the phase its own durable evidence proves.
 ///
 /// The advance is normally computed as a side effect of recording a gate or
-/// settling a turn. When that moment is missed — ASMA-8205 passed its
+/// settling a turn. When that moment is missed — a task passed its
 /// `high-verification-gate` at sequence 2 and the stored phase never moved —
 /// nothing re-derives it afterwards, and the workflow stalls with complete and
 /// unambiguous evidence sitting in front of it.
@@ -14492,6 +14587,10 @@ pub struct PublicationDecisionDto {
     pub reasons: Vec<String>,
     /// The rules revision the decision was computed under.
     pub policy_revision: u32,
+    /// The immutable activated authorization bundle read for this judgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
     /// When it was judged.
     #[schema(value_type = String)]
     pub evaluated_at: Timestamp,

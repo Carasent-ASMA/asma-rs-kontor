@@ -1651,12 +1651,12 @@ fn account(fixture: &Fixture) -> kontor_core::id::AccountProfileId {
         .create_account_profile(&NewAccountProfile {
             id,
             project_id: fixture.project,
-            label: ExternalName::parse("codex-work").expect("a label"),
+            label: ExternalName::parse("codex-b").expect("a label"),
             external_account_id: None,
             harness: RuntimeKindKey::parse("generic.runtime").expect("a runtime key"),
             credential_ref: CredentialReference {
                 kind: CredentialReferenceKind::ConfigHome,
-                alias: CredentialAlias::parse("codex-work").expect("an alias"),
+                alias: CredentialAlias::parse("codex-b").expect("an alias"),
             },
             environment: document("environment"),
             routing: document("routing"),
@@ -1683,7 +1683,7 @@ fn provenance_for(
         id: kontor_core::id::QuotaObservationProvenanceId::generate(),
         project_id: fixture.project,
         account_profile_id: id,
-        provider: "codex-work".to_owned(),
+        provider: "codex-b".to_owned(),
         signal_id: "codex-usage-limit-work".to_owned(),
         signal_version: kontor_core::id::SpecVersion::FIRST,
         signal_definition_hash: document("signal").hash().clone(),
@@ -1721,7 +1721,7 @@ fn quota_at(
     kontor_core::repository::NewProviderQuotaState {
         project_id: fixture.project,
         account_profile_id: id,
-        provider: "codex-work".to_owned(),
+        provider: "codex-b".to_owned(),
         state,
         resets_at,
         windows: Vec::new(),
@@ -1757,7 +1757,7 @@ fn quota(
     kontor_core::repository::NewProviderQuotaState {
         project_id: fixture.project,
         account_profile_id: id,
-        provider: "codex-work".to_owned(),
+        provider: "codex-b".to_owned(),
         state,
         resets_at,
         windows: Vec::new(),
@@ -2178,7 +2178,7 @@ fn write_runtime_quota(
         Some(kontor_core::repository::NewProviderQuotaState {
             project_id: fixture.project,
             account_profile_id: id,
-            provider: "codex-work".to_owned(),
+            provider: "codex-b".to_owned(),
             state: ProviderQuotaKind::Exhausted,
             resets_at: Some(at("2099-01-01T00:00:00Z")),
             windows: Vec::new(),
@@ -2247,7 +2247,7 @@ fn a_runtime_observation_without_provenance_is_refused_even_when_a_row_exists() 
             .set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
                 project_id: fixture.project,
                 account_profile_id: id,
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 state: ProviderQuotaKind::Unknown,
                 resets_at: None,
                 windows: Vec::new(),
@@ -2291,7 +2291,7 @@ fn a_record_that_disagrees_with_its_row_is_refused_per_column() {
         (
             "provider",
             Box::new(|r: &mut NewQuotaObservationProvenance| {
-                r.provider = "codex-personal".to_owned();
+                r.provider = "codex-a".to_owned();
             }),
         ),
         (
@@ -2473,7 +2473,7 @@ fn a_quota_row_cannot_cite_another_projects_provenance() {
             .create_account_profile(&NewAccountProfile {
                 id: account_b,
                 project_id: project_b,
-                label: ExternalName::parse("codex-work-b").expect("a label"),
+                label: ExternalName::parse("codex-b-b").expect("a label"),
                 external_account_id: None,
                 harness: RuntimeKindKey::parse("generic.runtime").expect("a runtime key"),
                 credential_ref: CredentialReference {
@@ -2531,7 +2531,7 @@ fn a_quota_row_cannot_cite_another_projects_provenance() {
             quota_state: Some(kontor_core::repository::NewProviderQuotaState {
                 project_id: project_b,
                 account_profile_id: account_b,
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 state: kontor_core::spec::ProviderQuotaKind::Unknown,
                 resets_at: None,
                 windows: Vec::new(),
@@ -2571,7 +2571,7 @@ fn a_quota_row_cannot_cite_another_projects_provenance() {
         "INSERT INTO provider_quota_states
              (project_id, account_profile_id, provider, state, resets_at, evidence_hash,
               source, observed_at, revision, updated_at, provenance_id)
-         VALUES (?1, ?2, 'codex-personal', 'unknown', NULL,
+         VALUES (?1, ?2, 'codex-a', 'unknown', NULL,
                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                  'runtime_observation', '2026-08-09T10:00:00Z', 1, '2026-08-09T10:00:00Z', ?3)",
         rusqlite::params![
@@ -2644,7 +2644,7 @@ fn provenance_cardinality_matches_what_was_actually_accepted() {
             .set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
                 project_id: fixture.project,
                 account_profile_id: id,
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 state: ProviderQuotaKind::Unknown,
                 resets_at: None,
                 windows: Vec::new(),
@@ -2676,7 +2676,7 @@ fn provenance_cardinality_matches_what_was_actually_accepted() {
 
     // Refused: a record that disagrees with its row adds nothing either.
     let refused = write_runtime_quota(&fixture, id, AggregateRevision::INITIAL, |record| {
-        record.provider = "codex-personal".to_owned();
+        record.provider = "codex-a".to_owned();
     });
     assert!(refused.is_err());
     assert_eq!(provenance_count(&fixture), 1, "a refusal adds no record");
@@ -2881,7 +2881,7 @@ fn the_exported_quota_chain_is_exact_and_carries_no_refusal_text() {
         .records
         .provider_quota_states
         .iter()
-        .find(|row| row.provider == "codex-work")
+        .find(|row| row.provider == "codex-b")
         .expect("the runtime-observed row");
     assert_eq!(runtime.provenance_id.as_deref(), Some(record.id.as_str()));
     assert_eq!(runtime.evidence_hash, record.evidence_digest);
@@ -2900,7 +2900,7 @@ fn the_exported_quota_chain_is_exact_and_carries_no_refusal_text() {
 
     assert_eq!(export.records.provider_quota_windows.len(), 1);
     let window = &export.records.provider_quota_windows[0];
-    assert_eq!(window.provider, "codex-work");
+    assert_eq!(window.provider, "codex-b");
     assert_eq!(window.used_percent, 100);
 
     // Through the import, where the chain must arrive as lineage and nothing
@@ -3046,7 +3046,7 @@ fn refused_detail(tamper: impl FnOnce(&mut serde_json::Value)) -> String {
 /// check that never ran.
 #[test]
 fn a_rehashed_document_cannot_forge_the_quota_chain() {
-    let codex = |document: &serde_json::Value| state_at(document, "codex-work");
+    let codex = |document: &serde_json::Value| state_at(document, "codex-b");
 
     let cases: Vec<TamperCase> = vec![
         (

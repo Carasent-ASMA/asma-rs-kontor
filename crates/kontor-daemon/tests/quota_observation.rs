@@ -69,7 +69,7 @@ fn shipped_signal_for(alias: &str) -> QuotaSignal {
         .unwrap_or_else(|| panic!("the fixture carries a signal for {alias}"))
 }
 
-/// Create an account addressable as `codex-work`.
+/// Create an account addressable as `codex-b`.
 async fn account(world: &World, label: &str, alias: &str) -> AccountProfileId {
     let project = world.project;
     let created = Call::post(
@@ -210,14 +210,14 @@ fn refusal(seat: &Seat, text: &str) -> TransientRefusal {
 async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "codex-work-a", "codex-work").await;
+    let profile = account(&world, "codex-b-a", "codex-b").await;
     let state = world.daemon.state();
 
     let classified = classify_and_record(
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -229,7 +229,7 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
         "the first observation must write a row"
     );
     assert_eq!(classified.kind, ProviderQuotaKind::Exhausted);
-    assert_eq!(classified.provider, "codex-work");
+    assert_eq!(classified.provider, "codex-b");
     // 09:35 in Oslo during August is CEST, two hours ahead of UTC.
     assert_eq!(classified.resets_at, Some(at("2026-08-23T07:35:00Z")));
 
@@ -249,7 +249,7 @@ async fn a_usage_limit_refusal_records_the_instant_the_vendor_stated() {
 async fn the_same_limit_observed_three_times_refreshes_one_row() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "codex-work-b", "codex-work").await;
+    let profile = account(&world, "codex-b-b", "codex-b").await;
     let state = world.daemon.state();
 
     let mut recorded = 0;
@@ -258,7 +258,7 @@ async fn the_same_limit_observed_three_times_refreshes_one_row() {
             &state,
             world.project,
             profile,
-            &[codex_signal_for("codex-work")],
+            &[codex_signal_for("codex-b")],
             &refusal(&seat, CODEX_LIMIT),
             at(&format!("2026-08-21T10:0{minute}:00Z")),
         )
@@ -290,7 +290,7 @@ async fn the_same_limit_observed_three_times_refreshes_one_row() {
 async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "codex-work-c", "codex-work").await;
+    let profile = account(&world, "codex-b-c", "codex-b").await;
     let state = world.daemon.state();
 
     for text in [
@@ -303,7 +303,7 @@ async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
                 &state,
                 world.project,
                 profile,
-                &[codex_signal_for("codex-work")],
+                &[codex_signal_for("codex-b")],
                 &refusal(&seat, text),
                 at("2026-08-21T10:00:00Z"),
             )
@@ -328,7 +328,7 @@ async fn an_ordinary_error_and_a_finished_seat_record_nothing() {
 async fn a_realm_with_no_signals_document_stays_inert() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "codex-work-d", "codex-work").await;
+    let profile = account(&world, "codex-b-d", "codex-b").await;
     let state = world.daemon.state();
 
     assert!(
@@ -358,9 +358,9 @@ async fn a_realm_with_no_signals_document_stays_inert() {
 async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    // The account is addressable as `codex-personal`; the signal names
-    // `codex-work`. One vendor's sentence must not block the other login.
-    let profile = account(&world, "codex-personal-a", "codex-personal").await;
+    // The account is addressable as `codex-a`; the signal names
+    // `codex-b`. One vendor's sentence must not block the other login.
+    let profile = account(&world, "codex-a-a", "codex-a").await;
     let state = world.daemon.state();
 
     assert!(
@@ -368,7 +368,7 @@ async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
             &state,
             world.project,
             profile,
-            &[codex_signal_for("codex-work")],
+            &[codex_signal_for("codex-b")],
             &refusal(&seat, CODEX_LIMIT),
             at("2026-08-21T10:00:00Z"),
         )
@@ -390,14 +390,14 @@ async fn a_wording_this_account_cannot_select_is_not_attributed_to_it() {
 async fn the_refusal_sentence_never_reaches_the_store() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "codex-work-e", "codex-work").await;
+    let profile = account(&world, "codex-b-e", "codex-b").await;
     let state = world.daemon.state();
 
     let classified = classify_and_record(
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -449,16 +449,13 @@ async fn a_credential_shaped_refusal_is_refused_before_it_is_ever_classified() {
 async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let work = account(&world, "alias-work", "codex-work").await;
-    let personal = account(&world, "alias-personal", "codex-personal").await;
+    let work = account(&world, "alias-work", "codex-b").await;
+    let personal = account(&world, "alias-personal", "codex-a").await;
     let state = world.daemon.state();
     // The realm-wide configured sequence, work first.
-    let configured = [
-        codex_signal_for("codex-work"),
-        codex_signal_for("codex-personal"),
-    ];
+    let configured = [codex_signal_for("codex-b"), codex_signal_for("codex-a")];
 
-    for (profile, expected) in [(work, "codex-work"), (personal, "codex-personal")] {
+    for (profile, expected) in [(work, "codex-b"), (personal, "codex-a")] {
         let classified = classify_and_record(
             &state,
             world.project,
@@ -476,7 +473,7 @@ async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
     let stored = state
         .with_store(|store| store.list_provider_quota_states(world.project))
         .expect("quota states");
-    for (profile, expected) in [(work, "codex-work"), (personal, "codex-personal")] {
+    for (profile, expected) in [(work, "codex-b"), (personal, "codex-a")] {
         let row = stored
             .iter()
             .find(|entry| entry.account_profile_id == profile)
@@ -492,14 +489,11 @@ async fn identical_wording_records_the_alias_the_seat_actually_runs_on() {
 async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let personal = account(&world, "mask-personal", "codex-personal").await;
+    let personal = account(&world, "mask-personal", "codex-a").await;
     let state = world.daemon.state();
-    // `codex-work` is first and matches the same text, but this seat cannot
+    // `codex-b` is first and matches the same text, but this seat cannot
     // select it.
-    let configured = [
-        codex_signal_for("codex-work"),
-        codex_signal_for("codex-personal"),
-    ];
+    let configured = [codex_signal_for("codex-b"), codex_signal_for("codex-a")];
 
     let classified = classify_and_record(
         &state,
@@ -512,7 +506,7 @@ async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
     .expect("the write settles")
     .expect("the eligible signal is reached");
     assert_eq!(
-        classified.provider, "codex-personal",
+        classified.provider, "codex-a",
         "an ineligible alias must not stand in front of an eligible one",
     );
 }
@@ -523,7 +517,7 @@ async fn an_ineligible_earlier_signal_cannot_mask_an_eligible_later_one() {
 async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "family-only", "codex-work").await;
+    let profile = account(&world, "family-only", "codex-b").await;
     let state = world.daemon.state();
 
     assert!(
@@ -556,7 +550,7 @@ async fn a_signal_naming_a_vendor_family_is_inert_for_an_alias_routed_account() 
 async fn a_reset_that_is_not_in_the_future_records_a_blocking_unknown_instead() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "past-reset", "codex-work").await;
+    let profile = account(&world, "past-reset", "codex-b").await;
     let state = world.daemon.state();
 
     // Observed well after the instant the message states.
@@ -564,7 +558,7 @@ async fn a_reset_that_is_not_in_the_future_records_a_blocking_unknown_instead() 
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2027-01-01T00:00:00Z"),
     )
@@ -600,7 +594,7 @@ async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
 
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "cas-foreign", "codex-work").await;
+    let profile = account(&world, "cas-foreign", "codex-b").await;
     let state = world.daemon.state();
 
     // Somebody else's conclusion about the same pair, from a different source
@@ -610,7 +604,7 @@ async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
             store.set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
                 project_id: world.project,
                 account_profile_id: profile,
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 state: ProviderQuotaKind::Available,
                 resets_at: None,
                 windows: Vec::new(),
@@ -630,7 +624,7 @@ async fn a_foreign_older_row_is_never_mistaken_for_our_own() {
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -673,7 +667,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
 
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "cas-stale", "codex-work").await;
+    let profile = account(&world, "cas-stale", "codex-b").await;
     let state = world.daemon.state();
 
     state
@@ -681,7 +675,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
             store.set_provider_quota_state(&kontor_core::repository::NewProviderQuotaState {
                 project_id: world.project,
                 account_profile_id: profile,
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 state: ProviderQuotaKind::Available,
                 resets_at: None,
                 windows: Vec::new(),
@@ -707,7 +701,7 @@ async fn a_refusal_older_than_the_current_row_does_not_regress_it() {
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T18:00:00Z"),
     )
@@ -739,7 +733,7 @@ async fn a_vanished_account_is_a_no_op_and_not_an_error() {
         &state,
         world.project,
         absent,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     );
@@ -755,9 +749,9 @@ async fn a_vanished_account_is_a_no_op_and_not_an_error() {
 async fn an_exact_semantic_row_is_refreshed_by_a_new_runtime_observation() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "cas-exact", "codex-work").await;
+    let profile = account(&world, "cas-exact", "codex-b").await;
     let state = world.daemon.state();
-    let signals = [codex_signal_for("codex-work")];
+    let signals = [codex_signal_for("codex-b")];
 
     // First call writes.
     let first = classify_and_record(
@@ -816,14 +810,14 @@ async fn an_exact_semantic_row_is_refreshed_by_a_new_runtime_observation() {
 async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "cas-differs", "codex-work").await;
+    let profile = account(&world, "cas-differs", "codex-b").await;
     let state = world.daemon.state();
 
     let first = classify_and_record(
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -844,7 +838,7 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &other,
         at("2026-08-21T10:05:00Z"),
     )
@@ -864,7 +858,7 @@ async fn a_row_that_differs_is_never_accepted_as_already_recorded() {
 async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "late-probe", "codex-work").await;
+    let profile = account(&world, "late-probe", "codex-b").await;
     let state = world.daemon.state();
 
     // The item was emitted at 09:00; Kontor inspects at 15:00.
@@ -872,7 +866,7 @@ async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T15:00:00Z"),
     )
@@ -904,14 +898,14 @@ async fn a_delayed_inspection_dates_the_conclusion_by_the_item_not_the_read() {
 async fn a_decision_reports_a_proposal_and_never_a_completed_write() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "proposal-only", "codex-work").await;
+    let profile = account(&world, "proposal-only", "codex-b").await;
     let state = world.daemon.state();
 
     let decided = decide(
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal(&seat, CODEX_LIMIT),
         at("2026-08-21T10:00:00Z"),
     )
@@ -936,7 +930,7 @@ async fn a_decision_reports_a_proposal_and_never_a_completed_write() {
 async fn the_public_quota_projection_carries_the_exact_provenance() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "public-readback", "codex-work").await;
+    let profile = account(&world, "public-readback", "codex-b").await;
     let state = world.daemon.state();
 
     // The launched seat above is what the record must cite: the composite key
@@ -965,7 +959,7 @@ async fn the_public_quota_projection_carries_the_exact_provenance() {
         &state,
         world.project,
         profile,
-        &[codex_signal_for("codex-work")],
+        &[codex_signal_for("codex-b")],
         &refusal,
         at("2026-08-21T10:00:00Z"),
     )
@@ -1001,7 +995,7 @@ async fn the_public_quota_projection_carries_the_exact_provenance() {
         !provenance.is_null(),
         "the projection answers why, not only what: {row}",
     );
-    assert_eq!(provenance["signal_id"], "codex-usage-limit-codex-work");
+    assert_eq!(provenance["signal_id"], "codex-usage-limit-codex-b");
     assert_eq!(provenance["signal_version"], 1);
     assert_eq!(provenance["item_kind"], "assistant_message");
     assert_eq!(
@@ -1080,9 +1074,9 @@ fn pointer(
 async fn an_identical_semantic_refusal_still_proposes_exact_provenance() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "replay-cardinality", "codex-work").await;
+    let profile = account(&world, "replay-cardinality", "codex-b").await;
     let state = world.daemon.state();
-    let signals = [codex_signal_for("codex-work")];
+    let signals = [codex_signal_for("codex-b")];
 
     classify_and_record(
         &state,

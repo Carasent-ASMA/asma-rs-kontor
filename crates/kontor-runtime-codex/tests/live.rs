@@ -394,6 +394,7 @@ async fn two_pinned_accounts_run_concurrently_and_neither_ending_closes_a_run() 
 
         let inspected = adapter
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T09:02:00Z"),
             })

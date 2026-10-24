@@ -424,6 +424,7 @@ impl Modify for RealmBearer {
         crate::applications::FleetPolicyActivatedDto,
         crate::applications::FleetBundleDto,
         crate::applications::FleetBundleManifestDto,
+        crate::applications::OperationalDomainPinDto,
         crate::applications::FleetRoleCatalogPinDto,
         crate::applications::FleetBundlePreviewRequest,
         crate::applications::FleetBundlePreviewDto,

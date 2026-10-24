@@ -5,8 +5,8 @@
 //! caller key; a different publication under a used key is a conflict.
 
 use kontor_core::id::{
-    ExternalName, IdempotencyKey, MiniProjectId, ProjectId, PublicationAttestationId, TaskId,
-    Timestamp,
+    ContentHash, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, PublicationAttestationId,
+    TaskId, Timestamp,
 };
 use kontor_core::publication::{CommitSha, PublicationDecision};
 use kontor_core::repository::{RepositoryError, RepositoryResult};
@@ -101,7 +101,7 @@ impl AttestationRecord {
 }
 
 const COLUMNS: &str = "id, project_id, mini_project_id, task_id, repository, base_branch, head_branch, \
-                       head_sha, pull_request, title, accepted, reasons, policy_revision, recorded_at";
+                       head_sha, pull_request, title, accepted, reasons, policy_revision, recorded_at, source_bundle_hash";
 
 impl SqliteStore {
     /// Record one publication decision under the caller's idempotency key.
@@ -121,11 +121,14 @@ impl SqliteStore {
                 && existing.head_branch == new.head_branch
                 && existing.head_sha == new.head_sha
                 && existing.pull_request == new.pull_request
-                && existing.title == new.title;
+                && existing.title == new.title
+                && existing.mini_project_id == new.mini_project_id
+                && existing.task_id == new.task_id
+                && existing.decision == new.decision;
             if !same {
                 return Err(conflict(
                     "publication attestation",
-                    "the idempotency key already names another publication",
+                    "the idempotency key already names another publication or governing policy snapshot",
                 ));
             }
             return Ok(AttestationRecord::Replayed(existing));
@@ -139,8 +142,8 @@ impl SqliteStore {
                 "INSERT INTO publication_attestations
                  (id, project_id, mini_project_id, task_id, repository, base_branch, head_branch,
                   head_sha, pull_request, title, accepted, reasons, policy_revision,
-                  idempotency_key, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                  idempotency_key, recorded_at, source_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     new.id.to_string(),
                     new.project_id.to_string(),
@@ -158,6 +161,10 @@ impl SqliteStore {
                     i64::from(new.decision.policy_revision),
                     new.idempotency_key.as_str(),
                     text(new.recorded_at),
+                    new.decision
+                        .source_bundle_hash
+                        .as_ref()
+                        .map(ContentHash::as_str),
                 ],
             )
             .map_err(backend)?;
@@ -231,6 +238,7 @@ type Row = (
     String,
     i64,
     String,
+    Option<String>,
 );
 
 fn read_attestation(
@@ -251,6 +259,7 @@ fn read_attestation(
         row.get(11)?,
         row.get(12)?,
         row.get(13)?,
+        row.get(14)?,
     );
     Ok(build_attestation(columns))
 }
@@ -271,6 +280,7 @@ fn build_attestation(columns: Row) -> RepositoryResult<PublicationAttestation> {
         reasons,
         policy_revision,
         recorded_at,
+        source_bundle_hash,
     ) = columns;
     let reasons: Vec<String> =
         serde_json::from_str(&reasons).map_err(|_| RepositoryError::Backend {
@@ -294,6 +304,10 @@ fn build_attestation(columns: Row) -> RepositoryResult<PublicationAttestation> {
             accepted: accepted == 1,
             reasons,
             policy_revision: u32::try_from(policy_revision).unwrap_or(0),
+            source_bundle_hash: source_bundle_hash
+                .as_deref()
+                .map(ContentHash::parse)
+                .transpose()?,
         },
         recorded_at: read_timestamp(&recorded_at)?,
     })

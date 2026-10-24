@@ -365,7 +365,7 @@ pub async fn observe_waiting_seats(
             let task_open = task.as_ref().is_some_and(|task| {
                 !task.state.is_terminal() && task.state != TaskState::Withdrawn
             });
-            let pending = pending_permissions(state, &run, now).await;
+            let pending = pending_permissions(state, &run, now).await?;
             let last_progress = state
                 .with_store(|store| store.read_runtime_events(run.project_id, run.id, None))?;
             let last_progress = last_progress.last().map(|event| event.observed_at);
@@ -527,9 +527,9 @@ async fn pending_permissions(
     state: &ApiState,
     run: &kontor_core::repository::AgentRun,
     now: Timestamp,
-) -> Vec<String> {
+) -> kontor_core::repository::RepositoryResult<Vec<String>> {
     let Some(binding) = run.binding.as_ref() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let snapshot = state.sessions().get(binding.id).or_else(|| {
         state
@@ -544,21 +544,28 @@ async fn pending_permissions(
             })
     });
     let Some(snapshot) = snapshot else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(adapter) = state.runtimes().get(&binding.identity.runtime_kind) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
+    let resolved_route = state
+        .applications()
+        .session_launch_route(run.project_id, run.id)
+        .map_err(|_| kontor_core::repository::RepositoryError::Backend {
+            detail: "the private session route could not be read for attention".to_owned(),
+        })?;
     let Ok(observation) = adapter
         .inspect(&kontor_runtime::request::InspectRequest {
+            resolved_route,
             binding: snapshot,
             requested_at: now,
         })
         .await
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    pending_permissions_from_document(&observation.evidence)
+    Ok(pending_permissions_from_document(&observation.evidence))
 }
 
 fn pending_permissions_from_document(document: &kontor_core::id::CanonicalDocument) -> Vec<String> {

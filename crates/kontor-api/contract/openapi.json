@@ -11001,7 +11001,7 @@
           "applications"
         ],
         "summary": "Catch a stalled workflow up to the phase its own durable evidence proves.",
-        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — ASMA-8205 passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
+        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — a task passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
         "operationId": "recover_workflow_phase",
         "parameters": [
           {
@@ -14385,6 +14385,13 @@
               }
             ]
           },
+          "operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact immutable domain bundle bound to this epic operation."
+          },
           "project_id": {
             "type": "string",
             "description": "The project."
@@ -14509,6 +14516,13 @@
           "receipt"
         ],
         "properties": {
+          "operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact selected domain context, absent only on historical readback."
+          },
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "Durable apply/replay receipt."
@@ -14767,6 +14781,13 @@
                 "description": "Durable identity used to place this epic and its tasks in a runtime.\nOmission preserves an existing declaration for wire compatibility."
               }
             ]
+          },
+          "expected_operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional preview precondition. A different selected/pinned domain refuses.\nOmission resolves the explicitly selected project domain at apply time."
           },
           "expected_revision": {
             "type": "integer",
@@ -18545,7 +18566,7 @@
       },
       "CoreTeamPreviewRequest": {
         "type": "object",
-        "description": "A proposed Core Team composition: the caller's seats, or the Core Team\nrevision one published orchestration bundle declares (ASMA-8280 S-3).\nExactly one of the two.",
+        "description": "A proposed Core Team composition: the caller's seats, or the Core Team\nrevision one published orchestration bundle declares.\nExactly one of the two.",
         "properties": {
           "seats": {
             "type": [
@@ -18630,7 +18651,7 @@
       },
       "CoreTeamRouteGrantSubjectDto": {
         "type": "object",
-        "description": "The successor's grant subject, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret (ASMA-8187).",
+        "description": "The successor's grant subject, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret.",
         "required": [
           "generation",
           "subject_seat_binding_id",
@@ -19112,6 +19133,19 @@
             "type": "string",
             "description": "When a concrete epic materializes it."
           },
+          "purposes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "architecture_closer",
+                "process_closer",
+                "control"
+              ]
+            },
+            "description": "Frozen purposes derived by the server; legacy empty is non-granting. Never accepted as authored seat selections.",
+            "uniqueItems": true
+          },
           "role": {
             "$ref": "#/components/schemas/ResolvedRoleRefDto",
             "description": "The role, as the server resolved it."
@@ -19174,7 +19208,7 @@
       },
       "CoreTeamSeatRouteRequest": {
         "type": "object",
-        "description": "One authorized native route for a persistent Core Team role.\n\nExactly one of `model_route` and `eligibility`: the caller's exact route,\nwhich the activated fleet policy may admit or refuse but never replaces, or\n— when the caller names none — the policy's own choice under the\neligibility the caller states (ASMA-8280).",
+        "description": "One authorized native route for a persistent Core Team role.\n\nExactly one of `model_route` and `eligibility`: the caller's exact route,\nwhich the activated fleet policy may admit or refuse but never replaces, or\n— when the caller names none — the policy's own choice under the\neligibility the caller states.",
         "required": [
           "role_code"
         ],
@@ -19999,7 +20033,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The runtime provider aliases this account is addressable under, when the\ndeployment has registered one alias per login — `codex-work` for one\nCodex account, `codex-personal` for the other. Frozen into the profile's\nimmutable routing document at creation, because a pin that could move\nunder a running seat would not be a pin. Empty means the account is not\naddressable per provider and no quota walk will select it, which is\nexactly the pre-declaration behaviour."
+            "description": "The runtime provider aliases this account is addressable under, when the\ndeployment has registered one alias per login — `codex-b` for one\nCodex account, `codex-a` for the other. Frozen into the profile's\nimmutable routing document at creation, because a pin that could move\nunder a running seat would not be a pin. Empty means the account is not\naddressable per provider and no quota walk will select it, which is\nexactly the pre-declaration behaviour."
           }
         }
       },
@@ -20281,7 +20315,7 @@
           },
           "external_epic_key": {
             "type": "string",
-            "description": "The external tracker key, e.g. `ASMA-7869`."
+            "description": "The confirmed external tracker key."
           },
           "kontor_backlog_code": {
             "type": [
@@ -21305,7 +21339,7 @@
       },
       "FleetBundleDto": {
         "type": "object",
-        "description": "The Realm's orchestration bundle selection (ASMA-8280 S-1).\n\nThe same single activation pointer [`FleetPolicyDto`] reports, read for its\nbundle: a schema_version 1 record names a policy alone; a schema_version 2\nrecord also names the orchestration bundle and Core Team revision, whose\nmanifest is reported here when it verifies.",
+        "description": "The Realm's orchestration bundle selection.\n\nThe same single activation pointer [`FleetPolicyDto`] reports, read for its\nbundle: a schema_version 1 record names a policy alone; a schema_version 2\nrecord also names the orchestration bundle and Core Team revision, whose\nmanifest is reported here when it verifies.",
         "required": [
           "realm_id",
           "selection"
@@ -21376,6 +21410,17 @@
             "type": "string",
             "description": "The bundle's canonical Core Team revision."
           },
+          "operational_domain": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationalDomainPinDto",
+                "description": "Exact selected domain artifact retained by bundle publication."
+              }
+            ]
+          },
           "policy_hash": {
             "type": "string",
             "description": "The bundle's policy."
@@ -21385,6 +21430,17 @@
             "format": "int32",
             "description": "The schema that policy validates under.",
             "minimum": 0
+          },
+          "publication_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetPublicationPolicyDto",
+                "description": "Publication authority selected only when this bundle is activated."
+              }
+            ]
           },
           "resolver": {
             "type": "string",
@@ -21459,7 +21515,7 @@
       },
       "FleetBundleProposalDto": {
         "type": "object",
-        "description": "A proposed initial orchestration bundle for review (ASMA-8280 S-2).",
+        "description": "A proposed initial orchestration bundle for review.",
         "required": [
           "realm_id",
           "orchestration",
@@ -21604,7 +21660,7 @@
       },
       "FleetPolicyDto": {
         "type": "object",
-        "description": "The Realm's fleet policy selection (ASMA-8280).\n\nExactly one source decides fleet routing: an activation record naming one\npublished policy by content hash, or — when none exists — the unmigrated\nstate-root `fleet.yml`. An activation that cannot be verified is reported\nhere and refuses placement; it never falls back.",
+        "description": "The Realm's fleet policy selection.\n\nExactly one source decides fleet routing: an activation record naming one\npublished policy by content hash, or — when none exists — the unmigrated\nstate-root `fleet.yml`. An activation that cannot be verified is reported\nhere and refuses placement; it never falls back.",
         "required": [
           "realm_id",
           "selection"
@@ -21754,6 +21810,90 @@
           "activation",
           "fleet_yml"
         ]
+      },
+      "FleetProjectBranchRulesDto": {
+        "type": "object",
+        "description": "The project's narrowing of the shared core grammar.",
+        "required": [
+          "project_key",
+          "types",
+          "pattern",
+          "commit_pattern"
+        ],
+        "properties": {
+          "commit_pattern": {
+            "type": "string",
+            "description": "Anchored commit template; not evidence of an observed commit message."
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Anchored branch template."
+          },
+          "project_key": {
+            "type": "string",
+            "description": "Exact public tracker project key."
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed conventional branch types."
+          }
+        }
+      },
+      "FleetPublicationPolicyDto": {
+        "type": "object",
+        "description": "The explicit project publication policy pinned by an orchestration bundle.",
+        "required": [
+          "project_id",
+          "repositories",
+          "root_repository",
+          "module_repositories",
+          "base_branch"
+        ],
+        "properties": {
+          "base_branch": {
+            "type": "string",
+            "description": "The only permitted publication base branch."
+          },
+          "branch_rules": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetProjectBranchRulesDto",
+                "description": "Selected branch templates, effective only with this activated policy."
+              }
+            ]
+          },
+          "module_repositories": {
+            "type": "object",
+            "description": "Exact durable Task.module keys and their additional repository.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The internal existing Kontor project this policy governs."
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The project allowlist; membership alone grants no access."
+          },
+          "root_repository": {
+            "type": "string",
+            "description": "The repository every confirmed binding in the project may publish to."
+          }
+        }
       },
       "FleetRoleCatalogPinDto": {
         "type": "object",
@@ -22822,7 +22962,7 @@
       },
       "JiraMaterializationAppliedDto": {
         "type": "object",
-        "description": "A confirmed Jira materialization and ASMA activation receipt.",
+        "description": "A confirmed Jira materialization and epic activation receipt.",
         "required": [
           "realm_id",
           "epic_id",
@@ -22839,7 +22979,7 @@
           },
           "activation_receipt_id": {
             "type": "string",
-            "description": "The separate ASMA activation command receipt."
+            "description": "The separate epic activation command receipt."
           },
           "batch_id": {
             "type": "string",
@@ -23933,7 +24073,7 @@
           },
           "external_key": {
             "type": "string",
-            "description": "The exact confirmed external tracker key the review is opened under,\ne.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize\nthe pull request's repository."
+            "description": "The exact confirmed external tracker key of the epic or one of its tasks.\nIt must authorize\nthe pull request's repository."
           },
           "model_routes": {
             "type": [
@@ -23954,6 +24094,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "OperationalDomainPinDto": {
+        "type": "object",
+        "description": "Folder-relative authoring provenance and exact immutable domain byte identity.",
+        "required": [
+          "source",
+          "source_hash"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Selected-folder-relative YAML path; never a runtime lookup path."
+          },
+          "source_hash": {
+            "type": "string",
+            "description": "SHA-256 of the exact authored UTF-8 bytes."
+          }
+        }
       },
       "OperationalGapDto": {
         "type": "object",
@@ -25050,6 +25208,13 @@
               }
             ]
           },
+          "operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact immutable domain bundle bound to this epic operation."
+          },
           "project_id": {
             "type": "string",
             "description": "The owning project."
@@ -25699,6 +25864,13 @@
               }
             ]
           },
+          "current_operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current domain context, absent on historical selections."
+          },
           "preview_hash": {
             "type": "string",
             "description": "Apply-bound comparison hash."
@@ -25719,6 +25891,13 @@
           "target_definition": {
             "$ref": "#/components/schemas/PinnedTeamDefinitionDto",
             "description": "Exact published target."
+          },
+          "target_operational_domain_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Verified activated bundle bound to this proposed selection."
           }
         }
       },
@@ -26419,6 +26598,13 @@
           "repository": {
             "type": "string",
             "description": "The forge repository, as observed."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The immutable activated authorization bundle read for this judgement."
           },
           "task_id": {
             "type": [
@@ -31499,7 +31685,7 @@
           },
           "converged": {
             "type": "boolean",
-            "description": "Whether every link is already converged, in status **and** in content.\n\nContent is part of this answer deliberately. Reporting `true` while an\nissue's description still held only `Kontor <kind> <uuid>: <title>` is\nthe defect ASMA-8123 fixes: a caller asking whether a ticket is\nreconciled must not be told yes while its reader sees an internal UUID."
+            "description": "Whether every link is already converged, in status **and** in content.\n\nContent is part of this answer deliberately. Reporting `true` while an\nissue's description still held only `Kontor <kind> <uuid>: <title>` is\na content-projection defect: a caller asking whether a ticket is\nreconciled must not be told yes while its reader sees an internal UUID."
           },
           "diff": {
             "type": "array",
@@ -32736,7 +32922,7 @@
           },
           "module": {
             "type": "string",
-            "description": "Catalog module whose repository the target names."
+            "description": "Exact durable task module used to render the target."
           },
           "new_worktree": {
             "type": "string",
@@ -32827,7 +33013,7 @@
           },
           "module": {
             "type": "string",
-            "description": "Catalog module whose repository the target names."
+            "description": "Exact durable task module used to render the target."
           },
           "new_worktree": {
             "type": "string",
@@ -32882,7 +33068,7 @@
           },
           "new_worktree": {
             "type": "string",
-            "description": "Exact deterministic ASMA catalog-module target."
+            "description": "Exact deterministic target rendered from the selected layout and durable module."
           },
           "old_worktree": {
             "type": "string",

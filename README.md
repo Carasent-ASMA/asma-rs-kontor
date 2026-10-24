@@ -120,7 +120,8 @@ The current repository includes:
 - **publication identity**: one branch grammar shared with the ASMA CLI,
   recorded `publication:preview` / `:attest` decisions that cannot be updated
   or deleted, and an optional GitHub App gateway that posts the
-  `asma/publication-identity` check and squash-merges only the judged head
+  exact publication-identity check named by `project.check_runs` and
+  squash-merges only the judged head
   (see [Native naming](docs/NATIVE_NAMING.md) and
   [Configuration](docs/CONFIGURATION.md));
 - epic-independent **durable desks** (`DESK • ADAM`, `DESK • PR REVIEW`) with

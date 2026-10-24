@@ -316,6 +316,27 @@ impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Captured {
 }
 
 #[test]
+fn selected_configuration_is_visible_through_the_installed_log_filter() {
+    let captured = Captured::default();
+    let subscriber = logging::subscriber(captured.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::error!(
+            config_dir = "/var/lib/kontor/example config",
+            project_key = "EXM",
+            credential_path = "synthetic-private-material",
+            "project configuration selected"
+        );
+    });
+    let written = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        written.contains("/var/lib/kontor/example config"),
+        "{written}"
+    );
+    assert!(written.contains("project_key=EXM"), "{written}");
+    assert!(!written.contains("synthetic-private-material"));
+}
+
+#[test]
 fn a_log_line_carries_allowlisted_fields_only_and_never_a_credential() {
     let captured = Captured::default();
     let subscriber = logging::subscriber(captured.clone());

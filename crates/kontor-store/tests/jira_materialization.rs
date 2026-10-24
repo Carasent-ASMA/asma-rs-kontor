@@ -178,7 +178,7 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
     );
     assert!(
         store
-            .activate_asma_epic(project_id, epic_id, CommandReceiptId::generate(), now)
+            .activate_epic(project_id, epic_id, CommandReceiptId::generate(), now)
             .is_err()
     );
     for (item, key) in items.iter().zip(["ASMA-1", "ASMA-2"]) {
@@ -267,27 +267,23 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
             project_id,
             receipt_id,
             idempotency_key: IdempotencyKey::parse("activate-1").expect("key"),
-            kind: CommandKind::ActivateAsmaEpic,
+            kind: CommandKind::ActivateEpic,
             target: AggregateRef::MiniProject {
                 mini_project_id: epic_id,
             },
             target_revision: AggregateRevision::INITIAL,
             intent: CanonicalDocument::from_value(&serde_json::json!({
                 "schema_version": 1,
-                "operation": "activate_asma_epic"
+                "operation": "activate_epic"
             }))
             .expect("intent"),
             created_at: now,
         })
         .expect("activation receipt");
     store
-        .activate_asma_epic(project_id, epic_id, receipt_id, now)
+        .activate_epic(project_id, epic_id, receipt_id, now)
         .expect("complete binding set activates");
-    assert!(
-        store
-            .asma_epic_is_active(project_id, epic_id)
-            .expect("readback")
-    );
+    assert!(store.epic_is_active(project_id, epic_id).expect("readback"));
     let links = store
         .list_task_ticket_links(project_id, task_id)
         .expect("task link");

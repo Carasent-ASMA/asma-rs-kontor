@@ -3291,8 +3291,11 @@ version = "0.2.1"
 dependencies = [
  "kontor-core",
  "kontor-fleet",
+ "kontor-profiles",
+ "kontor-teams",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tempfile",
 ]
 
@@ -3393,6 +3396,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "kontor-core",
+ "kontor-fleet",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3441,6 +3445,7 @@ dependencies = [
  "async-trait",
  "futures",
  "kontor-core",
+ "kontor-fleet",
  "kontor-runtime",
  "kontor-tests-contract",
  "reqwest",

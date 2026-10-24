@@ -1318,7 +1318,7 @@ const AKEYS = ['fresh', 'read', 'write', 'out', 'n', 'act', 'cost', 'cF', 'cR', 
 function aAdd(a, f) { for (const k of AKEYS) a[k] += f[AI[k]]; }
 const aTok = a => a.fresh + a.read + a.write + a.out;
 const aHit = a => (a.fresh + a.read + a.write) ? a.read / (a.fresh + a.read + a.write) : 0;
-const STORE_LABEL = {'codex': 'Codex (legacy home)', 'codex-personal': 'Codex personal', 'codex-work': 'Codex work', 'claude': 'Claude Code (legacy home)', 'claude-work': 'Claude Code work', 'claude-personal': 'Claude Code personal', 'opencode': 'OpenCode', 'copilot': 'GitHub Copilot CLI'};
+const STORE_LABEL = {'codex': 'Codex (legacy home)', 'claude': 'Claude Code (legacy home)', 'opencode': 'OpenCode', 'copilot': 'GitHub Copilot CLI'};
 function weekOf(d) { const t = new Date(dayMs(d)); const dow = (t.getUTCDay() + 6) % 7; return isoDay(dayMs(d) - dow * DAYMS); }
 function allKey(f) {
   switch (allState.stack) {
@@ -1437,8 +1437,8 @@ function renderAllMonths() {
     t.append(el('tr', {}, el('td', {class: 'l', text: mo}), ...tds, el('td', {text: `${fmtN(aTok(tot))} · ${fmt$(tot.cost)}`})));
   }
   const c = document.getElementById('allCoverage'); c.replaceChildren(el('tr', {}, ...['Store', 'Earliest data', 'Latest data', 'Sessions', 'Tokens', 'What is missing'].map((h, i) => el('th', {class: i === 0 || i === 5 ? 'l' : '', text: h}))));
-  const MISSING = Object.assign({'opencode': '—', 'codex-personal': '—', 'codex-work': '—'}, A.missing || {});
-  for (const [k, v] of Object.entries(A.coverage).sort((a, b) => a[1].first.localeCompare(b[1].first))) c.append(el('tr', {}, el('td', {class: 'l', text: STORE_LABEL[k] || k}), el('td', {text: v.first}), el('td', {text: v.last}), el('td', {text: v.sessions.toLocaleString()}), el('td', {text: fmtN(v.tok)}), el('td', {class: 'l muted', text: MISSING[k] || ''})));
+  const MISSING = A.missing || {};
+  for (const [k, v] of Object.entries(A.coverage).sort((a, b) => a[1].first.localeCompare(b[1].first))) c.append(el('tr', {}, el('td', {class: 'l', text: STORE_LABEL[k] || k}), el('td', {text: v.first}), el('td', {text: v.last}), el('td', {text: v.sessions.toLocaleString()}), el('td', {text: fmtN(v.tok)}), el('td', {class: 'l muted', text: MISSING[k] ?? '—'})));
   c.append(el('tr', {}, el('td', {class: 'l muted', colspan: 6, text: 'Cursor and DeepSeek Harness keep no local token counts and are not included.'})));
 }
 function renderLedger() {

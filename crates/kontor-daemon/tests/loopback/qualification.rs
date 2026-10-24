@@ -6,24 +6,25 @@ use kontor_store::backup::{create_snapshot, export_realm};
 
 /// Create the old-pin control before any desk vocabulary is selected.
 async fn legacy_realm() -> Review {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let root = world.directory.path().join("qualification-repository");
     let project = ensure_governed_project(&world, root.to_str().expect("path"));
     let category = first_category(&world).await;
     let name = "Qualification legacy";
-    let applied = Call::post(
-        format!("/v1/projects/{project}/epics:apply"),
+    let applied = apply_fixture_epic(
+        &world,
+        &project,
         &epic_body(
             current_project_revision(&world, &project).await,
             name,
             &category,
             serde_json::json!([{"title": "Legacy fixture", "module": "_tools/asma-rs-kontor"}]),
         ),
+        "qualification-legacy",
     )
-    .signed_as(&world, "admin")
-    .with_key("qualification-legacy")
-    .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("epic").to_owned();
@@ -52,6 +53,8 @@ fn pin(realm: &Review) -> kontor_core::spec::TeamDefinitionSnapshot {
 }
 
 async fn select(realm: &Review, definition: &TeamDefinitionSpec, key: &str) {
+    let _domain_selection =
+        harness::DomainSelectionFixture::activate(&realm.world, realm.project_id);
     let preview = Call::post(
         format!(
             "/v1/projects/{}/team-definition-selection:preview",
@@ -225,6 +228,12 @@ async fn a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses
 async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives() {
     // Start desk-less: an existing legacy epic is a positive old-pin control.
     let realm = legacy_realm().await;
+    activate_through_the_registry(
+        &realm.world,
+        &unbound_fixture_catalog(),
+        "qualification-explicit-catalog",
+    )
+    .await;
     let old_pin = pin(&realm);
     let original = realm.world.daemon.state().with_store(|store| {
         store
@@ -235,6 +244,24 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     let original_bytes = original.canonicalize().expect("canonical");
     // Remove desks too for the rollback control; the bundled old revision is v1.
     let deskless = realm.world.daemon.state().with_store(|store| {
+        let historical = kontor_profiles::bundled_operational_domain()
+            .unwrap()
+            .team_definitions
+            .remove(0);
+        if store
+            .get_team_definition(
+                realm.project_id,
+                historical.definition_id,
+                historical.version,
+            )
+            .unwrap()
+            .is_none()
+        {
+            store
+                .publish_team_definition(realm.project_id, &historical, kontor_api::now())
+                .unwrap();
+        }
+
         store
             .get_team_definition(
                 realm.project_id,
@@ -413,6 +440,9 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     .send(&realm.world)
     .await;
     assert_eq!(ad_hoc.status, 200, "{}", ad_hoc.body);
+    // Legacy leadership retains its original routing and pins. The publication
+    // journey below explicitly activates its own repository authority.
+    activate_publication_policy(&realm.world, &realm.project);
     let bodies = [
         open_body(&realm.epic_key, MODULE_REPOSITORY, 101, Some(routes())),
         open_body(&realm.epic_key, MODULE_REPOSITORY, 102, Some(routes())),
@@ -453,6 +483,7 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
         task_key,
     } = realm;
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -497,6 +528,7 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     let router = daemon.router();
     let realm = Review {
         world: World {
+            historical_epics,
             directory,
             daemon,
             router,

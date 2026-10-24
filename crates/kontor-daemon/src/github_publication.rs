@@ -7,22 +7,23 @@
 //! `contents: write` for the squash merge, and nothing else. This module is that
 //! App's client — JWT, installation token, check runs, pull-request reads and the
 //! head-bound squash merge — plus the poller that re-judges every open pull
-//! request and posts `asma/publication-identity` for it.
+//! request and posts the selected project's publication-identity check for it.
 //!
-//! Everything here is inert until an operator installs the App and writes
+//! Everything here is inert until an operator installs the App and selects
+//! `forge/github-app.yml`. Explicit native embeddings retain the reader for
 //! `<state root>/config/github-app.json`. Absent configuration is valid; a
 //! present document that will not parse refuses the start, as the quota-signal
 //! document does. The private key is read from a path the document names and
 //! never from the document itself.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
-use kontor_api::applications::{ApplicationOperations, PublicationIdentityRequest};
+use kontor_api::applications::PublicationIdentityRequest;
 use kontor_api::state::{ApiState, BarrierState};
 use kontor_core::id::{ExternalName, IdempotencyKey, ProjectId, Timestamp};
 use kontor_core::publication::CommitSha;
@@ -34,7 +35,7 @@ use crate::applications::Services;
 
 /// Where the App configuration lives below the state root.
 pub const CONFIG_FILE: &str = "config/github-app.json";
-/// The check run every judged pull request carries.
+/// Legacy default for explicitly composed native App configuration.
 pub const DEFAULT_CHECK_NAME: &str = "asma/publication-identity";
 /// GitHub's REST API version this client speaks.
 const API_VERSION: &str = "2022-11-28";
@@ -63,7 +64,7 @@ pub struct GithubPublicationConfig {
     pub project_id: ProjectId,
     /// The `owner/name` repositories the App is installed on and judges.
     pub repositories: Vec<String>,
-    /// The check-run name. Defaults to [`DEFAULT_CHECK_NAME`].
+    /// The project-selected check name; native decoding defaults to [`DEFAULT_CHECK_NAME`].
     #[serde(default = "default_check_name")]
     pub check_name: String,
     /// Seconds between polls of open pull requests.
@@ -104,6 +105,44 @@ pub enum ConfigError {
 }
 
 impl GithubPublicationConfig {
+    /// Decode selected YAML using the project's publication-identity check name.
+    ///
+    /// An App's explicit name may confirm that selection, never override it.
+    /// The native reader's legacy default does not apply to selected YAML.
+    ///
+    /// # Errors
+    /// Refuses missing or ambiguous project checks, conflicting names and invalid YAML.
+    pub fn from_selected_yaml(text: &str, check_runs: &[String]) -> Result<Self, ConfigError> {
+        let invalid = |detail: &str| ConfigError::Invalid {
+            detail: detail.to_owned(),
+        };
+        let mut names = check_runs.iter().filter(|name| {
+            name.as_str() == "publication-identity" || name.ends_with("/publication-identity")
+        });
+        let name = names
+            .next()
+            .filter(|_| names.next().is_none())
+            .ok_or_else(|| {
+                invalid("project.check_runs must select exactly one publication-identity check")
+            })?;
+        let mut value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(text).map_err(|_| invalid("invalid App YAML"))?;
+        let fields = value
+            .as_mapping_mut()
+            .ok_or_else(|| invalid("App YAML must be a mapping"))?;
+        if fields
+            .get("check_name")
+            .is_some_and(|field| field.as_str() != Some(name.as_str()))
+        {
+            return Err(invalid("check_name must agree with project.check_runs"));
+        }
+        fields.insert("check_name".into(), name.clone().into());
+        let config: Self =
+            serde_yaml_ng::from_value(value).map_err(|_| invalid("invalid App YAML"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Read the document below `state_root`, if there is one.
     ///
     /// # Errors
@@ -118,6 +157,16 @@ impl GithubPublicationConfig {
         let config: Self = serde_json::from_str(&text).map_err(|error| ConfigError::Invalid {
             detail: error.classify_detail(),
         })?;
+        config.validate()?;
+        Ok(Some(config))
+    }
+
+    /// Validate settings decoded from the explicitly selected YAML source.
+    ///
+    /// # Errors
+    /// Refuses unsupported schemas, invalid repositories and a zero poll interval.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let config = self;
         if config.schema_version != 1 {
             return Err(ConfigError::Invalid {
                 detail: "schema_version must be 1".to_owned(),
@@ -141,7 +190,7 @@ impl GithubPublicationConfig {
                 detail: "poll_seconds must be at least 1".to_owned(),
             });
         }
-        Ok(Some(config))
+        Ok(())
     }
 }
 
@@ -629,12 +678,37 @@ pub fn check_key(repository: &str, facts: &PullRequestFacts) -> IdempotencyKey {
         .expect("a hex key is a valid idempotency key")
 }
 
+/// Stable across retries, distinct for an observed retarget, binding or policy change.
+pub(crate) fn policy_check_key(
+    request: &PublicationIdentityRequest,
+    decision: &kontor_core::publication::PublicationDecision,
+    epic_id: Option<kontor_core::id::MiniProjectId>,
+    task_id: Option<kontor_core::id::TaskId>,
+) -> IdempotencyKey {
+    let basis = serde_json::json!({
+        "schema_version": 1,
+        "repository": request.repository,
+        "base_branch": request.base_branch,
+        "head_branch": request.head_branch,
+        "head_sha": request.head_sha,
+        "pull_request": request.pull_request,
+        "title": request.title,
+        "decision": decision,
+        "epic_id": epic_id,
+        "task_id": task_id,
+    });
+    let document = kontor_core::id::CanonicalDocument::from_serializable(&basis)
+        .expect("publication facts are canonical JSON values");
+    IdempotencyKey::parse(&format!("github-check-{}", document.hash()))
+        .expect("a digest forms a valid idempotency key")
+}
+
 /// One poll: judge every open pull request of every governed repository and
-/// post a check run for each head/title not yet reported this process.
+/// Re-evaluate current authority before suppressing an unchanged last report.
 pub async fn judge_open_pull_requests(
     gateway: &GithubPublicationGateway,
     services: &Services,
-    posted: &mut BTreeSet<String>,
+    posted: &mut BTreeMap<(String, u64), String>,
 ) {
     let project_id = gateway.config().project_id;
     for repository in &gateway.config().repositories {
@@ -646,10 +720,6 @@ pub async fn judge_open_pull_requests(
             }
         };
         for facts in pull_requests {
-            let key = check_key(repository, &facts);
-            if posted.contains(key.as_str()) {
-                continue;
-            }
             let request = match identity_of(repository, &facts) {
                 Ok(request) => request,
                 Err(error) => {
@@ -657,19 +727,27 @@ pub async fn judge_open_pull_requests(
                     continue;
                 }
             };
-            let decision = match services
-                .attest_publication(&key, project_id, &request)
-                .await
-            {
+            let (key, decision) = match services.attest_publication_check(project_id, &request) {
                 Ok(decision) => decision,
                 Err(error) => {
                     warn!(repository, number = facts.number, %error, "publication could not be judged");
                     continue;
                 }
             };
+            let subject = (repository.clone(), facts.number);
+            if posted
+                .get(&subject)
+                .is_some_and(|posted| posted == key.as_str())
+            {
+                continue;
+            }
+            let policy = decision
+                .source_bundle_hash
+                .as_ref()
+                .map_or("unconfigured", kontor_core::id::ContentHash::as_str);
             let summary = if decision.accepted {
                 format!(
-                    "Branch `{}` at `{}` is bound to Kontor epic {} (attestation {}).",
+                    "Branch `{}` at `{}` is bound to Kontor epic {} (attestation {}, policy bundle {}).",
                     request.head_branch.as_str(),
                     &facts.head.sha[..12.min(facts.head.sha.len())],
                     decision
@@ -680,15 +758,17 @@ pub async fn judge_open_pull_requests(
                         .attestation_id
                         .map(|id| id.to_string())
                         .unwrap_or_default(),
+                    policy,
                 )
             } else {
                 format!(
-                    "Refused: {}. Expected `<type>/ASMA-<number>-<slug>` bound to a confirmed Kontor/Jira epic or task, base `master`, title leading with a key of that epic. Attestation {}.",
+                    "Refused: {}. Expected a canonical branch and matching title bound to a confirmed tracker epic or task, targeting the configured base branch. Attestation {}, policy bundle {}.",
                     decision.reasons.join(", "),
                     decision
                         .attestation_id
                         .map(|id| id.to_string())
                         .unwrap_or_default(),
+                    policy,
                 )
             };
             match gateway
@@ -702,7 +782,7 @@ pub async fn judge_open_pull_requests(
                         accepted = decision.accepted,
                         "publication check posted"
                     );
-                    posted.insert(key.as_str().to_owned());
+                    posted.insert(subject, key.as_str().to_owned());
                 }
                 Err(error) => {
                     warn!(repository, number = facts.number, %error, "publication check could not be posted")
@@ -725,7 +805,7 @@ pub async fn poll_until_stopped(
     let mut stops = state.signals().stops();
     let mut ticker = tokio::time::interval(Duration::from_secs(gateway.config().poll_seconds));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut posted = BTreeSet::new();
+    let mut posted = BTreeMap::new();
     loop {
         if state.signals().is_stopping() {
             return;
@@ -835,6 +915,108 @@ mod tests {
             key_pair_from_pem("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn policy_bound_check_keys_change_on_retarget_revocation_and_binding_changes() {
+        use kontor_core::id::{ContentHash, MiniProjectId};
+        use kontor_core::publication::PublicationDecision;
+
+        let mut request = PublicationIdentityRequest {
+            repository: ExternalName::parse("example-org/root").unwrap(),
+            base_branch: ExternalName::parse("main").unwrap(),
+            head_branch: ExternalName::parse("feat/EXM-1-work").unwrap(),
+            head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            pull_request: Some(1),
+            title: Some(ExternalName::parse("EXM-1 Work").unwrap()),
+        };
+        let mut decision = PublicationDecision::accepted();
+        decision.source_bundle_hash = Some(ContentHash::of(b"first activated policy"));
+        let epic = Some(MiniProjectId::generate());
+        let first = policy_check_key(&request, &decision, epic, None);
+        assert_eq!(first, policy_check_key(&request, &decision, epic, None));
+        request.base_branch = ExternalName::parse("develop").unwrap();
+        assert_ne!(first, policy_check_key(&request, &decision, epic, None));
+        request.base_branch = ExternalName::parse("main").unwrap();
+        decision.source_bundle_hash = Some(ContentHash::of(b"replacement activated policy"));
+        assert_ne!(first, policy_check_key(&request, &decision, epic, None));
+        decision.source_bundle_hash = Some(ContentHash::of(b"first activated policy"));
+        decision.accepted = false;
+        decision.reasons.push("repository_mismatch".to_owned());
+        assert_ne!(first, policy_check_key(&request, &decision, epic, None));
+        decision.accepted = true;
+        decision.reasons.clear();
+        assert_ne!(
+            first,
+            policy_check_key(&request, &decision, Some(MiniProjectId::generate()), None)
+        );
+        assert_eq!(first, policy_check_key(&request, &decision, epic, None));
+    }
+
+    #[test]
+    fn selected_check_names_come_only_from_project_settings() {
+        let mut value = serde_json::json!({
+            "schema_version": 1,
+            "app_id": 1,
+            "installation_id": 2,
+            "private_key_path": "/unused-key-reference.pem",
+            "project_id": ProjectId::generate(),
+            "repositories": ["example-org/example-project"],
+        });
+        for name in ["publication-identity", "example/publication-identity"] {
+            let checks = vec!["publication-branch-title".to_owned(), name.to_owned()];
+            value.as_object_mut().unwrap().remove("check_name");
+            let yaml = serde_yaml_ng::to_string(&value).unwrap();
+            assert_eq!(
+                GithubPublicationConfig::from_selected_yaml(&yaml, &checks)
+                    .unwrap()
+                    .check_name,
+                name
+            );
+            value["check_name"] = serde_json::json!(name);
+            let yaml = serde_yaml_ng::to_string(&value).unwrap();
+            assert_eq!(
+                GithubPublicationConfig::from_selected_yaml(&yaml, &checks)
+                    .unwrap()
+                    .check_name,
+                name
+            );
+            for bad in [
+                serde_json::json!("unselected/publication-identity"),
+                serde_json::json!(""),
+                serde_json::Value::Null,
+                serde_json::json!(7),
+            ] {
+                value["check_name"] = bad;
+                let yaml = serde_yaml_ng::to_string(&value).unwrap();
+                assert!(GithubPublicationConfig::from_selected_yaml(&yaml, &checks).is_err());
+            }
+            value["check_name"] = serde_json::json!(name);
+            let yaml = serde_yaml_ng::to_string(&value).unwrap();
+            for bad in [
+                format!("{yaml}check_name: {name}\n"),
+                format!("{yaml}unknown_field: true\n"),
+                format!("{yaml}schema_version: 2\n"),
+                "[not, a, mapping]".to_owned(),
+            ] {
+                assert!(GithubPublicationConfig::from_selected_yaml(&bad, &checks).is_err());
+            }
+            for (field, bad) in [
+                ("schema_version", serde_json::json!(2)),
+                ("poll_seconds", serde_json::json!(0)),
+                ("repositories", serde_json::json!(["not-a-repository"])),
+            ] {
+                let mut invalid = value.clone();
+                invalid[field] = bad;
+                assert!(
+                    GithubPublicationConfig::from_selected_yaml(
+                        &serde_yaml_ng::to_string(&invalid).unwrap(),
+                        &checks,
+                    )
+                    .is_err()
+                );
+            }
+        }
     }
 
     #[test]
@@ -972,7 +1154,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/repos/Carasent-ASMA/asma-modules/check-runs"))
             .and(body_partial_json(serde_json::json!({
-                "name": DEFAULT_CHECK_NAME, "head_sha": "82c56f5043b436ba666962cf82a89e93e330a271",
+                "name": "example/publication-identity", "head_sha": "82c56f5043b436ba666962cf82a89e93e330a271",
                 "status": "completed", "conclusion": "failure"
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": 1})))
@@ -987,20 +1169,25 @@ mod tests {
             .mount(&server)
             .await;
 
-        let gateway = GithubPublicationGateway::with_key(
-            GithubPublicationConfig {
-                schema_version: 1,
-                app_id: 424242,
-                installation_id: 77,
-                private_key_path: PathBuf::from("/unused"),
-                project_id: ProjectId::parse("01a0064a-e056-7603-9968-ef64fdaacb75").expect("id"),
-                repositories: vec!["Carasent-ASMA/asma-modules".to_owned()],
-                check_name: DEFAULT_CHECK_NAME.to_owned(),
-                poll_seconds: 60,
-                api_base: server.uri(),
-            },
-            test_key(),
-        );
+        let mut document = serde_yaml_ng::to_value(GithubPublicationConfig {
+            schema_version: 1,
+            app_id: 424242,
+            installation_id: 77,
+            private_key_path: PathBuf::from("/unused"),
+            project_id: ProjectId::parse("01a0064a-e056-7603-9968-ef64fdaacb75").expect("id"),
+            repositories: vec!["Carasent-ASMA/asma-modules".to_owned()],
+            check_name: String::new(),
+            poll_seconds: 60,
+            api_base: server.uri(),
+        })
+        .unwrap();
+        document.as_mapping_mut().unwrap().remove("check_name");
+        let config = GithubPublicationConfig::from_selected_yaml(
+            &serde_yaml_ng::to_string(&document).unwrap(),
+            &["example/publication-identity".to_owned()],
+        )
+        .unwrap();
+        let gateway = GithubPublicationGateway::with_key(config, test_key());
         let pull_requests = gateway
             .open_pull_requests("Carasent-ASMA/asma-modules")
             .await

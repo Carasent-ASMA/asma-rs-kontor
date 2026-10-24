@@ -88,6 +88,16 @@ fn selection(role: &str, presence: EpicPresence, ad_hoc_allowed: bool) -> CoreTe
     }
 }
 
+fn purpose_roles() -> kontor_teams::CoreTeamPurposeRoles<'static> {
+    static LEAD: std::sync::OnceLock<RoleCode> = std::sync::OnceLock::new();
+    static PROCESS: std::sync::OnceLock<RoleCode> = std::sync::OnceLock::new();
+    kontor_teams::CoreTeamPurposeRoles {
+        architecture_closer: LEAD.get_or_init(|| RoleCode::parse("LSA").unwrap()),
+        process_closer: PROCESS.get_or_init(|| RoleCode::parse("TPM").unwrap()),
+        control: PROCESS.get_or_init(|| RoleCode::parse("TPM").unwrap()),
+    }
+}
+
 fn roster(version: SpecVersion) -> CoreTeamRevision {
     CoreTeamRevision::resolve(
         version,
@@ -96,6 +106,7 @@ fn roster(version: SpecVersion) -> CoreTeamRevision {
             selection("SA", EpicPresence::Default, true),
             selection("QA", EpicPresence::OnDemand, false),
         ],
+        purpose_roles(),
     )
     .expect("valid Core Team")
 }
@@ -302,6 +313,7 @@ fn core_team_forces_distinct_control_roles_and_derives_quick_and_initial_seats()
             SpecVersion::FIRST,
             &catalog(),
             &[selection("LSA", EpicPresence::OnDemand, true)],
+            purpose_roles()
         )
         .is_err(),
         "a project cannot weaken the mandatory LSA seat"
@@ -337,7 +349,7 @@ async fn qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa() {
             quick.id,
             PromotionTarget {
                 name: name("Operational bootstrap"),
-                activate_asma_epic: true,
+                activate_epic: true,
                 confirmed_jira_epic_id: Some(external("ASMA-9000")),
             },
             topology(),
@@ -355,6 +367,7 @@ async fn qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa() {
         SpecVersion::parse(2).expect("version two"),
         &catalog(),
         &[selection("QA", EpicPresence::Default, false)],
+        purpose_roles(),
     )
     .expect("next Core Team");
     let (_, next_hash) = workflow
@@ -552,7 +565,7 @@ async fn invalid_role_base_and_asma_activation_refuse_before_effects() {
                 quick.id,
                 PromotionTarget {
                     name: name("Unbound ASMA epic"),
-                    activate_asma_epic: true,
+                    activate_epic: true,
                     confirmed_jira_epic_id: None,
                 },
                 topology(),
@@ -568,7 +581,7 @@ async fn invalid_role_base_and_asma_activation_refuse_before_effects() {
             quick.id,
             PromotionTarget {
                 name: name("Tracker-neutral work"),
-                activate_asma_epic: false,
+                activate_epic: false,
                 confirmed_jira_epic_id: None,
             },
             topology(),
@@ -587,4 +600,168 @@ async fn invalid_role_base_and_asma_activation_refuse_before_effects() {
         .await
         .expect("explicit archive applies after handoff");
     assert_eq!(effects.archived, BTreeSet::from([quick.id.to_string()]));
+}
+
+#[test]
+fn resolved_purposes_are_ordered_and_process_control_share_one_required_seat() {
+    use kontor_teams::CoreTeamSeatPurpose::*;
+    let roster = roster(SpecVersion::FIRST);
+    let architecture = roster.seat_for_purpose(ArchitectureCloser).unwrap();
+    assert_eq!(architecture.purposes, [ArchitectureCloser]);
+    let process = roster.seat_for_purpose(ProcessCloser).unwrap();
+    assert_eq!(process.purposes, [ProcessCloser, Control]);
+    assert_eq!(process, roster.seat_for_purpose(Control).unwrap());
+    assert_eq!(
+        roster
+            .seats
+            .iter()
+            .filter(|seat| seat.role.role_code.as_str() == "TPM")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn legacy_purposes_are_readable_omitted_on_serialization_and_never_inferred() {
+    use kontor_teams::CoreTeamSeatPurpose;
+    let mut value = serde_json::to_value(roster(SpecVersion::FIRST)).unwrap();
+    for seat in value["seats"].as_array_mut().unwrap() {
+        seat.as_object_mut().unwrap().remove("purposes");
+    }
+    let legacy: CoreTeamRevision = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&legacy).unwrap(), value);
+    assert!(legacy.canonicalize().is_ok());
+    for purpose in CoreTeamSeatPurpose::ALL {
+        assert!(matches!(
+            legacy.seat_for_purpose(*purpose),
+            Err(DomainError::MissingAuthority {
+                rule: "role_purpose_unpinned",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn malformed_duplicate_or_ambiguous_markers_and_weakened_presence_refuse() {
+    use kontor_teams::CoreTeamSeatPurpose::*;
+    let base = roster(SpecVersion::FIRST);
+    for markers in [
+        serde_json::json!(["unknown"]),
+        serde_json::json!(["control", "control"]),
+        serde_json::json!(["control", "process_closer"]),
+    ] {
+        let mut value = serde_json::to_value(&base).unwrap();
+        value["seats"][0]["purposes"] = markers;
+        assert!(serde_json::from_value::<CoreTeamRevision>(value).is_err());
+    }
+    let mut invalid = base.clone();
+    invalid.seats[1].purposes.insert(0, ArchitectureCloser);
+    assert!(invalid.canonicalize().is_err());
+    let mut invalid = base.clone();
+    invalid.seats[0].presence = EpicPresence::OnDemand;
+    assert!(invalid.canonicalize().is_err());
+    let mut invalid = base.clone();
+    let mut duplicate = invalid.seats[0].clone();
+    duplicate.purposes.clear();
+    invalid.seats.push(duplicate);
+    assert!(invalid.canonicalize().is_err());
+    let mut invalid = base;
+    invalid.seats[1].purposes.clear();
+    assert!(invalid.canonicalize().is_err());
+}
+
+#[test]
+fn exact_delivery_selectors_alone_assign_purposes_and_edits_do_not_reinterpret_snapshots() {
+    use kontor_teams::{CoreTeamPurposeRoles, CoreTeamSeatPurpose::*};
+    let catalog = catalog();
+    let selections = [
+        selection("LSA", EpicPresence::Required, true),
+        selection("TPM", EpicPresence::Required, false),
+        selection("SA", EpicPresence::Required, true),
+        selection("QA", EpicPresence::Required, true),
+    ];
+    let roles = purpose_roles();
+    let first =
+        CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &selections, roles).unwrap();
+    let alternative = RoleCode::parse("SA").unwrap();
+    let next = CoreTeamRevision::resolve(
+        SpecVersion::FIRST,
+        &catalog,
+        &selections,
+        CoreTeamPurposeRoles {
+            control: &alternative,
+            ..roles
+        },
+    )
+    .unwrap();
+    let mut stripped_first = serde_json::to_value(&first).unwrap();
+    let mut stripped_next = serde_json::to_value(&next).unwrap();
+    for value in [&mut stripped_first, &mut stripped_next] {
+        for seat in value["seats"].as_array_mut().unwrap() {
+            seat.as_object_mut().unwrap().remove("purposes");
+        }
+    }
+    assert_eq!(
+        stripped_first, stripped_next,
+        "only purpose markers changed"
+    );
+    assert_ne!(
+        first.canonicalize().unwrap().hash(),
+        next.canonicalize().unwrap().hash()
+    );
+    assert_eq!(
+        first
+            .seat_for_purpose(Control)
+            .unwrap()
+            .role
+            .role_code
+            .as_str(),
+        "TPM"
+    );
+    assert_eq!(
+        next.seat_for_purpose(Control)
+            .unwrap()
+            .role
+            .role_code
+            .as_str(),
+        "SA"
+    );
+    assert!(
+        first
+            .seats
+            .iter()
+            .find(|seat| seat.role.role_code.as_str() == "QA")
+            .unwrap()
+            .purposes
+            .is_empty()
+    );
+    assert!(
+        CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &catalog,
+            &selections,
+            CoreTeamPurposeRoles {
+                architecture_closer: roles.process_closer,
+                ..roles
+            }
+        )
+        .is_err()
+    );
+    let mut retired = catalog.clone();
+    retired.roles[0].lifecycle = CodeLifecycle::Retired;
+    assert!(CoreTeamRevision::resolve(SpecVersion::FIRST, &retired, &selections, roles).is_err());
+    let unknown = RoleCode::parse("UNKNOWN").unwrap();
+    assert!(
+        CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &catalog,
+            &selections,
+            CoreTeamPurposeRoles {
+                control: &unknown,
+                ..roles
+            }
+        )
+        .is_err()
+    );
 }

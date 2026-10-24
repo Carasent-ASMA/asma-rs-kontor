@@ -944,7 +944,7 @@ impl Services {
                     seat_binding_id: seat.id,
                     occupancy_generation: generation,
                     autonomy,
-                    model_rung: model_rung.clone(),
+                    model_rung: (model_rung.clone()).into(),
                     state: HostedSeatLaunchIntentState::Prepared,
                     observed_native_id: None,
                     prepared_at: kontor_api::now(),
@@ -983,6 +983,7 @@ impl Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .launch_hosted_seat(&HostedSeatLaunchRequest {
+                resolved_route: None,
                 seat_binding_id: seat.id,
                 role_slot_id: seat.role_slot_id.clone(),
                 display_name: title.clone(),
@@ -1025,6 +1026,7 @@ impl Services {
                     generation,
                     &hosted.native_identity.native_id,
                     hosted.observed_at,
+                    &hosted.model_rung.clone().into(),
                 )
             })
             .map_err(|error| self.refuse(&error))?;

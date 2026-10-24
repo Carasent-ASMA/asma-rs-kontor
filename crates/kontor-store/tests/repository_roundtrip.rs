@@ -2821,6 +2821,41 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
 /// notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
+    support::rewind_activation_name(&connection);
+    let consultation_evidence: i64 = connection.query_row(
+        "SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_intent_hash IS NOT NULL OR consultation_git_readback IS NOT NULL",
+        [], |row| row.get(0),
+    ).expect("later consultation evidence reads");
+    assert_eq!(
+        consultation_evidence, 0,
+        "a historical rewind cannot discard consultation evidence"
+    );
+    connection.execute_batch(
+        "DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable;
+         ALTER TABLE topology_nodes DROP COLUMN consultation_intent;
+         ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash;
+         ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback;"
+    ).expect("remove empty later consultation placement columns");
+    for table in [
+        "project_team_definition_defaults",
+        "mini_project_team_definition_snapshots",
+    ] {
+        let pinned: i64 = connection
+            .query_row(
+                &format!(
+                    "SELECT count(*) FROM {table} WHERE operational_domain_bundle_hash IS NOT NULL"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("later domain pin evidence reads");
+        assert_eq!(pinned, 0, "a historical rewind cannot discard a domain pin");
+        connection
+            .execute_batch(&format!(
+                "ALTER TABLE {table} DROP COLUMN operational_domain_bundle_hash;"
+            ))
+            .expect("remove the empty later domain pin column");
+    }
     connection
         .execute_batch(
             // Every artefact introduced after v114 has to go, or reopening
@@ -2864,6 +2899,8 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE desks;
          DROP TABLE execution_hold_attention;
          DROP TABLE operational_gaps;
+         DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;
+         ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");

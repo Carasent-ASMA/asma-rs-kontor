@@ -471,7 +471,7 @@ async fn a_resumed_launch_refuses_each_context_drift_and_claims_the_baseline_has
         (
             (container_topology, [&other_hash, &container]),
             (container_topology, [&container_hash, &container]),
-            "the member container's topology differs from the epic's pinned topology",
+            "consultation.source_layout_binding_mismatch",
         ),
         (
             (repin, [&successor_hash, &realm.epic]),
@@ -485,7 +485,16 @@ async fn a_resumed_launch_refuses_each_context_drift_and_claims_the_baseline_has
         let resumed = realm
             .invoke_with(&body, realm.caller_token(), "b1a-context")
             .await;
-        assert_refused(world, &resumed, ApiErrorCode::PlacementBlocked, rule);
+        if drift == repin {
+            assert_refused(
+                world,
+                &resumed,
+                ApiErrorCode::InvalidRequest,
+                "operational_domain_definition_mismatch",
+            );
+        } else {
+            assert_refused(world, &resumed, ApiErrorCode::PlacementBlocked, rule);
+        }
         let calls = world.fake.take_calls();
         assert!(
             member_effects(&calls).is_empty(),

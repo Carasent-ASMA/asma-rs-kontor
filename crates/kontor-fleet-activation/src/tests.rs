@@ -8,6 +8,9 @@ use kontor_fleet::rule::{A09, L01, L02, P07, V32};
 use super::rule::*;
 use super::*;
 
+#[path = "domain_tests.rs"]
+mod domains;
+
 const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
 const COMMITTEE: &str = "committee/01991c00-0000-7000-8000-000000000001/reviewer-a";
 const ADVISOR: &str = "advisor/01a02d00-0000-7000-8000-00000000ad01";
@@ -69,7 +72,7 @@ fn roster(version: SpecVersion) -> (CanonicalDocument, RoleCatalogId) {
 fn policy(lsa: &str, tpm: &str) -> String {
     format!(
         "schema_version: 2\n\
-         domains:\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  claude: {{ provider: claude, accounts: [claude-a] }}\n\
          models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n\
          chains:\n  lead:\n    - [sol@xhigh]\n    - [opus@xhigh]\n  review:\n    - [opus@xhigh]\n\
          bindings:\n  {lsa}: lead\n  {tpm}: lead\n  {TEAM}: lead\n  {COMMITTEE}: review\n  {ADVISOR}: lead\n"
@@ -135,6 +138,10 @@ fn published_bundle() -> Bundle {
     let manifest = BundleManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         resolver: "kontor-fleet 0.2.1".to_owned(),
+        publication_policy: None,
+        consultation_layout: None,
+        operational_domain: None,
+        qualification: None,
         sources: BTreeMap::from([
             (
                 "orchestration.yml".to_owned(),
@@ -178,9 +185,259 @@ fn refused<T: std::fmt::Debug>(result: Result<T, FleetError>) -> &'static str {
     }
 }
 
+#[test]
+fn pinned_route_sources_survive_current_edits_and_refuse_missing_or_tampered_bytes() {
+    use crate::routes::{self, QualificationPin};
+    let mut bundle = published_bundle();
+    let legacy = bundle.manifest.canonicalize().unwrap();
+    let project = "project:\n  runtime:\n    matrix:\n      - {harness: paseo, provider: codex}\n";
+    let qualifications = "schema_version: 1\nrecords: []\n";
+    let project_hash = ContentHash::of(project.as_bytes());
+    let qualification_hash = ContentHash::of(qualifications.as_bytes());
+    bundle
+        .manifest
+        .sources
+        .insert(routes::PROJECT_SOURCE.into(), project_hash.clone());
+    bundle.manifest.sources.insert(
+        routes::QUALIFICATION_SOURCE.into(),
+        qualification_hash.clone(),
+    );
+    bundle.manifest.qualification = Some(QualificationPin {
+        source: routes::QUALIFICATION_SOURCE.into(),
+        source_hash: qualification_hash.clone(),
+    });
+    let preview = bundle.manifest.canonicalize().unwrap();
+    assert!(!preview.json().contains("activated_at"));
+    bundle.bundle_hash = preview.hash().clone();
+    private(
+        &routes::source_path(bundle.path(), &project_hash),
+        project.as_bytes(),
+    );
+    private(
+        &routes::source_path(bundle.path(), &qualification_hash),
+        qualifications.as_bytes(),
+    );
+    private(
+        &manifest_path(bundle.path(), &bundle.bundle_hash),
+        preview.json().as_bytes(),
+    );
+    bundle.write_record(&bundle.record());
+    let activated = load(bundle.path()).unwrap();
+    let manifest = activated.bundle.unwrap().manifest;
+    let policy = activated.policy;
+    assert!(
+        routes::read_matrix(bundle.path(), &manifest)
+            .unwrap()
+            .allows("paseo", "codex")
+    );
+    assert!(
+        routes::read_qualifications(bundle.path(), &manifest, &policy, &activated.record)
+            .unwrap()
+            .is_some()
+    );
+    // Mutable authoring elsewhere is not an artifact readback source.
+    private(
+        &bundle.path().join(routes::PROJECT_SOURCE),
+        b"project: {runtime: {matrix: []}}\n",
+    );
+    assert!(
+        routes::read_matrix(bundle.path(), &manifest)
+            .unwrap()
+            .allows("paseo", "codex")
+    );
+    assert_eq!(manifest.canonicalize().unwrap(), preview);
+    assert_ne!(preview, legacy);
+    let mut other_record = activated.record.clone();
+    other_record.source_bundle_hash = Some(legacy.hash().clone());
+    assert_eq!(
+        refused(routes::read_qualifications(
+            bundle.path(),
+            &manifest,
+            &policy,
+            &other_record
+        )),
+        "route_qualification_unproven"
+    );
+    private(
+        &routes::source_path(bundle.path(), &project_hash),
+        b"project: {}\n",
+    );
+    assert_eq!(
+        refused(routes::read_matrix(bundle.path(), &manifest)),
+        "host_route_source_hash_mismatch"
+    );
+    std::fs::remove_file(routes::source_path(bundle.path(), &project_hash)).unwrap();
+    assert_eq!(
+        refused(routes::read_matrix(bundle.path(), &manifest)),
+        "host_route_source_missing"
+    );
+    private(
+        &routes::source_path(bundle.path(), &qualification_hash),
+        b"schema_version: 1\nrecords: []",
+    );
+    assert_eq!(
+        refused(routes::read_qualifications(
+            bundle.path(),
+            &manifest,
+            &policy,
+            &activated.record
+        )),
+        "host_route_source_hash_mismatch"
+    );
+}
+
 fn first(selection: &FleetSelection) -> (String, u16, u16) {
     let route = selection.selected.as_ref().expect("a selected route");
     (route.rung.provider.0.clone(), route.step, route.sub_step)
+}
+
+#[test]
+fn an_additive_publication_policy_is_verified_without_changing_legacy_manifest_bytes() {
+    use kontor_core::id::ProjectId;
+    use kontor_core::publication::PublicationPolicy;
+    use kontor_core::pull_request::ForgeRepository;
+
+    let mut bundle = published_bundle();
+    let legacy = bundle.manifest.canonicalize().unwrap();
+    let value: serde_json::Value = serde_json::from_str(legacy.json()).unwrap();
+    assert!(value.get("publication_policy").is_none());
+    let decoded: BundleManifest = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.canonicalize().unwrap(), legacy);
+    let root = ForgeRepository::parse("example-org/root").unwrap();
+    bundle.manifest.publication_policy = Some(PublicationPolicy {
+        project_id: ProjectId::generate(),
+        repositories: vec![root.clone()],
+        root_repository: root,
+        module_repositories: BTreeMap::new(),
+        base_branch: ExternalName::parse("main").unwrap(),
+        branch_rules: None,
+    });
+    let document = bundle.manifest.canonicalize().unwrap();
+    let value: serde_json::Value = serde_json::from_str(document.json()).unwrap();
+    assert!(value["publication_policy"].get("branch_rules").is_none());
+    let decoded: BundleManifest = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.canonicalize().unwrap(), document);
+    assert_ne!(document.hash(), legacy.hash());
+    bundle.bundle_hash = document.hash().clone();
+    private(
+        &manifest_path(bundle.path(), &bundle.bundle_hash),
+        document.json().as_bytes(),
+    );
+    bundle.write_record(&bundle.record());
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .publication_policy,
+        bundle.manifest.publication_policy
+    );
+    bundle
+        .manifest
+        .publication_policy
+        .as_mut()
+        .unwrap()
+        .root_repository = ForgeRepository::parse("other-org/unlisted").unwrap();
+    assert!(bundle.manifest.canonicalize().is_err());
+}
+
+#[test]
+fn consultation_layout_is_pinned_by_activation_and_legacy_manifests_stay_unchanged() {
+    use kontor_core::branch::{BranchType, ProjectBranchRules};
+    use kontor_core::placement::ConsultationLayout;
+
+    let mut bundle = published_bundle();
+    let legacy = bundle.manifest.canonicalize().unwrap();
+    assert!(!legacy.json().contains("consultation_layout"));
+    let decoded: BundleManifest = serde_json::from_str(legacy.json()).unwrap();
+    assert_eq!(decoded.canonicalize().unwrap(), legacy);
+    let layout = ConsultationLayout {
+        worktree_layout: "managed/trees/<key-slug>/<module>".into(),
+        template: "consultations/<key-slug>/<node>".into(),
+        branch_rules: ProjectBranchRules {
+            project_key: "EXM".into(),
+            types: vec![BranchType::Chore],
+            pattern: "^(chore)/<KEY>-<number>-<slug>$".into(),
+            commit_pattern: "^<KEY>-<number> <summary>$".into(),
+        },
+        base_branch: "trunk".into(),
+    };
+    bundle.manifest.consultation_layout = Some(layout.clone());
+    let first = bundle.manifest.canonicalize().unwrap();
+    private(
+        &manifest_path(bundle.path(), first.hash()),
+        first.json().as_bytes(),
+    );
+    assert!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout
+            .is_none()
+    );
+    bundle.bundle_hash = first.hash().clone();
+    bundle.write_record(&bundle.record());
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout,
+        Some(layout.clone())
+    );
+
+    bundle
+        .manifest
+        .consultation_layout
+        .as_mut()
+        .unwrap()
+        .template = "new/<node>/<key-slug>".into();
+    let edited = bundle.manifest.canonicalize().unwrap();
+    assert_ne!(first.hash(), edited.hash());
+    private(
+        &manifest_path(bundle.path(), edited.hash()),
+        edited.json().as_bytes(),
+    );
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout,
+        Some(layout)
+    );
+    bundle.bundle_hash = edited.hash().clone();
+    bundle.write_record(&bundle.record());
+    assert_eq!(
+        load(bundle.path())
+            .unwrap()
+            .bundle
+            .unwrap()
+            .manifest
+            .consultation_layout,
+        bundle.manifest.consultation_layout
+    );
+
+    bundle
+        .manifest
+        .consultation_layout
+        .as_mut()
+        .unwrap()
+        .template = "../<node>/<key-slug>".into();
+    assert!(bundle.manifest.canonicalize().is_err());
+    let malformed = CanonicalDocument::from_serializable(&bundle.manifest).unwrap();
+    private(
+        &manifest_path(bundle.path(), malformed.hash()),
+        malformed.json().as_bytes(),
+    );
+    bundle.bundle_hash = malformed.hash().clone();
+    bundle.write_record(&bundle.record());
+    assert_eq!(refused(load(bundle.path())), M09);
 }
 
 #[test]
@@ -204,7 +461,7 @@ fn a_verified_v2_bundle_resolves_every_seat_class_from_one_policy() {
             "{key}"
         );
         assert_eq!(selection.provenance.binding_key, key);
-        assert_eq!(first(&selection), ("codex-work".to_owned(), 1, 1), "{key}");
+        assert_eq!(first(&selection), ("codex-b".to_owned(), 1, 1), "{key}");
     }
     let reviewer = resolve(bundle.path(), COMMITTEE, &Eligibility::default()).expect("bound");
     assert_eq!(reviewer.provenance.chain, "review");
@@ -213,12 +470,12 @@ fn a_verified_v2_bundle_resolves_every_seat_class_from_one_policy() {
         bundle.path(),
         &bundle.key("lsa"),
         &Eligibility {
-            unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+            unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
             excluded_vendors: BTreeSet::new(),
         },
     )
     .expect("bound");
-    assert_eq!(first(&degraded), ("codex-personal".to_owned(), 1, 2));
+    assert_eq!(first(&degraded), ("codex-a".to_owned(), 1, 2));
     let blocked = resolve(
         bundle.path(),
         &bundle.key("lsa"),
@@ -553,7 +810,7 @@ fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
             {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": COMMITTEE},
             {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": TEAM},
             {"slot_id": "lead", "role": "judge", "binding_key": bundle.key("lsa"),
-             "unavailable_accounts": ["codex-work"]},
+             "unavailable_accounts": ["codex-b"]},
         ],
     }));
     let selection = activated.allocate(&request).expect("allocates");
@@ -583,9 +840,9 @@ fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
     assert_eq!(
         picked,
         [
-            (COMMITTEE, "review", "claude-personal"),
-            (TEAM, "lead", "codex-work"),
-            (lsa.as_str(), "lead", "codex-personal"),
+            (COMMITTEE, "review", "claude-a"),
+            (TEAM, "lead", "codex-b"),
+            (lsa.as_str(), "lead", "codex-a"),
         ]
     );
     assert_eq!(
@@ -593,7 +850,7 @@ fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
             .allocation
             .eligibility
             .unavailable_accounts,
-        BTreeSet::from(["codex-work".to_owned()])
+        BTreeSet::from(["codex-b".to_owned()])
     );
     // The same snapshot through the one-call path: equal answer.
     assert_eq!(
@@ -618,7 +875,7 @@ fn a_joint_allocation_is_whole_or_blocked_with_every_reason() {
         "diversity": "distinct_vendor_per_reviewer",
         "slots": [
             {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": TEAM,
-             "unavailable_accounts": ["codex-work", "codex-personal"]},
+             "unavailable_accounts": ["codex-b", "codex-a"]},
             {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": COMMITTEE},
         ],
     }));
@@ -733,7 +990,7 @@ const CROSS_HARNESS: &str = "\
 schema_version: 2
 domains:
   cursor: { provider: cursor, accounts: [cursor] }
-  claude: { provider: claude, accounts: [claude-personal] }
+  claude: { provider: claude, accounts: [claude-a] }
 models:
   auto: { domain: cursor, id: auto, vendor: unknown }
   sonnet: { domain: cursor, id: claude-sonnet-5, vendor: anthropic }
@@ -806,13 +1063,8 @@ fn a_planning_pair_is_one_joint_allocation_on_two_actual_vendors() {
     assert_eq!(
         picked,
         [
-            (PlanningPairSlot::SeatA, TEAM, "codex-work", "openai"),
-            (
-                PlanningPairSlot::SeatB,
-                TEAM,
-                "claude-personal",
-                "anthropic"
-            ),
+            (PlanningPairSlot::SeatA, TEAM, "codex-b", "openai"),
+            (PlanningPairSlot::SeatB, TEAM, "claude-a", "anthropic"),
         ]
     );
     let passed_over = &placement.selection.slots[1].allocation.considered[0];
@@ -1007,7 +1259,7 @@ const GENERIC: &str = "team/01936f5a-0000-7000-8000-000000000002";
 fn committee_policy() -> String {
     format!(
         "schema_version: 2\n\
-         domains:\n  claude: {{ provider: claude, accounts: [claude-work, claude-personal] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-b, claude-a] }}\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
          unavailable:\n  domains: [deepseek]\n  accounts: []\n\
          models:\n  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}\n  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n  sol: {{ domain: codex, id: gpt-6.1-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [xhigh], vision: true, calibrated: true }}\n  deepseek-flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek, efforts: [max], vision: false, calibrated: false }}\n\
          chains:\n  review-a:\n    - [sol@xhigh]\n    - [deepseek-flash@max]\n    - [opus-5.5@xhigh, opus-5@xhigh]\n  review-b:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n  consult-claude-first:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n    - [grok-4.6@xhigh]\n\
@@ -1078,9 +1330,9 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
     assert_eq!(
         seated(&formal),
         owned([
-            ("codex-work", "gpt-6.1-sol", 1),
-            ("claude-work", "claude-opus-5", 1),
-            ("codex-work", "gpt-6.1-sol", 2),
+            ("codex-b", "gpt-6.1-sol", 1),
+            ("claude-b", "claude-opus-5", 1),
+            ("codex-b", "gpt-6.1-sol", 2),
         ])
     );
     let judge = &formal.slots[2].allocation;
@@ -1116,9 +1368,9 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
     assert_eq!(
         seated(&generic),
         owned([
-            ("codex-work", "gpt-6.1-sol", 1),
-            ("claude-work", "claude-opus-5", 1),
-            ("claude-work", "claude-opus-5", 1),
+            ("codex-b", "gpt-6.1-sol", 1),
+            ("claude-b", "claude-opus-5", 1),
+            ("claude-b", "claude-opus-5", 1),
         ])
     );
 
@@ -1134,8 +1386,7 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
 fn a_formal_review_with_no_admissible_judge_is_blocked_whole() {
     let activated = committee_snapshot();
     let mut request = committee(FORMAL, ["reviewer-a", "reviewer-b", "judge"]);
-    request["slots"][2]["unavailable_accounts"] =
-        serde_json::json!(["codex-work", "codex-personal"]);
+    request["slots"][2]["unavailable_accounts"] = serde_json::json!(["codex-b", "codex-a"]);
     let blocked = activated
         .allocate(&joint(request))
         .expect("a defined block result");

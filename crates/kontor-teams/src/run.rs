@@ -376,7 +376,8 @@ impl LaunchPermit {
                 autonomy: launch.autonomy,
                 requested_at: launch.requested_at,
             })
-            .with_fleet_provenance(launch.fleet_provenance);
+            .with_fleet_provenance(launch.fleet_provenance)
+            .with_resolved_route(launch.resolved_route);
         PreparedLaunch {
             permit: self,
             request,
@@ -462,6 +463,8 @@ pub struct SlotLaunch {
     pub prompt: BoundedText,
     /// The exact provider/model/effort rung selected from the frozen template.
     pub model_rung: ModelRung,
+    /// Private route read from the durable delivery intent.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// The frozen requested/effective context-window policy for this seat.
     ///
     /// Resolved from [`TeamRunSlots::requested_context_window`] and the
@@ -517,6 +520,7 @@ impl OccupiedSlot {
     #[must_use]
     pub fn resume_request(&self, requested_at: Timestamp) -> ResumeRequest {
         ResumeRequest {
+            resolved_route: None,
             binding: self.binding.as_ref().clone(),
             requested_at,
         }

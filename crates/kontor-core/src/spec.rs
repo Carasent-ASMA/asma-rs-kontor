@@ -14,6 +14,18 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+crate::closed_enum! {
+    /// Authority resolved from delivery selectors and frozen with a roster.
+    CoreTeamSeatPurpose, "CoreTeamSeatPurpose" {
+        /// Closes architecture and product questions.
+        ArchitectureCloser => "architecture_closer",
+        /// Closes process and routing questions.
+        ProcessCloser => "process_closer",
+        /// Owns the epic's delivery seats.
+        Control => "control",
+    }
+}
+
 use crate::naming::{NameSeparator, NativeNameTemplate, NativeNameToken};
 
 /// Raw reasoning-effort ids exposed by supported runtimes.

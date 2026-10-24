@@ -208,7 +208,7 @@ fn markers_match_through_surrounding_non_ascii_content() {
 // ---------------------------------------------------------------------------
 
 /// The message Claude actually produced on 2026-08-30, verbatim, repeated to
-/// all three ASMA-7869 builders when the `claude-work` allowance was spent.
+/// all three ASMA-7869 builders when the `claude-b` allowance was spent.
 const CLAUDE_LIMIT: &str = "You've hit your individual spend limit · ask your admin to raise it \
      at claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 10:40pm \
      (Europe/Chisinau)";
@@ -230,7 +230,7 @@ fn claude_alias(alias: &str) -> QuotaSignal {
 }
 
 fn claude() -> QuotaSignal {
-    claude_alias("claude-work")
+    claude_alias("claude-b")
 }
 
 fn chisinau(text: &str) -> Timestamp {
@@ -242,7 +242,7 @@ fn chisinau(text: &str) -> Timestamp {
 /// August, three hours ahead of UTC.
 #[test]
 fn the_captured_message_classifies_on_both_claude_logins() {
-    for alias in ["claude-work", "claude-personal"] {
+    for alias in ["claude-b", "claude-a"] {
         let observed = classify(
             CLAUDE_LIMIT,
             &[claude_alias(alias)],

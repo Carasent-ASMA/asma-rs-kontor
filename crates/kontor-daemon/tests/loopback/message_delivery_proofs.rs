@@ -148,6 +148,7 @@ async fn legacy_message_proof_survives_restart_replays_and_long_history_without_
         .observe_trailing_tool_call(&held, kontor_api::now())
         .unwrap();
     let World {
+        historical_epics,
         directory,
         daemon,
         router,
@@ -172,6 +173,7 @@ async fn legacy_message_proof_survives_restart_replays_and_long_history_without_
     assert_eq!(daemon.reconcile().await, BarrierState::Open);
     let router = daemon.router();
     let world = World {
+        historical_epics,
         directory,
         daemon,
         router,

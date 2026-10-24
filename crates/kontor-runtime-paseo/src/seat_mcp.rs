@@ -53,8 +53,8 @@
 //! its cwd. Hosted leadership also receives the scoped MCP and exact tool
 //! policy in its creation frame for every provider, including Codex and
 //! OpenCode; their MCP surface must not depend on Claude's local files.
-//! Account-qualified Claude provider ids such as `claude-work` and
-//! `claude-personal` are the same harness boundary and are composed too.
+//! Account-qualified Claude provider ids such as `claude-b` and
+//! `claude-a` are the same harness boundary and are composed too.
 //!
 //! A proved Desk-scoped local directory uses a separate publication path:
 //! settings then MCP, exact originals in a private daemon-owned journal, and
@@ -1495,7 +1495,7 @@ mod tests {
         let repo = repo();
         compose_for_hosted_seat(
             Some(&seat("/realm/state")),
-            "claude-personal",
+            "claude-a",
             repo.path(),
             HostedCompositionMode::Worktree,
         )
@@ -1598,7 +1598,7 @@ mod tests {
             for seat_mcp in [None, Some(seat("/realm/state"))] {
                 compose_for_delivery_seat(seat_mcp.as_ref(), "opencode", &posture, cwd)
                     .expect("an OpenCode seat composes nothing");
-                compose_for_delivery_seat(seat_mcp.as_ref(), "opencode-work", &posture, cwd)
+                compose_for_delivery_seat(seat_mcp.as_ref(), "opencode-b", &posture, cwd)
                     .expect("an account alias is still the OpenCode harness");
             }
         }
@@ -1618,7 +1618,7 @@ mod tests {
         let repo = repo();
         compose_for_delivery_seat(
             Some(&seat("/realm/state")),
-            "claude-personal",
+            "claude-a",
             &SeatPosture::read_only(),
             repo.path(),
         )

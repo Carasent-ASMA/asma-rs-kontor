@@ -1,9 +1,4 @@
-# Neutral team-pack overlay. The pack ships its own default team; a project
-# adds only what differs here: extra roles, labels, prompt settings and
-# committee presets. Model ids and account aliases stay in fleet.yml and
-# host.yml, never in this file.
 schema_version: 1
-teams: []
-profiles: []
-committee_presets: []
-role_prompts: []
+profile_pack: "packs/profiles.yml"
+operational_domain: "packs/operational-domain.yml"
+committee_presets: "packs/committee-presets.yml"

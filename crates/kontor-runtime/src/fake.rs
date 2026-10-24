@@ -854,7 +854,7 @@ struct FakeState {
     succession_summaries: VecDeque<String>,
     /// Every governed summary dispatch this runtime was asked to execute.
     succession_summary_calls: Vec<(ModelRung, AccountProfileId, String)>,
-    consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
+    consultation_routes: BTreeMap<SeatBindingId, kontor_core::launch_route::StoredLaunchRoute>,
     consultation_route_provenances: BTreeMap<SeatBindingId, &'static str>,
     retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
     unavailable_providers: BTreeSet<String>,
@@ -2841,6 +2841,18 @@ impl ScriptedFakeRuntime {
     /// The route a consultation seat was launched on.
     #[must_use]
     pub fn consultation_route(&self, seat: SeatBindingId) -> Option<ModelRung> {
+        self.lock()
+            .consultation_routes
+            .get(&seat)
+            .map(kontor_core::launch_route::StoredLaunchRoute::canonical_rung)
+    }
+
+    /// The complete private launch intent received by the simulated native surface.
+    #[must_use]
+    pub fn consultation_launch_route(
+        &self,
+        seat: SeatBindingId,
+    ) -> Option<kontor_core::launch_route::StoredLaunchRoute> {
         self.lock().consultation_routes.get(&seat).cloned()
     }
 
@@ -3221,6 +3233,14 @@ fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<Sessio
 
 #[async_trait]
 impl RuntimeAdapter for ScriptedFakeRuntime {
+    fn validate_launch_route(
+        &self,
+        route: &kontor_core::launch_route::ResolvedRoute,
+    ) -> RuntimeResult<()> {
+        route.validate()?;
+        Ok(())
+    }
+
     fn validate_consultation_model_rung(
         &self,
         rung: &ModelRung,
@@ -4281,9 +4301,20 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::LaunchConsultation(request.seat_binding_id));
+        let launch_route = request
+            .resolved_route
+            .clone()
+            .map(kontor_core::launch_route::StoredLaunchRoute::resolved)
+            .transpose()?
+            .unwrap_or_else(|| request.model_rung.clone().into());
+        if state.consultations.contains_key(&request.seat_binding_id)
+            && state.consultation_routes.get(&request.seat_binding_id) != Some(&launch_route)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
         state
             .consultation_routes
-            .insert(request.seat_binding_id, request.model_rung.clone());
+            .insert(request.seat_binding_id, launch_route);
         state.consultation_route_provenances.insert(
             request.seat_binding_id,
             request.route_provenance.source.as_str(),
@@ -4553,7 +4584,17 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             },
         )?;
         if held.identity != request.identity
-            || state.consultation_routes.get(&request.seat_binding_id) != Some(&request.model_rung)
+            || state
+                .consultation_routes
+                .get(&request.seat_binding_id)
+                .map(kontor_core::launch_route::StoredLaunchRoute::canonical_rung)
+                .as_ref()
+                != Some(&request.model_rung)
+            || state
+                .consultation_routes
+                .get(&request.seat_binding_id)
+                .and_then(kontor_core::launch_route::StoredLaunchRoute::frozen)
+                != request.resolved_route.as_ref()
         {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -4813,6 +4854,18 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .get(&request.claimant_native_id)
             .cloned()
             .ok_or(RuntimeError::CorrelationFailed)?;
+        let model_rung = if let Some(route) = &request.resolved_route {
+            route.validate()?;
+            if model_rung.provider.0 != route.native_alias
+                || model_rung.model.0 != route.route_model_id
+                || model_rung.effort != route.canonical_effort
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            route.canonical_rung()
+        } else {
+            model_rung
+        };
         let current = state.hosted_seats.get(&request.seat_binding_id).cloned();
         let predecessor = request.expected_predecessor.clone();
         match (&current, &predecessor) {
@@ -6322,6 +6375,7 @@ mod retitle_seat_generation_tests {
             .expect("the native refusal is recorded");
         let observation = runtime
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: snapshot.clone(),
                 requested_at: observed_at,
             })
@@ -6449,6 +6503,7 @@ mod retitle_seat_generation_tests {
             },
         );
         let request = HostedSeatInspectRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: identity.clone(),
             model_rung: ModelRung {
@@ -6482,6 +6537,7 @@ mod retitle_seat_generation_tests {
         );
         runtime
             .retire_hosted_seat(&HostedSeatRetireRequest {
+                resolved_route: None,
                 placement: None,
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
@@ -6506,6 +6562,7 @@ mod retitle_seat_generation_tests {
         );
         runtime
             .retire_hosted_seat(&HostedSeatRetireRequest {
+                resolved_route: None,
                 placement: None,
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
@@ -6541,6 +6598,7 @@ mod retitle_seat_generation_tests {
             },
         );
         let request = HostedSeatMessageRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: predecessor.clone(),
             message_id: MessageId::parse("0193f000-0000-7000-8000-000000000070")
@@ -6585,6 +6643,7 @@ mod retitle_seat_generation_tests {
             },
         );
         let successor_request = HostedSeatMessageRequest {
+            resolved_route: None,
             identity: successor,
             ..request.clone()
         };

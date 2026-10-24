@@ -40,6 +40,7 @@ project:
     - time_zone
     - holiday_countries
     - currency
+  optional: [project_id, publication, consultation_layout]
   nested:
     decision_authorities:
       required: [platform, architecture, decision_records_root]
@@ -61,10 +62,32 @@ project:
       required: [max_delivery_seats, max_parallel_tasks, start_admission]
       rule: max_parallel_tasks and start_admission are the Paseo-direct placement capacity ceiling and initial admission; start_admission must be <= max_parallel_tasks; max_delivery_seats is an owner-set project value scoped per team run, not supplied by the placement rule, not a global team-run ceiling, and kontord has no such field
 
+publication_contract:
+  presence: project_id and publication are either both absent or both present
+  absent: direct-only startup is valid; no publication authority is configured
+  project_id: an explicit internal Kontor ProjectId UUIDv7, never inferred from a tracker key, name, path or App
+  required: [root_repository, module_repositories]
+  repositories: every value is an exact validated entry in project.forge.repositories; membership alone grants no access
+  modules: exact durable Task.module ModuleKeys; no duplicates, wildcards, aliases, prefixes or path guesses; an empty mapping is valid
+  task_scope: configured root plus only the exact stored task module mapping
+  epic_scope: configured root plus the union for that epic's own stored tasks
+  base_branch: project.forge.base_branch, without a fallback
+  integrations: declared Kontor project_id values in the selected tracker or App must agree with project.project_id; they never supply authority
+  runtime: require the requested ProjectId to match the activated policy and an existing Project in the same realm; config loading never creates a Project
+  activation: the existing immutable bundle manifest pins the resolved policy and source hashes; authoring edits or unactivated publications never replace authority
+
+branch_contract:
+  types: a nonempty unique subset of kontor-core BranchType, in declared order
+  pattern: anchored `^(type|type)/<KEY>-<number>-<slug>$`, with the declared types in order; a literal matching project.key is also valid
+  commit_pattern: anchored `^<KEY>-<number> <summary>$`, or the matching literal project.key
+  rule: templates narrow the shared grammar; arbitrary regexes and cross-project literals refuse by field name
+  publication: rules are pinned with publication policy in the activated bundle; confirmed task/epic binding remains required
+  commit_evidence: the commit template is validated and pinned; a head SHA alone does not prove a commit message
+
 # The two supervision files are distinct contracts.
 supervision_contract:
   project.supervision: folder-relative autonomous_tpm_v1 TPM cadence profile, read from the selected config folder
-  paseo_watchdog: <state-root>/supervision.yml, read by the Paseo watchdog and recovery path; it is not a project key
+  paseo_watchdog: paseo-supervision.yml in the selected folder, read by the Paseo watchdog and recovery path; it is not a project key
 
 # The PR desk contract. The project block owns the invocation, the pinned
 # policy file name and the data-root-relative history root; the host owns an
@@ -124,8 +147,43 @@ paths:
       - host.paths.*
       - host.binaries.*
       - host.project_cli.*
+      - host.checkouts.root.path
+      - host.checkouts.modules.<Task.module>.path
   conventions:
-    project.worktree_layout: a pattern with <key-slug> and <module>, not a resolved path
+    project.worktree_layout: an exact relative pattern with a literal managed root and exactly one whole <key-slug> and <module> segment; no unknown placeholders, absolute paths or traversal; not a resolved path
+    project.consultation_layout: optional relative pattern under the literal managed-root prefix of worktree_layout; exactly one whole <key-slug> and <node> segment; no module substitution, unknown or repeated placeholders, absolute paths or traversal
+
+consultation_layout_contract:
+  presence: optional for empty/direct-only startup; omission supplies no placement policy
+  key_slug: confirmed canonical epic tracker key in lowercase
+  node: canonical durable TopologyNodeId owned by the epic and project
+  root: durable Project.root_path plus the literal managed-root prefix of pinned project.worktree_layout
+  branch: existing confirmed epic-key and node derivation under selected project.branch grammar
+  source: existing host.checkouts.root; no separate consultation source selector
+  activation: exact layout, managed-root pattern, base branch and branch grammar are derived into the existing immutable bundle manifest; edits or unactivated publications never replace the activated policy
+  placement: freeze source, branch, destination and config identity in the existing consultation intent before Git; prove root, common directory, ownership, containment and readback
+  legacy: resume only exact durable bindings and pins; directory existence alone never authorizes adoption or relocation
+
+# Host checkout sources constrain Git input identity, never publication authority.
+task_checkout_sources:
+  source: host.yml
+  key: checkouts
+  presence: optional for empty/direct-only startup; omission disables managed task source selection without fallback
+  required_fields: [root, modules]
+  root: explicit source whose canonical checkout root equals durable Project.root_path
+  modules: exact canonical Task.module keys; no wildcard, basename, prefix or resource-root mapping; empty mapping is valid
+  record:
+    required_fields: [repository, path, base_ref]
+    repository: exact validated project.forge.repositories member; grants no publication permission
+    path: absolute canonical existing working-checkout root; parent Git discovery is refused
+    base_ref: explicit refs/heads/<project.forge.base_branch> or refs/remotes/<configured-remote>/<project.forge.base_branch>; resolve exact ref to a direct commit
+  selection: exact module record wins; otherwise root only for a normal tracked place at the pinned base with no gitlink, symlink or nested repository boundary; missing or inconclusive places need an exact record
+  root_only: root source plus the existing explicitly declared durable task worktree; no invented module or destination
+  destination: project.worktree_layout renders full durable Task.module and confirmed tracker key; existing destinations prove exact root, same Git common directory, confirmed branch and task ownership
+  snapshot: derive an undeclared module claim only after durable tracker confirmation; freeze the first claim and source record, canonical common directory, exact base ref and commit atomically before Git; retries preserve the snapshot and confirmed bindings only verify readback
+  changes: host input is bootstrap-bound; later edits cannot change existing placements; guarded correction freezes the replacement source atomically with its exact claim
+  remote_task_branch: no implicit remote fallback; explicit input required
+  consultation: uses the declared root source under consultation_layout_contract; never fabricates Task.module
 
 # The fleet/host join. The fleet owns canonical model/vendor/effort policy; the
 # host owns the working provider/harness/account route. The logical slot is the
@@ -178,3 +236,37 @@ route_snapshot:
     - canonical_effort
     - canonical_vendor
     - resolved_at
+
+# Tracker documents are authoring candidates; explicit Admin installation
+# publishes their immutable revisions into the selected realm/project.
+tracker_specs:
+  manifest: project.tracker.spec
+  required: [schema_version, kind, project_key, specs]
+  schema_version: 1
+  kind: jira
+  specs:
+    entry_required: [kind, path]
+    kind_values: [ticket_fields, external_workflow]
+    path: folder-relative existing YAML file, contained after symlink resolution
+  constraints:
+    - project_key equals project.key
+    - exactly one declared external project across the selected specs
+    - duplicate type/connector/external-project/issue-type/version selectors refuse
+    - loading installs nothing; omission or an empty list has no bundled fallback
+    - installation binds workflow and matching field hashes in one Admin receipt
+    - installed immutable bytes govern until explicitly installed policy changes
+
+# The selected pack is authoring; existing publication/apply paths remain the writer.
+team_pack:
+  manifest: project.team_pack
+  schema_version: 1
+  required: [schema_version, profile_pack, operational_domain, committee_presets]
+  extra_keys: refused
+  references: contained existing YAML files relative to the selected folder root
+  validation: existing typed profile/team/domain/preset schemas plus logical-role delivery correspondence
+  read: exact source hashes cached at startup; no hot-read or installation
+  absent: empty/direct-only daemon startup may omit the pack; no compiled profile/preset fallback
+  profiles: selected candidates and explicitly registered packs; stored revisions and run pins govern execution
+  selected_team_authority: registered input; never compiled-seed revision reconciliation
+  committees: explicit existing preview/apply; reading a catalog or restarting publishes nothing
+  domain: candidate validation here; runtime authority requires resolved frozen Core Team purposes

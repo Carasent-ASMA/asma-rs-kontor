@@ -16,6 +16,11 @@
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
+pub(crate) mod historical_runtime;
+pub(crate) mod legacy_epic;
+#[path = "../../../kontor-jira/tests/support/catalog.rs"]
+pub(super) mod tracker_fixtures;
+
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -172,6 +177,8 @@ fn install_migrated_database(directory: &Path) {
 
 /// One started Realm, its router and the runtime behind it.
 pub(crate) struct World {
+    /// Explicit pre-domain graph construction for historical migration tests.
+    pub(crate) historical_epics: bool,
     /// Kept for its `Drop`: the state root outlives every request in a test.
     pub(crate) directory: TempDir,
     pub(crate) daemon: Daemon,
@@ -228,9 +235,16 @@ struct WorldComposition {
     created_realm: bool,
     /// A test-owned `attention.yml` written before the daemon starts.
     attention: Option<String>,
+    native_consultations: bool,
+    native_route_policy: Option<String>,
+    native_role_catalog: Option<kontor_core::spec::RoleCatalogRevision>,
 }
 
 impl World {
+    pub(crate) fn with_historical_epics(mut self) -> Self {
+        self.historical_epics = true;
+        self
+    }
     /// Trusted synthetic startup composition through the ordinary client seam.
     pub(crate) async fn open_with_memory_cognee(client: kontor_memory_cognee::Client) -> Self {
         Self::compose_with_connector(
@@ -290,26 +304,24 @@ impl World {
 
     /// Start an empty Realm with the test-owned runtime-refusal quota signals.
     ///
-    /// The fixture names neutral account aliases, while the compiled route
-    /// catalog the test packs route through names the Codex logins `codex-work`
-    /// and `codex-personal`. Only the two Codex `provider:` lines are mapped
-    /// back; every marker, reset prefix and zone stays the fixture bytes.
+    /// The test packs and signal document use the same synthetic account ids;
+    /// markers, reset prefixes and zones remain the exact fixture bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
         let document = Self::catalogued_quota_signal_document();
         Self::open_empty_with_quota_signal_document(&document).await
     }
 
     fn catalogued_quota_signal_document() -> String {
-        let mut document =
+        let document =
             include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
-        for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
-            let line = format!("    provider: {shipped}\n");
+        for alias in ["codex-b", "codex-a"] {
             assert_eq!(
-                document.matches(&line).count(),
+                document
+                    .matches(&format!("    provider: {alias}\n"))
+                    .count(),
                 1,
-                "the fixture declares {shipped} once"
+                "the fixture declares {alias} once"
             );
-            document = document.replace(&line, &format!("    provider: {catalogued}\n"));
         }
         document
     }
@@ -493,6 +505,85 @@ impl World {
         Self::compose_with(every_capability(), true, false, true, DEFAULT_CAPACITY).await
     }
 
+    /// Explicit selected-folder source/layout for new consultation effects.
+    pub(crate) async fn open_native_consultations() -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            true,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                native_consultations: true,
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn open_native_consultations_with_routes(policy: &str) -> Self {
+        Self::open_native_consultations_with_catalog(policy, None).await
+    }
+
+    pub(crate) async fn open_native_consultations_with_catalog(
+        policy: &str,
+        catalog: Option<&kontor_core::spec::RoleCatalogRevision>,
+    ) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            true,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                native_consultations: true,
+                native_route_policy: Some(policy.to_owned()),
+                native_role_catalog: catalog.cloned(),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Restart only this disposable test Realm, retaining the supported runtime transport.
+    pub(crate) async fn restart_native_consultations(self) -> Self {
+        let Self {
+            historical_epics,
+            directory,
+            daemon,
+            router,
+            fake,
+            project,
+            task,
+            team_run,
+        } = self;
+        drop(router);
+        drop(daemon);
+        let registry = RuntimeRegistry::new()
+            .with(fake_family(), Arc::clone(&fake) as Arc<dyn RuntimeAdapter>);
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path())
+                .with_config_dir(directory.path().join("selected config with spaces"))
+                .with_port(0)
+                .with_derived_read_deadline_seconds(1),
+            registry,
+        )
+        .expect("disposable selected Realm restarts");
+        let router = daemon.router();
+        let world = Self {
+            historical_epics,
+            directory,
+            daemon,
+            router,
+            fake,
+            project,
+            task,
+            team_run,
+        };
+        world.daemon.reconcile().await;
+        world
+    }
+
     /// The same Realm, admitting work under ceilings the operator configured.
     ///
     /// The only way to observe that the ceilings are *configuration* and not a
@@ -632,6 +723,16 @@ impl World {
             // proves an unanswerable session is refused *by the deadline* has
             // to wait it out, and the property is identical at one second.
             .with_derived_read_deadline_seconds(1);
+        if composition.native_consultations {
+            config = config.with_config_dir(native_consultation_config(
+                directory.path(),
+                composition.native_route_policy.as_deref(),
+                composition.native_role_catalog.as_ref(),
+            ));
+        } else {
+            config =
+                config.with_connector_specs(tracker_fixtures::catalog().expect("test catalog"));
+        }
         if let Some(connectors) = composition.jira_connectors {
             config = config.with_jira_connectors(connectors);
         }
@@ -750,6 +851,7 @@ impl World {
                 store
                     .set_project_team_definition_default(
                         &kontor_core::repository::ProjectTeamDefinitionDefault {
+                            operational_domain_bundle_hash: None,
                             project_id: project,
                             expected: None,
                             definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
@@ -758,6 +860,7 @@ impl World {
                             .expect("a snapshot"),
                             selected_at: at("2026-08-10T09:00:00Z"),
                         },
+                        None,
                     )
                     .expect("the world selects its own naming authority");
 
@@ -789,6 +892,7 @@ impl World {
         }
 
         Self {
+            historical_epics: false,
             directory,
             daemon,
             router,
@@ -1377,3 +1481,308 @@ impl Answer {
         frames
     }
 }
+
+/// Explicit fixture authority for project selection. Removing this temporary
+/// activation afterwards also exercises that a durable selection outlives it.
+/// No business aggregate is seeded by this authoring/publication helper.
+pub(crate) struct DomainSelectionFixture {
+    activation: std::path::PathBuf,
+    previous: Option<Vec<u8>>,
+}
+impl DomainSelectionFixture {
+    pub(crate) fn activate(world: &World, project: ProjectId) -> Self {
+        let activation = world
+            .directory
+            .path()
+            .join(kontor_fleet_activation::FLEET_ACTIVATION_FILE);
+        let previous = std::fs::read(&activation).ok();
+        let bundle = Self::candidate(world, project);
+        let source = kontor_daemon::fleet::FleetSource::at(world.directory.path());
+        let published = source.publish_bundle(&bundle).expect("fixture publication");
+        let standing = kontor_fleet_activation::read_activation(world.directory.path()).ok();
+        source
+            .activate_bundle(
+                &published.bundle_hash,
+                &kontor_daemon::fleet::ActivationFence {
+                    policy_hash: standing.as_ref().map(|r| r.policy_hash.clone()),
+                    source_bundle_hash: standing.and_then(|r| r.source_bundle_hash),
+                },
+            )
+            .expect("fixture explicit activation");
+        Self {
+            activation,
+            previous,
+        }
+    }
+    /// Explicit test installation: publish/activate exact bytes, then select and
+    /// publish the roster. It creates no business graph and retains old epic pins.
+    pub(crate) fn bind(world: &World, project: ProjectId) {
+        use kontor_core::repository::{ProjectTeamDefinitionDefault, StoredCoreTeamRevision};
+        let domain = kontor_profiles::bundled_operational_domain().unwrap();
+        world.daemon.state().with_store(|store| {
+            for topology in &domain.topology_specs {
+                if store
+                    .get_topology_spec(project, topology.spec_id, topology.version)
+                    .unwrap()
+                    .is_none()
+                {
+                    store
+                        .publish_topology_spec(
+                            project,
+                            topology,
+                            &kontor_core::spec::Shareability::default_for(
+                                kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+                            )
+                            .unwrap(),
+                            kontor_api::now(),
+                        )
+                        .unwrap();
+                }
+            }
+            for definition in &domain.team_definitions {
+                if store
+                    .get_team_definition(project, definition.definition_id, definition.version)
+                    .unwrap()
+                    .is_none()
+                {
+                    store
+                        .publish_team_definition(project, definition, kontor_api::now())
+                        .unwrap();
+                }
+            }
+            if store
+                .get_project_team_definition_default(project)
+                .unwrap()
+                .is_none()
+            {
+                store
+                    .set_project_team_definition_default(
+                        &ProjectTeamDefinitionDefault {
+                            project_id: project,
+                            expected: None,
+                            definition: kontor_core::spec::TeamDefinitionSnapshot::from_revision(
+                                &domain.team_definitions[0],
+                            )
+                            .unwrap(),
+                            operational_domain_bundle_hash: None,
+                            selected_at: kontor_api::now(),
+                        },
+                        None,
+                    )
+                    .unwrap();
+            }
+        });
+        let bundle = Self::candidate(world, project);
+        let _activation = Self::activate(world, project);
+        let hash = kontor_fleet_activation::read_activation(world.directory.path())
+            .unwrap()
+            .source_bundle_hash
+            .unwrap();
+        let domain: kontor_profiles::OperationalDomainPack =
+            serde_yaml_ng::from_str(bundle.operational_domain.as_ref().unwrap()).unwrap();
+        world.daemon.state().with_store(|store| {
+            if store.get_current_core_team(project).unwrap().is_none() {
+                store
+                    .publish_core_team_revision(
+                        &StoredCoreTeamRevision {
+                            project_id: project,
+                            version: bundle.revision.version,
+                            catalog_hash: bundle.revision.catalog_hash.clone(),
+                            seats: serde_json::to_value(&bundle.revision.seats).unwrap(),
+                            published_at: kontor_api::now(),
+                        },
+                        &domain.role_catalogs[0],
+                    )
+                    .unwrap();
+            }
+            let held = store
+                .get_project_team_definition_default(project)
+                .unwrap()
+                .unwrap();
+            if held.operational_domain_bundle_hash.as_ref() != Some(&hash) {
+                store
+                    .set_project_team_definition_default(
+                        &ProjectTeamDefinitionDefault {
+                            project_id: project,
+                            expected: Some(held.definition.clone()),
+                            definition: held.definition,
+                            operational_domain_bundle_hash: Some(hash),
+                            selected_at: kontor_api::now(),
+                        },
+                        held.operational_domain_bundle_hash.as_ref(),
+                    )
+                    .unwrap();
+            }
+        });
+    }
+    pub(crate) fn candidate(
+        world: &World,
+        project: ProjectId,
+    ) -> kontor_daemon::orchestration::ResolvedBundle {
+        use kontor_core::id::ContentHash;
+        let mut domain = kontor_profiles::bundled_operational_domain().expect("fixture domain");
+        world.daemon.state().with_store(|store| {
+            if let Some(roster) = store.get_current_core_team(project).unwrap() {
+                let seats: Vec<kontor_teams::CoreTeamSeat> =
+                    serde_json::from_value(roster.seats).unwrap();
+                if let Some(seat) = seats.first() {
+                    domain.role_catalogs = vec![
+                        store
+                            .get_role_catalog(seat.role.catalog_id, seat.role.catalog_revision)
+                            .unwrap()
+                            .unwrap(),
+                    ];
+                }
+            }
+            domain.team_definitions = store
+                .list_team_definitions(project)
+                .expect("published definitions");
+            domain.topology_specs = store
+                .list_topology_specs(project)
+                .expect("published topologies");
+        });
+        let catalog = &domain.role_catalogs[0];
+        domain.delivery.role_bindings.retain(|binding| {
+            catalog
+                .role(&binding.role_code)
+                .is_some_and(|role| role.lifecycle == kontor_core::spec::CodeLifecycle::Current)
+        });
+        domain.role_prompts.retain(|prompt| {
+            catalog
+                .role(&prompt.role_code)
+                .is_some_and(|role| role.lifecycle == kontor_core::spec::CodeLifecycle::Current)
+        });
+        domain
+            .validate()
+            .expect("fixture domain agrees with its published revisions");
+        let catalog = &domain.role_catalogs[0];
+        let core_team = kontor_daemon::orchestration::propose_core_team(catalog, &domain)
+            .expect("explicit fixture roster");
+        let selected = world
+            .directory
+            .path()
+            .join("selected config with spaces/orchestration/orchestration.yml");
+        let orchestration = if selected.exists() {
+            std::fs::read_to_string(selected).unwrap()
+        } else {
+            kontor_daemon::orchestration::propose_orchestration().unwrap()
+        };
+        let fleet = include_str!("../../../../config/examples/orchestration/fleet.yml");
+        let mut bundle = kontor_daemon::orchestration::resolve_bundle(
+            &kontor_daemon::orchestration::BundleSources {
+                orchestration: &orchestration,
+                fleet,
+                core_team: &core_team,
+            },
+            catalog,
+            &domain,
+        )
+        .expect("fixture bundle resolves");
+        let yaml = serde_yaml_ng::to_string(&domain).unwrap();
+        let descriptor = kontor_fleet_activation::OperationalDomainPin {
+            source: "packs/test-domain.yml".to_owned(),
+            source_hash: ContentHash::of(yaml.as_bytes()),
+        };
+        bundle
+            .manifest
+            .sources
+            .insert(descriptor.source.clone(), descriptor.source_hash.clone());
+        bundle.manifest.operational_domain = Some(descriptor);
+        bundle.operational_domain = Some(yaml);
+        bundle
+    }
+}
+impl Drop for DomainSelectionFixture {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::fs::write(&self.activation, previous)
+                .expect("restore prior disposable activation");
+        } else {
+            std::fs::remove_file(&self.activation).expect("remove temporary fixture activation");
+        }
+    }
+}
+
+/// Authored test inputs and a real source checkout, all under one disposable owner.
+fn native_consultation_config(
+    root: &Path,
+    route_policy: Option<&str>,
+    catalog: Option<&kontor_core::spec::RoleCatalogRevision>,
+) -> std::path::PathBuf {
+    let checkout = native_checkout_fixture::repository(&root.join("checkout"));
+    let folder = native_config_fixture::write_config_folder(root);
+    if let Some(catalog) = catalog {
+        let path = folder.join("packs/operational-domain.yml");
+        let mut domain: serde_json::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        domain["role_catalogs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(catalog).unwrap());
+        std::fs::write(path, serde_yaml_ng::to_string(&domain).unwrap()).unwrap();
+    }
+    let entry = folder.join("orchestration/orchestration.yml");
+    let mut yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+    yaml["project"]["key"] = "ASMA".into();
+    yaml["project"]["tracker"]["project_key"] = "ASMA".into();
+    yaml["project"]["forge"]["base_branch"] = native_checkout_fixture::BASE.into();
+    yaml["project"]["worktree_layout"] = "managed/trees/<key-slug>/<module>".into();
+    std::fs::write(entry, serde_yaml_ng::to_string(&yaml).unwrap()).unwrap();
+    let tracker = folder.join("tracker/jira.yml");
+    let mut yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(&tracker).unwrap()).unwrap();
+    yaml["project_key"] = "ASMA".into();
+    std::fs::write(tracker, serde_yaml_ng::to_string(&yaml).unwrap()).unwrap();
+    std::fs::write(folder.join("host.yml"),serde_yaml_ng::to_string(&serde_json::json!({"schema_version":1,"runtime":{"planes":{"schema_version":5,"runtimes":[]}},"checkouts":{"root":native_checkout_fixture::source(&checkout),"modules":{}}})).unwrap()).unwrap();
+    if let Some(policy) = route_policy {
+        // This same-provider fixture has no cross-provider qualification; the
+        // copied example record names a different synthetic fleet model.
+        std::fs::remove_file(folder.join("orchestration/route-qualifications.yml")).unwrap();
+        let policy: serde_json::Value = serde_yaml_ng::from_str(policy).unwrap();
+        let mut pairs = std::collections::BTreeSet::new();
+        let matrix: Vec<_> = policy["domains"]
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(|domain| {
+                let provider = domain["provider"].as_str().unwrap();
+                pairs
+                    .insert(provider.to_owned())
+                    .then(|| serde_json::json!({"provider":provider,"harness":"paseo"}))
+            })
+            .collect();
+        let entry = folder.join("orchestration/orchestration.yml");
+        let mut source: serde_json::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        source["project"]["runtime"]["matrix"] = matrix.into();
+        std::fs::write(entry, serde_yaml_ng::to_string(&source).unwrap()).unwrap();
+        let path = folder.join("host.yml");
+        let mut host: serde_json::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut accounts = serde_json::Map::new();
+        let mut routes = serde_json::Map::new();
+        for (domain, definition) in policy["domains"].as_object().unwrap() {
+            routes.insert(domain.clone(), definition["accounts"].clone());
+            let serves: serde_json::Map<String, serde_json::Value> = policy["models"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, model)| model["domain"].as_str() == Some(domain.as_str()))
+                .map(|(symbolic, model)| (symbolic.clone(), model["id"].clone()))
+                .collect();
+            for slot in definition["accounts"].as_array().unwrap() {
+                let slot = slot.as_str().unwrap();
+                accounts.insert(slot.to_owned(), serde_json::json!({"provider":definition["provider"],"harness":"paseo","native_alias":format!("synthetic-{slot}"),"credential":"env:SYNTHETIC_REFERENCE","serves":serves}));
+            }
+        }
+        host["provider_accounts"] = accounts.into();
+        host["routes"] = routes.into();
+        std::fs::write(path, serde_yaml_ng::to_string(&host).unwrap()).unwrap();
+    }
+    folder
+}
+#[path = "../support/checkouts.rs"]
+mod native_checkout_fixture;
+#[path = "../support/config.rs"]
+pub(crate) mod native_config_fixture;

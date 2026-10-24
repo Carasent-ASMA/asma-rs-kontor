@@ -599,7 +599,10 @@ fn compose_paseo(
         fallback
             .validate()
             .map_err(|_| refuse("provider_fallbacks model route"))?;
-        if !crate::applications::model_route_is_catalogued(fallback, None) {
+        if !crate::applications::model_route_is_catalogued(
+            fallback,
+            crate::applications::CatalogAuthority::CompiledOnly,
+        ) {
             return Err(refuse("provider_fallbacks model route"));
         }
     }
@@ -897,7 +900,7 @@ mod tests {
 
     #[test]
     fn fable_upgrade_preserves_frozen_routes_and_accepts_the_current_release() {
-        for provider in ["claude", "claude-work", "claude-personal"] {
+        for provider in ["claude", "claude-b", "claude-a"] {
             for model in ["claude-fable-5", "claude-fable-5-1"] {
                 let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
                 setting.provider_fallbacks.insert(

@@ -40,11 +40,14 @@ fn deferred_refresh_accepts_exactly_admit_or_future_wait_shapes() {
     );
     assert_eq!(
         SuccessionDeferredRefresh {
-            successor_model_rung: Some(ModelRung {
-                provider: ProviderRef("anthropic".to_owned()),
-                model: ModelRef("claude-sonnet".to_owned()),
-                effort: None,
-            }),
+            successor_model_rung: Some(
+                ModelRung {
+                    provider: ProviderRef("anthropic".to_owned()),
+                    model: ModelRef("claude-sonnet".to_owned()),
+                    effort: None,
+                }
+                .into()
+            ),
             successor_account_profile_id: Some(AccountProfileId::generate()),
             deferred_until: None,
             ..base.clone()
@@ -100,10 +103,13 @@ fn request(deferred_until: Option<Timestamp>) -> NewSuccessionAttempt {
         quota_state_revision: AggregateRevision::INITIAL,
         quota_evidence_hash: ContentHash::of(b"quota evidence"),
         quota_provider: "openai".to_owned(),
-        successor_model_rung: deferred_until.is_none().then(|| ModelRung {
-            provider: ProviderRef("anthropic".to_owned()),
-            model: ModelRef("claude-sonnet".to_owned()),
-            effort: None,
+        successor_model_rung: deferred_until.is_none().then(|| {
+            ModelRung {
+                provider: ProviderRef("anthropic".to_owned()),
+                model: ModelRef("claude-sonnet".to_owned()),
+                effort: None,
+            }
+            .into()
         }),
         successor_account_profile_id: deferred_until.is_none().then(AccountProfileId::generate),
         idempotency_key: IdempotencyKey::parse("succession:one").expect("key"),

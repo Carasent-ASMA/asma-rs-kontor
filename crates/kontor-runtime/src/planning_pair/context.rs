@@ -101,7 +101,7 @@ pub fn frozen_member<'a>(
         .iter()
         .find(|member| member.slot == slot)
         .ok_or(ContextRefusal::SeatAbsentFromPlacement)?;
-    if member.route != seat.model_rung {
+    if member.route != seat.model_rung.canonical_rung() {
         return Err(ContextRefusal::RouteDiffers);
     }
     if seat.occupancy_generation == 0 {
@@ -185,7 +185,7 @@ impl FrozenMember<'_> {
             },
             topology_node_id: node.id,
             cwd: cwd.clone(),
-            route: self.seat.model_rung.clone(),
+            route: self.seat.model_rung.canonical_rung(),
             vendor: self.member.vendor.clone(),
             placement_hash: self.placement_hash.clone(),
             requested_fleet_provenance,

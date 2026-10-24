@@ -232,7 +232,7 @@ mod tests {
 
     fn route() -> CatalogRoute {
         CatalogRoute {
-            provider: "codex-personal".to_owned(),
+            provider: "codex-a".to_owned(),
             model: "gpt-5.6-sol".to_owned(),
             effort: Some("high".to_owned()),
         }

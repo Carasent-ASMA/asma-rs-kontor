@@ -87,6 +87,7 @@ fn every_admitted_delivery_seat_composes_the_worker_profile() {
         let rung = rung(provider, model);
         let labels = BTreeMap::new();
         let create = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            resolved_route: None,
             request_id: "req-delivery-profile",
             workspace_id: WORKSPACE_ID,
             canonical_cwd: CWD,
@@ -150,9 +151,22 @@ fn every_admitted_consultation_and_committee_seat_composes_the_consultation_prof
         ("cursor", "gpt-5.6-sol"),
     ] {
         let rung = rung(provider, model);
-        let provenance = kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
-            ContentHash::of(b"a fleet policy"),
-        );
+        let mut provenance =
+            kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+                ContentHash::of(b"a fleet policy"),
+            );
+        let family = match provider {
+            "cursor" => Some("cursor"),
+            "opencode" | "opencode-zai" => Some("opencode"),
+            _ => None,
+        };
+        if let Some(family) = family {
+            let policy = consultation_permission_policy(family, &rung);
+            provenance = kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+                policy.hash().clone(),
+            );
+            provenance.fleet_permissions = Some(policy.consultation_permissions());
+        }
         for (family, run) in [
             (
                 "advisor",
@@ -249,6 +263,7 @@ async fn frame_delivered_delivery_launches_compose_the_worker_profile() {
         let binding_id = request.binding_id().to_string();
         let agent_run_id = request.agent_run_id().to_string();
         let intent = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            resolved_route: None,
             request_id: "req-frame-intent",
             workspace_id: WORKSPACE_ID,
             canonical_cwd: CWD,
