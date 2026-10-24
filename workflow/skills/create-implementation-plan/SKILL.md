@@ -261,6 +261,16 @@ shows it as a badge. Values (badge colour): `Completed` (bright green),
 `In progress` (yellow), `Planned` (blue), `Deprecated` (red), `On Hold`
 (orange).
 
+A plan whose status is `On Hold` carries a frontmatter `hold:` block with four
+non-empty fields: `reason`, `owner`, `lifts_when` and `review_by`, in the shape
+of the [plan template](../../templates/plan.md#8-holds). `reason` is one of the
+template's closed list. `review_by` is an ISO date no earlier than today and at
+most 30 days ahead; a hold past its review date is expired, not quietly still
+valid, and a date more than 30 days ahead is refused. The pack's `check`
+command enforces the block; run it before treating an `On Hold` plan as
+current. The block records the same four fields the Paseo-direct TPM pause
+rule requires, so a pause and a plan hold cannot disagree.
+
 <a id="mutation-validation-a-plan-is-not-tested-until-the-tests-are-tested"></a>
 ## Mutation validation (a plan is not "tested" until the tests are tested)
 
