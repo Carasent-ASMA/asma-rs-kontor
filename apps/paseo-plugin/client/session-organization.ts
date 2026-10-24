@@ -549,6 +549,9 @@ export function workstreamRank(label: string): number {
   if (normalized === "qa") {
     return 0;
   }
+  if (normalized === "tickets") {
+    return 0;
+  }
   if (normalized === OTHER_WORKSTREAM.toLocaleLowerCase()) {
     return 100;
   }
@@ -1264,8 +1267,8 @@ export function inEpicScope(
 }
 
 /**
- * Desk work is a desk workstream (PR Review, Adam, QA), a native desk label without a workstream
- * mapping, or a native desk project's session that nothing assigns a workstream.
+ * Desk work is a desk workstream (PR Review, Adam, QA, Tickets), a native desk label without a
+ * workstream mapping, or a native desk project's session that nothing assigns a workstream.
  */
 export function isDeskWork(
   entry: DirectoryEntry,
