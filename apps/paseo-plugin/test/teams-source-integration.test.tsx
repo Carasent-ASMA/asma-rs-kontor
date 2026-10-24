@@ -124,7 +124,7 @@ describe("A-owned Teams source integration", () => {
   });
   it("preserves template versions, unresolved identities and distinct native observations", () => {
     view = openAll(); const text = visible(page());
-    expect(text).toContain("74 binding identities remain unresolved");
+    expect(text).toContain("76 binding identities remain unresolved");
     expect(text).toContain("Binding does not pin a template version"); expect(text).toContain("slot alone is insufficient");
     expect(text).toContain(" v1"); expect(text).toContain(" v2");
     expect(text).toContain("Native observations: 1 sessions · observed 2026-10-18T10:00:00Z");
@@ -165,13 +165,13 @@ describe("A-owned Teams source integration", () => {
     const unavailable = visible(page({ sources: [legacy], snapshots: {}, reads: { "legacy-json": { ...summary, status: "unavailable" } } }));
     expect(unavailable).toContain("unavailable · working copy"); expect(unavailable).not.toContain("Reading…");
   });
-  it.each([["authoring", 38], ["operator", 36]] as const)("preserves actual hashed 38/36 binding counts with a bounded expandable role view (%s)", (sourceId, expectedCount) => {
-    expect(snapshots.authoring!.sha256).toBe("8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec");
+  it.each([["authoring", 40], ["operator", 36]] as const)("preserves actual hashed 40/36 binding counts with a bounded expandable role view (%s)", (sourceId, expectedCount) => {
+    expect(snapshots.authoring!.sha256).toBe("fa82d7a49d12a01a30f0a3b939d605aecf04d784fb80e53b88fcc99ff1f211f7");
     expect(snapshots.operator!.sha256).toBe("5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487");
     expect(visible(page())).not.toContain("Configured bindings");
     view = { ...DEFAULT_TEAMS_VIEW, configured: true };
     const collapsed = visible(page());
-    expect(collapsed).toContain("Configured bindings (38)"); expect(collapsed).toContain("Configured bindings (36)");
+    expect(collapsed).toContain("Configured bindings (40)"); expect(collapsed).toContain("Configured bindings (36)");
     expect(collapsed).not.toContain("declared chainName:");
     view = openAll();
     const snapshot = snapshots[sourceId]!;
@@ -205,7 +205,7 @@ describe("A-owned Teams source integration", () => {
     expect(text).toContain("supported efforts low, medium, high, xhigh, max, ultracode");
     expect(text).toContain("calibrated false"); expect(text).toContain("/models/fable-5.1"); expect(text).toContain("/domains/claude");
     expect(text).toContain("Policy eligibility is not evaluated"); expect(text).toContain("not availability or eligibility");
-    expect(text).toContain("74 binding identities remain unresolved");
+    expect(text).toContain("76 binding identities remain unresolved");
   });
   it("retains an explicit declared mapping when its chain definition is unavailable", () => {
     const snapshot = snapshots.authoring!;

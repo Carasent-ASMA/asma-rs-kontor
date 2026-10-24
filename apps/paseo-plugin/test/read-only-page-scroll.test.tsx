@@ -14,7 +14,7 @@ import { DEFAULT_TEAMS_VIEW, type TeamsView } from "../client/teams-source-page"
 // The disclosure state lives in the saved Teams view; configured sources start open here.
 const view = () => model.view as TeamsView;
 const bindingsOpen = () => view().sources.authoring?.bindings ?? false;
-const catalog = sourceCatalog(JSON.stringify([{ id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec" }]));
+const catalog = sourceCatalog(JSON.stringify([{ id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "fa82d7a49d12a01a30f0a3b939d605aecf04d784fb80e53b88fcc99ff1f211f7" }]));
 let snapshot: TeamsSourceSnapshot;
 type Props = Parameters<typeof ReadOnlyPage>[0];
 type Element = ReactElement<Record<string, unknown>>;
@@ -38,7 +38,7 @@ function mount(hostId: string) {
     drag: () => call("onScrollBeginDrag"),
     toggle: () => {
       // Re-render for the current view; the outer scroller keeps its first instance.
-      const action = expand(ReadOnlyPage({ ...props, teamsView: view() })).find((element) => element.props.accessibilityLabel === "Configured bindings (38)")!;
+      const action = expand(ReadOnlyPage({ ...props, teamsView: view() })).find((element) => element.props.accessibilityLabel === "Configured bindings (40)")!;
       expect(action).toBeDefined(); (action.props.onPress as () => void)();
     },
   };

@@ -15,7 +15,7 @@ import { composeTeamsSourceView, readTeamsSource, teamsSourceSnapshotSchema,
 // runtime-policy fixture).
 const sources = [
   { id: "authoring", filename: "authoring-fleet.yml", format: "fleet-authoring",
-    hash: "8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec" },
+    hash: "fa82d7a49d12a01a30f0a3b939d605aecf04d784fb80e53b88fcc99ff1f211f7" },
   { id: "operator", filename: "operator-fleet.yml", format: "fleet-operator",
     hash: "5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487" },
   { id: "roster", filename: "core-team.yml", format: "core-roster",
@@ -72,7 +72,7 @@ describe("ASMA-8550 actual Teams/chains source adapter", () => {
     const operator = fleet(snapshots[1]!);
     expect(snapshots[0]?.configurationState).toBe("unactivated-authoring");
     expect(snapshots[1]?.configurationState).toBe("operator-file-snapshot");
-    expect([authoring.schemaVersion, authoring.chains.length, authoring.models.length, authoring.bindings.length]).toEqual([2, 18, 20, 38]);
+    expect([authoring.schemaVersion, authoring.chains.length, authoring.models.length, authoring.bindings.length]).toEqual([2, 18, 20, 40]);
     expect([operator.schemaVersion, operator.chains.length, operator.models.length, operator.bindings.length]).toEqual([1, 18, 20, 36]);
     expect(authoring.domains.find((domain) => domain.alias === "deepseek")?.accounts).toEqual(["opencode-deepseek"]);
     expect(operator.domains.find((domain) => domain.alias === "deepseek")?.accounts).toEqual(["opencode"]);
@@ -125,7 +125,7 @@ describe("ASMA-8550 actual Teams/chains source adapter", () => {
     const view = composeTeamsSourceView(snapshots, observed);
     expect(view.observedSessions).toBe(observed);
     expect(view.observedSessions[0]?.model).toBe("user-selected-model");
-    expect(view.metadata).toHaveLength(74);
+    expect(view.metadata).toHaveLength(76);
     const architect = view.metadata.find((entry) => entry.sourceId === "authoring" && entry.bindingReference.endsWith("000001/architect"))!;
     expect(architect.state).toBe("unresolved");
     expect(architect.reason).toContain("does not pin a template version");
