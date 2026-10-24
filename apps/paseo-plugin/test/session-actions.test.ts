@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureRecentStorage, readRecent, recentRows } from "../client/recent-sessions";
-import { openCreatedSession, openRecoveredSession, openSessionById, type SessionNavigation } from "../client/session-actions";
+import { archivedByRead, openCreatedSession, openRecoveredSession, openSessionById, type SessionNavigation } from "../client/session-actions";
 import type { CreateOutcome } from "../shared/session-create";
 import type { LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
@@ -170,9 +170,26 @@ describe("openRecoveredSession", () => {
   const recovered = (availability: Partial<NonNullable<LifecycleRow["availability"]>> | null = {}, id = "archived-exact-id") => ({ id, title: "SWE • DEMO-4 • Fixture", outcome: "archived", runtime: "unconfirmed",
     availability: availability && { agentId: id, state: "readable", archivedAt: "2026-10-24T08:00:00.000Z", reason: "Fixture read.", checkedAt: "2026-10-24T08:01:00.000Z", revision: "r1", ...availability } }) as LifecycleRow;
 
-  it("opens the archive's own exact-ID read after its row left the directory", () => {
+  it("opens an uncertain archive whose exact-ID read does not show it archived, after its row left the directory", () => {
     const nav = navigation();
-    expect(openRecoveredSession({ row: recovered(), id: "archived-exact-id", serverId: "host-a", navigation: nav })).toEqual({ ok: true });
+    expect(openRecoveredSession({ row: recovered({ archivedAt: null }), id: "archived-exact-id", serverId: "host-a", navigation: nav })).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "archived-exact-id", serverId: "host-a" });
+  });
+
+  it("AR-01 never opens a session its exact-ID read shows archived: Paseo would ask to restore its workspace", () => {
+    const nav = navigation();
+    expect(openRecoveredSession({ row: recovered(), id: "archived-exact-id", serverId: "host-a", navigation: nav }))
+      .toEqual({ ok: false, reason: "archived", message: expect.stringContaining("Refresh status settles its archive") });
+    expect(nav.openAgent).not.toHaveBeenCalled(); expect(readRecent("host-a").record.visits).toEqual([]);
+    expect(archivedByRead(recovered(), "archived-exact-id")).toBe(true);
+    expect(archivedByRead(recovered({ archivedAt: null }), "archived-exact-id")).toBe(false);
+    expect(archivedByRead(recovered({ agentId: "other-id" }), "archived-exact-id")).toBe(false);
+    expect(archivedByRead(recovered({ state: "unknown" }), "archived-exact-id")).toBe(false);
+  });
+
+  it("AR-01 leaves Archived-list opening by exact ID unchanged", () => {
+    const nav = navigation(), entry = sessionEntry("archived-exact-id", { archivedAt: "2026-10-24T08:00:00.000Z" });
+    expect(openSessionById({ entries: [entry], id: entry.id, serverId: "host-a", navigation: nav })).toEqual({ ok: true });
     expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "archived-exact-id", serverId: "host-a" });
   });
 

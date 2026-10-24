@@ -66,6 +66,23 @@ export function NoticeTray({ colors, compact, disabled = false, onHide, hideRef,
   </View>;
 }
 
+/**
+ * A notice's own action as a toolbar icon beside its text, never a row of its own: a 44 pt target, its name on hover,
+ * focus and a deliberate long press, and a release after that help never runs it.
+ */
+export function NoticeAction({ icon, accessibilityLabel, help, colors, onPress, disabled = false, expanded, ref }: {
+  icon: string; accessibilityLabel: string; help: string; colors: Colors; onPress: () => void; disabled?: boolean; expanded?: boolean; ref?: Ref<View>;
+}) {
+  const hint = useActionHelp(help, ref);
+  return <Pressable {...hint.bindings} accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityHint={help}
+    accessibilityState={{ disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} aria-disabled={disabled} disabled={disabled}
+    onPress={() => { hint.dismiss(); onPress(); }}
+    style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 6,
+      borderWidth: 1, borderColor: focused ? colors.foreground : colors.border, backgroundColor: pressed || expanded ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={icon} size={18} color={colors.foreground} /></View>
+  </Pressable>;
+}
+
 /** Icon and count for the hidden tray; its name and deliberate help retain every notice summary. */
 export function NoticesButton({ notices, colors, onPress, ref }: { notices: readonly Notice[]; colors: Colors; compact: boolean; onPress: () => void; ref?: Ref<View> }) {
   const ink = notices.some((notice) => notice.tone === "danger") ? colors.statusDanger : colors.statusWarning;

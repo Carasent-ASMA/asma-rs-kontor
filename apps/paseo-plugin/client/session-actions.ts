@@ -10,7 +10,7 @@ export type OpenSessionResult =
   | { readonly ok: true }
   | {
       readonly ok: false;
-      readonly reason: "missing" | "navigation" | "failed";
+      readonly reason: "missing" | "archived" | "navigation" | "failed";
       readonly message: string;
     };
 
@@ -62,7 +62,18 @@ export function openRecoveredSession(input: {
   if (input.row?.id !== input.id || input.row.availability?.agentId !== input.id || input.row.availability.state !== "readable") {
     return { ok: false, reason: "missing", message: "The host has not confirmed this exact session ID. Refresh status before opening it." };
   }
+  if (archivedByRead(input.row, input.id)) {
+    return { ok: false, reason: "archived", message: "This session is archived. Refresh status settles its archive; opening it would ask Paseo to restore its workspace." };
+  }
   return openNativeSession(input);
+}
+
+/**
+ * The archive's own exact-ID read shows it in the archive. Recovery never opens it: Paseo opens an archived session
+ * through its workspace restore, which settling an archive does not need. The Archived list still opens it.
+ */
+export function archivedByRead(row: LifecycleRow | null, id: string): boolean {
+  return row?.id === id && row.availability?.agentId === id && row.availability.state === "readable" && !!row.availability.archivedAt;
 }
 
 function openNativeSession(input: { readonly id: string; readonly serverId: string; readonly navigation: SessionNavigation | undefined }): OpenSessionResult {

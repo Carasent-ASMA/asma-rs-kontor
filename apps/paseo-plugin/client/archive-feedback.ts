@@ -28,7 +28,7 @@ export const RECOVERY_STATES: Readonly<Record<RecoveryState, { readonly label: s
   unknown: { label: "Archive result unknown", short: "archive result unknown",
     reason: "The archive request was sent, but the host has not confirmed whether the session was archived. Another archive request will not be sent while its outcome is uncertain." },
   unconfirmed: { label: "Archived · runtime stop not confirmed", short: "archived, runtime stop not confirmed",
-    reason: "The host reports it archived but does not report its runtime closed. Another archive request will not be sent while its outcome is uncertain." },
+    reason: "The host lists it in the archive but has not reported its runtime stopped, so it is not called stopped. Refresh status asks again; no archive request is sent again." },
   unavailable: { label: "Couldn't check", short: "couldn't check archive",
     reason: "The host could not be read, so this archive's state is not known. Refresh status when the host is available." },
 };

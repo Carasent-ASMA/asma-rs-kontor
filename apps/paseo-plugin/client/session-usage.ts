@@ -26,6 +26,15 @@ export function shortModel(model: string | null): string {
   return model;
 }
 
+/** A routed provider names its model as the text `["account","model"]`: the model element, or null for any other value. */
+export function routeModel(model: string | null): { readonly account: string; readonly model: string } | null {
+  if (!model?.startsWith("[")) return null;
+  try {
+    const route: unknown = JSON.parse(model);
+    return Array.isArray(route) && route.length === 2 && route.every((part) => typeof part === "string" && part.trim()) ? { account: route[0].trim(), model: route[1].trim() } : null;
+  } catch { return null; }
+}
+
 export function modelPresentation(entry: SessionUsageEntry) {
   const runtime = entry.telemetry?.runtimeInfo;
   const observed = text(runtime?.extra?.runtimeModel);
@@ -37,10 +46,11 @@ export function modelPresentation(entry: SessionUsageEntry) {
   else if (selection) source = "Runtime model selection";
   else if (configured) source = "Configured model";
   const qualifier = observed ? "reported" : "configured";
+  // The row names the route's model; `model` keeps the full route for Details and help.
+  const route = routeModel(model), short = shortModel(route?.model ?? model);
   return {
-    model, source, configured, selection,
-    short: shortModel(model),
-    label: model === null ? shortModel(model) : `${shortModel(model)} · ${qualifier}`,
+    model, source, configured, selection, route, short,
+    label: model === null ? short : `${short} · ${qualifier}`,
   };
 }
 
@@ -49,11 +59,18 @@ export function validTokenCount(value: unknown): value is number {
 }
 
 // Compact row units stay K/M across device locales; exact Details keep localized numbers.
-const compactTokens = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+// Hermes on iOS ignores Intl's compact notation (it printed 4,078), so the units are computed here exactly as
+// "en" compact with one decimal: half away from zero, and a value that rounds up to 1000 moves to the next unit.
+const UNITS = [[1e3, "K"], [1e6, "M"], [1e9, "B"], [1e12, "T"]] as const;
 const exactTokenNumber = new Intl.NumberFormat();
 
 export function formatTokens(value: number, _locale?: string): string {
-  return compactTokens.format(value);
+  if (value < 1_000) return String(value);
+  let unit = value >= 1e12 ? 3 : value >= 1e9 ? 2 : value >= 1e6 ? 1 : 0;
+  // An integer over size / 10 is exact at .5, so Math.round rounds half up like Intl.
+  const tenths = (index: number) => Math.round(value / (UNITS[index]![0] / 10)) / 10;
+  if (tenths(unit) >= 1_000 && unit < UNITS.length - 1) unit++;
+  return `${tenths(unit)}${UNITS[unit]![1]}`;
 }
 
 /** Format an exact report, preserving absent/invalid values and explicit zero. */
