@@ -795,6 +795,23 @@ describe("Kontor composer controls share one host directory", () => {
     expect(host.releases).toBe(1);
   });
 
+  it("leaves no consumable hand-off after cleanup even when removing a pill throws", async () => {
+    fakeHost("host-a", [agentPage("native-a", { workspaceId: "wks-a" })]);
+    const controls = fakeControls();
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const pill = controls.pillFor("native-a");
+    expect(pill).toBeDefined();
+    pill!.registration.remove.mockImplementation(() => {
+      throw new Error("remove boom");
+    });
+
+    const key = handOffOpen("host-a", { kind: "session", agentId: "native-a" });
+    expect(stop).toThrow("remove boom");
+    expect(takeHandOff("host-a", key)).toBeNull();
+  });
+
   it("publishes nothing from a late bootstrap walk after cleanup", async () => {
     const rows = [
       agentPage("agent-a", { workspaceId: "wks-a" }),

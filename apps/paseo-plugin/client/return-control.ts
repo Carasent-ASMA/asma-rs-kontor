@@ -124,9 +124,9 @@ export function contributeReturnControl(
 
   return () => {
     stopped = true;
+    // First, so a throwing removal cannot leave a request for a later screen to open.
+    withdrawHandOff();
     releaseDirectory();
     removeAll();
-    // A disposed plugin keeps no request for a later screen to open.
-    withdrawHandOff();
   };
 }
