@@ -5,6 +5,9 @@ import { Disclosure, type Colors } from "./page-controls";
 import { deskIcon } from "./desk-icon";
 import { SESSION_SHORTCUTS } from "./session-scope-chip";
 
+/** Desk glyph legend; legacy codes such as QSW are deliberately absent. */
+export const DESK_LEGEND = [['pr-review', 'PR Review'], ['adam', 'Adam'], ['qa', 'QA'], ['tickets', 'Tickets'], ['', 'Other desk']] as const;
+
 /** Static reference: the same icons and workspace definitions as the tree. */
 export function SessionsLegend({ colors, compact, open, onToggle, contextual = false }: {
   colors: Colors; compact: boolean; open: boolean; onToggle: (open: boolean) => void; contextual?: boolean;
@@ -36,7 +39,7 @@ export function SessionsLegend({ colors, compact, open, onToggle, contextual = f
       </View>
       <View style={section}>
         <Text accessibilityRole="header" style={heading}>Desk icons</Text>
-        {([['pr-review', 'PR Review'], ['adam', 'Adam'], ['qa', 'QA'], ['qsw', 'QSW · Quick Session Workspace'], ['', 'Other desk']] as const).map(([key, label]) => <View key={key} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+        {DESK_LEGEND.map(([key, label]) => <View key={key} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
           <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden style={{ paddingTop: 2 }}>
             <Icon name={deskIcon(key)} size={16} color={colors.foregroundMuted} />
           </View>

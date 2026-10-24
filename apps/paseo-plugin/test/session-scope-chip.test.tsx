@@ -10,8 +10,9 @@ vi.mock("../client/control-help", () => ({ useControlHelp: (text: string) => { h
 import { SESSION_SHORTCUTS, SessionScopeChip } from "../client/session-scope-chip";
 import { buildOrganizationTree, nativeDesk, matchesScope, flattenOrganizationTree, scopeKeepsGroup, filterOrganizationTree, aggregateState } from "../client/session-organization";
 import { deskIcon, organizationIcon } from "../client/desk-icon";
+import { DESK_LEGEND } from "../client/sessions-legend";
 import { sessionEntry } from "./session-fixtures";
-import { groupStateHelp, groupStateSummary, OrganizationRowView, StateBadge } from "../client/organization-row";
+import { groupStateHelp, groupStateSummary, OrganizationRowView, StateBadge, WORKSPACE_KINDS } from "../client/organization-row";
 
 type Element = ReactElement<Record<string, any>>;
 const walk = (node: unknown): Element[] => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(walk) : [node as Element, ...walk((node as Element).props.children)];
@@ -53,15 +54,27 @@ describe("scope icon controls", () => {
 
 describe("desk glyphs preserve native meaning", () => {
   it("gives known desks distinct SDK glyphs and unknown desks a stable fallback", () => {
-    expect(["pr-review", "Adam", "QA", "QSW"].map(deskIcon)).toEqual(["GitPullRequest", "Bot", "FlaskConical", "Zap"]);
+    expect(["pr-review", "Adam", "QA", "Tickets"].map(deskIcon)).toEqual(["GitPullRequest", "Bot", "FlaskConical", "Ticket"]);
+    expect(deskIcon("QSW")).toBe("Armchair");
     expect(deskIcon("future desk")).toBe("Armchair");
     expect(deskIcon("future desk")).toBe(deskIcon(""));
   });
 
-  it.each(["hierarchy", "placement"] as const)("keeps empty QSW and unknown desks under native IDs in %s", (grouping) => {
+  it("gives Tickets desk its own icon and scope shortcut while QSW appears in no legend or kind list", () => {
+    const tickets = SESSION_SHORTCUTS.find(({ id }) => id === "Tickets");
+    expect(tickets).toMatchObject({ label: "Tickets desk", caption: "Tickets", icon: "Ticket" });
+    expect(SESSION_SHORTCUTS.map(({ id }) => id)).not.toContain("QSW");
+    expect(WORKSPACE_KINDS.QSW).toBeUndefined();
+    expect(Object.keys(WORKSPACE_KINDS)).not.toContain("QSW");
+    expect(DESK_LEGEND.map(([key]) => key)).not.toContain("qsw");
+    expect(DESK_LEGEND).toContainEqual(["tickets", "Tickets"]);
+    expect(organizationIcon(buildOrganizationTree({ entries: [], projects: [{ id: "tickets", name: "DESK • TICKETS" }] })[0]!)).toBe("Ticket");
+  });
+
+  it.each(["hierarchy", "placement"] as const)("keeps empty legacy QSW and unknown desks under native IDs in %s", (grouping) => {
     const projects = [{ id: "qsw", name: "DESK • QSW" }, { id: "future", name: "DESK • FUTURE" }];
     const tree = buildOrganizationTree({ entries: [], projects, grouping });
-    expect(tree.map(organizationIcon)).toEqual(["Armchair", "Zap"]);
+    expect(tree.map(organizationIcon)).toEqual(["Armchair", "Armchair"]);
     expect(tree.find((group) => group.project?.id === "qsw")).toMatchObject({ detail: "0 workspaces", desk: true, totalCount: 0 });
     const filtered = filterOrganizationTree(tree, () => false, (group) => scopeKeepsGroup(group, "Desks"));
     expect(filtered).toHaveLength(2);
@@ -73,12 +86,51 @@ describe("desk glyphs preserve native meaning", () => {
   it("changes neither desk membership nor the outside-desks scope for conflicting associations", () => {
     const entries = [sessionEntry("adam", { projectName: "DESK • ADAM", labels: { desk: "pr-review" } }),
       sessionEntry("review", { labels: { desk: "pr-review" } }), sessionEntry("qsw", { projectName: "DESK • QSW" }),
+      sessionEntry("tickets", { projectName: "DESK • TICKETS" }),
       sessionEntry("stream", { labels: { workstream: "alpha" } }), sessionEntry("unknown")];
     expect(SESSION_SHORTCUTS.map(({ id }) => entries.filter((entry) => matchesScope(entry, id, {})).map((entry) => entry.id)))
-      .toEqual([["adam", "review", "qsw", "stream", "unknown"], ["review"], ["adam"], ["stream", "unknown"]]);
+      .toEqual([["adam", "review", "qsw", "tickets", "stream", "unknown"], ["review"], ["adam"], ["tickets"], ["stream", "unknown"]]);
   });
 });
 
+
+describe("lead workspaces first under every desk", () => {
+  const project = { id: "prj_tickets", name: "DESK • TICKETS" };
+  function deskWith(names: readonly string[], saved: readonly string[] = []) {
+    const workspaces = names.map((name, index) => ({ id: `w_${index}`, name, projectKey: project.id, projectName: project.name }));
+    const key = (name: string) => `project:${project.id}/workspace:id%3A${workspaces.find((workspace) => workspace.name === name)!.id}`;
+    return buildOrganizationTree({ entries: [], projects: [project], workspaces,
+      siblingOrder: saved.length ? { [`project:${project.id}`]: saved.map(key) } : {} })
+      .find((group) => group.project?.id === project.id)!;
+  }
+
+  it("puts LSA, TPM and ADHOC first in that order when saved order puts a TSW or RSW first, legacy ADAM included", () => {
+    const names = ["RSW • ASMA-1 • review", "TSW • ASMA-2 • task", "ADAM", "ADHOC", "TPM", "LSA"];
+    expect(deskWith(names, names).groups.map((group) => group.label))
+      .toEqual(["LSA", "TPM", "ADHOC", "RSW • ASMA-1 • review", "TSW • ASMA-2 • task", "ADAM"]);
+  });
+
+  it("keeps other workspaces in their saved order after the leads", () => {
+    const names = ["LSA", "TPM", "ADHOC", "TSW • ASMA-2 • task", "RSW • ASMA-1 • review", "ADAM"];
+    expect(deskWith(names, ["TSW • ASMA-2 • task", "ADAM", "RSW • ASMA-1 • review", "ADHOC", "LSA", "TPM"]).groups.map((group) => group.label))
+      .toEqual(["LSA", "TPM", "ADHOC", "TSW • ASMA-2 • task", "ADAM", "RSW • ASMA-1 • review"]);
+  });
+
+  it("shows no lead placeholders on a desk without lead workspaces", () => {
+    const desk = deskWith(["TSW • ASMA-2 • task", "RSW • ASMA-1 • review"], ["TSW • ASMA-2 • task", "RSW • ASMA-1 • review"]);
+    expect(desk.groups.map((group) => group.label)).toEqual(["TSW • ASMA-2 • task", "RSW • ASMA-1 • review"]);
+    const rows = flattenOrganizationTree([desk], {}, true);
+    expect(rows.flatMap((row) => row.kind === "group" ? [row.group.label] : [])).toEqual(["DESK • TICKETS", "TSW • ASMA-2 • task", "RSW • ASMA-1 • review"]);
+  });
+
+  it("keeps an empty Tickets desk workspace discoverable under the Tickets scope", () => {
+    const workspaces = [{ id: "w_tsw", name: "TSW • ASMA-2 • task", projectKey: project.id, projectName: project.name }];
+    const filtered = filterOrganizationTree(buildOrganizationTree({ entries: [], projects: [project], workspaces }),
+      () => false, (group) => scopeKeepsGroup(group, "Tickets"));
+    expect(filtered.flatMap((group) => group.groups).filter((group) => group.kind === "workspace" && group.totalCount === 0).map((group) => group.label))
+      .toEqual(["TSW • ASMA-2 • task"]);
+  });
+});
 
 describe("group primary state shares", () => {
   const entries = [sessionEntry("input", { status: "running", needsInput: true, requiresAttention: true }),
