@@ -3105,8 +3105,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // empty Archived result. The index is derived only from the full host projection, never from the
   // current filtered rows; it shows exact native identity and opens the same read-only details, and
   // it never adds archived sessions to the ordinary count or tree.
-  const retirementConflicts = !retirement ? [] : [...retirement.projections.values()].filter((projection) =>
-    projection.native.archiveMembership === "archived" && projection.conflicts.some((conflict) => conflict.kind.startsWith("archived-with-")));
+  const retirementConflicts = !retirement ? [] : [...retirement.projections.values()].filter((projection) => {
+    const entry = availability.entries.find((candidate) => candidate.id === projection.sessionId);
+    return !!entry && projection.native.archiveMembership === "archived" && projection.conflicts.some((conflict) => conflict.kind.startsWith("archived-with-"));
+  });
   const retirementConflictIndex = retirementConflicts.length === 0 ? null : (
     <View testID="sessions-retirement-conflicts" style={{ gap: 4, paddingHorizontal: 4, paddingVertical: 2 }}>
       <Text accessibilityRole="header" style={{ color: colors.statusWarning, fontSize: 12, fontWeight: "600" }}>Archived conflicts</Text>
