@@ -304,6 +304,7 @@ import { responsibilitySchema, type ResponsibilityRead } from "../shared/respons
 import { TOOLBAR_LAYOUT_GAP } from "../client/toolbar-visibility";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
+import type { SessionStateCount } from "../client/session-state-counts";
 import { toggleSelection, WorkstreamSelector } from "../client/workstream-selector";
 import { workstreamOptionLabel } from "../client/plan-workstreams";
 
@@ -550,12 +551,12 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { query: "", includeArchived: false });
     renderScreen(undefined, compact);
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "sessions-filter-error").props.count).toBe(1);
-    expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toBe(2);
-    expect(findByTestID(harness.current(), "sessions-filter-closed").props.count).toBe(13);
+    expect(findByTestID(harness.current(), "sessions-filter-error").props.count).toMatchObject({ text: "1" });
+    expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toMatchObject({ text: "2" });
+    expect(findByTestID(harness.current(), "sessions-filter-closed").props.count).toMatchObject({ text: "13" });
     const earlier = findByTestID(harness.current(), "sessions-filter-earlier_error");
     expect(earlier.props.label).toBe("Earlier errors");
-    expect(earlier.props.count).toBe(13);
+    expect(earlier.props.count).toMatchObject({ text: "13" });
     expect(earlier.props.status).toBe("earlier_error");
     (earlier.props.onPress as () => void)(); harness.flush();
     if (compact) closeMobileFilters();
@@ -628,31 +629,31 @@ describe("SessionsScreen toolbar events", () => {
     }
     // Labeled filters teach the same shapes, keeping their labels and exact counts.
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: 1 });
-    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: 0 });
+    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: { text: "…", label: expect.stringContaining("Reading") } });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: { text: "…", label: expect.stringContaining("Reading") } });
     if (compact) closeMobileFilters();
   });
 
-  it("shows one primary matching count and keeps inventory units/read status subordinate in Filters", () => {
+  it("shows applied filters with the matching count accessible and inventory units/read status subordinate in Filters", () => {
     const header = () => findByTestID(harness.current(), "sessions-layout-bar");
     directory.state = { ...directory.state as object, includeArchived: false };
     patchSessionView("host-a", { includeArchived: false });
     renderScreen();
     const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
-    search("");
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session");
+    search("Session");
+    expect(String(findByTestID(header(), "sessions-applied-filters").props.accessibilityLabel)).toContain("1 matching session");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^Inventory: 1 session in this host context, excluding archived\. Results span 1 workspace \/ folder group/);
     search("no such session");
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("0 matching sessions");
+    expect(String(findByTestID(header(), "sessions-applied-filters").props.accessibilityLabel)).toContain("0 matching sessions");
     search("session-a");
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session");
-    expect(findByTestID(header(), "sessions-count").props.accessibilityLiveRegion).toBe("polite");
+    expect(String(findByTestID(header(), "sessions-applied-filters").props.accessibilityLabel)).toContain("1 matching session");
+    expect(findByTestID(header(), "sessions-applied-filters").props.accessibilityLiveRegion).toBe("polite");
     directory.state = { ...directory.state as object, inventoryComplete: false };
     renderScreen();
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session · partial");
+    expect(String(findByTestID(header(), "sessions-applied-filters").props.accessibilityLabel)).toContain("partial read");
     directory.state = { ...directory.state as object, inventoryComplete: true, lastUpdatedAt: null };
     renderScreen();
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("…");
+    expect(String(findByTestID(header(), "sessions-applied-filters").props.accessibilityLabel)).toContain("Reading matching sessions");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toBe("Inventory for this membership has not been read yet.");
   });
 
@@ -811,8 +812,8 @@ describe("SessionsScreen toolbar events", () => {
     expect(onIncludeArchived).toHaveBeenCalledWith(false);
     const list = findByTestID(harness.current(), "sessions-list");
     // Compact says the Filters matching count: one session, qualified because the read is not live and complete.
-    const count = findByTestID(harness.current(), "sessions-mobile-count");
-    expect(textOf(count)).toBe("1 matching session · stale"); expect(count.props.accessibilityLabel).toContain("1 matching session matched the read at");
+    expect(walk(harness.current()).some((node) => node.props.testID === "sessions-mobile-count")).toBe(false);
+    expect((walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.counts as Record<string, SessionStateCount>).all!.label).toContain("partial read");
     const banner = findByTestID(harness.current(), "sessions-source-banner");
     expect(banner.props.message).toContain("Inventory read attempt");
     expect(banner.props.message).not.toContain("Last complete read");
@@ -970,7 +971,8 @@ describe("SessionsScreen toolbar events", () => {
     const chip = (testID: string) => findByTestID(harness.current(), testID);
     expect([chip("sessions-filter-favorites").props.label, (chip("sessions-shortcut-2").props.choice as { label: string }).label]).toEqual(["★ Favorites", "Adam desk"]);
     expect(chip("sessions-shortcut-2").type).toBe(SessionScopeChip);
-    expect([chip("sessions-filter-favorites").props.count, chip("sessions-shortcut-2").props.count]).toEqual([1, 1]);
+    expect((chip("sessions-filter-favorites").props.count as SessionStateCount).label).toContain("Reading");
+    expect(chip("sessions-shortcut-2").props.count).toBe(1);
     (chip("sessions-filter-favorites").props.onPress as () => void)(); harness.flush();
     (chip("sessions-shortcut-2").props.onPress as () => void)(); harness.flush();
     expect(readSessionView("host-a")).toMatchObject({ status: "favorites", shortcut: "Adam" });
@@ -1166,7 +1168,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
     expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
-    expect(header()).toEqual(["sessions-layout-bar", "sessions-mobile-count", "sessions-view-controls"]);
+    expect(header()).toEqual(["sessions-layout-bar", "sessions-view-controls"]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
@@ -2322,7 +2324,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(triggers[0]!.props.status).toBe("idle"); expect(triggers[0]!.props).not.toHaveProperty("summary");
   });
 
-  it("says the Filters matching count once in the compact count row, and keeps Clear filters at 44pt in the work line", () => {
+  it("shows compact applied-filter values, leaves the count accessible and keeps Clear filters at 44pt", () => {
     patchSessionView("host-a", { status: "idle", query: "session", layout: "grouped", grouping: "role" });
     renderCompact({ scopeLabel: "ASMA-1" });
     openMobileFilters();
@@ -2331,15 +2333,15 @@ describe("SessionsScreen mobile filter page", () => {
     expect(testIDs(harness.current())).not.toContain("sessions-mobile-selected-filter");
     const bar = findByTestID(harness.current(), "sessions-layout-bar");
     // Only what no visible control says: not the state chip, the work line or the layout control.
-    expect(textOf(findByTestID(bar, "sessions-mobile-count"))).toBe(`${filters.text} · ASMA-1 · “session” · Group: Role`);
-    expect(findByTestID(bar, "sessions-mobile-count").props.accessibilityLabel).toBe(`${filters.label}. ASMA-1. “session”. Group: Role`);
+    expect(textOf(findByTestID(bar, "sessions-applied-filters"))).toBe("ASMA-1 • “session”");
+    expect(findByTestID(bar, "sessions-applied-filters").props.accessibilityLabel).toBe(`ASMA-1. “session”. ${filters.label}`);
     expect(walk(bar).some((node) => node.type === SessionLayoutControl)).toBe(true);
     const clear = () => findByTestID(findByTestID(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent, "sessions-work"), "sessions-mobile-clear-filters");
     expect(clear().props).toMatchObject({ disabled: false, style: expect.objectContaining({ minHeight: 44 }) });
     (clear().props.onPress as () => void)(); harness.flush();
     expect(readSessionView("host-a")).toMatchObject({ status: "all", query: "", layout: "grouped", grouping: "role" });
     expect(clear().props.disabled).toBe(true);
-    expect(textOf(findByTestID(harness.current(), "sessions-mobile-count"))).not.toContain("session”");
+    expect(textOf(findByTestID(harness.current(), "sessions-applied-filters"))).not.toContain("session”");
 
     renderCompact({ compact: false, scopeLabel: "ASMA-1" });
     expect(testIDs(harness.current())).not.toContain("sessions-mobile-count");
@@ -2386,7 +2388,7 @@ describe("SessionsScreen mobile filter page", () => {
     for (const [status, ids] of Object.entries(expected)) {
       (toolbar().props.onStatus as (status: string) => void)(status); harness.flush();
       expect(sessionRowIds().sort()).toEqual(ids);
-      expect((toolbar().props.counts as Record<string, number>)[status]).toBe(ids.length);
+      expect((toolbar().props.counts as Record<string, SessionStateCount>)[status]!.label).toContain(`${ids.length} of`);
       expect(readSessionView("host-a").query).toBe("mobile");
     }
     (toolbar().props.onChooser as () => void)(); harness.flush();
@@ -2395,7 +2397,7 @@ describe("SessionsScreen mobile filter page", () => {
     (chooser.props.onClose as () => void)(); harness.flush();
     (toolbar().props.onQuery as (query: string) => void)("run"); harness.flush();
     expect(sessionRowIds()).toEqual([]);
-    expect((toolbar().props.counts as Record<string, number>).all).toBe(1);
+    expect((toolbar().props.counts as Record<string, SessionStateCount>).all!.text).toBe("1/6");
     (toolbar().props.onStatus as (status: string) => void)("all"); harness.flush();
     expect(sessionRowIds()).toEqual(["run"]);
     (toolbar().props.onQuery as (query: string) => void)(""); harness.flush();
@@ -2419,7 +2421,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(findByTestID(harness.current(), "sessions-filter-running").props.active).toBe(true);
     (walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
     closeMobileFilters();
-    expect((walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.counts as Record<string, number>).all).toBe(2);
+    expect((walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.counts as Record<string, SessionStateCount>).all!.text).toBe("2");
     expect(groupRows().map((row) => row.group.label).sort()).toEqual(["QA", "SWE"]);
     expect(readSessionView("host-a")).toMatchObject({ query: "", status: "all", grouping: "role", shortcut: null, includeArchived: false });
   });
@@ -2789,10 +2791,9 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
     const toggle = findByTestID(harness.current(), "sessions-advanced-archived");
     expect(toggle.props.label).toBe("Archived history");
     (toggle.props.onPress as () => void)(); harness.flush();
-    expect(findByTestID(harness.current(), "sessions-filter-all").props.count).toBe(2);
-    expect(findByTestID(harness.current(), "sessions-filter-running").props.count).toBe(1);
-    expect(findByTestID(harness.current(), "sessions-filter-current").props.count).toBe(0);
-    expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toBe(0);
+    for (const state of ["all", "running", "current", "attention"]) {
+      expect(findByTestID(harness.current(), `sessions-filter-${state}`).props.count).toMatchObject({ text: "…", label: "Reading sessions for this membership" });
+    }
     if (compact) closeMobileFilters();
     expect(sessionRowIds()).toEqual(["archive-starting-other", "archive-running-mine"]);
     expect(readSessionView("host-a")).toMatchObject({ membership: "archived", status: "all", query: "Session", assignment: "me", grouping: "flat", sort: "title", sortDirection: "desc" });

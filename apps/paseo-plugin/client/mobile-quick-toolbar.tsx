@@ -5,13 +5,14 @@ import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useControlHelp } from "./control-help";
 import { focusControl } from "./mobile-filters";
 import { type Colors } from "./page-controls";
-import { quickFilterHelp, quickFilterLabel, QUICK_FILTER_ICONS, visibleQuickFilters } from "./mobile-quick-filter-options";
+import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS, visibleQuickFilters } from "./mobile-quick-filter-options";
+import type { SessionStateCount } from "./session-state-counts";
 import { type StatusFilter } from "./session-view";
 
 /** One existing pressable owns activation and shared pointer/keyboard help. Touch learns the icons in More. */
 export function QuickToolbarButton({ label, help = label, icon, iconColor, colors, onPress, selected, expanded, count, caption, testID, target = 44, ref }: {
   label: string; help?: string; icon: string; iconColor?: string; colors: Colors; onPress(): void;
-  selected?: boolean; expanded?: boolean; count?: number; caption?: string; testID?: string; target?: number; ref?: Ref<View>;
+  selected?: boolean; expanded?: boolean; count?: SessionStateCount; caption?: string; testID?: string; target?: number; ref?: Ref<View>;
 }) {
   const controlHelp = useControlHelp(help, ref);
   return <Pressable {...controlHelp.bindings} testID={testID} accessibilityRole="button" accessibilityLabel={label}
@@ -21,14 +22,22 @@ export function QuickToolbarButton({ label, help = label, icon, iconColor, color
     style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ width: target, minHeight: target, flexShrink: 0, paddingVertical: 3,
       alignItems: "center", justifyContent: "center", gap: 1, borderRadius: 7, borderWidth: selected || focused ? 2 : 1,
       borderColor: selected || focused ? colors.accent : colors.border, backgroundColor: pressed || selected ? colors.surface2 : colors.surface1 })}>
-    <Icon name={icon} size={18} color={iconColor ?? (selected ? colors.accent : colors.foreground)} />
-    {count !== undefined || caption ? <Text numberOfLines={1} style={{ maxWidth: "100%", color: colors.foregroundMuted, fontSize: 10, lineHeight: 13 }}>{caption ?? (count! > 999 ? "999+" : count)}</Text> : null}
+    {count?.denominator !== undefined ? <View testID="session-state-ratio" style={{ flexDirection: "row", alignItems: "center", gap: 1 }}>
+      <Icon name={icon} size={18} color={iconColor ?? colors.foreground} />
+      <View style={{ alignItems: "stretch" }}>
+        <Text style={{ textAlign: "center", color: colors.foreground, fontSize: 10, lineHeight: 13, fontVariant: ["tabular-nums"], borderBottomWidth: 1, borderBottomColor: colors.foregroundMuted }}>{count.numerator}</Text>
+        <Text style={{ textAlign: "center", color: colors.foregroundMuted, fontSize: 10, lineHeight: 13, fontVariant: ["tabular-nums"] }}>{count.denominator}</Text>
+      </View>
+    </View> : <>
+      <Icon name={icon} size={18} color={iconColor ?? (selected ? colors.accent : colors.foreground)} />
+      {count !== undefined || caption ? <Text numberOfLines={1} style={{ maxWidth: "100%", color: colors.foregroundMuted, fontSize: 10, lineHeight: 13 }}>{caption ?? count?.text}</Text> : null}
+    </>}
     {selected ? <View importantForAccessibility="no" accessibilityElementsHidden style={{ position: "absolute", top: 1, right: 1 }}><Icon name="Check" size={10} color={colors.foreground} /></View> : null}
   </Pressable>;
 }
 
 type ToolbarProps = {
-  colors: Colors; width: number; query: string; status: StatusFilter; counts: Readonly<Record<StatusFilter, number>>;
+  colors: Colors; width: number; query: string; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>;
   activeCount: number; searchInputRef: RefObject<ComponentRef<typeof TextInput> | null>;
   filtersTriggerRef: RefObject<View | null>; chooserRef: RefObject<View | null>; chooserOpen: boolean;
   helpDismissRef: Ref<() => void>;
@@ -70,7 +79,7 @@ export function MobileQuickToolbar(props: ToolbarProps) {
         <QuickToolbarButton ref={searchTriggerRef} testID="sessions-mobile-search-trigger" label={query ? `Search sessions, current search: ${query}` : "Search sessions"}
           icon="Search" caption={query ? "Edit" : undefined} expanded={false} colors={colors} target={target} onPress={() => setSearchOpen(true)} />
         {choices.map((choice) => <QuickToolbarButton key={choice} testID={`sessions-quick-${choice}`} icon={QUICK_FILTER_ICONS[choice]} iconColor={sessionStatusInk(choice, colors)} colors={colors} target={target}
-          label={`${quickFilterLabel(choice)}, ${counts[choice]} sessions`} help={quickFilterHelp(choice, counts[choice])} count={counts[choice]} selected={status === choice} onPress={() => props.onStatus(choice)} />)}
+          label={`${quickFilterLabel(choice)}, ${counts[choice].label}`} help={`${quickFilterLabel(choice)}. ${counts[choice].label}. ${QUICK_FILTER_MEANINGS[choice]}`} count={counts[choice]} selected={status === choice} onPress={() => props.onStatus(choice)} />)}
       </>}
       <View style={{ flex: searchOpen ? 0 : 1 }} />
       <QuickToolbarButton ref={chooserRef} testID="sessions-mobile-quick-chooser-trigger" label={`All 8 quick filters and icon meanings, current: ${quickFilterLabel(status)}`}

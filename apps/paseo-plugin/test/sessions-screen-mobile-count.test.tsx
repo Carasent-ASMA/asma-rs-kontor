@@ -57,6 +57,9 @@ import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { SessionLayoutControl } from "../client/session-layout-control";
 import { DEFAULT_RECOVERY_TARGET, TAKEOVER_LIMIT, type LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
+import { responsibilitySchema } from "../shared/responsibility";
+import { QUICK_STATUS_FILTERS, MORE_STATUS_FILTERS } from "../client/session-view";
+import type { SessionStateCount } from "../client/session-state-counts";
 import { clearSessionViews, patchSessionView } from "../client/session-view-store";
 
 type Element = { readonly type?: unknown; readonly props: Record<string, unknown> };
@@ -80,9 +83,9 @@ const ENTRIES = [
 ];
 const ready = (patch: Partial<DirectoryState> = {}): DirectoryState => ({ entries: ENTRIES, status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false, ...patch });
 
-function mount() {
+function mount(props: Partial<Parameters<typeof SessionsScreen>[0]> = {}) {
   harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Fixture host" }, layout: { compact: true, platform: "ios" },
-    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as Parameters<typeof SessionsScreen>[0]));
+    navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {}, ...props } as Parameters<typeof SessionsScreen>[0]));
   const list = byTestID("sessions-list")[0];
   if (list) (list.props.ref as { current: unknown }).current = { scrollToOffset: () => undefined, scrollToIndex: () => undefined };
 }
@@ -199,5 +202,60 @@ describe("matchingCount", () => {
     expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("…");
     expect(count({ inventoryComplete: undefined })).toBe("1 matching session · partial");
     expect(count({}, false, "Reconnecting")).toBe("1 matching session · reconnecting");
+  });
+});
+
+
+describe("state ratios and applied-filter readback", () => {
+  const counts = () => all().find((element) => element.type === MobileQuickToolbar)!.props.counts as Record<string, SessionStateCount>;
+  const summary = () => byTestID("sessions-applied-filters")[0];
+  it("uses the same route universe before refinements for every state and preserves same-set and zero", () => {
+    fake.state = ready({ entries: [...ENTRIES, sessionEntry("outside-project", { projectKey: "outside", status: "running" })] });
+    patchSessionView("host-a", { status: "running", work: "all", query: "alpha" });
+    mount({ projectId: "prj_1" });
+    expect(counts().running!.text).toBe("0/2"); expect(counts().current!.text).toBe("1/3"); expect(counts().all!.text).toBe("2/5");
+    expect(summary()!.props.children).toBe("“alpha”");
+    expect(summary()!.props.accessibilityLabel).toContain("0 matching sessions");
+    // Active state never zeroes the alternatives; changing layout does not change either side.
+    const before = counts(); layout("grouped"); expect(counts()).toEqual(before); layout("flat");
+    open(); search("a"); back();
+    expect(counts().all!.text).toBe("5/5");
+    press("sessions-mobile-clear-filters");
+    expect(counts().all!.text).toBe("5"); expect(summary()).toBeUndefined();
+    open(); press("sessions-reset-view"); back();
+    expect(counts().current!.text).toBe("3"); expect(summary()!.props.children).toBe("My work");
+    expect(byTestID("sessions-mobile-count")).toHaveLength(0);
+  });
+
+  it("combines search, person, association, task, desk and epic with one membership/route universe", () => {
+    const labels = { workstream: "alpha", epic: "DEMO-1", "asma.task": "DEMO-2" };
+    fake.state = ready({ entries: [sessionEntry("match", { title: "Review topic", status: "running", labels }),
+      sessionEntry("other-topic", { title: "Different", labels }), sessionEntry("other-association", { title: "Review topic", labels: { ...labels, workstream: "beta" } }),
+      sessionEntry("other-person", { title: "Review topic", labels: { ...labels, epic: "DEMO-3" } }),
+      sessionEntry("archive", { title: "Review topic", labels, archivedAt: "2026-10-20" })] });
+    const projection = responsibilitySchema.parse({ schema: "kontor/responsibility@1", realm: "tracker.example", generatedAt: "2026-10-21T12:00:00Z", expiresAt: "2099-10-22T12:00:00Z",
+      provenance: { collector: "fixture", selection: ["DEMO-1", "DEMO-3"], complete: true, workstreams: null },
+      people: [{ accountId: "person-a", displayName: "Alex Example", active: true, accountType: "atlassian" }],
+      issues: [{ key: "DEMO-1", type: "Epic", level: 1, parent: null, assignee: "person-a", workstreams: [] }, { key: "DEMO-3", type: "Epic", level: 1, parent: null, assignee: null, workstreams: [] }], workstreams: [] });
+    patchSessionView("host-a", { query: "Review   topic", work: "mine", assignment: "person:person-a", streams: ["alpha"], shortcut: "desk-project:prj_1", epic: { kind: "known", key: "DEMO-1" }, task: { jira: "DEMO-2", kontorId: null, label: "DEMO-2" } });
+    mount({ projectId: "prj_1", responsibility: { status: "ready", projection, revision: "r1", readAt: "2026-10-21", diagnostics: [] } });
+    expect(counts().all!.text).toBe("1/4"); expect(counts().running!.text).toBe("1/1"); expect(counts().idle!.text).toBe("0/3");
+    const text = String(summary()!.props.children);
+    for (const part of ["My work", "Assigned to Alex Example", "“Review topic”", "DEMO-2", "alpha", "DEMO-1"]) expect(text).toContain(part);
+    expect(text).not.toMatch(/Current|matching sessions|Grouped|Flat/);
+    // The archive and other project's sessions cannot enter the denominator.
+    expect(counts().all!.label).toContain("1 of 4 sessions");
+    for (const status of [...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS]) expect(counts()[status]).toBeDefined();
+  });
+
+  it("isolates the same IDs in another host and keeps archive transitions unknown until a matching read", () => {
+    patchSessionView("host-a", { query: "alpha" }); mount(); expect(counts().all!.text).toBe("2/5");
+    harness.unmount();
+    fake.state = ready({ entries: [sessionEntry("alpha-idle", { title: "Other host session" })] });
+    mount({ host: { id: "host-b", label: "Other fixture host" } });
+    expect(counts().all!.text).toBe("…"); // Host B has no online host summary in this fixture.
+    expect(counts().all!.label).toContain("1 sessions"); expect(counts().all!.label).not.toContain("of 5");
+    open(); press("sessions-advanced-archived"); back();
+    expect(counts().all!.text).toBe("…"); expect(counts().all!.label).toContain("Reading");
   });
 });
