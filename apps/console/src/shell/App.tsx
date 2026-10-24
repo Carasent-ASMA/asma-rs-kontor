@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react'
 import type { Endpoint } from '../api/endpoint'
-import { browserStore, inDesktop, strongholdStore, type CredentialStore } from './credentials'
+import { browserStore, inDesktop, keychainStore, type CredentialStore } from './credentials'
 import { Connect } from './Connect'
 import { TopBar } from './TopBar'
 import { NavRail, type ViewId } from './NavRail'
@@ -45,7 +45,7 @@ export function App({ store }: { store?: CredentialStore }) {
     let live = true
     void inDesktop().then((desktop) => {
       if (live) {
-        setResolved(desktop ? strongholdStore : browserStore)
+        setResolved(desktop ? keychainStore : browserStore)
       }
     })
     return () => {

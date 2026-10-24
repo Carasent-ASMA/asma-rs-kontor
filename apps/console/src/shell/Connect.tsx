@@ -6,9 +6,9 @@
  * this console does not scan for daemons, does not read a state root and is never
  * handed a runtime endpoint.
  *
- * On the desktop the pair can be kept in Stronghold, unlocked with a vault
- * password. In the browser it cannot, and the form says so rather than quietly
- * putting a bearer token in web storage.
+ * On the desktop the pair can be kept in the operating system's keychain. In
+ * the browser it cannot, and the form says so rather than quietly putting a
+ * bearer token in web storage.
  */
 import { useState, type FormEvent } from 'react'
 import { localityOf, normalizeBaseUrl, type Endpoint } from '../api/endpoint'
@@ -26,7 +26,6 @@ export function Connect({
 }) {
   const [baseUrl, setBaseUrl] = useState(rememberedBaseUrl)
   const [token, setToken] = useState('')
-  const [secret, setSecret] = useState('')
   const [remember, setRemember] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -46,7 +45,9 @@ export function Connect({
       return
     }
     try {
-      await store.save(endpoint, remember ? secret : undefined)
+      // A present secret is the store's sign that the operator asked to keep
+      // the endpoint; the keychain store has no password to read from it.
+      await store.save(endpoint, remember ? '' : undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'the credential could not be saved')
       return
@@ -56,23 +57,23 @@ export function Connect({
 
   const unlock = async (): Promise<void> => {
     try {
-      const saved = await store.load(secret)
+      const saved = await store.load()
       if (saved) {
         onConnect(saved)
       } else {
-        setError('no saved endpoint could be unlocked with that password')
+        setError('no endpoint is saved in the OS keychain')
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'the vault could not be opened')
+      setError(cause instanceof Error ? cause.message : 'the OS keychain could not be reached')
     }
   }
 
   const forget = async (): Promise<void> => {
     try {
-      await store.clear(secret)
+      await store.clear()
       setError('the saved endpoint was forgotten')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'the vault could not be opened')
+      setError(cause instanceof Error ? cause.message : 'the OS keychain could not be reached')
     }
   }
 
@@ -108,25 +109,16 @@ export function Connect({
 
         {store.durable ? (
           <>
-            <label htmlFor="vault-secret">Vault password</label>
-            <input
-              id="vault-secret"
-              name="vault_secret"
-              type="password"
-              autoComplete="off"
-              value={secret}
-              onChange={(event) => setSecret(event.target.value)}
-            />
             <label className="checkbox">
               <input
                 type="checkbox"
                 checked={remember}
                 onChange={(event) => setRemember(event.target.checked)}
               />
-              Keep this endpoint in Stronghold
+              Keep this endpoint in the OS keychain
             </label>
             <button type="button" onClick={() => void unlock()}>
-              Unlock a saved endpoint
+              Use the saved endpoint
             </button>
             {/* A credential that can be kept and never dropped is one an
                 operator has no way to revoke from here. */}
