@@ -19,7 +19,7 @@ import { kontordLine, kontordSentence } from "./kontord-copy";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import { useSessionRetirementProjection } from "./use-session-lifecycle";
-import type { DirectoryEntry } from "./session-directory";
+import { emptyDirectoryState, type DirectoryEntry } from "./session-directory";
 import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -63,6 +63,10 @@ export function KontorScreen(props: PluginScreenProps) {
   // Remount all host-local hooks on a host switch; routes remain host-scoped.
   return <HostScreen key={props.host.id} {...props} />;
 }
+/** Stable empty inputs: retirement is a Sessions read, so other pages must not recompute or read it. */
+const NO_SESSION_ENTRIES: readonly DirectoryEntry[] = [];
+const NO_SESSION_DIRECTORY = emptyDirectoryState();
+
 function HostScreen(props: PluginScreenProps) {
   const { host, layout } = props;
   const hosts = useHosts();
@@ -151,14 +155,15 @@ function HostScreen(props: PluginScreenProps) {
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
   // Read-only retention is a Sessions projection over the shared archive-inclusive directory and the
-  // already-read source/receipt evidence. It is disabled elsewhere, so opening another page reads nothing.
+  // already-read source/receipt evidence. Other pages neither read nor project it.
+  const projecting = route.tab === "Sessions";
   const retirement = useSessionRetirementProjection(host.id, {
-    entries: directory.state.entries,
-    directory: directory.state,
-    sources: sourcesInContext,
-    reads: sourceState.reads,
-    associations: saved.planAssociations,
-    enabled: route.tab === "Sessions",
+    entries: projecting ? directory.state.entries : NO_SESSION_ENTRIES,
+    directory: projecting ? directory.state : NO_SESSION_DIRECTORY,
+    sources: projecting ? sourcesInContext : undefined,
+    reads: projecting ? sourceState.reads : undefined,
+    associations: projecting ? saved.planAssociations : undefined,
+    enabled: projecting,
   });
   // Pages demand exact reads for their own context: the selected plan and its linked associations on Plan,
   // Board and Graph; the context sources on the recorded and overview pages; none on Sessions.
