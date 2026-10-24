@@ -37,6 +37,7 @@ async function scopeControls(page, touch) {
     assert.ok(box.width >= 44 && box.height >= 44, '44pt scope targets');
     assert.ok(box.x >= 0 && box.x + box.width <= page.viewportSize().width, 'scope fits viewport');
     assert.ok(await button.locator('svg').count(), 'SDK glyph rendered');
+    if (i === 3) assert.ok(await button.locator('svg.lucide-ticket').count(), 'Tickets uses the ticket glyph');
     assert.ok((await button.innerText()).includes(String(counts[i])));
   }
 }
