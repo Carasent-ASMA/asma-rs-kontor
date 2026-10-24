@@ -10,8 +10,8 @@ assert.ok(origin && output, 'Supply the isolated fixture origin and an evidence 
 fs.mkdirSync(output, { recursive: true });
 const report = { cases: [], tooltipChecks: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 let browser;
-const counts = [679, 93, 48, 538];
-const labels = ['All sessions', 'PR Review', 'Adam desk', 'Outside desks'];
+const counts = [679, 93, 48, 0, 538];
+const labels = ['All sessions', 'PR Review', 'Adam desk', 'Tickets desk', 'Outside desks'];
 const state = page => page.evaluate(() => window.readSessionView());
 const chip = (page, index) => page.getByTestId(`sessions-shortcut-${index}`);
 const snap = (page, name) => page.screenshot({ path: path.join(output, `${name}.png`) });
@@ -30,7 +30,7 @@ async function visibleTooltip(page, expectedText) {
 async function scopeControls(page, touch) {
   if (touch) await page.getByRole('button', { name: 'Filters and view', exact: true }).tap();
   await chip(page, 0).waitFor();
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     const button = chip(page, i);
     assert.equal(await button.getAttribute('aria-label'), `${labels[i]}, ${counts[i]} sessions`);
     const box = await button.boundingBox();
@@ -104,7 +104,7 @@ async function check(width, theme) {
     assert.ok((await kontor().getAttribute('aria-label')).includes('Running: 2 of 538 sessions'));
     const qsw = page.getByRole('button', { name: /^Native project DESK • QSW,/ });
     assert.ok((await qsw.innerText()).includes('No sessions'));
-    assert.ok(await qsw.locator('svg.lucide-zap').count());
+    assert.ok(await qsw.locator('svg.lucide-armchair').count());
     const unknown = page.getByRole('button', { name: /^Native project DESK • FUTURE,/ });
     assert.ok(await unknown.locator('svg.lucide-armchair').count());
     for (const row of [kontor(), qsw, unknown]) assert.ok((await row.boundingBox()).height >= 44);
@@ -126,14 +126,16 @@ async function check(width, theme) {
     assert.equal((await state(page)).query, 'Synthetic session 0', 'scope keeps search');
     assert.equal((await state(page)).shortcut, 'Adam');
     await page.getByTestId('sessions-search').fill('');
-    await activate(chip(page, 3), touch);
+    await activate(chip(page, 4), touch);
     assert.equal((await state(page)).shortcut, 'Other work', 'legacy saved ID retained');
     await activate(chip(page, 0), touch);
     if (touch) {
       assert.equal(await page.getByRole('tooltip').count(), 0, 'touch does not depend on hover');
       await page.getByRole('button', { name: 'Legend', exact: true }).tap();
       assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('Scope filters'));
-      assert.ok((await page.getByTestId('sessions-legend').innerText()).includes('QSW · Quick Session Workspace'));
+      const legendText = await page.getByTestId('sessions-legend').innerText();
+      assert.ok(legendText.includes('Tickets'));
+      assert.ok(!legendText.includes('QSW'));
       await page.getByRole('button', { name: 'Show sessions with the current filters', exact: true }).tap();
     } else {
       await chip(page, 1).hover();

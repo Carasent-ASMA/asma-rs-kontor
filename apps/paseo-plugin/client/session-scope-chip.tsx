@@ -11,6 +11,7 @@ export const SESSION_SHORTCUTS = [
   { id: null, label: "All sessions", caption: "All", icon: "Layers", help: "Include sessions from every desk and outside desks." },
   { id: "PR Review", label: "PR Review", caption: "Review", icon: deskIcon("pr-review"), help: "Show PR Review desk sessions, including desk associations outside native desk projects." },
   { id: "Adam", label: "Adam desk", caption: "Adam", icon: deskIcon("adam"), help: "Show Adam desk sessions, including desk associations outside native desk projects." },
+  { id: "Tickets", label: "Tickets desk", caption: "Tickets", icon: deskIcon("tickets"), help: "Show Tickets desk sessions, including desk associations outside native desk projects." },
   { id: "Other work", label: "Outside desks", caption: "Outside", icon: "Compass", help: "Show sessions outside every desk, including workstreams and sessions with no desk association." },
 ] as const;
 

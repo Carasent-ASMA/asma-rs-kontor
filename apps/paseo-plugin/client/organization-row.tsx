@@ -11,7 +11,7 @@ export { KIND_ICONS } from "./desk-icon";
 /** Display glossary for repeated workspace-name prefixes; grouping by prefix establishes no authority. */
 export const WORKSPACE_KINDS: Readonly<Record<string, string>> = {
   RSW: "Review workspace", TSW: "Task workspace", ASW: "Advisory workspace", CSW: "Committee workspace",
-  ESW: "Epic workspace", ECP: "Legacy epic coordination", QSW: "Quick Session Workspace", DESK: "Durable desk",
+  ESW: "Epic workspace", ECP: "Legacy epic coordination", DESK: "Durable desk",
 };
 export const KIND_NAMES: Readonly<Record<OrganizationGroupKind, string>> = {
   workstream: "Workstream", epic: "Epic", "workspace-kind": "Workspace kind", workspace: "Workspace", project: "Native project", role: "Role", flat: "Sessions",

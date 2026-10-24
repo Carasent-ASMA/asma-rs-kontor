@@ -621,6 +621,8 @@ function buildWorkspaceGroups(input: {
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly nativeOrder: ReadonlyMap<string, number>;
   readonly emptyWorkspaces?: readonly OrganizationWorkspace[];
+  /** A lead order that outranks saved order; other workspaces share its last rank. */
+  readonly rank?: (group: OrganizationGroup) => number;
 }): OrganizationGroup[] {
   const byWorkspace = new Map<string, { label: string; entries: DirectoryEntry[] }>();
   for (const workspace of input.emptyWorkspaces ?? []) byWorkspace.set(`id:${workspace.id}`, { label: workspace.name, entries: [] });
@@ -657,6 +659,7 @@ function buildWorkspaceGroups(input: {
     }),
     input.parentKey,
     input.siblingOrder,
+    input.rank,
   );
 }
 
@@ -798,6 +801,14 @@ function buildEpicGroup(input: {
   });
 }
 
+/** Lead workspaces show first under every desk, in this order, whatever the saved order. */
+const LEAD_WORKSPACES: readonly string[] = ["lsa", "tpm", "adhoc"];
+
+function leadWorkspaceRank(label: string): number {
+  const index = LEAD_WORKSPACES.indexOf(label.trim().toLocaleLowerCase());
+  return index < 0 ? LEAD_WORKSPACES.length : index;
+}
+
 /** Native desk projects keep one real workspace branch regardless of their sessions' associations. */
 function buildNativeDesks(input: OrganizationInput, nativeOrder: ReadonlyMap<string, number>): OrganizationGroup[] {
   const scopes = deriveDeskScopes(input.entries, input.workspaces, input.projects);
@@ -807,7 +818,8 @@ function buildNativeDesks(input: OrganizationInput, nativeOrder: ReadonlyMap<str
     const empty = (input.workspaces ?? []).filter((workspace) => workspace.projectKey === projectId && !occupied.has(workspace.id));
     const key = `project:${segment(projectId)}`;
     const children = buildWorkspaceGroups({ entries, parentKey: key, depth: 1,
-      siblingOrder: input.siblingOrder, nativeOrder, emptyWorkspaces: empty });
+      siblingOrder: input.siblingOrder, nativeOrder, emptyWorkspaces: empty,
+      rank: (workspace) => leadWorkspaceRank(workspace.label) });
     const workspaces = children.length;
     return group({ key, kind: "project", label, shortCode: null, parentKey: null, depth: 0,
       sessions: [], groups: children, desk: true, project: { id: projectId, name: label },
@@ -1290,6 +1302,8 @@ function matchesDeskScope(scope: string | null, projectId: string | null | undef
       return desk !== null ? desk === "pr-review" : stream === "pr review" || stream === "pr-review";
     case "Adam":
       return desk !== null ? desk === "adam" : stream === "adam";
+    case "Tickets":
+      return desk !== null ? desk === "tickets" : stream === "tickets";
     case "Desks":
       return desk !== null || deskWork;
     case "Other work":
@@ -1305,7 +1319,7 @@ export function scopeKeepsGroup(group: OrganizationGroup, scope: string | null, 
   if (group.project && group.totalCount === 0 && group.groups.length === 0) {
     return matchesDeskScope(scope, group.project.id, group.project.name, nativeDesk(group.project.name) ?? OTHER_WORKSTREAM, true);
   }
-  if (!["PR Review", "Adam", "Desks"].includes(scope) && !scope.startsWith(DESK_PROJECT_SCOPE)) return false;
+  if (!["PR Review", "Adam", "Tickets", "Desks"].includes(scope) && !scope.startsWith(DESK_PROJECT_SCOPE)) return false;
   if (group.kind !== "workspace" || group.totalCount !== 0 || !group.workspace) return false;
   const workspace = group.workspace;
   const stream = clean(mappings?.[workspaceMappingKey(workspace.id)]?.workstream) ?? nativeDesk(workspace.projectName) ?? OTHER_WORKSTREAM;

@@ -980,7 +980,7 @@ describe("SessionsScreen toolbar events", () => {
     harness.reset(); renderScreen(organization);
     expect(chip("sessions-filter-favorites").props.active).toBe(true);
     expect(chip("sessions-shortcut-2").props.active).toBe(true);
-    (chip("sessions-shortcut-3").props.onPress as () => void)(); harness.flush();
+    (chip("sessions-shortcut-4").props.onPress as () => void)(); harness.flush();
     expect(sessionRowIds()).toEqual([]);
   });
 
@@ -2278,7 +2278,7 @@ describe("SessionsScreen mobile filter page", () => {
     patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true, status: "all" });
     renderScreen(organization, true); openMobileFilters();
     const selector = () => walk(harness.current()).find((node) => node.type === SessionScopeSelector && node.props.id === "scope")!.props as Parameters<typeof SessionScopeSelector>[0];
-    expect(selector().options.map((choice) => choice.label)).toEqual(["Durable desks", "PR Review desk", "Adam desk", "Outside desks"]);
+    expect(selector().options.map((choice) => choice.label)).toEqual(["Durable desks", "PR Review desk", "Adam desk", "Tickets desk", "Outside desks"]);
     selector().onOpen(true); harness.flush();
     expect(readSessionView("host-a").scopeOpen).toBe("desk");
     selector().onChange("Desks"); harness.flush();
@@ -2603,7 +2603,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(readSessionView("host-a").streams).toEqual(["adam", "beta", "other work"]);
     if (compact) closeMobileFilters();
     if (!compact) {
-      const shortcut = findByTestID(harness.current(), "sessions-shortcut-3").props;
+      const shortcut = findByTestID(harness.current(), "sessions-shortcut-4").props;
       expect([(shortcut.choice as { label: string }).label, shortcut.count]).toEqual(["Outside desks", 2]);
     }
     // A partial read keeps the same association counts, and Filters says beside them that the read is partial.

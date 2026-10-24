@@ -333,15 +333,19 @@ associations in Details; they never become workspace-like parents within a desk.
 Optional role subgroups below a workspace are a presentation view. Empty native
 workspaces remain visible, and a desk with none says **No native workspaces in
 this desk**. Desk counts describe actual workspaces and sessions. Same-named
-projects and workspaces remain separate by native ID.
+projects and workspaces remain separate by native ID. Under every desk, `LSA`,
+`TPM` and `ADHOC` workspaces show first in that order whatever the saved order;
+other workspaces follow in their saved order. A desk without them shows no
+placeholder, a legacy `ADAM` workspace still renders until archived, and a
+legacy `DESK • QSW` project still renders as a desk until it is retired.
 
 Outside native desks, the workstream/epic tree and repeated workspace-kind/role
 prefix groups keep their existing behavior. Explicit epic contexts and workstream
 association filters explore declared associations without changing native placement.
 
 Filters also offers searchable **Desk / workspace scope** and **Epic scope**.
-The four scope shortcuts pair icons with counts and short captions (All, Review,
-Adam, Outside). Their full names and scope explanations appear on hover or
+The five scope shortcuts pair icons with counts and short captions (All, Review,
+Adam, Tickets, Outside). Their full names and scope explanations appear on hover or
 keyboard focus and in accessible names/hints; touch keeps the captions. Counts
 describe the current project/epic context before search and other filters.
 Each shortcut has a 44 pt target, a pressed state, a focus border and an
@@ -360,8 +364,9 @@ native lifecycle and attention signals can overlap those displayed states. The
 Legend provides the same scope and desk explanations on touch screens and
 describes whether the current tree counts matches or retained context.
 Desk rows retain their full names: PR Review uses
-a pull request, Adam a bot, QA a flask and QSW a bolt; unknown desks use an
-armchair. These glyphs describe presentation, never durable desk configuration.
+a pull request, Adam a bot, QA a flask and Tickets a ticket; unknown desks,
+including a legacy QSW desk, use an armchair. These glyphs describe presentation,
+never durable desk configuration.
 An exact desk choice uses the native project ID, distinguishing identical names;
 workstream choices keep canonical association keys, and epic choices use the same
 label/mapping/Jira-capture resolver as Details. Conflicting or missing epic

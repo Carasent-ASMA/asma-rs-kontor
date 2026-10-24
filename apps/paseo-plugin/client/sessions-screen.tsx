@@ -153,6 +153,7 @@ const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: stri
   { id: "Desks", label: "Durable desks" },
   { id: "PR Review", label: "PR Review desk" },
   { id: "Adam", label: "Adam desk" },
+  { id: "Tickets", label: "Tickets desk" },
   { id: "Other work", label: "Outside desks" },
 ];
 const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string }[] = [
