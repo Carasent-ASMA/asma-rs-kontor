@@ -55,13 +55,13 @@ const release = (path: string, expected: string) => whileOwned(path, expected, (
 // adopts the disk.
 const memorySchema = z.object({
   seq: z.number().int().nonnegative(),
-  /** The open refusal, named by the newest read (its attempt seq) that saw it; the binding keeps the latest completion. */
+  /** The open refusal, named by the newest read (its attempt seq) that saw it; the binding keeps the latest completion.
+   *  Its kind is `unknown` while the memory is unresolved, and only a later successful provider turn releases it. */
   refusal: refusalObservationSchema.extend({ seq: z.number().int().nonnegative() }).nullable(),
   /** Attempts with no recorded outcome: each one's seq, the snapshot seq it was opened on (`revision`) and its start. */
   open: z.array(z.object({ seq: z.number().int().positive(), revision: z.number().int().nonnegative(), start: z.string() }).strict()),
-  /** An attempt an earlier worker left open, or a partial, corrupt, foreign or unexpected artifact. Resume stays closed
-   *  until a later read names a refusal or finds the session quiet. */
-  uncertain: z.object({ seq: z.number().int().nonnegative(), observedAt: z.string() }).strict().nullable(),
+  /** A clean read or a recovery is durably recorded. Absence is never clean. */
+  clean: z.boolean(),
   /** The final read of the last recovery: a read that started before it cannot reopen what it released. */
   cleared: z.number().int().nonnegative(),
   /** What the last recovery released, recorded before it took effect. */
@@ -85,8 +85,9 @@ const later = (a: string | undefined, b: string) => a && Date.parse(a) > Date.pa
 const joinRefusal = (base: RefusalObservation | null, next: RefusalObservation, names: boolean): RefusalObservation =>
   ({ ...(names || !base ? next : base), observedAt: later(base?.observedAt, next.observedAt) });
 const plain = ({ seq: _seq, ...observation }: OpenRefusal): RefusalObservation => observation;
-const unknownRefusal = (observedAt: string): RefusalObservation => ({ kind: "unknown", failureAt: "unknown", observedAt, route: { provider: "unknown", model: null },
-  message: "An earlier read of this session has no recorded outcome, or its refusal record is partial, corrupt or foreign." });
+const unknownRefusal = (observedAt: string, message: string): RefusalObservation => ({ kind: "unknown", failureAt: "unknown", observedAt, route: { provider: "unknown", model: null }, message });
+const NO_CLEAN = "No clean read of this session is stored, so a native error that is not a classified provider refusal is unresolved.";
+const UNRESOLVED = "An earlier read of this session left no recorded outcome, or a stored refusal record is partial, corrupt or foreign.";
 type RefusalRead = { agent?: Agent; availability: SessionAvailability; attempt: number; seen: RefusalObservation | null; memory?: RefusalMemory; problem?: Error | null; fence?: Error };
 export function lifecycleRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.status, agent.archivedAt, agent.updatedAt, agent.provider, agent.model,
@@ -267,10 +268,10 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const fence = error instanceof Error ? error : new Error(String(error));
       return { availability: { agentId: id, state: "unknown", reason: fence.message, checkedAt: new Date().toISOString(), revision: "unknown" }, attempt: 0, seen: null, fence };
     }
-    const read = await readExact(id);
+    const read = await readExact(id), seenAt = new Date().toISOString();
     // Bound when the exact read returned, never at its start: a slow read must not bind recovery before its record.
-    const seen = read.agent ? observeRefusal(read.agent, new Date().toISOString()) : null;
-    return { ...read, attempt, seen, ...await settle(id, attempt, read.agent, seen) };
+    const seen = read.agent ? observeRefusal(read.agent, seenAt) : null;
+    return { ...read, attempt, seen, ...await settle(id, attempt, read.agent, seen, seenAt) };
   }
   async function readExact(id: string): Promise<{ agent?: Agent; availability: SessionAvailability }> {
     const checkedAt = new Date().toISOString();
@@ -285,12 +286,12 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   }
   /** This ID's refusal memory, in the path's queue. On first use it adopts the valid snapshot with the highest seq among
    *  the record, a held record and complete temps. An attempt that snapshot left open, a partial, corrupt or foreign
-   *  artifact, or a newer snapshot this worker did not write is uncertainty: an open refusal's kind is then unknown and
-   *  its binding moves to now, so neither a stale kind nor a turn before this read can release it. Evidence that cannot
-   *  be read is an error. */
+   *  artifact, or a newer snapshot this worker did not write leaves the memory unresolved: a refusal of unknown kind
+   *  bound to now, so neither a stale kind, a cleared error nor a turn before this read can release it. Evidence that
+   *  cannot be read is an error. */
   async function adopt(id: string, path: string): Promise<RefusalMemory> {
     const mine = covered.get(path) ?? new Set<string>(), known = memories.get(path), name = basename(path), adopted: string[] = [];
-    let memory: RefusalMemory = known ?? { seq: 0, refusal: null, open: [], uncertain: null, cleared: 0, recovered: null }, unsure = false;
+    let memory: RefusalMemory = known ?? { seq: 0, refusal: null, open: [], clean: false, cleared: 0, recovered: null }, unsure = false;
     try {
       const names = await readdir(root).catch((error) => { if (error?.code === "ENOENT") return [] as string[]; throw error; });
       for (const entry of names.filter((value) => value === name || value.startsWith(`${name}.`))) {
@@ -307,8 +308,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (!known && memory.open.length) { unsure = true; memory = { ...memory, open: [] }; }
     if (unsure) {
       const now = new Date().toISOString();
-      memory = { ...memory, uncertain: { seq: memory.seq, observedAt: later(memory.uncertain?.observedAt, now) },
-        refusal: memory.refusal && { ...memory.refusal, kind: "unknown", observedAt: later(memory.refusal.observedAt, now) } };
+      memory = { ...memory, refusal: memory.refusal ? { ...memory.refusal, kind: "unknown", observedAt: later(memory.refusal.observedAt, now) } : { ...unknownRefusal(now, UNRESOLVED), seq: memory.seq } };
     }
     for (const file of adopted) mine.add(file);
     covered.set(path, mine); memories.set(path, memory);
@@ -347,25 +347,27 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   /** Records one fenced read's outcome, in the path's queue. A read that returned no record of this ID records nothing;
    *  its attempt stays on disk until this worker's next snapshot. A refusal names the memory unless a newer read did, and
    *  is dropped only when a recovery whose final read started after it released it; otherwise it moves the binding later.
-   *  A read without one keeps an open refusal. Uncertainty stays while the session shows a native error, and goes when a
-   *  later read finds it quiet. */
-  async function settle(id: string, attempt: number, agent: Agent | undefined, seen: RefusalObservation | null): Promise<{ memory: RefusalMemory; problem: Error | null }> {
+   *  A read without one keeps an open refusal. With no clean stored, a native error without a classified refusal is
+   *  unresolved until a later successful provider turn, and only a read without a native error records the first clean,
+   *  which counts once it is durable. */
+  async function settle(id: string, attempt: number, agent: Agent | undefined, seen: RefusalObservation | null, seenAt: string): Promise<{ memory: RefusalMemory; problem: Error | null }> {
     const path = refusalPath(id);
     return queued(path, async () => {
       const memory = memories.get(path)!, open = memory.open.filter((entry) => entry.seq !== attempt);
       if (!agent) { memories.set(path, { ...memory, open }); return { memory: { ...memory, open }, problem: null }; }
-      let { refusal, uncertain } = memory;
+      let { refusal, clean } = memory;
       if (seen && attempt > memory.cleared) {
         const names = !refusal || attempt > refusal.seq;
         refusal = { ...joinRefusal(refusal, seen, names), seq: refusal && !names ? refusal.seq : attempt };
-        if (uncertain && attempt > uncertain.seq) { refusal.observedAt = later(uncertain.observedAt, refusal.observedAt); uncertain = null; }
-      } else if (!seen && uncertain) {
-        if (quietAfterRefusal(agent) && attempt > uncertain.seq) uncertain = null;
-        else if (agent.status === "error" || agent.lastError) uncertain = { ...uncertain, seq: Math.max(uncertain.seq, attempt) };
+      } else if (!seen && !refusal && !clean) {
+        if (agent.status === "error" || agent.lastError) refusal = { ...unknownRefusal(seenAt, NO_CLEAN), seq: attempt };
+        else clean = true;
       }
-      const next = { ...memory, seq: memory.seq + 1, open, refusal, uncertain };
-      memories.set(path, next);
-      return { memory: next, problem: await publish(id, path, next, refusal ? "refusal" : uncertain || open.length ? "attempt" : "clean") };
+      const next = { ...memory, seq: memory.seq + 1, open, refusal, clean };
+      const problem = await publish(id, path, next, refusal ? "refusal" : clean && !open.length ? "clean" : "attempt");
+      const kept = problem && clean && !memory.clean ? { ...next, clean: false } : next;
+      memories.set(path, kept);
+      return { memory: kept, problem };
     });
   }
   /** Releases the refusal `found` held, only if nothing changed it since, and only once the release is durable. */
@@ -374,23 +376,23 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     return queued(path, async () => {
       const now = memories.get(path)!;
       if (!now.refusal || JSON.stringify([now.refusal, now.cleared]) !== JSON.stringify([found.refusal, found.cleared])) return false;
-      const next = { ...now, seq: now.seq + 1, refusal: null, cleared: attempt, recovered: plain(now.refusal) };
+      const next = { ...now, seq: now.seq + 1, refusal: null, clean: true, cleared: attempt, recovered: plain(now.refusal) };
       memories.set(path, { ...now, seq: next.seq });
       if (await publish(id, path, next, "recovery")) return false;
       memories.set(path, next); return true;
     });
   }
   const unrecorded = (read: RefusalRead) => read.seen && read.problem ? new Error(`The refusal this read saw could not be recorded (${errorText(read.problem)}). This worker keeps it, and the read's attempt on disk keeps Resume closed after a restart.`) : null;
-  /** What a fenced exact read of this ID leaves: a refusal it saw (current), else the open refusal or uncertainty
-   *  (history). Expiry, a failed read or a cleared lastError never release a refusal; only positive recovery after its
-   *  observation does, when `recover` allows the bounded timeline read (G7). */
+  /** What a fenced exact read of this ID leaves: a refusal it saw (current), else the open refusal (history); with no
+   *  clean stored, never "no refusal". Expiry, a failed read or a cleared lastError never release a refusal; only
+   *  positive recovery after its observation does, when `recover` allows the bounded timeline read (G7). */
   async function refusalFor(id: string, observed: RefusalRead, recover = false): Promise<ProviderRefusal | null> {
     const { agent, seen, memory } = observed;
     if (!memory) throw observed.fence ?? new Error("This exact read was not fenced. Resume stays closed.");
     const problem = unrecorded(observed);
     if (problem) throw problem;
     if (seen) return refusalState(seen, { seen: true, readable: true, error: agent?.status === "error", recovered: false });
-    if (!memory.refusal) return memory.uncertain && refusalState(unknownRefusal(memory.uncertain.observedAt), { seen: false, readable: !!agent, error: false, recovered: false });
+    if (!memory.refusal) return memory.clean ? null : refusalState(unknownRefusal(observed.availability.checkedAt, NO_CLEAN), { seen: false, readable: !!agent, error: false, recovered: false });
     let stored = memory.refusal, recovered = false;
     if (recover && agent && quietAfterRefusal(agent)) {
       // A timeline read can load the provider runtime, so only the explicit refusal read runs it. Unavailable is not recovery.

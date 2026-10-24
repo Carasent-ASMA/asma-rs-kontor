@@ -16,7 +16,8 @@ export type RefusalAgent = { provider: string; model?: string | null; runtimeInf
   activeTurn?: unknown; lastError?: string | null; providerUnavailable?: boolean };
 const id = z.string().min(1).max(200);
 export const refusalObservationSchema = z.object({
-  /** `unknown`: refusal memory that is unresolved or unreadable; like `unavailable`, it binds only by time. */
+  /** `unknown`: unresolved refusal memory: a read with no recorded outcome, a record that cannot be used, or a native
+   *  error with no clean read stored. Like `unavailable`, it binds only by time. */
   kind: z.enum(["quota", "auth", "unavailable", "unknown"]),
   /** From the refusal text only, else "unknown"; never a host timestamp. */
   failureAt: z.string(),

@@ -74,7 +74,9 @@ async function host(initial: Agent[], entries: Entry[]) {
 describe("Resume retries the same session on its own route", () => {
   it.each(Object.entries(routes))("%s route: eligible under the default target, sent once to the same ID, nothing created", async (_name, route) => {
     // Only the session's own provider is ready; the target's provider is absent from this host.
-    const h = await host([agent("a", route)], [ready(route.provider)]), review = await h.preview("resume");
+    const h = await host([agent("a", route)], [ready(route.provider)]);
+    await readClean(h);
+    const review = await h.preview("resume");
     expect(review.rows[0]).toMatchObject({ id: "a", eligible: true, provider: route.provider });
     expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "submitted" });
     expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "submitted" });
@@ -90,6 +92,7 @@ describe("Resume retries the same session on its own route", () => {
     ["disabled", { provider: "claude", enabled: false, status: "ready" }],
   ] as const)("checks the session's own provider, not the target's: %s blocks with nothing sent", async (_name, own) => {
     const h = await host([agent("a", routes["non-default"])], [{ ...ready(target.provider), models: [{ provider: target.provider, id: target.model, label: "Sol", thinkingOptions: [{ id: target.effort, label: "Extra high" }] }] }, own]);
+    await readClean(h);
     const review = await h.preview("resume");
     expect(review.rows[0]?.eligible).toBe(true);
     expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("provider claude is not ready") });
@@ -148,6 +151,15 @@ async function restarted(h: Awaited<ReturnType<typeof host>>) {
   vi.resetModules();
   return (await import("../server/session-lifecycle")).createLifecycleService(h.client, h.root);
 }
+/** A durable clean read of each ID while it was quiet, then its fixture state again: a Resume needs a stored clean. */
+async function readClean(h: Awaited<ReturnType<typeof host>>, ids = ["a"]) {
+  for (const id of ids) {
+    const was = h.records.get(id)!;
+    h.update(id, quiet);
+    expect((await h.service.providerRefusal(id)).refusal).toBeNull();
+    h.records.set(id, was);
+  }
+}
 async function refusedHost(others: Agent[] = []) {
   const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA }), ...others], [ready("codex-fixture-account"), ready("claude")]);
   return { h, first: await h.service.providerRefusal("a") };
@@ -191,7 +203,7 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect(h.timeline).toHaveBeenCalledWith({ direction: "tail", limit: 50 });
     expect((await h.service.providerRefusal("a")).refusal).toBeNull();
     expect(await refusalFiles(h.root)).toHaveLength(1);
-    expect(await recordOf(h.root, "a")).toMatchObject({ refusal: null, recovered: { kind: "quota" }, open: [], uncertain: null });
+    expect(await recordOf(h.root, "a")).toMatchObject({ state: "clean", refusal: null, recovered: { kind: "quota" }, open: [], clean: true });
     h.update("a", transport);
     expect((await h.preview("resume")).rows[0]?.eligible).toBe(true);
   });
@@ -412,7 +424,7 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect((await resumeReview(service)).rows[0]?.eligible).toBe(true);
   });
 
-  it("F9: a refusal neither the record nor the hold kept leaves its read attempt on disk; after a restart a transport error cannot Resume, and only a later quiet read resolves it", async () => {
+  it("F9: a refusal neither the record nor the hold kept leaves its read attempt on disk; after a restart a transport error cannot Resume, and only a later successful turn resolves it", async () => {
     const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
     h.hooks.refresh = async () => { fault("writeFile", 2); };
     await expect(h.service.providerRefusal("a")).rejects.toThrow("could not be recorded");
@@ -424,9 +436,12 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect((await service.providerRefusal("a")).refusal).toMatchObject({ kind: "unknown", recovery: "not-confirmed" });
     expect((await resumeReview(service)).rows[0]?.eligible).toBe(false);
     expect(h.send).not.toHaveBeenCalled();
-    // A later successful turn leaves the session quiet; a read then resolves it, and a later failure can Resume.
+    // The error cleared without a turn: quiet alone resolves nothing. A turn answered after the binding does.
     h.update("a", quiet);
-    expect((await service.providerRefusal("a")).refusal).toBeNull();
+    const held = (await service.providerRefusal("a")).refusal;
+    expect(held).toMatchObject({ kind: "unknown", recovery: "not-confirmed" });
+    h.timeline.mockResolvedValue(recoveredTail(held!.observedAt));
+    expect((await service.providerRefusal("a")).refusal).toMatchObject({ kind: "unknown", recovery: "confirmed" });
     h.update("a", transport);
     expect((await resumeReview(service)).rows[0]?.eligible).toBe(true);
   });
@@ -667,6 +682,7 @@ describe("Provider refusal on an exact read (R1)", () => {
 
   it("unreadable stored evidence closes only that session's Resume and is left unchanged", async () => {
     const h = await host([agent("a", routes["account-suffixed"]), agent("b", routes["account-suffixed"])], [ready("codex-fixture-account")]), path = refusalFile(h.root, "a");
+    await readClean(h, ["b"]);
     await mkdir(path);
     await expect(h.service.providerRefusal("a")).rejects.toThrow("Resume stays closed");
     const review = await h.preview("resume", ["a", "b"]);
@@ -681,7 +697,7 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect((await stat(path)).isDirectory()).toBe(true);
   });
 
-  const otherSession = JSON.stringify({ agentId: "z", state: "refusal", seq: 9, open: [], uncertain: null, cleared: 0, recovered: null,
+  const otherSession = JSON.stringify({ agentId: "z", state: "refusal", seq: 9, open: [], clean: true, cleared: 0, recovered: null,
     refusal: { kind: "quota", failureAt: "unknown", observedAt: "2026-10-24T10:00:00.000Z", route: { provider: "codex", model: null }, message: null, seq: 9 } });
   const oldFormat = JSON.stringify({ agentId: "a", kind: "quota", failureAt: "unknown", observedAt: "2026-10-24T10:00:00.000Z", route: { provider: "codex", model: null }, message: null });
   it.each([
@@ -691,26 +707,110 @@ describe("Provider refusal on an exact read (R1)", () => {
     ["another session's held record", ".held", otherSession],
     ["an old-format held record", ".held", oldFormat],
     ["a partial temp", ".0b6f.tmp", '{"agentId":"a"'],
-  ] as const)("%s fails closed for that session only, is recorded as unresolved before it goes, and a later quiet read resolves it", async (_name, suffix, bytes) => {
+  ] as const)("%s fails closed for that session only, is recorded as unresolved before it goes, and only a later successful turn resolves it", async (_name, suffix, bytes) => {
     const h = await host([agent("a", routes["account-suffixed"]), agent("b", routes["account-suffixed"])], [ready("codex-fixture-account")]);
+    await readClean(h, ["b"]);
     await writeFile(`${refusalFile(h.root, "a")}${suffix}`, bytes);
     const review = await h.preview("resume", ["a", "b"]);
     expect(review.rows.map((row) => [row.id, row.eligible])).toEqual([["a", false], ["b", true]]);
     expect(review.rows[0]?.reason).toContain("(unknown) has no confirmed recovery");
     expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
     expect(h.send).not.toHaveBeenCalled();
-    expect((await recordOf(h.root, "a")).uncertain).toMatchObject({ observedAt: expect.any(String) });
+    expect(await recordOf(h.root, "a")).toMatchObject({ state: "refusal", refusal: { kind: "unknown", observedAt: expect.any(String) } });
     expect((await refusalFiles(h.root)).filter((name) => name.startsWith(basename(refusalFile(h.root, "a"))))).toEqual([basename(refusalFile(h.root, "a"))]);
     const service = await restarted(h);
     expect((await resumeReview(service)).rows[0]?.eligible).toBe(false);
     h.update("a", quiet);
-    expect((await service.providerRefusal("a")).refusal).toBeNull();
+    const held = (await service.providerRefusal("a")).refusal;
+    expect(held).toMatchObject({ kind: "unknown", recovery: "not-confirmed" });
+    h.timeline.mockResolvedValue(recoveredTail(held!.observedAt));
+    expect((await service.providerRefusal("a")).refusal).toMatchObject({ recovery: "confirmed" });
     h.update("a", transport);
     expect((await resumeReview(service)).rows[0]?.eligible).toBe(true);
   });
 
+  it("a session first read in a native error with no clean stored is unresolved: Resume stays closed, across a restart, until a later successful turn", async () => {
+    const h = await host([agent("a", routes["account-suffixed"])], [ready("codex-fixture-account")]);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("(unknown) has no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(await recordOf(h.root, "a")).toMatchObject({ state: "refusal", clean: false, refusal: { kind: "unknown" } });
+    const service = await restarted(h);
+    expect((await resumeReview(service)).rows[0]?.eligible).toBe(false);
+    // An unclassified lastError outside a native error is unresolved too.
+    h.update("a", { ...quiet, lastError: "fixture stream reset" });
+    const held = (await service.providerRefusal("a")).refusal;
+    expect(held).toMatchObject({ kind: "unknown", state: "history", recovery: "not-confirmed" });
+    // The error cleared without a turn, and a turn before the binding, prove nothing.
+    h.update("a", quiet);
+    h.timeline.mockResolvedValue({ entries: [entry(retryItem, held!.observedAt, -2_000), entry(answeredItem, held!.observedAt, -1_000)], error: null });
+    expect((await service.providerRefusal("a")).refusal).toMatchObject({ kind: "unknown", recovery: "not-confirmed" });
+    h.update("a", transport);
+    expect((await resumeReview(service)).rows[0]?.eligible).toBe(false);
+    expect(h.send).not.toHaveBeenCalled();
+    h.update("a", quiet);
+    h.timeline.mockResolvedValue(recoveredTail(held!.observedAt));
+    expect((await service.providerRefusal("a")).refusal).toMatchObject({ kind: "unknown", recovery: "confirmed" });
+    expect(await recordOf(h.root, "a")).toMatchObject({ state: "recovery", clean: true, refusal: null });
+    h.update("a", transport);
+    const resumed = await resumeReview(service);
+    expect(resumed.rows[0]?.eligible).toBe(true);
+    expect(await service.execute(resumed.id, "a")).toMatchObject({ outcome: "submitted" });
+  });
+
+  it("only a durable clean read counts: a session read quiet first can Resume a later failure; a clean that could not be written cannot", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], ...quiet }), agent("b", { ...routes["account-suffixed"], ...quiet })], [ready("codex-fixture-account")]);
+    expect((await h.service.providerRefusal("a")).refusal).toBeNull();
+    expect(await recordOf(h.root, "a")).toMatchObject({ state: "clean", clean: true, refusal: null, open: [] });
+    h.hooks.refresh = async () => { fault("writeFile", 2); };
+    expect((await h.service.providerRefusal("b")).refusal).toMatchObject({ kind: "unknown", recovery: "not-confirmed" });
+    expect(await recordOf(h.root, "b")).toMatchObject({ state: "attempt", clean: false });
+    h.update("a", transport); h.update("b", transport);
+    for (const service of [h.service, await restarted(h)]) {
+      const review = await resumeReview(service, ["a", "b"]);
+      expect(review.rows.map((row) => [row.id, row.eligible])).toEqual([["a", true], ["b", false]]);
+    }
+  });
+
+  it.each([
+    ["the read's outcome could not be recorded", async (h: Awaited<ReturnType<typeof host>>) => {
+      h.hooks.refresh = async () => { fault("writeFile", 2); };
+      await expect(h.service.providerRefusal("a")).rejects.toThrow("could not be recorded");
+    }],
+    ["the worker stopped during the read", async (h: Awaited<ReturnType<typeof host>>) => {
+      const slow = holdNextRead(h);
+      void h.service.providerRefusal("a");
+      await slow.reached;
+    }],
+  ] as const)("a durable attempt whose refusal was not recorded (%s) keeps Resume closed after a restart, even once the error cleared without a turn", async (_name, lose) => {
+    const h = await host([agent("a", routes["account-suffixed"])], [ready("codex-fixture-account")]);
+    await readClean(h);
+    h.update("a", { lastError: QUOTA, updatedAt: "2026-10-24T10:00:01Z" });
+    await lose(h);
+    expect(await recordOf(h.root, "a")).toMatchObject({ state: "attempt", clean: true, refusal: null, open: [{ seq: expect.any(Number) }] });
+    const service = await restarted(h);
+    h.update("a", quiet);
+    const held = (await service.providerRefusal("a")).refusal;
+    expect(held).toMatchObject({ kind: "unknown", read: "stale", recovery: "not-confirmed" });
+    h.update("a", transport);
+    for (const next of [service, await restarted(h)]) {
+      const review = await resumeReview(next);
+      expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("(unknown) has no confirmed recovery") });
+      expect(await next.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    }
+    expect(h.send).not.toHaveBeenCalled();
+    const last = await restarted(h);
+    h.update("a", quiet);
+    const bound = (await last.providerRefusal("a")).refusal!;
+    h.timeline.mockResolvedValue(recoveredTail(bound.observedAt));
+    expect((await last.providerRefusal("a")).refusal).toMatchObject({ recovery: "confirmed" });
+    h.update("a", transport);
+    expect((await resumeReview(last)).rows[0]?.eligible).toBe(true);
+  });
+
   it("every Resume-path exact read starts only after its attempt is on disk; Archive and probes write no refusal memory", async () => {
     const h = await host([agent("a", routes["account-suffixed"]), agent("b", { ...routes["account-suffixed"], status: "idle" })], [ready("codex-fixture-account")]);
+    await readClean(h);
     const ref = h.client.agents.ref.bind(h.client.agents), open: number[] = [];
     h.client.agents.ref = (id) => {
       const value = ref(id);
@@ -730,13 +830,14 @@ describe("Provider refusal on an exact read (R1)", () => {
   it("a failed re-read keeps the refusal as unreadable history; with no observation it is unknown, not clear", async () => {
     const { h } = await refusedHost([agent("b", routes["account-suffixed"])]);
     h.unreadable.add("a"); h.unreadable.add("b");
-    expect(await h.service.providerRefusal("a")).toMatchObject({ availability: { state: "unknown" }, refusal: { read: "unreadable", state: "history", recovery: "not-confirmed" } });
-    expect(await h.service.providerRefusal("b")).toMatchObject({ availability: { state: "unknown" }, refusal: null });
+    expect(await h.service.providerRefusal("a")).toMatchObject({ availability: { state: "unknown" }, refusal: { kind: "quota", read: "unreadable", state: "history", recovery: "not-confirmed" } });
+    expect(await h.service.providerRefusal("b")).toMatchObject({ availability: { state: "unknown" }, refusal: { kind: "unknown", read: "unreadable", state: "history", recovery: "not-confirmed" } });
     expect((await h.preview("resume")).rows[0]?.eligible).toBe(false);
   });
 
   it("no global inference: another session on the same route shows nothing and can Resume", async () => {
     const { h } = await refusedHost([agent("b", routes["account-suffixed"]), agent("c", { ...routes["account-suffixed"], status: "running", lastError: undefined })]);
+    await readClean(h, ["b"]);
     expect((await h.service.providerRefusal("b")).refusal).toBeNull();
     expect((await h.service.providerRefusal("c")).refusal).toBeNull();
     expect((await h.preview("resume", ["b"])).rows[0]?.eligible).toBe(true);
