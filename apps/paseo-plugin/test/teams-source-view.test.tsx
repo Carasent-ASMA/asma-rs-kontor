@@ -194,7 +194,7 @@ describe("Teams disclosures and targets (A11Y-01)", () => {
     const screen = mount({}, all);
     const disclosures = screen.nodes().filter((node) => typeof (node.props.accessibilityState as { expanded?: unknown } | undefined)?.expanded === "boolean");
     const open = (label: string) => disclosures.filter((node) => node.props.accessibilityLabel === label).map((node) => (node.props.accessibilityState as { expanded: boolean }).expanded);
-    for (const label of [configured(), `Configured bindings (${fleet.bindings.length})`, `Configured chains (${fleet.chains.length})`, "Unresolved template/leadership details (74)", `${fleet.bindings[0]!.reference} → ${fleet.bindings[0]!.chainName}`]) expect(new Set(open(label))).toEqual(new Set([true]));
+    for (const label of [configured(), `Configured bindings (${fleet.bindings.length})`, `Configured chains (${fleet.chains.length})`, "Unresolved template/leadership details (76)", `${fleet.bindings[0]!.reference} → ${fleet.bindings[0]!.chainName}`]) expect(new Set(open(label))).toEqual(new Set([true]));
     expect(open("Source details")).toEqual([true, true, true, true]);
     // Rows outside the saved openBindings report collapsed, not a missing state.
     const closed = disclosures.filter((node) => !(node.props.accessibilityState as { expanded: boolean }).expanded).map((node) => String(node.props.accessibilityLabel));

@@ -13,6 +13,7 @@ const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/fleet.yml");
 const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/orchestration/fleet.yml");
 
 const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
+const TICKETS_BASIC: &str = "team/01936f5a-0000-7000-8000-000000000105";
 const COMMITTEE: &str = "committee/01991c00-0000-7000-8000-000000000001/reviewer-a";
 const ADVISOR: &str = "advisor/01a02d00-0000-7000-8000-00000000ad01";
 
@@ -190,6 +191,24 @@ fn a_v1_document_reads_the_same_through_both_entry_points() {
         assert_eq!(fleet.resolve(key), policy.resolve(key), "{key}");
         assert!(policy.resolve(key).is_some(), "{key} is bound");
     }
+}
+
+#[test]
+fn the_tickets_basic_team_resolves_both_slots() {
+    let snapshot = FleetSnapshot::parse(EXAMPLE).expect("the fleet reader accepts the example");
+    for (slot, chain) in [
+        ("implement", "open-first-build"),
+        ("verify", "open-first-verify"),
+    ] {
+        let key = format!("{TICKETS_BASIC}/{slot}");
+        let resolution = snapshot.resolve(&key).expect("the seat is bound");
+        assert_eq!(resolution.provenance.binding_key, key);
+        assert_eq!(resolution.provenance.chain, chain);
+        assert!(!resolution.routes.is_empty(), "{key} resolves to a route");
+    }
+    let verify = format!("{TICKETS_BASIC}/verify");
+    let implement = format!("{TICKETS_BASIC}/implement");
+    assert_eq!(snapshot.independent_of(&verify), Some(implement.as_str()));
 }
 
 #[test]
