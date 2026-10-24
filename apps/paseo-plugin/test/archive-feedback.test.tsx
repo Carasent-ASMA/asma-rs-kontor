@@ -269,6 +269,20 @@ describe("Archive details", () => {
     draw.unmount(); held.resolve(undefined); await checking; await settle();
     expect(changed).not.toHaveBeenCalled(); expect(fake.count("sessions.lifecycle-reconcile-item")).toBe(1);
   });
+  it("QA1-PR476-P2-01 an unmount retires the recovery lookup: a pending list or owner read sends no further read and writes nothing", async () => {
+    for (const held of ["list", "owner"] as const) for (const fails of [false, true]) {
+      const slow = deferred<unknown>(), changed = vi.fn(), fake = host([held === "list" ? () => slow.promise : async () => latest([sa, other])]);
+      if (held === "owner") fake.owners.set(sa.reviewId, () => slow.promise);
+      const draw = mount(fake.rpc, () => "host-a", changed), view = draw(); await settle();
+      const before = fake.calls.map(([name, input]) => [name, { ...input }]);
+      expect(before.at(-1)).toEqual(["sessions.lifecycle-review", held === "list" ? {} : { reviewId: sa.reviewId }]);
+      draw.unmount(); if (fails) slow.reject(new Error("Fixture late failure.")); else slow.resolve(held === "list" ? latest([sa, other]) : ownerReview(sa)); await settle();
+      // Retired controls stay inert too.
+      await view.recovery.reload(); await view.recovery.refresh(); await view.recovery.refresh(sa); await settle();
+      expect(fake.calls).toEqual(before); expect(changed).not.toHaveBeenCalled();
+      expect(draw().recovery).toMatchObject({ items: [], error: null, listed: null, complete: false, refreshing: null });
+    }
+  });
 });
 
 describe("AUD P2-B01-R6 a request the earlier host view of a mounted hook started", () => {

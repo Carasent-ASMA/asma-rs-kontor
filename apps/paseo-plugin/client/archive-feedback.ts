@@ -122,7 +122,8 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
   const [complete, setComplete] = useState(false);
   const [, setRevision] = useState(0);
   // A host switch starts a new run; a result from an earlier run, even for the same host ID, changes nothing.
-  const owner = useRef(hostId), run = useRef(0), loads = useRef(0), active = useRef(false), known = useRef<readonly RecoveryItem[]>([]);
+  // `live` is false once the view's cleanup ran: retired work sends no further read and writes no state.
+  const owner = useRef(hostId), run = useRef(0), loads = useRef(0), live = useRef(false), active = useRef(false), known = useRef<readonly RecoveryItem[]>([]);
   owner.current = hostId;
   const ownerItem = async (ref: UnresolvedRef, reviews: Map<string, Promise<LifecycleReview | null>>): Promise<RecoveryItem | null> => {
     try {
@@ -138,7 +139,8 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
     }
   };
   const load = async () => {
-    const host = hostId, current = ++loads.current, stale = () => owner.current !== host || current !== loads.current;
+    const host = hostId, current = ++loads.current, stale = () => !live.current || owner.current !== host || current !== loads.current;
+    if (stale()) return;
     try {
       const result = await read({});
       if (stale()) return;
@@ -147,26 +149,28 @@ export function useArchiveRecovery(hostId: string, lifecycle: { review: unknown;
       const next: RecoveryItem[] = [], reviews = new Map<string, Promise<LifecycleReview | null>>();
       let partial = false;
       for (const ref of result?.unresolved ?? []) {
-        const item = await ownerItem(ref, reviews);
         if (stale()) return;
+        const item = await ownerItem(ref, reviews);
         if (item?.error) partial = true;
         if (item) next.push(item);
       }
+      if (stale()) return;
       known.current = next; setItems(next); setError(null); setListed(host); setComplete(!partial);
     } catch (failure) { if (!stale()) { setError(text(failure)); setComplete(false); } }
   };
-  // An unmount ends the run too: a refresh loop never reconciles, loads or calls onChanged for an unmounted view.
+  // An unmount ends the run and every load too: a pending list or owner read sends nothing further, and a refresh
+  // loop never reconciles, loads or calls onChanged for an unmounted view.
   useEffect(() => {
-    run.current++; active.current = false; known.current = [];
+    live.current = true; run.current++; active.current = false; known.current = [];
     setItems([]); setError(null); setRefreshing(null); setNotes({}); setListed(null); setComplete(false);
-    return () => { run.current++; };
+    return () => { live.current = false; run.current++; loads.current++; };
   }, [hostId]);
   useEffect(() => { if (!lifecycle.busy && !lifecycle.running) void load(); }, [hostId, lifecycle.review, lifecycle.busy, lifecycle.running]);
   // Hermes scopes loop bindings per function call, so a note reaches its updater only as this call's arguments.
   const note = (key: string, value: RefreshNote) => setNotes((current) => ({ ...current, [key]: value }));
   /** One exact-ID read per owner ref, in order: `only` refreshes that one item, none refreshes every listed item. */
   const refresh = async (only?: UnresolvedRef) => {
-    if (active.current) return;
+    if (active.current || !live.current) return;
     active.current = true; setRefreshing(only ? recoveryKey(only) : "all");
     const token = ++run.current, refs = only ? [only] : known.current.map((item) => item.ref);
     try {
