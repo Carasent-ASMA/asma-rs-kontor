@@ -59,6 +59,11 @@ pill is the in-session return control where the composer supports it.
   subscription's bootstrap page is one row, since the walk reads every row. A
   workspace and project read under 30 s old is reused with its own read time.
   Plugin cleanup releases the subscriptions.
+- **Token counts.** Row input/output and separate cache-read counts use stable
+  compact units across device locales: K = 1,000 and M = 1,000,000, with at most
+  one decimal (300K, 1.2M). Rounding carries across unit boundaries. The arrows,
+  ≥ lower-bound mark, missing values and provider-report scope stay the same.
+  Details and spoken/help text retain exact localized values.
 - **Search and filters.** Search matches every token against the full original
   session title, workspace name, project name/key, cwd and recognized
   structured labels (`epic`, `workstream`, PR and ticket identifiers). Native
@@ -252,10 +257,14 @@ filters; the native **← Kontor** control returns to the last host-local view.
 Sessions has separate **Layout**, **Group by** and **Sort by** choices. **Flat**
 lists the complete filtered set. **Grouped** offers **Desks & workstreams**,
 **Desks & workspaces** and **Role**; switching back restores the last grouping.
-The labelled **Grouped / Flat** segments stay above the scrolling list on mobile
+The icon-only **Grouped / Flat** choices stay above the scrolling list on mobile
 and desktop, alongside one explicitly labelled matching-session count (below
-it on compact screens). The same row includes the separate Select action with
-an icon and short label. In short compact windows,
+it on compact screens). The same row includes the separate Select action and
+notice icon/count. All have at least 44 pt targets. The selected layout has a
+check mark, fill and thin border. A deliberate long press opens the action title
+and explanation without activating it; hover and keyboard focus show the same
+help. Escape, outside touch, scroll or cancellation dismisses it. Pressable owns
+the gesture recognizer; no gesture timer is added. In short compact windows,
 that row scrolls at the top of the list so session rows retain usable space.
 Their checked state, keyboard focus outline and hover/focus help make the choice
 visible. Use Tab to reach the
@@ -1318,9 +1327,10 @@ The action outcome remains visible when its row disappears.
 The Current default is part of the combined Sessions view.
 
 **Select** shares a wrapping row with the mutually exclusive **Grouped** and
-**Flat** layout choices. Icons have short visible labels and accessible help;
+**Flat** layout choices. The row uses icons with accessible names and
+long-press, hover and keyboard help;
 all three targets are at least 44 pt. The layout group uses a subtle fill and
-underlined selected label, with no enclosing frame. **Select** enters bulk
+check mark, with no enclosing frame. **Select** enters bulk
 archive selection on desktop and mobile; a row long press
 also enters selection. Checkboxes support Space on web and have 44-point targets.
 **Select all shown** covers only the filtered sessions. A batch contains at most

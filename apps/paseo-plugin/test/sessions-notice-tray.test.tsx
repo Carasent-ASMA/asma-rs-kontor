@@ -144,7 +144,7 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
     expect(summaries(trigger())).toEqual(["1 archive not confirmed"]); expect(placed(layout)).toBe(true);
     const rendered = button(trigger()!.props);
     expect(rendered.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Show notices: 1 archive not confirmed", "aria-expanded": false, accessibilityState: { expanded: false } });
-    expect((rendered.props.style as { borderColor: string }).borderColor).toBe(colors.statusWarning);
+    expect(walk(rendered).find(element => element.type === "Icon")!.props.color).toBe(colors.statusWarning);
     // Presentation only: no read, check, archive or toast, so nothing is reported closed.
     expect(fake.calls.length).toBe(before); expect(fake.toast.show).not.toHaveBeenCalled(); expect(fake.toast.error).not.toHaveBeenCalled();
     expect(count("sessions.lifecycle-reconcile-item")).toBe(0); expect(count("sessions.lifecycle-execute-item")).toBe(0);
@@ -192,12 +192,12 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
     mount(layout); await settle();
     expect(tray()!.props).toMatchObject({ compact: layout.startsWith("compact"), disabled: false });
     (tray()!.props.onHide as () => void)(); await settle();
-    const style = button(trigger()!.props).props.style as { minHeight: number; minWidth: number };
+    const style = (button(trigger()!.props).props.style as (state: object) => { minHeight: number; minWidth: number })({});
     expect(style.minHeight).toBeGreaterThanOrEqual(44); expect(style.minWidth).toBeGreaterThanOrEqual(44);
     if (layout.startsWith("compact")) {
       // 320 and 390 keep the quick toolbar at its width; the button sits in the 80 pt Resume column and shows a count.
       expect(all().find((element) => element.type === MobileQuickToolbar)?.props.width).toBe(Number(layout.slice(-3)) - 112);
-      expect(walk(button(trigger()!.props)).find((element) => element.type === "Text")?.props.children).toBe("1 notice");
+      expect(walk(button(trigger()!.props)).find((element) => element.type === "Text")?.props.children).toBe(1);
     }
   });
 });
@@ -224,8 +224,8 @@ describe("Notice tray with several notices", () => {
       expect(summaries(trigger())).toEqual([read, "Session navigation unavailable", "1 archive not confirmed"]);
       const rendered = button(trigger()!.props);
       expect(rendered.props.accessibilityLabel).toBe(`Show notices: ${read}; Session navigation unavailable; 1 archive not confirmed`);
-      expect(walk(rendered).find((element) => element.type === "Text")?.props.children).toBe(`${read} +2`);
-      expect((rendered.props.style as { borderColor: string }).borderColor).toBe(status === "error" ? colors.statusDanger : colors.statusWarning);
+      expect(walk(rendered).find((element) => element.type === "Text")?.props.children).toBe(3);
+      expect(walk(rendered).find(element => element.type === "Icon")!.props.color).toBe(status === "error" ? colors.statusDanger : colors.statusWarning);
     }
   });
 
@@ -360,14 +360,14 @@ describe("NoticeTray keyboard and outside presses", () => {
 
 describe("NoticesButton pointer sizes", () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
-  it("is 30 pt on a desktop mouse and 44 pt on touch or a compact layout", async () => {
+  it("keeps an icon and count in a 44pt target on desktop and touch", async () => {
     const notice: Notice = { keys: ["archive:a"], summary: "1 archive not confirmed", tone: "warning", node: null };
     const sizes: Record<string, number> = {};
     for (const pointer of ["fine", "coarse"] as const) {
       vi.resetModules(); vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)" && pointer === "coarse" }));
       const { NoticesButton: Button } = await import("../client/notice-tray");
-      for (const compact of [false, true]) sizes[`${pointer}:${compact ? "compact" : "wide"}`] = ((Button({ notices: [notice], colors, compact, onPress: () => undefined }) as unknown as Element).props.style as { minHeight: number }).minHeight;
+      for (const compact of [false, true]) sizes[`${pointer}:${compact ? "compact" : "wide"}`] = ((Button({ notices: [notice], colors, compact, onPress: () => undefined }) as unknown as Element).props.style as (state: object) => { minHeight: number })({}).minHeight;
     }
-    expect(sizes).toEqual({ "fine:wide": 30, "fine:compact": 44, "coarse:wide": 44, "coarse:compact": 44 });
+    expect(sizes).toEqual({ "fine:wide": 44, "fine:compact": 44, "coarse:wide": 44, "coarse:compact": 44 });
   });
 });

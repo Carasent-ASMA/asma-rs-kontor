@@ -178,6 +178,44 @@ describe("hover and focus help", () => {
     (screen.tooltip()!.props.onPointerEnter as () => void)(); vi.advanceTimersByTime(10000); screen.render(); expect(screen.tooltip()).toBeDefined();
     (screen.tooltip()!.props.onPointerLeave as () => void)(); vi.advanceTimersByTime(160); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
+  it("keeps panel hover when the source leave callback arrives after panel entry", () => {
+    const screen = mount(); screen.control.bindings.onHoverIn(); screen.render();
+    (screen.tooltip()!.props.onPointerEnter as () => void)();
+    screen.control.bindings.onHoverOut(); vi.advanceTimersByTime(1000); screen.render(); expect(screen.tooltip()).toBeDefined();
+    (screen.tooltip()!.props.onPointerLeave as () => void)(); vi.advanceTimersByTime(160); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it("retires an old panel's hover when another control takes focus, including late old-panel entry", () => {
+    const screen = mount(1440, 900);
+    const next = useControlHelp("Select sessions. Choose sessions for archive, then review and confirm.");
+    next.bindings.ref(measure(1100, 300, 44, 44) as View);
+    screen.control.bindings.onHoverIn(); screen.render();
+    const oldPanel = screen.tooltip()!;
+    (oldPanel.props.onPointerEnter as () => void)();
+    screen.control.bindings.onHoverOut();
+    next.bindings.onFocus(); screen.render();
+    expect(screen.tooltip()!.props.children).not.toBe(oldPanel.props.children);
+    // A callback queued by the replaced panel cannot claim its successor's hover.
+    (oldPanel.props.onPointerEnter as () => void)();
+    next.bindings.onBlur(); vi.advanceTimersByTime(1000); screen.render();
+    expect(screen.tooltip()).toBeUndefined();
+  });
+  it("does not let a retired panel's leave cancel hover over the replacement panel", () => {
+    const screen = mount(1440, 900);
+    const next = useControlHelp("Flat. Show matching sessions in one list.");
+    next.bindings.ref(measure(1100, 300, 44, 44) as View);
+    screen.control.bindings.onHoverIn(); screen.render();
+    const oldPanel = screen.tooltip()!;
+    (oldPanel.props.onPointerEnter as () => void)();
+    next.bindings.onFocus(); screen.render();
+    const nextPanel = screen.tooltip()!;
+    (nextPanel.props.onPointerEnter as () => void)();
+    next.bindings.onBlur();
+    (oldPanel.props.onPointerLeave as () => void)();
+    next.bindings.onHoverOut(); vi.advanceTimersByTime(1000); screen.render();
+    expect(screen.tooltip()).toBeDefined();
+    (nextPanel.props.onPointerLeave as () => void)(); vi.advanceTimersByTime(160); screen.render();
+    expect(screen.tooltip()).toBeUndefined();
+  });
   it.each([[320, 240], [390, 320], [1400, 800]])("clamps help inside a %s by %s viewport and opens upward at the bottom", (width, height) => {
     const screen = mount(width, height); screen.control.bindings.onFocus(); screen.render();
     const style = screen.tooltip()!.props.style as { left: number; maxWidth: number; bottom: number; maxHeight: number };

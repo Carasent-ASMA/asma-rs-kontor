@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
-import { useControlHelp } from "./control-help";
+import { useActionHelp } from "./control-help";
 import { ARCHIVE_BATCH_LIMIT, unresolvedArchive, type LifecycleRow } from "../shared/session-lifecycle";
 import { Action, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
@@ -48,17 +48,16 @@ export function ArchiveRowFeedback({ row, colors }: { row: LifecycleRow | undefi
 export function ArchiveSelectionToggle({ selection, disabled, colors, toggleRef }: {
   selection: ReturnType<typeof useArchiveSelection>; disabled: boolean; colors: Colors; toggleRef?: RefObject<View | null>;
 }) {
-  const hint = "Choose sessions for archive. Nothing is archived until you review and confirm.";
-  const help = useControlHelp(hint, toggleRef);
+  const hint = selection.selecting ? "Cancel selection. Clear selected sessions without archiving." : "Select sessions. Choose sessions for archive, then review and confirm.";
+  const help = useActionHelp(hint, toggleRef);
   return <Pressable {...help.bindings} testID="sessions-selection-toggle" accessibilityRole="button"
     accessibilityLabel={selection.selecting ? "Cancel archive selection" : "Select sessions for archive"} accessibilityHint={hint}
     accessibilityState={{ selected: selection.selecting, disabled }} aria-pressed={selection.selecting} disabled={disabled}
     onPress={() => { help.dismiss(); if (selection.selecting) selection.clear(); else selection.start(); }}
     style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minWidth: 44, minHeight: 44, paddingHorizontal: 8, paddingVertical: 6,
-      flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 6, borderWidth: 2, borderColor: focused ? colors.foreground : "transparent",
+      alignItems: "center", justifyContent: "center", borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.foreground : "transparent",
       backgroundColor: pressed || selection.selecting ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
-    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={selection.selecting ? "X" : "ListChecks"} size={16} color={colors.foregroundMuted} /></View>
-    <Text style={{ color: colors.foreground, fontSize: 12 }}>{selection.selecting ? "Cancel" : "Select"}</Text>
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={selection.selecting ? "X" : "ListChecks"} size={18} color={colors.foreground} /></View>
   </Pressable>;
 }
 
