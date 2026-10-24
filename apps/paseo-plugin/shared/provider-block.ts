@@ -6,10 +6,8 @@ import { availabilitySchema, freshAvailability } from "./session-lifecycle";
 // former single pattern matched.
 const QUOTA = /quota|usage.?limit|rate.?limit|exhaust|billing|credit/i;
 const AUTH = /unauthori[sz]ed|authenticat|\b401\b|\b403\b|api.?key|credential|token.expired|permission.denied/i;
-// The provider's own response date: an HTTP IMF-fixdate (always GMT) under `date` in the serialized `responseHeaders`
-// object only. A body, reset or any other date is never a failure time.
-const RESPONSE_HEADERS = /"responseHeaders"\s*:\s*\{([^{}]*)\}/;
-const HEADER_DATE = /"date"\s*:\s*"((?:mon|tue|wed|thu|fri|sat|sun), \d{2} (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec) \d{4} \d{2}:\d{2}:\d{2} gmt)"/i;
+// An HTTP IMF-fixdate, always GMT.
+const IMF_DATE = /^(?:mon|tue|wed|thu|fri|sat|sun), \d{2} (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec) \d{4} \d{2}:\d{2}:\d{2} gmt$/i;
 const SYSTEM_ERROR = /^\s*\[System Error\]/;
 /** Timeline items one recovery check reads. A transport bound: a refusal further back cannot be confirmed (G7). */
 export const RECOVERY_TAIL_ITEMS = 50;
@@ -21,7 +19,8 @@ export const refusalObservationSchema = z.object({
   kind: z.enum(["quota", "auth", "unavailable"]),
   /** From the refusal text only, else "unknown"; never a host timestamp. */
   failureAt: z.string(),
-  /** Host time of the exact-ID read that saw the refusal; not a failure time and not provider health. */
+  /** Host time after the exact-ID read that saw the refusal returned: recovery counts only turns after it. Not a failure
+   *  time and not provider health. */
   observedAt: z.string(),
   route: z.object({ provider: z.string(), model: z.string().nullable() }),
   message: z.string().nullable(),
@@ -42,8 +41,14 @@ export function refusalKind(agent: Pick<RefusalAgent, "lastError" | "providerUna
   const text = agent.lastError ?? "";
   return QUOTA.test(text) ? "quota" : AUTH.test(text) ? "auth" : agent.providerUnavailable ? "unavailable" : null;
 }
+/** The provider's own response date: `date` in the `responseHeaders` of the outer serialized error envelope only. A
+ *  nested, body or reset date, or text that is not one JSON envelope, is never a failure time. */
 export function failureAt(text: string | null | undefined): string {
-  const headers = RESPONSE_HEADERS.exec(text ?? "")?.[1], match = headers ? HEADER_DATE.exec(headers) : null, time = match ? Date.parse(match[1]!) : NaN;
+  const start = text?.indexOf("{") ?? -1;
+  let headers: unknown = null;
+  try { if (start >= 0) headers = (JSON.parse(text!.slice(start)) as { responseHeaders?: unknown } | null)?.responseHeaders; } catch { /* not one envelope: unknown */ }
+  const date = headers && typeof headers === "object" ? Object.entries(headers).find(([key]) => key.toLowerCase() === "date")?.[1] : undefined;
+  const time = typeof date === "string" && IMF_DATE.test(date) ? Date.parse(date) : NaN;
   return Number.isFinite(time) ? new Date(time).toISOString() : "unknown";
 }
 export function observeRefusal(agent: RefusalAgent, observedAt: string): RefusalObservation | null {

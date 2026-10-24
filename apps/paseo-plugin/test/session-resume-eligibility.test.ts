@@ -9,11 +9,16 @@ import { contributeSessionLifecycle, createLifecycleService, lifecycleRow, type 
 import { DEFAULT_RECOVERY_TARGET as target, RESUME_PROMPT } from "../shared/session-lifecycle";
 import type { ProviderRefusalRead } from "../shared/provider-block";
 
-// One deterministic interleaving point: runs between a guarded release's compare and its delete.
-const fsHook = vi.hoisted(() => ({ beforeUnlink: undefined as undefined | (() => Promise<void>) }));
+// Deterministic interleaving points: one runs between a guarded release's compare and its delete; the other fails the
+// next read of a stored refusal with an I/O error.
+const fsHook = vi.hoisted(() => ({ beforeUnlink: undefined as undefined | (() => Promise<void>), failRefusalRead: false }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, unlink: async (path: Parameters<typeof actual.unlink>[0]) => { const hook = fsHook.beforeUnlink; fsHook.beforeUnlink = undefined; await hook?.(); return actual.unlink(path); } };
+  const readFile = (async (...args: Parameters<typeof actual.readFile>) => {
+    if (fsHook.failRefusalRead && String(args[0]).includes("refusal-")) { fsHook.failRefusalRead = false; throw Object.assign(new Error("EIO: fixture i/o error"), { code: "EIO" }); }
+    return actual.readFile(...args);
+  }) as typeof actual.readFile;
+  return { ...actual, readFile, unlink: async (path: Parameters<typeof actual.unlink>[0]) => { const hook = fsHook.beforeUnlink; fsHook.beforeUnlink = undefined; await hook?.(); return actual.unlink(path); } };
 });
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -39,8 +44,9 @@ type Timeline = { entries: readonly unknown[]; error?: string | null };
 async function host(initial: Agent[], entries: Entry[]) {
   const root = await mkdtemp(join(tmpdir(), "kontor-resume-test-")); dirs.push(root);
   const records = new Map(initial.map((value) => [value.id, value])), unreadable = new Set<string>();
-  // One deterministic interleaving point: runs after an exact read took its record, before the read returns.
-  const hooks: { refresh?: () => Promise<void> } = {};
+  // One deterministic interleaving point: runs after an exact read took its record, before the read returns. A hook
+  // that returns a record makes the read return that instead (a record that changed while the read was slow).
+  const hooks: { refresh?: () => Promise<Agent | void> } = {};
   const timeline = vi.fn(async (_options?: { direction?: "tail"; limit?: number }): Promise<Timeline> => ({ entries: [{ type: "user_message", text: "Fictional task context" }], error: null }));
   const send = vi.fn(async (_id: string, _text: string, _options?: unknown) => {}), archive = vi.fn(async (id: string) => {
     records.set(id, { ...records.get(id)!, status: "closed", archivedAt: "2026-10-24" }); return { archivedAt: "2026-10-24" };
@@ -50,7 +56,8 @@ async function host(initial: Agent[], entries: Entry[]) {
     list: async () => ({ requestId: "fixture", entries: [...records.values()].map((value) => ({ agent: value, project: { projectKey: "fixture", projectName: "Fixture", checkout: { worktreeRoot: null, cwd: "/fixtures/checkout", isGit: false as const, currentBranch: null, remoteUrl: null, isPaseoOwnedWorktree: false as const, mainRepoRoot: null } } })), pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } }),
     ref: (id) => ({ refresh: async () => {
       if (unreadable.has(id)) throw new Error("fixture transport closed");
-      const value = records.get(id), hook = hooks.refresh; hooks.refresh = undefined; await hook?.();
+      const taken = records.get(id), hook = hooks.refresh; hooks.refresh = undefined;
+      const value = (await hook?.()) ?? taken;
       return value ? { agent: value, project: null } : null;
     },
       send: (text, options) => send(id, text, options), archive: () => archive(id), timeline: { refetch: timeline } }),
@@ -119,15 +126,17 @@ async function refusedHost(others: Agent[] = []) {
   const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA }), ...others], [ready("codex-fixture-account"), ready("claude")]);
   return { h, first: await h.service.providerRefusal("a") };
 }
-afterEach(() => { fsHook.beforeUnlink = undefined; });
+afterEach(() => { fsHook.beforeUnlink = undefined; fsHook.failRefusalRead = false; vi.useRealTimers(); });
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("Provider refusal on an exact read (R1)", () => {
   it("current: binds the header failure time, the read time and the route read; no timeline read; Resume stays closed", async () => {
     const { h, first } = await refusedHost();
-    expect(first.refusal).toEqual({ kind: "quota", failureAt: "2026-10-20T21:30:52.000Z", observedAt: first.availability.checkedAt,
+    expect(first.refusal).toEqual({ kind: "quota", failureAt: "2026-10-20T21:30:52.000Z", observedAt: expect.any(String),
       route: { provider: "codex-fixture-account", model: "gpt-6.1-sol" }, message: QUOTA, read: "fresh", state: "current", recovery: "not-confirmed" });
     expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("Quota/auth") });
     expect(h.timeline).not.toHaveBeenCalled();
+    expect(Date.parse(first.refusal!.observedAt)).toBeGreaterThanOrEqual(Date.parse(first.refusal!.observedAt));
   });
 
   it("a body reset date with empty responseHeaders is never the failure time", async () => {
@@ -146,11 +155,11 @@ describe("Provider refusal on an exact read (R1)", () => {
     const { h, first } = await refusedHost();
     await new Promise((resolve) => setTimeout(resolve, 5));
     const second = await h.service.providerRefusal("a");
-    expect(second.refusal).toMatchObject({ state: "current", failureAt: first.refusal!.failureAt, observedAt: second.availability.checkedAt });
-    expect(Date.parse(second.availability.checkedAt)).toBeGreaterThan(Date.parse(first.availability.checkedAt));
+    expect(second.refusal).toMatchObject({ state: "current", failureAt: first.refusal!.failureAt });
+    expect(Date.parse(second.refusal!.observedAt)).toBeGreaterThan(Date.parse(first.refusal!.observedAt));
     expect(await refusalFiles(h.root)).toHaveLength(1);
     h.update("a", quiet);
-    h.timeline.mockResolvedValue(recoveredTail(second.availability.checkedAt));
+    h.timeline.mockResolvedValue(recoveredTail(second.refusal!.observedAt));
     expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "history", recovery: "confirmed" });
     expect(h.timeline).toHaveBeenCalledWith({ direction: "tail", limit: 50 });
     expect((await h.service.providerRefusal("a")).refusal).toBeNull();
@@ -162,8 +171,8 @@ describe("Provider refusal on an exact read (R1)", () => {
   it("absence of lastError at a retry start is not recovery; a different later failure still cannot Resume", async () => {
     const { h, first } = await refusedHost();
     h.update("a", { status: "running", lastError: undefined, activeTurn: { turnId: "retry", startedAt: null }, updatedAt: "2026-10-24T10:00:01Z" });
-    h.timeline.mockResolvedValue(recoveredTail(first.availability.checkedAt));
-    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", state: "history", recovery: "not-confirmed", observedAt: first.availability.checkedAt });
+    h.timeline.mockResolvedValue(recoveredTail(first.refusal!.observedAt));
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", state: "history", recovery: "not-confirmed", observedAt: first.refusal!.observedAt });
     expect(h.timeline).not.toHaveBeenCalled();
     h.update("a", transport);
     const review = await h.preview("resume");
@@ -175,7 +184,7 @@ describe("Provider refusal on an exact read (R1)", () => {
   it("closed after a refusal is not recovery, even with a completed turn in the tail", async () => {
     const { h, first } = await refusedHost();
     h.update("a", { ...quiet, status: "closed" });
-    h.timeline.mockResolvedValue(recoveredTail(first.availability.checkedAt));
+    h.timeline.mockResolvedValue(recoveredTail(first.refusal!.observedAt));
     expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "history", recovery: "not-confirmed" });
     expect(h.timeline).not.toHaveBeenCalled();
     expect(await refusalFiles(h.root)).toHaveLength(1);
@@ -192,7 +201,7 @@ describe("Provider refusal on an exact read (R1)", () => {
   ] as const)("not recovery: %s", async (_name, reply) => {
     const { h, first } = await refusedHost();
     h.update("a", quiet);
-    h.timeline.mockImplementation(async () => reply(first.availability.checkedAt));
+    h.timeline.mockImplementation(async () => reply(first.refusal!.observedAt));
     for (let read = 0; read < 2; read++) expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", state: "history", recovery: "not-confirmed" });
     expect(await refusalFiles(h.root)).toHaveLength(1);
     h.update("a", transport);
@@ -202,7 +211,7 @@ describe("Provider refusal on an exact read (R1)", () => {
   it("a refusal written between a release's compare and its delete survives, and Resume stays closed", async () => {
     const { h, first } = await refusedHost();
     h.update("a", quiet);
-    h.timeline.mockResolvedValue(recoveredTail(first.availability.checkedAt));
+    h.timeline.mockResolvedValue(recoveredTail(first.refusal!.observedAt));
     let newer: Promise<ProviderRefusalRead> | undefined;
     fsHook.beforeUnlink = async () => {
       h.update("a", { status: "error", lastError: QUOTA, updatedAt: "2026-10-24T10:00:04Z" });
@@ -213,41 +222,122 @@ describe("Provider refusal on an exact read (R1)", () => {
     const second = await newer!;
     expect(second.refusal).toMatchObject({ state: "current" });
     h.update("a", transport);
-    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", recovery: "not-confirmed", observedAt: second.availability.checkedAt });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", recovery: "not-confirmed", observedAt: second.refusal!.observedAt });
     expect((await h.preview("resume")).rows[0]?.eligible).toBe(false);
     expect(h.send).not.toHaveBeenCalled();
   });
 
-  it("a read that finishes late never replaces a later observation (AUD-01b)", async () => {
-    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: "401 Unauthorized" })], [ready("codex-fixture-account")]);
+  it.each([["", false], [" in the same millisecond", true]] as const)("overlapping reads%s: the later-started read names the refusal; the binding keeps the latest completion (AUD-01b, AUD-R2-01a)", async (_name, frozen) => {
+    if (frozen) { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-24T10:00:00.000Z")); }
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
     let finish!: () => void;
     h.hooks.refresh = () => new Promise((resolve) => { finish = resolve; });
-    const older = h.service.providerRefusal("a");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    h.update("a", { lastError: QUOTA, updatedAt: "2026-10-24T10:00:04Z" });
+    const pending = h.service.providerRefusal("a");
+    await sleep(5);
+    h.update("a", { lastError: "401 Unauthorized", updatedAt: "2026-10-24T10:00:04Z" });
     const newer = await h.service.providerRefusal("a");
+    await sleep(5);
     finish();
-    expect((await older).refusal).toMatchObject({ kind: "auth", read: "fresh" });
-    expect(Date.parse(newer.availability.checkedAt)).toBeGreaterThan(Date.parse((await older).availability.checkedAt));
+    const older = await pending;
+    expect(older.refusal).toMatchObject({ kind: "quota", read: "fresh" });
+    expect(Date.parse(older.refusal!.observedAt)).toBeGreaterThanOrEqual(Date.parse(newer.refusal!.observedAt));
     h.update("a", transport);
-    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", kind: "quota", message: QUOTA,
-      failureAt: "2026-10-20T21:30:52.000Z", observedAt: newer.availability.checkedAt });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ read: "stale", kind: "auth", message: "401 Unauthorized", failureAt: "unknown", observedAt: older.refusal!.observedAt });
     expect(await refusalFiles(h.root)).toHaveLength(1);
+  });
+
+  it("an older read still in flight never restores a refusal a newer read released (AUD-R2-01b)", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]);
+    let finish!: () => void;
+    h.hooks.refresh = () => new Promise((resolve) => { finish = resolve; });
+    const pending = h.service.providerRefusal("a");
+    await sleep(5);
+    const newer = await h.service.providerRefusal("a");
+    h.update("a", quiet);
+    h.timeline.mockResolvedValue(recoveredTail(newer.refusal!.observedAt));
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ recovery: "confirmed" });
+    finish();
+    expect((await pending).refusal).toMatchObject({ kind: "quota", read: "fresh" });
+    expect(await refusalFiles(h.root)).toEqual([]);
+    expect((await h.service.providerRefusal("a")).refusal).toBeNull();
+  });
+
+  it("an I/O error comparing with stored evidence fails the write; an older read never replaces it (AUD-R2-01c)", async () => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA })], [ready("codex-fixture-account")]), path = refusalFile(h.root, "a");
+    let finish!: () => void;
+    h.hooks.refresh = () => new Promise((resolve) => { finish = resolve; });
+    const pending = h.service.providerRefusal("a");
+    await sleep(5);
+    h.update("a", { lastError: "401 Unauthorized", updatedAt: "2026-10-24T10:00:04Z" });
+    await h.service.providerRefusal("a");
+    const stored = await readFile(path, "utf8");
+    fsHook.failRefusalRead = true;
+    finish();
+    await expect(pending).rejects.toThrow("cannot be read (EIO");
+    expect(await readFile(path, "utf8")).toBe(stored);
+    fsHook.failRefusalRead = true;
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false });
+    expect(await readFile(path, "utf8")).toBe(stored);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a quota refusal", { status: "error", lastError: QUOTA, updatedAt: "2026-10-24T10:00:01Z" }],
+    ["provider unavailable", { ...quiet, providerUnavailable: true, updatedAt: "2026-10-24T10:00:01Z" }],
+  ] as const)("a slow read of %s binds recovery after it returned: turns before the record was read prove nothing (AUD-R2-05, QA F6)", async (_name, refusal) => {
+    const h = await host([agent("a", { ...routes["account-suffixed"], ...quiet })], [ready("codex-fixture-account")]);
+    h.hooks.refresh = async () => { await sleep(20); h.update("a", refusal); return h.records.get("a"); };
+    const first = await h.service.providerRefusal("a"), started = first.availability.checkedAt;
+    expect(first.refusal).not.toBeNull();
+    expect(Date.parse(first.refusal!.observedAt)).toBeGreaterThan(Date.parse(started) + 2);
+    h.update("a", { ...quiet, providerUnavailable: false });
+    h.timeline.mockResolvedValue({ entries: [entry(refusedItem, started, -1_000), entry(retryItem, started, 1), entry(answeredItem, started, 2)], error: null });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "history", recovery: "not-confirmed" });
+    expect(await refusalFiles(h.root)).toHaveLength(1);
+    h.update("a", transport);
+    expect((await h.preview("resume")).rows[0]?.eligible).toBe(false);
+  });
+
+  it.each([
+    ["an auth refusal", { status: "error", lastError: "401 Unauthorized" }, "auth"],
+    ["provider unavailable", { providerUnavailable: true }, "unavailable"],
+  ] as const)("the final exact read's %s is stored and reported; the old tail cannot clear it once that read clears (AUD-R2-02, QA F5)", async (_name, refusal, kind) => {
+    const { h, first } = await refusedHost(), o = first.refusal!.observedAt;
+    const tail: Timeline = { entries: [entry(refusedItem, o, -1_000), entry(retryItem, o, 1), entry(answeredItem, o, 2)], error: null };
+    await sleep(10);
+    h.update("a", quiet);
+    h.timeline.mockImplementation(async () => { h.update("a", { ...refusal, updatedAt: "2026-10-24T10:00:05Z" }); return tail; });
+    const seen = (await h.service.providerRefusal("a")).refusal;
+    expect(seen).toMatchObject({ kind, state: "history", recovery: "not-confirmed" });
+    expect(Date.parse(seen!.observedAt)).toBeGreaterThan(Date.parse(o));
+    h.update("a", { ...quiet, providerUnavailable: false, updatedAt: "2026-10-24T10:00:06Z" });
+    h.timeline.mockResolvedValue(tail);
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ kind, observedAt: seen!.observedAt, recovery: "not-confirmed" });
+    expect(await refusalFiles(h.root)).toHaveLength(1);
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining("no confirmed recovery") });
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
+    expect(h.send).not.toHaveBeenCalled();
   });
 
   it.each([
     ["starts a turn", (h: Awaited<ReturnType<typeof host>>) => h.update("a", { status: "running", activeTurn: { turnId: "next", startedAt: null }, updatedAt: "2026-10-24T10:00:05Z" })],
     ["fails again", (h: Awaited<ReturnType<typeof host>>) => h.update("a", { ...transport, updatedAt: "2026-10-24T10:00:05Z" })],
     ["loses its provider", (h: Awaited<ReturnType<typeof host>>) => h.update("a", { providerUnavailable: true, updatedAt: "2026-10-24T10:00:05Z" })],
+    ["closes", (h: Awaited<ReturnType<typeof host>>) => h.update("a", { status: "closed", updatedAt: "2026-10-24T10:00:05Z" })],
     ["cannot be read again", (h: Awaited<ReturnType<typeof host>>) => h.unreadable.add("a")],
+    ["goes missing", (h: Awaited<ReturnType<typeof host>>) => h.records.delete("a")],
+    ["comes back as another ID", (h: Awaited<ReturnType<typeof host>>) => h.records.set("a", { ...h.records.get("a")!, id: "z" })],
   ] as const)("a session that %s during the timeline read is not recovered (AUD-02)", async (_name, move) => {
     const { h, first } = await refusedHost();
     h.update("a", quiet);
-    h.timeline.mockImplementation(async () => { move(h); return recoveredTail(first.availability.checkedAt); });
-    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "history", recovery: "not-confirmed", observedAt: first.availability.checkedAt });
+    h.timeline.mockImplementation(async () => { move(h); return recoveredTail(first.refusal!.observedAt); });
+    expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ state: "history", recovery: "not-confirmed" });
     expect(h.timeline).toHaveBeenCalledTimes(1);
     expect(await refusalFiles(h.root)).toHaveLength(1);
-    h.unreadable.delete("a"); h.update("a", transport);
+    h.unreadable.delete("a"); h.records.set("a", agent("a", { ...routes["account-suffixed"], ...transport }));
     expect((await h.preview("resume")).rows[0]?.eligible).toBe(false);
   });
 
@@ -256,7 +346,7 @@ describe("Provider refusal on an exact read (R1)", () => {
     const first = await h.service.providerRefusal("a");
     expect(first.refusal).toMatchObject({ kind: "unavailable", message: null });
     h.update("a", { ...quiet, providerUnavailable: false });
-    const o = first.availability.checkedAt;
+    const o = first.refusal!.observedAt;
     h.timeline.mockResolvedValue({ entries: [entry(refusedItem, o, -day), entry(retryItem, o, -day + 1_000), entry(answeredItem, o, -day + 2_000)], error: null });
     expect((await h.service.providerRefusal("a")).refusal).toMatchObject({ kind: "unavailable", state: "history", recovery: "not-confirmed" });
     expect(await refusalFiles(h.root)).toHaveLength(1);
@@ -276,6 +366,10 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect(review.rows[0]?.reason).toContain("cannot be read");
     expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked" });
     expect(h.send).not.toHaveBeenCalled();
+    expect(await intact(path)).toBe(true);
+    // A refusal seen now is not permission to replace evidence that cannot be read (AUD-R2-01).
+    h.update("a", { lastError: QUOTA });
+    await expect(h.service.providerRefusal("a")).rejects.toThrow("cannot be read");
     expect(await intact(path)).toBe(true);
   });
 

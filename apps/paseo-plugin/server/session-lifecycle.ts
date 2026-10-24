@@ -49,6 +49,10 @@ function whileOwned(path: string, expected: string, step: () => Promise<unknown>
   });
 }
 const release = (path: string, expected: string) => whileOwned(path, expected, () => unlink(path));
+// Every exact read takes the next generation before it starts. Per refusal path, the newest generation that wrote or
+// released it; an older read still in flight can then never name, overwrite or restore that refusal. Same single worker.
+let readGeneration = 0;
+const refusalFence = new Map<string, number>();
 export function lifecycleRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.status, agent.archivedAt, agent.updatedAt, agent.provider, agent.model,
     agent.cwd, agent.workspaceId, agent.currentModeId, agent.effectiveThinkingOptionId, agent.activeTurn,
@@ -218,7 +222,11 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: input.action === "archive" ? archiveOrder(rows) : rows, limitation: TAKEOVER_LIMIT };
     await save(review); return review;
   }
-  async function observe(id: string): Promise<{ agent?: Agent; availability: SessionAvailability }> {
+  async function observe(id: string): Promise<{ agent?: Agent; availability: SessionAvailability; generation: number }> {
+    const generation = ++readGeneration;
+    return { generation, ...await readExact(id) };
+  }
+  async function readExact(id: string): Promise<{ agent?: Agent; availability: SessionAvailability }> {
     const checkedAt = new Date().toISOString();
     try {
       const found = await client.agents.ref(id).refresh();
@@ -229,37 +237,53 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         providerHistory: found.agent.persistence?.sessionId ? "unverified" : "not-reported" } };
     } catch (error) { return { availability: { agentId: id, state: "unknown", reason: `Native read failed: ${errorText(error)}. Absence is not confirmed.`, checkedAt, revision: "unknown" } }; }
   }
+  /** The stored refusal for this ID, if any. Unreadable or corrupt evidence is an error, never absence. */
+  async function storedFor(id: string): Promise<{ bytes: string; stored: RefusalObservation } | null> {
+    try {
+      const bytes = await readFile(refusalPath(id), "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
+      return bytes === null ? null : { bytes, stored: refusalObservationSchema.parse(refusalObservationSchema.extend({ agentId: z.literal(id) }).parse(JSON.parse(bytes))) };
+    } catch (error) { throw new Error(`Stored provider refusal evidence for this session cannot be read (${errorText(error)}). Resume stays closed; nothing was changed.`); }
+  }
+  /** Records what one exact read saw, in the path's queue with the guarded release, and returns what is now stored. The
+   *  newest read names the refusal. An older one can only move an existing binding later: overlapping reads keep the
+   *  latest completion time. */
+  async function remember(id: string, seen: RefusalObservation, generation: number): Promise<RefusalObservation | null> {
+    const path = refusalPath(id);
+    await ready();
+    return queued(path, async () => {
+      const prior = (await storedFor(id))?.stored ?? null, newest = generation > (refusalFence.get(path) ?? 0);
+      if (!newest && (!prior || Date.parse(prior.observedAt) >= Date.parse(seen.observedAt))) return prior;
+      const record = { ...(newest ? seen : prior!), observedAt: prior && Date.parse(prior.observedAt) > Date.parse(seen.observedAt) ? prior.observedAt : seen.observedAt };
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      await writeFile(temporary, JSON.stringify({ agentId: id, ...record }), { mode: 0o600 }); await rename(temporary, path);
+      if (newest) refusalFence.set(path, generation);
+      return record;
+    });
+  }
   /** The latest classified refusal an exact read of this ID saw. Expiry, a failed read or a cleared lastError never
    *  release it; only positive recovery after that exact observation does, and only when `recover` allows the bounded
    *  timeline read (G7). Writes and the guarded release share the path's queue, so a newer refusal is never removed. */
-  async function refusalFor(id: string, observed: { agent?: Agent; availability: SessionAvailability }, recover = false): Promise<ProviderRefusal | null> {
+  async function refusalFor(id: string, observed: { agent?: Agent; availability: SessionAvailability; generation: number }, recover = false): Promise<ProviderRefusal | null> {
     const path = refusalPath(id), agent = observed.agent;
-    const seen = agent && observeRefusal(agent, observed.availability.checkedAt);
+    // Stamped after the exact read returned, never at its start: a slow read must not bind recovery before its record.
+    const seen = agent && observeRefusal(agent, new Date().toISOString());
     if (seen) {
-      await ready();
-      await queued(path, async () => {
-        // A read that finished late never replaces a later observation of this ID.
-        const prior = await readFile(path, "utf8").then((bytes) => refusalObservationSchema.parse(JSON.parse(bytes)).observedAt).catch(() => null);
-        if (prior && Date.parse(prior) > Date.parse(seen.observedAt)) return;
-        const temporary = `${path}.${randomUUID()}.tmp`;
-        await writeFile(temporary, JSON.stringify({ agentId: id, ...seen }), { mode: 0o600 }); await rename(temporary, path);
-      });
+      await remember(id, seen, observed.generation);
       return refusalState(seen, { seen: true, readable: true, error: agent.status === "error", recovered: false });
     }
-    let bytes: string | null, stored: RefusalObservation;
-    try {
-      bytes = await readFile(path, "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
-      if (bytes === null) return null;
-      stored = refusalObservationSchema.extend({ agentId: z.literal(id) }).parse(JSON.parse(bytes));
-    } catch (error) { throw new Error(`Stored provider refusal evidence for this session cannot be read (${errorText(error)}). Resume stays closed; nothing was changed.`); }
-    let recovered = false;
+    const found = await storedFor(id);
+    if (!found) return null;
+    let stored = found.stored, recovered = false;
     if (recover && agent && quietAfterRefusal(agent)) {
       // A timeline read can load the provider runtime, so only the explicit refusal read runs it. Unavailable is not recovery.
       const history = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: RECOVERY_TAIL_ITEMS }).catch(() => null);
       if (history && !history.error && recoveredAfterRefusal(history.entries, stored)) {
-        // The session may have moved during the timeline read: confirm only on a later exact read that is still quiet.
-        const after = (await observe(id)).agent;
-        recovered = !!after && quietAfterRefusal(after) && !refusalKind(after) && await release(path, bytes);
+        // The session may have moved during the timeline read: only a later exact read that is still quiet confirms, and
+        // a refusal that read sees is new evidence that moves the stored binding and is reported, never cleared.
+        const after = await observe(id), again = after.agent && observeRefusal(after.agent, new Date().toISOString());
+        if (again) stored = await remember(id, again, after.generation) ?? stored;
+        else recovered = !!after.agent && quietAfterRefusal(after.agent)
+          && await whileOwned(path, found.bytes, async () => { await unlink(path); refusalFence.set(path, after.generation); });
       }
     }
     return refusalState(stored, { seen: false, readable: !!agent, error: false, recovered });
