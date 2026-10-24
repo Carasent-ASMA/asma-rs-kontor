@@ -6,6 +6,8 @@ import { WorkspaceDescriptorPayloadSchema } from "@getpaseo/protocol/messages";
 import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
+import type { CreateOutcome } from "../shared/session-create";
+import { readRecent } from "../client/recent-sessions";
 import { confirmedEpic } from "../client/page-data";
 import { canonicalGraphSchema, jiraHistorySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import { Linking } from "react-native";
@@ -791,6 +793,31 @@ it("finds a graphless plan by its explicit workstream and shows exact Plan conte
 });
 
 describe("Start or switch entry", () => {
+  const created: CreateOutcome = { requestId: "00000000-0000-4000-8000-000000000001", state: "verified", title: "LSA • ADHOC • Fixture", agentId: "new-exact-id", workspaceId: "wks-adam",
+    message: "Created and verified.", differences: [], persona: "supported", checkedAt: "2026-10-23" };
+
+  it("opens a created exact ID absent from the directory, records the accepted visit and closes the sheet", () => {
+    const screen = mount(false, { tab: "Overview" });
+    screen.click("Start or switch");
+    const sheet = screen.elements().find((node) => node.type === StartSwitchSheet)!;
+    const result = (sheet.props.onOpenCreated as (outcome: CreateOutcome) => { ok: boolean })(created); screen.render();
+    expect(result).toEqual({ ok: true });
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "new-exact-id", serverId: screen.props.host.id });
+    expect(readRecent(screen.props.host.id).record.visits.map((visit) => visit.id)).toEqual(["new-exact-id"]);
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
+  });
+
+  it("keeps the creation sheet open and records no visit when navigation fails", () => {
+    const screen = mount(false, { tab: "Overview" });
+    vi.mocked(screen.props.navigation!.openAgent).mockImplementation(() => { throw new Error("navigation failed"); });
+    screen.click("Start or switch");
+    const sheet = screen.elements().find((node) => node.type === StartSwitchSheet)!;
+    expect((sheet.props.onOpenCreated as (outcome: CreateOutcome) => { ok: boolean })(created)).toMatchObject({ ok: false }); screen.render();
+    expect(readRecent(screen.props.host.id).record.visits).toEqual([]);
+    expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(true);
+    expect(model.toastError).not.toHaveBeenCalled();
+  });
+
   it.each([[true, "Start or switch session"], [false, "Start or switch"]])("opens one sheet from the context row and closes it (compact=%s)", (compact, label) => {
     const screen = mount(compact, { tab: "Overview" });
     expect(screen.action(label).props).toMatchObject({ icon: "History", expanded: false });

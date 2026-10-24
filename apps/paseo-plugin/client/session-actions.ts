@@ -1,4 +1,5 @@
 import { freshAvailability } from "../shared/session-lifecycle";
+import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
 import { recordVisit } from "./recent-sessions";
@@ -36,6 +37,22 @@ export function openSessionById(input: {
   if (freshAvailability(entry)?.state === "missing") {
     return { ok: false, reason: "missing", message: "The host could not find this exact session ID at the last availability check. Refresh availability before opening it again." };
   }
+  return openNativeSession({ ...input, id: entry.id });
+}
+
+/** A successful correlated creation readback supplies the exact native ID without a full directory walk. */
+export function openCreatedSession(input: {
+  readonly outcome: CreateOutcome;
+  readonly serverId: string;
+  readonly navigation: SessionNavigation | undefined;
+}): OpenSessionResult {
+  if (!["verified", "differences"].includes(input.outcome.state) || !input.outcome.agentId) {
+    return { ok: false, reason: "missing", message: "The host has not confirmed this creation's exact session ID. Check its outcome before opening it." };
+  }
+  return openNativeSession({ ...input, id: input.outcome.agentId });
+}
+
+function openNativeSession(input: { readonly id: string; readonly serverId: string; readonly navigation: SessionNavigation | undefined }): OpenSessionResult {
   if (!input.navigation) {
     return {
       ok: false,
@@ -44,8 +61,8 @@ export function openSessionById(input: {
     };
   }
   try {
-    input.navigation.openAgent({ agentId: entry.id, serverId: input.serverId });
-    recordVisit(input.serverId, entry.id);
+    input.navigation.openAgent({ agentId: input.id, serverId: input.serverId });
+    recordVisit(input.serverId, input.id);
     return { ok: true };
   } catch (error) {
     return {

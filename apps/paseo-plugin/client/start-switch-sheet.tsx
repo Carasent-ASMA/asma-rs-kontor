@@ -1,8 +1,9 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc, type PluginHostSummary } from "@getpaseo/plugin/client";
-import { readCreateOptions, type CreateOptions } from "../shared/session-create";
+import { readCreateOptions, type CreateOptions, type CreateOutcome } from "../shared/session-create";
+import type { OpenSessionResult } from "./session-actions";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
@@ -27,18 +28,19 @@ export type CreateOptionsState =
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** The host's create options, read when the sheet opens and again on `refresh`; never while the host is offline. */
-export function useCreateOptions(online: boolean): { state: CreateOptionsState; refresh: () => void } {
+export function useCreateOptions(online: boolean): { state: CreateOptionsState; refresh: (workspaceId?: string) => void } {
   const read = useRpc(readCreateOptions);
   const [state, setState] = useState<CreateOptionsState>({ status: online ? "loading" : "offline" });
   const [revision, setRevision] = useState(0);
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>();
   useEffect(() => {
     if (!online) { setState({ status: "offline" }); return; }
     let live = true;
     setState({ status: "loading" });
-    read({}).then((options) => { if (live) setState({ status: "ready", options }); }, (error: unknown) => { if (live) setState({ status: "error", message: errorText(error) }); });
+    read(workspaceId ? { workspaceId } : {}).then((options) => { if (live) setState({ status: "ready", options }); }, (error: unknown) => { if (live) setState({ status: "error", message: errorText(error) }); });
     return () => { live = false; };
-  }, [online, revision]);
-  return { state, refresh: () => setRevision((value) => value + 1) };
+  }, [online, revision, workspaceId]);
+  return { state, refresh: (workspaceId) => { setWorkspaceId(workspaceId); setRevision((value) => value + 1); } };
 }
 
 /** What the sheet says about New LSA when it cannot offer it; null when it can. */
@@ -81,14 +83,19 @@ function persistenceNote(persistence: ReturnType<typeof readRecent>["persistence
  * One sheet for switching and starting: Recent and a search over every session, plus New LSA as a header action when
  * the host allows it. Rows open only through the screen's `onOpen`, the shared open path with its refusals.
  */
-export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, hostId, hostStatus, directory, canOpen, onOpen, onShowAll, onClose }: {
+export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose }: {
   anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; compact: boolean; colors: Colors;
   hostId: string; hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
   /** Whether this Paseo app exposes native navigation to plugins. */
   canOpen: boolean;
+  onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult;
   onOpen: (entry: DirectoryEntry) => void; onShowAll: (query: string) => void; onClose: () => void;
 }) {
   const [mode, setMode] = useState<"switch" | "new">("switch");
+  const creation = useRef({ hostId, open: false });
+  const scope = creation.current;
+  const startNew = () => { creation.current = { hostId, open: true }; setMode("new"); };
+  const leaveNew = () => { creation.current.open = false; setMode("switch"); };
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState(() => readRecent(hostId));
   const [showSaved, setShowSaved] = useState(false);
@@ -99,20 +106,20 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
   const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live });
   const unavailable = createAvailability(create.state);
   const tall = compact || COARSE_POINTER;
-  const dismiss = () => { onClose(); setTimeout(() => focusControl(anchor.current), 0); };
+  const dismiss = () => { creation.current.open = false; onClose(); setTimeout(() => focusControl(anchor.current), 0); };
   const heading = (text: string) => <Text accessibilityRole="header" numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{text}</Text>;
   const close = <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
   const header = mode === "new"
     ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 4 }}>
-      <IconButton label="Back to recent sessions" icon="ChevronLeft" colors={colors} onPress={() => setMode("switch")} />
+      <IconButton label="Back to recent sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />
       {heading("New LSA")}{close}
     </View>
     : <View style={{ gap: 4, paddingBottom: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         {heading("Start or switch")}
         {create.state.status === "ready" && create.state.options.pending
-          ? <Action small label="Check creation" accessibilityLabel="Check pending session creation" colors={colors} onPress={() => setMode("new")} />
-          : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New LSA" accessibilityLabel="New LSA session" colors={colors} onPress={() => setMode("new")} /> : null}
+          ? <Action small label="Check creation" accessibilityLabel="Check pending session creation" colors={colors} onPress={startNew} />
+          : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New LSA" accessibilityLabel="New LSA session" colors={colors} onPress={startNew} /> : null}
         {close}
       </View>
       <TextInput testID="kontor-switch-search" accessibilityLabel="Jump to any session" placeholder="Jump to any session…" autoFocus={!compact} value={query} onChangeText={setQuery}
@@ -126,9 +133,9 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
   const persistence = persistenceNote(recent.persistence);
   return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={colors} label={mode === "new" ? "New LSA session" : "Start or switch session"} onClose={dismiss}
     placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 400, maxHeight: 560 }} header={header}>
-    {mode === "new" ? <NewLsaForm colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
-      listed={(agentId) => directory.entries.some((entry) => entry.id === agentId)}
-      onOpen={(agentId) => { const entry = directory.entries.find((candidate) => candidate.id === agentId); if (entry) onOpen(entry); }} onCancel={() => setMode("switch")} />
+    {mode === "new" ? <NewLsaForm hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
+      isActive={() => scope === creation.current && scope.open && scope.hostId === hostId}
+      onOpenCreated={onOpenCreated} onCancel={leaveNew} />
     : <ScrollView testID="kontor-switch-list" role="menu" accessibilityLabel={query.trim() ? "Matching sessions" : "Recent sessions"} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
       {freshness === "Live" ? null : <Text testID="kontor-switch-freshness" style={muted}>Last known · {freshness}</Text>}
       {canOpen ? null : <Text style={muted}>This Paseo app does not let plugins open sessions; rows are listed only.</Text>}
