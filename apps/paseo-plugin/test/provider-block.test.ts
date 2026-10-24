@@ -6,8 +6,6 @@ import {
 // Synthetic refusal shaped like an OpenCode APIError: the response date is the only zoned time; the reset has no zone.
 const QUOTA_REFUSAL = 'APIError: {"statusCode":429,"responseHeaders":{"date":"Tue, 20 Oct 2026 21:30:52 GMT"},"responseBody":"{\\"error\\":{\\"code\\":\\"1308\\",\\"message\\":\\"5-hour usage limit reached; reset after 2026-10-21 07:45:40\\"}}"}';
 const FAILED_AT = "2026-10-20T21:30:52.000Z";
-const turn = (type: string, text: string) => ({ item: { type, text } });
-const refused = turn("assistant_message", "[System Error] You've hit your usage limit. Try again later.");
 
 describe("refusal classifier", () => {
   // The single pattern this module replaced, kept here only to prove the split matches exactly the same text.
@@ -27,9 +25,13 @@ describe("refusal classifier", () => {
 
 describe("failure time comes only from the refusal text", () => {
   it.each([
-    ["serialized response header", QUOTA_REFUSAL, FAILED_AT],
-    ["escaped header inside a body", 'body: "{\\"date\\":\\"Tue, 20 Oct 2026 21:30:52 GMT\\"}"', FAILED_AT],
-    ["raw header line", "HTTP/1.1 429\ndate: Tue, 20 Oct 2026 21:30:52 GMT\n", FAILED_AT],
+    ["the responseHeaders date", QUOTA_REFUSAL, FAILED_AT],
+    ["a capitalised Date header", '{"responseHeaders":{"content-type":"application/json","Date":"Tue, 20 Oct 2026 21:30:52 GMT"}}', FAILED_AT],
+    ["empty responseHeaders and a body error.reset.date", '{"responseHeaders":{},"responseBody":"{\\"error\\":{\\"reset\\":{\\"date\\":\\"Wed, 21 Oct 2026 07:45:40 GMT\\"}}}"}', "unknown"],
+    ["empty responseHeaders and an unescaped body reset date", '{"responseHeaders":{},"responseBody":{"error":{"reset":{"date":"Wed, 21 Oct 2026 07:45:40 GMT"}}}}', "unknown"],
+    ["a reset header", '{"responseHeaders":{"x-reset-date":"Wed, 21 Oct 2026 07:45:40 GMT"}}', "unknown"],
+    ["a date outside responseHeaders", '{"date":"Tue, 20 Oct 2026 21:30:52 GMT"}', "unknown"],
+    ["a raw header line", "HTTP/1.1 429\ndate: Tue, 20 Oct 2026 21:30:52 GMT\n", "unknown"],
     ["a reset time without a zone", "5-hour usage limit; reset after 2026-10-21 07:45:40", "unknown"],
     ["a zoned reset time", "usage limit; try again at 2026-10-21T07:45:40Z", "unknown"],
     ["a reset labelled date", "usage limit; reset date: Tue, 20 Oct 2026 21:30:52 GMT", "unknown"],
@@ -78,25 +80,41 @@ describe("state and recovery", () => {
     expect(refusalAsOf(unreadable, { id: "a", updatedAt: "u1" }, at(120_000))?.read).toBe("unreadable");
     expect(refusalAsOf({ ...result, refusal: null }, { id: "a", updatedAt: "u1" }, at(120_000))).toBeNull();
   });
-  it("needs a quiet exact read: a retry start, an active turn or any error is not recovery", () => {
+  it("needs an exact idle read: closed, a retry start, an active turn or any error is not recovery", () => {
     expect(quietAfterRefusal({ provider: "claude", status: "idle" })).toBe(true);
-    expect(quietAfterRefusal({ provider: "claude", status: "closed" })).toBe(true);
-    for (const patch of [{ status: "running" }, { status: "initializing" }, { status: "error" }, { activeTurn: { turnId: "t" } }, { lastError: "Turn interrupted" }])
+    for (const patch of [{ status: "closed" }, { status: "running" }, { status: "initializing" }, { status: "error" }, { activeTurn: { turnId: "t" } }, { lastError: "Turn interrupted" }])
       expect(quietAfterRefusal({ provider: "claude", status: "idle", ...patch }), JSON.stringify(patch)).toBe(false);
   });
 });
 
-describe("timeline recovery (G7)", () => {
-  const ok = turn("assistant_message", "Done: continued the task."), user = turn("user_message", "Please continue.");
+describe("timeline recovery (G7), bound to the stored observation", () => {
+  const observedAt = "2026-10-24T10:00:00.000Z", day = 86_400_000;
+  const at = (ms: number) => ({ timestamp: new Date(Date.parse(observedAt) + ms).toISOString() });
+  const refused = (ms: number) => ({ item: { type: "assistant_message", text: "[System Error] You've hit your usage limit. Try again later." }, ...at(ms) });
+  const user = (ms: number) => ({ item: { type: "user_message", text: "Please continue." }, ...at(ms) });
+  const ok = (ms: number) => ({ item: { type: "assistant_message", text: "Done: continued the task." }, ...at(ms) });
   it.each([
-    ["a completed later turn", [refused, user, ok], true],
-    ["an error item refusal then a completed turn", [{ item: { type: "error", message: QUOTA_REFUSAL } }, user, ok], true],
-    ["the refusal alone", [refused], false],
-    ["a retry start with no answer", [refused, user], false],
-    ["a retry refused again", [refused, user, refused], false],
-    ["a later failure without its own completed turn", [refused, user, ok, user, turn("assistant_message", "[System Error] transport closed")], false],
-    ["a later error notification", [refused, user, ok, { item: { type: "notification", level: "error", message: "stream failed" } }], false],
-    ["no refusal in the tail", [user, ok], false],
+    ["a completed turn after the observation", [refused(-1_000), user(1_000), ok(2_000)], true],
+    ["an error item refusal, then a completed turn", [{ item: { type: "error", message: QUOTA_REFUSAL }, ...at(-1_000) }, user(1_000), ok(2_000)], true],
+    ["the refusal alone", [refused(-1_000)], false],
+    ["a retry start with no answer", [refused(-1_000), user(1_000)], false],
+    ["a retry refused again", [refused(-1_000), user(1_000), refused(2_000)], false],
+    ["a later failure without its own completed turn", [refused(-1_000), user(1_000), ok(2_000), user(3_000), { item: { type: "assistant_message", text: "[System Error] transport closed" }, ...at(4_000) }], false],
+    ["a later error notification", [refused(-1_000), user(1_000), ok(2_000), { item: { type: "notification", level: "error", message: "stream failed" }, ...at(3_000) }], false],
+    ["no refusal in the tail", [user(1_000), ok(2_000)], false],
+    ["an older refusal answered before the observation", [refused(-day), user(-day + 1_000), ok(-day + 2_000)], false],
+    ["an older answered refusal while the observed one is not shown", [refused(-day), user(-day + 1_000), ok(-day + 2_000), user(-1_000), user(1_000), ok(2_000)], false],
+    ["an answer before the observation", [refused(-3_000), user(-2_000), ok(-1_000)], false],
+    ["an entry without a timestamp", [refused(-1_000), { item: { type: "user_message", text: "x" } }, ok(2_000)], false],
+    ["entries out of order", [refused(-1_000), ok(2_000), user(1_000), ok(3_000)], false],
     ["an empty or malformed tail", [null, {}, { item: null }, { item: { text: "no type" } }], false],
-  ] as const)("%s", (_name, entries, expected) => expect(recoveredAfterRefusal(entries)).toBe(expected));
+  ] as const)("%s", (_name, entries, expected) => expect(recoveredAfterRefusal(entries, { kind: "quota", observedAt })).toBe(expected));
+  it("proves nothing against an unreadable observation time", () => expect(recoveredAfterRefusal([refused(-1_000), user(1_000), ok(2_000)], { kind: "quota", observedAt: "unknown" })).toBe(false));
+  it("needs the stored kind: a quota refusal in the tail does not recover a stored auth refusal", () =>
+    expect(recoveredAfterRefusal([refused(-1_000), user(1_000), ok(2_000)], { kind: "auth", observedAt })).toBe(false));
+  it.each([
+    ["an older quota-recovery tail after only a readiness change", [refused(-day), user(-day + 1_000), ok(-day + 2_000)], false],
+    ["a retry start with no answer", [ok(-1_000), user(1_000)], false],
+    ["a turn answered after the observation", [ok(-1_000), user(1_000), ok(2_000)], true],
+  ] as const)("unavailable, bound by time only: %s", (_name, entries, expected) => expect(recoveredAfterRefusal(entries, { kind: "unavailable", observedAt })).toBe(expected));
 });

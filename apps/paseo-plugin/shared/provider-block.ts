@@ -6,8 +6,10 @@ import { availabilitySchema, freshAvailability } from "./session-lifecycle";
 // former single pattern matched.
 const QUOTA = /quota|usage.?limit|rate.?limit|exhaust|billing|credit/i;
 const AUTH = /unauthori[sz]ed|authenticat|\b401\b|\b403\b|api.?key|credential|token.expired|permission.denied/i;
-// The provider's own response date: an HTTP IMF-fixdate (always GMT) under a `date` header key, serialized or raw.
-const RESPONSE_DATE = /(?:\\?"date\\?"\s*:\s*\\?"|^date:\s*)((?:mon|tue|wed|thu|fri|sat|sun), \d{2} (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec) \d{4} \d{2}:\d{2}:\d{2} gmt)/im;
+// The provider's own response date: an HTTP IMF-fixdate (always GMT) under `date` in the serialized `responseHeaders`
+// object only. A body, reset or any other date is never a failure time.
+const RESPONSE_HEADERS = /"responseHeaders"\s*:\s*\{([^{}]*)\}/;
+const HEADER_DATE = /"date"\s*:\s*"((?:mon|tue|wed|thu|fri|sat|sun), \d{2} (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec) \d{4} \d{2}:\d{2}:\d{2} gmt)"/i;
 const SYSTEM_ERROR = /^\s*\[System Error\]/;
 /** Timeline items one recovery check reads. A transport bound: a refusal further back cannot be confirmed (G7). */
 export const RECOVERY_TAIL_ITEMS = 50;
@@ -41,7 +43,7 @@ export function refusalKind(agent: Pick<RefusalAgent, "lastError" | "providerUna
   return QUOTA.test(text) ? "quota" : AUTH.test(text) ? "auth" : agent.providerUnavailable ? "unavailable" : null;
 }
 export function failureAt(text: string | null | undefined): string {
-  const match = RESPONSE_DATE.exec(text ?? ""), time = match ? Date.parse(match[1]!) : NaN;
+  const headers = RESPONSE_HEADERS.exec(text ?? "")?.[1], match = headers ? HEADER_DATE.exec(headers) : null, time = match ? Date.parse(match[1]!) : NaN;
   return Number.isFinite(time) ? new Date(time).toISOString() : "unknown";
 }
 export function observeRefusal(agent: RefusalAgent, observedAt: string): RefusalObservation | null {
@@ -60,20 +62,30 @@ export function refusalAsOf(result: ProviderRefusalRead, entry: { id: string; up
   if (!refusal || refusal.read !== "fresh" || freshAvailability({ ...entry, availability: result.availability }, now)) return refusal;
   return { ...refusal, read: "stale", state: "history" };
 }
-/** The exact read half of positive recovery: the last turn ended without a failure. A cleared lastError alone is not enough. */
+/** The exact read half of positive recovery: idle, so the last turn ended without a failure. Closed, running or a
+ *  cleared lastError alone is not enough. */
 export function quietAfterRefusal(agent: RefusalAgent): boolean {
-  return agent.status !== "error" && agent.status !== "running" && agent.status !== "initializing" && !agent.activeTurn && !agent.lastError;
+  return agent.status === "idle" && !agent.activeTurn && !agent.lastError;
 }
 type Item = { type: string; text?: unknown; message?: unknown; level?: unknown };
 const itemText = (item: Item) => typeof item.text === "string" ? item.text : typeof item.message === "string" ? item.message : "";
 const failed = (item: Item) => item.type === "error" || (item.type === "notification" && item.level === "error") || (item.type === "assistant_message" && SYSTEM_ERROR.test(itemText(item)));
-/** The timeline half (G7): the tail shows a refusal, and after the last failure a new turn whose provider answer is not a failure. */
-export function recoveredAfterRefusal(entries: readonly unknown[]): boolean {
-  const items = entries.flatMap((entry) => {
-    const item = (entry as { item?: unknown } | null)?.item as Item | undefined;
-    return item && typeof item.type === "string" ? [item] : [];
-  });
-  if (!items.some((item) => failed(item) && refusalKind({ lastError: itemText(item) }))) return false;
-  const lastFailure = items.findLastIndex(failed), turn = items.findIndex((item, index) => index > lastFailure && item.type === "user_message");
-  return turn >= 0 && items.some((item, index) => index > turn && item.type === "assistant_message" && !failed(item));
+/** The timeline half (G7), bound to one stored observation by host time. Before `observedAt`, the last failure is a
+ *  refusal of the stored kind with no turn started after it (the turn whose lastError was observed); an unavailable
+ *  flag names no turn, so only its time binds it. After `observedAt`, a new turn got a provider answer and no failure
+ *  followed. An entry without a host timestamp, or out of order, proves nothing. */
+export function recoveredAfterRefusal(entries: readonly unknown[], { kind, observedAt }: Pick<RefusalObservation, "kind" | "observedAt">): boolean {
+  const seen = Date.parse(observedAt), items: (Item & { at: number })[] = [];
+  if (!Number.isFinite(seen)) return false;
+  for (const entry of entries) {
+    const value = entry as { item?: unknown; timestamp?: unknown } | null, item = value?.item as Item | null | undefined;
+    const at = typeof value?.timestamp === "string" ? Date.parse(value.timestamp) : NaN;
+    if (!item || typeof item.type !== "string" || !Number.isFinite(at) || at < (items.at(-1)?.at ?? at)) return false;
+    items.push({ ...item, at });
+  }
+  const split = items.findIndex((item) => item.at > seen), before = split < 0 ? items : items.slice(0, split), after = split < 0 ? [] : items.slice(split);
+  const refusal = before.findLastIndex(failed);
+  if (kind !== "unavailable" && (refusal < 0 || refusalKind({ lastError: itemText(before[refusal]!) }) !== kind || before.slice(refusal).some((item) => item.type === "user_message"))) return false;
+  const lastFailure = after.findLastIndex(failed), turn = after.findIndex((item, index) => index > lastFailure && item.type === "user_message");
+  return turn >= 0 && after.some((item, index) => index > turn && item.type === "assistant_message" && !failed(item));
 }

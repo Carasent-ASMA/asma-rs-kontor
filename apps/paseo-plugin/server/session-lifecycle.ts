@@ -12,7 +12,7 @@ import {
 } from "../shared/session-lifecycle";
 import {
   RECOVERY_TAIL_ITEMS, observeRefusal, quietAfterRefusal, readProviderRefusal, recoveredAfterRefusal, refusalKind, refusalObservationSchema, refusalState,
-  type ProviderRefusal, type ProviderRefusalRead,
+  type ProviderRefusal, type ProviderRefusalRead, type RefusalObservation,
 } from "../shared/provider-block";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -36,14 +36,17 @@ const UNRESOLVED_LIMIT = 100;
 // fence written after that (a successor Resume or Archive) is never overwritten or removed. One step per path at a time.
 // ponytail: an in-process queue; one plugin worker owns the root. Cross-process ownership would need a lock directory.
 const fenceSteps = new Map<string, Promise<unknown>>();
+function queued<T>(path: string, step: () => Promise<T>): Promise<T> {
+  const next = (fenceSteps.get(path) ?? Promise.resolve()).then(step);
+  fenceSteps.set(path, next.catch(() => {}));
+  return next;
+}
 function whileOwned(path: string, expected: string, step: () => Promise<unknown>): Promise<boolean> {
-  const next = (fenceSteps.get(path) ?? Promise.resolve()).then(async () => {
+  return queued(path, async () => {
     const current = await readFile(path, "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
     if (current !== expected) return false;
     await step(); return true;
   });
-  fenceSteps.set(path, next.catch(() => {}));
-  return next;
 }
 const release = (path: string, expected: string) => whileOwned(path, expected, () => unlink(path));
 export function lifecycleRevision(agent: Agent): string {
@@ -193,7 +196,10 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const rows: LifecycleRow[] = [];
     for (const id of selectedIds) {
       const observed = await observe(id), listed = all.find((agent) => agent.id === id);
-      const record = observed.agent ?? listed, refusal = input.action === "resume" ? await refusalFor(id, observed) : null;
+      const record = observed.agent ?? listed;
+      // Unreadable refusal evidence closes only this row's Resume, never the whole review.
+      let refusal: ProviderRefusal | null = null, refusalProblem: string | null = null;
+      if (input.action === "resume") try { refusal = await refusalFor(id, observed); } catch (error) { refusalProblem = errorText(error); }
       // No record: the exact read either confirmed absence ("missing") or failed ("unknown"); only absence reads as missing.
       const row: LifecycleRow = record ? lifecycleRow(record, all, input.action, refusal) : {
         id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null,
@@ -206,6 +212,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       }
       if (!observed.agent) { row.eligible = input.action === "archive" && observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
       if (input.action === "archive" && archivedMembership(observed.agent)) row.eligible = true;
+      if (refusalProblem && row.eligible) { row.eligible = false; row.reason = refusalProblem; }
       rows.push(row);
     }
     const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: input.action === "archive" ? archiveOrder(rows) : rows, limitation: TAKEOVER_LIMIT };
@@ -223,24 +230,37 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     } catch (error) { return { availability: { agentId: id, state: "unknown", reason: `Native read failed: ${errorText(error)}. Absence is not confirmed.`, checkedAt, revision: "unknown" } }; }
   }
   /** The latest classified refusal an exact read of this ID saw. Expiry, a failed read or a cleared lastError never
-   *  release it; only positive recovery does, and only when `recover` allows the bounded timeline read (G7). */
+   *  release it; only positive recovery after that exact observation does, and only when `recover` allows the bounded
+   *  timeline read (G7). Writes and the guarded release share the path's queue, so a newer refusal is never removed. */
   async function refusalFor(id: string, observed: { agent?: Agent; availability: SessionAvailability }, recover = false): Promise<ProviderRefusal | null> {
     const path = refusalPath(id), agent = observed.agent;
     const seen = agent && observeRefusal(agent, observed.availability.checkedAt);
     if (seen) {
       await ready();
-      const temporary = `${path}.${randomUUID()}.tmp`;
-      await writeFile(temporary, JSON.stringify({ agentId: id, ...seen }), { mode: 0o600 }); await rename(temporary, path);
+      await queued(path, async () => {
+        // A read that finished late never replaces a later observation of this ID.
+        const prior = await readFile(path, "utf8").then((bytes) => refusalObservationSchema.parse(JSON.parse(bytes)).observedAt).catch(() => null);
+        if (prior && Date.parse(prior) > Date.parse(seen.observedAt)) return;
+        const temporary = `${path}.${randomUUID()}.tmp`;
+        await writeFile(temporary, JSON.stringify({ agentId: id, ...seen }), { mode: 0o600 }); await rename(temporary, path);
+      });
       return refusalState(seen, { seen: true, readable: true, error: agent.status === "error", recovered: false });
     }
-    const bytes = await readFile(path, "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
-    if (bytes === null) return null;
-    const stored = refusalObservationSchema.extend({ agentId: z.literal(id) }).parse(JSON.parse(bytes));
+    let bytes: string | null, stored: RefusalObservation;
+    try {
+      bytes = await readFile(path, "utf8").catch((error) => { if (error?.code === "ENOENT") return null; throw error; });
+      if (bytes === null) return null;
+      stored = refusalObservationSchema.extend({ agentId: z.literal(id) }).parse(JSON.parse(bytes));
+    } catch (error) { throw new Error(`Stored provider refusal evidence for this session cannot be read (${errorText(error)}). Resume stays closed; nothing was changed.`); }
     let recovered = false;
     if (recover && agent && quietAfterRefusal(agent)) {
       // A timeline read can load the provider runtime, so only the explicit refusal read runs it. Unavailable is not recovery.
       const history = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: RECOVERY_TAIL_ITEMS }).catch(() => null);
-      recovered = !!history && !history.error && recoveredAfterRefusal(history.entries) && await release(path, bytes);
+      if (history && !history.error && recoveredAfterRefusal(history.entries, stored)) {
+        // The session may have moved during the timeline read: confirm only on a later exact read that is still quiet.
+        const after = (await observe(id)).agent;
+        recovered = !!after && quietAfterRefusal(after) && !refusalKind(after) && await release(path, bytes);
+      }
     }
     return refusalState(stored, { seen: false, readable: !!agent, error: false, recovered });
   }
