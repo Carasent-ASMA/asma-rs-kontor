@@ -184,7 +184,13 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     return same ? null : "This changed after you opened it. Cancel and choose the action again.";
   };
   const run = async (current: Confirm) => {
-    if (invalid(current, read())) return;
+    const now = read(), reason = invalid(current, now);
+    if (reason) {
+      // Closes the confirmation now, since a changed owner answer need not redraw the bar; the buttons then carry the current state.
+      setConfirm(null);
+      setResult([`Nothing was sent. ${now[current.action].enabled ? "This changed after you opened it; choose the action again to review it." : reason}`]);
+      return;
+    }
     const mine = ++token.current;
     setPending(true);
     let lines: string[];
