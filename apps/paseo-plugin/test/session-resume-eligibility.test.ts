@@ -9,16 +9,17 @@ import { contributeSessionLifecycle, createLifecycleService, lifecycleRow, type 
 import { DEFAULT_RECOVERY_TARGET as target, RESUME_PROMPT } from "../shared/session-lifecycle";
 import type { ProviderRefusalRead } from "../shared/provider-block";
 
-// Deterministic faults and one interleaving point for refusal files: a fault fails the next matching reads, writes,
-// renames or unlinks; `beforeRename` runs before each rename of a refusal file.
+// Deterministic faults and interleaving points: a fault fails the next matching reads, writes, renames or unlinks;
+// `beforeRename` runs before each rename of a refusal file and `beforeSave` before each other rename (a saved row).
 type Fault = { op: "readFile" | "writeFile" | "rename" | "unlink"; match: RegExp; code: string; times: number };
-const fsHook = vi.hoisted(() => ({ faults: [] as Fault[], beforeRename: undefined as undefined | ((from: string) => Promise<void>) }));
+const fsHook = vi.hoisted(() => ({ faults: [] as Fault[], beforeRename: undefined as undefined | ((from: string) => Promise<void>),
+  beforeSave: undefined as undefined | ((from: string) => Promise<void>) }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   const failing = <T,>(name: Fault["op"], call: T): T => (async (...args: unknown[]) => {
     const path = String(args[0]), fault = fsHook.faults.find((entry) => entry.op === name && entry.times > 0 && entry.match.test(path));
     if (fault) { fault.times--; throw Object.assign(new Error(`${fault.code}: fixture i/o error (${name})`), { code: fault.code }); }
-    if (name === "rename" && path.includes("refusal-")) await fsHook.beforeRename?.(path);
+    if (name === "rename") await (path.includes("refusal-") ? fsHook.beforeRename : fsHook.beforeSave)?.(path);
     return (call as (...values: unknown[]) => Promise<unknown>)(...args);
   }) as T;
   return { ...actual, readFile: failing("readFile", actual.readFile), writeFile: failing("writeFile", actual.writeFile), rename: failing("rename", actual.rename), unlink: failing("unlink", actual.unlink) };
@@ -164,7 +165,7 @@ async function refusedHost(others: Agent[] = []) {
   const h = await host([agent("a", { ...routes["account-suffixed"], lastError: QUOTA }), ...others], [ready("codex-fixture-account"), ready("claude")]);
   return { h, first: await h.service.providerRefusal("a") };
 }
-afterEach(() => { fsHook.faults = []; fsHook.beforeRename = undefined; vi.useRealTimers(); });
+afterEach(() => { fsHook.faults = []; fsHook.beforeRename = undefined; fsHook.beforeSave = undefined; vi.useRealTimers(); });
 const resumeReview = (service: ReturnType<typeof createLifecycleService>, ids = ["a"]) => service.preview({ action: "resume", scope: "filtered", agentIds: ids, target });
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -717,6 +718,8 @@ describe("Provider refusal on an exact read (R1)", () => {
     ["a newer clean record beside an older held read that never recorded its outcome (AUD-R6-01)", [["", snapshot("clean", 6)], [".held", snapshot("attempt", 5, { open: [{ seq: 5, revision: 4, start: "2026-10-24T10:00:00.000Z" }] })]]],
     ["a newer recovery bound before an older held refusal it never released (AUD-R6-01)", [["", snapshot("recovery", 8, { cleared: 7, recovered: { ...auth(0), seq: undefined, observedAt: "2026-10-24T09:00:00.000Z" } })], [".held", snapshot("refusal", 6, { refusal: auth(5) })]]],
     ["a newer record whose refusal was named before an older held refusal, though bound later (AUD-R6-01)", [["", snapshot("refusal", 8, { refusal: { ...auth(3), kind: "quota", message: "usage limit reached", observedAt: "2026-10-24T10:00:05.000Z" } })], [".held", snapshot("refusal", 6, { refusal: auth(5) })]]],
+    ...(["2026-10-24T10:00:00.000Z", "2026-10-24T10:00:05.000Z"] as const).map((at) => [`a newer recovery of another kind, bound ${at.endsWith("00.000Z") ? "with" : "after"} an older held refusal (R7)`,
+      [["", snapshot("recovery", 12, { cleared: 11, recovered: { ...auth(0), seq: undefined, kind: "quota", message: "usage limit reached", observedAt: at } })], [".held", snapshot("refusal", 8, { refusal: auth(7) })]]] as const),
     ["a recovery record whose release has no valid time (AUD-R6-02)", [["", snapshot("recovery", 4, { cleared: 3, recovered: { ...auth(0), seq: undefined, observedAt: "not-a-timestamp" } })]]],
     ["a refusal record bound to no valid time (AUD-R6-02)", [["", snapshot("refusal", 4, { refusal: { ...auth(3), observedAt: "not-a-timestamp" } })]]],
     ["an attempt record whose read has no valid start (AUD-R6-02)", [["", snapshot("attempt", 4, { open: [{ seq: 4, revision: 3, start: "not-a-timestamp" }] })]]],
@@ -911,6 +914,39 @@ describe("Provider refusal on an exact read (R1)", () => {
     expect(resumed.rows[0]?.eligible).toBe(true);
     expect(await h.service.execute(resumed.id, "a")).toMatchObject({ outcome: "submitted" });
     expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["records a current auth refusal", { lastError: "401 Unauthorized" }, false, "auth"],
+    ["records a current unavailable refusal", { providerUnavailable: true }, false, "unavailable"],
+    ["has not recorded its outcome yet", { lastError: "401 Unauthorized" }, true, "auth"],
+    ["completes without a refusal (control)", {}, false, null],
+  ] as const)("while execute saves its intent, another read that %s decides the Resume before anything is sent (AUD R7)", async (_name, change, open, kind) => {
+    const h = await host([agent("a", routes["account-suffixed"])], [ready("codex-fixture-account")]);
+    await readClean(h);
+    h.update("a", transport);
+    const review = await h.preview("resume");
+    expect(review.rows[0]?.eligible).toBe(true);
+    let other: Promise<ProviderRefusalRead> | undefined, slow: ReturnType<typeof holdNextRead> | undefined;
+    // After the final decision, while its intent row is saved, the session changes and another read observes it.
+    fsHook.beforeSave = async (from) => {
+      if (!(await readFile(from, "utf8")).includes('"outcome":"intent"')) return;
+      fsHook.beforeSave = undefined;
+      h.update("a", { ...change, updatedAt: "2026-10-24T10:00:09Z" });
+      if (open) { slow = holdNextRead(h); other = h.service.providerRefusal("a"); await slow.reached; }
+      else expect((await h.service.providerRefusal("a")).refusal).toEqual(kind ? expect.objectContaining({ kind, state: "current" }) : null);
+    };
+    if (!kind) {
+      expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "submitted" });
+      expect(h.send).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(await h.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("Nothing was sent") });
+    expect(h.send).not.toHaveBeenCalled();
+    if (slow) { slow.finish(); expect((await other!).refusal).toMatchObject({ kind }); }
+    expect(await recordOf(h.root, "a")).toMatchObject({ refusal: { kind } });
+    h.update("a", { ...transport, providerUnavailable: false });
+    expect((await h.preview("resume")).rows[0]).toMatchObject({ eligible: false, reason: expect.stringContaining(`(${kind}) has no confirmed recovery`) });
   });
 
   it("every Resume-path exact read starts only after its attempt is on disk; Archive and probes write no refusal memory", async () => {

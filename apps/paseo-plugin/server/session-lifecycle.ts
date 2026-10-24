@@ -98,16 +98,16 @@ const PENDING = "Another exact read of this session has not recorded its outcome
 /** An open read later than the last release: until it records its outcome, the memory is not clean. */
 const pending = (memory: RefusalMemory, after = memory.cleared) => memory.open.some((entry) => entry.seq > after);
 const bound = (next: { observedAt: string }, prior: { observedAt: string }) => Date.parse(next.observedAt) >= Date.parse(prior.observedAt);
-const identity = ({ observedAt: _at, seq: _seq, ...rest }: OpenRefusal) => JSON.stringify(rest);
+const identity = ({ observedAt: _at, seq: _seq, ...rest }: RefusalObservation & { seq?: number }) => JSON.stringify(rest);
 /** Whether `memory` accounts for everything an older snapshot holds. Each read that snapshot left open is still open,
  *  named the open refusal or was the last recovery's final read. Its refusal is still open, named by the same read with
  *  the same evidence or by a later read, and bound no earlier; or a recovery whose final read started after that refusal
- *  was named released it, bound no earlier. */
+ *  was named released that same refusal (its kind, route and evidence), bound no earlier. */
 const covers = (memory: RefusalMemory, older: RefusalMemory) => {
   const held = memory.refusal, refusal = older.refusal, recovered = memory.recovered;
   return older.open.every((entry) => memory.open.some((open) => open.seq === entry.seq) || held?.seq === entry.seq || memory.cleared === entry.seq)
     && (!refusal || (held ? (held.seq > refusal.seq || (held.seq === refusal.seq && identity(held) === identity(refusal))) && bound(held, refusal)
-      : !!recovered && memory.cleared > refusal.seq && bound(recovered, refusal)));
+      : !!recovered && memory.cleared > refusal.seq && identity(recovered) === identity(refusal) && bound(recovered, refusal)));
 };
 /** An unresolved memory: an open refusal loses its kind, counts as named by read `seq` and binds no earlier than `at`. */
 const unresolved = (memory: RefusalMemory, at: string, seq: number): OpenRefusal => memory.refusal
@@ -414,6 +414,8 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       memories.set(path, next); return true;
     });
   }
+  /** Whether this ID's refusal memory is clean now: a clean stored, no open refusal and no read after the last release still open. */
+  const cleanNow = (id: string) => { const memory = memories.get(refusalPath(id)); return !!memory && memory.clean && !memory.refusal && !pending(memory); };
   const unrecorded = (read: RefusalRead) => read.seen && read.problem ? new Error(`The refusal this read saw could not be recorded (${errorText(read.problem)}). This worker keeps it, and the read's attempt on disk keeps Resume closed after a restart.`) : null;
   /** What a fenced exact read of this ID leaves: a refusal it saw (current), else the open refusal (history); with no
    *  clean stored, never "no refusal". Expiry, a failed read or a cleared lastError never release a refusal; only
@@ -542,6 +544,9 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
       if (!await whileOwned(lockPath, ours, async () => { await saveRow(reviewId, row); await writeFile(lockPath, intent, { mode: 0o600 }); }))
         throw new Error("Another action took this session's fence before dispatch. Nothing was sent; review again.");
+      // A refusal, or a read that has not recorded its outcome, after the final decision contradicts it. Checked in this
+      // worker's memory with no await before the send, so nothing records in between; nothing has been sent yet.
+      if (review.action === "resume" && !cleanNow(agentId)) throw new Error("A provider refusal, or a read without a recorded outcome, came after the final check. Nothing was sent; review again.");
       ours = intent; dispatchStarted = true;
       if (review.action === "resume") {
         await agent.send(RESUME_PROMPT, { messageId: `kontor-resume-${review.id}-${hash(agentId).slice(0, 12)}`, activeTurnBehavior: "steer" });
