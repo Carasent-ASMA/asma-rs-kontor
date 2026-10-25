@@ -8,15 +8,16 @@ import { withdrawHandOff } from "./session-actions";
 import { StartSwitchPopover } from "./start-switch-sheet";
 import { bindHostDirectory } from "./use-session-directory";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
+import { composerSessionPresentation } from "./composer-session-state";
 
 export const RETURN_CONTROL_ID = "return-to-kontor";
 export const RETURN_CONTROL_TITLE = "Start or switch session";
 export const RETURN_CONTROL_LABEL = "Kontor";
-export const RETURN_CONTROL_ICON = "Building2";
 
 type RegisteredPill = {
   readonly workspaceId: string;
   readonly registration: PluginButtonRegistration;
+  readonly presentation: ReturnType<typeof composerSessionPresentation>;
 };
 
 /**
@@ -59,41 +60,41 @@ export function contributeReturnControl(
     }
   }
 
-  function registerAgent(entry: DirectoryEntry): void {
+  function registerAgent(entry: DirectoryEntry, state: DirectoryState): void {
     if (stopped) {
       return;
     }
     const workspaceId = entry.workspaceId?.trim() ?? "";
-    if (
-      workspaceId.length === 0 ||
-      entry.archivedAt !== null ||
-      entry.status === "closed"
-    ) {
+    if (workspaceId.length === 0 || entry.archivedAt !== null) {
       removePill(entry.id);
       return;
     }
     const current = pills.get(entry.id);
-    if (current?.workspaceId === workspaceId) {
-      return;
-    }
-    if (current) {
-      removePill(entry.id);
-    }
+    const presentation = composerSessionPresentation(entry, state, RETURN_CONTROL_TITLE);
     try {
+      if (current?.workspaceId === workspaceId) {
+        if (current.presentation.icon !== presentation.icon || current.presentation.title !== presentation.title) {
+          current.registration.update(presentation);
+          pills.set(entry.id, { ...current, presentation });
+        }
+        return;
+      }
+      if (current) {
+        removePill(entry.id);
+      }
       const registration = client.addComposerPill({
         id: RETURN_CONTROL_ID,
         workspaceId,
         agentId: entry.id,
         button: {
-          title: RETURN_CONTROL_TITLE,
-          icon: RETURN_CONTROL_ICON,
+          ...presentation,
           label: RETURN_CONTROL_LABEL,
           behavior: { kind: "popover", Content },
         },
       });
-      pills.set(entry.id, { workspaceId, registration });
+      pills.set(entry.id, { workspaceId, registration, presentation });
     } catch (error) {
-      console.error("Kontor return control could not register a composer pill", error);
+      console.error("Kontor return control could not reconcile a composer pill", error);
     }
   }
 
@@ -107,7 +108,7 @@ export function contributeReturnControl(
     const seen = new Set<string>();
     for (const entry of state.entries) {
       seen.add(entry.id);
-      registerAgent(entry);
+      registerAgent(entry, state);
     }
     // A provisional page and a partial read may omit older sessions. Only a
     // complete inventory may establish that a missing pill should go away.

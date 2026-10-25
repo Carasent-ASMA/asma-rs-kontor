@@ -5,6 +5,7 @@ import type {
 } from "@getpaseo/client";
 import type {
   PluginButtonRegistration,
+  PluginButtonIcon,
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { getPaseoClient } = vi.hoisted(() => ({ getPaseoClient: vi.fn() }));
 
 vi.mock("@getpaseo/plugin/client", () => ({ getPaseoClient }));
+vi.mock("react-native", () => ({ View: "View" }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 // The popover body is drawn by the host; this suite checks only what the pill hands it.
 vi.mock("../client/start-switch-sheet", () => ({ StartSwitchPopover: function StartSwitchPopover() { return null; } }));
 
@@ -21,7 +24,6 @@ import { handOffOpen, takeHandOff } from "../client/session-actions";
 import { StartSwitchPopover } from "../client/start-switch-sheet";
 import {
   contributeReturnControl,
-  RETURN_CONTROL_ICON,
   RETURN_CONTROL_ID,
   RETURN_CONTROL_LABEL,
   RETURN_CONTROL_TITLE,
@@ -192,7 +194,7 @@ type PillContribution = {
   agentId: string;
   button: {
     title: string;
-    icon: string;
+    icon: PluginButtonIcon;
     label?: string;
     behavior:
       | { kind: "action"; onPress(): void }
@@ -229,7 +231,9 @@ function fakeControls(
     beforeAdd?.(contribution);
     let pill!: Pill;
     const registration = {
-      update: vi.fn(),
+      update: vi.fn((patch: Partial<PillContribution["button"]>) => {
+        Object.assign(pill.contribution.button, patch);
+      }),
       remove: vi.fn(() => {
         pill.active = false;
       }),
@@ -322,8 +326,8 @@ describe("Kontor composer controls share one host directory", () => {
       workspaceId: "wks-0",
       agentId: "s-0",
       button: {
-        title: RETURN_CONTROL_TITLE,
-        icon: RETURN_CONTROL_ICON,
+        title: `${RETURN_CONTROL_TITLE} · Last known: Idle`,
+        icon: expect.any(Function),
         label: RETURN_CONTROL_LABEL,
         behavior: { kind: "popover" },
       },
@@ -370,7 +374,7 @@ describe("Kontor composer controls share one host directory", () => {
     expect(takeHandOff("host-a", key)).toBeNull();
   });
 
-  it("follows native updates and removes closed, archived and removed sessions", async () => {
+  it("follows native updates, shows closed and removes archived or removed sessions", async () => {
     const rows = [agentPage("agent-a", { workspaceId: "wks-a" })];
     const host = fakeHost("host-a", rows);
     const controls = fakeControls();
@@ -417,7 +421,7 @@ describe("Kontor composer controls share one host directory", () => {
         status: "closed",
       },
     } as PaseoAgentUpdate);
-    expect(controls.pillFor("agent-b")).toBeUndefined();
+    expect(controls.pillFor("agent-b")?.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Closed`);
 
     host.emitUpdate({
       kind: "upsert",
@@ -431,6 +435,99 @@ describe("Kontor composer controls share one host directory", () => {
     host.emitUpdate({ kind: "remove", agentId: "agent-c" } as PaseoAgentUpdate);
     expect(controls.pillFor("agent-c")).toBeUndefined();
 
+    stop();
+  });
+
+  it("updates only the exact agent's state in place without replacing its popover or reading inventory", async () => {
+    const rows = [agentPage("agent-a"), agentPage("agent-b", { status: "running" })];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const a = controls.pillFor("agent-a")!;
+    const b = controls.pillFor("agent-b")!;
+    const behavior = a.contribution.button.behavior;
+    const reads = host.calls.length;
+    a.registration.update.mockClear();
+    b.registration.update.mockClear();
+
+    const states = [
+      { status: "running", expected: "Running" },
+      { status: "running", requiresAttention: true, attentionReason: "finished", expected: "Running" },
+      { status: "running", attentionReason: "permission", expected: "Needs input" },
+      { status: "error", expected: "Error" },
+      { status: "idle", requiresAttention: true, attentionReason: "finished", expected: "Attention" },
+      { status: "idle", requiresAttention: true, attentionReason: "error", expected: "Idle" },
+      { status: "initializing", expected: "Starting" },
+      { status: "closed", expected: "Closed" },
+    ] as const;
+    for (const { expected, ...patch } of states) {
+      host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent, ...patch } } as PaseoAgentUpdate);
+      expect(controls.pillFor("agent-a")).toBe(a);
+      expect(a.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · ${expected}`);
+      expect(a.contribution.button.behavior).toBe(behavior);
+      expect(a.contribution.button.label).toBe("Kontor");
+    }
+    // This is why the directory is used instead of a snapshot lacking pendingPermissions.
+    host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent,
+      status: "running", pendingPermissions: [{ id: "permission-a", provider: "codex", name: "Read", kind: "tool" }] } } as PaseoAgentUpdate);
+    expect(a.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Needs input`);
+    expect(a.registration.update).toHaveBeenCalled();
+    expect(b.registration.update).not.toHaveBeenCalled();
+    expect(b.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Running`);
+    expect(a.registration.remove).not.toHaveBeenCalled();
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(2);
+    expect(host.calls).toHaveLength(reads);
+    stop();
+  });
+
+  it("keeps stable icons across metadata changes and mutes last-known state offline, then recovers", async () => {
+    const rows = [agentPage("agent-a", { status: "running" })];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const pill = controls.pillFor("agent-a")!;
+    const icon = pill.contribution.button.icon;
+    const reads = host.calls.length;
+    pill.registration.update.mockClear();
+    host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent, title: "Renamed" } } as PaseoAgentUpdate);
+    expect(pill.registration.update).not.toHaveBeenCalled();
+    expect(pill.contribution.button.icon).toBe(icon);
+    startHostDirectory("host-a", "offline");
+    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Last known: Running`);
+    expect(pill.contribution.button.icon).not.toBe(icon);
+    expect(host.calls).toHaveLength(reads);
+    startHostDirectory("host-a", "online");
+    await settle();
+    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Running`);
+    expect(pill.contribution.button.icon).toBe(icon);
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
+    expect(host.subscribes).toHaveLength(2);
+    stop();
+  });
+
+  it("retries a refused presentation update on the next native event without removing the pill", async () => {
+    const rows = [agentPage("agent-a")];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const pill = controls.pillFor("agent-a")!;
+    const reads = host.calls.length;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    pill.registration.update.mockImplementationOnce(() => { throw new Error("presentation refused"); });
+    const update = { kind: "upsert", agent: { ...rows[0]!.agent, status: "error" } } as PaseoAgentUpdate;
+    host.emitUpdate(update);
+    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Idle`);
+    host.emitUpdate(update);
+    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Error`);
+    expect(pill.registration.remove).not.toHaveBeenCalled();
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
+    expect(host.calls).toHaveLength(reads);
     stop();
   });
 
@@ -596,11 +693,11 @@ describe("Kontor composer controls share one host directory", () => {
     startHostDirectory("host-a");
     await settle();
 
-    expect(controls.activePills()).toHaveLength(1);
+    expect(controls.activePills()).toHaveLength(2);
     expect(controls.pillFor("live")).toBeDefined();
     expect(controls.pillFor("no-workspace")).toBeUndefined();
     expect(controls.pillFor("empty-workspace")).toBeUndefined();
-    expect(controls.pillFor("closed")).toBeUndefined();
+    expect(controls.pillFor("closed")?.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Closed`);
     expect(controls.pillFor("archived")).toBeUndefined();
     stop();
   });
