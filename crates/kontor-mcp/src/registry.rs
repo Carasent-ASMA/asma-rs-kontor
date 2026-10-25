@@ -7319,6 +7319,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Object(RUNTIME_MODEL_ROUTE),
                 "The approved provider/model/effort route for the same logical seat.",
             ),
+            opt(
+                "takeover",
+                Place::Body,
+                ArgType::Bool,
+                "Explicit operator takeover: replace an idle or failed native even on its unchanged route.",
+            ),
         ],
         about: "Preview an exact Core Team native route correction without changing identity.",
     },
@@ -7373,6 +7379,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Object(RUNTIME_MODEL_ROUTE),
                 "The approved provider/model/effort route for the same logical seat.",
+            ),
+            opt(
+                "takeover",
+                Place::Body,
+                ArgType::Bool,
+                "The takeover the route preview was asked for.",
             ),
             req(
                 "preview_hash",

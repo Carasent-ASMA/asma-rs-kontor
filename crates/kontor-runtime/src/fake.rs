@@ -2734,6 +2734,23 @@ impl ScriptedFakeRuntime {
         }
     }
 
+    /// Reproduce an archived hosted native reopened outside Kontor: the
+    /// inverse of [`Self::archive_hosted_seat`].
+    pub fn reopen_hosted_seat(&self, native_id: &ExternalId) {
+        let mut state = self.lock();
+        let found = state
+            .archived_hosted_seats
+            .iter()
+            .find_map(|(binding, seat)| {
+                (&seat.identity.native_id == native_id).then_some((*binding, seat.clone()))
+            });
+        if let Some((binding, seat)) = found {
+            state.archived_hosted_seats.remove(&binding);
+            state.hosted_seats.insert(binding, seat);
+            state.archived_seats.remove(native_id);
+        }
+    }
+
     /// Reproduce a native archive for any persistent hosted or consultation
     /// seat while retaining its immutable title and placement history.
     pub fn archive_persistent_seat(&self, native_id: &ExternalId) {

@@ -7502,13 +7502,15 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         }
+        // A closed native has already stopped; archiving it is the retirement
+        // proof it lacks, and the readback below must still show no execution.
         if !matches!(
             before.status,
-            PaseoAgentStatus::Idle | PaseoAgentStatus::Error
+            PaseoAgentStatus::Idle | PaseoAgentStatus::Error | PaseoAgentStatus::Closed
         ) || !before.pending_permissions.is_empty()
         {
             return Err(RuntimeError::ReplacementNotEvidenced {
-                rule: "Core Team route correction requires an idle or failed predecessor with no pending permission",
+                rule: "Core Team route correction requires an idle, failed or closed predecessor with no pending permission",
             });
         }
         let output = self

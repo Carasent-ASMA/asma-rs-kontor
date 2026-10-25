@@ -1063,7 +1063,8 @@ pub struct FleetEligibilityRequest {
     pub excluded_vendors: Vec<String>,
 }
 
-/// Exact in-place route correction or stale-native recovery for one persistent Core Team seat.
+/// Exact in-place route correction, stale-native recovery or operator takeover for one
+/// persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamRoutePreviewRequest {
@@ -1080,6 +1081,11 @@ pub struct CoreTeamRoutePreviewRequest {
     pub expected_generation: u64,
     /// Provider/model/effort that should fill the same logical seat afterwards.
     pub desired_model_route: RuntimeModelRouteRequest,
+    /// Explicit operator takeover: replace the native even when it is live
+    /// and its route is unchanged. Only an idle or failed predecessor with no
+    /// pending permission and no other live native on the seat qualifies.
+    #[serde(default)]
+    pub takeover: bool,
 }
 
 /// Read-only route-correction or stale-native recovery plan for one persistent Core Team seat.
@@ -1131,6 +1137,9 @@ pub struct CoreTeamRouteApplyRequest {
     pub expected_generation: u64,
     /// Provider/model/effort that should fill the same logical seat afterwards.
     pub desired_model_route: RuntimeModelRouteRequest,
+    /// The takeover the preview was asked for.
+    #[serde(default)]
+    pub takeover: bool,
     /// Hash returned by preview.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
@@ -1146,6 +1155,7 @@ impl CoreTeamRouteApplyRequest {
             expected_native_id: self.expected_native_id.clone(),
             expected_generation: self.expected_generation,
             desired_model_route: self.desired_model_route.clone(),
+            takeover: self.takeover,
         }
     }
 }

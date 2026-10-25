@@ -182,6 +182,7 @@ use kontor_core::consultation::{
     RecordedFinding, conjunctive_outcome, validate_semantic_topic,
     validate_semantic_topic_correction,
 };
+use kontor_core::durable_seat::DurableSeatActivity;
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
@@ -293,7 +294,7 @@ use kontor_runtime::container::{
     ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest,
     ContainerRequest, RetitleContainerRequest,
 };
-use kontor_runtime::durable_seat::HostedSeatScope;
+use kontor_runtime::durable_seat::{HostedSeatCensusRequest, HostedSeatScope};
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
     CorrelationChallengeCompletionRequest, CorrelationChallengeRequest, HistoryRequest,
@@ -743,6 +744,7 @@ struct CoreTeamRoutePlan {
     /// this leadership seat.
     leadership: Option<LeadershipRoute>,
     stale_native_recovery: bool,
+    takeover: bool,
     preview_hash: ContentHash,
 }
 
@@ -816,7 +818,9 @@ impl LeadershipRoute {
 impl CoreTeamRoutePlan {
     fn needs_native_replacement(&self) -> bool {
         self.successor.is_none()
-            && (self.predecessor.model_rung != self.desired || self.stale_native_recovery)
+            && (self.takeover
+                || self.predecessor.model_rung != self.desired
+                || self.stale_native_recovery)
     }
 }
 
@@ -9787,7 +9791,7 @@ impl Services {
                         "the hosted-seat runtime is not configured in this daemon",
                     )
                 })?;
-            match adapter
+            let live = match adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
@@ -9815,7 +9819,47 @@ impl Services {
                 Err(error) => {
                     return Err(ApiError::from_runtime(state.realm_id(), &error));
                 }
+            };
+            // A takeover replaces a native that is still there, so it asks
+            // what that native is doing, before any claim or effect. Only the
+            // exact predecessor may carry the seat live, and only idle or
+            // failed: a working, permission-waiting or unknown predecessor, a
+            // second live carrier or a census contradicting the inspection
+            // refuses. The retirement re-proves this at the native boundary.
+            if live && request.takeover {
+                let census = adapter
+                    .census_hosted_seat(&HostedSeatCensusRequest {
+                        seat_binding_id: binding.id,
+                        requested_at: kontor_api::now(),
+                    })
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                let exact = &predecessor.native_identity.native_id;
+                let eligible = census
+                    .carriers
+                    .iter()
+                    .any(|carrier| carrier.native_id == *exact)
+                    && census.carriers.iter().all(|carrier| {
+                        if carrier.native_id == *exact {
+                            !carrier.archived
+                                && matches!(
+                                    carrier.activity,
+                                    DurableSeatActivity::Idle | DurableSeatActivity::Errored
+                                )
+                        } else {
+                            carrier.archived
+                        }
+                    });
+                if !eligible {
+                    return Err(ApiError::from_runtime(
+                        state.realm_id(),
+                        &RuntimeError::ReplacementNotEvidenced {
+                            rule: "a Core Team takeover requires its exact predecessor idle or failed, with no pending permission and no other live native on the seat",
+                        },
+                    ));
+                }
             }
+            live
         };
         let stale_native_recovery =
             predecessor.model_rung == desired && (successor.is_some() || !native_is_live);
@@ -9864,7 +9908,16 @@ impl Services {
                 },
             },
         });
-        if stale_native_recovery {
+        if request.takeover {
+            // Pinned in place of the liveness answer. A takeover replaces the
+            // predecessor whether or not it is still live, so a replay that
+            // re-plans after its own retirement still names this hash. The
+            // profile is the frozen slot the takeover was admitted for.
+            preview_document["takeover"] = serde_json::json!({
+                "role_slot": binding.role_slot_id.as_str(),
+                "role_code": binding.role.role_code.as_str(),
+            });
+        } else if stale_native_recovery {
             preview_document["stale_native_recovery"] = serde_json::Value::Bool(true);
         }
         // Only a policy-bound seat carries this, so an unbound seat's preview
@@ -9885,6 +9938,7 @@ impl Services {
             desired,
             leadership,
             stale_native_recovery,
+            takeover: request.takeover,
             preview_hash,
         })
     }
@@ -28680,6 +28734,19 @@ impl ApplicationOperations for Services {
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            // The launch recovers an exact-label native it finds live, and on an
+            // unchanged route the predecessor wears those labels. One reopened
+            // after its retirement would come back here as its own successor.
+            // That is execution the retirement did not stop, never a succession,
+            // so it refuses before the route commit and nothing archives it.
+            if outcome.identity.native_id == plan.predecessor.native_identity.native_id {
+                return Err(ApiError::from_runtime(
+                    state.realm_id(),
+                    &RuntimeError::ReplacementNotEvidenced {
+                        rule: "the launch answered with the predecessor it was to replace",
+                    },
+                ));
+            }
             self.record_launch_provenance(
                 "hosted_leadership",
                 plan.binding.id.to_string(),
