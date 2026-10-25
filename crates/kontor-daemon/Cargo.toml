@@ -28,6 +28,9 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 # below it does: `kontor-api` is stated against the port.
 kontor-runtime-paseo = { path = "../kontor-runtime-paseo", version = "=0.2.1" }
 kontor-store = { path = "../kontor-store", version = "=0.2.1" }
+# The optional observational work catalog. It owns a separate database, so this
+# edge never makes discovery a precondition of governed reconciliation.
+kontor-catalog = { path = "../kontor-catalog", version = "=0.2.1" }
 # The application services are composed here and nowhere else: this is the one
 # crate allowed to hold the profile pack, the team layer and the scheduler in the
 # same hand as the store and the adapters.

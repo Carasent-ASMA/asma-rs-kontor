@@ -289,6 +289,11 @@ pub struct ApiParts {
     pub derived_read_deadline: std::time::Duration,
     /// The composed application services the public operations run through.
     pub applications: Applications,
+    /// The host-local work catalog, when the composition root opened one.
+    ///
+    /// Absence is not an empty catalog: the read routes answer `unavailable`,
+    /// because a catalog that was never composed has no coverage to report.
+    pub catalog: Option<Arc<kontor_catalog::Catalog>>,
 }
 
 struct Inner {
@@ -309,6 +314,7 @@ struct Inner {
     evidence_window_seconds: i64,
     derived_read_deadline: std::time::Duration,
     applications: Applications,
+    catalog: Option<Arc<kontor_catalog::Catalog>>,
 }
 
 /// The handler state. Cheap to clone; one Realm for its whole lifetime.
@@ -887,6 +893,7 @@ impl ApiState {
             evidence_window_seconds: parts.evidence_window_seconds,
             derived_read_deadline: parts.derived_read_deadline,
             applications: parts.applications,
+            catalog: parts.catalog,
         }))
     }
 
@@ -922,6 +929,12 @@ impl ApiState {
     #[must_use]
     pub fn ingress(&self) -> &IngressPolicy {
         &self.0.ingress
+    }
+
+    /// The host-local work catalog, when one was composed.
+    #[must_use]
+    pub fn catalog(&self) -> Option<&Arc<kontor_catalog::Catalog>> {
+        self.0.catalog.as_ref()
     }
 
     /// The configured runtime adapters.

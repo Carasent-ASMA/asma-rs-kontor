@@ -388,6 +388,15 @@ async fn serve(
         daemon.jira_reconciler(),
         daemon.state(),
     ));
+    // The work catalog is a separate observational plane. Its poller shares the
+    // shutdown signal but not the reconciliation loop, the store or the barrier:
+    // a catalog failure degrades coverage and nothing else.
+    if let Some(catalog) = daemon.catalog() {
+        tokio::spawn(kontor_catalog::poll_until_stopped(
+            catalog,
+            daemon.state().signals().stops(),
+        ));
+    }
     // Publication checks run only where an operator installed the GitHub App;
     // without the document the gateway is absent and nothing is posted.
     if let Some(gateway) = daemon.github_publication() {

@@ -593,6 +593,11 @@ pub struct Daemon {
     attention: Option<Arc<attention::AttentionChannel>>,
     usage_poller: usage::UsagePoller,
     github_publication: Option<Arc<github_publication::GithubPublicationGateway>>,
+    /// The host-local work catalog, when its separate database opened.
+    ///
+    /// A failure here degrades catalog coverage only: the daemon still serves,
+    /// schedules and reconciles exactly as before.
+    catalog: Option<Arc<kontor_catalog::Catalog>>,
     /// Held for its `Drop`. The claim on the state root lasts exactly as long as
     /// this value does.
     lock: StateRootLock,
@@ -713,6 +718,16 @@ impl Daemon {
         // splitting one process between two of them. A present configuration
         // overrides the seed from here on, including in `config` itself.
         config.capacity = capacity_in_force(&store, config.capacity)?;
+        let catalog = match kontor_catalog::Catalog::open(&config.state_root) {
+            Ok(catalog) => Some(Arc::new(catalog)),
+            Err(error) => {
+                warn!(
+                    detail = %error,
+                    "the work catalog could not be opened; discovery is unavailable in this process"
+                );
+                None
+            }
+        };
         let credentials = credentials::open_or_create(&config.state_root)?;
         let realm_id = store.realm_id();
         // The services and the state are mutually dependent — the state serves
@@ -861,6 +876,7 @@ impl Daemon {
                 config.derived_read_deadline_seconds.max(1),
             ),
             applications: applications.clone(),
+            catalog: catalog.clone(),
         });
         applications.attach(state.clone());
         info!(
@@ -880,6 +896,7 @@ impl Daemon {
             attention,
             usage_poller,
             github_publication,
+            catalog,
             lock,
         })
     }
@@ -995,6 +1012,15 @@ impl Daemon {
     #[must_use]
     pub fn github_publication(&self) -> Option<Arc<github_publication::GithubPublicationGateway>> {
         self.github_publication.clone()
+    }
+
+    /// The host-local work catalog, when its separate database opened.
+    ///
+    /// Absence means discovery is unavailable in this process; it never means
+    /// governed scheduling is unavailable.
+    #[must_use]
+    pub fn catalog(&self) -> Option<Arc<kontor_catalog::Catalog>> {
+        self.catalog.clone()
     }
 
     /// The configuration this daemon started with.
@@ -1825,6 +1851,11 @@ impl Daemon {
         let realm_id = self.realm_id();
         self.state.barrier().settle(BarrierState::Pending);
         self.state.signals().stop();
+        if let Some(catalog) = &self.catalog
+            && let Err(error) = catalog.release_owner()
+        {
+            warn!(detail = %error, "the catalog lease could not be released on shutdown");
+        }
         // Break the services ↔ state cycle before either half can be dropped.
         // The state holds the services and the services hold the state, so
         // without this the SQLite connection survives the daemon and a cleanly
