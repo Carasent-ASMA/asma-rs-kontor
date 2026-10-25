@@ -1328,6 +1328,75 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("keeps the latest Retry stale and does not walk while its subscription is held", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const initialPages = fake.listCalls.filter((call) => call.subscribe === undefined).length;
+    const first = fake.holdNextSubscribe();
+    const second = fake.holdNextSubscribe();
+    const firstRetry = directory.retry();
+    await first.started;
+    const secondRetry = directory.retry();
+    await second.started;
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(latest.status).toBe("stale");
+    expect(latest.live).toBe(false);
+    expect(latest.inventoryComplete).toBe(false);
+    expect(latest.entries[0]?.title).toBe("Last known");
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(initialPages);
+
+    second.release();
+    first.release();
+    await Promise.all([firstRetry, secondRetry]);
+    await directory.dispose();
+  });
+
+  it("runs one fresh walk after the latest Retry and keeps it live when the old subscription settles late", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const initialPages = fake.listCalls.filter((call) => call.subscribe === undefined).length;
+    const first = fake.holdNextSubscribe();
+    const second = fake.holdNextSubscribe();
+    const firstRetry = directory.retry();
+    await first.started;
+    const secondRetry = directory.retry();
+    await second.started;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    second.release();
+    await Promise.all([firstRetry, secondRetry]);
+    expect(latest.status).toBe("ready");
+    expect(latest.live).toBe(true);
+    expect(latest.inventoryComplete).toBe(true);
+
+    first.release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(latest.status).toBe("ready");
+    expect(latest.live).toBe(true);
+    expect(latest.inventoryComplete).toBe(true);
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(initialPages + 1);
+    await directory.dispose();
+  });
+
   it("starts a fresh walk for each reconnect while an earlier read is held", async () => {
     const fake = fakeDirectory([[entry("agent-a", { title: "Old" })]]);
     let latest = emptyDirectoryState();
