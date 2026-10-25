@@ -58,14 +58,15 @@ const list=async(options={})=>{const visible=rows.filter(row=>options.filter?.in
  const start=Number(options.page?.cursor??0),end=start+(options.page?.limit??200);
  return {requestId:'fixture',entries:visible.slice(start,end),pageInfo:{hasMore:end<visible.length,nextCursor:end<visible.length?String(end):null,prevCursor:null}};};
 const now=Date.now(); recordVisit(HOST,'dup-1',now-120000); recordVisit(HOST,'dup-2',now-60000);
-const catalog={enabled:true,disabledReason:null,pending:null,notes:[],catalogWorkspaceId:'wks-adam',desks:[{workspaceId:'wks-adam',projectId:'project-adam',desk:'ADAM',project:'DESK • ADAM'}],profile:null,
+const catalog={enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:'project-adam',issues:[],jiraProblem:null,
+ desks:[{projectId:'project-adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/project-adam',lead:{ADHOC:'wks-adhoc',LSA:'wks-lsa',TPM:'wks-tpm'}}],profile:null,
  providers:[{id:'active',label:'Active provider',status:'ready',available:true,note:null,persona:'supported',models:[{id:'first',label:'Active model',efforts:[],defaultEffort:null}],defaultModel:'first',modes:[],defaultMode:null}]};
 window.fixture={calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
  client:hostId=>{if(hostId!==HOST)throw new Error('Unexpected host '+hostId);return {agents:{list}};},
  recent:()=>readRecent(HOST).record.visits.map(visit=>visit.id),
  rpc:async(name,input)=>{window.fixture.calls.push({name,input});
   if(name==='sessions.create-options'){await new Promise(resolve=>setTimeout(resolve,10));return catalog;}
-  if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:input.workspaceId,message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
+  if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   throw new Error('Unexpected RPC in isolated fixture: '+name);
  }};
 const navigation={openAgent:input=>{window.fixture.opens.push(input);},openWorkspace:()=>{throw new Error('Unexpected workspace navigation');}};
@@ -151,7 +152,7 @@ async function run(name, test) {
         assert.equal(await page.getByText('Start or switch session', { exact: true }).count(), compact ? 1 : 0);
         assert.equal(await page.getByRole('heading', { name: 'Start or switch', exact: true }).count(), 0);
         assert.equal(await page.getByRole('button', { name: /^Close/ }).count(), 0);
-        const controls = [page.getByRole('button', { name: 'Open Kontor', exact: true }), page.getByRole('button', { name: 'New LSA session', exact: true }), page.getByRole('textbox', { name: 'Jump to any session', exact: true }),
+        const controls = [page.getByRole('button', { name: 'Open Kontor', exact: true }), page.getByRole('button', { name: 'New session', exact: true }), page.getByRole('textbox', { name: 'Jump to any session', exact: true }),
           page.getByTestId('kontor-switch-row-dup-1'), page.getByTestId('kontor-switch-row-dup-2'), page.getByRole('button', { name: 'Clear recent on this device', exact: true })];
         await expect(controls[0]).toBeInViewport();
         await expect(controls[1]).toBeVisible();
@@ -226,8 +227,8 @@ async function run(name, test) {
     for (const width of [320, 390, 1440]) await run(`${width}-new-lsa-inside-popover`, async () => {
       const { page, context } = await pageFor(width);
       try {
-        await page.getByRole('button', { name: 'New LSA session', exact: true }).click();
-        await page.getByRole('heading', { name: 'New LSA', exact: true }).waitFor();
+        await page.getByRole('button', { name: 'New session', exact: true }).click();
+        await page.getByRole('heading', { name: 'New session', exact: true }).waitFor();
         await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Popover review');
         const create = page.getByTestId('kontor-new-lsa-create');
         await expect(create).toBeEnabled();
@@ -263,7 +264,7 @@ async function run(name, test) {
     for (const width of [320, 390, 1440]) await run(`${width}-help-and-escape-observed`, async () => {
       const { page, context } = await pageFor(width);
       try {
-        await page.getByRole('button', { name: 'New LSA session', exact: true }).click();
+        await page.getByRole('button', { name: 'New session', exact: true }).click();
         const back = page.getByRole('button', { name: 'Back to recent sessions', exact: true });
         const help = page.getByRole('tooltip'), popover = page.getByTestId('host-popover');
         const observe = async name => {
@@ -289,7 +290,7 @@ async function run(name, test) {
           await page.waitForTimeout(700);
           observation.longHold = await observe('long-hold');
           await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-          observation.longHold.stayedInNewLsa = await page.getByRole('heading', { name: 'New LSA', exact: true }).count() === 1;
+          observation.longHold.stayedInNewLsa = await page.getByRole('heading', { name: 'New session', exact: true }).count() === 1;
           await page.getByRole('textbox', { name: 'Topic', exact: true }).focus();
         }
         // Keyboard: leave the Back button and return to it.
@@ -306,6 +307,17 @@ async function run(name, test) {
         const now = await state(page);
         assert.deepEqual(now.screens, []); assert.deepEqual(now.opens, []); assert.deepEqual(now.toasts, []);
         return { observation };
+      } finally { await context.close(); }
+    });
+    await run('1440-desk-inference-from-workspace', async () => {
+      const { page, context } = await pageFor(1440);
+      try {
+        const input = await page.evaluate(() => window.fixture.calls.find(call => call.name === 'sessions.create-options')?.input);
+        assert.deepEqual(input, { workspaceId: 'wks-adam' });
+        await page.getByRole('button', { name: 'New session', exact: true }).click();
+        const desk = page.getByRole('radio', { name: 'DESK • ADAM', exact: true });
+        await desk.waitFor();
+        assert.equal(await desk.getAttribute('aria-checked'), 'true');
       } finally { await context.close(); }
     });
     await run('390-stale-screen-leaves-newer-request', async () => {
