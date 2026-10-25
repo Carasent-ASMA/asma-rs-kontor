@@ -1328,6 +1328,55 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("fences a queued refresh iteration when Retry starts a new generation", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const heldPage = fake.holdNextPage();
+    const firstRefresh = directory.refresh();
+    await heldPage.started;
+    const queuedRefresh = directory.refresh();
+    fake.setPages([[entry("agent-a", { title: "Premature fresh" })]]);
+
+    const heldSubscription = fake.holdNextSubscribe();
+    const retrying = directory.retry();
+    await heldSubscription.started;
+    const pagesWhileHeld = fake.listCalls.filter((call) => call.subscribe === undefined).length;
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(latest.status).toBe("stale");
+    expect(latest.live).toBe(false);
+    expect(latest.inventoryComplete).toBe(false);
+    expect(latest.entries[0]?.title).toBe("Last known");
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesWhileHeld);
+
+    heldSubscription.release();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Premature fresh",
+      1_500,
+    );
+    await Promise.all([retrying, firstRefresh, queuedRefresh]);
+    expect(settled.live).toBe(true);
+    expect(settled.inventoryComplete).toBe(true);
+
+    const pagesAfterFresh = fake.listCalls.filter((call) => call.subscribe === undefined).length;
+    heldPage.release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesAfterFresh);
+    expect(latest.entries[0]?.title).toBe("Premature fresh");
+
+    await directory.dispose();
+  });
+
   it("keeps stale last-known rows when a normal refresh races a held Retry bootstrap", async () => {
     const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
     let latest = emptyDirectoryState();

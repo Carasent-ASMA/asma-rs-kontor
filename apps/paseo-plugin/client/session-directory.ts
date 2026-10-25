@@ -936,7 +936,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       do {
         refreshQueued = false;
         await runRefresh();
-      } while (refreshQueued && !disposed);
+      } while (refreshQueued && !disposed && refreshGeneration === generation);
     })();
     try {
       await refreshPromise;
