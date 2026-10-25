@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
-import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, type TakeoverDeps } from "../server/session-lifecycle";
+import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, type TakeoverDeps } from "../server/session-lifecycle";
+import * as readSources from "../server/read-sources";
+import * as teamsAdapter from "../server/teams-source-adapter";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
@@ -120,6 +122,26 @@ describe("takeover review", () => {
     h.deps.operatorFleetDiscovery = async () => { reads++; return discovery(); };
     await h.service.review({ agentId: "agent-1", bindingKey: KEY });
     expect(reads).toBe(1);
+  });
+
+  it("readOperatorFleetDiscovery uses one Teams adapter read for profiles and account catalog", async () => {
+    const read = vi.fn(async () => ({
+      status: "ready" as const, sha256: "fleet-sha", readAt: "2026-10-25T09:00:00.000Z",
+      data: { kind: "fleet" as const, bindings: [{ chainResolved: true, reference: KEY, chainName: "claude-first" }], domains: [{ accounts: ["claude-a"] }] },
+      diagnostics: [] as const,
+    }));
+    const catalogSpy = vi.spyOn(readSources, "sourceCatalog").mockReturnValue({ sources: [{ id: "operator", title: "operator", kind: "teams", path: "/fixture/operator-fleet.yml", workstream: null, epic: null, projectId: null, revisionKind: "working copy" }], diagnostics: [] });
+    const adapterSpy = vi.spyOn(teamsAdapter, "createTeamsSourceAdapter").mockReturnValue({ read } as never);
+    try {
+      const result = await readOperatorFleetDiscovery();
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith({ sourceId: "operator" });
+      expect(result.choices).toEqual([{ bindingKey: KEY, chain: "claude-first" }]);
+      expect(result.catalog.revision).toBe("fleet-sha");
+    } finally {
+      catalogSpy.mockRestore();
+      adapterSpy.mockRestore();
+    }
   });
 
   it("offers the server's profiles, never infers a chain, and keeps one successor request across revisions", async () => {
