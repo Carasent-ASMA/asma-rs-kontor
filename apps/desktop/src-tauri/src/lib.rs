@@ -27,10 +27,10 @@
 
 mod credentials;
 
-use credentials::{CredentialError, CredentialStore, Endpoint, OsKeychain, machine_host};
+use credentials::{CredentialError, CredentialStore, Endpoint, OsKeychain, SERVICE, machine_host};
 
 fn os_store() -> CredentialStore<OsKeychain> {
-    CredentialStore::new(OsKeychain, &machine_host())
+    CredentialStore::new(OsKeychain::new(SERVICE), &machine_host())
 }
 
 // The commands are async so a keychain prompt waits off the main thread.

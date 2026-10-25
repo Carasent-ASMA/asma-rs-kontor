@@ -195,30 +195,48 @@ fn host_label(name: Option<&str>) -> String {
     if usable { label } else { LOCAL_HOST.to_owned() }
 }
 
-/// The production backend: the operating system's credential store.
-pub(crate) struct OsKeychain;
+/// The production backend: the operating system's credential store, under one
+/// service — [`SERVICE`] in the shell.
+pub(crate) struct OsKeychain {
+    service: String,
+}
 
-impl SecretBackend for OsKeychain {
-    fn get(&self, account: &str) -> Result<String, CredentialError> {
-        entry(account)?.get_password().map_err(classify)
-    }
-
-    fn set(&self, account: &str, value: &str) -> Result<(), CredentialError> {
-        entry(account)?.set_password(value).map_err(classify)
-    }
-
-    fn delete(&self, account: &str) -> Result<(), CredentialError> {
-        entry(account)?.delete_credential().map_err(classify)
+impl OsKeychain {
+    /// The OS store, filing entries under `service`.
+    pub(crate) fn new(service: &str) -> Self {
+        Self {
+            service: service.to_owned(),
+        }
     }
 }
 
-fn entry(account: &str) -> Result<keyring_core::Entry, CredentialError> {
+impl SecretBackend for OsKeychain {
+    fn get(&self, account: &str) -> Result<String, CredentialError> {
+        entry(&self.service, account)?
+            .get_password()
+            .map_err(classify)
+    }
+
+    fn set(&self, account: &str, value: &str) -> Result<(), CredentialError> {
+        entry(&self.service, account)?
+            .set_password(value)
+            .map_err(classify)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), CredentialError> {
+        entry(&self.service, account)?
+            .delete_credential()
+            .map_err(classify)
+    }
+}
+
+fn entry(service: &str, account: &str) -> Result<keyring_core::Entry, CredentialError> {
     // `keyring` picks and installs the platform store once; the entry is then
     // built through `keyring-core` so it can carry store modifiers.
     if keyring::Entry::store_status().is_err() {
         return Err(CredentialError::Unavailable);
     }
-    keyring_core::Entry::new_with_modifiers(SERVICE, account, &entry_modifiers()).map_err(classify)
+    keyring_core::Entry::new_with_modifiers(service, account, &entry_modifiers()).map_err(classify)
 }
 
 /// The store modifiers every entry is built with on this platform.
@@ -652,5 +670,147 @@ mod tests {
     fn machine_host_is_the_computer_name_on_windows() {
         let expected = host_label(std::env::var("COMPUTERNAME").ok().as_deref());
         assert_eq!(machine_host(), expected);
+    }
+
+    /// REAL OS store qualification, run by hand only (ASMA-8645 option C).
+    ///
+    /// Unlike every other test here this uses [`OsKeychain`], the production
+    /// backend, through the production [`CredentialStore`]. It refuses to run
+    /// unless `KONTOR_QUAL_SERVICE` starts with `kontor-console-qual-` and
+    /// `KONTOR_QUAL_ACCOUNT` starts with `qual-`, so it can never address the
+    /// shell's own [`SERVICE`]. Every value is synthetic, the secret is never
+    /// printed, and a drop guard clears every entry it may have written.
+    ///
+    /// Run every step in this one process: a rebuilt binary is a new keychain
+    /// identity and may be prompted for the entries the previous one wrote.
+    #[test]
+    #[ignore = "touches the real OS credential store; needs KONTOR_QUAL_SERVICE and KONTOR_QUAL_ACCOUNT"]
+    fn real_store_qualification() {
+        const QUAL_PREFIX: &str = "kontor-console-qual-";
+        let service = std::env::var("KONTOR_QUAL_SERVICE").expect("KONTOR_QUAL_SERVICE");
+        let host = std::env::var("KONTOR_QUAL_ACCOUNT").expect("KONTOR_QUAL_ACCOUNT");
+        assert!(
+            service.starts_with(QUAL_PREFIX) && service.len() > QUAL_PREFIX.len(),
+            "refusing: the service must start with {QUAL_PREFIX}"
+        );
+        assert_ne!(service, SERVICE);
+        assert!(
+            host.starts_with("qual-") && !host.contains('|'),
+            "refusing: the account prefix must start with qual- and hold no |"
+        );
+
+        let store = CredentialStore::new(OsKeychain::new(&service), &host);
+        const PROFILES: [&str; 3] = ["default", "alt", "invalid"];
+        struct Cleanup<'a>(&'a CredentialStore<OsKeychain>);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                for profile in PROFILES {
+                    let outcome = self.0.clear(Some(profile));
+                    println!("CLEANUP {profile}: {outcome:?}");
+                }
+            }
+        }
+        let _cleanup = Cleanup(&store);
+
+        // 64 hex characters from this process's random hasher state.
+        let token = || {
+            use std::hash::{BuildHasher, Hasher};
+            (0..4)
+                .map(|_| {
+                    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+                    hasher.write_u8(0);
+                    format!("{:016x}", hasher.finish())
+                })
+                .collect::<String>()
+        };
+        let synthetic = |token: String| Endpoint {
+            base_url: "https://qual.invalid".to_owned(),
+            token,
+        };
+        let metadata = |profile: &str| {
+            let output = std::process::Command::new("/usr/bin/security")
+                .args([
+                    "find-generic-password",
+                    "-s",
+                    &service,
+                    "-a",
+                    &format!("{host}|{profile}"),
+                ])
+                .output()
+                .expect("run /usr/bin/security");
+            // Without -g or -w, `security` prints attributes only, never the secret.
+            println!(
+                "METADATA {profile}: exit {:?}\n{}{}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.status.code()
+        };
+
+        println!("SERVICE {service}\nACCOUNT PREFIX {host}|");
+        assert_eq!(
+            store.load(None),
+            Err(CredentialError::NotFound),
+            "no entry before the first write"
+        );
+        println!("STEP 0 load before write: not_found");
+
+        let first = synthetic(token());
+        store.save(None, &first).expect("save");
+        assert_eq!(store.load(None).as_ref(), Ok(&first));
+        println!("STEP 1 save then load: round trip equal");
+        assert_eq!(metadata("default"), Some(0));
+
+        let second = synthetic(token());
+        assert_ne!(first, second);
+        store.save(None, &second).expect("replace");
+        assert_eq!(store.load(None).as_ref(), Ok(&second));
+        println!("STEP 2 replace then load: the replacement");
+
+        let alt = synthetic(token());
+        store.save(Some("alt"), &alt).expect("save alt");
+        assert_eq!(store.load(Some("alt")).as_ref(), Ok(&alt));
+        assert_eq!(store.load(None).as_ref(), Ok(&second));
+        store.clear(Some("alt")).expect("clear alt");
+        assert_eq!(store.load(Some("alt")), Err(CredentialError::NotFound));
+        assert_eq!(store.load(None).as_ref(), Ok(&second));
+        println!(
+            "STEP 3 profile separation: default and alt independent; clearing alt kept default"
+        );
+
+        for (label, endpoint) in [
+            (
+                "empty base_url",
+                Endpoint {
+                    base_url: String::new(),
+                    token: token(),
+                },
+            ),
+            (
+                "non-http URL",
+                Endpoint {
+                    base_url: "file:///qual.invalid".to_owned(),
+                    token: token(),
+                },
+            ),
+            ("oversized token", synthetic("a".repeat(MAX_TOKEN_LEN + 1))),
+        ] {
+            assert_eq!(
+                store.save(Some("invalid"), &endpoint),
+                Err(CredentialError::Invalid),
+                "{label}"
+            );
+            println!("STEP 4 invalid input ({label}): invalid");
+        }
+        assert_eq!(store.load(Some("invalid")), Err(CredentialError::NotFound));
+        assert_eq!(metadata("invalid"), Some(44), "no write for invalid input");
+        println!("STEP 4 invalid input: nothing written");
+
+        store.clear(None).expect("clear");
+        assert_eq!(store.load(None), Err(CredentialError::NotFound));
+        assert_eq!(store.clear(None), Err(CredentialError::NotFound));
+        assert_eq!(metadata("default"), Some(44));
+        println!("STEP 5 clear then load: not_found; the entry is gone");
     }
 }
