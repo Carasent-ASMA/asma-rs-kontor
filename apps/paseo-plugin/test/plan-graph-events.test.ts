@@ -47,7 +47,7 @@ const hooks = vi.hoisted(() => {
   };
 });
 vi.mock("react", async (importOriginal) => ({ ...await importOriginal<typeof import("react")>(), useContext: () => null, ...hooks }));
-vi.mock("react-native", () => ({ View: "View", Text: "Text", Pressable: "Pressable" }));
+vi.mock("react-native", () => ({ ActivityIndicator: "ActivityIndicator", View: "View", Text: "Text", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
 
 import { Action } from "../client/page-controls";
@@ -82,7 +82,7 @@ function emit(element: Element, name: string, ...events: unknown[]) {
   if (typeof handler !== "function") throw new Error(`Handler missing: ${name}`);
   handler(...events);
 }
-function style(element: Element): Record<string, unknown> { return element.props.style as Record<string, unknown>; }
+function style(element: Element): Record<string, unknown> { const value = element.props.style; return (typeof value === "function" ? value({ pressed: false }) : value) as Record<string, unknown>; }
 function sample(): PlanGraphData { return JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")); }
 function rootGraph(count: number): PlanGraphData {
   const graph = sample();

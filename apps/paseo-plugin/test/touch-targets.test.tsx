@@ -25,7 +25,10 @@ async function heights(pointer: "none" | "coarse" | "fine") {
   if (pointer !== "none") vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)" && pointer === "coarse" }));
   const { Disclosure } = await import("../client/page-controls");
   const { SourceDetails } = await import("../client/source-details");
-  const height = (tree: ReactNode, label: string) => (elements(tree).find((node) => node.type === "Pressable" && String(node.props.accessibilityLabel).startsWith(label))!.props.style as { minHeight: number }).minHeight;
+  const height = (tree: ReactNode, label: string) => {
+    const found = elements(tree).find((node) => node.type === "Pressable" && String(node.props.accessibilityLabel).startsWith(label))!.props.style;
+    return ((typeof found === "function" ? found({ pressed: false }) : found) as { minHeight: number }).minHeight;
+  };
   return {
     disclosure: height(Disclosure({ label: "Configured chains", colors, children: null }), "Configured chains"),
     small: height(Disclosure({ label: "Legend", colors, children: null, small: true }), "Legend"),
