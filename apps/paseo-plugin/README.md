@@ -214,7 +214,7 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   privacy and cross-device acceptance. A Paseo change is not automatically
   required to synchronize visits initiated through Kontor. Native views from
   outside Kontor still need the separate view-event capability above.
-- **New LSA (bounded create).** Available by default when
+- **New session (bounded create).** Available by default when
   `$PASEO_HOME/plugin-config/kontor/create.json`
   (default `~/.paseo/plugin-config/kontor/create.json`) is absent on the host
   computer. The operator can write exactly `{"create":"off"}` to disable it
@@ -222,21 +222,31 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   unreadable path (including a dangling symlink in any component) keeps it off.
   The sheet says why. The file is read on every request and never written by
   the plugin.
-  Submitting **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
-  project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
-  to 48 characters after NFC normalization and never contains `•`, `·` or a
-  control character. The labels are `role=LSA`, `title.auto=<title>`,
-  `persona=kontor-lsa-adhoc@<hash>` and `create.request=<request ID>`; never a
-  `kontor.*` or orchestration label. Provider, model, effort and mode default
-  to the host's `LSA` agent profile, else the provider's own defaults; a
-  dangerous mode is marked. The provider catalog is read from the selected
-  desk's working directory. Pickers show only enabled, ready providers and
-  their selectable models. Loading, unknown, unavailable and failed reads
-  have separate messages and a **Refresh choices** action. An empty catalog
-  blocks creation. A saved or selected choice that disappears stays invalid
-  until the operator chooses again; refresh never silently substitutes it.
-  Submit revalidates workspace, catalog and duplicate title before recording
-  intent. No first prompt is sent.
+  Submitting **New session** creates one Adam lead in the desk's lead
+  workspace. Ad hoc is LSA-only and lands in `ADHOC`; From Jira ticket puts an
+  `LSA` or `TPM` in `LSA` or `TPM`. A missing lead workspace is created on the
+  desk and read back before the session is dispatched. The title is
+  `<ROLE> • <KEY|ADHOC> • <topic>`; a topic has 3 to 48 characters after NFC
+  normalization and never contains `•`, `·` or a control character. A From
+  Jira topic comes from the issue summary, cut to the title budget. Labels are
+  `role`, `epic` or `ticket` for a bound lead, `title.auto`, a versioned
+  `persona` and `create.request`; never a `kontor.*` or orchestration label.
+  `DESK • ADAM` offers epics only, `DESK • TICKETS` offers non-epic issues with
+  no active parent epic (an issue under one is refused, naming the epic), and
+  `DESK • PR REVIEW` offers ad hoc only, keeping the existing PR desk creation
+  path. The server re-reads the issue at create time; a mismatched desk and
+  issue type, a Done or unknown issue, or an unavailable Jira refuses without
+  creating anything. Provider, model, effort and mode default to the host's
+  role profile, else the provider's own defaults; a dangerous mode is marked.
+  The provider catalog is read from the selected desk's working directory.
+  Pickers show only enabled, ready providers and their selectable models.
+  Loading, unknown, unavailable and failed reads have separate messages and a
+  **Refresh choices** action. An empty catalog blocks creation. A saved or
+  selected choice that disappears stays invalid until the operator chooses
+  again; refresh never silently substitutes it. Submit revalidates workspace,
+  catalog and duplicate title before recording intent. A named source session's
+  last assistant message is read as its handoff summary and is refused when
+  absent; it is given to the new lead before its first task.
 - **Truthful outcome.** The request is recorded on the host, under
   `$PASEO_HOME/plugin-state/kontor/session-create-v1/`, before one idempotent
   native create. Success is claimed only from an exact readback: **Created and
@@ -261,15 +271,16 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   finished rendering. When the app lacks plugin navigation, use Sessions to
   find the displayed ID. Nothing is
   created while the host is offline.
-- **Persona and rename.** The LSA persona goes in the system prompt. Its
-  delivery is confirmed only for Claude and Codex; other providers show
-  "Persona delivery unverified". A plugin cannot rename a session, so the
-  persona tells the session to rename itself with Paseo MCP `update_agent`, and
-  only while its title equals `title.auto`. It renames once, to
-  `LSA • <KEY> • <topic>`, when it has a confirmed epic key, and sets `epic` and
-  `title.auto`. It changes the topic only at a checkpoint. Once its title
-  differs from `title.auto`, which means the operator renamed it, it never
-  renames again.
+- **Personas, Jira duty and the wall protocol.** There are three personas,
+  each versioned by its own hash: ad-hoc LSA, bound LSA and bound TPM. None
+  renames itself. The ad-hoc LSA writes a handoff summary when a key is
+  confirmed and asks the operator to start the bound lead with it named as the
+  source. The bound personas carry the Jira duty (create ASMA issues when the
+  work needs them and move them through their states) and the wall protocol
+  (stop, comment with evidence and options, record a hold, ask one A/B/C
+  question, then continue). The persona goes in the system prompt for Claude
+  and Codex. For every other provider it is sent as one labelled bootstrap
+  prompt with no task; its `persona` label carries `+bootstrap`.
 
 ## Organization and read-only pages
 
@@ -1330,7 +1341,7 @@ pnpm --filter @carasent/kontor-paseo-plugin test
 apps/paseo-plugin/scripts/closure-suite.sh
 ```
 
-`test/session-create.test.ts` pins New LSA availability with no switch or
+`test/session-create.test.ts` pins New session availability with no switch or
 explicit `on`, refusal for explicit `off` or invalid/unreadable switches,
 and the workspace, provider, duplicate-request, intent and readback guards.
 Availability alone never creates a session or sends a first prompt.

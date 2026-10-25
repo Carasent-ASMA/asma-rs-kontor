@@ -1,13 +1,15 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-/**
- * One bounded creation: an ad-hoc LSA Adam tab in a desk's `ADAM` workspace, titled
- * `LSA • ADHOC • <topic>`. The role and scope are fixed; the session promotes its own title to a
- * confirmed epic key later (see the persona's rename rules), because a plugin cannot rename an agent.
- */
-export const CREATE_ROLE = "LSA";
+/** A lead role and the way its session starts; together they select the persona and the lead workspace. */
+export const CREATE_ROLES = ["LSA", "TPM"] as const;
+export type CreateRole = (typeof CREATE_ROLES)[number];
+export const CREATE_STARTS = ["ad-hoc", "from-jira"] as const;
+export type CreateStart = (typeof CREATE_STARTS)[number];
+/** The scope word for an unbound LSA; it is not a workspace-kind code. */
 export const CREATE_SCOPE = "ADHOC";
+export const LEAD_WORKSPACES = ["ADHOC", "LSA", "TPM"] as const;
+export type LeadWorkspace = (typeof LEAD_WORKSPACES)[number];
 export const TITLE_SEPARATOR = " • ";
 export const TOPIC_MIN = 3;
 export const TOPIC_MAX = 48;
@@ -15,8 +17,9 @@ export const TOPIC_MAX = 48;
 export const CREATE_REQUEST_LABEL = "create.request";
 /** The title the session or Kontor last wrote; a native rename that differs stops automation. */
 export const TITLE_AUTO_LABEL = "title.auto";
-/** Providers whose `systemPrompt` mapping was confirmed on the host; any other is unverified. */
+/** Providers whose `systemPrompt` mapping was confirmed on the host; any other gets a bootstrap prompt. */
 export const PERSONA_PROVIDERS: readonly string[] = ["claude", "codex"];
+export const JIRA_KEY_PATTERN = /^ASMA-[1-9]\d*$/;
 
 /** NFC, trimmed, whitespace runs collapsed; case kept as typed. */
 export function normalizeTopic(raw: string): string {
@@ -33,8 +36,18 @@ export function topicProblem(topic: string): string | null {
   return null;
 }
 
-export function adhocTitle(topic: string): string {
-  return [CREATE_ROLE, CREATE_SCOPE, topic].join(TITLE_SEPARATOR);
+/** A Jira summary as a topic: normalized, then cut to the title budget without splitting a character. */
+export function issueTopic(summary: string): string {
+  return [...normalizeTopic(summary)].slice(0, TOPIC_MAX).join("").trim();
+}
+
+export function leadTitle(role: CreateRole, key: string | null, topic: string): string {
+  return [role, key ?? CREATE_SCOPE, topic].join(TITLE_SEPARATOR);
+}
+
+/** Which lead workspace a role and start belong in. */
+export function leadWorkspaceName(role: CreateRole, start: CreateStart): LeadWorkspace {
+  return start === "ad-hoc" ? "ADHOC" : role;
 }
 
 /** The desk a native project's name makes it, `DESK • PR REVIEW` → `PR REVIEW`; null for any other project. */
@@ -45,14 +58,34 @@ export function deskName(projectName: string | null | undefined): string | null 
   return name || null;
 }
 
-/** A desk's Adam workspace is named exactly ADAM (any case). */
+export type DeskKind = "adam" | "tickets" | "pr-review" | "other";
+/** How a desk's start list is constrained: epics on ADAM, non-epic issues on TICKETS, ad hoc elsewhere. */
+export function deskKind(desk: string): DeskKind {
+  const name = desk.trim().toUpperCase();
+  return name === "ADAM" ? "adam" : name === "TICKETS" ? "tickets" : name === "PR REVIEW" ? "pr-review" : "other";
+}
+
+/** A desk's Adam workspace is named exactly ADAM (any case). Kept for the legacy desk read. */
 export function isAdamWorkspace(name: string | null | undefined): boolean {
   return (name ?? "").trim().toUpperCase() === "ADAM";
 }
 
+/** A lead workspace is named exactly ADHOC, LSA or TPM (any case). */
+export function isLeadWorkspace(name: string | null | undefined): name is LeadWorkspace {
+  return (LEAD_WORKSPACES as readonly string[]).includes((name ?? "").trim().toUpperCase());
+}
+
 const id = z.string().min(1).max(200);
 
-export const createDeskSchema = z.object({ workspaceId: id, projectId: id, desk: z.string(), project: z.string() }).strict();
+export const createDeskSchema = z.object({
+  projectId: id, project: z.string(), desk: z.string(), kind: z.enum(["adam", "tickets", "pr-review", "other"]),
+  /** The desk checkout's working directory; null only when no workspace on the desk has one. */
+  cwd: z.string().nullable(),
+  /** The desk's lead workspaces by kind; null when the desk does not have one yet. */
+  lead: z.object({ ADHOC: id.nullable(), LSA: id.nullable(), TPM: id.nullable() }).strict(),
+}).strict();
+export type CreateDesk = z.infer<typeof createDeskSchema>;
+
 export const createProviderSchema = z.object({
   id, label: z.string(), available: z.boolean(), note: z.string().nullable(), persona: z.enum(["supported", "unverified"]),
   status: z.enum(["ready", "loading", "error", "unavailable", "disabled", "unknown"]),
@@ -62,6 +95,14 @@ export const createProviderSchema = z.object({
   defaultMode: z.string().nullable(),
 }).strict();
 export type CreateProvider = z.infer<typeof createProviderSchema>;
+
+/** One ASMA issue as `asma jira search` returns it; the parent is present only for a child issue. */
+export const jiraIssueSchema = z.object({
+  key: z.string(), summary: z.string(), type: z.string(), epic: z.boolean(),
+  status: z.string(), statusCategory: z.string(), open: z.boolean(),
+  parent: z.object({ key: z.string(), summary: z.string(), statusCategory: z.string(), open: z.boolean() }).strict().nullable(),
+}).strict();
+export type JiraIssue = z.infer<typeof jiraIssueSchema>;
 
 /**
  * - `verified`: the host's readback of the new session matches every requested field.
@@ -88,10 +129,14 @@ export const createOptionsSchema = z.object({
   disabledReason: z.string().nullable(),
   desks: z.array(createDeskSchema),
   /** The desk whose working directory scoped this provider catalog; null when no desk is available. */
-  catalogWorkspaceId: id.nullable(),
+  catalogProjectId: id.nullable(),
   providers: z.array(createProviderSchema),
-  /** The host's `LSA` agent profile, the form's defaults when present. */
+  /** The host's agent profile for the chosen role, the form's defaults when present. */
   profile: z.object({ name: z.string(), provider: z.string(), model: z.string().nullable(), modeId: z.string().nullable(), effort: z.string().nullable() }).nullable(),
+  /** The desk-eligible issues for a From Jira ticket start; empty for any other start. */
+  issues: z.array(jiraIssueSchema),
+  /** Why the issue list could not be read; null when it was or was not requested. */
+  jiraProblem: z.string().nullable(),
   /** An earlier request whose effect is not settled; it blocks a new creation until a Check settles it. */
   pending: createOutcomeSchema.nullable(),
   /** Read problems that do not stop the form, such as an unreadable profile list. */
@@ -99,10 +144,26 @@ export const createOptionsSchema = z.object({
 }).strict();
 export type CreateOptions = z.infer<typeof createOptionsSchema>;
 
+export const createScopeSchema = z.object({
+  projectId: id.optional(),
+  /** The workspace the dialog was opened in; the server resolves its desk when projectId is absent. */
+  workspaceId: id.optional(),
+  role: z.enum(CREATE_ROLES).optional(),
+  start: z.enum(CREATE_STARTS).optional(),
+  issueKey: z.string().max(200).optional(),
+}).strict();
+export type CreateScope = z.infer<typeof createScopeSchema>;
+
 export const createRequestSchema = z.object({
   requestId: z.string().uuid(),
-  topic: z.string().max(400),
-  workspaceId: id,
+  role: z.enum(CREATE_ROLES),
+  start: z.enum(CREATE_STARTS),
+  projectId: id,
+  /** The ad-hoc topic; absent for a From Jira ticket start, where the issue summary supplies it. */
+  topic: z.string().max(400).optional(),
+  issueKey: z.string().max(200).nullable().optional(),
+  /** A source session whose handoff summary the new lead reads before its first task. */
+  sourceAgentId: z.string().max(200).nullable().optional(),
   provider: id,
   model: id,
   effort: id.nullable(),
@@ -110,6 +171,6 @@ export const createRequestSchema = z.object({
 }).strict();
 export type CreateRequest = z.infer<typeof createRequestSchema>;
 
-export const readCreateOptions = defineRpc({ name: "sessions.create-options", input: z.object({ workspaceId: id.optional() }).strict(), output: createOptionsSchema });
+export const readCreateOptions = defineRpc({ name: "sessions.create-options", input: createScopeSchema, output: createOptionsSchema });
 export const executeCreate = defineRpc({ name: "sessions.create", input: createRequestSchema, output: createOutcomeSchema });
 export const checkCreate = defineRpc({ name: "sessions.create-check", input: z.object({ requestId: z.string().uuid() }).strict(), output: createOutcomeSchema });
