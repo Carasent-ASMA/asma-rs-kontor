@@ -893,6 +893,9 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     if (disposed || expectedGeneration !== generation) {
       return;
     }
+    if (status === "ready" && live && inventoryComplete && staleReason === null) {
+      return;
+    }
     await refresh(reason);
   }
 
@@ -921,6 +924,10 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     refreshPromise = (async () => {
       const refreshGeneration = generation;
       if (!subscriptionActive) {
+        const attempt = subscriptionAttempt;
+        if (attempt && attempt.generation === refreshGeneration) {
+          return;
+        }
         await openSubscription(refreshGeneration);
         if (disposed || refreshGeneration !== generation) {
           return;

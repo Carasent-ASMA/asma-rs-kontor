@@ -97,8 +97,8 @@ function HostScreen(props: PluginScreenProps) {
   const captureRevisions = Object.values(sourceState.reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" ? [`${read.source.id}@${read.revision}`] : []).sort().join(" ");
   const jira = useMemo(() => jiraCapture(Object.values(sourceState.reads)), [captureRevisions]);
   const linked = useMemo(() => new WeakMap<DirectoryEntry, DirectoryEntry>(), [jira]);
-  const directory = useMemo(() => ({ refresh: native.refresh, state: { ...native.state, entries: withJiraCapture(native.state.entries, jira, linked) } }),
-    [native.refresh, native.state, jira, linked]);
+  const directory = useMemo(() => ({ refresh: native.refresh, retry: native.retry, state: { ...native.state, entries: withJiraCapture(native.state.entries, jira, linked) } }),
+    [native.refresh, native.retry, native.state, jira, linked]);
   const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");

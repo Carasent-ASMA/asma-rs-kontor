@@ -1328,6 +1328,47 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("keeps stale last-known rows when a normal refresh races a held Retry bootstrap", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    fake.failNext();
+    await directory.refresh();
+    expect(latest.status).toBe("stale");
+    expect(latest.live).toBe(false);
+    expect(latest.entries[0]?.title).toBe("Last known");
+
+    const held = fake.holdNextSubscribe();
+    const retrying = directory.retry();
+    await held.started;
+    const pagesBeforeRefresh = fake.listCalls.filter((call) => call.subscribe === undefined).length;
+    const normalRefresh = directory.refresh();
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(latest.status).toBe("stale");
+    expect(latest.live).toBe(false);
+    expect(latest.inventoryComplete).toBe(false);
+    expect(latest.staleReason).not.toBeNull();
+    expect(latest.entries[0]?.title).toBe("Last known");
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesBeforeRefresh);
+
+    held.release();
+    await Promise.all([retrying, normalRefresh]);
+    expect(latest.status).toBe("ready");
+    expect(latest.live).toBe(true);
+    expect(latest.inventoryComplete).toBe(true);
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesBeforeRefresh + 1);
+    await directory.dispose();
+  });
+
   it("keeps the latest Retry stale and does not walk while its subscription is held", async () => {
     const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
     let latest = emptyDirectoryState();
