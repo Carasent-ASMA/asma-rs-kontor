@@ -1107,7 +1107,12 @@ impl Catalog {
                         status.collection.entries_observed
                     ),
                 });
-                for repository in &status.collection.coverage {
+                for repository in status
+                    .collection
+                    .coverage
+                    .iter()
+                    .take(MAX_SOURCE_COVERAGE_ROWS - PLAN_SUMMARY_COVERAGE_ROWS)
+                {
                     coverage.push(CatalogSourceCoverage {
                         subject: repository.root.clone(),
                         state: repository_state_name(repository.state).to_owned(),
@@ -1348,7 +1353,7 @@ impl Catalog {
                     .collection
                     .coverage
                     .into_iter()
-                    .take(MAX_SOURCE_COVERAGE_ROWS)
+                    .take(MAX_SOURCE_COVERAGE_ROWS - NATIVE_SUMMARY_COVERAGE_ROWS)
                     .map(|runtime| CatalogSourceCoverage {
                         subject: runtime.runtime_instance.clone(),
                         state: native_runtime_state_name(runtime.state).to_owned(),
@@ -1695,6 +1700,8 @@ const ENTRY_CURSOR_VERSION: &str = "v1";
 const MAX_ENTRY_PAGE: usize = 1000;
 const MAX_SOURCE_CONFLICTS: usize = 64;
 const MAX_SOURCE_COVERAGE_ROWS: usize = 64;
+const PLAN_SUMMARY_COVERAGE_ROWS: usize = 3;
+const NATIVE_SUMMARY_COVERAGE_ROWS: usize = 2;
 
 fn filter_entries(
     entries: Vec<CatalogEntry>,
