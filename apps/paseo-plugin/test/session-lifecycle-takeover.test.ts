@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, type TakeoverDeps } from "../server/session-lifecycle";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
-import { resolverInstant, type ResolverRun, type RouteHealth } from "../server/session-takeover";
+import { resolverInstant, routeHealthFromProviderSnapshot, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -87,7 +87,7 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
   const observedAt = new Date().toISOString();
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, choices: async () => choices,
-    evidence: (mode) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
+    evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
   };
   const service = createTakeoverService(client as never, root, deps);
@@ -164,13 +164,45 @@ describe("takeover review", () => {
 
   it("states a block, never a route, when no positive route evidence exists", async () => {
     const h = await host();
-    h.deps.evidence = (mode) => ({ ...health(mode), observations: [] });
+    h.deps.evidence = ({ mode }) => ({ ...health(mode), observations: [] });
     h.deps.run = async (_command, args) => JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 409, body: { code: "placement_blocked", message: "no route", selection: {
       considered: [{ route, excluded: "route_unobserved" }], provenance: { binding_key: KEY, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 },
       route_health: JSON.parse(args.at(-1)!.slice("--route-health=".length)), selected: null } } });
     const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
     expect(review).toMatchObject({ state: "blocked", digest: null, successor: null, route: { selected: null, considered: [{ excluded: "route_unobserved" }] } });
     expect(review.limits.join(" ")).toContain("No host source of positive route health");
+  });
+
+  it("blocks the configured chain when the predecessor's current quota lastError matches the snapshot account", async () => {
+    const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", status: "error", lastError: "429 usage limit exceeded" }) });
+    let seenCwd = "";
+    h.deps.evidence = ({ mode, cwd }) => {
+      seenCwd = cwd;
+      const asOf = Date.now();
+      return routeHealthFromProviderSnapshot({ ...SNAPSHOT, generatedAt: new Date(asOf).toISOString() }, mode, asOf);
+    };
+    h.deps.run = async (_command, args) => JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 409, body: { code: "placement_blocked", message: "no route", selection: {
+      considered: [{ route, excluded: "route_unavailable_now" }], provenance: { binding_key: KEY, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 },
+      route_health: JSON.parse(args.at(-1)!.slice("--route-health=".length)), selected: null } } });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(seenCwd).toBe("/fixtures/wks-1");
+    expect(review.state).toBe("blocked");
+    expect(review.route?.considered?.[0]?.excluded).toBe("route_unavailable_now");
+  });
+
+  it("reads positive route evidence from the host provider snapshot at the session checkout", async () => {
+    const h = await host();
+    let seenCwd = "";
+    h.deps.evidence = ({ mode, cwd }) => {
+      seenCwd = cwd;
+      const asOf = Date.now();
+      return routeHealthFromProviderSnapshot({ ...SNAPSHOT, generatedAt: new Date(asOf).toISOString() }, mode, asOf);
+    };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(seenCwd).toBe("/fixtures/wks-1");
+    expect(review.limits.join(" ")).not.toContain("No host source of positive route health");
+    expect(review.state).toBe("ready");
+    expect(h.effects.resolve[0]?.find((arg) => arg.startsWith("--route-health="))).toContain("\"state\":\"available\"");
   });
 
   it("refuses to retire without fresh, exact owner and wake proof", async () => {
@@ -283,7 +315,7 @@ describe("takeover apply", () => {
       }
       if (field === "evidence") {
         const prior = h.deps.evidence;
-        h.deps.evidence = (mode) => { const evidence = prior(mode); return { ...evidence, observations: evidence.observations.map((entry) => ({ ...entry, revision: "r2" })) }; };
+        h.deps.evidence = (input) => Promise.resolve(prior(input)).then((resolved) => ({ ...resolved, observations: resolved.observations.map((entry) => ({ ...entry, revision: "r2" })) }));
       }
       if (field === "deadline") {
         const prior = h.deps.run!;
@@ -531,7 +563,7 @@ describe("LSA-8641-CP2-01 sealed effect validity", () => {
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const h = await host(), receipt = h.deps.continuity!;
     h.deps.continuity = async (...args) => ({ ...(await receipt(...args))!, observedAt: new Date(issued).toISOString() });
-    h.deps.evidence = (mode) => ({ ...health(mode), as_of: resolverInstant(now), max_age_seconds: 1,
+    h.deps.evidence = ({ mode }) => ({ ...health(mode), as_of: resolverInstant(now), max_age_seconds: 1,
       observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: resolverInstant(issued) })) });
     const run = h.deps.run!;
     h.deps.run = async (...args) => {
@@ -597,7 +629,7 @@ describe("LSA-8641-CP2-01 sealed effect validity", () => {
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const h = await host({ loseCreateReply: stage === "create" }), receipt = h.deps.continuity!;
     h.deps.continuity = async (...args) => ({ ...(await receipt(...args))!, observedAt: new Date(issued).toISOString() });
-    h.deps.evidence = (mode) => ({ ...health(mode), as_of: resolverInstant(now), max_age_seconds: 1,
+    h.deps.evidence = ({ mode }) => ({ ...health(mode), as_of: resolverInstant(now), max_age_seconds: 1,
       observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: resolverInstant(issued) })) });
     if (stage === "release") {
       const ref = h.client.agents.ref;

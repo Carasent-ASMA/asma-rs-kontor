@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { PaseoAgentListResult } from "@getpaseo/client";
 import type { KontorPluginConfig } from "./config";
 import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, parent, seatBinding } from "./labels";
+import type { RefusalObservation } from "../shared/provider-block";
 import { CREATE_REQUEST_LABEL } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -78,6 +79,83 @@ export const routeHealthSchema = z.object({
 export type RouteHealth = z.infer<typeof routeHealthSchema>;
 /** Whole seconds in the resolver's canonical UTC form; flooring keeps every observation at or before its as_of. */
 export const resolverInstant = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace(".000Z", "Z");
+
+const ROUTE_EFFORTS = new Set(["off", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]);
+/** How long a host providers snapshot may admit a route; matches the takeover review preflight window. */
+export const ROUTE_HEALTH_MAX_AGE_SECONDS = 300;
+
+/** One host `providers.snapshot` read, without paid probes; the same surface session creation uses. */
+export type ProviderRouteSnapshot = {
+  requestId: string;
+  generatedAt: string;
+  entries: readonly {
+    provider: string;
+    enabled?: boolean;
+    status?: string;
+    models?: readonly { id: string; isSelectable?: boolean; thinkingOptions?: readonly { id: string }[] }[];
+    modes?: readonly { id: string }[];
+  }[];
+};
+
+function routeObservationState(entry: ProviderRouteSnapshot["entries"][number], mode: string | null): RouteHealth["observations"][number]["state"] {
+  if (entry.enabled === false) return "unavailable";
+  if (entry.enabled !== true) return "unknown";
+  if (entry.status === "ready") {
+    if (mode && entry.modes?.length && !entry.modes.some((candidate) => candidate.id === mode)) return "unknown";
+    return "available";
+  }
+  if (entry.status === "loading" || entry.status === "unknown") return "unknown";
+  if (entry.status === "error" || entry.status === "unavailable") return "unavailable";
+  return "unknown";
+}
+
+/** Maps the host provider snapshot into bounded per-route observations for the fleet selector. */
+export function routeHealthFromProviderSnapshot(snapshot: ProviderRouteSnapshot, mode: string | null, asOfMs = Date.now()): RouteHealth {
+  const generated = Date.parse(snapshot.generatedAt);
+  const observedAt = resolverInstant(Number.isFinite(generated) ? generated : asOfMs);
+  const revision = `${snapshot.requestId}@${snapshot.generatedAt}`;
+  const observations: RouteHealth["observations"] = [];
+  for (const entry of snapshot.entries) {
+    const state = routeObservationState(entry, mode);
+    const models = (entry.models ?? []).filter((model) => model.isSelectable !== false);
+    for (const model of models) {
+      type Effort = NonNullable<RouteHealth["observations"][number]["effort"]>;
+      const efforts = (model.thinkingOptions ?? []).flatMap((option) => ROUTE_EFFORTS.has(option.id) ? [option.id as Effort] : []);
+      const variants: (Effort | undefined)[] = efforts.length ? efforts : [undefined];
+      for (const effort of variants) {
+        if (observations.length >= 256) break;
+        observations.push({
+          account: entry.provider, model: model.id, ...(effort ? { effort } : {}), ...(mode ? { mode } : {}),
+          state, observed_at: observedAt, revision,
+        });
+      }
+    }
+  }
+  return { as_of: resolverInstant(asOfMs), max_age_seconds: ROUTE_HEALTH_MAX_AGE_SECONDS, ...(mode ? { mode } : {}), observations };
+}
+
+function observationMatchesRefusal(observation: RouteHealth["observations"][number], refusal: RefusalObservation): boolean {
+  return observation.account === refusal.route.provider
+    && (!refusal.route.model || observation.model === refusal.route.model);
+}
+
+/**
+ * Fail-closed tightening from the predecessor's current agent refusal (`lastError` / `providerUnavailable` only).
+ * Not quota-window proof, timeline recovery, or persisted refusal memory; no host reads beyond the agent snapshot
+ * already used in review.
+ */
+export function joinSessionLocalRefusalToRouteHealth(health: RouteHealth, refusal: RefusalObservation | null): RouteHealth {
+  if (!refusal) return health;
+  const state: RouteHealth["observations"][number]["state"] = refusal.kind === "unknown" ? "unknown" : "unavailable";
+  const tag = `session-refusal:${refusal.kind}@${refusal.observedAt}`;
+  let changed = false;
+  const observations = health.observations.map((observation) => {
+    if (!observationMatchesRefusal(observation, refusal)) return observation;
+    changed = true;
+    return { ...observation, state, revision: `${observation.revision}+${tag}` };
+  });
+  return changed ? { ...health, observations } : health;
+}
 
 const TOOL = "kontor_fleet_policy_resolve";
 const validitySchema = z.object({ observed_at: instant, valid_until: instant }).strict();

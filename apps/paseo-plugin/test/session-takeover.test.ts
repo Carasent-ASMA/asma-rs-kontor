@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  GOVERNED_ELSEWHERE, resolveTakeoverRoute, resolverInstant, takeoverAdapter, takeoverRouteInputSchema,
+  GOVERNED_ELSEWHERE, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute, resolverInstant, routeHealthFromProviderSnapshot, takeoverAdapter, takeoverRouteInputSchema,
   type ResolverRun, type RouteHealth,
 } from "../server/session-takeover";
 
@@ -169,5 +169,50 @@ describe("the fixed local fleet selection read", () => {
     expect(result.message).toContain("no fleet activation record exists");
     const failed = await resolveTakeoverRoute(config, ordinary, { agentId: "agent-1", bindingKey: KEY }, health, () => Promise.reject(new Error("spawn kontor ENOENT")));
     expect(failed).toMatchObject({ state: "unknown", selected: null });
+  });
+});
+
+describe("route health from provider snapshot", () => {
+  const snapshot = { requestId: "snap-1", generatedAt: "2026-10-25T08:59:00.000Z", entries: [
+    { provider: "claude-a", enabled: true, status: "ready", modes: [{ id: "default" }],
+      models: [{ id: "claude-opus-5", thinkingOptions: [{ id: "xhigh" }, { id: "not-an-effort" }] }] },
+    { provider: "codex-b", enabled: true, status: "loading", models: [{ id: "gpt-5.6-sol", thinkingOptions: [{ id: "xhigh" }] }] },
+    { provider: "codex-a", enabled: false, status: "ready", models: [{ id: "gpt-5.6-sol", thinkingOptions: [{ id: "xhigh" }] }] },
+  ] };
+
+  it("maps ready accounts to available routes and others to unknown or unavailable", () => {
+    const built = routeHealthFromProviderSnapshot(snapshot, "default", Date.parse("2026-10-25T09:00:00.000Z"));
+    expect(built.max_age_seconds).toBe(300);
+    expect(built.mode).toBe("default");
+    expect(built.observations).toEqual([
+      { account: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default", state: "available", observed_at: "2026-10-25T08:59:00Z", revision: "snap-1@2026-10-25T08:59:00.000Z" },
+      { account: "codex-b", model: "gpt-5.6-sol", effort: "xhigh", mode: "default", state: "unknown", observed_at: "2026-10-25T08:59:00Z", revision: "snap-1@2026-10-25T08:59:00.000Z" },
+      { account: "codex-a", model: "gpt-5.6-sol", effort: "xhigh", mode: "default", state: "unavailable", observed_at: "2026-10-25T08:59:00Z", revision: "snap-1@2026-10-25T08:59:00.000Z" },
+    ]);
+  });
+
+  it("treats a ready provider without the session mode as unknown for that route", () => {
+    const built = routeHealthFromProviderSnapshot(snapshot, "bypassPermissions", Date.parse("2026-10-25T09:00:00.000Z"));
+    expect(built.observations.find((entry) => entry.account === "claude-a")?.state).toBe("unknown");
+  });
+});
+
+describe("session-local refusal join", () => {
+  const base = routeHealthFromProviderSnapshot({ requestId: "s", generatedAt: "2026-10-25T09:00:00.000Z", entries: [
+    { provider: "claude-a", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "claude-opus-5", thinkingOptions: [{ id: "xhigh" }] }] },
+    { provider: "codex-b", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "gpt-5.6-sol", thinkingOptions: [{ id: "xhigh" }] }] },
+  ] }, "default", Date.parse("2026-10-25T09:00:00.000Z"));
+
+  it("marks matching account observations unavailable on explicit quota evidence without touching other accounts", () => {
+    const joined = joinSessionLocalRefusalToRouteHealth(base, {
+      kind: "quota", failureAt: "unknown", observedAt: "2026-10-25T09:00:00.000Z", message: "429 quota",
+      route: { provider: "claude-a", model: "claude-opus-5" },
+    });
+    expect(joined.observations.find((entry) => entry.account === "claude-a")?.state).toBe("unavailable");
+    expect(joined.observations.find((entry) => entry.account === "codex-b")?.state).toBe("available");
+  });
+
+  it("leaves health unchanged when the predecessor carries no explicit refusal", () => {
+    expect(joinSessionLocalRefusalToRouteHealth(base, null)).toBe(base);
   });
 });

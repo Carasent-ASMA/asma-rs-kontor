@@ -9,7 +9,7 @@ import { parent } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
-import { BINDING_KEY, GOVERNED_ELSEWHERE, resolveTakeoverRoute, resolverInstant, takeoverAdapter, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute } from "./session-takeover";
+import { BINDING_KEY, GOVERNED_ELSEWHERE, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute, routeHealthFromProviderSnapshot, takeoverAdapter, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute } from "./session-takeover";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
@@ -671,8 +671,8 @@ export type TakeoverDeps = {
   create: Pick<ReturnType<typeof createSessionCreateService>, "createSeat" | "check" | "preflight" | "record">;
   /** Configured profiles a session may be associated with; discovery only, the resolver validates the one chosen. */
   choices: () => Promise<ProfileChoice[]>;
-  /** The host's route evidence for a permission mode; only a qualified positive source may call a route available. */
-  evidence: (mode: string | null) => RouteHealth;
+  /** The host's route evidence for one checkout and permission mode; only a qualified positive source may call a route available. */
+  evidence: (input: { mode: string | null; cwd: string }) => RouteHealth | Promise<RouteHealth>;
   /** A qualified owner/wake read. Missing support is unknown and blocks retirement. */
   continuity?: (agentId: string, requestId: string) => Promise<TakeoverContinuity | null>;
   run?: ResolverRun;
@@ -800,7 +800,11 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     }
     const mode = first.currentModeId ?? first.runtimeInfo?.modeId ?? null;
     if (!mode) return answer("unknown", "This session's permission mode cannot be read, so a successor's permission boundary cannot be confirmed.");
-    const health = deps.evidence(mode);
+    let health: RouteHealth;
+    const routeEvidenceAt = new Date().toISOString();
+    try { health = await Promise.resolve(deps.evidence({ mode, cwd: first.cwd })); }
+    catch (error) { return answer("unknown", `Provider route evidence could not be read: ${errorText(error)}.`); }
+    health = joinSessionLocalRefusalToRouteHealth(health, observeRefusal(first, routeEvidenceAt));
     if (!health.observations.length) limits = [...limits, UNOBSERVED_LIMIT];
     route = await resolveTakeoverRoute(deps.config, direct, { agentId, bindingKey: association.bindingKey }, health, deps.run);
     if (route.state !== "selected" || !route.selected || !route.provenance || !route.validity) return answer(route.state === "selected" ? "unknown" : route.state, route.message);
@@ -1054,10 +1058,6 @@ async function configuredProfiles(): Promise<ProfileChoice[]> {
   if (snapshot.data?.kind !== "fleet") throw new Error(`the operator fleet source is ${snapshot.status}`);
   return snapshot.data.bindings.filter((binding) => binding.chainResolved && BINDING_KEY.test(binding.reference)).slice(0, 200).map((binding) => ({ bindingKey: binding.reference, chain: binding.chainName }));
 }
-/** No host source of positive route health is qualified yet: provider readiness and quota windows are not route
- *  availability. Every route therefore reads as unobserved, and the resolver blocks. */
-const unobservedRoutes = (mode: string | null): RouteHealth => ({ as_of: resolverInstant(Date.now()), max_age_seconds: 300, ...(mode ? { mode } : {}), observations: [] });
-
 export function contributeSessionLifecycle(server: PluginServerContext) {
   const root = join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-lifecycle-v1");
   server.handle(lifecycleCapabilities, (_input, { paseo }) => createLifecycleService(paseo, root).capabilities());
@@ -1069,7 +1069,8 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
   server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
   const takeover = (paseo: PaseoApi) => createTakeoverService(paseo, root, {
-    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), choices: configuredProfiles, evidence: unobservedRoutes,
+    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), choices: configuredProfiles,
+    evidence: async ({ mode, cwd }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode),
   });
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));
   server.handle(applyTakeover, (input, { paseo }) => takeover(paseo).apply(input));
