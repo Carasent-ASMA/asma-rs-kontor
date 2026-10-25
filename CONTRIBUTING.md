@@ -216,7 +216,9 @@ Live daemon/runtime tests must be explicitly opt-in; ordinary tests must not
 depend on network access, provider accounts or a user's runtime state.
 
 After committing, use the impact-selected `--mode archive` command above.
-The head, Git tree and exact base diff must match the plan. A changed head or
+The head, Git tree and exact base diff must match the plan. The verifier checks
+every tracked export blob and mode before and after selected commands; a
+command that changes tracked source cannot produce a passing receipt. A changed head or
 impact requires updated coverage/evidence; do not transfer a previous PASS to a
 different candidate. Assess lock completeness with the applicable locked/frozen
 command in the plan, not a fresh dependency resolution.
