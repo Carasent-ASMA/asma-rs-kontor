@@ -70,6 +70,78 @@ function fakeHost(hostId: string, rows: AgentDirectoryPage[]) {
   return host;
 }
 
+type Deferred<T> = {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: Error) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+type OwnerSubscriptionResult = PaseoAgentListResult & {
+  subscriptionId: string;
+  subscription: {
+    subscriptionId: string;
+    ready: Promise<PaseoAgentListResult>;
+    subscribe: (observer: Observer) => () => void;
+    release: () => Promise<void>;
+  };
+};
+
+function ownerFixture() {
+  const subscriptions: Deferred<OwnerSubscriptionResult>[] = [];
+  const reads: Deferred<PaseoAgentListResult>[] = [];
+  let state: DirectoryState | null = null;
+  const list = (options: PaseoAgentListOptions = {}) => {
+    if (options.subscribe) {
+      const gate = deferred<OwnerSubscriptionResult>();
+      subscriptions.push(gate);
+      return gate.promise;
+    }
+    const gate = deferred<PaseoAgentListResult>();
+    reads.push(gate);
+    return gate.promise;
+  };
+  react.hosts.set("host-a", { agents: { list } });
+  const stop = bindHostDirectory((next) => {
+    state = next;
+  });
+  return {
+    subscriptions,
+    reads,
+    state: () => state,
+    stop,
+    activate(index: number) {
+      const snapshot = {
+        requestId: "fixture",
+        entries: [agent("a")],
+        pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+        subscriptionId: `sub-${index + 1}`,
+      };
+      subscriptions[index]!.resolve({
+        ...snapshot,
+        subscription: {
+          subscriptionId: snapshot.subscriptionId,
+          ready: Promise.resolve(snapshot),
+          subscribe: (observer: Observer) => {
+            observer.snapshot(snapshot);
+            return () => undefined;
+          },
+          release: async () => undefined,
+        },
+      });
+    },
+  };
+}
+
 function render<T>(draw: () => T): T { react.cursor = 0; const value = draw(); for (const run of react.queue.splice(0)) run(); return value; }
 function unmount() { for (const s of react.slots) s.cleanup?.(); react.slots = []; react.queue = []; }
 async function settle() { for (let n = 0; n < 50; n++) await Promise.resolve(); }
@@ -156,6 +228,58 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     });
     expect(host.subscribes).toHaveLength(1);
     unbind();
+  });
+
+  it("starts a fresh connection when a retained subscription rejects after provisional rows are ready", async () => {
+    const host = ownerFixture();
+    startHostDirectory("host-a");
+    await settle();
+    host.reads[0]!.resolve({
+      requestId: "fixture",
+      entries: [agent("a")],
+      pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+    });
+    await settle();
+    host.subscriptions[0]!.reject(new Error("subscription timeout"));
+    await settle();
+    expect(host.state()).toMatchObject({
+      status: "ready",
+      live: false,
+      inventoryComplete: false,
+    });
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(host.subscriptions).toHaveLength(2);
+    expect(host.reads).toHaveLength(2);
+    host.stop();
+  });
+
+  it("starts a fresh connection when activation reconciliation fails", async () => {
+    const host = ownerFixture();
+    startHostDirectory("host-a");
+    await settle();
+    host.reads[0]!.resolve({
+      requestId: "fixture",
+      entries: [agent("a")],
+      pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+    });
+    await settle();
+    host.activate(0);
+    await settle();
+    host.reads[1]!.reject(new Error("reconcile failure"));
+    await settle();
+    expect(host.state()).toMatchObject({
+      status: "stale",
+      live: false,
+      inventoryComplete: false,
+    });
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(host.subscriptions).toHaveLength(2);
+    expect(host.reads).toHaveLength(3);
+    host.stop();
   });
 
   it("joins an in-flight sidebar reconnect without a second subscription", async () => {

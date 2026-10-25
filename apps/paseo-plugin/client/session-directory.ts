@@ -536,10 +536,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   }
 
   function hasPendingConnection(): boolean {
-    return (
-      !disposed &&
-      (subscriptionAttempt !== null || (subscriptionActive && !inventoryComplete))
-    );
+    return !disposed && (subscriptionAttempt !== null || refreshing);
   }
 
   function abortRefresh(): void {
