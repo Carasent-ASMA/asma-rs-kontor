@@ -531,6 +531,26 @@ describe("Kontor composer controls share one host directory", () => {
     stop();
   });
 
+  it("does not borrow a matching native ID from another host while its own host is offline", async () => {
+    const own = fakeHost("host-a", [agentPage("same-id", { status: "running" })]);
+    const other = fakeHost("host-b", [agentPage("same-id", { status: "error" })]);
+    const controls = fakeControls();
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const pill = controls.pillFor("same-id")!;
+    startHostDirectory("host-a", "offline");
+    const reads = own.calls.length;
+    startHostDirectory("host-b");
+    await settle();
+    expect(other.subscribes).toHaveLength(1);
+    expect(controls.pillFor("same-id")).toBe(pill);
+    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Last known: Running`);
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
+    expect(own.calls).toHaveLength(reads);
+    stop();
+  });
+
   it("lets the plan control read sessions from the same directory without another walk", async () => {
     vi.useFakeTimers();
     const rows = [
