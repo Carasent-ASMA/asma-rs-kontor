@@ -762,8 +762,6 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       }
       readEpoch += 1;
       abortRefresh();
-      pendingUpdates = [];
-      pendingOverflow = false;
       refreshQueued = true;
       return;
     }

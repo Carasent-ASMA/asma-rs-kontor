@@ -3,6 +3,7 @@ import type {
   PaseoAgentListResult,
 } from "@getpaseo/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { OwnedSubscriptions } from "../node_modules/@getpaseo/client/dist/connection/owned.js";
 import {
   SessionDirectory,
   type AgentDirectoryPage,
@@ -218,6 +219,120 @@ function loadingDirectory(fake: ReturnType<typeof scriptedDirectory>) {
   return { directory, latest: () => latest, states };
 }
 
+type Deferred<T = void> = {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+};
+
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function sdkBufferedUpdate(beforeActivation: boolean): Promise<DirectoryState> {
+  const subscriptionGate = deferred();
+  const firstPage = deferred();
+  const secondPage = deferred();
+  const owned = new OwnedSubscriptions({
+    release: async () => undefined,
+    failed: () => undefined,
+  });
+  owned.restore();
+  const oldRow = entry("fixture-a");
+  const freshRow = entry("fixture-a");
+  freshRow.agent = {
+    ...freshRow.agent,
+    title: "New permission warning",
+    status: "running",
+    updatedAt: "2026-10-25T12:00:02.000Z",
+    pendingPermissions: [
+      {
+        id: "permission-fixture",
+        provider: "opencode",
+        name: "fixture",
+        kind: "tool",
+      },
+    ],
+    requiresAttention: true,
+    attentionReason: "permission",
+  };
+  const snapshot: SubscriptionSnapshot = {
+    requestId: "fixture-subscription",
+    subscriptionId: "fixture-sub",
+    entries: [oldRow],
+    pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+  };
+  const update = {
+    type: "agent_update" as const,
+    payload: {
+      subscriptionId: "fixture-sub",
+      kind: "upsert" as const,
+      agent: freshRow.agent,
+      project: freshRow.project,
+    },
+  };
+  const page = (row: AgentDirectoryPage): PaseoAgentListResult => ({
+    requestId: "fixture-page",
+    entries: [row],
+    pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+  });
+  let pages = 0;
+  let latest: DirectoryState | null = null;
+  const client = {
+    agents: {
+      list: async (options: PaseoAgentListOptions = {}) => {
+        if (options.subscribe) {
+          const subscription = owned.observe(
+            async (accept) => {
+              await subscriptionGate.promise;
+              accept(snapshot);
+              if (beforeActivation) owned.receive(update);
+              return snapshot;
+            },
+            options.signal,
+          );
+          return { ...(await subscription.ready), subscription };
+        }
+        pages += 1;
+        if (pages === 1) {
+          await firstPage.promise;
+          return page(oldRow);
+        }
+        await secondPage.promise;
+        throw new Error("fixture reconciliation failed");
+      },
+    },
+  } as unknown as DirectoryClient;
+  const directory = new SessionDirectory({
+    client: () => client,
+    includeArchived: false,
+    bootstrapLimit: 25,
+    onChange: (state) => {
+      latest = state;
+    },
+  });
+  try {
+    const starting = directory.start();
+    await vi.waitFor(() => expect(pages).toBe(1));
+    subscriptionGate.resolve();
+    await vi.waitFor(() => expect(pages).toBe(2));
+    if (!beforeActivation) owned.receive(update);
+    secondPage.resolve();
+    await starting;
+    if (!latest) throw new Error("directory emitted no state");
+    return latest;
+  } finally {
+    subscriptionGate.resolve();
+    firstPage.resolve();
+    secondPage.resolve();
+    await directory.dispose();
+    await owned.close();
+  }
+}
+
 describe("session directory loading latency", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -397,6 +512,36 @@ describe("session directory loading latency", () => {
     );
 
     await directory.dispose();
+  });
+
+  it("preserves a pinned-SDK bootstrap buffered update when reconciliation fails", async () => {
+    const latest = await sdkBufferedUpdate(true);
+    expect(latest).toMatchObject({
+      status: "stale",
+      live: false,
+      inventoryComplete: false,
+    });
+    expect(latest.entries[0]).toMatchObject({
+      title: "New permission warning",
+      status: "running",
+      pendingPermissionCount: 1,
+      needsInput: true,
+    });
+  });
+
+  it("preserves the same pinned-SDK update delivered during reconciliation", async () => {
+    const latest = await sdkBufferedUpdate(false);
+    expect(latest).toMatchObject({
+      status: "stale",
+      live: false,
+      inventoryComplete: false,
+    });
+    expect(latest.entries[0]).toMatchObject({
+      title: "New permission warning",
+      status: "running",
+      pendingPermissionCount: 1,
+      needsInput: true,
+    });
   });
 
   it("supersedes a provisional walk when the subscription activates during it", async () => {
