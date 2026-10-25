@@ -155,12 +155,12 @@ describe("kontord status probe", () => {
 describe("shared catalog consumption", () => {
   const text = source("../server/work-catalog.ts");
 
-  it("starts only the configured observer and names only the two catalog tools", () => {
+  it("starts only the configured observer and names the four catalog tools", () => {
     expect(text.match(/spawn\(/g)).toHaveLength(1);
     expect(text).toContain(`["--state-root", config.stateRoot, "--credential-tier", DEFAULT_CREDENTIAL_TIER, ...(config.serveProfile ? ["--serve-profile", config.serveProfile] : [])]`);
     expect(text).toContain("spawn(config.mcpCommand, args, {");
     expect(text).not.toMatch(/shell:/);
-    expect([...new Set(text.match(/kontor_[a-z_]+/g))].sort()).toEqual(["kontor_work_catalog_entries", "kontor_work_catalog_sources"]);
+    expect([...new Set(text.match(/kontor_[a-z_]+/g))].sort()).toEqual(["kontor_work_catalog_entries", "kontor_work_catalog_native_inventory", "kontor_work_catalog_native_status", "kontor_work_catalog_sources"]);
   });
 
   it("never opens the daemon database, credential or a network connection", () => {

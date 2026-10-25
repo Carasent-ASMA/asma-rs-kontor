@@ -21,14 +21,17 @@ const FILTERS: readonly PortfolioFilter[] = ["all", "active", "review", "decisio
 const day = (value: string) => value.split(" / ").map((part) => part.slice(0, 10)).join(" / ");
 const count = (value: number, noun: string) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 /** Visible signal line: non-zero native counts only, or one "No sessions". */
-function signalLine(sessions: ReturnType<typeof nativeSummary>): string {
+function signalLine(sessions: ReturnType<typeof nativeSummary>, directory: DirectoryState): string {
+  if (directory.entries.length === 0 && (directory.status === "idle" || directory.status === "loading")) return "Sessions reading";
+  if (directory.entries.length === 0 && directory.source === "unavailable") return "Sessions unavailable";
+  if (directory.inventoryComplete === false && directory.entries.length === 0) return "Session total unknown · partial inventory";
   if (!sessions.total) return "No sessions";
   return [count(sessions.total, "session"), sessions.running ? `${sessions.running} running` : null, sessions.attention ? `${sessions.attention} attention` : null,
     sessions.needsInput ? `${sessions.needsInput} need input` : null, sessions.errors ? count(sessions.errors, "error") : null].filter(Boolean).join(" · ");
 }
 /** A visible cue only when the native read is not a complete one; the exact read stays in Sources and coverage. */
 function inventoryCue(directory: DirectoryState): string | null {
-  if (directory.lastUpdatedAt === null) return "inventory not read yet";
+  if (directory.lastUpdatedAt === null) return directory.source === "unavailable" ? "inventory unavailable" : "inventory not read yet";
   if (directory.inventoryComplete === true) return null;
   return `${directory.inventoryComplete === false ? "partial inventory" : "inventory completeness Unknown"} · read ${readTime(directory.lastUpdatedAt)}`;
 }
@@ -61,7 +64,7 @@ export function OverviewPage(props: Props) {
   const wide = width >= 760;
   const sessions = `${props.scoped ? "Sessions in this scope" : "Host sessions"}: ${count(total.total, "session")} · ${total.running} running · ${total.attention} native attention · ${total.needsInput} needs input · ${total.errors} errors.${!props.scoped && loose ? ` ${loose} with an unknown epic stay in Sessions.` : ""}`;
   const scope = `${props.scoped ? "Project" : "Global"} overview, available without kontord.`;
-  const meta = [signalLine(total), !props.scoped && loose ? `${loose} epic unknown` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
+  const meta = [signalLine(total, props.directory), !props.scoped && loose ? `${loose} epic unknown` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
   const jiraLabel = observed.length ? `Jira captured ${observed.map(shortDates).join(" / ")}` : "Jira not connected";
   const catalogCue = props.catalog?.mode === "snapshot" ? "catalog snapshot"
     : props.catalog?.mode === "unavailable" ? "catalog unavailable"
@@ -106,7 +109,7 @@ export function OverviewPage(props: Props) {
     </View>
   </View>;
 }
-function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, colors, compact, onSource, onEpicTab, sourceError }: Props & { row: PortfolioRow; last: boolean; wide: boolean; readingDecisions: boolean; readingDelivery: boolean }) {
+function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, colors, compact, onSource, onEpicTab, sourceError, directory }: Props & { row: PortfolioRow; last: boolean; wide: boolean; readingDecisions: boolean; readingDelivery: boolean }) {
   const single = row.plans.length === 1 ? row.plans[0]!.source.id : null;
   const go = (tab: EpicTab) => row.epicKey === null && tab === "Plan" && single ? onSource(single) : onEpicTab(tab, row.epicKey, tab === "Sessions" ? null : single);
   const sessions = row.sessions;
@@ -144,7 +147,7 @@ function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, col
       <View style={{ flex: wide ? 1 : undefined, minWidth: 0, gap: 3 }}>
         <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: "700" }}>{row.title}</Text>
         {nextLine ? <Text style={small}>{nextLine}</Text> : null}
-        {row.epicKey ? <Text style={small}>{signalLine(sessions)}</Text> : null}
+        {row.epicKey ? <Text style={small}>{signalLine(sessions, directory)}</Text> : null}
         {recordLine ? <Text style={small}>{recordLine}</Text> : null}
       </View>
       {wide ? <>{stageView}{progressView}{ctaView}</> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>{stageView}{progressView}{ctaView}</View>}

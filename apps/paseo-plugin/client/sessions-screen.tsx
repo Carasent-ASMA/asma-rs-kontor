@@ -3016,9 +3016,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     ? `No sessions in ${scopeParts.join(", ")} in this view.`
     : clearable
       ? "No sessions match the current search and filters."
-      : state.status === "error"
+      : state.status === "error" || state.source === "unavailable"
         ? "No sessions could be read from this host."
-        : "No sessions in this host's scope.";
+        : state.inventoryComplete === false
+          ? "No sessions could be read from this host's partial inventory."
+          : "No sessions in this host's scope.";
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
   const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
   const shortPeek = peek !== null && shortScreen;

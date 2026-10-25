@@ -18,23 +18,23 @@ export async function collectWorkspaces(client: Pick<PaseoApi, "workspaces">, si
   throw new Error("Workspace inventory exceeded the page limit");
 }
 const REFRESH_MS = 30_000;
-type WorkspaceDirectory = {
+export type DirectWorkspaceDirectory = {
   entries: PaseoWorkspace[]; error: string | null; readAt: string | null;
   projects: PaseoProject[]; projectError: string | null; projectsReadAt: string | null;
 };
-const EMPTY: WorkspaceDirectory = { entries: [], error: null, readAt: null, projects: [], projectError: null, projectsReadAt: null };
+const EMPTY: DirectWorkspaceDirectory = { entries: [], error: null, readAt: null, projects: [], projectError: null, projectsReadAt: null };
 /** The last state per host for this plugin runtime; `fresh` is when both lists were last read in full. */
-const retained = new Map<string, { state: WorkspaceDirectory; fresh: number | null }>();
+const retained = new Map<string, { state: DirectWorkspaceDirectory; fresh: number | null }>();
 export function forgetWorkspaceDirectories(): void { retained.clear(); }
 
 /** Snapshot coverage is labelled independently from the live session subscription. */
 export function useWorkspaceDirectory(hostId: string, online: boolean) {
-  const [state, setState] = useState<WorkspaceDirectory>(() => retained.get(hostId)?.state ?? EMPTY);
+  const [state, setState] = useState<DirectWorkspaceDirectory>(() => retained.get(hostId)?.state ?? EMPTY);
   useEffect(() => {
     const lifetime = new AbortController();
     let timer: ReturnType<typeof setTimeout> | null = null;
     // A remount keeps the poll's cadence: a full read under 30 s old, shown with its own read time, is not read again.
-    const publish = (change: (current: WorkspaceDirectory) => WorkspaceDirectory, fresh: number | null) => {
+    const publish = (change: (current: DirectWorkspaceDirectory) => DirectWorkspaceDirectory, fresh: number | null) => {
       const next = change(retained.get(hostId)?.state ?? EMPTY);
       retained.set(hostId, { state: next, fresh });
       setState(() => next);

@@ -13,12 +13,11 @@ import { useKeyboardSettings } from "./use-keyboard-settings";
 import { useBackShortcut } from "./keyboard-shortcuts";
 import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
-import { useWorkCatalog } from "./use-work-catalog";
 import { useResponsibility } from "./use-responsibility";
 import { useKontorStatus } from "./use-kontor-status";
 import { kontordLine, kontordSentence } from "./kontord-copy";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
-import { useSessionDirectory } from "./use-session-directory";
+import { useSharedInventory } from "./shared-inventory";
 import type { DirectoryEntry } from "./session-directory";
 import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
@@ -31,7 +30,6 @@ import { OrganizationSettingsPage } from "./organization-settings-page";
 import { openCreatedSession, openSessionById } from "./session-actions";
 import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
-import { useWorkspaceDirectory } from "./use-workspace-directory";
 import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
@@ -81,9 +79,12 @@ function HostScreen(props: PluginScreenProps) {
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   // The Teams page is controlled by its view in the navigation store, which does not render by itself.
   const [, setTeamsViewRevision] = useState(0);
-  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
+  // One shared inventory adapter feeds Sessions, Overview, Search, Activity, Board/Graph links,
+  // project/workspace selectors and Start/Switch; no view enumerates native state on its own.
+  const inventory = useSharedInventory({ hostId: host.id, hostStatus, includeArchived });
+  const native = inventory.directory;
   const sourceState = useReadSources(host.id, hostStatus);
-  const workCatalog = useWorkCatalog(host.id, hostStatus);
+  const workCatalog = inventory.catalog;
   const responsibility = useResponsibility(host.id, hostStatus);
   // kontord is optional: its line never changes the native host status, and Sessions never waits for it.
   const kontorStatus = useKontorStatus(host.id, hostStatus);
@@ -97,7 +98,7 @@ function HostScreen(props: PluginScreenProps) {
     [native.refresh, native.state, jira, linked]);
   const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
-  const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
+  const workspaces = inventory.workspaces;
   const planMappings = useMemo(() => planWorkstreamMappings(sourceState.sources, sourceState.reads, directory.state.entries,
     workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName })), saved.displayMappings, saved.planAssociations),
     [sourceState.sources, sourceState.reads, directory.state.entries, workspaces.entries, saved.displayMappings, saved.planAssociations]);
@@ -132,12 +133,12 @@ function HostScreen(props: PluginScreenProps) {
     }
   }, [host.id, route, sourceState.sources, sourceState.reads, saved.planAssociations, projectEpics]);
   const projects = useMemo(() => {
-    const names = new Map((workspaces.projects ?? []).map((project) => [project.projectId, project.projectCustomName ?? project.projectDisplayName]));
+    const names = new Map(workspaces.projects.map((project) => [project.projectId, project.projectCustomName ?? project.projectDisplayName]));
     for (const entry of directory.state.entries) if (entry.projectKey && !names.has(entry.projectKey)) names.set(entry.projectKey, entry.projectName ?? entry.projectKey);
     for (const workspace of workspaces.entries) if (!names.has(workspace.projectId)) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
     return [...names];
   }, [directory.state.entries, workspaces.entries, workspaces.projects]);
-  const projectRoots = useMemo(() => new Map([...workspaces.entries.map((workspace) => [workspace.projectId, workspace.projectRootPath] as const), ...(workspaces.projects ?? []).map((project) => [project.projectId, project.projectRootPath] as const)]), [workspaces.entries, workspaces.projects]);
+  const projectRoots = useMemo(() => new Map([...workspaces.entries.map((workspace) => [workspace.projectId, workspace.projectRootPath] as const), ...workspaces.projects.map((project) => [project.projectId, project.projectRootPath] as const)]), [workspaces.entries, workspaces.projects]);
   const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
   const scopedEpic = selectedPlan ? sourceEpic(selectedPlan, sourceState.reads[selectedPlan.id]) : route.epicKey;
   const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId)
@@ -285,7 +286,7 @@ function HostScreen(props: PluginScreenProps) {
     planSources={planSources} onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     projects={projects.map(([id, name]) => ({ id, name, root: projectRoots.get(id) }))}
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}
-    workspaceNote={[workspaces.error ?? (workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"), workspaces.projectError ?? (workspaces.projectsReadAt ? `Projects read ${new Date(workspaces.projectsReadAt).toLocaleTimeString()}` : "Reading the project list…")].join(" · ")} />;
+    workspaceNote={[workspaces.error ?? (workspaces.readAt ? `${workspaces.source === "catalog" ? "Shared catalog" : "Workspace list"} read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"), workspaces.projectError ?? (workspaces.projectsReadAt ? `Projects read ${new Date(workspaces.projectsReadAt).toLocaleTimeString()}` : "Reading the project list…")].join(" · ")} />;
   else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} kontord={kontord} refresh={() => { void sourceState.refresh(); }}
     onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))}
     keyboard={<KeyboardSettingsCard state={keyboard.state} save={keyboard.save} colors={colors} web={layout.platform === "web"} root={rootRef} copy={copy} />} />;
