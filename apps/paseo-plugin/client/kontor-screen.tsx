@@ -18,7 +18,8 @@ import { useKontorStatus } from "./use-kontor-status";
 import { kontordLine, kontordSentence } from "./kontord-copy";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
-import type { DirectoryEntry } from "./session-directory";
+import { useSessionRetirementProjection } from "./use-session-lifecycle";
+import { emptyDirectoryState, type DirectoryEntry } from "./session-directory";
 import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -62,6 +63,10 @@ export function KontorScreen(props: PluginScreenProps) {
   // Remount all host-local hooks on a host switch; routes remain host-scoped.
   return <HostScreen key={props.host.id} {...props} />;
 }
+/** Stable empty inputs: retirement is a Sessions read, so other pages must not recompute or read it. */
+const NO_SESSION_ENTRIES: readonly DirectoryEntry[] = [];
+const NO_SESSION_DIRECTORY = emptyDirectoryState();
+
 function HostScreen(props: PluginScreenProps) {
   const { host, layout } = props;
   const hosts = useHosts();
@@ -80,7 +85,7 @@ function HostScreen(props: PluginScreenProps) {
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   // The Teams page is controlled by its view in the navigation store, which does not render by itself.
   const [, setTeamsViewRevision] = useState(0);
-  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
+  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived: route.tab === "Sessions" || includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
   const responsibility = useResponsibility(host.id, hostStatus);
   // kontord is optional: its line never changes the native host status, and Sessions never waits for it.
@@ -149,6 +154,17 @@ function HostScreen(props: PluginScreenProps) {
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
+  // Read-only retention is a Sessions projection over the shared archive-inclusive directory and the
+  // already-read source/receipt evidence. Other pages neither read nor project it.
+  const projecting = route.tab === "Sessions";
+  const retirement = useSessionRetirementProjection(host.id, {
+    entries: projecting ? directory.state.entries : NO_SESSION_ENTRIES,
+    directory: projecting ? directory.state : NO_SESSION_DIRECTORY,
+    sources: projecting ? sourcesInContext : undefined,
+    reads: projecting ? sourceState.reads : undefined,
+    associations: projecting ? saved.planAssociations : undefined,
+    enabled: projecting,
+  });
   // Pages demand exact reads for their own context: the selected plan and its linked associations on Plan,
   // Board and Graph; the context sources on the recorded and overview pages; none on Sessions.
   const demandedSourceIds = useMemo(() => demandedSourceIdsFor(route, sources, associationIds),
@@ -276,7 +292,7 @@ function HostScreen(props: PluginScreenProps) {
       setSessionsRevision((revision) => revision + 1);
     })} /> : null;
   let page;
-  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
+  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}

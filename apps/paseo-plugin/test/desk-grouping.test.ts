@@ -158,6 +158,23 @@ describe("desk scope contexts", () => {
     expect(scopes.filter((scope) => matchesScope(mapped, scope, { "session:mapped": { workstream: "Adam" } }))).toEqual(["Adam", "Desks"]);
   });
 
+  it("treats label- and mapping-declared Tickets sessions outside a native desk as desk work", () => {
+    const labelled = sessionEntry("ticket-label", { ...EPIC, labels: { workstream: "Tickets" } });
+    const mapped = sessionEntry("ticket-map", { ...EPIC });
+    const mappings = { "session:ticket-map": { workstream: "Tickets" } };
+    for (const [entry, values] of [[labelled, {}], [mapped, mappings]] as const) {
+      expect(isDeskWork(entry, values)).toBe(true);
+      expect(matchesScope(entry, "Tickets", values)).toBe(true);
+      expect(matchesScope(entry, "Desks", values)).toBe(true);
+      expect(matchesScope(entry, "Other work", values)).toBe(false);
+    }
+    const tree = buildOrganizationTree({ entries: [labelled, mapped], displayMappings: mappings });
+    const tickets = tree.find((group) => group.kind === "workstream" && group.label === "Tickets")!;
+    expect(tickets).toMatchObject({ desk: true });
+    expect(tickets.entries.map((entry) => entry.id).sort()).toEqual(["ticket-label", "ticket-map"]);
+    expect(tree.some((group) => group.label === OTHER_WORKSTREAM)).toBe(false);
+  });
+
   it("keeps a desk context's empty workspaces discoverable, and only that desk's", () => {
     const tree = buildOrganizationTree({ entries: inventory(), workspaces: emptyWorkspaces });
     const shown = (scope: string | null) => {

@@ -1,16 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   activeFilterCount,
-  attentionLabel,
+  archivedConflictIds,
+  archivedConflicts,
   archivedLabel,
+  attentionLabel,
   DEFAULT_SESSION_FILTERS,
   filterDirectoryEntries,
+  filterDirectoryEntriesWithArchivedConflicts,
   hasActiveView,
+  isArchivedConflict,
   matchesQuery,
   matchesMembership,
   matchesStatus,
   statusFilterLabel,
 } from "../client/session-view";
+import { isArchivedSession } from "../client/session-directory";
 import { sessionEntry } from "./session-fixtures";
 
 describe("session search and filters", () => {
@@ -226,5 +231,46 @@ describe("explicit archive membership", () => {
       expect(matchesMembership({ ...ordinary, archivedAt, availability: evidence }, "archived")).toBe(true);
       expect(matchesStatus({ ...ordinary, archivedAt, status: "idle" }, "current")).toBe(false);
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("archived conflicts stay addressable and separate", () => {
+  const archivedAt = "2026-10-18T11:00:00Z";
+  const rows = [
+    sessionEntry("live", { status: "running" }),
+    sessionEntry("archived-running", { status: "running", archivedAt }),
+    sessionEntry("archived-turn", { status: "idle", archivedAt, activeTurn: true }),
+    sessionEntry("archived-turn-without-start", { status: "idle", archivedAt, activeTurn: true, activeTurnStartedAt: null }),
+    sessionEntry("archived-permission", { status: "idle", archivedAt, pendingPermissionCount: 1 }),
+    sessionEntry("archived-quiet", { status: "closed", archivedAt }),
+  ];
+
+  it("uses native membership, native status and native turn presence", () => {
+    expect(isArchivedSession(rows[1]!)).toBe(true);
+    expect(matchesMembership(rows[1]!, "archived")).toBe(true);
+    expect(matchesMembership(rows[1]!, "sessions")).toBe(false);
+    expect(matchesStatus(rows[1]!, "running")).toBe(true);
+    expect(archivedLabel(rows[1]!)).toBe("Archived");
+    expect(isArchivedConflict(rows[0]!)).toBe(false);
+    expect(isArchivedConflict(rows[5]!)).toBe(false);
+  });
+
+  it.each([
+    ["archived-running", ["active native execution"]],
+    ["archived-turn", ["active native execution"]],
+    ["archived-turn-without-start", ["active native execution"]],
+    ["archived-permission", ["pending interaction"]],
+  ] as const)("keeps %s in the conflict exception set", (id, reasons) => {
+    const conflicts = archivedConflicts(rows);
+    expect(conflicts.find((conflict) => conflict.entry.id === id)?.reasons).toEqual(reasons);
+    expect(archivedConflictIds(rows).has(id)).toBe(true);
+  });
+
+  it("evaluates the full raw inventory before membership, search and status filters", () => {
+    const filtered = filterDirectoryEntriesWithArchivedConflicts(rows, { ...DEFAULT_SESSION_FILTERS, status: "all", membership: "sessions", query: "live" });
+    expect(filtered.map((entry) => entry.id)).toEqual(["live", "archived-running", "archived-turn", "archived-turn-without-start", "archived-permission"]);
+    expect(filterDirectoryEntries(rows, { ...DEFAULT_SESSION_FILTERS, status: "all", membership: "sessions", query: "live" }).map((entry) => entry.id)).toEqual(["live"]);
+    const filteredEmpty = filterDirectoryEntriesWithArchivedConflicts(rows, { ...DEFAULT_SESSION_FILTERS, status: "closed", membership: "archived", query: "nothing-matches-this" });
+    expect(filteredEmpty.map((entry) => entry.id)).toEqual(["archived-running", "archived-turn", "archived-turn-without-start", "archived-permission"]);
   });
 });

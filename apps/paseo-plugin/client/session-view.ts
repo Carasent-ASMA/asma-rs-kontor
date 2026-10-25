@@ -4,6 +4,7 @@ import {
   hasSessionAttention,
   isArchivedSession,
   type DirectoryEntry,
+  type DirectoryState,
   type SessionStatus,
 } from "./session-directory";
 
@@ -122,6 +123,14 @@ export function matchesStatus(
   }
 }
 
+/**
+ * A read covers ordinary membership whenever it includes archived rows; an archive-inclusive
+ * read is a superset, not the other membership. Only an ordinary read fails to cover Archived.
+ */
+export function readCoversMembership(state: Pick<DirectoryState, "includeArchived">, includeArchived: boolean): boolean {
+  return state.includeArchived || !includeArchived;
+}
+
 export function matchesFilters(
   entry: DirectoryEntry,
   filters: SessionFilters,
@@ -189,4 +198,46 @@ export function sessionAvailabilityLabel(entry: DirectoryEntry): string | null {
   if (evidence?.archivedAt) return "Already archived";
   if (evidence?.state === "readable") return `${entry.attentionReason === "finished" ? "Unread result · " : ""}Native record found · provider history ${evidence.providerHistory === "not-reported" ? "not reported" : "unverified"}`;
   return "Availability unknown";
+}
+
+/** Native execution and pending interaction stay obligations even after archive membership. */
+export function hasNativeActiveTurn(entry: Pick<DirectoryEntry, "activeTurn" | "activeTurnStartedAt">): boolean {
+  return entry.activeTurn === true || entry.activeTurnStartedAt !== null && entry.activeTurnStartedAt !== undefined;
+}
+
+export type ArchivedConflict = { readonly entry: DirectoryEntry; readonly reasons: readonly string[] };
+
+/** An archived session with live execution or a pending interaction remains addressable and is never revived. */
+export function archivedConflictReasons(entry: DirectoryEntry): readonly string[] {
+  if (!isArchivedSession(entry)) return [];
+  const reasons: string[] = [];
+  if (entry.status === "running" || hasNativeActiveTurn(entry)) reasons.push("active native execution");
+  if (entry.pendingPermissionCount > 0 || entry.attentionReason === "permission") reasons.push("pending interaction");
+  return reasons;
+}
+
+export function isArchivedConflict(entry: DirectoryEntry): boolean {
+  return archivedConflictReasons(entry).length > 0;
+}
+
+/** Evaluate the full raw inventory before membership, search, status or scope filtering. */
+export function archivedConflicts(entries: readonly DirectoryEntry[]): readonly ArchivedConflict[] {
+  return entries.flatMap((entry) => {
+    const reasons = archivedConflictReasons(entry);
+    return reasons.length ? [{ entry, reasons }] : [];
+  });
+}
+
+export function archivedConflictIds(entries: readonly DirectoryEntry[]): ReadonlySet<string> {
+  return new Set(archivedConflicts(entries).map((conflict) => conflict.entry.id));
+}
+
+/**
+ * Ordinary filter matches plus every archived conflict, so a known obligation stays reachable when the normal
+ * list excludes archives, a status/search/scope filter hides it, or the result is otherwise empty.
+ */
+export function filterDirectoryEntriesWithArchivedConflicts(entries: readonly DirectoryEntry[], filters: SessionFilters, favorites: readonly string[] = []): DirectoryEntry[] {
+  const matching = filterDirectoryEntries(entries, filters, favorites), seen = new Set(matching.map((entry) => entry.id));
+  for (const conflict of archivedConflicts(entries)) if (!seen.has(conflict.entry.id)) { seen.add(conflict.entry.id); matching.push(conflict.entry); }
+  return matching;
 }

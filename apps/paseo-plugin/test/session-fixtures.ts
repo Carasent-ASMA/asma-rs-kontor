@@ -10,6 +10,8 @@ type SessionEntryOverrides = {
   attentionReason?: "finished" | "error" | "permission" | null;
   pendingPermissionCount?: number;
   needsInput?: boolean;
+  activeTurn?: boolean;
+  activeTurnStartedAt?: string | null;
   archivedAt?: string | null;
   workspaceName?: string | null;
   projectName?: string | null;
@@ -38,6 +40,8 @@ export function sessionEntry(
     needsInput:
       overrides.needsInput ??
       (pendingPermissionCount > 0 || attentionReason === "permission"),
+    activeTurn: overrides.activeTurn ?? false,
+    activeTurnStartedAt: overrides.activeTurnStartedAt ?? null,
     archivedAt: overrides.archivedAt ?? null,
     createdAt: overrides.createdAt ?? "2026-10-18T09:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-10-18T10:00:00.000Z",

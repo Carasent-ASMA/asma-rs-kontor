@@ -7596,6 +7596,7 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
             consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id)["agent"].clone();
         archived_list["entries"][0]["agent"]["labels"][label::READ_ONLY] =
             serde_json::json!("true");
+        archived_list["entries"][0]["agent"]["status"] = serde_json::json!("closed");
         let recorded = RecordedPaseo::new()
             .answering(&PaseoCommand::version(), VERSION)
             .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
@@ -11056,6 +11057,7 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
         before["agent"]["labels"] = labels.clone();
         let mut after = before.clone();
         after["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+        after["agent"]["status"] = serde_json::json!("closed");
 
         let recorded = RecordedPaseo::new()
             .answering(&PaseoCommand::version(), VERSION)
@@ -11119,6 +11121,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
     before["agent"]["labels"] = labels.clone();
     let mut archived = v(AGENT_LIST_ARCHIVED_ONLY);
     archived["entries"][0]["agent"]["labels"] = labels;
+    archived["entries"][0]["agent"]["status"] = serde_json::json!("closed");
 
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
@@ -11311,6 +11314,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
     });
     archived["agent"]["currentModeId"] = serde_json::json!("bypassPermissions");
     archived["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+    archived["agent"]["status"] = serde_json::json!("closed");
 
     let recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
@@ -11342,6 +11346,233 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
         plane.daemon.mutations().is_empty(),
         "an archived replay performs no second native effect"
     );
+}
+
+fn hosted_retire_request(seat_binding_id: SeatBindingId) -> HostedSeatRetireRequest {
+    HostedSeatRetireRequest {
+        placement: None,
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
+        requested_at: at("2026-08-20T05:10:00Z"),
+    }
+}
+
+fn hosted_labels(seat_binding_id: SeatBindingId) -> serde_json::Value {
+    serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    })
+}
+
+/// Paseo writes `archivedAt` before it closes the runtime. An archive the
+/// retirement did not perform itself — a lost acknowledgement, an operator's
+/// manual archive — is therefore evidence only with the `closed` status a
+/// successful close persists. A failed close, a reopened predecessor or a
+/// pending permission keeps the seat unretired, and nothing is archived again.
+#[tokio::test]
+async fn an_archive_stamp_without_close_evidence_does_not_retire_a_hosted_seat() {
+    for (status, permission) in [
+        // A failed close: the stamp beside a runtime that still reads idle.
+        ("idle", false),
+        ("error", false),
+        // Reopened after the archive.
+        ("running", false),
+        ("initializing", false),
+        ("closed", true),
+    ] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut archived = v(AGENT);
+        archived["agent"]["labels"] = hosted_labels(seat_binding_id);
+        archived["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+        archived["agent"]["status"] = serde_json::json!(status);
+        if permission {
+            archived["agent"]["pendingPermissions"] =
+                v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone();
+        }
+        let plane = Plane::fresh(
+            RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+                .announcing(&v(SERVER_INFO))
+                .answering_rpc("fetch_agent_request", archived),
+        );
+
+        let refused = plane
+            .adapter
+            .retire_hosted_seat(&hosted_retire_request(seat_binding_id))
+            .await;
+
+        assert!(
+            matches!(refused, Err(RuntimeError::ReplacementNotEvidenced { .. })),
+            "{status} (pending permission: {permission}) was accepted as retired: {refused:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{status} (pending permission: {permission}) wrote to the runtime"
+        );
+    }
+}
+
+/// Readbacks of a predecessor reopened after this call's own archive: still
+/// archived but working, or unarchived again (a prompt unarchives) while
+/// working or idle.
+const REOPENED_AFTER_ACK: [(Option<&str>, &str); 3] = [
+    (Some("2026-08-20T05:10:00.000Z"), "running"),
+    (None, "running"),
+    (None, "idle"),
+];
+
+/// Asserts a post-acknowledgement reopen refused as no retirement, never as
+/// predecessor absence, after exactly the one intended archive.
+fn assert_reopen_refused(plane: &Plane, refused: RuntimeResult<impl std::fmt::Debug>) {
+    let error = refused.expect_err("a reopened predecessor was accepted as retired");
+    assert!(
+        matches!(error, RuntimeError::ReplacementNotEvidenced { .. }),
+        "{error:?}"
+    );
+    assert!(!error.proves_hosted_predecessor_absent());
+    assert_eq!(
+        plane.daemon.mutations(),
+        vec![PaseoCommand::agent_archive(AGENT_ID).route().to_owned()]
+    );
+}
+
+/// The acknowledgement proves the close happened, not that nothing reopened
+/// the predecessor afterwards. A readback that finds it working or unarchived
+/// again is no retirement, and the successor must not launch beside it.
+#[tokio::test]
+async fn an_acknowledged_archive_that_reads_back_working_does_not_retire_a_hosted_seat() {
+    for (archived_at, status) in REOPENED_AFTER_ACK {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut before = v(AGENT);
+        before["agent"]["labels"] = hosted_labels(seat_binding_id);
+        let mut reopened = before.clone();
+        reopened["agent"]["archivedAt"] = serde_json::json!(archived_at);
+        reopened["agent"]["status"] = serde_json::json!(status);
+        let plane = Plane::fresh(
+            RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+                .announcing(&v(SERVER_INFO))
+                .then_answering_rpc("fetch_agent_request", before)
+                .answering_rpc("fetch_agent_request", reopened),
+        );
+
+        let refused = plane
+            .adapter
+            .retire_hosted_seat(&hosted_retire_request(seat_binding_id))
+            .await;
+
+        assert_reopen_refused(&plane, refused);
+    }
+}
+
+/// Version boundary. The recorded Paseo 0.8.0 archive readback carries its
+/// stamp beside an `idle` status, which is indistinguishable from a failed
+/// close. On such a host an archive the retirement did not perform is no
+/// evidence, so the replacement is refused fail-safe rather than admitted on
+/// the stamp. No compatibility with those hosts is claimed for this path.
+#[tokio::test]
+async fn a_paseo_0_8_archive_readback_is_not_retirement_evidence() {
+    use kontor_runtime::adapter::ConsultationSeatRetireRequest;
+    let seat_binding_id = SeatBindingId::generate();
+    let mut hosted = v(AGENT_ARCHIVED);
+    hosted["agent"]["labels"] = hosted_labels(seat_binding_id);
+    assert_eq!(
+        hosted["agent"]["status"], "idle",
+        "the recorded 0.8.0 shape"
+    );
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("fetch_agent_request", hosted),
+    );
+    assert!(matches!(
+        plane
+            .adapter
+            .retire_hosted_seat(&hosted_retire_request(seat_binding_id))
+            .await,
+        Err(RuntimeError::ReplacementNotEvidenced { .. })
+    ));
+    assert!(plane.daemon.mutations().is_empty());
+
+    let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
+    let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
+    let mut consultation = consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id);
+    consultation["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("fetch_agent_request", consultation),
+    );
+    let request = ConsultationSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::template(
+            ContentHash::of(b"template"),
+        ),
+        requested_at: kontor_core::id::Timestamp::now(),
+    };
+    assert!(matches!(
+        plane.adapter.retire_consultation_seat(&request).await,
+        Err(RuntimeError::ReplacementNotEvidenced { .. })
+    ));
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// A consultation recovery follows the same rule after its own archive: a
+/// predecessor reading back working or unarchived again was reopened and is
+/// not retired.
+#[tokio::test]
+async fn an_acknowledged_consultation_archive_that_reads_back_working_is_refused() {
+    use kontor_runtime::adapter::ConsultationSeatRetireRequest;
+    let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
+    let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
+    let request = ConsultationSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: model_rung(),
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::template(
+            ContentHash::of(b"template"),
+        ),
+        requested_at: kontor_core::id::Timestamp::now(),
+    };
+    for (archived_at, status) in REOPENED_AFTER_ACK {
+        let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
+        before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
+        let mut reopened = before.clone();
+        reopened["agent"]["archivedAt"] = serde_json::json!(archived_at);
+        reopened["agent"]["status"] = serde_json::json!(status);
+        let plane = Plane::fresh(
+            RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+                .then_answering_rpc("fetch_agent_request", before)
+                .answering_rpc("fetch_agent_request", reopened),
+        );
+        let refused = plane.adapter.retire_consultation_seat(&request).await;
+        assert_reopen_refused(&plane, refused);
+    }
 }
 
 /// A legacy alias at the canonical path is retitle-required, not vacancy.
@@ -14443,6 +14674,13 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
         "known-history",
         "census-omits-predecessor",
         "census-drift",
+        "failed-close",
+        "reopened",
+        "census-running",
+        "census-idle",
+        "census-permission",
+        "exact-failed-close",
+        "exact-reopened",
     ] {
         let seat_binding_id = SeatBindingId::generate();
         let mut agent = v(AGENT)["agent"].clone();
@@ -14451,6 +14689,8 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
             "kontor.hosted_seat": "true",
         });
         agent["archivedAt"] = serde_json::json!("2026-09-20T05:42:26.512Z");
+        // What Paseo 0.12 persists once an archive closed the runtime.
+        agent["status"] = serde_json::json!("closed");
         let mut request = HostedSeatRetireRequest {
             seat_binding_id,
             identity: NativeRuntimeIdentity {
@@ -14481,6 +14721,10 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
                     Some(external("different-conversation"))
             }
             "generation" => request.identity.generation = 99,
+            // The stamp is written before the close; a failed close leaves it
+            // beside a live runtime that still reads idle.
+            "failed-close" | "exact-failed-close" => agent["status"] = serde_json::json!("idle"),
+            "reopened" | "exact-reopened" => agent["status"] = serde_json::json!("running"),
             "label" => {
                 agent["labels"]["kontor.seat_binding_id"] =
                     serde_json::json!(SeatBindingId::generate())
@@ -14510,6 +14754,22 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
         if case == "census-drift" {
             census["entries"][0]["agent"]["archivedAt"] = serde_json::Value::Null;
         }
+        // The two readbacks diverge: a census-* census contradicts a closed
+        // exact fetch, and an exact-* fetch is contradicted by a closed census.
+        match case {
+            "census-running" => {
+                census["entries"][0]["agent"]["status"] = serde_json::json!("running")
+            }
+            "census-idle" => census["entries"][0]["agent"]["status"] = serde_json::json!("idle"),
+            "census-permission" => {
+                census["entries"][0]["agent"]["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone()
+            }
+            "exact-failed-close" | "exact-reopened" => {
+                census["entries"][0]["agent"]["status"] = serde_json::json!("closed")
+            }
+            _ => {}
+        }
         let mut exact = v(AGENT);
         exact["agent"] = agent;
         let plane = Plane::fresh(
@@ -14525,6 +14785,26 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
             let proof = outcome.expect("the exact archived predecessor is provable");
             assert_eq!(proof.identity, request.identity);
             assert_eq!(proof.archived_at, at("2026-09-20T05:42:26.512Z"));
+        } else if matches!(
+            case,
+            "live"
+                | "permission"
+                | "failed-close"
+                | "reopened"
+                | "census-drift"
+                | "census-running"
+                | "census-idle"
+                | "census-permission"
+                | "exact-failed-close"
+                | "exact-reopened"
+        ) {
+            // A predecessor that either readback shows not provably retired is
+            // refused as such; a closed but unarchived agent can be prompted
+            // back to life.
+            assert!(
+                matches!(outcome, Err(RuntimeError::ReplacementNotEvidenced { .. })),
+                "{case}: {outcome:?}"
+            );
         } else {
             assert!(outcome.is_err(), "{case} was accepted");
         }
