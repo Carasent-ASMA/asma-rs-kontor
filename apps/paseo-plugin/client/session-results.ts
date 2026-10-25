@@ -1,6 +1,6 @@
 import type { DirectoryEntry } from "./session-directory";
 import { earlierErrorLabel } from "./session-view";
-import { epicLabel, isDeskWork, nativeDesk, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, TASK_JIRA_LABELS, UNASSIGNED_EPIC, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
+import { associationLabel, isDeskWork, nativeDesk, labelRoleCode, organizationScope, ROLE_ORDER, sessionEpic, sessionState, TASK_JIRA_LABELS, UNASSIGNED_EPIC, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
 
 type Mappings = Parameters<typeof organizationScope>[1];
 
@@ -15,12 +15,13 @@ export function inWorkspace(entry: DirectoryEntry): boolean {
 
 export function sessionProvenance(entry: DirectoryEntry, mappings: Mappings): SessionProvenance {
   const scope = organizationScope(entry, mappings);
+  const epic = associationLabel(sessionEpic(entry, mappings));
   const native = entry.projectKey && nativeDesk(entry.projectName) !== null ? { id: entry.projectKey, name: entry.projectName!, workspaceId: entry.workspaceId } : null;
   const desk = scope.epic === UNASSIGNED_EPIC && isDeskWork(entry, mappings);
   // Say a working directory is not a workspace rather than pass it off as one.
   const workspace = inWorkspace(entry) ? workspaceLabel(entry) : entry.cwd ? `No workspace · ${entry.cwd}` : "No workspace";
-  if (native) return { parts: [native.name, workspace], desk: true, workspace, nativeDesk: native, association: `Association ${scope.workstream} · ${epicLabel(scope.epic)}` };
-  return { parts: desk ? [`${scope.workstream} desk`, workspace] : [scope.workstream, epicLabel(scope.epic), workspace], desk, workspace };
+  if (native) return { parts: [native.name, workspace], desk: true, workspace, nativeDesk: native, association: `Association ${scope.workstream} · ${epic}` };
+  return { parts: desk ? [`${scope.workstream} desk`, workspace] : [scope.workstream, epic, workspace], desk, workspace };
 }
 
 /** Every token must appear in the session's search text or its placement labels (a mapped name counts). */

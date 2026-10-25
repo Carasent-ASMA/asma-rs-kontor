@@ -139,7 +139,7 @@ describe("session organization hierarchy", () => {
   it("keeps unassigned workspace-kind siblings inside their native project boundary", () => {
     const tree = buildOrganizationTree({ entries: [entry("one", { projectKey: "A", projectName: "Project A", workspaceId: "a", workspaceName: "TSW • A" }), entry("two", { projectKey: "B", projectName: "Project B", workspaceId: "b", workspaceName: "TSW • B" })] });
     expect(allGroups(tree).filter((group) => group.kind === "workspace-kind")).toHaveLength(0);
-    expect(allGroups(tree).filter((group) => group.kind === "epic").map((group) => group.label)).toEqual(["Epic unknown · Project A", "Epic unknown · Project B"]);
+    expect(allGroups(tree).filter((group) => group.kind === "epic").map((group) => [group.label, group.context])).toEqual([["No epic linked", "Project A"], ["No epic linked", "Project B"]]);
     expect(new Set(sessionIds(flattenOrganizationTree(tree)))).toEqual(new Set(["one", "two"]));
   });
   it("retains a discovered empty workspace with zero native sessions", () => {

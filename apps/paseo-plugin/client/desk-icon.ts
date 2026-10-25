@@ -1,4 +1,4 @@
-import { nativeDesk, type OrganizationGroup, type OrganizationGroupKind } from "./session-organization";
+import { nativeDesk, type EpicAssociation, type OrganizationGroup, type OrganizationGroupKind } from "./session-organization";
 
 export const KIND_ICONS: Partial<Record<OrganizationGroupKind, string>> = { workstream: "Route", epic: "Flag", workspace: "PanelsTopLeft", project: "Folder" };
 
@@ -13,8 +13,12 @@ export function deskIcon(key: string): string {
   }
 }
 
+/** Rows without a known epic never borrow the epic flag. */
+const ASSOCIATION_ICONS: Readonly<Record<Exclude<EpicAssociation, "epic">, string>> = { ticket: "Ticket", adhoc: "Sparkles", conflict: "CircleAlert", unlinked: "CircleDashed" };
+
 export function organizationIcon(group: OrganizationGroup): string | undefined {
   if (group.desk) return deskIcon(nativeDesk(group.project?.name) ?? group.label);
+  if (group.kind === "epic" && group.association && group.association !== "epic") return ASSOCIATION_ICONS[group.association];
   if (group.kind === "workspace" && group.parentKey?.includes("/kind:")) return undefined;
   return KIND_ICONS[group.kind];
 }

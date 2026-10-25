@@ -370,10 +370,13 @@ never durable desk configuration.
 An exact desk choice uses the native project ID, distinguishing identical names;
 workstream choices keep canonical association keys, and epic choices use the same
 label/mapping/Jira-capture resolver as Details. Conflicting or missing epic
-evidence matches **Epic unknown**, never a title-derived epic. All three scope
+evidence matches **No epic linked**, never a title-derived epic. All three scope
 dimensions compose with the other filters. Active scopes remain visible above
 the list, can be removed individually, and **Clear scope** removes just these
 dimensions. Empty selections and unavailable keys stay explicit until cleared.
+
+In My work the selector counts the registered and plan-only choices it leaves
+out, without listing them, and offers Show in All work.
 
 The workstream association choices list only values resolved from sessions in the
 current scope: session mapping, workspace mapping, `desk` label, `workstream`
@@ -381,10 +384,10 @@ label, native DESK project fallback, then Other work, in that order. These choic
 are neither a native project inventory nor a complete registry of workstreams.
 Native projects/workspaces have their own context scope and native IDs. Sessions
 of non-desk projects without declarations remain under Other work and their
-epic, or Epic unknown; no workstream is inferred from their titles.
+epic, or No epic linked; no workstream is inferred from their titles.
 
 A native project whose sessions settle different epics shows one row per epic.
-Its Epic unknown row follows the project's last recognised row when both are in
+Its rows without a known epic follow the project's last recognised row when both are in
 one workstream, and stays in place when they are not. Either way the rows name
 each other: how many of the project's sessions have no known epic, how many of
 its workspaces have no sessions, and in which workstreams. Rows match by native
@@ -392,7 +395,9 @@ project ID, never by name. Projects whose sibling rows read alike, directly or
 through another such project, are named together: one folder of each project's
 root, the last one where the roots differ and below any home folder, or their
 position when the roots cannot tell them apart safely or a name would make a row
-read like any other sibling. Compact rows
+read like any other sibling. A row's project and folder lead its secondary line
+and never become part of its label, so no project or checkout name reads as an
+epic. Compact rows
 show a group's detail under its label, in up to two lines. No session moves,
 merges or hides, and no epic or workstream is assigned.
 
@@ -622,9 +627,16 @@ Settings › Presentation and associations can map it or link a plan. No project
 session name links a session.
 
 Display precedence is: saved session mapping, saved workspace mapping, desk label,
-workstream label, native desk classification, then an unambiguous declared-plan
-fallback through an exact epic or explicit session-to-plan association. Explicit
-plan project bindings constrain that fallback. Missing, unavailable or conflicting
+workstream label, native desk classification — except a registry desk marked
+`match: fallback`, whose `paseo_project` sessions continue — then an applicable
+ready plan declaring the workstream of the session's epic, then that epic's `ws:`
+label in a ready Jira capture. An applicable ready plan and a label that disagree
+link nothing, and Details says the sources disagree. An explicit session-to-plan
+association uses plans alone. These associations drive workstream filters and
+counts. The unfiltered tree keeps each native desk project's sessions under that
+desk; under a workstream filter, sessions group by workstream and epic, one epic
+row across projects. Details names the plans or capture behind a derived
+workstream. Explicit plan project bindings constrain that fallback. Missing, unavailable or conflicting
 plans do not attach arbitrarily. Derived mappings remain in memory and never write
 preferences or native labels. Plan context includes the declaration and exact source
 revision; graphless plans have no task graph or inferred lifecycle. Historical,
@@ -640,12 +652,21 @@ it to that project.
 A session's epic is its display mapping, else what its `epic`, `jira.epic`,
 `origin.epic` and `asma.epic` labels name together with the historical Jira
 projection's epic for each key those labels or its `jira.issue`, `task` or
-`asma.task` label name. Every named epic must agree. When they disagree, or
-nothing names one, the epic is unknown and shows as Epic unknown, never as "no
-epic": no source here shows that a task has no parent. Session details name the
-sources and the capture's observation time, or why the epic is unknown. A
-workspace carries no labels, so a project's unmapped workspaces without sessions form an
-Epic unknown group that says so beside the project's known epics. A capture
+`asma.task` label name. Every named epic must agree. When they disagree, the
+session shows as **Epic sources disagree** and nothing below applies. Without an
+epic, a session Kontor created (it carries `create.request`) shows as **Ticket
+<KEY>** when Kontor wrote its `ticket` label after checking the issue in Jira, or
+as **Ad hoc** when its `persona` label starts `kontor-lsa-adhoc@` or
+`kontor-lsa-adhoc+bootstrap@`; the hash after `@` is never read. Anything else
+shows as **No epic linked**, never as "no epic": no source here shows that a task
+has no parent. A `ticket` or persona label without `create.request`, a parent
+session, a title, a project or a workspace never settles any of these. Each kind
+has its own row and icon, apart from the epic flag, and a workstream counts each
+distinct epic once. Session details name the sources and the capture's
+observation time, or why the epic is unknown; a key the capture does not hold is
+not covered by it, which is not the same as having no epic. A
+workspace carries no labels, so a project's unmapped workspaces without sessions form a
+No epic linked group that says so beside the project's known epics. A capture
 cannot see a later move in Jira, so a label and a capture that agree can both be
 stale. Other label keys, project names, titles and sibling labels never assign
 an epic. The tree, results, Overview counts, the context picker and project
@@ -737,6 +758,12 @@ bun apps/paseo-plugin/scripts/export-jira-history.ts /srv/captures/consumption-d
 
 This explicit offline exporter is separate from the consumption pipeline and
 writes only the bounded JSON to stdout. The plugin retains its 2 MiB read cap.
+The projection keeps each selected epic's `ws:<key>` label as `ws`. Select Epic
+keys only: a key that is both a selected entry and another entry's child is
+rejected as ambiguous. A plugin older than this change rejects a projection
+carrying `ws`, so install before repointing the source. This capture is the
+resolver's one read-only epic source; a later shared catalog replaces it behind
+the same lookup, and no second collector is added.
 The projection retains the original observation time, source hash and selected
 keys; reading it later never makes it live. Exact parent/issue keys supply
 historical workflow observations in Overview, Board and Graph, and the epic of a
