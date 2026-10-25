@@ -440,8 +440,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogProjectId: null, providers: [], profile: null, issues: [], jiraProblem: null, pending: null, notes }; }
     // The issue chooses its desk, so the search spans every type; an ineligible issue stays listed with its reason.
     let issues: JiraIssue[] = [], jiraProblem: string | null = null;
-    if (desk && start === "from-jira" && desk.kind !== "pr-review" && desk.kind !== "other") {
-      const issueClass = scope.issueClass ?? (desk.kind === "adam" ? "epic" : "non-epic");
+    if (desk && start === "from-jira") {
+      const issueClass = scope.issueClass ?? (desk.kind === "adam" ? "epic" : desk.kind === "tickets" ? "non-epic" : "eligible");
       const result = await jira({ query: scope.issueKey ?? "", issueClass, openOnly: true });
       if (result.failure) jiraProblem = `Jira could not be read: ${result.failure}`;
       else issues = result.issues;

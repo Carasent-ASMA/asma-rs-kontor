@@ -296,11 +296,17 @@ describe("create options", () => {
     expect(tickets.issues.map((issue) => issue.key)).toEqual(["ASMA-102", "ASMA-103"]);
     expect(s.jira).toHaveBeenCalledWith({ query: "", issueClass: "non-epic", openOnly: true });
     s.jira.mockClear();
-    expect((await s.service.options({ projectId: "prj-pr", role: "LSA", start: "from-jira" })).issues).toEqual([]);
-    expect(s.jira).not.toHaveBeenCalled();
-    s.jira.mockClear();
     await s.service.options({ projectId: "prj-adam", start: "ad-hoc" });
     expect(s.jira).not.toHaveBeenCalled();
+  });
+
+  it("browses eligible Jira issues from a non-lead opening desk", async () => {
+    const s = await setup();
+    const pr = await s.service.options({ projectId: "prj-pr", role: "LSA", start: "from-jira" });
+    expect(s.jira).toHaveBeenCalledTimes(1);
+    expect(s.jira).toHaveBeenCalledWith({ query: "", issueClass: "eligible", openOnly: true });
+    expect(pr.issues.map((issue) => issue.key)).toEqual(["ASMA-100", "ASMA-102", "ASMA-103"]);
+    expect(pr.catalogProjectId).toBe("prj-pr");
   });
 
   it("passes the selected class before the cap and keeps every eligible type", async () => {
