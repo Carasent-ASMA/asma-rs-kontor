@@ -164,6 +164,14 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   session by title, place and labels, Recent first, at most 20 rows, and
   **Show all N in Sessions** hands the query to Sessions unscoped. A row opens by native ID through the same
   path as Sessions. Rows carry no archive control.
+- **State shortcuts.** The shared sheet and chat popover show Running,
+  Questions (Needs input), Provider blocked and Errors over this host's
+  nonarchived sessions in all projects. These counts use the retained directory,
+  not the eight Recent rows. A shortcut opens the same Sessions filter without
+  retaining an incompatible search or refinement; presentation preferences stay.
+  Partial, stale or unavailable reads show updating/unknown counts. Provider
+  blocked requires exact refusal evidence; unchecked errors are never inferred
+  blocked or reported as a verified zero.
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.

@@ -33,7 +33,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps),
   useSyncExternalStore: <T,>(_subscribe: unknown, read: () => T) => read() }));
-vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
+vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
@@ -52,7 +52,7 @@ type Element = ReactElement<Record<string, unknown>>;
 function elements(value: ReactNode): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(value)) return [];
-  const drawn = typeof value.type === "function" && ["Choices", "SwitchRowItem"].includes(value.type.name) ? (value.type as (props: object) => ReactNode)(value.props) : null;
+  const drawn = typeof value.type === "function" && ["Choices", "SwitchRowItem", "StartSwitchStatuses"].includes(value.type.name) ? (value.type as (props: object) => ReactNode)(value.props) : null;
   return [value, ...elements(value.props.children as ReactNode), ...elements(value.props.header as ReactNode), ...elements(drawn)];
 }
 const text = (tree: Element[]) => tree.filter((node) => node.type === "Text" || node.type === Copy).map((node) => [node.props.children].flat(Infinity).join("")).join("\n");
@@ -291,9 +291,10 @@ describe("Start or switch sheet", () => {
 });
 
 describe("Start or switch popover from the composer pill", () => {
-  function pop(patch: { compact?: boolean; entries?: DirectoryEntry[]; live?: boolean } = {}) {
+  function pop(patch: { compact?: boolean; entries?: DirectoryEntry[]; live?: boolean; complete?: boolean } = {}) {
     recordVisit("host-a", "agent-a", Date.now() - 60_000);
     model.directory = directory(patch.entries ?? [prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" }), sessionEntry("agent-b", { title: "QA • ASMA-1 • Review" })], patch.live ?? true);
+    if (patch.complete !== undefined) model.directory = { ...model.directory, inventoryComplete: patch.complete };
     const openScreen = vi.fn(), close = vi.fn();
     const all = { host: { id: "host-a", label: "Host A" }, theme: { colors: COLORS }, layout: { compact: patch.compact ?? false, platform: "web" as const },
       context: "agent" as const, workspaceId: "wks-adam", agentId: "agent-current", close, openScreen, screenId: "sessions" } as unknown as Parameters<typeof StartSwitchPopover>[0];
@@ -337,6 +338,36 @@ describe("Start or switch popover from the composer pill", () => {
     pop();
     expect(model.directoryArgs[0]).toEqual({ hostId: "host-a", hostStatus: "online" });
     expect(model.directoryArgs[0]).not.toHaveProperty("includeArchived");
+  });
+
+  it("offers four canonical status shortcuts from the existing directory, not Recent, with one host-scoped hand-off despite repeated taps", () => {
+    const p = pop({ complete: true, entries: [sessionEntry("run", { status: "running" }), sessionEntry("question", { needsInput: true }),
+      sessionEntry("finished", { requiresAttention: true, attentionReason: "finished" }), sessionEntry("error", { status: "error" })] });
+    const shortcuts = p.tree.filter(node => String(node.props.testID).startsWith("kontor-switch-status-") && node.props.onPress);
+    expect(shortcuts).toHaveLength(4);
+    for (const node of shortcuts) expect(node.props.target).toBeGreaterThanOrEqual(44);
+    expect(byTestId(p.tree, "kontor-switch-status-needs_input")!.props).toMatchObject({ count: { text: "1" }, label: expect.stringContaining("Questions / Needs input, 1 sessions") });
+    expect(byTestId(p.tree, "kontor-switch-status-provider_blocked")!.props).toMatchObject({ count: { text: "…" } });
+    expect(model.directoryArgs).toEqual([{ hostId: "host-a", hostStatus: "online" }]);
+    const press = byTestId(p.tree, "kontor-switch-status-needs_input")!.props.onPress as () => void;
+    press(); press();
+    (byTestId(p.tree, "kontor-switch-status-error")!.props.onPress as () => void)();
+    expect(p.openScreen).toHaveBeenCalledTimes(1); expect(p.close).toHaveBeenCalledTimes(1);
+    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
+    expect(takeHandOff("host-a", key)).toEqual({ kind: "state", status: "needs_input", scope: { projectId: null, membership: "sessions", refinements: "none" } });
+    expect(readRecent("host-a").record.visits).toHaveLength(1);
+  });
+
+  it("keeps a failed status hand-off visible and retryable, without closing or retaining its failed request", () => {
+    const p = pop();
+    p.openScreen.mockImplementationOnce(() => { throw new Error("Screen unavailable"); });
+    const press = byTestId(p.tree, "kontor-switch-status-running")!.props.onPress as () => void;
+    press();
+    expect(p.close).not.toHaveBeenCalled(); expect(model.toast.error).toHaveBeenCalledWith("Screen unavailable");
+    const failedKey = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
+    expect(takeHandOff("host-a", failedKey)).toBeNull();
+    press();
+    expect(p.openScreen).toHaveBeenCalledTimes(2); expect(p.close).toHaveBeenCalledOnce();
   });
 
   it("opens Kontor without a request and closes", () => {

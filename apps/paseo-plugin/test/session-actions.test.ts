@@ -4,6 +4,7 @@ import { archivedByRead, handOffOpen, openCreatedSession, openHandOff, openRecov
 import type { CreateOutcome } from "../shared/session-create";
 import type { LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
+import { STATUS_SHORTCUTS, STATUS_SHORTCUT_SCOPE } from "../client/session-state-shortcuts";
 
 function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn> } {
   return {
@@ -11,6 +12,30 @@ function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn>
     openWorkspace: vi.fn(),
   } as unknown as SessionNavigation & { openAgent: ReturnType<typeof vi.fn> };
 }
+
+describe("session-state hand-off", () => {
+  it.each(STATUS_SHORTCUTS)("consumes $status and its exact scope once without opening an agent", ({ status }) => {
+    const onState = vi.fn(), onSearch = vi.fn(), nav = navigation();
+    const target = { kind: "state" as const, status, scope: STATUS_SHORTCUT_SCOPE };
+    const key = handOffOpen("host-a", target);
+    const input = { hostId: "host-a", key, entries: [], navigation: nav, onSearch, onState };
+    expect(openHandOff(input)).toEqual({ ok: true });
+    expect(onState).toHaveBeenCalledExactlyOnceWith(target);
+    expect(openHandOff(input)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).not.toHaveBeenCalled(); expect(onSearch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a foreign host and makes a callback failure visible, then permits a fresh request", () => {
+    const onState = vi.fn<() => void>(() => { throw new Error("Route unavailable"); });
+    const target = { kind: "state" as const, status: "running" as const, scope: STATUS_SHORTCUT_SCOPE };
+    const input = { hostId: "host-a", entries: [], navigation: navigation(), onSearch: vi.fn(), onState };
+    expect(openHandOff({ ...input, key: handOffOpen("foreign-host", target) })).toMatchObject({ ok: false, reason: "stale" });
+    expect(onState).not.toHaveBeenCalled();
+    expect(openHandOff({ ...input, key: handOffOpen("host-a", target) })).toMatchObject({ ok: false, reason: "navigation", message: "Route unavailable" });
+    onState.mockImplementation(() => {});
+    expect(openHandOff({ ...input, key: handOffOpen("host-a", target) })).toEqual({ ok: true });
+  });
+});
 
 describe("openSessionById", () => {
   beforeEach(() => configureRecentStorage(null));

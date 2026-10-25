@@ -16,6 +16,8 @@ import { sessionState } from "./session-organization";
 import { SessionStateMarker } from "./session-state-marker";
 import { ageInWords } from "./session-time";
 import { useSessionDirectory } from "./use-session-directory";
+import { StartSwitchStatuses } from "./start-switch-statuses";
+import type { StateShortcut } from "./session-state-shortcuts";
 
 /** The Kontor screen param that opens this sheet, from the Command Center item. */
 export const SWITCH_SHEET = "switch";
@@ -97,6 +99,7 @@ type StartSwitchProps = {
   canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult;
   onOpen: (entry: DirectoryEntry) => void; onShowAll: (query: string) => void; onClose: () => void;
+  onShowState?: (shortcut: StateShortcut) => void;
   /** Inside the host's own popover or bottom sheet, which owns the title, dismissal and scrolling; Open Kontor joins the actions. */
   popover?: { readonly openKontor: () => void };
   /** The workspace or project the dialog was opened in; its desk becomes the default. */
@@ -108,7 +111,7 @@ type StartSwitchProps = {
  * and a search over every session, plus New session as a header action when the host allows it. Rows open only through
  * `onOpen`, so each surface keeps its own single open path and its refusals.
  */
-export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose, popover, initialScope }: StartSwitchProps) {
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onShowState, onClose, popover, initialScope }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">("switch");
   const creation = useRef({ hostId, open: false });
   const scope = creation.current;
@@ -141,6 +144,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       </View>
       <TextInput testID="kontor-switch-search" accessibilityLabel="Jump to any session" placeholder="Jump to any session…" autoFocus={!compact} value={query} onChangeText={setQuery}
         placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 12, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
+      {onShowState ? <StartSwitchStatuses directory={directory} hostStatus={hostStatus} colors={colors} onSelect={onShowState} /> : null}
     </View>;
   const muted = { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 } as const;
   let empty: string | null = null;
@@ -196,6 +200,7 @@ export function StartSwitchPopover({ host, theme, layout, workspaceId, close, op
   // Reads the shared directory without setting its Archived choice; Recent and search leave archived sessions out.
   const directory = useSessionDirectory({ hostId: host.id, hostStatus });
   const toast = useToast();
+  const stateOpened = useRef(false);
   /** Null once Kontor received the request and the popover closed; otherwise why it could not open. */
   const go = (key?: string): string | null => {
     try { openScreen(key ? { screenId, params: { target: key } } : { screenId }); }
@@ -203,11 +208,18 @@ export function StartSwitchPopover({ host, theme, layout, workspaceId, close, op
     close();
     return null;
   };
-  const handOff = (target: HandOffTarget) => go(handOffOpen(host.id, target));
+  const handOff = (target: HandOffTarget) => {
+    if (target.kind === "state" && stateOpened.current) return null;
+    if (target.kind === "state") stateOpened.current = true;
+    const failure = go(handOffOpen(host.id, target));
+    if (failure && target.kind === "state") stateOpened.current = false;
+    return failure;
+  };
   const report = (failure: string | null) => { if (failure) toast.error(failure); };
   const { header, body } = useStartSwitch({ compact: layout.compact, colors: theme.colors, hostId: host.id, hostStatus, directory: directory.state, canOpen: true,
     onOpen: (entry) => report(handOff({ kind: "session", agentId: entry.id })),
     onShowAll: (query) => report(handOff({ kind: "search", query })),
+    onShowState: (shortcut) => report(handOff({ kind: "state", ...shortcut })),
     onOpenCreated: (outcome) => {
       const failure = handOff({ kind: "created", outcome });
       return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };

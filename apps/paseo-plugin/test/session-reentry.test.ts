@@ -26,6 +26,7 @@ import { useSessionAvailability } from "../client/use-session-availability";
 import { forgetWorkspaceDirectories, useWorkspaceDirectory } from "../client/use-workspace-directory";
 import type { AgentDirectoryPage } from "../client/session-directory";
 import { sessionEntry } from "./session-fixtures";
+import { startSwitchCounts } from "../client/session-state-shortcuts";
 
 type Observer = {
   snapshot: (snapshot: unknown) => void;
@@ -82,6 +83,21 @@ beforeEach(async () => {
 afterEach(() => { unmount(); vi.useRealTimers(); });
 
 describe("returning to Kontor reuses the host's live session directory", () => {
+  it("derives repeated composer state counts from the retained snapshot with zero extra inventory requests or subscriptions", async () => {
+    const host = fakeHost("host-a", sessions(450));
+    kontor(); await settle();
+    const before = host.calls.length, subscriptions = host.subscribes.length;
+    for (let render = 0; render < 8; render++) {
+      const snapshot = kontor().state;
+      const counts = startSwitchCounts(snapshot, "Live");
+      expect(counts.running.text).toBe("0");
+      expect(counts.needs_input.text).toBe("0");
+      expect(counts.error.text).toBe("0");
+    }
+    expect(host.calls).toHaveLength(before);
+    expect(host.subscribes).toHaveLength(subscriptions);
+  });
+
   it("walks once on first entry with a one-row subscription bootstrap, then returns to live rows without a read", async () => {
     const host = fakeHost("host-a", sessions(450));
     kontor(); await settle();

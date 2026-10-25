@@ -61,6 +61,7 @@ vi.mock("../client/keyboard-shortcuts", async (original) => ({
 import { KontorScreen } from "../client/kontor-screen";
 import { DESTINATIONS, hostNavigation, navigate, NO_SCOPE, readRouteView, sessionScopeKey, type KontorRoute } from "../client/navigation-state";
 import { patchSessionView, readSessionView } from "../client/session-view-store";
+import { STATUS_SHORTCUTS, STATUS_SHORTCUT_SCOPE } from "../client/session-state-shortcuts";
 import { filterDirectoryEntries } from "../client/session-view";
 import type { BoardSessions } from "../client/board-sessions";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
@@ -937,6 +938,23 @@ describe("composer popover hand-off", () => {
   };
   let host = "";
   beforeEach(() => { withdrawHandOff(); host = `pop-${++sequence}`; });
+
+  it.each(STATUS_SHORTCUTS)("opens $status once in this host's ordinary all-project Sessions, clearing stale refinements only", ({ status }) => {
+    navigate(host, { tab: "Sessions", ...NO_SCOPE });
+    const scope = sessionScopeKey(host, hostNavigation(host).route);
+    patchSessionView(scope, { status: "recent", query: "old search", membership: "archived", includeArchived: true, streams: ["old"], assignment: "me",
+      layout: "flat", grouping: "role", sort: "title", sortDirection: "asc" });
+    const key = handOffOpen(host, { kind: "state", status, scope: STATUS_SHORTCUT_SCOPE });
+    const screen = arrive(host, key, { tab: "Board", projectId: "other-project", epicKey: "ASMA-1" });
+    expect(hostNavigation(host).route).toMatchObject({ tab: "Sessions", ...NO_SCOPE });
+    expect(readSessionView(scope)).toMatchObject({ status, query: "", membership: "sessions", includeArchived: false, streams: null, assignment: "any", work: "mine",
+      layout: "flat", grouping: "role", sort: "title", sortDirection: "asc" });
+    expect(screen.elements().find(node => node.type === SessionsScreen)?.props.viewScope).toBe(scope);
+    expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
+    screen.render(); screen.commit();
+    expect(readSessionView(scope).status).toBe(status);
+    expect(readRecent(host).record.visits).toEqual([]);
+  });
 
   it("opens the exact host and session ID once; a re-render, a remount, Back or a StrictMode rerun replays nothing", () => {
     const key = handOffOpen(host, { kind: "session", agentId: "native" });

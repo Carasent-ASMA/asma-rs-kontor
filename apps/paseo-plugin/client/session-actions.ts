@@ -3,6 +3,7 @@ import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
 import { recordVisit } from "./recent-sessions";
+import type { StateShortcut } from "./session-state-shortcuts";
 
 export type SessionNavigation = NonNullable<PluginScreenProps["navigation"]>;
 
@@ -19,6 +20,7 @@ export type OpenSessionResult =
 export type HandOffTarget =
   | { readonly kind: "session"; readonly agentId: string }
   | { readonly kind: "created"; readonly outcome: CreateOutcome }
+  | ({ readonly kind: "state" } & StateShortcut)
   | { readonly kind: "search"; readonly query: string };
 
 /**
@@ -61,6 +63,7 @@ export function openHandOff(input: {
   readonly entries: readonly DirectoryEntry[];
   readonly navigation: SessionNavigation | undefined;
   readonly onSearch: (query: string) => void;
+  readonly onState?: (shortcut: StateShortcut) => void;
 }): OpenSessionResult | null {
   if (!input.key) return null;
   const target = takeHandOff(input.hostId, input.key);
@@ -69,6 +72,12 @@ export function openHandOff(input: {
   }
   if (target.kind === "search") {
     input.onSearch(target.query);
+    return { ok: true };
+  }
+  if (target.kind === "state") {
+    if (!input.onState) return { ok: false, reason: "navigation", message: "This Kontor screen cannot open a session-state filter. Open Sessions and choose the filter again." };
+    try { input.onState(target); }
+    catch (error) { return { ok: false, reason: "navigation", message: error instanceof Error ? error.message : String(error) }; }
     return { ok: true };
   }
   if (target.kind === "session") {

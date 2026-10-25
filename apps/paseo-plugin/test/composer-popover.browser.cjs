@@ -23,6 +23,9 @@ const react = rootOf(renderer, 'react'), dom = rootOf(renderer, 'react-dom'), na
 assert.equal(renderer('react/package.json').version, '19.1.0');
 assert.equal(renderer('react-dom/package.json').version, '19.1.0');
 assert.equal(renderer('react-native-web/package.json').version, '0.21.4');
+const iconRoot = path.join(rootOf(renderer, 'lucide-react'), 'dist/esm/icons');
+const fixtureGlyphs = { Play: 'play', MessageCircleQuestion: 'message-circle-question', Ban: 'ban', CircleAlert: 'circle-alert' };
+const glyphImports = Object.entries(fixtureGlyphs).map(([name, file]) => `import ${name} from ${JSON.stringify(path.join(iconRoot, file + '.mjs'))};`).join('\n');
 const client = file => JSON.stringify(path.join(plugin, 'client', file));
 fs.writeFileSync(path.join(fixture, 'package.json'), '{"private":true,"type":"module"}\n');
 fs.writeFileSync(path.join(fixture, 'index.html'), '<html><meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/main.tsx"></script></html>');
@@ -30,12 +33,16 @@ fs.writeFileSync(path.join(fixture, 'native.ts'), 'export * from "react-native-w
 fs.writeFileSync(path.join(fixture, 'sdk-client.ts'), `
 export const useRpc = contract => input => window.fixture.rpc(contract.name, input);
 export const getPaseoClient = hostId => window.fixture.client(hostId);
-export const useHosts = () => [{ serverId: 'fixture-a', label: 'Fixture host', status: 'online' }];
+import {useSyncExternalStore} from 'react';
+let cache;
+export const useHosts = () => useSyncExternalStore(listener=>{window.fixture.hostListeners.add(listener);return()=>window.fixture.hostListeners.delete(listener)},()=>{const status=window.fixture.hostStatus;if(cache?.[0].status!==status)cache=[{serverId:'fixture-a',label:'Fixture host',status}];return cache});
 `);
 fs.writeFileSync(path.join(fixture, 'sdk-native.tsx'), `import React from 'react';
+${glyphImports}
+const icons={Play,MessageCircleQuestion,Ban,CircleAlert};
 export {TextInput,ScrollView} from 'react-native';
 export const useToast = () => ({ error: message => { window.fixture.toasts.push(message); }, show: () => {} });
-export const Icon = ({size=16,color}) => <span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;
+export const Icon = ({name,size=16,color}) => {const Glyph=icons[name];return Glyph?<Glyph aria-hidden="true" width={size} height={size} color={color}/>:<span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;};
 `);
 fs.writeFileSync(path.join(fixture, 'main.tsx'), `import React,{StrictMode,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client'; import {Pressable,ScrollView,Text,View} from 'react-native';
@@ -43,7 +50,11 @@ import {useToast} from '@getpaseo/plugin/client/react-native';
 import {StartSwitchPopover} from ${client('start-switch-sheet.tsx')};
 import {openHandOff} from ${client('session-actions.ts')};
 import {configureRecentStorage,readRecent,recordVisit} from ${client('recent-sessions.ts')};
-import {useSessionDirectory} from ${client('use-session-directory.ts')};
+import {useSessionDirectory,startHostDirectory} from ${client('use-session-directory.ts')};
+import {stateShortcutPatch} from ${client('session-state-shortcuts.ts')};
+import {readSessionView,patchSessionView} from ${client('session-view-store.ts')};
+import {filterDirectoryEntries} from ${client('session-view.ts')};
+import {providerBlockedView} from ${client('provider-blocked-filter.ts')};
 document.body.style.margin='0';
 const query=new URLSearchParams(location.search), dark=query.get('theme')==='dark', compact=innerWidth<700;
 const colors={surface0:dark?'#15171c':'#fff',surface1:dark?'#1f222a':'#f5f6f8',surface2:dark?'#2e333e':'#e6ebf2',foreground:dark?'#ecedf0':'#20242c',foregroundMuted:dark?'#a8adb7':'#5e6570',border:dark?'#414754':'#c7cdd7',accent:dark?'#9cbfff':'#245bba',accentForeground:dark?'#15171c':'#fff',statusSuccess:'#168047',statusWarning:'#a76b0a',statusDanger:'#b02222'};
@@ -52,16 +63,17 @@ const values=new Map(); configureRecentStorage({read:key=>values.get(key),write:
 const page=(id,title,archivedAt=null)=>({agent:{id,title,status:'idle',provider:'fixture',cwd:'/fixture',workspaceId:'wks-adam',model:null,labels:{},createdAt:'2026-10-22T09:00:00.000Z',updatedAt:'2026-10-22T10:00:00.000Z',archivedAt,pendingPermissions:[],requiresAttention:false,attentionReason:null,attentionTimestamp:null},project:null});
 // Two sessions share a title: only the exact ID may leave a row. 25 searchable batches exceed the 20 shown matches.
 const rows=[page('dup-1','Route review'),page('dup-2','Route review'),page('deploy-7','Deploy checklist'),...Array.from({length:25},(_,i)=>page('batch-'+String(i+1).padStart(2,'0'),'Batch '+String(i+1).padStart(2,'0'))),page('batch-archived','Batch archived','2026-10-22T11:00:00.000Z')];
-const list=async(options={})=>{const visible=rows.filter(row=>options.filter?.includeArchived===true||row.agent.archivedAt===null);
+Object.assign(rows[0].agent,{status:'running'});Object.assign(rows[1].agent,{attentionReason:'permission',requiresAttention:true});Object.assign(rows[2].agent,{attentionReason:'finished',requiresAttention:true});Object.assign(rows[3].agent,{status:'error'});Object.assign(rows[4].agent,{status:'running',attentionReason:'permission',requiresAttention:true});
+const list=async(options={})=>{window.fixture.inventoryCalls.push(options);const visible=rows.filter(row=>options.filter?.includeArchived===true||row.agent.archivedAt===null);
  if(options.subscribe){const limit=options.page?.limit??200,entries=visible.slice(0,limit);const snapshot={requestId:'fixture',subscriptionId:'sub-1',entries,pageInfo:{hasMore:visible.length>entries.length,nextCursor:visible.length>entries.length?String(entries.length):null,prevCursor:null}};
-  return {...snapshot,subscription:{subscriptionId:'sub-1',ready:Promise.resolve(snapshot),subscribe:observer=>{observer.snapshot();return()=>{};},release:async()=>{}}};}
+  return {...snapshot,subscription:{subscriptionId:'sub-1',ready:Promise.resolve(snapshot),subscribe:observer=>{window.fixture.observers.push(observer);observer.snapshot();return()=>{};},release:async()=>{}}};}
  const start=Number(options.page?.cursor??0),end=start+(options.page?.limit??200);
  return {requestId:'fixture',entries:visible.slice(start,end),pageInfo:{hasMore:end<visible.length,nextCursor:end<visible.length?String(end):null,prevCursor:null}};};
 const now=Date.now(); recordVisit(HOST,'dup-1',now-120000); recordVisit(HOST,'dup-2',now-60000);
 const catalog={enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:'project-adam',issues:[],jiraProblem:null,
  desks:[{projectId:'project-adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/project-adam',lead:{ADHOC:'wks-adhoc',LSA:'wks-lsa',TPM:'wks-tpm'}}],profile:null,
  providers:[{id:'active',label:'Active provider',status:'ready',available:true,note:null,persona:'supported',models:[{id:'first',label:'Active model',efforts:[],defaultEffort:null}],defaultModel:'first',modes:[],defaultMode:null}]};
-window.fixture={calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
+window.fixture={hostStatus:'online',hostListeners:new Set(),inventoryCalls:[],observers:[],stateFilters:[],draft:'unfinished chat draft',pendingQuestion:'pending-permission',calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
  client:hostId=>{if(hostId!==HOST)throw new Error('Unexpected host '+hostId);return {agents:{list}};},
  recent:()=>readRecent(HOST).record.visits.map(visit=>visit.id),
  rpc:async(name,input)=>{window.fixture.calls.push({name,input});
@@ -69,12 +81,15 @@ window.fixture={calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],cl
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   throw new Error('Unexpected RPC in isolated fixture: '+name);
  }};
+window.fixture.setHost=status=>{window.fixture.hostStatus=status;for(const listener of window.fixture.hostListeners)listener()};
+startHostDirectory(HOST,'online');
 const navigation={openAgent:input=>{window.fixture.opens.push(input);},openWorkspace:()=>{throw new Error('Unexpected workspace navigation');}};
 /** Stand-in for the Kontor screen's hand-off effect: the same call, keyed on the same param. */
-function KontorStandIn({params}){const directory=useSessionDirectory({hostId:HOST,hostStatus:'online'});const toast=useToast();
- useEffect(()=>{const result=openHandOff({hostId:HOST,key:params.target,entries:directory.state.entries,navigation,onSearch:text=>window.fixture.searches.push(text)});
+function KontorStandIn({params}){const directory=useSessionDirectory({hostId:HOST,hostStatus:'online'});const toast=useToast();const [view,setView]=useState(()=>readSessionView(HOST));
+ useEffect(()=>{const result=openHandOff({hostId:HOST,key:params.target,entries:directory.state.entries,navigation,onSearch:text=>window.fixture.searches.push(text),onState:shortcut=>{const next=patchSessionView(HOST,stateShortcutPatch(readSessionView(HOST),shortcut));setView(next);window.fixture.stateFilters.push(shortcut)}});
   window.fixture.results.push(result);if(result&&!result.ok&&result.reason!=='stale')toast.error(result.message);},[params.target]);
- return <Text testID="fixture-screen" style={{color:colors.foreground,margin:16}}>Kontor {params.target?'with a request':'without a request'}</Text>;}
+ const matching=view.status==='provider_blocked'?providerBlockedView({state:directory.state,includeArchived:false,candidates:directory.state.entries,reads:new Map(),freshness:'Live',blocked:null}).sessions:filterDirectoryEntries(directory.state.entries,view);
+ return <View><Text testID="fixture-status-filter" style={{color:colors.foreground}}>{view.status}</Text><Text testID="fixture-status-ids" style={{color:colors.foreground}}>{matching.map(entry=>entry.id).join(',')}</Text><Text testID="fixture-screen" style={{color:colors.foreground,margin:16}}>Kontor {params.target?'with a request':'without a request'}</Text></View>;}
 function App(){const pill=useRef(null);const [open,setOpen]=useState(false),[route,setRoute]=useState(null),[mount,setMount]=useState(0);
  const dismiss=()=>{setOpen(false);setTimeout(()=>pill.current?.focus?.(),0);};
  window.fixture.show=index=>setRoute(window.fixture.screens[index]);window.fixture.remount=()=>setMount(value=>value+1);window.fixture.release=dismiss;
@@ -100,10 +115,11 @@ createRoot(document.getElementById('root')).render(<App/>);
 const report = { cases: [], nativeDevice: 'unverified', hostChrome: 'synthetic popover and bottom sheet', screen: 'stand-in running the real openHandOff' };
 let server, browser;
 async function pageFor(width, theme = 'light') {
-  const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: width < 700, isMobile: width < 700 });
+  const context = await browser.newContext({ viewport: { width, height: 844 }, reducedMotion: width === 320 ? 'reduce' : 'no-preference', hasTouch: width < 700, isMobile: width < 700 });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
-  await page.goto(server.resolvedUrls.local[0] + '?theme=' + theme);
+  await page.goto(server.resolvedUrls.local[0] + '?theme=' + theme, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(()=>window.fixture?.inventoryCalls.length>=2);
   await openPopover(page);
   return { page, context };
 }
@@ -120,6 +136,7 @@ function assertKeyOnly(screen, forbidden) {
 }
 const within = (box, frame) => box.x >= frame.x - 0.5 && box.x + box.width <= frame.x + frame.width + 0.5;
 async function run(name, test) {
+  if(process.env.CASE_FILTER&&(!new RegExp(process.env.CASE_FILTER).test(name)||report.cases.some(test=>test.status==='FAIL')))return;
   try { const extra = await test(); report.cases.push({ name, status: 'PASS', ...(extra ?? {}) }); }
   catch (error) { report.cases.push({ name, status: 'FAIL', error: String(error.stack) }); }
 }
@@ -138,6 +155,30 @@ async function run(name, test) {
   });
   await server.listen(); browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
+    for (const width of [320,390,1440]) for (const theme of ['light','dark']) await run(`statuses-${width}-${theme}`,async()=>{
+      const {page,context}=await pageFor(width,theme);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+      try{
+        await expect(page.getByTestId('kontor-switch-status-running')).toHaveText('2');
+        const scope=await page.getByTestId('kontor-switch-status-scope').innerText();assert.equal(scope,'This host · all projects · nonarchived');
+        const expected={running:'2',needs_input:'2',provider_blocked:'…',error:'1'},boxes=[];
+        for(const [status,count] of Object.entries(expected)){const control=page.getByTestId('kontor-switch-status-'+status);assert.equal(await control.innerText(),count);assert.match(await control.getAttribute('aria-label'),/This host, all projects, nonarchived/);const box=await control.boundingBox();assert.ok(box.width>=44&&box.height>=44);boxes.push(box);}
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+        await page.getByRole('button',{name:'New session',exact:true}).waitFor();await page.getByRole('button',{name:'Open Kontor',exact:true}).waitFor();
+        const before=await page.evaluate(()=>({calls:window.fixture.inventoryCalls.length,draft:window.fixture.draft,pending:window.fixture.pendingQuestion}));
+        await page.screenshot({path:path.join(output,`statuses-${width}-${theme}.png`)});
+        await page.evaluate(()=>window.fixture.release());await page.getByTestId('host-popover').waitFor({state:'detached'});await openPopover(page);assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),before.calls,'opening strip must add zero inventory requests');
+        await page.evaluate(()=>window.fixture.setHost('offline'));await page.waitForFunction(()=>document.querySelector('[data-testid=kontor-switch-status-running]')?.textContent==='…');
+        assert.match(await page.getByTestId('kontor-switch-status-read').innerText(),/offline/i);
+        await page.evaluate(()=>window.fixture.setHost('online'));await page.waitForFunction(()=>document.querySelector('[data-testid=kontor-switch-status-running]')?.textContent==='2');
+        const afterReconnect=await page.evaluate(()=>window.fixture.inventoryCalls.length);await page.evaluate(()=>window.fixture.release());await page.getByTestId('host-popover').waitFor({state:'detached'});await openPopover(page);assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),afterReconnect);
+        const press=page.getByTestId('kontor-switch-status-needs_input');await press.focus();assert.equal(await press.evaluate(node=>document.activeElement===node),true);await press.press('Enter');
+        await page.waitForFunction(()=>window.fixture.stateFilters.length===1);await expect(page.getByTestId('fixture-status-filter')).toHaveText('needs_input');
+        assert.deepEqual((await page.getByTestId('fixture-status-ids').innerText()).split(',').sort(),['batch-02','dup-2']);
+        const result=await page.evaluate(()=>({screens:window.fixture.screens.length,closes:window.fixture.closes,draft:window.fixture.draft,pending:window.fixture.pendingQuestion,opens:window.fixture.opens,rpcs:window.fixture.calls.map(call=>call.name)}));
+        assert.equal(result.screens,1);assert.equal(result.closes,1);assert.equal(result.draft,before.draft);assert.equal(result.pending,before.pending);assert.deepEqual(result.opens,[]);assert.ok(result.rpcs.every(name=>name==='sessions.create-options'));assert.deepEqual(errors,[]);
+        return {boxes,scope,expected,reopenDismissal:'Synthetic host close callback; no Escape-from-textbox claim',inventoryBefore:before.calls,inventoryAfterReconnect:afterReconnect,result,errors};
+      }finally{await context.close();}
+    });
     for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) await run(`${width}-${theme}-layout`, async () => {
       const { page, context } = await pageFor(width, theme);
       try {

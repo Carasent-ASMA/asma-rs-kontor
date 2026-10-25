@@ -37,6 +37,7 @@ import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
 import { StartSwitchSheet, SWITCH_SHEET } from "./start-switch-sheet";
+import { stateShortcutPatch, type StateShortcut } from "./session-state-shortcuts";
 import { configureRecentStorage } from "./recent-sessions";
 import { deviceProfileStorage } from "./viewer-profile";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
@@ -129,6 +130,11 @@ function HostScreen(props: PluginScreenProps) {
     // Sessions keeps a local view snapshot, so the same route must read the replacement too.
     setSessionsRevision((revision) => revision + 1);
   });
+  const showState = (shortcut: StateShortcut) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
+    const scope = sessionScopeKey(host.id, next);
+    patchSessionView(scope, stateShortcutPatch(readSessionView(scope), shortcut));
+    setSessionsRevision((revision) => revision + 1);
+  });
   useEffect(() => {
     if (props.params.tab === "Plan") visit({ tab: "Plan", projectId: null, epicKey: null, sourceId: props.params.sourceId ?? null, originAgentId: props.params.agentId ?? null });
   }, [props.params.tab, props.params.sourceId, props.params.agentId, visit]);
@@ -139,7 +145,7 @@ function HostScreen(props: PluginScreenProps) {
   // A composer popover hands its open to this screen by a one-shot key. A used, replaced or foreign key opens
   // nothing and says nothing: this screen is already where to choose again.
   useEffect(() => {
-    const result = openHandOff({ hostId: host.id, key: props.params.target, entries: directory.state.entries, navigation: props.navigation, onSearch: showAll });
+    const result = openHandOff({ hostId: host.id, key: props.params.target, entries: directory.state.entries, navigation: props.navigation, onSearch: showAll, onState: showState });
     if (result && !result.ok && result.reason !== "stale") toast.error(result.message);
   }, [props.params.target]);
   useEffect(() => {
@@ -305,7 +311,7 @@ function HostScreen(props: PluginScreenProps) {
   </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state} initialScope={switchScope}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
     onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
-    onShowAll={showAll} /> : null;
+    onShowAll={showAll} onShowState={(shortcut) => { showState(shortcut); setMenu(null); }} /> : null;
   let page;
   if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
