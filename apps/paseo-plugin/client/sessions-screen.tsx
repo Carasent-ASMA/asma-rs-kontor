@@ -1,4 +1,5 @@
 import { sessionStateCounts, type SessionStateCount } from "./session-state-counts";
+import { providerBlockedView, type ProviderRefusalReads } from "./provider-blocked-filter";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { SessionLayoutControl } from "./session-layout-control";
 import { useHosts } from "@getpaseo/plugin/client";
@@ -202,6 +203,9 @@ export const OPTIONS_SPACE_SHARE = 0.7;
 export const OPTIONS_MIN_HEIGHT = 3 * FILTERS_TOUCH_TARGET;
 /** Wide screen padding above the toolbar and below the list. */
 const WIDE_SCREEN_PADDING = 16;
+/** No list-wide refusal source is admitted yet (ASMA-8648: host list field or bounded native-error reads), so every
+ *  native error shows as not checked. Replace with that source; never with status, attention, age or titles. */
+const NO_REFUSAL_READS: ProviderRefusalReads = new Map();
 /**
  * Below this compact screen height, Show in tree folds the slim toolbar and the filter summary into
  * its Back row: at 320pt they would otherwise fill the screen and hide the session it shows.
@@ -2128,13 +2132,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
     [scoped, eligible, linked, tokens, mappings]);
+  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
+  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
+  const blockedView = useMemo(() => providerBlockedView({ candidates, reads: NO_REFUSAL_READS, state, includeArchived, freshness: countFreshness,
+    blocked: assignmentBlocked ? assignmentPart : null, now: clock.now }), [candidates, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, clock.now]);
   const results = useMemo(() => {
-    const matching = candidates.filter((entry) => matchesStatus(entry, view.status, favorites));
+    const matching = view.status === "provider_blocked" ? [...blockedView.sessions] : candidates.filter((entry) => matchesStatus(entry, view.status, favorites));
     const compare = sessionComparator(sort, sortDirection);
     if (compare) return matching.sort(compare);
     const ids = new Set(matching.map((entry) => entry.id));
     return visibleSessions(flatTree).filter((entry) => ids.has(entry.id));
-  }, [candidates, view.status, favorites, sort, sortDirection, flatTree]);
+  }, [candidates, blockedView, view.status, favorites, sort, sortDirection, flatTree]);
   const matchingIds = useMemo(() => new Set(results.map((entry) => entry.id)), [results]);
   const sessionNarrowing = tokens.length > 0 || !!task || (view.status !== "all" && view.status !== "current")
     || streams !== null || view.epic != null || assignment !== "any";
@@ -2155,13 +2163,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
     return counts;
   }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
-  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
-  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
   // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
   const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
   const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, refined, state, includeArchived,
-    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null }),
-    [scoped, candidates, favorites, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart]);
+    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count }),
+    [scoped, candidates, favorites, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
@@ -3031,6 +3037,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     ? `No session in this view is linked to ${task.label}.`
     : onlyScope
     ? `No sessions in ${scopeParts.join(", ")} in this view.`
+    : view.status === "provider_blocked" && blockedView.empty
+    ? blockedView.empty
     : clearable
       ? "No sessions match the current search and filters."
       : state.status === "error"
@@ -3124,7 +3132,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       ))}
     </View>
   );
-  const listHeader = <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine}</>;
+  // Unchecked error sessions are counted, not listed as blocked; Error is the one way to see them.
+  const providerNotice = view.status === "provider_blocked" && blockedView.notice ? <View testID="sessions-provider-notice" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
+    <Text style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{blockedView.notice}</Text>
+    <TextAction testID="sessions-provider-show-error" label="Show Error" accessibilityLabel="Show all error sessions" colors={colors} compact={compact} onPress={() => updateFilter({ status: "error" })} />
+  </View> : null;
+  const listHeader = <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : peek ? null : <>{workLine}{providerNotice}</>}</>;
 
   return (
     <View
