@@ -23,6 +23,9 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 # crate only assembles its input and reports its answer.
 kontor-scheduler = { path = "../kontor-scheduler", version = "=0.2.1" }
 kontor-store = { path = "../kontor-store", version = "=0.2.1" }
+# The work-catalog reads are the observational module's frozen contract. The API
+# holds the handle the daemon composed and never opens `catalog.db` itself.
+kontor-catalog = { path = "../kontor-catalog", version = "=0.2.1" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
