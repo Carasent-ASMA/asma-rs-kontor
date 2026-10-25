@@ -49,8 +49,8 @@ failure handling and verification.
 8. Place the epic in Paseo with the
    [native placement reference](../epic-orchestration/references/paseo-direct-native-placement.md):
    the ESW project and one TSW per child. A new epic gets no `ECP` workspace;
-   its Adam tab lives in the durable `DESK • ADAM` project. Read back each
-   native id, kind and `cwd`.
+   its epic lead is created in the `LSA` workspace of the durable `DESK • ADAM`
+   project. Read back each native id, kind and `cwd`.
 9. Hand off. Name the epic key, task keys, dependency frontier, blockers,
    selected surface and verified native names. With `bdd`, also name the
    scenario-owning tasks.
