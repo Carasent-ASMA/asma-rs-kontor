@@ -72299,3 +72299,384 @@ async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona(
         "the retired launched occupancy must retain its frozen persona"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASMA-8641 — an explicit operator takeover through the same route correction.
+//
+// A live idle or failed seat on its unchanged route is neither a route change
+// nor stale, so nothing replaced it. The takeover flag asks for that
+// replacement explicitly, through the same preview, claim, retirement, launch
+// and committed readback as every other Core Team succession.
+// ---------------------------------------------------------------------------
+
+/// The refusal a takeover answers for a predecessor it may not replace.
+const TAKEOVER_REFUSAL: &str = "a Core Team takeover requires its exact predecessor idle or failed, with no pending permission and no other live native on the seat";
+
+/// Preview one explicit takeover of the seat on its unchanged route, answering
+/// with the preview and the body an apply needs.
+async fn previewed_takeover(
+    world: &World,
+    project: &str,
+    epic: &str,
+    binding: &str,
+    native: &ExternalId,
+    generation: u64,
+) -> (Answer, serde_json::Value) {
+    let mut body = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+        "takeover": true,
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    if preview.status == 200 {
+        body["preview_hash"] = preview.json()["preview_hash"].clone();
+    }
+    (preview, body)
+}
+
+/// How many retirements and launches the fake recorded for a seat, its
+/// materialization included.
+fn hosted_effects(world: &World, binding_id: SeatBindingId) -> (usize, usize) {
+    let calls = world.fake.calls();
+    let retired = calls
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+        .count();
+    let launched = calls
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::LaunchHostedSeat(id) if *id == binding_id))
+        .count();
+    (retired, launched)
+}
+
+/// An idle or failed seat on its unchanged route is replaced only when the
+/// operator asks. The ordinary preview still replaces nothing; the takeover
+/// pins its own hash, retires once and launches one distinct successor under
+/// that successor's own generation-scoped grant. A second fresh key converges.
+#[tokio::test]
+async fn an_operator_takeover_replaces_an_idle_or_failed_seat_on_its_unchanged_route() {
+    use kontor_core::durable_seat::DurableSeatActivity;
+    for (case, activity) in [
+        ("idle", DurableSeatActivity::Idle),
+        ("failed", DurableSeatActivity::Errored),
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8641-takeover-{case}"),
+            &format!("asma-8641-takeover-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        world.fake.set_hosted_seat_activity(&native, activity);
+
+        let ordinary = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+            &serde_json::json!({
+                "expected_revision": 1,
+                "seat_binding_id": binding,
+                "expected_native_id": native,
+                "expected_generation": generation,
+                "desired_model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                },
+            }),
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert_eq!(ordinary.status, 200, "{case}: {}", ordinary.body);
+        assert_eq!(
+            ordinary.json()["would_replace_native"],
+            false,
+            "{case}: an ordinary preview of a live seat on its own route replaces nothing"
+        );
+
+        let (preview, body) =
+            previewed_takeover(world, project, epic, &binding, &native, generation).await;
+        assert_eq!(preview.status, 200, "{case}: {}", preview.body);
+        assert_eq!(preview.json()["would_replace_native"], true, "{case}");
+        assert_ne!(
+            preview.json()["preview_hash"],
+            ordinary.json()["preview_hash"],
+            "{case}: the takeover is pinned in its preview"
+        );
+
+        let minted_before = world.fake.minted_natives();
+        let (retired, launched) = hosted_effects(world, binding_id);
+        let applied = apply_succession(
+            world,
+            project,
+            epic,
+            &body,
+            &format!("asma-8641-takeover-{case}"),
+        )
+        .await;
+        assert_eq!(applied.status, 200, "{case}: {}", applied.body);
+        let outcome = applied.json();
+        let successor = outcome["successor_native_id"]
+            .as_str()
+            .expect("a successor")
+            .to_owned();
+        assert_ne!(
+            successor,
+            native.as_str(),
+            "{case}: the predecessor was recovered as its own successor"
+        );
+        assert_eq!(outcome["receipt"]["applied"], "updated", "{case}");
+        assert_eq!(
+            outcome["readback"]["predecessor"]["native_id"],
+            native.as_str()
+        );
+        assert_eq!(
+            outcome["readback"]["successor"]["native_id"],
+            successor.as_str()
+        );
+        assert_eq!(outcome["readback"]["successor"]["occupancy_generation"], 2);
+        assert_eq!(
+            outcome["readback"]["grant_subject"]["generation"], 2,
+            "{case}: the successor derives its own generation's grant"
+        );
+        assert_eq!(world.fake.minted_natives(), minted_before + 1, "{case}");
+        let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+        assert_eq!(active, successor, "{case}");
+        assert_eq!(history, vec![native.as_str().to_owned()], "{case}");
+        assert_eq!(occupancy, 2, "{case}");
+
+        let again = apply_succession(
+            world,
+            project,
+            epic,
+            &body,
+            &format!("asma-8641-takeover-{case}-again"),
+        )
+        .await;
+        assert_eq!(again.status, 200, "{case}: {}", again.body);
+        assert_eq!(again.json()["successor_native_id"], successor.as_str());
+        assert_eq!(again.json()["receipt"]["applied"], "unchanged", "{case}");
+        assert_eq!(world.fake.minted_natives(), minted_before + 1, "{case}");
+        assert_eq!(
+            hosted_effects(world, binding_id),
+            (retired + 1, launched + 1),
+            "{case}"
+        );
+    }
+}
+
+/// A takeover replaces only an idle or failed predecessor that alone carries
+/// the seat. Anything else refuses at the preview, and again at the apply's
+/// re-plan of a preview taken while it qualified, before the claim: no
+/// retirement, no launch, no ledger row.
+#[tokio::test]
+async fn an_operator_takeover_refuses_a_busy_or_contradicted_seat_before_its_claim() {
+    use kontor_core::durable_seat::{DurableSeatActivity, DurableSeatCarrier};
+    for case in [
+        "working",
+        "awaiting-permission",
+        "unknown",
+        "second-live-native",
+        "archived-and-live",
+        "census-omits-predecessor",
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8641-refuse-{case}"),
+            &format!("asma-8641-refuse-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        let (qualified, body) =
+            previewed_takeover(world, project, epic, &binding, &native, generation).await;
+        assert_eq!(qualified.status, 200, "{case}: {}", qualified.body);
+
+        match case {
+            "working" => world
+                .fake
+                .set_hosted_seat_activity(&native, DurableSeatActivity::Working),
+            "awaiting-permission" => world
+                .fake
+                .set_hosted_seat_activity(&native, DurableSeatActivity::AwaitingPermission),
+            "unknown" => world
+                .fake
+                .set_hosted_seat_activity(&native, DurableSeatActivity::Unknown),
+            "second-live-native" => world.fake.add_hosted_seat_carrier(
+                binding_id,
+                DurableSeatCarrier {
+                    native_id: ExternalId::parse("native-outside-kontor").expect("an id"),
+                    archived: false,
+                    activity: DurableSeatActivity::Idle,
+                },
+            ),
+            // Idle, so only its archived reading can refuse it.
+            "archived-and-live" => world.fake.add_hosted_seat_carrier(
+                binding_id,
+                DurableSeatCarrier {
+                    native_id: native.clone(),
+                    archived: true,
+                    activity: DurableSeatActivity::Idle,
+                },
+            ),
+            _ => world.fake.omit_from_hosted_census(&native),
+        }
+        let (refused_preview, _) =
+            previewed_takeover(world, project, epic, &binding, &native, generation).await;
+        assert_eq!(
+            refused_preview.status, 409,
+            "{case}: {}",
+            refused_preview.body
+        );
+        assert_eq!(refused_preview.json()["action"], TAKEOVER_REFUSAL, "{case}");
+
+        let minted_before = world.fake.minted_natives();
+        let effects_before = hosted_effects(world, binding_id);
+        let key = format!("asma-8641-refuse-{case}");
+        let refused = apply_succession(world, project, epic, &body, &key).await;
+        assert_eq!(refused.status, 409, "{case}: {}", refused.body);
+        assert_eq!(refused.json()["action"], TAKEOVER_REFUSAL, "{case}");
+        assert_eq!(hosted_effects(world, binding_id), effects_before, "{case}");
+        assert_eq!(world.fake.minted_natives(), minted_before, "{case}");
+        assert!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store
+                    .get_core_team_route_succession(&IdempotencyKey::parse(&key).expect("a key")))
+                .expect("the ledger reads")
+                .is_none(),
+            "{case}: the refused takeover took a claim"
+        );
+        let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+        assert_eq!(active, native.as_str(), "{case}");
+        assert!(history.is_empty(), "{case}");
+        assert_eq!(occupancy, 1, "{case}");
+    }
+}
+
+/// A takeover that lost its retirement acknowledgement resumes under the same
+/// preview. The predecessor it archived is no longer live when the replay
+/// re-plans, and the takeover pin keeps that from moving the hash. Meanwhile a
+/// fresh key refuses at the claim, having retired and launched nothing.
+#[tokio::test]
+async fn a_takeover_that_lost_its_retirement_acknowledgement_resumes_under_its_own_preview() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8641-retire-ack", "asma-8641-retire-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8641-retire-ack").expect("a key");
+    let (preview, body) =
+        previewed_takeover(world, project, epic, &binding, &native, generation).await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+
+    let minted_before = world.fake.minted_natives();
+    let (retired, launched) = hosted_effects(world, binding_id);
+    world.fake.lose_next_hosted_retire_ack(binding_id);
+    let lost = apply_succession(world, project, epic, &body, key.as_str()).await;
+    assert_ne!(lost.status, 200, "{}", lost.body);
+    assert_eq!(hosted_effects(world, binding_id), (retired + 1, launched));
+    assert_eq!(world.fake.minted_natives(), minted_before);
+    let claimed = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the claim survived the loss");
+    assert!(claimed.route_committed_at.is_none());
+
+    let intruder =
+        apply_succession(world, project, epic, &body, "asma-8641-retire-ack-other").await;
+    assert_ne!(intruder.status, 200, "{}", intruder.body);
+    assert_eq!(hosted_effects(world, binding_id), (retired + 1, launched));
+    assert_eq!(world.fake.minted_natives(), minted_before);
+
+    let resumed = apply_succession(world, project, epic, &body, key.as_str()).await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(world.fake.minted_natives(), minted_before + 1);
+    assert_eq!(
+        hosted_effects(world, binding_id),
+        (retired + 1, launched + 1)
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        resumed.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete());
+        assert!(settled.receipt_id.is_some());
+    });
+}
+
+/// On an unchanged route the predecessor wears the successor's launch labels.
+/// Reopened after its retirement, the launch recovers it as its own successor;
+/// the takeover refuses that before the route commit and leaves the native, the
+/// claim and the seat as they are.
+#[tokio::test]
+async fn a_takeover_never_commits_its_reopened_predecessor_as_the_successor() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8641-reopened", "asma-8641-reopened-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8641-reopened").expect("a key");
+    let (preview, body) =
+        previewed_takeover(world, project, epic, &binding, &native, generation).await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+
+    let minted_before = world.fake.minted_natives();
+    let pause = world.fake.pause_next_hosted_launch();
+    let apply = apply_succession(world, project, epic, &body, key.as_str());
+    let reopen = async {
+        pause.entered().await;
+        world.fake.reopen_hosted_seat(&native);
+        pause.release();
+    };
+    let (refused, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(apply, reopen)
+    })
+    .await
+    .expect("the takeover settles");
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(
+        refused.json()["action"],
+        "the launch answered with the predecessor it was to replace"
+    );
+    assert_eq!(world.fake.minted_natives(), minted_before);
+    let claimed = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the claim stays with its owner");
+    assert!(claimed.route_committed_at.is_none());
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, native.as_str());
+    assert!(history.is_empty());
+    assert_eq!(occupancy, 1);
+}

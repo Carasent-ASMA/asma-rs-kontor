@@ -18606,6 +18606,10 @@
           "seat_binding_id": {
             "type": "string",
             "description": "Logical SeatBinding that must be preserved."
+          },
+          "takeover": {
+            "type": "boolean",
+            "description": "The takeover the preview was asked for."
           }
         },
         "additionalProperties": false
@@ -18825,7 +18829,7 @@
       },
       "CoreTeamRoutePreviewRequest": {
         "type": "object",
-        "description": "Exact in-place route correction or stale-native recovery for one persistent Core Team seat.",
+        "description": "Exact in-place route correction, stale-native recovery or operator takeover for one\npersistent Core Team seat.",
         "required": [
           "expected_revision",
           "seat_binding_id",
@@ -18857,6 +18861,10 @@
           "seat_binding_id": {
             "type": "string",
             "description": "Logical SeatBinding that must be preserved."
+          },
+          "takeover": {
+            "type": "boolean",
+            "description": "Explicit operator takeover: replace the native even when it is live\nand its route is unchanged. Only an idle or failed predecessor with no\npending permission and no other live native on the seat qualifies."
           }
         },
         "additionalProperties": false

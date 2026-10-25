@@ -6454,6 +6454,8 @@ export interface components {
             preview_hash: string;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+            /** @description The takeover the preview was asked for. */
+            takeover?: boolean;
         };
         /** @description Which trailing effects of a committed succession have landed. */
         CoreTeamRouteEffectsDto: {
@@ -6559,7 +6561,10 @@ export interface components {
             /** @description Whether a native archive/launch is required. */
             would_replace_native: boolean;
         };
-        /** @description Exact in-place route correction or stale-native recovery for one persistent Core Team seat. */
+        /**
+         * @description Exact in-place route correction, stale-native recovery or operator takeover for one
+         *     persistent Core Team seat.
+         */
         CoreTeamRoutePreviewRequest: {
             /** @description Provider/model/effort that should fill the same logical seat afterwards. */
             desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
@@ -6577,6 +6582,12 @@ export interface components {
             expected_revision: number;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+            /**
+             * @description Explicit operator takeover: replace the native even when it is live
+             *     and its route is unchanged. Only an idle or failed predecessor with no
+             *     pending permission and no other live native on the seat qualifies.
+             */
+            takeover?: boolean;
         };
         /**
          * @description The complete durable evidence one Core Team succession produced.

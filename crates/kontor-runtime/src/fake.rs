@@ -920,6 +920,9 @@ struct FakeState {
     /// The error every hosted-seat census answers with. Sticky, like the
     /// inspection rule: a reconciliation reads the census more than once.
     hosted_census_refusal: Option<RuntimeError>,
+    /// Natives a census leaves out although this fake holds them: a census
+    /// that contradicts the exact read.
+    hosted_census_omitted: BTreeSet<ExternalId>,
     /// The predecessors the latest launch of each binding named as fenced.
     hosted_launch_fences: BTreeMap<SeatBindingId, Vec<ExternalId>>,
     /// Consultation seats keyed by their durable SeatBinding identity.
@@ -1640,6 +1643,7 @@ impl ScriptedFakeRuntime {
                 hosted_activity: BTreeMap::new(),
                 extra_hosted_carriers: BTreeMap::new(),
                 hosted_census_refusal: None,
+                hosted_census_omitted: BTreeSet::new(),
                 hosted_launch_fences: BTreeMap::new(),
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
@@ -2597,6 +2601,12 @@ impl ScriptedFakeRuntime {
         self.lock().hosted_census_refusal = None;
     }
 
+    /// Leave one native out of every hosted-seat census while exact reads
+    /// still find it.
+    pub fn omit_from_hosted_census(&self, native_id: &ExternalId) {
+        self.lock().hosted_census_omitted.insert(native_id.clone());
+    }
+
     /// The predecessors the latest launch of this binding named as fenced.
     #[must_use]
     pub fn hosted_launch_fence(&self, seat_binding_id: SeatBindingId) -> Option<Vec<ExternalId>> {
@@ -2731,6 +2741,23 @@ impl ScriptedFakeRuntime {
             state.hosted_seats.remove(&binding);
             state.archived_hosted_seats.insert(binding, seat);
             state.archived_seats.insert(native_id.clone());
+        }
+    }
+
+    /// Reproduce an archived hosted native reopened outside Kontor: the
+    /// inverse of [`Self::archive_hosted_seat`].
+    pub fn reopen_hosted_seat(&self, native_id: &ExternalId) {
+        let mut state = self.lock();
+        let found = state
+            .archived_hosted_seats
+            .iter()
+            .find_map(|(binding, seat)| {
+                (&seat.identity.native_id == native_id).then_some((*binding, seat.clone()))
+            });
+        if let Some((binding, seat)) = found {
+            state.archived_hosted_seats.remove(&binding);
+            state.hosted_seats.insert(binding, seat);
+            state.archived_seats.remove(native_id);
         }
     }
 
@@ -4725,6 +4752,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         if let Some(extra) = state.extra_hosted_carriers.get(&request.seat_binding_id) {
             carriers.extend(extra.iter().cloned());
         }
+        carriers.retain(|carrier| !state.hosted_census_omitted.contains(&carrier.native_id));
         Ok(HostedSeatCensus {
             carriers,
             observed_at: request.requested_at,

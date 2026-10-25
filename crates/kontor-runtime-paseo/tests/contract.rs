@@ -11041,12 +11041,12 @@ async fn a_sibling_workspace_title_does_not_block_an_exact_hosted_seat_claim() {
     assert_eq!(plane.daemon.count("agent archive"), 0);
 }
 
-/// An admin-authorized Core Team route correction archives the exact idle
-/// native predecessor and proves the archive by the same id. A replay observes
-/// the archived stamp and emits no second native effect.
+/// An admin-authorized Core Team route correction archives the exact idle,
+/// failed or closed native predecessor and proves the archive by the same id. A
+/// replay observes the archived stamp and emits no second native effect.
 #[tokio::test]
 async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved() {
-    for status in ["idle", "error"] {
+    for status in ["idle", "error", "closed"] {
         let seat_binding_id = SeatBindingId::generate();
         let labels = serde_json::json!({
             "kontor.seat_binding_id": seat_binding_id.to_string(),
@@ -11166,6 +11166,7 @@ async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retireme
     for case in [
         "running",
         "error-with-permission",
+        "closed-with-permission",
         "workspace",
         "cwd",
         "provider-conversation",
@@ -11194,8 +11195,9 @@ async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retireme
         };
         match case {
             "running" => before["agent"]["status"] = serde_json::json!("running"),
-            "error-with-permission" => {
-                before["agent"]["status"] = serde_json::json!("error");
+            "error-with-permission" | "closed-with-permission" => {
+                before["agent"]["status"] =
+                    serde_json::json!(case.trim_end_matches("-with-permission"));
                 before["agent"]["pendingPermissions"] =
                     v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone();
             }
