@@ -53,6 +53,9 @@ describe("takeover ownership", () => {
       .toEqual({ adapter: "direct", basis: "orchestrated", owner: "owner-1", createRequest: null });
     const native = { labels: { orchestration: "paseo-direct" }, parentAgentId: "owner-2" };
     expect(takeoverAdapter(native)).toMatchObject({ basis: "orchestrated", owner: "owner-2" });
+    // A takeover successor of an orchestrated seat keeps its owner and names its own creation request.
+    expect(takeoverAdapter({ labels: { orchestration: "paseo-direct", "paseo.parent-agent-id": "owner-1", "create.request": REQUEST } }))
+      .toEqual({ adapter: "direct", basis: "orchestrated", owner: "owner-1", createRequest: REQUEST });
     expect(takeoverAdapter({ labels: { "kontor.seat_binding_id": "seat-1", "kontor.worktree": "/w" } })).toEqual({ adapter: "governed", seat: "seat-1" });
   });
 
@@ -63,7 +66,7 @@ describe("takeover ownership", () => {
       { "kontor.agent-run": "run-1", "create.request": REQUEST },
       { orchestration: "paseo-direct" },
       { orchestration: "kontor" },
-      { orchestration: "paseo-direct", "paseo.parent-agent-id": "owner-1", "create.request": REQUEST },
+      { orchestration: "paseo-direct", "paseo.parent-agent-id": "owner-1", "create.request": "not-a-request" },
       { "create.request": "not-a-request" },
     ]) expect(takeoverAdapter({ labels }).adapter, JSON.stringify(labels)).toBe("refused");
   });

@@ -28,7 +28,7 @@ export interface PlacementBinding {
   readonly directory: string;
 }
 
-function within(child: string, parent: string): boolean {
+export function within(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }

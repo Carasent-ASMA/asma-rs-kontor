@@ -4,8 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { PaseoAgentListResult } from "@getpaseo/client";
 import type { KontorPluginConfig } from "./config";
-import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, seatBinding } from "./labels";
-import { parent } from "./session-lifecycle";
+import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, parent, seatBinding } from "./labels";
 import { CREATE_REQUEST_LABEL } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -15,7 +14,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
  * The one ASMA-8641 takeover producer has two adapters, and every session has at most one of them. The native/direct
  * adapter is this plugin acting through the host SDK on the paired user's confirmation. The governed adapter is the
  * kontord lifecycle writer, unchanged and never reached from here. Only protected ownership evidence decides:
- * Kontor seat labels, the Paseo-direct orchestration label with its native owner, or the session-create-v1 request.
+ * Kontor seat labels, the Paseo-direct orchestration label with its native owner, and the session-create-v1 request.
  * Title, role, model and an absent label are never evidence, and a conflicting or unverifiable claim has no adapter.
  */
 export type TakeoverAdapter =
@@ -23,15 +22,17 @@ export type TakeoverAdapter =
   | { adapter: "direct"; basis: "ordinary"; owner: null; createRequest: null }
   /** Created by New session; its session-create-v1 request is the provenance. */
   | { adapter: "direct"; basis: "created"; owner: null; createRequest: string }
-  /** A Paseo-direct seat and the native session that owns it. */
-  | { adapter: "direct"; basis: "orchestrated"; owner: string; createRequest: null }
+  /** A Paseo-direct seat and the native session that owns it; a takeover successor also names its creation request. */
+  | { adapter: "direct"; basis: "orchestrated"; owner: string; createRequest: string | null }
   /** A kontord seat: only the governed lifecycle writer takes it over. */
   | { adapter: "governed"; seat: string }
   | { adapter: "refused"; reason: string };
 
 const CONFLICT = "Ownership conflicts: this session carries both Kontor seat labels and direct-session labels. Nothing is taken over until its owner resolves that.";
 export const GOVERNED_ELSEWHERE = "This is a Kontor-governed seat. Only its governed lifecycle writer can take it over; this screen performs no effect on it.";
+const MALFORMED_REQUEST = "This session's creation request label is malformed, so its provenance cannot be verified.";
 const refused = (reason: string): TakeoverAdapter => ({ adapter: "refused", reason });
+const uuid = z.string().uuid();
 
 export function takeoverAdapter(agent: Pick<Agent, "labels">): TakeoverAdapter {
   const labels = agent.labels ?? {}, orchestration = labels.orchestration, created = labels[CREATE_REQUEST_LABEL];
@@ -43,14 +44,12 @@ export function takeoverAdapter(agent: Pick<Agent, "labels">): TakeoverAdapter {
   }
   if (orchestration !== undefined) {
     if (orchestration !== PASEO_DIRECT_ORCHESTRATION) return refused(`The orchestration label "${orchestration}" is not one this screen can verify an owner for.`);
-    if (created !== undefined) return refused(CONFLICT);
     const owner = parent(agent);
-    return owner ? { adapter: "direct", basis: "orchestrated", owner, createRequest: null } : refused("This Paseo-direct seat names no owning session, so its ownership cannot be verified.");
+    if (!owner) return refused("This Paseo-direct seat names no owning session, so its ownership cannot be verified.");
+    if (created !== undefined && !uuid.safeParse(created).success) return refused(MALFORMED_REQUEST);
+    return { adapter: "direct", basis: "orchestrated", owner, createRequest: created ?? null };
   }
-  if (created !== undefined) {
-    return z.string().uuid().safeParse(created).success ? { adapter: "direct", basis: "created", owner: null, createRequest: created }
-      : refused("This session's creation request label is malformed, so its provenance cannot be verified.");
-  }
+  if (created !== undefined) return uuid.safeParse(created).success ? { adapter: "direct", basis: "created", owner: null, createRequest: created } : refused(MALFORMED_REQUEST);
   return { adapter: "direct", basis: "ordinary", owner: null, createRequest: null };
 }
 

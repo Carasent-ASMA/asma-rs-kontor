@@ -78,6 +78,59 @@ export const probeSessionAvailability = defineRpc({ name: "sessions.availability
   output: z.record(z.string(), availabilitySchema) });
 export const readSessionDispositions = defineRpc({ name: "sessions.lifecycle-dispositions", input: z.object({ agentIds: z.array(id).max(100) }).strict(), output: z.record(z.string(), availabilitySchema) });
 
+/** Take over: one session is reviewed, then confirmed by its review ID, revision and the digest the server issued. */
+export const TAKEOVER_PROMPT = "The operator confirmed this takeover. Continue the task from the handoff summary in this session: read it, the conversation and the current workspace first, and keep the task scope, checkout, supervisor and permission boundaries. If context, authority or a dependency is missing, report it and wait. Do not create another session.";
+const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const takeoverReviewInputSchema = z.object({
+  agentId: id,
+  /** Revises this review at its current revision; both absent opens a new review. */
+  reviewId: z.string().uuid().optional(),
+  revision: z.number().int().positive().optional(),
+  /** One of the review's offered profiles, for a session with no recorded chain; null keeps the earlier choice. */
+  bindingKey: z.string().max(400).nullable(),
+}).strict().refine((input) => (input.reviewId === undefined) === (input.revision === undefined), "A revision names its review.");
+export type TakeoverReviewInput = z.infer<typeof takeoverReviewInputSchema>;
+const routeViewSchema = z.object({ account: z.string(), model: z.string(), effort: z.string().nullable(), vendor: z.string(), step: z.number(), subStep: z.number() }).strict();
+export const takeoverReviewSchema = z.object({
+  reviewId: z.string().uuid(), revision: z.number().int().positive(), agentId: id, checkedAt: z.string(),
+  /** ready: confirmable with `digest`. choose: pick one of the offered profiles. blocked: no route in the chain has fresh
+   *  positive evidence. refused: the owner refuses, in `message`. unknown: something needed could not be read. */
+  state: z.enum(["ready", "choose", "blocked", "refused", "unknown"]),
+  message: z.string(),
+  predecessor: z.object({ title: z.string(), workspaceId: id.nullable(), cwd: z.string(), provider: z.string(), model: z.string().nullable(), effort: z.string().nullable(), mode: z.string().nullable(), status: z.string() }).strict().nullable(),
+  ownership: z.enum(["ordinary", "created", "orchestrated"]).nullable(),
+  /** The configured chain the session takes over with: recorded for it, or chosen here from the server's choices. */
+  association: z.object({ bindingKey: z.string().nullable(), source: z.enum(["recorded", "chosen"]).nullable(), choices: z.array(z.object({ bindingKey: z.string(), chain: z.string() }).strict()) }).strict(),
+  route: z.object({ policyHash: z.string(), bindingKey: z.string(), chain: z.string(), selected: routeViewSchema.nullable(), considered: z.array(routeViewSchema.extend({ excluded: z.string().nullable() })) }).strict().nullable(),
+  /** The one creation request a confirmation dispatches; its ID is stable for the life of the review. */
+  successor: z.object({ requestId: z.string().uuid(), title: z.string(), workspaceId: id, cwd: z.string(), provider: z.string(), model: z.string(), effort: z.string().nullable(), mode: z.string().nullable(), persona: z.string().nullable() }).strict().nullable(),
+  /** What this takeover cannot do on this host, stated before confirmation. */
+  limits: z.array(z.string()),
+  /** Opaque; present only when ready. Apply sends it back unchanged; the client never computes it. */
+  digest: digestSchema.nullable(),
+}).strict();
+export type TakeoverReview = z.infer<typeof takeoverReviewSchema>;
+/**
+ * - `refused`: nothing was done; a fresh review may follow.
+ * - `uncertain`: an effect was sent and is not confirmed. Only Check runs next; nothing is resent.
+ * - `partial`: the predecessor was archived and no verified successor holds its task.
+ * - `succeeded`: `successor` names the verified session that now holds the task.
+ */
+export const takeoverOutcomeSchema = z.object({
+  reviewId: z.string().uuid(), revision: z.number().int().positive(), agentId: id,
+  state: z.enum(["refused", "uncertain", "partial", "succeeded"]),
+  phase: z.enum(["preflight", "intent", "archive", "create", "verify", "release", "done"]),
+  message: z.string(),
+  successor: z.object({ requestId: z.string().uuid(), agentId: id.nullable(), title: z.string() }).strict().nullable(),
+  /** review: a fresh review may start. check: only Check, a read with no effect, may run. none: nothing here helps. */
+  next: z.enum(["review", "check", "none"]),
+  checkedAt: z.string(),
+}).strict();
+export type TakeoverOutcome = z.infer<typeof takeoverOutcomeSchema>;
+export const reviewTakeover = defineRpc({ name: "sessions.takeover-review", input: takeoverReviewInputSchema, output: takeoverReviewSchema });
+export const applyTakeover = defineRpc({ name: "sessions.takeover-apply", input: z.object({ reviewId: z.string().uuid(), revision: z.number().int().positive(), digest: digestSchema }).strict(), output: takeoverOutcomeSchema });
+export const checkTakeover = defineRpc({ name: "sessions.takeover-check", input: z.object({ reviewId: z.string().uuid() }).strict(), output: takeoverOutcomeSchema });
+
 /** The installed plugin exposes no authoritative finalization owner for a direct or governed session. */
 export const MISSING_OWNER_ADAPTER = "no installed direct owner/finalization adapter";
 /** A Ready projection is descriptive evidence only: it is never a command, permission or automatic effect. */
