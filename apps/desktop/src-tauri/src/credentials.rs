@@ -1,14 +1,21 @@
 //! The console's saved endpoint, kept in the operating system's credential store.
 //!
-//! One entry per machine and profile: service [`SERVICE`], account
-//! `"{host}|{profile}"`, holding the endpoint's base URL and realm bearer as one
-//! JSON value. The store is the platform's own — Keychain Services on macOS,
-//! Credential Manager on Windows, the Secret Service elsewhere — reached through
-//! the `keyring` crate. This module writes no cryptography and keeps no file.
+//! One entry per profile: service [`SERVICE`], account `"{host}|{profile}"`,
+//! holding the endpoint's base URL and realm bearer as one JSON value. The store
+//! is the platform's own — Keychain Services on macOS, Credential Manager on
+//! Windows, the Secret Service elsewhere — reached through the `keyring` crate.
+//! This module writes no cryptography and keeps no file.
 //!
-//! The host is part of the account because a Windows credential roams with the
-//! user's profile, while the endpoint it holds is a loopback address that only
-//! means something on the machine that saved it.
+//! The entry never leaves the machine. On Windows it is created with `Local`
+//! persistence ([`entry_modifiers`]) rather than `keyring`'s default
+//! `Enterprise`, which would roam the bearer with a roaming profile; `host` is
+//! also the machine's name there. On macOS and Linux `host` is the constant
+//! [`LOCAL_HOST`]: a name taken from the network could change between networks
+//! and strand the entry. See [`machine_host`].
+//!
+//! On Linux, `keyring` looks for the Secret Service once per process. If none is
+//! running at the first credential call, every call reports
+//! [`CredentialError::Unavailable`] until the shell is restarted.
 //!
 //! Every failure is one of [`CredentialError`]'s kinds and nothing else: the
 //! platform's own error text can name the service and account, so it is dropped,
@@ -26,6 +33,12 @@ const DEFAULT_PROFILE: &str = "default";
 /// The longest profile name accepted.
 const MAX_PROFILE_LEN: usize = 64;
 
+/// The longest base URL accepted.
+const MAX_BASE_URL_LEN: usize = 2048;
+
+/// The longest bearer accepted. A realm's tier secret is 64 hex characters.
+const MAX_TOKEN_LEN: usize = 4096;
+
 /// Why a credential operation failed. Serialized as `{"kind": "<kind>"}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -42,16 +55,6 @@ pub(crate) enum CredentialError {
     Invalid,
 }
 
-/// Whether anything is saved for a profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CredentialStatus {
-    /// A well-formed endpoint is saved.
-    Stored,
-    /// Nothing is saved.
-    Empty,
-}
-
 /// The endpoint the console attaches to: the same shape as its `Endpoint`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +63,24 @@ pub(crate) struct Endpoint {
     pub(crate) base_url: String,
     /// The realm bearer.
     pub(crate) token: String,
+}
+
+impl Endpoint {
+    /// An absolute http(s) URL with a host and no userinfo, and a non-empty
+    /// bearer of visible ASCII, both within their length caps.
+    fn is_valid(&self) -> bool {
+        let url_ok = self.base_url.len() <= MAX_BASE_URL_LEN
+            && tauri::Url::parse(&self.base_url).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some_and(|host| !host.is_empty())
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            });
+        let token_ok = !self.token.is_empty()
+            && self.token.len() <= MAX_TOKEN_LEN
+            && self.token.bytes().all(|b| b.is_ascii_graphic());
+        url_ok && token_ok
+    }
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -96,18 +117,6 @@ impl<B: SecretBackend> CredentialStore<B> {
         }
     }
 
-    /// Whether an endpoint is saved for `profile`.
-    pub(crate) fn status(
-        &self,
-        profile: Option<&str>,
-    ) -> Result<CredentialStatus, CredentialError> {
-        match self.load(profile) {
-            Ok(_) => Ok(CredentialStatus::Stored),
-            Err(CredentialError::NotFound) => Ok(CredentialStatus::Empty),
-            Err(error) => Err(error),
-        }
-    }
-
     /// Save `endpoint` for `profile`, replacing whatever was there.
     pub(crate) fn save(
         &self,
@@ -115,7 +124,7 @@ impl<B: SecretBackend> CredentialStore<B> {
         endpoint: &Endpoint,
     ) -> Result<(), CredentialError> {
         let account = self.account(profile)?;
-        if endpoint.base_url.trim().is_empty() || endpoint.token.trim().is_empty() {
+        if !endpoint.is_valid() {
             return Err(CredentialError::Invalid);
         }
         let value = serde_json::to_string(endpoint).map_err(|_| CredentialError::Invalid)?;
@@ -126,7 +135,10 @@ impl<B: SecretBackend> CredentialStore<B> {
     pub(crate) fn load(&self, profile: Option<&str>) -> Result<Endpoint, CredentialError> {
         let account = self.account(profile)?;
         let value = self.backend.get(&account)?;
-        serde_json::from_str(&value).map_err(|_| CredentialError::Invalid)
+        match serde_json::from_str::<Endpoint>(&value) {
+            Ok(endpoint) if endpoint.is_valid() => Ok(endpoint),
+            _ => Err(CredentialError::Invalid),
+        }
     }
 
     /// Forget the endpoint saved for `profile`.
@@ -151,35 +163,34 @@ impl<B: SecretBackend> CredentialStore<B> {
     }
 }
 
-/// This machine's name as it appears in the account: its first DNS label,
-/// lowercased.
-///
-/// Only the first label is kept because macOS reports a node name whose domain
-/// can change with the network (`name.local`, `name.home`), and the entry must
-/// not move with it. Renaming the machine does move it: the old entry is then
-/// not found, and the operator enters the endpoint once more.
-pub(crate) fn machine_host() -> String {
-    #[cfg(unix)]
-    let raw = rustix::system::uname()
-        .nodename()
-        .to_string_lossy()
-        .into_owned();
-    #[cfg(windows)]
-    let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
-    #[cfg(not(any(unix, windows)))]
-    let raw = String::new();
+/// The `host` of every account on a machine whose credentials do not roam.
+pub(crate) const LOCAL_HOST: &str = "local";
 
-    let label = raw
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    if label.is_empty() {
-        "localhost".to_owned()
-    } else {
-        label
-    }
+/// The `host` part of this machine's accounts.
+///
+/// On Windows it is `COMPUTERNAME`, which the OS sets from the machine's own
+/// name rather than from the network. Everywhere else it is [`LOCAL_HOST`].
+/// Renaming a Windows machine moves the key: the old entry is then not found,
+/// and the operator enters the endpoint once more.
+pub(crate) fn machine_host() -> String {
+    #[cfg(windows)]
+    let name = std::env::var("COMPUTERNAME").ok();
+    #[cfg(not(windows))]
+    let name: Option<String> = None;
+    host_label(name.as_deref())
+}
+
+/// `name`'s first DNS label, lowercased, or [`LOCAL_HOST`] when there is none.
+fn host_label(name: Option<&str>) -> String {
+    let label = name
+        .and_then(|name| name.split('.').next())
+        .map(|label| label.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let usable = !label.is_empty()
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if usable { label } else { LOCAL_HOST.to_owned() }
 }
 
 /// The production backend: the operating system's credential store.
@@ -199,8 +210,25 @@ impl SecretBackend for OsKeychain {
     }
 }
 
-fn entry(account: &str) -> Result<keyring::Entry, CredentialError> {
-    keyring::Entry::new(SERVICE, account).map_err(classify)
+fn entry(account: &str) -> Result<keyring_core::Entry, CredentialError> {
+    // `keyring` picks and installs the platform store once; the entry is then
+    // built through `keyring-core` so it can carry store modifiers.
+    if keyring::Entry::store_status().is_err() {
+        return Err(CredentialError::Unavailable);
+    }
+    keyring_core::Entry::new_with_modifiers(SERVICE, account, &entry_modifiers()).map_err(classify)
+}
+
+/// The store modifiers every entry is built with.
+///
+/// On Windows, `Local` persistence: the credential stays on this machine
+/// instead of roaming with the profile. The other stores take none.
+pub(crate) fn entry_modifiers() -> std::collections::HashMap<&'static str, &'static str> {
+    let mut modifiers = std::collections::HashMap::new();
+    if cfg!(windows) {
+        modifiers.insert("persistence", "Local");
+    }
+    modifiers
 }
 
 /// Map a `keyring` error to its kind, dropping its text.
@@ -208,8 +236,8 @@ fn classify(error: keyring::Error) -> CredentialError {
     use keyring::Error;
     match error {
         Error::NoEntry => CredentialError::NotFound,
-        Error::NoStorageAccess(_) => CredentialError::Locked,
-        Error::PlatformFailure(platform) => classify_platform(platform.as_ref()),
+        Error::NoStorageAccess(platform) => refine(platform.as_ref(), CredentialError::Locked),
+        Error::PlatformFailure(platform) => refine(platform.as_ref(), CredentialError::Unavailable),
         Error::BadEncoding(_)
         | Error::BadDataFormat(..)
         | Error::BadStoreFormat(_)
@@ -220,25 +248,40 @@ fn classify(error: keyring::Error) -> CredentialError {
     }
 }
 
-/// A platform failure, refined where the platform says why.
+/// Refine a platform error by the reason the platform gives, else `fallback`.
+///
+/// Only macOS reports a reason this module can read: the OSStatus inside the
+/// `security-framework` error that `keyring`'s Apple store wraps. That is the
+/// same `security-framework` this crate links; the lockfile test
+/// `one_security_framework_is_linked` fails if the two ever diverge.
 #[cfg(target_os = "macos")]
-fn classify_platform(error: &(dyn std::error::Error + Send + Sync + 'static)) -> CredentialError {
+fn refine(
+    error: &(dyn std::error::Error + Send + Sync + 'static),
+    fallback: CredentialError,
+) -> CredentialError {
     match error
         .downcast_ref::<security_framework::base::Error>()
         .map(|e| e.code())
     {
         // errSecUserCanceled, errSecAuthFailed
         Some(-128 | -25293) => CredentialError::Denied,
+        // Write permission (-61), errSecReadOnly, errSecInvalidOwnerEdit
+        Some(-61 | -25292 | -25244) => CredentialError::Denied,
         // errSecInteractionNotAllowed: the keychain is locked and may not prompt.
         Some(-25308) => CredentialError::Locked,
-        _ => CredentialError::Unavailable,
+        // errSecNotAvailable, errSecNoSuchKeychain, errSecInvalidKeychain
+        Some(-25291 | -25294 | -25295) => CredentialError::Unavailable,
+        _ => fallback,
     }
 }
 
-/// A platform failure, refined where the platform says why.
+/// Refine a platform error by the reason the platform gives, else `fallback`.
 #[cfg(not(target_os = "macos"))]
-fn classify_platform(_: &(dyn std::error::Error + Send + Sync + 'static)) -> CredentialError {
-    CredentialError::Unavailable
+fn refine(
+    _: &(dyn std::error::Error + Send + Sync + 'static),
+    fallback: CredentialError,
+) -> CredentialError {
+    fallback
 }
 
 #[cfg(test)]
@@ -315,12 +358,10 @@ mod tests {
     fn save_load_replace_clear() {
         let backend = MockBackend::default();
         let store = CredentialStore::new(&backend, "host-a");
-        assert_eq!(store.status(None), Ok(CredentialStatus::Empty));
         assert_eq!(store.load(None), Err(CredentialError::NotFound));
 
         store.save(None, &endpoint(7717, "synthetic-one")).unwrap();
         assert_eq!(store.load(None), Ok(endpoint(7717, "synthetic-one")));
-        assert_eq!(store.status(None), Ok(CredentialStatus::Stored));
 
         store.save(None, &endpoint(7718, "synthetic-two")).unwrap();
         assert_eq!(store.load(None), Ok(endpoint(7718, "synthetic-two")));
@@ -383,10 +424,32 @@ mod tests {
                 "{profile}"
             );
         }
-        assert_eq!(
-            store.save(None, &endpoint(1, " ")),
-            Err(CredentialError::Invalid)
-        );
+        let bad = |base_url: &str, token: &str| Endpoint {
+            base_url: base_url.to_owned(),
+            token: token.to_owned(),
+        };
+        let long_url = format!("http://127.0.0.1/{}", "a".repeat(MAX_BASE_URL_LEN));
+        let long_token = "a".repeat(MAX_TOKEN_LEN + 1);
+        for (base_url, token) in [
+            ("", "synthetic"),
+            ("127.0.0.1:7717", "synthetic"),
+            ("ftp://127.0.0.1", "synthetic"),
+            ("http://", "synthetic"),
+            ("http://user:pw@127.0.0.1", "synthetic"),
+            (long_url.as_str(), "synthetic"),
+            ("http://127.0.0.1:7717", ""),
+            ("http://127.0.0.1:7717", " "),
+            ("http://127.0.0.1:7717", "two words"),
+            ("http://127.0.0.1:7717", "line\nbreak"),
+            ("http://127.0.0.1:7717", long_token.as_str()),
+        ] {
+            assert_eq!(
+                store.save(None, &bad(base_url, token)),
+                Err(CredentialError::Invalid),
+                "{base_url:.40} / {} chars",
+                token.len()
+            );
+        }
         assert_eq!(*backend.writes.borrow(), 0);
 
         backend
@@ -394,7 +457,16 @@ mod tests {
             .borrow_mut()
             .insert("host-a|default".to_owned(), "not json".to_owned());
         assert_eq!(store.load(None), Err(CredentialError::Invalid));
-        assert_eq!(store.status(None), Err(CredentialError::Invalid));
+        backend.entries.borrow_mut().insert(
+            "host-a|default".to_owned(),
+            r#"{"baseUrl":"http://127.0.0.1:1","token":""}"#.to_owned(),
+        );
+        assert_eq!(store.load(None), Err(CredentialError::Invalid));
+        backend.entries.borrow_mut().insert(
+            "host-a|default".to_owned(),
+            r#"{"baseUrl":"file:///etc/passwd","token":"synthetic"}"#.to_owned(),
+        );
+        assert_eq!(store.load(None), Err(CredentialError::Invalid));
     }
 
     #[test]
@@ -408,7 +480,6 @@ mod tests {
             let store = CredentialStore::new(&backend, "host-a");
             assert_eq!(store.save(None, &endpoint(1, "synthetic")), Err(error));
             assert_eq!(store.load(None), Err(error));
-            assert_eq!(store.status(None), Err(error));
             assert_eq!(store.clear(None), Err(error));
             // The one write went to the backend and was refused; there is no
             // other sink for it to land in.
@@ -450,19 +521,55 @@ mod tests {
             classify(Error::Invalid("p".into(), "r".into())),
             CredentialError::Invalid
         );
+        assert_eq!(
+            classify(Error::Ambiguous(Vec::new())),
+            CredentialError::Invalid
+        );
+        assert_eq!(
+            classify(Error::BadDataFormat(vec![0], platform())),
+            CredentialError::Invalid
+        );
+        assert_eq!(
+            classify(Error::BadStoreFormat("s".into())),
+            CredentialError::Invalid
+        );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_status_codes_refine_platform_failures() {
         use keyring::Error;
-        let status = |code| {
-            Error::PlatformFailure(Box::new(security_framework::base::Error::from_code(code)))
-        };
-        assert_eq!(classify(status(-128)), CredentialError::Denied);
-        assert_eq!(classify(status(-25293)), CredentialError::Denied);
-        assert_eq!(classify(status(-25308)), CredentialError::Locked);
-        assert_eq!(classify(status(-1)), CredentialError::Unavailable);
+        let code = |code| Box::new(security_framework::base::Error::from_code(code));
+        let failure = |c| classify(Error::PlatformFailure(code(c)));
+        let no_access = |c| classify(Error::NoStorageAccess(code(c)));
+
+        assert_eq!(failure(-128), CredentialError::Denied);
+        assert_eq!(failure(-25293), CredentialError::Denied);
+        assert_eq!(failure(-25308), CredentialError::Locked);
+        assert_eq!(failure(-1), CredentialError::Unavailable);
+
+        // The codes keyring files under NoStorageAccess, each mapped by meaning.
+        for c in [-61, -25292, -25244] {
+            assert_eq!(no_access(c), CredentialError::Denied, "{c}");
+        }
+        for c in [-25291, -25294, -25295] {
+            assert_eq!(no_access(c), CredentialError::Unavailable, "{c}");
+        }
+        assert_eq!(no_access(-25308), CredentialError::Locked);
+        assert_eq!(no_access(-1), CredentialError::Locked);
+    }
+
+    #[test]
+    fn one_security_framework_is_linked() {
+        // The macOS refinement downcasts keyring's wrapped error to this crate's
+        // security-framework type. With two copies in the tree the downcast
+        // would silently miss and every refined kind would fall back.
+        let lock = include_str!("../../../../Cargo.lock");
+        let copies = lock
+            .lines()
+            .filter(|line| *line == r#"name = "security-framework""#)
+            .count();
+        assert_eq!(copies, 1);
     }
 
     #[test]
@@ -490,10 +597,53 @@ mod tests {
     }
 
     #[test]
-    fn machine_host_is_one_lowercase_label() {
-        let host = machine_host();
-        assert!(!host.is_empty());
-        assert!(!host.contains('.') && !host.contains('|'));
-        assert_eq!(host, host.to_ascii_lowercase());
+    fn host_label_is_stable() {
+        assert_eq!(host_label(None), LOCAL_HOST);
+        assert_eq!(host_label(Some("")), LOCAL_HOST);
+        assert_eq!(host_label(Some("  ")), LOCAL_HOST);
+        assert_eq!(host_label(Some("a|b")), LOCAL_HOST);
+        assert_eq!(host_label(Some("DESKTOP-AB12")), "desktop-ab12");
+        // A domain suffix never moves the key.
+        assert_eq!(
+            host_label(Some("DESKTOP-AB12.corp.example")),
+            "desktop-ab12"
+        );
+        assert_eq!(host_label(Some("desktop-ab12.home")), "desktop-ab12");
+        // Capitals and a `.local` suffix derive the same key as the bare name.
+        assert_eq!(
+            host_label(Some("Ops-MBP.local")),
+            host_label(Some("ops-mbp"))
+        );
+
+        let backend = MockBackend::default();
+        let upper = CredentialStore::new(&backend, &host_label(Some("Ops-MBP.local")));
+        let lower = CredentialStore::new(&backend, &host_label(Some("ops-mbp")));
+        upper.save(None, &endpoint(1, "synthetic")).unwrap();
+        assert_eq!(lower.load(None), Ok(endpoint(1, "synthetic")));
+    }
+
+    #[test]
+    fn entries_persist_locally() {
+        let modifiers = entry_modifiers();
+        if cfg!(windows) {
+            // Never `Enterprise`, keyring's default, which roams.
+            assert_eq!(modifiers.get("persistence"), Some(&"Local"));
+            assert_eq!(modifiers.len(), 1);
+        } else {
+            assert!(modifiers.is_empty());
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn machine_host_ignores_the_network_name_off_windows() {
+        assert_eq!(machine_host(), LOCAL_HOST);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn machine_host_is_the_computer_name_on_windows() {
+        let expected = host_label(std::env::var("COMPUTERNAME").ok().as_deref());
+        assert_eq!(machine_host(), expected);
     }
 }

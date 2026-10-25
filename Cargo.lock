@@ -2783,7 +2783,7 @@ name = "kontor-desktop"
 version = "0.2.1"
 dependencies = [
  "keyring",
- "rustix",
+ "keyring-core",
  "security-framework",
  "serde",
  "serde_json",

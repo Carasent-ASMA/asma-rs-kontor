@@ -16,7 +16,7 @@
 //!
 //! The one capability it adds over the browser build is a place to keep the
 //! console's endpoint and realm bearer, which a browser has nowhere safe to put:
-//! the operating system's own credential store, behind four commands in
+//! the operating system's own credential store, behind three commands in
 //! [`credentials`]. It replaced the
 //! Stronghold vault (ASMA-8645), whose dependency tree carries
 //! RUSTSEC-2026-0387. A vault saved by that version is left on disk untouched
@@ -27,20 +27,13 @@
 
 mod credentials;
 
-use credentials::{
-    CredentialError, CredentialStatus, CredentialStore, Endpoint, OsKeychain, machine_host,
-};
+use credentials::{CredentialError, CredentialStore, Endpoint, OsKeychain, machine_host};
 
 fn os_store() -> CredentialStore<OsKeychain> {
     CredentialStore::new(OsKeychain, &machine_host())
 }
 
 // The commands are async so a keychain prompt waits off the main thread.
-
-#[tauri::command]
-async fn credential_status(profile: Option<String>) -> Result<CredentialStatus, CredentialError> {
-    os_store().status(profile.as_deref())
-}
 
 #[tauri::command]
 async fn credential_save(
@@ -68,7 +61,6 @@ async fn credential_clear(profile: Option<String>) -> Result<(), CredentialError
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            credential_status,
             credential_save,
             credential_load,
             credential_clear
