@@ -63,7 +63,7 @@ export function WorkCatalogStatus({ state, colors }: { state: WorkCatalogRead | 
     </View>;
   }
   const snapshot = state.mode === "snapshot";
-  const freshness = state.sourceAsOf === null ? "no complete source observation" : `source data as of ${state.sourceAsOf}`;
+  const freshness = state.sourceAsOf === null ? "no complete source observation" : `oldest source as of ${state.sourceAsOf}`;
   return <View testID="work-catalog-status" style={{ gap: 4 }}>
     <Text style={{ color: colors.foreground, fontSize: 12, lineHeight: 18, fontWeight: "600" }}>
       {snapshot ? "Shared catalog: last-known snapshot. Direct source readers remain active." : "Shared catalog: live through the observer credential."}

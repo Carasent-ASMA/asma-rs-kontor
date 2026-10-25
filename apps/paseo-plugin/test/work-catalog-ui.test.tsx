@@ -49,7 +49,7 @@ describe("the shared-catalog display", () => {
   it("shows per-source freshness, coverage, conflicts and pending verification", () => {
     const rendered = text(WorkCatalogStatus({ state: live, colors: {} as Parameters<typeof WorkCatalogStatus>[0]["colors"] }));
     expect(rendered).toContain("Shared catalog: live through the observer credential.");
-    expect(rendered).toContain(`Source data as of ${asOf}`);
+    expect(rendered).toContain(`Oldest source as of ${asOf}`);
     expect(rendered).toContain(`Plans · complete · generation 4 · as of ${asOf}`);
     expect(rendered).toContain("plan coverage detail");
     expect(rendered).toContain("3 associations pending verification");
@@ -69,7 +69,7 @@ describe("the shared-catalog display", () => {
     };
     const rendered = text(WorkCatalogStatus({ state: snapshot, colors: {} as Parameters<typeof WorkCatalogStatus>[0]["colors"] }));
     expect(rendered).toContain("last-known snapshot");
-    expect(rendered).toContain(`source data as of ${asOf}`);
+    expect(rendered).toContain(`oldest source as of ${asOf}`);
     expect(rendered).toContain("the observer could not be started");
     expect(rendered).not.toContain("2026-10-25T09:00:00");
     expect(rendered).not.toMatch(/as of 2026-10-25T09/);
