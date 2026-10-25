@@ -63,8 +63,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const NOW = Date.parse("2026-10-22T12:00:00.000Z");
 const COLORS = { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } as never;
-const ISSUE_EPIC = { key: "ASMA-100", summary: "Deliver the desk layout", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
-const ISSUE_STORY = { key: "ASMA-103", summary: "Replace New LSA with a role-aware New session", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
+const ISSUE_EPIC = { id: "100", key: "ASMA-100", summary: "Deliver the desk layout", created: "2026-10-01T10:00:00.000+0000", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
+const ISSUE_STORY = { id: "103", key: "ASMA-103", summary: "Replace New LSA with a role-aware New session", created: "2026-10-04T10:00:00.000+0000", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
 const OPTIONS: CreateOptions = {
   enabled: true, disabledReason: null, pending: null, notes: [], catalogProjectId: "prj-adam", issues: [ISSUE_EPIC], jiraProblem: null,
   desks: [

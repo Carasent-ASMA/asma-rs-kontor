@@ -47,12 +47,12 @@ const SNAPSHOT: Awaited<ReturnType<CreateClient["providers"]["snapshot"]>> = { r
   { provider: "codex", label: "Codex", enabled: false, status: "ready", models: [{ provider: "codex", id: "gpt", label: "GPT" }] },
 ] };
 
-const epic: JiraIssue = { key: "ASMA-100", summary: "Deliver the desk layout", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null };
-const underActive: JiraIssue = { key: "ASMA-101", summary: "Replace New LSA with a role-aware New session", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true,
+const epic: JiraIssue = { id: "100", key: "ASMA-100", summary: "Deliver the desk layout", created: "2026-10-01T10:00:00.000+0000", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null };
+const underActive: JiraIssue = { id: "101", key: "ASMA-101", summary: "Replace New LSA with a role-aware New session", created: "2026-10-02T10:00:00.000+0000", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true,
   parent: { key: "ASMA-100", summary: "Deliver the desk layout", statusCategory: "In Progress", open: true } };
-const underDone: JiraIssue = { ...underActive, key: "ASMA-102", parent: { ...underActive.parent!, statusCategory: "Done", open: false } };
-const standalone: JiraIssue = { ...underActive, key: "ASMA-103", parent: null };
-const closedEpic: JiraIssue = { ...epic, key: "ASMA-104", status: "Done", statusCategory: "Done", open: false };
+const underDone: JiraIssue = { ...underActive, id: "102", key: "ASMA-102", created: "2026-10-03T10:00:00.000+0000", parent: { ...underActive.parent!, statusCategory: "Done", open: false } };
+const standalone: JiraIssue = { ...underActive, id: "103", key: "ASMA-103", created: "2026-10-04T10:00:00.000+0000", parent: null };
+const closedEpic: JiraIssue = { ...epic, id: "104", key: "ASMA-104", created: "2026-10-05T10:00:00.000+0000", status: "Done", statusCategory: "Done", open: false };
 const ISSUES = [epic, underActive, underDone, standalone, closedEpic];
 
 const dirs: string[] = [];
@@ -91,10 +91,14 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
   const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
   const timeline = vi.fn(async () => ({ entries: timelineText === null ? [] : [{ item: { type: "assistant_message", text: timelineText } }] }));
   const jira = vi.fn<JiraSearch>(async ({ query, issueClass, openOnly }) => {
-    if (offline) return { issues: [], failure: "Jira is unreachable" };
-    const needle = query.trim().toLowerCase();
+    if (offline) return { issues: [], hasMore: false, nextPageToken: null, failure: "Jira is unreachable" };
+    const needle = query.trim().toLowerCase(), exactKey = /^asma-[1-9]\d*$/.test(needle);
+    const eligible = (issue: JiraIssue) => issue.epic || !issue.parent?.open;
+    const classMatches = (issue: JiraIssue) => exactKey || issueClass === null || issueClass === "eligible"
+      ? (exactKey || eligible(issue))
+      : issueClass === "epic" ? issue.epic : !issue.epic && eligible(issue);
     return { issues: ISSUES.filter((issue) => (!needle || issue.key.toLowerCase().startsWith(needle) || issue.summary.toLowerCase().includes(needle))
-      && (issueClass === null || (issueClass === "epic" ? issue.epic : !issue.epic)) && (!openOnly || issue.open)), failure: null };
+      && classMatches(issue) && (!openOnly || issue.open)), hasMore: false, nextPageToken: null, failure: null };
   });
   const client = {
     workspaces: {
@@ -298,6 +302,14 @@ describe("create options", () => {
     expect(s.jira).not.toHaveBeenCalled();
   });
 
+  it("passes the selected class before the cap and keeps every eligible type", async () => {
+    const s = await setup();
+    const options = await s.service.options({ projectId: "prj-tickets", role: "LSA", start: "from-jira", issueClass: "eligible" });
+    expect(s.jira).toHaveBeenCalledTimes(1);
+    expect(s.jira).toHaveBeenCalledWith({ query: "", issueClass: "eligible", openOnly: true });
+    expect(options.issues.map((issue) => issue.key)).toEqual(["ASMA-100", "ASMA-102", "ASMA-103"]);
+  });
+
   it("names an outage instead of silently offering no issue", async () => {
     const s = await setup({ offline: true });
     expect(await s.service.options({ start: "from-jira" })).toMatchObject({ issues: [], jiraProblem: "Jira could not be read: Jira is unreachable" });
@@ -439,7 +451,7 @@ describe("new session create", () => {
   it("re-reads the issue at create time and refuses a change before intent", async () => {
     const s = await setup();
     const original = s.jira.getMockImplementation()!;
-    s.jira.mockImplementationOnce(original).mockImplementationOnce(async () => ({ issues: [{ ...epic, open: false, status: "Done", statusCategory: "Done" }], failure: null }));
+    s.jira.mockImplementationOnce(original).mockImplementationOnce(async () => ({ issues: [{ ...epic, open: false, status: "Done", statusCategory: "Done" }], hasMore: false, nextPageToken: null, failure: null }));
     const outcome = await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic: undefined }));
     expect(outcome).toMatchObject({ state: "refused", message: expect.stringContaining("is Done") });
     expect(s.create).not.toHaveBeenCalled();

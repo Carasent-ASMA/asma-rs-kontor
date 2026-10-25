@@ -20,6 +20,9 @@ export const TITLE_AUTO_LABEL = "title.auto";
 /** Providers whose `systemPrompt` mapping was confirmed on the host; any other gets a bootstrap prompt. */
 export const PERSONA_PROVIDERS: readonly string[] = ["claude", "codex"];
 export const JIRA_KEY_PATTERN = /^ASMA-[1-9]\d*$/;
+/** The classes `asma jira search` can filter before its 50-slot cap. */
+export const JIRA_ISSUE_CLASSES = ["epic", "non-epic", "eligible"] as const;
+export type JiraIssueClass = (typeof JIRA_ISSUE_CLASSES)[number];
 
 /** NFC, trimmed, whitespace runs collapsed; case kept as typed. */
 export function normalizeTopic(raw: string): string {
@@ -98,7 +101,7 @@ export type CreateProvider = z.infer<typeof createProviderSchema>;
 
 /** One ASMA issue as `asma jira search` returns it; the parent is present only for a child issue. */
 export const jiraIssueSchema = z.object({
-  key: z.string(), summary: z.string(), type: z.string(), epic: z.boolean(),
+  id: z.string(), key: z.string(), summary: z.string(), created: z.string(), type: z.string(), epic: z.boolean(),
   status: z.string(), statusCategory: z.string(), open: z.boolean(),
   parent: z.object({ key: z.string(), summary: z.string(), statusCategory: z.string(), open: z.boolean() }).strict().nullable(),
 }).strict();
@@ -154,7 +157,7 @@ export const createOptionsSchema = z.object({
   providers: z.array(createProviderSchema),
   /** The host's agent profile for the chosen role, the form's defaults when present. */
   profile: z.object({ name: z.string(), provider: z.string(), model: z.string().nullable(), modeId: z.string().nullable(), effort: z.string().nullable() }).nullable(),
-  /** The open issues matching a From Jira ticket search, of every type; `issueDesk` says where each starts. Empty for any other start. */
+  /** The selected-class, pre-cap Jira issues for a From Jira ticket start; empty for any other start. */
   issues: z.array(jiraIssueSchema),
   /** Why the issue list could not be read; null when it was or was not requested. */
   jiraProblem: z.string().nullable(),
@@ -173,6 +176,8 @@ export const createScopeSchema = z.object({
   start: z.enum(CREATE_STARTS).optional(),
   /** The From Jira search: an ASMA key or words; empty lists the newest open issues. */
   issueKey: z.string().max(200).optional(),
+  /** The picker's selected Jira class, filtered before the 50-slot cap. */
+  issueClass: z.enum(JIRA_ISSUE_CLASSES).optional(),
 }).strict();
 export type CreateScope = z.infer<typeof createScopeSchema>;
 

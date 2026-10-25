@@ -12,7 +12,7 @@ import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, checkCreate, createOutcomeSchema, createRequestSchema,
   deskIssueProblem, deskKind, deskName, executeCreate, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateOptions, topicProblem,
-  type CreateDesk, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type JiraIssue, type LeadWorkspace,
+  type CreateDesk, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type JiraIssue, type JiraIssueClass, type LeadWorkspace,
 } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -295,17 +295,39 @@ export function readbackDifferences(agent: Agent, request: CreateRecord["request
 }
 
 /** One live Jira search through asma-cli; a failure is distinct from an empty result. */
-export type JiraSearch = (input: { query: string; issueClass: "epic" | "non-epic" | null; openOnly: boolean }) => Promise<{ issues: JiraIssue[]; failure: string | null }>;
-const jiraSearchOutput = z.object({ issues: z.array(jiraIssueSchema) }).strict();
+export type JiraSearchInput = { query: string; issueClass: JiraIssueClass | null; openOnly: boolean };
+export type JiraSearchResult = { issues: JiraIssue[]; hasMore: boolean; nextPageToken: string | null; failure: string | null };
+export type JiraSearch = (input: JiraSearchInput) => Promise<JiraSearchResult>;
+const jiraSearchOutput = z.object({
+  issues: z.array(jiraIssueSchema),
+  hasMore: z.boolean(),
+  nextPageToken: z.string().nullable().optional(),
+}).strict();
 const executeFile = promisify(execFile);
 
-export const asmaJiraSearch: JiraSearch = async (input) => {
-  const args = ["jira", "search", "--query", input.query, "--limit", "100", ...(input.issueClass ? ["--class", input.issueClass] : []), ...(input.openOnly ? [] : ["--all"])];
+/** The CLI arguments for one search; the 50 cap is applied before the result ever reaches the picker. */
+export function jiraSearchArgs(input: JiraSearchInput): string[] {
+  return ["jira", "search", "--query", input.query, "--limit", "50",
+    ...(input.issueClass ? ["--class", input.issueClass] : []), ...(input.openOnly ? [] : ["--all"])];
+}
+
+/** Parse the CLI page without dropping its identity, timestamp or continuation fields. */
+export function parseJiraSearchOutput(stdout: string): Omit<JiraSearchResult, "failure"> {
+  const parsed = jiraSearchOutput.parse(JSON.parse(stdout));
+  return { issues: parsed.issues, hasMore: parsed.hasMore, nextPageToken: parsed.nextPageToken ?? null };
+}
+
+type JiraExecute = (file: string, args: readonly string[], options: { timeout: number; maxBuffer: number; encoding: "utf8" }) => Promise<{ stdout: string }>;
+
+/** The CLI boundary, injectable so the contract can be tested without a live Jira or a child process. */
+export async function runJiraSearch(input: JiraSearchInput, execute: JiraExecute = executeFile): Promise<JiraSearchResult> {
   try {
-    const { stdout } = await executeFile("asma", args, { timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8" });
-    return { issues: jiraSearchOutput.parse(JSON.parse(stdout)).issues, failure: null };
-  } catch (error) { return { issues: [], failure: errorText(error) }; }
-};
+    const { stdout } = await execute("asma", jiraSearchArgs(input), { timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8" });
+    return { ...parseJiraSearchOutput(stdout), failure: null };
+  } catch (error) { return { issues: [], hasMore: false, nextPageToken: null, failure: errorText(error) }; }
+}
+
+export const asmaJiraSearch: JiraSearch = (input) => runJiraSearch(input);
 
 /** The source session's last assistant message is its handoff summary; null when it wrote none. */
 export async function sourceSummary(client: CreateClient, agentId: string): Promise<string | null> {
@@ -418,8 +440,9 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogProjectId: null, providers: [], profile: null, issues: [], jiraProblem: null, pending: null, notes }; }
     // The issue chooses its desk, so the search spans every type; an ineligible issue stays listed with its reason.
     let issues: JiraIssue[] = [], jiraProblem: string | null = null;
-    if (start === "from-jira") {
-      const result = await jira({ query: scope.issueKey ?? "", issueClass: null, openOnly: true });
+    if (desk && start === "from-jira" && desk.kind !== "pr-review" && desk.kind !== "other") {
+      const issueClass = scope.issueClass ?? (desk.kind === "adam" ? "epic" : "non-epic");
+      const result = await jira({ query: scope.issueKey ?? "", issueClass, openOnly: true });
       if (result.failure) jiraProblem = `Jira could not be read: ${result.failure}`;
       else issues = result.issues;
     }
