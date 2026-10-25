@@ -57,6 +57,7 @@ export type JiraHistory = z.infer<typeof jiraHistorySchema>;
 const instant = z.string().refine((value) => Number.isFinite(Date.parse(value)), "Invalid observation time");
 const anyJiraKey = z.string().regex(/^[A-Z][A-Z0-9_]*-[1-9]\d*$/);
 const count = z.number().int().nonnegative().max(5000);
+const sessions = z.number().int().nonnegative().max(100000);
 export const EPIC_IDENTITY_SCHEMA = "kontor/epic-identity@1";
 /** One issue as Jira returned it; `via` says whether the scope, a session's label or a child's parent selected it. */
 export const epicIdentityIssueSchema = z.object({
@@ -75,7 +76,7 @@ export const epicIdentitySchema = z.object({
   source: z.object({ kind: z.literal("jira-rest"), realm: z.string().min(1).max(253) }).strict(),
   scope: z.object({ jql: z.string().min(1).max(2000), project: z.string().regex(/^[A-Z][A-Z0-9_]*$/), declared: z.array(jiraKey).max(5000) }).strict(),
   provenance: z.object({ collector: z.string().min(1).max(80), adapter: z.string().min(1).max(200), label_keys: z.array(z.string().min(1).max(64)).max(32),
-    sessions: z.object({ read: count.max(100000), unreadable: count.max(100000) }).strict() }).strict(),
+    sessions: z.object({ read: sessions, unreadable: sessions }).strict() }).strict(),
   coverage: z.object({ scope_issues: count, declared: count, found: count, missing: z.array(jiraKey).max(5000),
     out_of_scope: z.array(anyJiraKey).max(5000), unresolved: z.array(jiraKey).max(5000) }).strict(),
   conflicts: z.array(z.object({ kind: z.literal("moved_key"), key: jiraKey, current: jiraKey, observed_at: instant }).strict()).max(5000),

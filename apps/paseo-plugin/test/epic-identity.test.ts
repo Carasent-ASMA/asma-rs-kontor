@@ -34,7 +34,8 @@ describe("current Jira identity export", () => {
     expect(epicIdentitySource([exported])?.unanswered.get("ASMA-50")).toBe("the parent of ASMA-50 was not read");
   });
 
-  it("refuses an ambiguous, dangling or extended document", () => {
+  it("refuses an ambiguous, dangling or extended document, and reads a host with more sessions than issues", () => {
+    expect(epicIdentitySchema.parse({ ...exported, provenance: { ...exported.provenance, sessions: { read: 5598, unreadable: 0 } } }).provenance.sessions.read).toBe(5598);
     expect(() => epicIdentitySchema.parse({ ...exported, issues: [...exported.issues, exported.issues[0]] })).toThrow(/duplicate/);
     expect(() => epicIdentitySchema.parse({ ...exported, conflicts: [{ ...exported.conflicts[0]!, current: "ASMA-77" }] })).toThrow(/lacks/);
     expect(() => epicIdentitySchema.parse({ ...exported, assignee: "not read" })).toThrow();
