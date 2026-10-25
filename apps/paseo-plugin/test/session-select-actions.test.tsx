@@ -17,7 +17,7 @@ const colors = { foreground: "#111", foregroundMuted: "#666", surface0: "#fff", 
 const draw = (element: Element) => (element.type as (props: Record<string, unknown>) => Element)(element.props);
 const texts = (tree: unknown) => walk(tree).filter((element) => element.type === "Text").map((element) => [element.props.children].flat().join(""));
 const session = (id: string, patch: Partial<SelectedSession> = {}): SelectedSession => ({ id, title: `Session ${id}`, status: "idle", archivedAt: null, ...patch });
-const yes = (agentId: string, patch: Partial<OwnerAnswer> = {}) => ({ hostId: "host-a", agentId, reviewId: `review-${agentId}`, revision: `rev-${agentId}`, supported: true, consequence: `Consequence for ${agentId}.`, ...patch }) as OwnerAnswer;
+const yes = (agentId: string, patch: Partial<OwnerAnswer> = {}) => ({ hostId: "host-a", agentId, reviewId: `review-${agentId}`, revision: `rev-${agentId}`, supported: true, consequence: `Consequence for ${agentId}.`, digest: `digest-${agentId}`, ...patch }) as OwnerAnswer;
 const no = (agentId: string, reason: string) => ({ hostId: "host-a", agentId, reviewId: `review-${agentId}`, revision: `rev-${agentId}`, supported: false, reason }) as OwnerAnswer;
 const done = (agentId: string, patch: Partial<OwnerReply> = {}): OwnerReply => ({ hostId: "host-a", agentId, outcome: "succeeded", successorId: `${agentId}-next`, text: "Archived it and started the new session.", ...patch });
 const apply = vi.fn<(request: OwnerRequest) => Promise<OwnerReply>>();
@@ -272,7 +272,7 @@ describe("select action bar", () => {
     expect(apply).not.toHaveBeenCalled();
     apply.mockResolvedValueOnce(done("a"));
     press(textButton(tree, "Take over"));
-    expect(apply).toHaveBeenCalledExactlyOnceWith({ hostId: "host-a", agentId: "a", reviewId: "review-a", revision: "rev-a" });
+    expect(apply).toHaveBeenCalledExactlyOnceWith({ hostId: "host-a", agentId: "a", reviewId: "review-a", revision: "rev-a", digest: "digest-a" });
     await flush();
     const after = render();
     expect(byTestID(after, "sessions-select-result")!.props).toMatchObject({ role: "status", children: "Done: new session a-next. Archived it and started the new session." });
@@ -313,7 +313,7 @@ describe("select action bar", () => {
     expect(texts(render())).toEqual(expect.arrayContaining(["Retry Session a (a) in this session?", "Consequence for a."]));
     apply.mockResolvedValueOnce(done("a", { successorId: undefined }));
     press(textButton(render(), "Retry"));
-    expect(apply).toHaveBeenCalledExactlyOnceWith({ hostId: "host-a", agentId: "a", reviewId: "review-a", revision: "rev-a" });
+    expect(apply).toHaveBeenCalledExactlyOnceWith({ hostId: "host-a", agentId: "a", reviewId: "review-a", revision: "rev-a", digest: "digest-a" });
     expect(review).not.toHaveBeenCalled();
   });
 
@@ -341,6 +341,7 @@ describe("select action bar", () => {
     ["Retry", "the owner now refuses", { owners: { retry: lookup(no("a", "Closed or stopped.")) } }, "Closed or stopped."],
     ["Retry", "the owner answers a new revision", { owners: { retry: lookup(yes("a", { revision: "rev-a2" })) } }, changed],
     ["Retry", "the owner answers from a new review", { owners: { retry: lookup(yes("a", { reviewId: "review-a2" })) } }, changed],
+    ["Retry", "the owner issues a new digest", { owners: { retry: lookup(yes("a", { digest: "digest-a2" })) } }, changed],
     ["Retry", "the owner states another consequence", { owners: { retry: lookup(yes("a", { consequence: "Another consequence." })) } }, changed],
   ] as const)("rechecks an open %s confirmation when %s, shows the current reason and calls no owner", async (label, _case, patch, reason) => {
     const action = label === "Take over" ? "takeOver" : "retry";
@@ -362,6 +363,7 @@ describe("select action bar", () => {
     ["now refuses", no("a", "Closed or stopped."), "Nothing was sent. Closed or stopped."],
     ["answers a new revision", yes("a", { revision: "rev-a2" }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
     ["answers from a new review", yes("a", { reviewId: "review-a2" }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
+    ["issues a new digest", yes("a", { digest: "digest-a2" }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
     ["states another consequence", yes("a", { consequence: "Another consequence." }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
   ] as const)("asks the Retry owner again at Confirm: when it %s with no redraw, nothing is sent and the reason shows at once", async (_case, later, line) => {
     let answer: OwnerAnswer | undefined = yes("a");

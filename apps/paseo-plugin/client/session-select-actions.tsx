@@ -14,12 +14,13 @@ import { exactTime, parseTime } from "./session-time";
  *   Its review picks the first available route from the session's recorded model chain (a direct session through the
  *   plugin server, a governed seat through its authorized writer).
  * - Retry in this session: the lifecycle row's own same-ID retryability, read without side effects.
- * Confirm sends back the review and revision it showed, so the owner refuses anything that drifted since.
+ * Confirm sends back the review, revision and the owner's opaque confirmation digest exactly as the confirmation
+ * showed them; the bar never computes or reads the digest, and the owner refuses anything that drifted since.
  */
 export type OwnerAnswer = { readonly hostId: string; readonly agentId: string; readonly reviewId: string; readonly revision: string }
-  & ({ readonly supported: true; readonly consequence: string } | { readonly supported: false; readonly reason: string });
-/** Sent only after Confirm, bound to the review and revision the confirmation showed. */
-export type OwnerRequest = { readonly hostId: string; readonly agentId: string; readonly reviewId: string; readonly revision: string };
+  & ({ readonly supported: true; readonly consequence: string; readonly digest: string } | { readonly supported: false; readonly reason: string });
+/** Sent only after Confirm, bound to the review, revision and digest the confirmation showed. */
+export type OwnerRequest = { readonly hostId: string; readonly agentId: string; readonly reviewId: string; readonly revision: string; readonly digest: string };
 /**
  * The reply names the session it reports on; a reply for another host or session is never shown. `partial` is a
  * Take over that retired the session without a confirmed new one; `unconfirmed` is still reconciling.
@@ -206,13 +207,13 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     else setConfirm({ action, agentId: state.ids[0]!, answer: answerFor(owners.retry!, hostId, state.ids[0]!) ?? null });
   };
   /** An open confirmation holds only while its action still applies; Retry also needs the same answer it showed: same
-   *  review, revision and consequence. Otherwise it shows the current reason and calls no owner. */
+   *  review, revision, digest and consequence. Otherwise it shows the current reason and calls no owner. */
   const invalid = (open: Confirm, now = states): string | null => {
     const state = now[open.action];
     if (!state.enabled) return state.line;
     if (open.action === "takeOver" || !open.answer) return null;
     const fresh = answerFor(owners.retry!, hostId, open.agentId), shown = open.answer;
-    return fresh?.supported && shown.supported && fresh.reviewId === shown.reviewId && fresh.revision === shown.revision && fresh.consequence === shown.consequence ? null : CHANGED;
+    return fresh?.supported && shown.supported && fresh.reviewId === shown.reviewId && fresh.revision === shown.revision && fresh.digest === shown.digest && fresh.consequence === shown.consequence ? null : CHANGED;
   };
   const run = async (current: Confirm) => {
     const answer = current.answer;
@@ -228,7 +229,7 @@ export function SelectActionBar({ hostId, selected, owners, blocked, refusal, zo
     setPending(true);
     let line: string;
     try {
-      const reply = await owners[current.action]!.apply({ hostId, agentId: answer.agentId, reviewId: answer.reviewId, revision: answer.revision });
+      const reply = await owners[current.action]!.apply({ hostId, agentId: answer.agentId, reviewId: answer.reviewId, revision: answer.revision, digest: answer.digest });
       line = reply.hostId === hostId && reply.agentId === answer.agentId ? replyLine(current.action, answer.agentId, reply) : "No result reported. Check the session before trying again.";
     } catch (error) {
       line = `Result unknown: ${errorText(error)}. Check the session before trying again.`;
