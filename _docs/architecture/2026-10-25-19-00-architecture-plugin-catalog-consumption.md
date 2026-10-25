@@ -42,8 +42,10 @@ Each row carries:
 - bounded `coverage` lines (repository/runtime/scope counts, archive coverage,
   sweep schedule and overdue state);
 - bounded `conflicts` (plan identity/content conflicts and Jira moved keys);
-- `pending_verification`, the active associations the frozen v1 contract cannot
-  verify. A source that cannot be read is a failed row, not a failed answer.
+- `pending_verification`, the active plan associations the frozen v1 contract
+  cannot verify. Jira's missing or unresolved declared keys are named in its
+  coverage line instead, because they are a coverage gap, not an association. A
+  source that cannot be read is a failed row, not a failed answer.
 
 ## Fixed observer tools
 
