@@ -240,6 +240,27 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(host.walks).toHaveLength(2);
   });
 
+  it("lets the composer popover read the shared directory without changing the screen's Archived rows", async () => {
+    const host = fakeHost("host-a", [agent("live"), agent("archived", "2026-10-21T00:00:00.000Z")]);
+    kontor("host-a", "online", true); await settle();
+    const [screen, popover] = render(() => [
+      useSessionDirectory({ hostId: "host-a", hostStatus: "online", includeArchived: true }),
+      useSessionDirectory({ hostId: "host-a", hostStatus: "online" }),
+    ]);
+    await settle();
+    const ids = (state: { entries: readonly { id: string }[] }) => state.entries.map((entry) => entry.id).sort();
+    expect(ids(screen!.state)).toEqual(["archived", "live"]);
+    expect(ids(popover!.state)).toEqual(["archived", "live"]);
+    expect(popover!.state.includeArchived).toBe(true);
+    expect(host.subscribes.map((call) => call.filter)).toEqual([{ includeArchived: true }]);
+    expect(host.walks).toHaveLength(1);
+    // The popover may open before the screen ever did; it then starts the ordinary active-session directory.
+    unmount(); await disposeRetainedDirectories();
+    const cold = fakeHost("host-a", [agent("live"), agent("archived", "2026-10-21T00:00:00.000Z")]);
+    render(() => useSessionDirectory({ hostId: "host-a", hostStatus: "online" })); await settle();
+    expect(cold.subscribes.map((call) => call.filter)).toEqual([{ includeArchived: false }]);
+  });
+
   it("releases the retained subscription on plugin cleanup; the next entry starts cold", async () => {
     const host = fakeHost("host-a", sessions(3));
     kontor(); await settle(); unmount();

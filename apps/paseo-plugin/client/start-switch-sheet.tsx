@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
-import { useRpc, type PluginHostSummary } from "@getpaseo/plugin/client";
+import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
 import { readCreateOptions, type CreateOptions, type CreateOutcome } from "../shared/session-create";
-import type { OpenSessionResult } from "./session-actions";
+import { handOffOpen, withdrawHandOff, type HandOffTarget, type OpenSessionResult } from "./session-actions";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
+import { ControlHelpProvider } from "./control-help";
 import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { nativeFreshnessLabel } from "./native-freshness";
@@ -14,6 +15,7 @@ import { isArchivedSession, type DirectoryEntry, type DirectoryState } from "./s
 import { sessionState } from "./session-organization";
 import { SessionStateMarker } from "./session-state-marker";
 import { ageInWords } from "./session-time";
+import { useSessionDirectory } from "./use-session-directory";
 
 /** The Kontor screen param that opens this sheet, from the Command Center item. */
 export const SWITCH_SHEET = "switch";
@@ -79,18 +81,22 @@ function persistenceNote(persistence: ReturnType<typeof readRecent>["persistence
   return null;
 }
 
-/**
- * One sheet for switching and starting: Recent and a search over every session, plus New LSA as a header action when
- * the host allows it. Rows open only through the screen's `onOpen`, the shared open path with its refusals.
- */
-export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose }: {
-  anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; compact: boolean; colors: Colors;
-  hostId: string; hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
+type StartSwitchProps = {
+  compact: boolean; colors: Colors; hostId: string; hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
   /** Whether this Paseo app exposes native navigation to plugins. */
   canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult;
   onOpen: (entry: DirectoryEntry) => void; onShowAll: (query: string) => void; onClose: () => void;
-}) {
+  /** Inside the host's own popover or bottom sheet, which owns the title, dismissal and scrolling; Open Kontor joins the actions. */
+  popover?: { readonly openKontor: () => void };
+};
+
+/**
+ * One body for switching and starting, drawn by the Kontor screen's sheet and by the composer pill's popover: Recent
+ * and a search over every session, plus New LSA as a header action when the host allows it. Rows open only through
+ * `onOpen`, so each surface keeps its own single open path and its refusals.
+ */
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose, popover }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">("switch");
   const creation = useRef({ hostId, open: false });
   const scope = creation.current;
@@ -106,9 +112,9 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
   const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live });
   const unavailable = createAvailability(create.state);
   const tall = compact || COARSE_POINTER;
-  const dismiss = () => { creation.current.open = false; onClose(); setTimeout(() => focusControl(anchor.current), 0); };
+  const dismiss = () => { creation.current.open = false; onClose(); };
   const heading = (text: string) => <Text accessibilityRole="header" numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{text}</Text>;
-  const close = <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
+  const close = popover ? null : <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
   const header = mode === "new"
     ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 4 }}>
       <IconButton label="Back to recent sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />
@@ -116,7 +122,7 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
     </View>
     : <View style={{ gap: 4, paddingBottom: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        {heading("Start or switch")}
+        {popover ? <View style={{ flex: 1, flexDirection: "row" }}><Action small icon="Building2" label="Open Kontor" colors={colors} onPress={popover.openKontor} /></View> : heading("Start or switch")}
         {create.state.status === "ready" && create.state.options.pending
           ? <Action small label="Check creation" accessibilityLabel="Check pending session creation" colors={colors} onPress={startNew} />
           : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New LSA" accessibilityLabel="New LSA session" colors={colors} onPress={startNew} /> : null}
@@ -131,34 +137,76 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
   else if (!rows.length && recent.record.clearedAt !== null) empty = `Cleared on this device at ${new Date(recent.record.clearedAt).toLocaleTimeString()}. Sessions you open from Kontor after that appear here.`;
   else if (!rows.length) empty = "Sessions you open from Kontor appear here, most recent first.";
   const persistence = persistenceNote(recent.persistence);
-  return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={colors} label={mode === "new" ? "New LSA session" : "Start or switch session"} onClose={dismiss}
-    placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 400, maxHeight: 560 }} header={header}>
-    {mode === "new" ? <NewLsaForm hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
+  const items = <>
+    {freshness === "Live" ? null : <Text testID="kontor-switch-freshness" style={muted}>Last known · {freshness}</Text>}
+    {canOpen ? null : <Text style={muted}>This Paseo app does not let plugins open sessions; rows are listed only.</Text>}
+    {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} />)}
+    {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
+    {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
+    <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
+      <Action small label="Clear recent on this device" colors={colors} onPress={() => setRecent(clearRecent(hostId))} />
+      <Text style={muted}>Opened from Kontor · this host and app profile only</Text>
+      <Text style={muted}>Native sidebar opens and other devices are not included.</Text>
+      {saved.ids.length ? <>
+        <Action small label={`${showSaved ? "Hide" : "Show"} saved history (${saved.ids.length})`} colors={colors} onPress={() => setShowSaved(!showSaved)} />
+        {showSaved ? <View testID="kontor-saved-history">
+          <Text style={muted}>Saved history · original host and opening times unknown. Session IDs only.</Text>
+          {saved.ids.map((id) => <Text key={id} selectable style={muted}>{id}</Text>)}
+        </View> : null}
+      </> : null}
+      {saved.unreadable ? <Text style={muted}>Earlier saved history could not be read and has been left untouched.</Text> : null}
+      {persistence ? <Text style={muted}>{persistence}</Text> : null}
+      {unavailable ? <Text testID="kontor-switch-create-status" style={muted}>{unavailable}</Text> : null}
+    </View>
+  </>;
+  const list = { testID: "kontor-switch-list", role: "menu", accessibilityLabel: query.trim() ? "Matching sessions" : "Recent sessions" } as const;
+  const body = mode === "new"
+    ? <NewLsaForm hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
       isActive={() => scope === creation.current && scope.open && scope.hostId === hostId}
       onOpenCreated={onOpenCreated} onCancel={leaveNew} />
-    : <ScrollView testID="kontor-switch-list" role="menu" accessibilityLabel={query.trim() ? "Matching sessions" : "Recent sessions"} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
-      {freshness === "Live" ? null : <Text testID="kontor-switch-freshness" style={muted}>Last known · {freshness}</Text>}
-      {canOpen ? null : <Text style={muted}>This Paseo app does not let plugins open sessions; rows are listed only.</Text>}
-      {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} />)}
-      {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
-      {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
-      <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
-        <Action small label="Clear recent on this device" colors={colors} onPress={() => setRecent(clearRecent(hostId))} />
-        <Text style={muted}>Opened from Kontor · this host and app profile only</Text>
-        <Text style={muted}>Native sidebar opens and other devices are not included.</Text>
-        {saved.ids.length ? <>
-          <Action small label={`${showSaved ? "Hide" : "Show"} saved history (${saved.ids.length})`} colors={colors} onPress={() => setShowSaved(!showSaved)} />
-          {showSaved ? <View testID="kontor-saved-history">
-            <Text style={muted}>Saved history · original host and opening times unknown. Session IDs only.</Text>
-            {saved.ids.map((id) => <Text key={id} selectable style={muted}>{id}</Text>)}
-          </View> : null}
-        </> : null}
-        {saved.unreadable ? <Text style={muted}>Earlier saved history could not be read and has been left untouched.</Text> : null}
-        {persistence ? <Text style={muted}>{persistence}</Text> : null}
-        {unavailable ? <Text testID="kontor-switch-create-status" style={muted}>{unavailable}</Text> : null}
-      </View>
-    </ScrollView>}
+    // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
+    : popover ? <View {...list}>{items}</View>
+    : <ScrollView {...list} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
+  return { label: mode === "new" ? "New LSA session" : "Start or switch session", header, body, dismiss };
+}
+
+/** The Kontor screen's sheet around the shared body; closing it returns focus to its trigger. */
+export function StartSwitchSheet({ anchor, root, rootSize, onClose, ...props }: Omit<StartSwitchProps, "popover"> & { anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize }) {
+  const { label, header, body, dismiss } = useStartSwitch({ ...props, onClose: () => { onClose(); setTimeout(() => focusControl(anchor.current), 0); } });
+  return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={props.colors} label={label} onClose={dismiss}
+    placement={props.compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 400, maxHeight: 560 }} header={header}>
+    {body}
   </AnchoredMenu>;
+}
+
+/**
+ * The composer pill's popover: the same body inside the host's popover or bottom sheet. A plugin popover gets no
+ * session navigation, so each open is handed once to the Kontor screen, which opens it by exact ID (`openHandOff`).
+ * Whether this app lets plugins open sessions is the screen's to say, so rows stay openable here.
+ */
+export function StartSwitchPopover({ host, theme, layout, close, openScreen, screenId }: PluginButtonContentProps & { openScreen: (input: PluginOpenScreenInput) => void; screenId: string }) {
+  const hostStatus = useHosts().find((candidate) => candidate.serverId === host.id)?.status ?? "offline";
+  // Reads the shared directory without setting its Archived choice; Recent and search leave archived sessions out.
+  const directory = useSessionDirectory({ hostId: host.id, hostStatus });
+  const toast = useToast();
+  /** Null once Kontor received the request and the popover closed; otherwise why it could not open. */
+  const go = (key?: string): string | null => {
+    try { openScreen(key ? { screenId, params: { target: key } } : { screenId }); }
+    catch (error) { if (key) withdrawHandOff(key); return errorText(error) || "Paseo could not open Kontor."; }
+    close();
+    return null;
+  };
+  const handOff = (target: HandOffTarget) => go(handOffOpen(host.id, target));
+  const report = (failure: string | null) => { if (failure) toast.error(failure); };
+  const { header, body } = useStartSwitch({ compact: layout.compact, colors: theme.colors, hostId: host.id, hostStatus, directory: directory.state, canOpen: true,
+    onOpen: (entry) => report(handOff({ kind: "session", agentId: entry.id })),
+    onShowAll: (query) => report(handOff({ kind: "search", query })),
+    onOpenCreated: (outcome) => {
+      const failure = handOff({ kind: "created", outcome });
+      return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };
+    },
+    onClose: close, popover: { openKontor: () => report(go()) } });
+  return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}</View></ControlHelpProvider>;
 }
 
 /** No X glyph here: in Sessions an X archives, and a look-alike must never sit on a row. */

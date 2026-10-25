@@ -88,7 +88,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const isCurrent = () => live.current && currentHost.current === hostId && isActive();
   const opening = useRef<string | null>(null);
-  const [openState, setOpenState] = useState<{ requestId: string; status: "opening" | "opened" | "failed"; message?: string } | null>(null);
+  const [openState, setOpenState] = useState<{ requestId: string; status: "opening" | "opened" | "handed" | "failed"; message?: string } | null>(null);
   const tall = compact || COARSE_POINTER;
   const muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 } as const;
   // The footer stays outside the scroll so Create is never below the fold of a short panel.
@@ -105,7 +105,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     try { result = onOpenCreated(outcome); }
     catch (error) { result = { ok: false, reason: "failed", message: error instanceof Error ? error.message : "Paseo could not open this session." }; }
     if (!result.ok) opening.current = null;
-    if (isCurrent()) setOpenState(result.ok ? { requestId: outcome.requestId, status: "opened" } : { requestId: outcome.requestId, status: "failed", message: result.message });
+    if (isCurrent()) setOpenState(result.ok ? { requestId: outcome.requestId, status: result.handoff ? "handed" : "opened" } : { requestId: outcome.requestId, status: "failed", message: result.message });
   };
   const finish = (outcome: CreateOutcome, requestId: string, title: string) => {
     if (!isCurrent()) return;
@@ -135,9 +135,9 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       {outcome.differences.map((line) => <Text key={line} style={muted}>• {line}</Text>)}
       {created ? <Text style={muted}>{personaLine(outcome.persona, providerLabel)}</Text> : null}
       {openNote ? <Text style={muted}>{openNote}</Text> : null}
-      {opened ? <Text testID="kontor-new-lsa-open-status" accessibilityLiveRegion="polite" style={muted}>{opened.status === "opening" ? "Opening session…" : opened.status === "opened" ? "Opened in Paseo." : `Created. Opening failed: ${opened.message} Use Open session to try again.`}</Text> : null}
+      {opened ? <Text testID="kontor-new-lsa-open-status" accessibilityLiveRegion="polite" style={muted}>{opened.status === "opening" ? "Opening session…" : opened.status === "opened" ? "Opened in Paseo." : opened.status === "handed" ? "Opening in Kontor…" : `Created. Opening failed: ${opened.message} Use Open session to try again.`}</Text> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {created && outcome.agentId && canOpen && opened?.status !== "opened" ? <Action small label="Open session" colors={colors} disabled={opened?.status === "opening" || options.status === "offline"} onPress={() => openCreated(outcome)} /> : null}
+        {created && outcome.agentId && canOpen && opened?.status !== "opened" && opened?.status !== "handed" ? <Action small label="Open session" colors={colors} disabled={opened?.status === "opening" || options.status === "offline"} onPress={() => openCreated(outcome)} /> : null}
         {outcome.state === "unknown" ? <Action small label="Check" accessibilityLabel="Check the host for this creation" colors={colors} onPress={() => runCheck(outcome.requestId, outcome.title)} /> : null}
         {outcome.state === "refused" ? <Action small label="Back to the form" colors={colors} onPress={() => { submitted.current = false; setPhase({ kind: "draft" }); }} /> : null}
         {outcome.state !== "refused" && outcome.state !== "unknown" ? <Action small label="Done" colors={colors} onPress={onCancel} /> : null}
