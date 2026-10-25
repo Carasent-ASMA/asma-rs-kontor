@@ -7,7 +7,7 @@ import { projectJiraHistory } from "../server/jira-history";
 import { readConfiguredSource } from "../server/read-sources";
 import { jiraCapture } from "../client/page-data";
 import { capturedWorkstreams, derivedWorkstreamNote, planFallbackNote, planWorkstreamMappings, planWorkstreamOptions } from "../client/plan-workstreams";
-import { buildOrganizationTree, organizationScope, visibleSessions } from "../client/session-organization";
+import { buildOrganizationTree, filterOrganizationTree, organizationScope, visibleSessions, type OrganizationGroup } from "../client/session-organization";
 import { sessionEntry } from "./session-fixtures";
 
 // The live shapes of 2026-10-24: Jira labels ASMA-7675 ws:qnr-v2 and ASMA-8633/8639 ws:kontor; the ASMA-7675 plan declares no workstream.
@@ -119,6 +119,20 @@ describe("epic workstreams from the Jira capture's ws: labels", () => {
     // Filing follows the epic; the tree still shows each native desk's sessions under that desk.
     expect(top["DESK • ADAM"]).toEqual(["adam-adhoc", "lsa-8633", "lsa-8639", "tpm-8633", "tpm-8639"]);
     expect([top["DESK • PR REVIEW"], top["DESK • QSW"], top.kontor]).toEqual([["pr-desk"], ["qsw-desk"], ["archived", "qa-8634"]]);
+  });
+
+  it("groups a filtered workstream by epic across its desk and projects, and the desks keep their own sessions", () => {
+    const mappings = planWorkstreamMappings([qnrPlan], reads, entries, [], saved, {}, registry);
+    const tree = buildOrganizationTree({ entries, displayMappings: mappings, byWorkstream: true });
+    const only = (key: string) => filterOrganizationTree(tree, (entry) => organizationScope(entry, mappings).workstream === key);
+    const epics = (groups: readonly OrganizationGroup[]) => Object.fromEntries(groups.flatMap((group) => group.groups.filter((child) => child.kind === "epic")
+      .map((child) => [`${group.label} → ${child.label}`, visibleSessions([child]).map((entry) => entry.id).sort()])));
+    expect(only("kontor").map((group) => group.label)).toEqual(["kontor"]);
+    expect(epics(only("kontor"))).toEqual({ "kontor → ASMA-8633": ["lsa-8633", "qa-8634", "tpm-8633"], "kontor → ASMA-8639": ["archived", "lsa-8639", "tpm-8639"] });
+    expect(epics(only("qnr-v2"))).toEqual({ "qnr-v2 → ASMA-7675": ["lsa-8350", "seat-a"] });
+    const top = Object.fromEntries(tree.map((group) => [group.label, visibleSessions([group]).map((entry) => entry.id).sort()]));
+    expect([top["DESK • ADAM"], top["DESK • PR REVIEW"], top["DESK • QSW"]]).toEqual([["adam-adhoc"], ["pr-desk"], ["qsw-desk"]]);
+    expect(Object.values(top).flat().sort()).toEqual(entries.map((entry) => entry.id).sort());
   });
 
   it("says why a session stays unlinked, naming the capture and its repair", () => {

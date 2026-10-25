@@ -116,6 +116,8 @@ export type OrganizationInput = {
   readonly projects?: readonly OrganizationProject[];
   /** An explicit sort's position per session ID; it replaces saved and default session order, never group order. */
   readonly leafOrder?: ReadonlyMap<string, number>;
+  /** A workstream filter is active: sessions group by their workstream and epic, not by native desk project or project. */
+  readonly byWorkstream?: boolean;
 };
 export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
 export type OrganizationProject = { readonly id: string; readonly name: string };
@@ -834,6 +836,9 @@ export function organizationGroupRank(value: OrganizationGroup): number {
   return value.desk ? 0 : workstreamRank(value.label);
 }
 
+/** The project key of an epic grouped across projects under a workstream filter. */
+const ACROSS_PROJECTS = "*";
+
 function buildHierarchy(input: {
   readonly entries: readonly DirectoryEntry[];
   readonly projects?: readonly OrganizationProject[];
@@ -841,8 +846,13 @@ function buildHierarchy(input: {
   readonly displayMappings: OrganizationInput["displayMappings"];
   readonly nativeOrder: ReadonlyMap<string, number>;
   readonly workspaces?: readonly OrganizationWorkspace[];
+  readonly byWorkstream?: boolean;
 }): OrganizationGroup[] {
-  const nativeDesks = buildNativeDesks(input, input.nativeOrder);
+  // Under a workstream filter, a desk session filed under another workstream leaves the desk, and a known epic is one group across projects.
+  const filed = (entry: DirectoryEntry) => !!input.byWorkstream && nativeDesk(entry.projectName) !== null
+    && normalizedPrefix(organizationScope(entry, input.displayMappings).workstream) !== nativeDesk(entry.projectName);
+  const across = (epic: string) => !!input.byWorkstream && epic !== UNASSIGNED_EPIC;
+  const nativeDesks = buildNativeDesks({ ...input, entries: input.entries.filter((entry) => !filed(entry)) }, input.nativeOrder);
   const nativeIds = new Set(nativeDesks.map((desk) => desk.project!.id));
   const workstreams = new Map<
     string,
@@ -857,7 +867,7 @@ function buildHierarchy(input: {
     }
   >();
   for (const entry of input.entries) {
-    if (entry.projectKey && nativeIds.has(entry.projectKey)) continue;
+    if (entry.projectKey && nativeIds.has(entry.projectKey) && !filed(entry)) continue;
     const scope = organizationScope(entry, input.displayMappings);
     const workstreamKey = normalizedPrefix(scope.workstream);
     let workstream = workstreams.get(workstreamKey);
@@ -872,12 +882,12 @@ function buildHierarchy(input: {
       continue;
     }
     const projectKey = entry.projectKey ?? `unknown:${entry.workspaceId ?? entry.cwd ?? entry.id}`;
-    const epicKey = JSON.stringify([projectKey, normalizedPrefix(scope.epic)]);
+    const epicKey = JSON.stringify([across(scope.epic) ? ACROSS_PROJECTS : projectKey, normalizedPrefix(scope.epic)]);
     const epic = workstream.epics.get(epicKey);
     if (epic) {
       epic.entries.push(entry);
     } else {
-      workstream.epics.set(epicKey, { label: scope.epic, projectKey, projectName: entry.projectName ?? "Project unknown", entries: [entry] });
+      workstream.epics.set(epicKey, { label: scope.epic, projectKey: across(scope.epic) ? ACROSS_PROJECTS : projectKey, projectName: entry.projectName ?? "Project unknown", entries: [entry] });
     }
   }
   const groups: OrganizationGroup[] = [];
@@ -895,9 +905,9 @@ function buildHierarchy(input: {
     // A workspace carries no desk label, so a desk workstream or its native desk project makes it desk work.
     if (epic === UNASSIGNED_EPIC && (workstreamRank(stream) === 0 || desk !== null)) { parent.deskEmpty.push(workspace); parent.isDesk = true; continue; }
     const projectKey = workspace.projectKey ?? `unknown:${workspace.id}`;
-    const epicKey = JSON.stringify([projectKey, normalizedPrefix(epic)]);
+    const epicKey = JSON.stringify([across(epic) ? ACROSS_PROJECTS : projectKey, normalizedPrefix(epic)]);
     let target = parent.epics.get(epicKey);
-    if (!target) { target = { label: epic, projectKey, projectName: workspace.projectName ?? "Project unknown", entries: [], emptyWorkspaces: [] }; parent.epics.set(epicKey, target); }
+    if (!target) { target = { label: epic, projectKey: across(epic) ? ACROSS_PROJECTS : projectKey, projectName: workspace.projectName ?? "Project unknown", entries: [], emptyWorkspaces: [] }; parent.epics.set(epicKey, target); }
     target.emptyWorkspaces = [...(target.emptyWorkspaces ?? []), workspace];
   }
   for (const [key, workstream] of workstreams) {
@@ -913,7 +923,7 @@ function buildHierarchy(input: {
         nativeOrder: input.nativeOrder,
         emptyWorkspaces: epic.emptyWorkspaces,
         projectKey: epic.projectKey,
-        displayLabel: multipleProjects ? `${epicLabel(epic.label)} · ${epic.projectName}` : epicLabel(epic.label),
+        displayLabel: multipleProjects && epic.projectKey !== ACROSS_PROJECTS ? `${epicLabel(epic.label)} · ${epic.projectName}` : epicLabel(epic.label),
       }),
     );
     const deskWorkspaces = workspaceChildren({
@@ -1127,6 +1137,7 @@ export function buildOrganizationTree(organization: OrganizationInput): Organiza
     nativeOrder,
     workspaces: input.workspaces,
     projects: input.projects,
+    byWorkstream: input.byWorkstream,
   });
 }
 

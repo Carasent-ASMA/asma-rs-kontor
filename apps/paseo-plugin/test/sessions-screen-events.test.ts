@@ -1554,6 +1554,9 @@ describe("SessionsScreen toolbar events", () => {
     expect(lines({ "session:desk-with-epic": { workstream: "declared" } })["Workstream association"]).toBe("declared");
     expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream association")!.value).toBe("labelled");
     expect(lines({})).not.toHaveProperty("Workstream");
+    expect(lines({})).not.toHaveProperty("Workstream source");
+    const derived = Object.fromEntries(sessionDetailLines(session, { "session:desk-with-epic": { workstream: "kontor" } }, null, "Workstream from the Jira ws:kontor label of ASMA-99101.").map(({ label, value }) => [label, value]));
+    expect(derived).toMatchObject({ "Native desk": "DESK • ADAM", "Workstream association": "kontor", "Workstream source": "Workstream from the Jira ws:kontor label of ASMA-99101." });
     expect(lines({})["Association verification"]).toBe("Workstream registry membership and epic/plan links are not checked here.");
     expect(lines({ "session:desk-with-epic": { workstream: "unregistered-association", epic: "ASMA-99999" } })).toMatchObject({
       "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "unregistered-association",
