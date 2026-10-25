@@ -11,7 +11,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "recovery";
+  readonly inventory: "base" | "large" | "long" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "recovery";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -69,6 +69,7 @@ export const SCENARIOS: readonly Scenario[] = [
   { id: "provenance", title: "Search: provenance", summary: "Search “swe”: matches across epics, a desk, a session without a workspace and one with no labels.", inventory: "base", sources: true, settings: EXPANDED, start: { query: "swe" } },
   { id: "empty-results", title: "Empty results", summary: "A search that matches nothing.", inventory: "base", sources: true, settings: EXPANDED, start: { query: "no such session" } },
   { id: "clear-restore", title: "Clear restores the tree", summary: "84 sessions. Open groups, scroll, filter, then clear: the tree and scroll come back.", inventory: "large", sources: true, settings: EXPANDED },
+  { id: "long-list", title: "Long list", summary: "A long day of work: more than 412 sessions, titles from one word to three lines. Scroll, live updates and reconnects.", inventory: "long", sources: true },
   { id: "board-tasks", title: "Board: task sessions", summary: "Plan ASMA-99101 on Board: zero, one and several linked sessions per task.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" } },
   { id: "team-declared", title: "Board: declared teams (simulated)", summary: "Plan ASMA-99101 with SIMULATED team, workflow and risk declarations: parallel QA and AUD, missing roles, a partial declaration and undeclared tasks.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" }, simulatedTeams: true },
   { id: "team-unordered", title: "Board: team without order (simulated)", summary: "Plan ASMA-99102 with SIMULATED declarations: roles with no declared handoff, and a declared team with no session yet.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99102" }, simulatedTeams: true },
