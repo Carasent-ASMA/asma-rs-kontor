@@ -167,7 +167,9 @@ async fn source_status_reports_each_source_and_its_completion_instant() {
         "the plan's declared associations are pending verification"
     );
     assert_eq!(sources.sources[1].state, CatalogSourceState::NotConfigured);
+    assert_eq!(sources.sources[1].pending_verification, 0);
     assert_eq!(sources.sources[2].state, CatalogSourceState::NeverCollected);
+    assert_eq!(sources.sources[2].pending_verification, 0);
     // The status call does not move a source's freshness.
     assert_eq!(
         fixture.catalog.sources().expect("a second status").sources[0].as_of,

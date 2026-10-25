@@ -1225,7 +1225,10 @@ impl Catalog {
         }) {
             Ok((checkpoint, evidence)) => {
                 let mut coverage = Vec::new();
-                let mut pending_verification = 0;
+                // Declared keys are Jira's own coverage gap, not an association:
+                // the frozen v1 contract records associations only for plan
+                // declarations and operator choices.
+                let pending_verification = 0;
                 if let Some(coverage_value) = &evidence.coverage {
                     coverage.push(CatalogSourceCoverage {
                         subject: "scope".to_owned(),
@@ -1259,8 +1262,11 @@ impl Catalog {
                             coverage_value.unresolved.len()
                         ),
                     });
-                    pending_verification =
-                        coverage_value.missing.len() + coverage_value.unresolved.len();
+                    // Declared keys are Jira's own coverage gap, not an
+                    // association: the frozen v1 contract records
+                    // associations only for plan declarations and operator
+                    // choices, so Jira contributes no pending-verification
+                    // associations.
                     coverage.push(CatalogSourceCoverage {
                         subject: "schedule".to_owned(),
                         state: if coverage_value.overdue {
