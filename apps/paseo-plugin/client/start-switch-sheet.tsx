@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
@@ -18,6 +18,8 @@ import { ageInWords } from "./session-time";
 import { useSessionDirectory } from "./use-session-directory";
 import { StartSwitchStatuses } from "./start-switch-statuses";
 import type { StateShortcut } from "./session-state-shortcuts";
+import { ArchiveSessionButton } from "./session-lifecycle-view";
+import { useStartSwitchArchive } from "./start-switch-archive";
 
 /** The Kontor screen param that opens this sheet, from the Command Center item. */
 export const SWITCH_SHEET = "switch";
@@ -121,8 +123,9 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const recent = useRecent(hostId);
   const saved = readSavedEntries(recent.record);
   const create = useCreateOptions(hostStatus === "online", initialScope);
+  const archive = useStartSwitchArchive(hostId, directory, hostStatus === "online");
   const now = Date.now();
-  const { rows, total } = switchRows(directory.entries, query, now, recent.record);
+  const { rows, total } = switchRows(archive.directory.entries, query, now, recent.record);
   const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live });
   const unavailable = createAvailability(create.state);
   const tall = compact || COARSE_POINTER;
@@ -144,7 +147,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       </View>
       <TextInput testID="kontor-switch-search" accessibilityLabel="Jump to any session" placeholder="Jump to any session…" autoFocus={!compact} value={query} onChangeText={setQuery}
         placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 12, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
-      {onShowState ? <StartSwitchStatuses directory={directory} hostStatus={hostStatus} colors={colors} onSelect={onShowState} /> : null}
+      {onShowState ? <StartSwitchStatuses directory={archive.directory} hostStatus={hostStatus} colors={colors} onSelect={onShowState} /> : null}
     </View>;
   const muted = { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 } as const;
   let empty: string | null = null;
@@ -155,7 +158,10 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const items = <>
     {freshness === "Live" ? null : <Text testID="kontor-switch-freshness" style={muted}>Last known · {freshness}</Text>}
     {canOpen ? null : <Text style={muted}>This Paseo app does not let plugins open sessions; rows are listed only.</Text>}
-    {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} />)}
+    {archive.notice ? <Text testID="kontor-switch-archive-result" accessibilityRole={archive.notice.error ? "alert" : undefined} role={archive.notice.error ? undefined : "status"} accessibilityLiveRegion="polite" style={{ ...muted, color: archive.notice.error ? colors.statusWarning : colors.foreground }}>{archive.notice.message}</Text> : null}
+    {archive.notice?.review ? <Action small label="Open Sessions to review archive" colors={colors} onPress={() => onShowAll("")} /> : null}
+    {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} action={<ArchiveSessionButton session={row.entry} compact colors={colors}
+      disabled={archive.disabled || archive.held(row.entry)} pending={archive.pendingId === row.entry.id} onPress={() => { void archive.onArchive(row.entry); }} />} />)}
     {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
     {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
     {!query.trim() && (total > rows.length || saved.ids.length > 0) ? <Action small label={`Show all ${total} recent in Sessions`}
@@ -228,15 +234,15 @@ export function StartSwitchPopover({ host, theme, layout, workspaceId, close, op
   return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}</View></ControlHelpProvider>;
 }
 
-/** No X glyph here: in Sessions an X archives, and a look-alike must never sit on a row. A menu row unless `role` says otherwise. */
-export function SwitchRowItem({ row, colors, tall, onPress, role = "menuitem" }: { row: SwitchRow; colors: Colors; tall: boolean; onPress: () => void; role?: "menuitem" | "button" }) {
-  return <Pressable testID={`kontor-switch-row-${row.entry.id}`} role={role} accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
+/** Open and the shared archive X have independent hit areas; the action is never nested in Open. */
+export function SwitchRowItem({ row, colors, tall, onPress, role = "menuitem", action }: { row: SwitchRow; colors: Colors; tall: boolean; onPress: () => void; role?: "menuitem" | "button"; action?: ReactNode }) {
+  return <View style={{ flexDirection: "row", alignItems: "center" }}><Pressable testID={`kontor-switch-row-${row.entry.id}`} role={role} accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
     style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5,
-      backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
+      flex: 1, minWidth: 0, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
     <SessionStateMarker state={sessionState(row.entry)} colors={colors} />
     <View style={{ flex: 1, minWidth: 0 }}>
       <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 13 }}>{row.entry.title}</Text>
       <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 2 }}>{row.detail}</Text>
     </View>
-  </Pressable>;
+  </Pressable>{action}</View>;
 }

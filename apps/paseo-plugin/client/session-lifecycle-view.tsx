@@ -13,7 +13,7 @@ export function ArchiveSessionButton({ session, onPress, colors, disabled = fals
   const help = useControlHelp("Archive session", buttonRef);
   return <>
     <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={pending ? `Archiving ${session.title}…` : `Archive session: ${session.title} (${session.id})`} accessibilityHint="Stop and archive this exact session. History and files remain. Sessions with managed children are protected."
-      disabled={disabled} accessibilityState={{ disabled, busy: pending }} aria-busy={pending || undefined} {...NO_PRESS_DELAY} onPress={() => { help.dismiss(); onPress(); }}
+      disabled={disabled} accessibilityState={{ disabled, busy: pending }} aria-busy={pending || undefined} {...NO_PRESS_DELAY} onPress={(event) => { event?.stopPropagation(); help.dismiss(); onPress(); }}
       style={({ pressed }: { pressed: boolean }) => ({ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", borderRadius: 6, ...pressFeedback(colors, pressed), opacity: pending ? 1 : disabled ? 0.4 : pressed ? 0.7 : 1 })}>
       {pending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : <Icon name="X" size={14} color={colors.foregroundMuted} />}
     </Pressable>

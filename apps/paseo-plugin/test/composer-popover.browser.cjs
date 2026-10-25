@@ -24,7 +24,7 @@ assert.equal(renderer('react/package.json').version, '19.1.0');
 assert.equal(renderer('react-dom/package.json').version, '19.1.0');
 assert.equal(renderer('react-native-web/package.json').version, '0.21.4');
 const iconRoot = path.join(rootOf(renderer, 'lucide-react'), 'dist/esm/icons');
-const fixtureGlyphs = { Play: 'play', MessageCircleQuestion: 'message-circle-question', Ban: 'ban', CircleAlert: 'circle-alert' };
+const fixtureGlyphs = { Play: 'play', MessageCircleQuestion: 'message-circle-question', Ban: 'ban', CircleAlert: 'circle-alert', X: 'x' };
 const glyphImports = Object.entries(fixtureGlyphs).map(([name, file]) => `import ${name} from ${JSON.stringify(path.join(iconRoot, file + '.mjs'))};`).join('\n');
 const client = file => JSON.stringify(path.join(plugin, 'client', file));
 fs.writeFileSync(path.join(fixture, 'package.json'), '{"private":true,"type":"module"}\n');
@@ -39,7 +39,7 @@ export const useHosts = () => useSyncExternalStore(listener=>{window.fixture.hos
 `);
 fs.writeFileSync(path.join(fixture, 'sdk-native.tsx'), `import React from 'react';
 ${glyphImports}
-const icons={Play,MessageCircleQuestion,Ban,CircleAlert};
+const icons={Play,MessageCircleQuestion,Ban,CircleAlert,X};
 export {TextInput,ScrollView} from 'react-native';
 export const useToast = () => ({ error: message => { window.fixture.toasts.push(message); }, show: () => {} });
 export const Icon = ({name,size=16,color}) => {const Glyph=icons[name];return Glyph?<Glyph aria-hidden="true" width={size} height={size} color={color}/>:<span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;};
@@ -59,6 +59,7 @@ document.body.style.margin='0';
 const query=new URLSearchParams(location.search), dark=query.get('theme')==='dark', compact=innerWidth<700;
 const colors={surface0:dark?'#15171c':'#fff',surface1:dark?'#1f222a':'#f5f6f8',surface2:dark?'#2e333e':'#e6ebf2',foreground:dark?'#ecedf0':'#20242c',foregroundMuted:dark?'#a8adb7':'#5e6570',border:dark?'#414754':'#c7cdd7',accent:dark?'#9cbfff':'#245bba',accentForeground:dark?'#15171c':'#fff',statusSuccess:'#168047',statusWarning:'#a76b0a',statusDanger:'#b02222'};
 const HOST='fixture-a', TITLE='Start or switch session';
+const reviews=new Map();
 const values=new Map(); configureRecentStorage({read:key=>values.get(key),write:(key,value)=>values.set(key,value)});
 const page=(id,title,archivedAt=null)=>({agent:{id,title,status:'idle',provider:'fixture',cwd:'/fixture',workspaceId:'wks-adam',model:null,labels:{},createdAt:'2026-10-22T09:00:00.000Z',updatedAt:'2026-10-22T10:00:00.000Z',archivedAt,pendingPermissions:[],requiresAttention:false,attentionReason:null,attentionTimestamp:null},project:null});
 // Two sessions share a title: only the exact ID may leave a row. 25 searchable batches exceed the 20 shown matches.
@@ -73,12 +74,23 @@ const now=Date.now(); recordVisit(HOST,'dup-1',now-120000); recordVisit(HOST,'du
 const catalog={enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:'project-adam',issues:[],jiraProblem:null,
  desks:[{projectId:'project-adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/project-adam',lead:{ADHOC:'wks-adhoc',LSA:'wks-lsa',TPM:'wks-tpm'}}],profile:null,
  providers:[{id:'active',label:'Active provider',status:'ready',available:true,note:null,persona:'supported',models:[{id:'first',label:'Active model',efforts:[],defaultEffort:null}],defaultModel:'first',modes:[],defaultMode:null}]};
-window.fixture={hostStatus:'online',hostListeners:new Set(),inventoryCalls:[],observers:[],stateFilters:[],draft:'unfinished chat draft',pendingQuestion:'pending-permission',calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
+window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Set(),inventoryCalls:[],observers:[],stateFilters:[],draft:'unfinished chat draft',pendingQuestion:'pending-permission',calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
  client:hostId=>{if(hostId!==HOST)throw new Error('Unexpected host '+hostId);return {agents:{list}};},
  recent:()=>readRecent(HOST).record.visits.map(visit=>visit.id),
  rpc:async(name,input)=>{window.fixture.calls.push({name,input});
   if(name==='sessions.create-options'){await new Promise(resolve=>setTimeout(resolve,10));return catalog;}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
+  if(name==='sessions.lifecycle-preview'){
+   const item=rows.find(row=>row.agent.id===input.agentIds[0]);if(!item)throw new Error('Unknown exact ID');const a=item.agent,blocked=window.fixture.archiveMode==='blocked';
+   const row={id:a.id,title:a.title,workspaceId:a.workspaceId,cwd:a.cwd,provider:a.provider,model:a.model,effort:null,mode:null,nativeStatus:a.status,fingerprint:'fixture',category:'candidate',eligible:!blocked,reason:blocked?'Managed child is protected.':'Fixture eligible.',children:[],outcome:blocked?'blocked':'pending',message:null};
+   const review={id:'00000000-0000-4000-8000-'+String(reviews.size+1).padStart(12,'0'),action:'archive',scope:'filtered',createdAt:new Date().toISOString(),target:input.target,rows:[row]};reviews.set(review.id,review);return review;
+  }
+  if(name==='sessions.lifecycle-execute-item'){
+   await new Promise(resolve=>setTimeout(resolve,120));const review=reviews.get(input.reviewId),row=review.rows.find(row=>row.id===input.agentId);if(!row||!row.eligible)throw new Error('Unexpected archive execute');
+   const item=rows.find(value=>value.agent.id===input.agentId),uncertain=window.fixture.archiveMode==='uncertain';
+   if(!uncertain){item.agent={...item.agent,status:'closed',archivedAt:new Date().toISOString(),updatedAt:new Date().toISOString()};for(const observer of window.fixture.observers)observer.update({type:'agent_update',payload:{kind:'upsert',agent:item.agent,project:null}});}
+   return {...row,outcome:uncertain?'uncertain':'archived',runtime:uncertain?'unconfirmed':'closed',availability:{agentId:row.id,state:'readable',nativeStatus:item.agent.status,archivedAt:item.agent.archivedAt,revision:item.agent.updatedAt,checkedAt:new Date().toISOString(),reason:'Fixture exact read.'}};
+  }
   throw new Error('Unexpected RPC in isolated fixture: '+name);
  }};
 window.fixture.setHost=status=>{window.fixture.hostStatus=status;for(const listener of window.fixture.hostListeners)listener()};
@@ -155,6 +167,30 @@ async function run(name, test) {
   });
   await server.listen(); browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
+    for(const width of [320,390,1440]) await run(`archive-x-${width}`,async()=>{
+      const {page,context}=await pageFor(width,'light');const errors=[];page.on('pageerror',error=>errors.push(error.message));
+      const count=async name=>page.evaluate(name=>window.fixture.calls.filter(call=>call.name===name).length,name);
+      try{
+        const initial=await page.evaluate(()=>({inventory:window.fixture.inventoryCalls.length,lifecycle:window.fixture.calls.filter(call=>call.name.startsWith('sessions.lifecycle')).length}));assert.equal(initial.lifecycle,0);
+        const x=page.getByRole('button',{name:'Archive session: Route review (dup-1)',exact:true}),open=page.getByTestId('kontor-switch-row-dup-1');
+        const box=await x.boundingBox(),openBox=await open.boundingBox();assert.ok(box.width>=44&&box.height>=44);assert.ok(openBox.x+openBox.width<=box.x+0.5,'Open and archive hit areas are independent');
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:path.join(output,`archive-x-${width}.png`)});
+        await x.focus();assert.equal(await x.evaluate(node=>document.activeElement===node),true);await x.press('Enter');await page.keyboard.press('Enter');
+        await expect(page.getByRole('button',{name:'Archiving Route review…',exact:true})).toHaveAttribute('aria-busy','true');
+        await expect(open).toHaveCount(0);await expect(page.getByTestId('kontor-switch-archive-result')).toHaveText('Archived Route review.');
+        await expect(page.getByTestId('kontor-switch-status-running')).toHaveText('1');assert.equal(await count('sessions.lifecycle-preview'),1);assert.equal(await count('sessions.lifecycle-execute-item'),1);
+        assert.deepEqual(await page.evaluate(()=>({screens:window.fixture.screens.length,opens:window.fixture.opens.length,closes:window.fixture.closes,draft:window.fixture.draft,pending:window.fixture.pendingQuestion})),{screens:0,opens:0,closes:0,draft:'unfinished chat draft',pending:'pending-permission'});
+        await page.evaluate(()=>window.fixture.archiveMode='blocked');await page.getByRole('button',{name:'Archive session: Route review (dup-2)',exact:true}).click();
+        await expect(page.getByTestId('kontor-switch-archive-result')).toHaveText('Managed child is protected.');await expect(page.getByTestId('kontor-switch-row-dup-2')).toHaveCount(1);assert.equal(await count('sessions.lifecycle-execute-item'),1);
+        await page.getByRole('textbox',{name:'Jump to any session',exact:true}).fill('Batch');await page.evaluate(()=>window.fixture.archiveMode='uncertain');
+        const uncertain=page.getByRole('button',{name:'Archive session: Batch 01 (batch-01)',exact:true});await uncertain.click();
+        await expect(page.getByTestId('kontor-switch-archive-result')).toContainText('archive result unknown');await expect(uncertain).toHaveAttribute('aria-disabled','true');
+        await expect(page.getByTestId('kontor-switch-row-batch-01')).toHaveCount(1);await expect(page.getByRole('textbox',{name:'Jump to any session',exact:true})).toHaveValue('Batch');
+        await expect(page.getByRole('button',{name:'Open Sessions to review archive',exact:true})).toHaveCount(1);assert.equal(await count('sessions.lifecycle-execute-item'),2);
+        assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),initial.inventory,'Archive UI must not add inventory reads');await page.screenshot({path:path.join(output,`archive-x-${width}-uncertain.png`)});
+        assert.deepEqual(errors,[]);return{box,openBox,inventoryReads:initial.inventory,preview:await count('sessions.lifecycle-preview'),execute:await count('sessions.lifecycle-execute-item'),exactId:true,noOpenOrClose:true,uncertainRetained:true,errors};
+      }finally{await context.close();}
+    });
     for (const width of [320,390,1440]) for (const theme of ['light','dark']) await run(`statuses-${width}-${theme}`,async()=>{
       const {page,context}=await pageFor(width,theme);const errors=[];page.on('pageerror',error=>errors.push(error.message));
       try{

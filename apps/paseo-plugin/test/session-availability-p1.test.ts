@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: () => vi.fn() }));
-import { bindAvailability, withSessionAvailability } from "../client/use-session-availability";
+import { bindAvailability, withLocalDispositions, withSessionAvailability } from "../client/use-session-availability";
 import { hasSessionAttention } from "../client/session-directory";
 import { sessionAvailabilityLabel } from "../client/session-view";
 import { sessionEntry } from "./session-fixtures";
@@ -36,5 +36,12 @@ describe("P1 availability cache truth", () => {
   });
   it("invalidates old-revision and future-dated claims", () => {
     for (const patch of [{ revision: "old" }, { checkedAt: new Date(Date.now() + 60_000).toISOString() }]) expect(hasSessionAttention(withSessionAvailability([entry()], { "native-a": { ...evidence("missing"), ...patch } })[0]!)).toBe(true);
+  });
+  it("does not relabel an older archive reply as the newer native revision", () => {
+    const original = entry(), newer = { ...original, updatedAt: "2026-10-25T12:02:00Z", archivedAt: null };
+    const reply = { ...evidence("readable"), archivedAt: "2026-10-25T12:01:00Z" };
+    const bound = bindAvailability(newer, reply);
+    expect(withLocalDispositions([newer], { [newer.id]: bound })[0]!.archivedAt).toBeNull();
+    expect(bound.revision).toBe(reply.revision);
   });
 });

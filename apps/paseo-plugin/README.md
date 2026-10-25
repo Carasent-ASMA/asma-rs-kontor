@@ -169,7 +169,11 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   every kept visit and the saved entries; typing matches every non-archived
   session by title, place and labels, Recent first, at most 20 rows, and
   **Show all N in Sessions** hands the query to Sessions unscoped. A row opens by native ID through the same
-  path as Sessions. Rows carry no archive control.
+  path as Sessions. A separate 44px archive X uses the same control and exact-ID
+  archive preflight/action as Sessions; it never opens the row. Pending and
+  refusal/result feedback stays in the sheet. Confirmed native membership removes
+  the row; uncertain outcomes stay visible for review in Sessions and are never
+  called success. Opening the sheet adds no archive or inventory read.
 - **State shortcuts.** The shared sheet and chat popover show Running,
   Questions (Needs input), Provider blocked and Errors over this host's
   nonarchived sessions in all projects. These counts use the retained directory,
