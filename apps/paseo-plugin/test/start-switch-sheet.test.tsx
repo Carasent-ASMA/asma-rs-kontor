@@ -1069,8 +1069,8 @@ describe("New session form", () => {
 
   it("names a disabled profile provider and its cause, promises no persona and substitutes nothing", () => {
     model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const work = { ...OPTIONS.providers[0]!, id: "codex-work", label: "Codex · Work (Carasent)", status: "disabled" as const, available: false, note: "Disabled on this host.", persona: "unverified" as const };
-    const f = form({ status: "ready", options: { ...OPTIONS, providers: [...OPTIONS.providers, work], profile: { name: "LSA", provider: "codex-work", model: "opus", modeId: "default", effort: "max" } } });
+    const work = { ...OPTIONS.providers[0]!, id: "codex-b", label: "Codex · Work (Carasent)", status: "disabled" as const, available: false, note: "Disabled on this host.", persona: "unverified" as const };
+    const f = form({ status: "ready", options: { ...OPTIONS, providers: [...OPTIONS.providers, work], profile: { name: "LSA", provider: "codex-b", model: "opus", modeId: "default", effort: "max" } } });
     f.type("Route review");
     expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Codex · Work (Carasent): Disabled on this host. The host's LSA profile chooses it. Choose an active provider.");
     expect(text(f.tree)).not.toContain("Persona:");
