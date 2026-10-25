@@ -11,7 +11,7 @@ import { readConfig } from "./config";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, checkCreate, createOutcomeSchema, createRequestSchema,
-  deskKind, deskName, executeCreate, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateOptions, topicProblem,
+  deskIssueProblem, deskKind, deskName, executeCreate, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateOptions, topicProblem,
   type CreateDesk, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type JiraIssue, type LeadWorkspace,
 } from "../shared/session-create";
 
@@ -294,15 +294,6 @@ export function readbackDifferences(agent: Agent, request: CreateRecord["request
   return differences;
 }
 
-/** Why an issue cannot start a lead on this desk; null when it can. */
-export function deskIssueProblem(desk: Pick<CreateDesk, "project" | "kind">, issue: JiraIssue): string | null {
-  if (!issue.open) return `${issue.key} is ${issue.status}; choose an open issue.`;
-  if (desk.kind === "adam" && !issue.epic) return `${issue.key} is a ${issue.type}, not an epic. ${desk.project} takes epics; a non-epic issue belongs on DESK • TICKETS.`;
-  if (desk.kind === "tickets" && issue.epic) return `${issue.key} is an epic. ${desk.project} takes non-epic issues; an epic belongs on DESK • ADAM.`;
-  if (desk.kind === "tickets" && issue.parent?.open) return `${issue.key} is under the active epic ${issue.parent.key} (${issue.parent.statusCategory}). It is delivered in that epic's ESW; choose an issue without an active parent epic.`;
-  return null;
-}
-
 /** One live Jira search through asma-cli; a failure is distinct from an empty result. */
 export type JiraSearch = (input: { query: string; issueClass: "epic" | "non-epic" | null; openOnly: boolean }) => Promise<{ issues: JiraIssue[]; failure: string | null }>;
 const jiraSearchOutput = z.object({ issues: z.array(jiraIssueSchema) }).strict();
@@ -425,11 +416,12 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const profile = config?.config.agentProfiles?.find((entry) => [entry.name, entry.id].some((value) => value.trim().toUpperCase() === role));
     let pending: CreateOutcome | null = null;
     try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogProjectId: null, providers: [], profile: null, issues: [], jiraProblem: null, pending: null, notes }; }
+    // The issue chooses its desk, so the search spans every type; an ineligible issue stays listed with its reason.
     let issues: JiraIssue[] = [], jiraProblem: string | null = null;
-    if (desk && start === "from-jira" && desk.kind !== "pr-review" && desk.kind !== "other") {
-      const result = await jira({ query: scope.issueKey ?? "", issueClass: desk.kind === "adam" ? "epic" : "non-epic", openOnly: true });
+    if (start === "from-jira") {
+      const result = await jira({ query: scope.issueKey ?? "", issueClass: null, openOnly: true });
       if (result.failure) jiraProblem = `Jira could not be read: ${result.failure}`;
-      else issues = result.issues.filter((issue) => deskIssueProblem(desk, issue) === null);
+      else issues = result.issues;
     }
     return { enabled: disabledReason === null, disabledReason, desks, catalogProjectId: desk?.projectId ?? null, providers,
       profile: profile ? { name: profile.name, provider: profile.provider, model: profile.model ?? null, modeId: profile.modeId ?? null, effort: profile.thinkingOptionId ?? null } : null,
@@ -523,7 +515,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       const gate = deskIssueProblem(desk, issue);
       if (gate) return refusal(gate);
       key = wanted;
-      topic = issueTopic(issue.summary);
+      topic = input.topic === undefined ? issueTopic(issue.summary) : normalizeTopic(input.topic);
     } else {
       topic = normalizeTopic(input.topic ?? "");
     }

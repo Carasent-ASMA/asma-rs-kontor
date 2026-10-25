@@ -37,14 +37,14 @@ export function fixtureCreate(enabled: boolean, add: (request: CreateRequest, ti
     const current = options(request.role);
     const desk = current.desks.find((entry) => entry.projectId === request.projectId);
     const issue = request.start === "from-jira" ? current.issues.find((entry) => entry.key === request.issueKey?.trim().toUpperCase()) ?? null : null;
-    const topic = request.start === "from-jira" ? issueTopic(issue?.summary ?? "") : normalizeTopic(request.topic ?? "");
+    const topic = request.start === "from-jira" && request.topic === undefined ? issueTopic(issue?.summary ?? "") : normalizeTopic(request.topic ?? "");
     const workspaceName = leadWorkspaceName(request.role, request.start);
     const workspaceId = desk?.lead[workspaceName] ?? null;
     const problem = !enabled ? current.disabledReason
       : !desk ? "SIMULATED: this scenario has no matching desk."
         : !workspaceId ? `SIMULATED: DESK • ADAM has no ${workspaceName} checkout.`
           : request.start === "from-jira" && !issue ? "SIMULATED: choose a fixture issue."
-            : request.start === "ad-hoc" && topicProblem(topic) ? topicProblem(topic)
+            : topicProblem(topic) ? topicProblem(topic)
               : request.provider !== "codex" || request.model !== "gpt-6.1-sol" || request.effort !== "xhigh" || request.modeId !== "fixture-mode" ? "Unsupported fixture creation options" : null;
     const title = leadTitle(request.role, issue?.key ?? null, topic);
     const result: CreateOutcome = { requestId: request.requestId, state: problem ? "refused" : "verified", title,

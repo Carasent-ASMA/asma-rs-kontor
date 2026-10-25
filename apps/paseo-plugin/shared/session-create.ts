@@ -104,6 +104,27 @@ export const jiraIssueSchema = z.object({
 }).strict();
 export type JiraIssue = z.infer<typeof jiraIssueSchema>;
 
+/** Why an issue cannot start a lead on this desk; null when it can. */
+export function deskIssueProblem(desk: Pick<CreateDesk, "project" | "kind">, issue: JiraIssue): string | null {
+  if (!issue.open) return `${issue.key} is ${issue.status}; choose an open issue.`;
+  if (desk.kind === "adam" && !issue.epic) return `${issue.key} is a ${issue.type}, not an epic. ${desk.project} takes epics; a non-epic issue belongs on DESK • TICKETS.`;
+  if (desk.kind === "tickets" && issue.epic) return `${issue.key} is an epic. ${desk.project} takes non-epic issues; an epic belongs on DESK • ADAM.`;
+  if (desk.kind === "tickets" && issue.parent?.open) return `${issue.key} is under the active epic ${issue.parent.key} (${issue.parent.statusCategory}), whose ESW delivers it. Start from ${issue.parent.key} instead.`;
+  return null;
+}
+
+/**
+ * The desk an issue starts on, whatever desk the dialog opened in: an epic on DESK • ADAM, a non-epic issue on
+ * DESK • TICKETS. `problem` says why it cannot start; the desk is null then.
+ */
+export function issueDesk<D extends Pick<CreateDesk, "project" | "kind">>(desks: readonly D[], issue: JiraIssue): { desk: D | null; problem: string | null } {
+  const kind = issue.epic ? "adam" : "tickets", name = issue.epic ? "DESK • ADAM" : "DESK • TICKETS";
+  const desk = desks.find((entry) => entry.kind === kind) ?? null;
+  const problem = deskIssueProblem({ kind, project: desk?.project ?? name }, issue)
+    ?? (desk ? null : `${issue.key} starts on ${name}, which has no checkout on this host. Create its lead workspaces through adoption first.`);
+  return problem ? { desk: null, problem } : { desk, problem: null };
+}
+
 /**
  * - `verified`: the host's readback of the new session matches every requested field.
  * - `differences`: created; the readback differs in the listed fields.
@@ -133,7 +154,7 @@ export const createOptionsSchema = z.object({
   providers: z.array(createProviderSchema),
   /** The host's agent profile for the chosen role, the form's defaults when present. */
   profile: z.object({ name: z.string(), provider: z.string(), model: z.string().nullable(), modeId: z.string().nullable(), effort: z.string().nullable() }).nullable(),
-  /** The desk-eligible issues for a From Jira ticket start; empty for any other start. */
+  /** The open issues matching a From Jira ticket search, of every type; `issueDesk` says where each starts. Empty for any other start. */
   issues: z.array(jiraIssueSchema),
   /** Why the issue list could not be read; null when it was or was not requested. */
   jiraProblem: z.string().nullable(),
@@ -150,6 +171,7 @@ export const createScopeSchema = z.object({
   workspaceId: id.optional(),
   role: z.enum(CREATE_ROLES).optional(),
   start: z.enum(CREATE_STARTS).optional(),
+  /** The From Jira search: an ASMA key or words; empty lists the newest open issues. */
   issueKey: z.string().max(200).optional(),
 }).strict();
 export type CreateScope = z.infer<typeof createScopeSchema>;
@@ -159,7 +181,7 @@ export const createRequestSchema = z.object({
   role: z.enum(CREATE_ROLES),
   start: z.enum(CREATE_STARTS),
   projectId: id,
-  /** The ad-hoc topic; absent for a From Jira ticket start, where the issue summary supplies it. */
+  /** The title topic. A From Jira start without one takes the issue summary; the key is never part of it. */
   topic: z.string().max(400).optional(),
   issueKey: z.string().max(200).nullable().optional(),
   /** A source session whose handoff summary the new lead reads before its first task. */

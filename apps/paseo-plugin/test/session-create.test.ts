@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
-import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskIssueProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
-import { deskKind, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
+import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
+import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 type NativeCreate = ReturnType<CreateClient["workspaces"]["ref"]>["agents"]["create"];
@@ -165,8 +165,19 @@ describe("desk and title grammar", () => {
     expect(deskIssueProblem(tickets, standalone)).toBeNull();
     expect(deskIssueProblem(tickets, underDone)).toBeNull();
     expect(deskIssueProblem(tickets, epic)).toContain("is an epic");
-    expect(deskIssueProblem(tickets, underActive)).toBe("ASMA-101 is under the active epic ASMA-100 (In Progress). It is delivered in that epic's ESW; choose an issue without an active parent epic.");
+    expect(deskIssueProblem(tickets, underActive)).toBe("ASMA-101 is under the active epic ASMA-100 (In Progress), whose ESW delivers it. Start from ASMA-100 instead.");
     expect(deskIssueProblem(adam, closedEpic)).toContain("ASMA-104 is Done");
+  });
+
+  it("derives the desk from the issue, never from the desk the dialog opened in", () => {
+    const desks = deskProjects(WORKSPACES);
+    expect(issueDesk(desks, epic)).toMatchObject({ desk: { projectId: "prj-adam" }, problem: null });
+    expect(issueDesk(desks, standalone)).toMatchObject({ desk: { projectId: "prj-tickets" }, problem: null });
+    expect(issueDesk(desks, underDone)).toMatchObject({ desk: { projectId: "prj-tickets" }, problem: null });
+    expect(issueDesk(desks, underActive)).toEqual({ desk: null, problem: expect.stringContaining("Start from ASMA-100 instead.") });
+    expect(issueDesk(desks, closedEpic)).toEqual({ desk: null, problem: expect.stringContaining("is Done") });
+    expect(issueDesk(desks.filter((desk) => desk.kind !== "tickets"), standalone))
+      .toEqual({ desk: null, problem: "ASMA-103 starts on DESK • TICKETS, which has no checkout on this host. Create its lead workspaces through adoption first." });
   });
 
   it("selects one versioned persona per role and start", () => {
@@ -274,15 +285,14 @@ describe("create options", () => {
     expect((await s.service.options({ role: "TPM" })).profile).toMatchObject({ name: "tpm", provider: "opencode", model: "big" });
   });
 
-  it("lists only open epics on ADAM and only non-epic issues without an active parent on TICKETS", async () => {
+  it("lists every open issue of every type from any desk, an ineligible one included, and searches by the given text", async () => {
     const s = await setup();
-    expect((await s.service.options({ projectId: "prj-adam", role: "LSA", start: "from-jira" })).issues.map((issue) => issue.key)).toEqual(["ASMA-100"]);
-    const tickets = await s.service.options({ projectId: "prj-tickets", role: "TPM", start: "from-jira" });
-    expect(tickets.issues.map((issue) => issue.key)).toEqual(["ASMA-102", "ASMA-103"]);
-    expect(s.jira).toHaveBeenCalledWith({ query: "", issueClass: "non-epic", openOnly: true });
-    s.jira.mockClear();
-    expect((await s.service.options({ projectId: "prj-pr", role: "LSA", start: "from-jira" })).issues).toEqual([]);
-    expect(s.jira).not.toHaveBeenCalled();
+    for (const projectId of ["prj-adam", "prj-tickets", "prj-pr"]) {
+      expect((await s.service.options({ projectId, role: "LSA", start: "from-jira" })).issues.map((issue) => issue.key)).toEqual(["ASMA-100", "ASMA-101", "ASMA-102", "ASMA-103"]);
+      expect(s.jira).toHaveBeenLastCalledWith({ query: "", issueClass: null, openOnly: true });
+    }
+    expect((await s.service.options({ role: "TPM", start: "from-jira", issueKey: "ASMA-103" })).issues.map((issue) => issue.key)).toEqual(["ASMA-103"]);
+    expect(s.jira).toHaveBeenLastCalledWith({ query: "ASMA-103", issueClass: null, openOnly: true });
     s.jira.mockClear();
     await s.service.options({ projectId: "prj-adam", start: "ad-hoc" });
     expect(s.jira).not.toHaveBeenCalled();
@@ -355,6 +365,21 @@ describe("new session create", () => {
     expect(sent.config.systemPrompt).toContain("A widen this ticket");
     expect(sent).not.toHaveProperty("prompt");
     expect(s.workspacesCreate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the exact key and binding when the From Jira topic is edited", async () => {
+    const s = await setup();
+    const outcome = await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic: "  Desk   layout follow-up " }));
+    const title = "LSA • ASMA-100 • Desk layout follow-up";
+    expect(outcome).toMatchObject({ state: "verified", title, workspaceId: "wks-adam-lsa" });
+    const sent = s.create.mock.calls[0]![0];
+    expect(sent.labels).toMatchObject({ epic: "ASMA-100", "title.auto": title });
+    expect(sent.config.systemPrompt).toContain("Scope: epic ASMA-100.");
+    expect(sent.config.systemPrompt).toContain("Topic: Desk layout follow-up.");
+    for (const topic of ["ASMA-100 • Forged", "ab"]) {
+      expect(await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic }))).toMatchObject({ state: "refused" });
+    }
+    expect(s.create).toHaveBeenCalledTimes(1);
   });
 
   it("places a bound TPM from an epic in TPM", async () => {

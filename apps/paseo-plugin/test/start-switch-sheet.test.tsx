@@ -424,8 +424,8 @@ describe("New session draft", () => {
     [{ ...OPTIONS, enabled: false, disabledReason: "Switched off." }, "Route review", "Switched off."],
     [{ ...OPTIONS, pending: outcome("unknown") }, "Route review", "An earlier creation, “LSA • ADHOC • Route review”, is not settled. Check it first."],
     [{ ...OPTIONS, desks: [] }, "Route review", "No desk on this host has lead workspaces."],
-    [{ ...OPTIONS, providers: [OPTIONS.providers[1]!] }, "Route review", "Provider claude is no longer active. Choose an active provider."],
-    [OPTIONS, "Route review", "Provider error: not signed in.", "gemini"],
+    [{ ...OPTIONS, providers: [OPTIONS.providers[1]!] }, "Route review", "Provider claude is no longer active. The host's lsa profile chooses it. Choose an active provider."],
+    [OPTIONS, "Route review", "Gemini: Provider error: not signed in. Choose an active provider.", "gemini"],
     [OPTIONS, "ab", "Type a topic of at least 3 characters."],
     [OPTIONS, "A • B", "A topic cannot contain • or ·, which separate title parts."],
   ])("names the reason Create is disabled", (options, topic, problem, provider?: string) => {
@@ -444,7 +444,7 @@ describe("New session draft", () => {
 
   it("promises the persona only where it is confirmed", () => {
     expect(personaLine("supported", "Claude")).toContain("Claude and Codex apply it");
-    expect(personaLine("unverified", "OpenCode")).toBe("Persona: delivered as a bootstrap prompt before the first task, because OpenCode does not apply a system prompt.");
+    expect(personaLine("unverified", "OpenCode")).toBe("Persona: delivered as a bootstrap prompt before the first task, because Kontor has not confirmed that OpenCode applies a system prompt.");
   });
 
   it("keeps invalidated explicit and saved choices invalid instead of replacing them", () => {
@@ -637,7 +637,7 @@ describe("New session form", () => {
   it("offers active choices as radios and keeps unavailable providers out of the picker", () => {
     const f = form();
     const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
-    expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Role", "Desk", "Start", "Provider", "Model", "Effort", "Mode"]);
+    expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Role", "Start", "Desk", "Provider", "Model", "Effort", "Mode"]);
     expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
     expect(radios.some((node) => String(node.props.accessibilityLabel).includes("Gemini"))).toBe(false);
     expect(radios.every((node) => (node.props.style as (state: { focused: boolean }) => { minHeight: number })({ focused: false }).minHeight >= 44)).toBe(true);
@@ -895,27 +895,113 @@ describe("New session form", () => {
     expect(action(f.tree, "Check")).toBeDefined();
   });
 
-  it("switches TPM to From Jira ticket, selects the epic and submits the issue key without a topic", () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form();
-    const radio = (label: string) => f.tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith(label))!;
-    (radio("TPM")!.props.onPress as () => void)(); f.render();
-    expect(radio("From Jira ticket").props["aria-checked"]).toBe(true);
-    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Choose a Jira issue.");
-    (radio("ASMA-100")!.props.onPress as () => void)(); f.render();
-    expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Deliver the desk layout.");
-    f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ role: "TPM", start: "from-jira", issueKey: "ASMA-100", projectId: "prj-adam" }));
-    expect(model.rpc["sessions.create"]!.mock.calls[0]![0]).not.toHaveProperty("topic");
+  describe("From Jira ticket", () => {
+    const UNDER_ACTIVE = { ...ISSUE_STORY, key: "ASMA-101", summary: "Wire the ticket desk", parent: { key: "ASMA-100", summary: ISSUE_EPIC.summary, statusCategory: "In Progress", open: true } } as const;
+    const JIRA = { ...OPTIONS, issues: [ISSUE_EPIC, UNDER_ACTIVE, ISSUE_STORY] };
+    const radio = (tree: Element[], label: string) => tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith(label));
+    const choose = (f: ReturnType<typeof form>, label: string) => { (radio(f.tree, label)!.props.onPress as () => void)(); f.render(); };
+    const edit = (f: ReturnType<typeof form>, id: string, value: string) => { (byTestId(f.tree, id)!.props.onChangeText as (value: string) => void)(value); f.render(); };
+
+    it("switches TPM to From Jira ticket, previews the epic's desk and submits the key with the default topic", () => {
+      model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+      const f = form();
+      choose(f, "TPM");
+      expect(radio(f.tree, "From Jira ticket")!.props["aria-checked"]).toBe(true);
+      expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Choose a Jira issue.");
+      choose(f, "ASMA-100");
+      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
+      expect(byTestId(f.tree, "kontor-new-session-jira-topic")?.props.value).toBe("Deliver the desk layout");
+      expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Deliver the desk layout.");
+      f.press("kontor-new-lsa-create");
+      expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ role: "TPM", start: "from-jira", issueKey: "ASMA-100", projectId: "prj-adam", topic: "Deliver the desk layout" }));
+    });
+
+    it("routes a standalone ticket opened from ADAM to DESK • TICKETS and reads that desk's catalog first", () => {
+      model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+      const f = form({ status: "ready", options: JIRA });
+      choose(f, "From Jira ticket");
+      expect(f.tree.some((node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Desk")).toBe(false);
+      choose(f, "ASMA-103");
+      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-tickets", role: "LSA", start: "from-jira" });
+      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • TICKETS, because ASMA-103 is a User Story without an active parent epic.");
+      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+      f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-tickets" } });
+      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+      f.press("kontor-new-lsa-create");
+      expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ start: "from-jira", issueKey: "ASMA-103", projectId: "prj-tickets" }));
+    });
+
+    it("keeps the exact key when the title is edited or a later search no longer lists the issue", () => {
+      model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+      const f = form({ status: "ready", options: JIRA });
+      choose(f, "TPM"); choose(f, "ASMA-100");
+      edit(f, "kontor-new-session-jira-topic", "Desk layout follow-up");
+      expect(byTestId(f.tree, "kontor-new-session-jira-topic")?.props.accessibilityLabel).toBe("Title topic after TPM • ASMA-100");
+      expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Desk layout follow-up.");
+      edit(f, "kontor-new-session-issue-search", "ticket desk");
+      f.press("Search");
+      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "TPM", start: "from-jira", issueKey: "ticket desk" });
+      f.setOptions({ status: "ready", options: { ...JIRA, issues: [UNDER_ACTIVE] } });
+      expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Desk layout follow-up.");
+      edit(f, "kontor-new-session-jira-topic", "ASMA-100 • Forged");
+      expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("A topic cannot contain • or ·, which separate title parts.");
+      edit(f, "kontor-new-session-jira-topic", "Desk layout follow-up");
+      f.press("kontor-new-lsa-create");
+      expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ role: "TPM", issueKey: "ASMA-100", projectId: "prj-adam", topic: "Desk layout follow-up" }));
+    });
+
+    it("shows a task under an active epic with its exact reason and a path to the owning epic, never as a choice", () => {
+      const f = form({ status: "ready", options: JIRA });
+      choose(f, "From Jira ticket");
+      expect(radio(f.tree, "ASMA-101")).toBeUndefined();
+      expect(text(elements(byTestId(f.tree, "kontor-new-session-blocked-ASMA-101")))).toBe("ASMA-101 · Wire the ticket desk: ASMA-101 is under the active epic ASMA-100 (In Progress), whose ESW delivers it. Start from ASMA-100 instead.");
+      f.press("Start from ASMA-100");
+      expect(radio(f.tree, "ASMA-100")!.props["aria-checked"]).toBe(true);
+      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
+    });
+
+    it("looks an unlisted owning epic up by its key on the ADAM catalog", () => {
+      const f = form({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-tickets", issues: [UNDER_ACTIVE] } });
+      choose(f, "From Jira ticket");
+      f.press("Start from ASMA-100");
+      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira", issueKey: "ASMA-100" });
+      expect(byTestId(f.tree, "kontor-new-session-issue-search")?.props.value).toBe("ASMA-100");
+      f.setOptions({ status: "ready", options: { ...JIRA, issues: [ISSUE_EPIC] } });
+      expect(radio(f.tree, "ASMA-100")!.props["aria-checked"]).toBe(true);
+      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
+    });
+
+    it("is offered from PR REVIEW too, because the issue chooses the desk", () => {
+      const f = form();
+      choose(f, "DESK • PR REVIEW");
+      f.setOptions({ status: "ready", options: { ...OPTIONS, catalogProjectId: "prj-pr" } });
+      expect(radio(f.tree, "From Jira ticket")!.props["aria-disabled"]).toBe(false);
+      choose(f, "From Jira ticket"); choose(f, "ASMA-100");
+      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
+      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira" });
+    });
+
+    it("names a ticket desk with no checkout instead of hiding the ticket", () => {
+      const f = form({ status: "ready", options: { ...JIRA, desks: [OPTIONS.desks[0]!] } });
+      choose(f, "From Jira ticket");
+      expect(text(elements(byTestId(f.tree, "kontor-new-session-blocked-ASMA-103")))).toContain("ASMA-103 starts on DESK • TICKETS, which has no checkout on this host.");
+    });
   });
 
-  it("offers From Jira ticket on ADAM and TICKETS only and states why PR REVIEW refuses it", () => {
-    const f = form();
-    (f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • PR REVIEW")!.props.onPress as () => void)(); f.render();
-    const fromJira = f.tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith("From Jira ticket"))!;
-    expect(fromJira.props["aria-disabled"]).toBe(true);
-    expect(fromJira.props.accessibilityLabel).toContain("offers ad hoc sessions only");
-    expect(f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • TICKETS")).toBeDefined();
+  it("names a disabled profile provider and its cause, promises no persona and substitutes nothing", () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const work = { ...OPTIONS.providers[0]!, id: "codex-work", label: "Codex · Work (Carasent)", status: "disabled" as const, available: false, note: "Disabled on this host.", persona: "unverified" as const };
+    const f = form({ status: "ready", options: { ...OPTIONS, providers: [...OPTIONS.providers, work], profile: { name: "LSA", provider: "codex-work", model: "opus", modeId: "default", effort: "max" } } });
+    f.type("Route review");
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Codex · Work (Carasent): Disabled on this host. The host's LSA profile chooses it. Choose an active provider.");
+    expect(text(f.tree)).not.toContain("Persona:");
+    expect(f.tree.find((node) => String(node.props.label).startsWith("Provider, model and mode"))?.props.label).toBe("Provider, model and mode: Codex · Work (Carasent), disabled");
+    expect(f.tree.some((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith("Codex"))).toBe(false);
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
+    f.press("kontor-new-lsa-create");
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+    (f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "Claude")!.props.onPress as () => void)(); f.render();
+    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
   });
 
   it("says when the chosen role workspace is missing and will be created", () => {

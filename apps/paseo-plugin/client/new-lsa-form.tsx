@@ -2,28 +2,34 @@ import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { checkCreate, executeCreate, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
-  type CreateOptions, type CreateOutcome, type CreateRole, type CreateScope, type CreateStart } from "../shared/session-create";
+import { checkCreate, executeCreate, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
+  type CreateOptions, type CreateOutcome, type CreateRole, type CreateScope, type CreateStart, type JiraIssue } from "../shared/session-create";
 import { Action, COARSE_POINTER, Copy, Disclosure, type Colors } from "./page-controls";
 import type { CreateOptionsState } from "./start-switch-sheet";
 import type { OpenSessionResult } from "./session-actions";
 
 export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; readonly start?: CreateStart; readonly projectId?: string;
-  readonly issueKey?: string; readonly sourceAgentId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null };
+  readonly issueKey?: string; readonly sourceAgentId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null;
+  /** The From Jira search text. */
+  readonly issueQuery?: string;
+  /** The chosen issue as listed, so a later search that does not list it keeps the binding. */
+  readonly picked?: JiraIssue;
+  /** The From Jira title topic as edited; absent means the issue summary. */
+  readonly jiraTopic?: string };
 
 const AD_HOC = "ad-hoc" as const, FROM_JIRA = "from-jira" as const;
-const startNote = (desk: CreateOptions["desks"][number] | null, start: CreateStart, role: CreateRole): string | null => {
-  if (start === AD_HOC) return role === "TPM" ? "TPM is key-bound; choose From Jira ticket." : null;
-  return desk && (desk.kind === "pr-review" || desk.kind === "other") ? `${desk.project} offers ad hoc sessions only.` : null;
-};
 
 /**
  * Defaults fill only unspecified choices. An explicit or saved choice that disappears stays invalid until
  * the operator chooses again; a catalog refresh never silently substitutes another model or permission mode.
+ * From Jira takes its desk from the issue, never from the desk the dialog opened in.
  */
 export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   const role = draft.role ?? "LSA", start = draft.start ?? AD_HOC;
-  const desk = (draft.projectId ? options.desks.find((entry) => entry.projectId === draft.projectId)
+  const issue = start === FROM_JIRA && draft.issueKey
+    ? options.issues.find((entry) => entry.key === draft.issueKey) ?? (draft.picked?.key === draft.issueKey ? draft.picked : null) : null;
+  const route = issue ? issueDesk(options.desks, issue) : null;
+  const desk = start === FROM_JIRA ? route?.desk ?? null : (draft.projectId ? options.desks.find((entry) => entry.projectId === draft.projectId)
     : options.desks.find((entry) => entry.projectId === options.catalogProjectId) ?? options.desks[0]) ?? null;
   const profile = options.profile;
   const providerId = draft.provider ?? profile?.provider ?? options.providers.find((entry) => entry.available)?.id;
@@ -37,26 +43,28 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   const mode = provider?.available ? provider.modes.find((entry) => entry.id === modeId) ?? null : null;
   const staleEffort = !effort && (!!effortId || !!model?.efforts.length);
   const staleMode = !mode && (!!modeId || !!provider?.modes.length);
-  const issue = start === FROM_JIRA && draft.issueKey ? options.issues.find((entry) => entry.key === draft.issueKey) ?? null : null;
-  const topic = start === AD_HOC ? normalizeTopic(draft.topic) : issue ? issueTopic(issue.summary) : "";
+  const issueSummaryTopic = issue ? issueTopic(issue.summary) : "";
+  const topic = start === AD_HOC ? normalizeTopic(draft.topic) : issue ? normalizeTopic(draft.jiraTopic ?? issueSummaryTopic) : "";
   const title = start === FROM_JIRA ? (issue ? leadTitle(role, issue.key, topic) : "") : leadTitle(role, null, topic);
   const workspaceName = leadWorkspaceName(role, start);
   const sourceAgentId = draft.sourceAgentId?.trim() || null;
   let problem: string | null = null;
   if (!options.enabled) problem = options.disabledReason ?? "New session is off on this host.";
   else if (options.pending) problem = `An earlier creation, “${options.pending.title}”, is not settled. Check it first.`;
+  else if (start === FROM_JIRA && options.jiraProblem) problem = options.jiraProblem;
+  else if (start === FROM_JIRA && !issue) problem = "Choose a Jira issue.";
+  else if (route?.problem) problem = route.problem;
   else if (!desk) problem = options.desks.length ? "The selected desk is no longer available. Choose a listed desk or Refresh desks." : "No desk on this host has lead workspaces.";
   else if (options.catalogProjectId !== desk.projectId) problem = "Refresh this desk's provider catalog before creating a session.";
   else if (role === "TPM" && start === AD_HOC) problem = "Ad hoc creates an LSA only. Choose LSA, or start from a Jira ticket.";
-  else if (start === FROM_JIRA && (desk.kind === "pr-review" || desk.kind === "other")) problem = `${desk.project} offers ad hoc sessions only; From Jira is not available there.`;
-  else if (start === FROM_JIRA && options.jiraProblem) problem = options.jiraProblem;
-  else if (start === FROM_JIRA && !issue) problem = "Choose a Jira issue.";
-  else if (start === AD_HOC && topicProblem(topic)) problem = topicProblem(topic);
-  else if (!provider?.available) problem = provider?.note ?? (providerId ? `Provider ${providerId} is no longer active. Choose an active provider.` : "No active provider is available for this desk.");
+  else if (topicProblem(topic)) problem = topicProblem(topic);
+  // A host profile may name a provider this host has switched off: say which and why, and never substitute another.
+  else if (!provider?.available) problem = !providerId ? "No active provider is available for this desk."
+    : `${provider ? `${provider.label}: ${provider.note}` : `Provider ${providerId} is no longer active.`}${draft.provider === undefined && profile?.provider === providerId ? ` The host's ${profile.name} profile chooses it.` : ""} Choose an active provider.`;
   else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : "No selectable model.";
   else if (staleEffort) problem = `Effort ${effortId ?? "none"} is no longer offered for ${model.label}. Choose an available effort.`;
   else if (staleMode) problem = `Mode ${modeId ?? "none"} is no longer offered by ${provider.label}. Choose an available mode.`;
-  return { desk, role, start, issue, provider, model, effort, mode, topic, title, workspaceName,
+  return { desk, role, start, issue, issueSummaryTopic, provider, model, effort, mode, topic, title, workspaceName,
     workspaceMissing: !!desk && !desk.lead[workspaceName], sourceAgentId, problem, fromProfile: preset !== null, staleEffort, staleMode };
 }
 
@@ -77,7 +85,7 @@ const HEADINGS: Record<CreateOutcome["state"], string> = {
 
 export function personaLine(persona: CreateOutcome["persona"], providerLabel: string): string {
   return persona === "supported" ? "Persona: sent as the system prompt; Claude and Codex apply it at creation."
-    : `Persona: delivered as a bootstrap prompt before the first task, because ${providerLabel} does not apply a system prompt.`;
+    : `Persona: delivered as a bootstrap prompt before the first task, because Kontor has not confirmed that ${providerLabel} applies a system prompt.`;
 }
 
 type Phase =
@@ -97,6 +105,9 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", role: "LSA", start: AD_HOC, projectId: options.status === "ready" ? options.options.catalogProjectId ?? undefined : undefined }));
   const [phase, setPhase] = useState<Phase>({ kind: "draft" });
   const [advanced, setAdvanced] = useState(!compact);
+  /** A read repeats the desk whose catalog is wanted and, for From Jira, the issue search. */
+  const scopeOf = (next: CreateDraft, projectId = next.projectId): CreateScope => ({ projectId, role: next.role, start: next.start,
+    ...(next.start === FROM_JIRA && next.issueQuery?.trim() ? { issueKey: next.issueQuery.trim() } : {}) });
   const submitted = useRef(false);
   // Keep controls mounted during a scoped refresh so keyboard focus/selection survives. This snapshot is
   // presentation only: submit still requires current ready options and the server's fresh validation.
@@ -135,7 +146,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       return;
     }
     setPhase({ kind: "result", outcome });
-    if (outcome.state === "unknown" || outcome.state === "refused") onRefresh({ projectId: draft.projectId, role: draft.role, start: draft.start });
+    if (outcome.state === "unknown" || outcome.state === "refused") onRefresh(scopeOf(draft));
   };
   const runCheck = (requestId: string, title: string) => {
     if (!isCurrent()) return;
@@ -182,7 +193,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     const text = options.status === "error" ? `Kontor could not read this host's options (${options.message}).` : options.status === "offline" ? "Host offline. Nothing can be created until it reconnects." : "Reading this host's desks and providers…";
     return wrap(<>
       <Copy colors={colors} muted>{text}</Copy>
-      {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh({ projectId: draft.projectId, role: draft.role, start: draft.start })} /> : null}
+      {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh(scopeOf(draft))} /> : null}
     </>);
   }
   const problem = options.status === "ready" ? choice.problem : options.status === "error"
@@ -196,41 +207,85 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     submitted.current = true;
     const requestId = newRequestId(), title = choice.title;
     setPhase({ kind: "busy", requestId, label: `Creating “${title}”…` });
-    execute({ requestId, role: choice.role, start: choice.start, projectId: choice.desk.projectId,
-      ...(choice.start === AD_HOC ? { topic: choice.topic } : { issueKey: choice.issue?.key ?? null }),
+    execute({ requestId, role: choice.role, start: choice.start, projectId: choice.desk.projectId, topic: choice.topic,
+      ...(choice.start === FROM_JIRA ? { issueKey: choice.issue?.key ?? null } : {}),
       sourceAgentId: choice.sourceAgentId, provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null })
       .then((outcome) => finish(outcome, requestId, title),
         (error: unknown) => { if (isCurrent()) setPhase({ kind: "lost", requestId, title, message: `The Kontor server did not answer (${error instanceof Error ? error.message : String(error)}).` }); });
   };
   const set = (patch: Partial<CreateDraft>) => setDraft({ ...draft, ...patch });
-  const refresh = (patch: Partial<CreateDraft>) => onRefresh({ projectId: patch.projectId ?? choice.desk?.projectId, role: patch.role ?? choice.role, start: patch.start ?? choice.start });
-  const summary = choice.desk ? [choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ") : "Choose a desk first";
-  const providerEmpty = !choice.desk ? (ready.desks.length ? "Choose an available desk to read its providers." : "Provider choices require a desk working directory.")
+  const refresh = (patch: Partial<CreateDraft>) => onRefresh(scopeOf({ ...draft, role: choice.role, start: choice.start, ...patch },
+    patch.projectId ?? choice.desk?.projectId ?? ready.catalogProjectId ?? undefined));
+  const summary = choice.desk ? [choice.provider && !choice.provider.available ? `${choice.provider.label}, ${choice.provider.status}` : choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ")
+    : choice.start === FROM_JIRA ? "Choose an issue first" : "Choose a desk first";
+  const providerEmpty = !choice.desk ? (choice.start === FROM_JIRA ? "Choose an issue to read its desk's providers." : ready.desks.length ? "Choose an available desk to read its providers." : "Provider choices require a desk working directory.")
     : ready.catalogProjectId !== choice.desk.projectId ? "Refresh choices to read this desk's providers." : "No active provider is available for this desk.";
   const fromJira = choice.start === FROM_JIRA;
+  const input = { color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 } as const;
+  const heading = { color: colors.foreground, fontSize: 12, fontWeight: "600" } as const;
+  // Every listed issue stays visible: a startable one as a choice, any other with the reason it cannot start here.
+  const routes = fromJira ? ready.issues.map((issue) => ({ issue, ...issueDesk(ready.desks, issue) })) : [];
+  const pick = (issue: JiraIssue) => {
+    const desk = issueDesk(ready.desks, issue).desk;
+    set({ issueKey: issue.key, picked: issue, jiraTopic: undefined, ...(desk ? { projectId: desk.projectId } : {}) });
+    if (desk && desk.projectId !== ready.catalogProjectId) refresh({ projectId: desk.projectId });
+  };
+  // The owning epic is looked up by its key when this list does not hold it; its own type then decides its desk.
+  const startOnEpic = (key: string) => {
+    const listed = ready.issues.find((issue) => issue.key === key);
+    if (listed) { pick(listed); return; }
+    const adam = ready.desks.find((desk) => desk.kind === "adam");
+    set({ issueKey: key, picked: undefined, jiraTopic: undefined, issueQuery: key, ...(adam ? { projectId: adam.projectId } : {}) });
+    refresh({ issueQuery: key, projectId: adam?.projectId });
+  };
   return wrap(<>
     <Choices label="Role" colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {
       const nextStart: CreateStart = role === "TPM" && choice.start === AD_HOC ? FROM_JIRA : choice.start;
       set({ role: role as CreateRole, start: nextStart }); refresh({ role: role as CreateRole, start: nextStart }); }}
       options={[{ id: "LSA", label: "LSA · Lead Software Architect" }, { id: "TPM", label: "TPM · Technical Program Manager" }]} />
-    <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId, issueKey: undefined }); refresh({ projectId }); }}
-      options={ready.desks.map((desk) => ({ id: desk.projectId, label: desk.project }))} empty="No desk on this host has lead workspaces." />
     <Choices label="Start" colors={colors} tall={tall} selected={choice.start} onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); }}
       options={[
-        { id: AD_HOC, label: "Ad hoc", disabled: choice.role === "TPM", note: startNote(choice.desk, AD_HOC, choice.role) },
-        { id: FROM_JIRA, label: "From Jira ticket", disabled: !!choice.desk && (choice.desk.kind === "pr-review" || choice.desk.kind === "other"), note: startNote(choice.desk, FROM_JIRA, choice.role) },
+        { id: AD_HOC, label: "Ad hoc", disabled: choice.role === "TPM", note: choice.role === "TPM" ? "TPM is key-bound; choose From Jira ticket." : null },
+        { id: FROM_JIRA, label: "From Jira ticket", note: "The issue chooses the desk." },
       ]} />
     {fromJira ? <View style={{ gap: 4 }}>
-      <Choices label="Jira issue" colors={colors} tall={tall} selected={choice.issue?.key ?? null} onSelect={(issueKey) => set({ issueKey })}
-        options={ready.issues.map((issue) => ({ id: issue.key, label: `${issue.key} · ${issue.summary}`, note: `${issue.type} · ${issue.status}` }))} empty="No eligible issue on this desk." />
+      <Text style={heading}>Find a Jira issue</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <TextInput testID="kontor-new-session-issue-search" accessibilityLabel="Find a Jira issue" placeholder="ASMA key or words; empty lists the newest" value={draft.issueQuery ?? ""}
+          onChangeText={(issueQuery) => set({ issueQuery })} onSubmitEditing={() => refresh({})} returnKeyType="search"
+          placeholderTextColor={colors.foregroundMuted} style={{ ...input, flex: 1, minWidth: 0 }} />
+        <Action small label="Search" accessibilityLabel="Search Jira issues" colors={colors} onPress={() => refresh({})} />
+      </View>
+      <Choices label="Jira issue" colors={colors} tall={tall} selected={choice.issue?.key ?? null} onSelect={(key) => pick(routes.find((route) => route.issue.key === key)!.issue)}
+        options={routes.filter((route) => route.desk).map(({ issue, desk }) => ({ id: issue.key, label: `${issue.key} · ${issue.summary}`, note: `${issue.type} · ${issue.status} · ${desk!.project}` }))}
+        empty={routes.length ? "No listed issue can start a lead; each says why below." : "No open ASMA issue matches."} />
+      {routes.filter((route) => route.problem).map(({ issue, problem: why }) => <View key={issue.key} testID={`kontor-new-session-blocked-${issue.key}`} style={{ gap: 2 }}>
+        <Text style={muted}>{issue.key} · {issue.summary}: {why}</Text>
+        {issue.parent?.open ? <Action small label={`Start from ${issue.parent.key}`} accessibilityLabel={`Start from the owning epic ${issue.parent.key}`} colors={colors} onPress={() => startOnEpic(issue.parent!.key)} /> : null}
+      </View>)}
       {ready.jiraProblem ? <Text testID="kontor-new-lsa-jira" style={{ color: colors.statusWarning, fontSize: 12 }}>{ready.jiraProblem}</Text> : null}
-      {choice.issue ? <Text style={muted}>Parent: {choice.issue.parent ? `${choice.issue.parent.key} · ${choice.issue.parent.statusCategory}` : "none"}.</Text> : null}
-    </View> : <View style={{ gap: 4 }}>
-      <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Topic</Text>
-      <TextInput testID="kontor-new-lsa-topic" accessibilityLabel="Topic" placeholder="What this session is about" autoFocus={!compact} maxLength={TOPIC_MAX} value={draft.topic}
-        onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
-        placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
-    </View>}
+      <Text testID="kontor-new-session-desk" style={muted}>{choice.issue && choice.desk ? `Desk: ${choice.desk.project}, because ${choice.issue.key} is ${choice.issue.epic ? "an epic" : `a ${choice.issue.type} without an active parent epic`}.`
+        : "Desk: follows the issue. An epic starts on DESK • ADAM; another open issue without an active parent epic starts on DESK • TICKETS."}</Text>
+      {choice.issue ? <View style={{ gap: 4 }}>
+        <Text style={heading}>Title</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text style={{ color: colors.foreground, fontSize: 13 }}>{leadTitle(choice.role, choice.issue.key, "").trimEnd()}</Text>
+          <TextInput testID="kontor-new-session-jira-topic" accessibilityLabel={`Title topic after ${choice.role} • ${choice.issue.key}`} maxLength={TOPIC_MAX}
+            value={draft.jiraTopic ?? choice.issueSummaryTopic} onChangeText={(jiraTopic) => set({ jiraTopic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
+            placeholderTextColor={colors.foregroundMuted} style={{ ...input, flex: 1, minWidth: 0 }} />
+        </View>
+        <Text style={muted}>Starts as the issue summary. Editing it keeps {choice.issue.key}.</Text>
+      </View> : null}
+    </View> : <>
+      <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId }); refresh({ projectId }); }}
+        options={ready.desks.map((desk) => ({ id: desk.projectId, label: desk.project }))} empty="No desk on this host has lead workspaces." />
+      <View style={{ gap: 4 }}>
+        <Text style={heading}>Topic</Text>
+        <TextInput testID="kontor-new-lsa-topic" accessibilityLabel="Topic" placeholder="What this session is about" autoFocus={!compact} maxLength={TOPIC_MAX} value={draft.topic}
+          onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
+          placeholderTextColor={colors.foregroundMuted} style={input} />
+      </View>
+    </>}
     <View style={{ gap: 4 }}>
       <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Source session (optional)</Text>
       <TextInput testID="kontor-new-session-source" accessibilityLabel="Source session" placeholder="Session ID whose handoff summary the lead reads first"
@@ -260,9 +315,10 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     {ready.providers.some((provider) => provider.status === "unknown") ? <Text style={muted}>Some provider availability is unknown.</Text> : null}
     {ready.providers.some((provider) => provider.status === "error") ? <Text style={muted}>Some providers could not be read.</Text> : null}
     {ready.providers.some((provider) => provider.status === "unavailable") ? <Text style={muted}>Some providers are unavailable.</Text> : null}
-    <Action small label={choice.desk ? "Refresh choices" : "Refresh desks"} colors={colors} onPress={() => onRefresh({ projectId: choice.desk?.projectId, role: choice.role, start: choice.start })} />
+    <Action small label={choice.desk || fromJira ? "Refresh choices" : "Refresh desks"} colors={colors} onPress={() => refresh({})} />
     {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
-    {choice.provider ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
+    {/* A provider that cannot start promises no persona delivery; the problem line names it and why. */}
+    {choice.provider?.available ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
     {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}
     {problem ? <Text testID="kontor-new-lsa-problem" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 12 }}>{problem}</Text> : null}
   </>, <>
