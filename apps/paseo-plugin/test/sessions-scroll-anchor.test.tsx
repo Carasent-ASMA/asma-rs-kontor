@@ -398,6 +398,17 @@ describe("row layout by measured row", () => {
     expect(layout.restate(rows, false)).toBe(24);
   });
 
+  it("keeps the reader's own session through a change while a smaller viewport shows only headings", () => {
+    const layout = createRowLayout();
+    const heading = (key: string) => ({ kind: "group", group: { key } }) as never;
+    const top = heading("group:g1");
+    const rows = [top, heading("group:g2"), ..."abcdefgh".split("").map(result)];
+    // At 10 the headings show first, and a (192 to 288) under them.
+    layout.capture(rows, false, 10, 300, 960);
+    // A notice shrinks the viewport to 56, which shows only the first heading, and a row arrives above a.
+    expect(layout.follow(rows, [top, result("x"), ...rows.slice(1)], false, 10, 56, 1056, true)).toBe(96);
+  });
+
   it("the screen lays its list out by measured row and header", () => {
     patchSessionView("host-a", { status: "all", layout: "flat" });
     mount();

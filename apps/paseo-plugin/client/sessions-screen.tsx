@@ -250,15 +250,21 @@ export function createRowLayout(resized?: () => void) {
     /**
      * How far the offset moves to keep the reader's place as the previous rows become the next. A row the change
      * moved or removed is not followed: the first session in view after it keeps the place. With none, the offset holds.
+     * A place read at this offset is the reader's own, kept while the change leaves its row where it was.
      */
-    follow(previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number): number {
-      const was = placeAt(previous, withHeader, offset, viewport, content);
+    follow(previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, current = false): number {
+      const was = current ? place : placeAt(previous, withHeader, offset, viewport, content);
       const before = build(previous), after = build(next);
       if (was.at !== "row") {
         place = was;
         return was.at === "top" ? 0 : after.length - before.length;
       }
       const steady = steadyKeys(before.keys, after.keys);
+      if (current && before.index.has(was.key) && steady.has(was.key)) {
+        const at = after.index.get(was.key)!;
+        place = { at: "row", key: was.key, top: head(withHeader) + after.offsets[at]! };
+        return after.offsets[at]! - before.offsets[before.index.get(was.key)!]!;
+      }
       const kept: number[] = [];
       for (let index = firstShown(before, withHeader, offset); index < before.keys.length && head(withHeader) + before.offsets[index]! < offset + viewport; index += 1) {
         if (after.index.has(before.keys[index]!) && steady.has(before.keys[index]!)) kept.push(index);
@@ -2163,7 +2169,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       eventOffsetRef.current = visibleOffset;
       viewportHeightRef.current = layoutMeasurement.height;
       contentHeightRef.current = contentSize.height;
-      rowLayout.capture(rowsRef.current, withHeaderRef.current, visibleOffset, layoutMeasurement.height, contentSize.height);
+      // The screen's own landing keeps the place it held; any other offset is read again.
+      if (Math.abs(visibleOffset - scrollOffsetRef.current) >= 1 || placedAtRef.current !== scrollOffsetRef.current) {
+        rowLayout.capture(rowsRef.current, withHeaderRef.current, visibleOffset, layoutMeasurement.height, contentSize.height);
+      }
       placedAtRef.current = visibleOffset;
       scrollOffsetRef.current = visibleOffset;
       writeScrollOffset(viewScope, visibleOffset);
@@ -2419,7 +2428,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     // in progress keeps its course.
     const offset = scrollOffsetRef.current;
     if (state.entries !== renderedRef.current.entries && view === renderedRef.current.view && !scrolling(renderedAt)) {
-      holdPlace(rowLayout.follow(previous, rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current));
+      holdPlace(rowLayout.follow(previous, rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current, placedAtRef.current === offset));
     } else {
       rowLayout.capture(rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current);
       placedAtRef.current = offset;
