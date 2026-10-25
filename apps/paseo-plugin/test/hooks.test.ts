@@ -33,6 +33,7 @@ function config(overrides: Partial<KontorPluginConfig> = {}): KontorPluginConfig
   return {
     stateRoot: "/tmp/kontor-state",
     mcpCommand: "kontor-mcp",
+    cliCommand: "kontor",
     mcpEnabled: true,
     serveProfile: null,
     placementRoots: [],

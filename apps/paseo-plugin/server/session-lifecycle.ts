@@ -119,7 +119,7 @@ export function lifecycleRevision(agent: Agent): string {
     agent.pendingPermissions, agent.lastError, agent.labels, agent.persistence, agent.providerUnavailable,
     agent.runtimeInfo, agent.capabilities.supportsSessionPersistence, agent.attentionReason, parent(agent)]));
 }
-function parent(agent: Agent) { return ("parentAgentId" in agent && typeof agent.parentAgentId === "string" ? agent.parentAgentId : null) ?? agent.labels?.["paseo.parent-agent-id"] ?? null; }
+export function parent(agent: Pick<Agent, "labels">) { return ("parentAgentId" in agent && typeof agent.parentAgentId === "string" ? agent.parentAgentId : null) ?? agent.labels?.["paseo.parent-agent-id"] ?? null; }
 // Archive deliberately stops current activity. Token/status/permission changes must not
 // make a running session impossible to stop; identity and placement must still match.
 function archiveRevision(agent: Agent): string {
