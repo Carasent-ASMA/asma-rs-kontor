@@ -151,6 +151,101 @@ pub struct CatalogSettings {
     /// Provenance: when it was materialized.
     #[serde(default)]
     pub imported_at: Option<String>,
+    /// Explicit read-only Jira observation. Absent means no Jira collection.
+    ///
+    /// This section is additive to catalog schema 1. It names the configured
+    /// scope; it never carries a credential value.
+    #[serde(default)]
+    pub jira: Option<JiraSettings>,
+}
+
+/// Explicit read-only Jira observation settings inside `catalog.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JiraSettings {
+    /// Whether this section is active. A present section defaults to active.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The Jira project key whose observations are collected.
+    pub project: String,
+    /// The configured scope JQL. It is the only scope authority.
+    pub scope_jql: String,
+    /// Operator-declared issue keys, directly verified every sweep.
+    #[serde(default)]
+    pub declared_keys: Vec<String>,
+    /// The base URL, when the catalog document owns it. Otherwise the
+    /// matching `jira.json` project supplies it.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// The keychain alias, when the catalog document owns it. Otherwise the
+    /// matching `jira.json` project supplies it.
+    #[serde(default)]
+    pub credential_alias: Option<String>,
+    /// The Jira observation cadence.
+    #[serde(default = "default_jira_cadence")]
+    pub cadence_seconds: u64,
+    /// How often a complete full census replaces incremental windows.
+    #[serde(default = "default_jira_full_sweep")]
+    pub full_sweep_seconds: u64,
+    /// The overlap subtracted from the last complete instant for an
+    /// incremental `updated` window.
+    #[serde(default = "default_jira_overlap")]
+    pub overlap_seconds: u64,
+    /// The enhanced-search page bound.
+    #[serde(default = "default_jira_max_pages")]
+    pub max_pages: usize,
+    /// The issue bound for one logical search.
+    #[serde(default = "default_jira_max_issues")]
+    pub max_issues: usize,
+    /// The maximum previously observed issues rechecked in one sweep.
+    #[serde(default = "default_jira_max_recheck")]
+    pub max_recheck: usize,
+    /// The enhanced-search page size, clamped to `1..=100`.
+    #[serde(default = "default_jira_page_size")]
+    pub page_size: u32,
+    /// The bounded retry attempt count.
+    #[serde(default = "default_jira_max_attempts")]
+    pub max_attempts: u32,
+    /// Whether the configured scope is an Epic hierarchy scope. When true a
+    /// directly re-read issue at hierarchy level 1 is still in scope even when
+    /// a search page omitted it, because search consistency lag is not a
+    /// deletion.
+    #[serde(default = "default_true")]
+    pub scope_is_epics: bool,
+    /// The maximum parent-resolution rounds.
+    #[serde(default = "default_jira_parent_rounds")]
+    pub parent_rounds: u32,
+}
+
+const fn default_true() -> bool {
+    true
+}
+const fn default_jira_cadence() -> u64 {
+    120
+}
+const fn default_jira_full_sweep() -> u64 {
+    900
+}
+const fn default_jira_overlap() -> u64 {
+    180
+}
+const fn default_jira_max_pages() -> usize {
+    200
+}
+const fn default_jira_max_issues() -> usize {
+    5000
+}
+const fn default_jira_max_recheck() -> usize {
+    500
+}
+const fn default_jira_page_size() -> u32 {
+    100
+}
+const fn default_jira_max_attempts() -> u32 {
+    3
+}
+const fn default_jira_parent_rounds() -> u32 {
+    5
 }
 
 const fn default_cadence() -> u64 {
@@ -172,6 +267,7 @@ impl Default for CatalogSettings {
             scan_budget_seconds: DEFAULT_SCAN_BUDGET_SECONDS,
             migrated_from: None,
             imported_at: None,
+            jira: None,
         }
     }
 }
@@ -348,6 +444,7 @@ fn resolve_plugin_configuration(
         scan_budget_seconds: DEFAULT_SCAN_BUDGET_SECONDS,
         migrated_from: (origin != ConfigOrigin::None).then_some(origin),
         imported_at: (origin != ConfigOrigin::None).then(|| now.to_owned()),
+        jira: None,
     };
     let revision = (origin != ConfigOrigin::None).then(|| {
         sha256(

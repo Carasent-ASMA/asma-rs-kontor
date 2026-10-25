@@ -16,6 +16,9 @@ workspace = true
 # generates opaque ids with the one generator, so two clocks and two id sources
 # cannot disagree about the same observation.
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+# The read-only Jira seam. This crate never composes the governed write
+# connector; it uses `JiraReadOnly` and the shared credential/transport bounds.
+kontor-jira = { path = "../kontor-jira", version = "=0.2.1" }
 # The catalog owns a SEPARATE SQLite file. It reuses the workspace's pinned
 # SQLite build and nothing from `kontor-store`: no governed table, no governed
 # authority and no enrollment requirement.
@@ -33,12 +36,16 @@ hex = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+url = { workspace = true }
 tracing = { workspace = true }
 # The read DTOs are the frozen contract and are also the OpenAPI schema source.
 utoipa = { workspace = true }
 
 [dev-dependencies]
+kontor-accounts = { path = "../kontor-accounts", version = "=0.2.1" }
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+secrecy = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+wiremock = { workspace = true }

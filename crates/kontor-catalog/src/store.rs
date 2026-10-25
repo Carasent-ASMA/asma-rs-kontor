@@ -43,10 +43,11 @@ pub const CATALOG_SCHEMA_VERSION: i64 = 3;
 
 /// Every migration this build can apply, keyed by the schema version it
 /// produces. The key rather than the array index decides whether a migration
-/// applies, so TASK-002's `0002` can merge beside this task's `0003` without
+/// applies, so the Jira `0002` and native `0003` migrations merge without
 /// either branch misreading an existing database.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_catalog.sql")),
+    (2, include_str!("../migrations/0002_jira_evidence.sql")),
     (3, include_str!("../migrations/0003_native_census.sql")),
 ];
 
@@ -870,11 +871,11 @@ fn rename_alias(value: &str, observed_at: &str) -> Alias {
     }
 }
 
-fn generation_to_sql(generation: u64) -> i64 {
+pub(crate) fn generation_to_sql(generation: u64) -> i64 {
     i64::try_from(generation).unwrap_or(i64::MAX)
 }
 
-fn bounded(text: &str) -> String {
+pub(crate) fn bounded(text: &str) -> String {
     text.chars().take(4096).collect()
 }
 

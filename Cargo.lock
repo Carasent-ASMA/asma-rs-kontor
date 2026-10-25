@@ -3176,8 +3176,11 @@ version = "0.2.1"
 dependencies = [
  "async-trait",
  "hex",
+ "kontor-accounts",
  "kontor-core",
+ "kontor-jira",
  "rusqlite",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -3186,8 +3189,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "url",
  "utoipa",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -3338,6 +3343,7 @@ version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
+ "httpdate",
  "kontor-accounts",
  "kontor-core",
  "reqwest",

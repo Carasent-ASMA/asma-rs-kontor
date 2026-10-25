@@ -16,6 +16,7 @@ kontor-accounts = { path = "../kontor-accounts", version = "=0.2.1" }
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 async-trait = { workspace = true }
 futures = { workspace = true }
+httpdate = { workspace = true }
 reqwest = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
