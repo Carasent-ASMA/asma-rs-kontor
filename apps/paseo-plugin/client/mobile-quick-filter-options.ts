@@ -4,7 +4,7 @@ import { QUICK_STATUS_FILTERS, statusFilterLabel, type StatusFilter } from "./se
 export const QUICK_FILTER_ICONS: Record<StatusFilter, string> = {
   current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
   needs_input: "MessageCircleQuestion", attention: "Bell", favorites: "Star",
-  initializing: "Loader", closed: "Square", earlier_error: "History",
+  initializing: "Loader", closed: "Square", earlier_error: "History", provider_blocked: "Ban",
 };
 
 export const QUICK_FILTER_MEANINGS: Record<StatusFilter, string> = {
@@ -19,6 +19,7 @@ export const QUICK_FILTER_MEANINGS: Record<StatusFilter, string> = {
   initializing: "Sessions currently starting.",
   closed: "Closed sessions in the current scope.",
   earlier_error: "Sessions with a retained error that are no longer in error.",
+  provider_blocked: "Error sessions whose exact read in the last minute saw a provider refusal. Sessions not checked are counted, not listed. Not a provider health check.",
 };
 
 export function quickFilterLabel(status: StatusFilter): string {

@@ -48,9 +48,12 @@ export function unsettledCount({ state, includeArchived, freshness, blocked }: C
  */
 export function sessionStateCounts(input: CountRead & {
   universe: readonly DirectoryEntry[]; candidates: readonly DirectoryEntry[]; favorites: readonly string[]; refined: boolean;
+  /** From providerBlockedView: exact-ID reads, never the state predicate. */
+  providerBlocked: SessionStateCount;
 }): Readonly<Record<StatusFilter, SessionStateCount>> {
   const { universe, candidates, favorites, refined } = input;
   return Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => {
+    if (status === "provider_blocked") return [status, input.providerBlocked];
     const count = (entries: readonly DirectoryEntry[]) => new Set(entries.filter((entry) => matchesStatus(entry, status, favorites)).map((entry) => entry.id)).size;
     const matched = count(candidates), total = count(universe);
     const numerator = compactSessionCount(matched), denominator = compactSessionCount(total);

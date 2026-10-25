@@ -539,6 +539,27 @@ describe("SessionsScreen toolbar events", () => {
     vi.useRealTimers();
   });
 
+  it.each([true, false])("lists no provider block without an exact-read source, on compact=%s", (compact) => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("refused", { status: "error", requiresAttention: true, attentionReason: "error" }), sessionEntry("idle"),
+    ], includeArchived: false };
+    patchSessionView("host-a", { query: "", includeArchived: false });
+    renderScreen(undefined, compact);
+    if (compact) openMobileFilters();
+    const chip = findByTestID(harness.current(), "sessions-filter-provider_blocked");
+    expect(chip.props.label).toBe("Provider blocked (observed)");
+    expect(chip.props.count).toMatchObject({ text: "…", label: expect.stringContaining("0 provider blocked and 1 not checked of 1 error session") });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props.count).toMatchObject({ text: "1" });
+    (chip.props.onPress as () => void)(); harness.flush();
+    if (compact) closeMobileFilters();
+    expect(sessionRowIds()).toEqual([]);
+    const list = findByTestID(harness.current(), "sessions-list");
+    expect(textOf(findByTestID(list.props.ListHeaderComponent, "sessions-provider-notice"))).toContain("1 error session not checked: provider state unknown, so not listed as blocked.");
+    expect(textOf(list.props.ListEmptyComponent)).toContain("No provider block observed among the 1 error session here; 1 not checked.");
+    (findByTestID(list.props.ListHeaderComponent, "sessions-provider-show-error").props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds()).toEqual(["refused"]);
+  });
+
   it.each([true, false])("keeps history neutral in rows and filters on compact=%s", (compact) => {
     const history = Array.from({ length: 13 }, (_, n) => sessionEntry(`history-${n}`, {
       title: `Closed review ${n}`, status: "closed", requiresAttention: true, attentionReason: "error",

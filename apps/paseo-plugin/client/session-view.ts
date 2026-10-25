@@ -18,6 +18,7 @@ export type StatusFilter =
   | "needs_input"
   | "attention"
   | "earlier_error"
+  | "provider_blocked"
   | "favorites";
 
 /** Frequent choices; runtime history and less common states sit under More states. */
@@ -31,7 +32,7 @@ export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
   "attention",
   "favorites",
 ];
-export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error"];
+export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error", "provider_blocked"];
 
 export type SessionMembership = "sessions" | "archived";
 
@@ -62,6 +63,7 @@ const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
   needs_input: "Needs input",
   attention: "Attention",
   earlier_error: "Earlier errors",
+  provider_blocked: "Provider blocked (observed)",
   favorites: "★ Favorites",
   initializing: "Starting",
   closed: "Closed",
@@ -118,6 +120,9 @@ export function matchesStatus(
       return entry.status === "error";
     case "earlier_error":
       return hasEarlierError(entry);
+    case "provider_blocked":
+      // Exact-ID reads only: providerBlockedView supplies this choice's rows and count, never this predicate.
+      return false;
     default:
       return entry.status === status;
   }

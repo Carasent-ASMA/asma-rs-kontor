@@ -47,7 +47,7 @@ describe("compact session status markers", () => {
     expect(QUICK_FILTER_ICONS).toEqual({
       current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
       needs_input: "MessageCircleQuestion", attention: "Bell", favorites: "Star",
-      initializing: "Loader", closed: "Square", earlier_error: "History",
+      initializing: "Loader", closed: "Square", earlier_error: "History", provider_blocked: "Ban",
     });
   });
   it("distinguishes all seven states without hue or repeated status words", () => {
