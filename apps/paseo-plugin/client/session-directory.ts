@@ -441,6 +441,7 @@ export async function collectDirectory(
  */
 export interface SessionDirectory {
   getState(): DirectoryState;
+  hasPendingConnection(): boolean;
   start(): Promise<void>;
   reconnect(): Promise<void>;
   retry(): Promise<void>;
@@ -482,6 +483,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let generation = 0;
   let readEpoch = 0;
   let refreshing = false;
+  let startedRefreshGeneration: number | null = null;
   let refreshQueued = false;
   let refreshPromise: Promise<void> | null = null;
   let subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
@@ -532,6 +534,13 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     options.onChange(getState());
+  }
+
+  function hasPendingConnection(): boolean {
+    return (
+      !disposed &&
+      (subscriptionAttempt !== null || (subscriptionActive && !inventoryComplete))
+    );
   }
 
   function abortRefresh(): void {
@@ -845,7 +854,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           }
           snapshots += 1;
           if (snapshots === 1) {
-            live = status === "ready";
+            live = status === "ready" && inventoryComplete;
             emit();
             return;
           }
@@ -930,6 +939,12 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
     }
     startSubscription(connectionGeneration);
+    await Promise.resolve();
+    await Promise.resolve();
+    if (startedRefreshGeneration === connectionGeneration) {
+      await refreshPromise?.catch(() => undefined);
+      return;
+    }
     await refreshNow("Reconciling the full session directory.", connectionGeneration);
   }
 
@@ -965,6 +980,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return refreshPromise ?? Promise.resolve();
     }
     refreshing = true;
+    startedRefreshGeneration = generation;
     // Provisional bootstrap rows are not stale: they never completed a walk.
     // A routine refresh of a live, complete, ready directory also stays calm;
     // every other completed state keeps today's stale marking.
@@ -1099,6 +1115,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
 
   const directory: SessionDirectory = {
     getState,
+    hasPendingConnection,
     start,
     reconnect,
     retry,

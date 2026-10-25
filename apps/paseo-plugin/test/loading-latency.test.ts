@@ -194,15 +194,17 @@ async function waitForState(
 
 function loadingDirectory(fake: ReturnType<typeof scriptedDirectory>) {
   let latest: DirectoryState | null = null;
+  const states: DirectoryState[] = [];
   const directory = new SessionDirectory({
     client: () => fake.client,
     includeArchived: false,
     bootstrapLimit: 25,
     onChange: (state) => {
       latest = state;
+      states.push(state);
     },
   });
-  return { directory, latest: () => latest };
+  return { directory, latest: () => latest, states };
 }
 
 describe("session directory loading latency", () => {
@@ -293,14 +295,24 @@ describe("session directory loading latency", () => {
     vi.setSystemTime(0);
     const fake = scriptedDirectory(false);
     fake.hangSubscriptions();
-    const { directory, latest } = loadingDirectory(fake);
+    const { directory, latest, states } = loadingDirectory(fake);
 
     fake.holdNextSubscription();
     await directory.start();
     expect(latest()).toMatchObject({ status: "ready", live: false, inventoryComplete: false });
     expect(fake.pageStarts).toHaveLength(3);
 
+    fake.holdNextPage();
     fake.releaseHeldSubscription();
+    await vi.waitFor(() => expect(fake.pageStarts).toHaveLength(4));
+    expect(latest()).toMatchObject({
+      status: "stale",
+      live: false,
+      inventoryComplete: false,
+    });
+    expect(states.every((state) => !(state.live && !state.inventoryComplete))).toBe(true);
+
+    fake.releaseHeldPage();
     const reconciled = await waitForState(
       () => latest(),
       (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,

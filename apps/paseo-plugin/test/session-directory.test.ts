@@ -493,12 +493,16 @@ describe("SessionDirectory", () => {
     await directory.start();
     expect(directory.getState().entries.map((row) => row.id).sort()).toEqual(["archived", "live"]);
     const held = fake.holdNextSubscribe();
+    const heldPage = fake.holdNextPage();
     const changing = directory.setIncludeArchived(false);
     await held.started;
     try {
       expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
     } finally {
-      fake.failNext(); held.release(); await changing;
+      fake.failAlways();
+      held.release();
+      heldPage.release();
+      await changing;
     }
     expect(directory.getState().status).toBe("stale");
     expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
@@ -1798,10 +1802,12 @@ describe("SessionDirectory", () => {
     const previousPages = latest.pages;
     const previousReadAt = latest.lastUpdatedAt;
     const subscribe = fake.holdNextSubscribe();
+    const heldPage = fake.holdNextPage();
     const changing = directory.setIncludeArchived(true);
     await subscribe.started;
-    fake.failNext();
+    fake.failAlways();
     subscribe.release();
+    heldPage.release();
     await changing;
 
     expect(latest.includeArchived).toBe(true);

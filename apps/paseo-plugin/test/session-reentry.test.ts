@@ -21,10 +21,10 @@ vi.mock("@getpaseo/plugin/client", () => ({
   getPaseoClient: (hostId: string) => react.hosts.get(hostId),
   useRpc: (rpc: { name: string }) => rpc.name === "sessions.lifecycle-dispositions" ? react.dispositions : async () => ({}),
 }));
-import { disposeRetainedDirectories, startHostDirectory, useSessionDirectory, type HostStatus } from "../client/use-session-directory";
+import { bindHostDirectory, disposeRetainedDirectories, startHostDirectory, useSessionDirectory, type HostStatus } from "../client/use-session-directory";
 import { useSessionAvailability } from "../client/use-session-availability";
 import { forgetWorkspaceDirectories, useWorkspaceDirectory } from "../client/use-workspace-directory";
-import type { AgentDirectoryPage } from "../client/session-directory";
+import type { AgentDirectoryPage, DirectoryState } from "../client/session-directory";
 import { sessionEntry } from "./session-fixtures";
 
 type Observer = {
@@ -43,12 +43,13 @@ const sessions = (count: number) => Array.from({ length: count }, (_, index) => 
 /** A fictional host: offset cursors over `rows`, one owned subscription per subscribe call. */
 function fakeHost(hostId: string, rows: AgentDirectoryPage[]) {
   const host = {
-    rows, calls: [] as PaseoAgentListOptions[], observers: [] as Observer[], released: 0, gate: null as Promise<void> | null,
+    rows, calls: [] as PaseoAgentListOptions[], observers: [] as Observer[], released: 0, gate: null as Promise<void> | null, subscribeGate: null as Promise<void> | null,
     workspaces: vi.fn(async () => ({ entries: [{ id: `${hostId}-wks` }], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } })),
     projects: vi.fn(async () => ({ projects: [{ projectId: `${hostId}-prj` }] })),
     get subscribes() { return host.calls.filter((call) => call.subscribe); },
     get walks() { return host.calls.filter((call) => !call.subscribe); },
     holdWalk() { let release!: () => void; host.gate = new Promise((resolve) => { release = resolve; }); return () => { host.gate = null; release(); }; },
+    holdSubscribe() { let release!: () => void; host.subscribeGate = new Promise((resolve) => { release = resolve; }); return () => { host.subscribeGate = null; release(); }; },
   };
   const list = async (options: PaseoAgentListOptions = {}) => {
     host.calls.push(options);
@@ -57,6 +58,7 @@ function fakeHost(hostId: string, rows: AgentDirectoryPage[]) {
     const result = { requestId: "fixture", entries: visible.slice(start, end),
       pageInfo: { hasMore: end < visible.length, nextCursor: end < visible.length ? String(end) : null, prevCursor: null } };
     if (!options.subscribe) { if (host.gate) await host.gate; return result; }
+    if (host.subscribeGate) await host.subscribeGate;
     const snapshot = { ...result, subscriptionId: `sub-${host.calls.length}` } as PaseoAgentListResult & { subscriptionId: string };
     return { ...snapshot, subscription: {
       subscriptionId: snapshot.subscriptionId, ready: Promise.resolve(snapshot),
@@ -115,6 +117,40 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(kontor().state.entries).toHaveLength(450);
     expect(host.subscribes).toHaveLength(1);
     expect(host.walks).toHaveLength(3);
+  });
+
+  it("joins a pending subscription after provisional rows are ready", async () => {
+    const host = fakeHost("host-a", sessions(450));
+    const release = host.holdSubscribe();
+    let latest: DirectoryState | null = null;
+    const unbind = bindHostDirectory((state) => {
+      latest = state;
+    });
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(latest).toMatchObject({
+      status: "ready",
+      live: false,
+      inventoryComplete: false,
+    });
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(3);
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(3);
+
+    release();
+    await settle();
+    expect(latest).toMatchObject({
+      status: "ready",
+      live: true,
+      inventoryComplete: true,
+    });
+    expect(host.subscribes).toHaveLength(1);
+    unbind();
   });
 
   it("joins an in-flight sidebar reconnect instead of starting a third walk", async () => {

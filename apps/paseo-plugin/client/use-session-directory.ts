@@ -93,7 +93,10 @@ function startConnection(record: RetainedDirectory): void {
     .reconnect()
     .catch(() => undefined)
     .finally(() => {
-      if (record.connection?.token === token) {
+      if (
+        record.connection?.token === token &&
+        !record.directory.hasPendingConnection()
+      ) {
         record.connection = null;
       }
     });
@@ -133,6 +136,9 @@ function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
       bootstrapLimit: BOOTSTRAP_LIMIT,
       onChange: (next) => {
         record.state = next;
+        if (record.connection !== null && !record.directory.hasPendingConnection()) {
+          record.connection = null;
+        }
         for (const listener of [...listeners]) {
           notifyListener(record, listener, next);
         }
