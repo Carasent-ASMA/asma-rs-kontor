@@ -67,3 +67,8 @@ export function seatBinding(labels: AgentLabels): SeatBinding {
     .find((value) => value !== undefined && value.length > 0);
   return { seat: seat ?? null };
 }
+
+/** The session's native parent, else its Paseo-direct owner label; null when neither names one. */
+export function parent(agent: { readonly labels?: AgentLabels; readonly parentAgentId?: unknown }): string | null {
+  return (typeof agent.parentAgentId === "string" ? agent.parentAgentId : null) ?? agent.labels?.["paseo.parent-agent-id"] ?? null;
+}

@@ -1289,6 +1289,7 @@ All values are optional and read from the daemon environment:
 | --- | --- | --- |
 | `KONTOR_PLUGIN_STATE_ROOT` | `~/.local/state/kontor/asma` | State root argument passed to `kontor-mcp`. |
 | `KONTOR_PLUGIN_MCP_COMMAND` | `kontor-mcp` | Command used for the composed server. |
+| `KONTOR_PLUGIN_CLI_COMMAND` | `kontor` | Command a confirmed native takeover runs for its one local fleet selection read (`fleet-policy-resolve`). |
 | `KONTOR_PLUGIN_MCP` | on | `off` skips the MCP server; the hooks and guard stay active. |
 | `KONTOR_PLUGIN_SERVE_PROFILE` | none | Optional `--serve-profile` narrowing. |
 | `KONTOR_PLUGIN_PLACEMENT_ROOTS` | none | Comma-separated extra containment roots. |
