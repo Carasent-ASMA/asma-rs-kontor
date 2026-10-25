@@ -3117,6 +3117,7 @@ dependencies = [
  "bytes",
  "futures",
  "jiff",
+ "kontor-catalog",
  "kontor-core",
  "kontor-runtime",
  "kontor-scheduler",
@@ -3166,6 +3167,25 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "kontor-catalog"
+version = "0.2.1"
+dependencies = [
+ "hex",
+ "kontor-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "utoipa",
  "uuid",
 ]
 
@@ -3231,6 +3251,7 @@ dependencies = [
  "jiff",
  "kontor-accounts",
  "kontor-api",
+ "kontor-catalog",
  "kontor-context",
  "kontor-core",
  "kontor-fleet",

@@ -1,0 +1,41 @@
+[package]
+name = "kontor-catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Host-local observational work catalog: plan discovery, identity and collection."
+
+[lints]
+workspace = true
+
+[dependencies]
+# The catalog records instants with the control plane's one timestamp type and
+# generates opaque ids with the one generator, so two clocks and two id sources
+# cannot disagree about the same observation.
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+# The catalog owns a SEPARATE SQLite file. It reuses the workspace's pinned
+# SQLite build and nothing from `kontor-store`: no governed table, no governed
+# authority and no enrollment requirement.
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Plan front matter is YAML. The same parser the plugin uses keeps the local
+# contract aligned with the existing direct reader.
+serde_yaml_ng = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+# The read DTOs are the frozen contract and are also the OpenAPI schema source.
+utoipa = { workspace = true }
+
+[dev-dependencies]
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
