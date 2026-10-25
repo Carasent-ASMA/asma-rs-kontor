@@ -181,6 +181,34 @@ async function bounds(page, width, height, name) {
       assert.equal(calls.length, 1); assert.equal(calls[0].input.sourceAgentId, null);
     } finally { await context.close(); }
   });
+  for (const width of [320, 390, 1440]) await run(width + '-topic-escape-closes-new-session-dialog', async () => {
+    const { page, context } = await start(width, 'screen');
+    try {
+      const topic = page.getByRole('textbox', { name: 'Topic', exact: true });
+      await topic.fill('Escape should close the sheet');
+      await topic.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Start or switch' })).toBeFocused();
+    } finally { await context.close(); }
+  });
+  for (const width of [320, 390, 1440]) await run(width + '-jira-filter-clears-stale-activedescendant', async () => {
+    const { page, context } = await start(width, 'screen');
+    try {
+      await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
+      const search = page.getByRole('combobox', { name: 'Choose a Jira issue' });
+      await expect(page.getByRole('option')).toHaveCount(50);
+      await search.focus();
+      await search.press('ArrowDown');
+      const highlighted = await search.getAttribute('aria-activedescendant');
+      assert.ok(highlighted && highlighted.startsWith('kontor-jira-picker-option-ASMA-'));
+      await page.getByRole('button', { name: 'Tickets', exact: true }).click();
+      await expect(page.getByRole('option')).toHaveCount(45);
+      await expect(search).not.toHaveAttribute('aria-activedescendant');
+      await search.press('ArrowDown');
+      const ticket = await search.getAttribute('aria-activedescendant');
+      assert.ok(ticket && ticket.startsWith('kontor-jira-picker-option-ASMA-') && ticket !== highlighted);
+    } finally { await context.close(); }
+  });
   await run('source-create-exact-selected-ID', async () => {
     const { page, context } = await start(390);
     try {

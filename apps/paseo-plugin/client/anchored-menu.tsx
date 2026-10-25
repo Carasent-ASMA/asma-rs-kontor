@@ -26,6 +26,11 @@ type KeyEvent = { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: b
 type Editable = { tagName?: string; getAttribute?(name: string): string | null; isContentEditable?: boolean };
 const LIST_NAV = new Set(["ArrowDown", "ArrowUp", "Home", "End"]);
 
+/** True when Escape should stay with a nested combobox/popup instead of closing the anchored panel. */
+export function panelNestedComboboxTarget(panel: FocusTarget | null, active: unknown): boolean {
+  if (!panel?.contains?.(active)) return false;
+  return (active as Editable).getAttribute?.("role") === "combobox";
+}
 /** True when focus is in a nested field that owns typing and combobox list keys inside a panel. */
 export function panelEditingTarget(panel: FocusTarget | null, active: unknown): boolean {
   if (!panel?.contains?.(active)) return false;
@@ -118,7 +123,7 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
       const node = panel.current as unknown as FocusTarget | null;
       const editing = panelEditingTarget(node, document?.activeElement);
       if (event.key === "Escape") {
-        if (editing) return;
+        if (panelNestedComboboxTarget(node, document?.activeElement)) return;
         event.preventDefault(); event.stopPropagation(); close.current(); restoreFocus(); return;
       }
       if (event.key === "Tab") {

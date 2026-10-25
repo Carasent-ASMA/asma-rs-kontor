@@ -32,7 +32,7 @@ vi.mock("../client/page-controls", () => ({ Action: "Action", NO_PRESS_DELAY: {}
 import { isSourceId, readSource, readSourceCatalog, sourceRows, sourceTokenMatches } from "../client/source-picker";
 import { issueTypeIcon, jiraPickerRows, JiraIssuePicker } from "../client/jira-issue-picker";
 import { SourceSessionPicker } from "../client/source-session-picker";
-import { SearchPicker } from "../client/search-picker";
+import { reconcilePickerActive, SearchPicker } from "../client/search-picker";
 
 const colors = { foreground: "#111", foregroundMuted: "#555", surface2: "#eee", border: "#ddd", accent: "#00f", statusWarning: "#850" } as never;
 const id = "00000000-0000-4000-8000-000000000001";
@@ -110,6 +110,15 @@ describe("source picker data", () => {
 const issue = (key: string, epic: boolean, type = epic ? "Epic" : "Task"): JiraIssue => ({
   id: `jira-${key}`, key, created: "2026-01-01T00:00:00.000Z", epic, type, summary: `Title ${key}`, status: "Open", statusCategory: "To Do", open: true, parent: null,
 });
+describe("search picker highlight", () => {
+  it("clears a stale active option when the result set changes", () => {
+    const row = (id: string) => ({ id, title: id, detail: "detail" });
+    expect(reconcilePickerActive("ASMA-900", [row("ASMA-900"), row("ASMA-899")])).toBe("ASMA-900");
+    expect(reconcilePickerActive("ASMA-900", [row("ASMA-899"), row("ASMA-897")])).toBeNull();
+    expect(reconcilePickerActive(null, [row("ASMA-900")])).toBeNull();
+  });
+});
+
 describe("Jira picker", () => {
   it("keeps backend rows intact except exact-key postfilter and maps only explicit type names to host glyphs", () => {
     const rows = Array.from({ length: 100 }, (_, i) => issue(`ASMA-${100 - i}`, i % 2 === 0));

@@ -5,6 +5,13 @@ import { Action, NO_PRESS_DELAY, pressFeedback, type Colors } from "./page-contr
 
 export type PickerRow = { id: string; title: string; detail: string; icon?: string; problem?: string | null; action?: ReactNode };
 
+/** Drop a keyboard highlight when its option left the list (for example after a type filter refetch). */
+export function reconcilePickerActive(active: string | null, rows: readonly PickerRow[]): string | null {
+  if (!active) return null;
+  const available = rows.filter((row) => !row.problem);
+  return available.some((row) => row.id === active) ? active : null;
+}
+
 type DomInput = {
   addEventListener?(type: "keydown", listener: (event: DomKey) => void, capture?: boolean): void;
   removeEventListener?(type: "keydown", listener: (event: DomKey) => void, capture?: boolean): void;
@@ -26,6 +33,7 @@ export function SearchPicker({ name, label, placeholder, query, onQuery, onSearc
   const available = rows.filter((row) => !row.problem);
   activeRef.current = active;
   useEffect(() => { setActive(null); scroll.current?.scrollTo({ y: 0, animated: false }); }, [query]);
+  useEffect(() => { setActive((current) => reconcilePickerActive(current, rows)); }, [rows]);
   const listId = `${name}-results`, optionId = (id: string) => `${name}-option-${id}`;
   const inputOf = (): DomInput | null => {
     const doc = (globalThis as { document?: { querySelector?(selector: string): DomInput | null } }).document;
@@ -50,7 +58,10 @@ export function SearchPicker({ name, label, placeholder, query, onQuery, onSearc
     syncActiveDescendant(optionId(id));
     scroll.current?.scrollTo({ y: positions.current.get(id) ?? 0, animated: false });
   };
-  useEffect(() => { syncActiveDescendant(active && !error ? optionId(active) : null); }, [active, error, name]);
+  useEffect(() => {
+    const highlighted = reconcilePickerActive(active, rows);
+    syncActiveDescendant(highlighted && !error ? optionId(highlighted) : null);
+  }, [active, error, name, rows]);
   useEffect(() => {
     if (Platform.OS !== "web") return;
     let input: DomInput | null = null, timer: ReturnType<typeof setTimeout> | undefined;
