@@ -1454,6 +1454,34 @@ rule; there is no `fleet.yml` and no last-valid fallback, and a schema_version 1
 activation resolves no leadership key. MCP neither lists nor dispatches it: it
 has no `/v1` route.
 
+An empty `--unavailable-accounts` set is not evidence that a route is
+available. A caller that holds positive evidence states it in single mode with
+`--route-health`:
+
+```json
+{
+  "as_of": "2026-10-25T09:00:00Z",
+  "max_age_seconds": 60,
+  "mode": "default",
+  "observations": [
+    {"account": "<account>", "model": "<model>", "effort": "xhigh", "mode": "default",
+     "state": "available", "observed_at": "2026-10-25T08:59:30Z", "revision": "<host read>"}
+  ]
+}
+```
+
+With route health stated, a route the eligibility admits is still passed over
+unless exactly one observation of its account, model, effort and `mode` says
+`available` and is at most `max_age_seconds` old at `as_of`. The exclusion
+reasons are `route_unobserved` (no observation), `route_health_unknown` (the
+read could not tell, several observations cover the route, or the one that
+does is dated after `as_of`), `route_health_stale` and
+`route_unavailable_now`. `as_of` is stated, never read from a clock, and the
+selection echoes the route health so the receipt reproduces the choice.
+`max_age_seconds` runs from 1 to 3600 (H-02). Route health belongs to single
+mode; `--allocation` and `--planning-pair` refuse it (H-01). Without it, the
+selection is negative-only as before.
+
 The same operation allocates a whole Committee jointly when it is given
 `--allocation` instead of `--binding-key` — exactly one of the two:
 

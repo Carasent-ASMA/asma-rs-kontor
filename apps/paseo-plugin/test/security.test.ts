@@ -44,6 +44,7 @@ describe("no Kontor write credential", () => {
 });
 
 const clientFiles = [
+  "../client/session-compact-content.tsx",
   "../client/mobile-filters.tsx",
   "../client/anchored-menu.tsx",
   "../client/graph-page.tsx",
@@ -166,5 +167,23 @@ describe("bounded session create", () => {
   it("only reads the operator's create switch", () => {
     expect(text).toContain('readFloor(file, "create")');
     expect(text).not.toMatch(/(?:open|writeFile|rename|rm)\((?:file|switchFile)\b/);
+  });
+});
+
+describe("bounded fleet selection read", () => {
+  const text = source("../server/session-takeover.ts");
+
+  it("runs only the configured kontor command with one fixed argument vector and the operator tier for that child alone", () => {
+    expect(text.match(/execFile\(/g)).toHaveLength(1);
+    expect(text).toContain("execFile(command, args, { env: { PATH: process.env.PATH ?? \"\", HOME: process.env.HOME ?? \"\" },");
+    expect(text).toContain("const args = [\"--state-root\", config.stateRoot, \"--tier\", \"operator\", \"fleet-policy-resolve\", `--binding-key=${key}`, `--route-health=${JSON.stringify(evidence.data)}`];");
+    expect(text).toContain("await run(config.cliCommand, args)");
+    expect(text.match(/"operator"/g)).toHaveLength(1);
+    expect([...new Set(text.match(/fleet-policy-resolve|kontor_[a-z_]+/g))]).toEqual(["kontor_fleet_policy_resolve", "fleet-policy-resolve"]);
+  });
+
+  it("raises no tier, handles no credential and opens no other surface", () => {
+    expect(text).not.toMatch(/shell:|spawn\(|exec\(|process\.env\.[A-Z_]*=|KONTOR_TIER|"admin"|credentials\.json|KONTOR_AUTH|daemon-keypair/);
+    expect(text).not.toMatch(/node:fs|writeFile|appendFile|createWriteStream|fetch\(|node:http|node:net|kontor-mcp/);
   });
 });

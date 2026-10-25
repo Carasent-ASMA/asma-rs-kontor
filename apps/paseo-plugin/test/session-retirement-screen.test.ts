@@ -132,6 +132,17 @@ beforeEach(() => { clearSessionViews(); patchSessionView("host-a", { query: "", 
 afterEach(() => harness.unmount());
 
 describe("Sessions retirement integration", () => {
+  it("keeps compact routine retirement behind Details and preserves inventory membership", () => {
+    mount(retirement([ordinaryProjection, retiredProjection]), { layout: { compact: true, platform: "ios" } });
+    expect(pureText(rowFeedback("ordinary"))).toBe("");
+    openRowDetails("ordinary");
+    const details = all().find((element) => element.type === SessionRetirementDetails)!;
+    expect(pureText(details)).toContain("Retirement evidence");
+    expect(pureText(details)).toContain("Missing evidence");
+    expect(pureText(details)).toContain("Native status idle");
+    expect(fake.inputs.at(-1)?.includeArchived).toBe(true);
+    expect(byTestID("sessions-retirement-conflict-retired")).toHaveLength(1);
+  });
   it("draws the disposition on the row and the read-only evidence in details", () => {
     mount();
     const feedback = rowFeedback("ordinary");

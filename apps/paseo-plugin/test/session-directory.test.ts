@@ -389,44 +389,52 @@ describe("SessionDirectory", () => {
     const rows = Array.from({ length: 60 }, (_, index) => entry(`bootstrap-${index}`));
     const fake = fakeDirectory([rows.slice(0, 40), rows.slice(40)]);
     const held = fake.holdNextPage();
+    const subscribe = fake.holdNextSubscribe();
     let latest = emptyDirectoryState();
+    const states: DirectoryState[] = [];
     const directory = new SessionDirectory({
       client: () => fake.client,
       includeArchived: false,
       bootstrapLimit: 25,
       onChange: (state) => {
         latest = state;
+        states.push(state);
       },
     });
 
     const starting = directory.start();
     await held.started;
+    subscribe.release();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries.length === 60,
+      1_500,
+    );
+    await starting;
 
-    expect(latest).toMatchObject({
+    const provisional = states.find(
+      (state) => state.entries.length === 25 && state.lastUpdatedAt === null,
+    );
+    expect(provisional).toMatchObject({
       status: "loading",
       live: false,
       pages: 0,
       lastUpdatedAt: null,
       inventoryComplete: false,
     });
-    expect(latest.entries).toHaveLength(25);
-    expect(new Set(latest.entries.map((item) => item.id))).toEqual(
+    expect(new Set(provisional!.entries.map((item) => item.id))).toEqual(
       new Set(rows.slice(0, 25).map((item) => item.agent.id)),
     );
-    // The count guard in matchingCount stays "…" until a completed walk sets lastUpdatedAt.
-    expect(latest.lastUpdatedAt).toBeNull();
 
     held.release();
-    await starting;
-
-    expect(latest).toMatchObject({
+    expect(settled).toMatchObject({
       status: "ready",
       live: true,
       pages: 2,
       inventoryComplete: true,
     });
-    expect(latest.entries).toHaveLength(60);
-    expect(latest.lastUpdatedAt).not.toBeNull();
+    expect(settled.entries).toHaveLength(60);
+    expect(settled.lastUpdatedAt).not.toBeNull();
 
     await directory.dispose();
   });
@@ -485,12 +493,16 @@ describe("SessionDirectory", () => {
     await directory.start();
     expect(directory.getState().entries.map((row) => row.id).sort()).toEqual(["archived", "live"]);
     const held = fake.holdNextSubscribe();
+    const heldPage = fake.holdNextPage();
     const changing = directory.setIncludeArchived(false);
     await held.started;
     try {
       expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
     } finally {
-      fake.failNext(); held.release(); await changing;
+      fake.failAlways();
+      held.release();
+      heldPage.release();
+      await changing;
     }
     expect(directory.getState().status).toBe("stale");
     expect(directory.getState().entries.map((row) => row.id)).toEqual(["live"]);
@@ -1351,17 +1363,26 @@ describe("SessionDirectory", () => {
     await heldSubscription.started;
     const pagesWhileHeld = fake.listCalls.filter((call) => call.subscribe === undefined).length;
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(latest.status).toBe("stale");
+    await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Premature fresh",
+      1_500,
+    );
     expect(latest.live).toBe(false);
     expect(latest.inventoryComplete).toBe(false);
-    expect(latest.entries[0]?.title).toBe("Last known");
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesWhileHeld);
+    expect(latest.staleReason).not.toBeNull();
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined).length).toBeGreaterThan(
+      pagesWhileHeld,
+    );
 
     heldSubscription.release();
     const settled = await waitForState(
       () => latest,
-      (state) => state.status === "ready" && state.entries[0]?.title === "Premature fresh",
+      (state) =>
+        state.status === "ready" &&
+        state.live === true &&
+        state.inventoryComplete === true &&
+        state.entries[0]?.title === "Premature fresh",
       1_500,
     );
     await Promise.all([retrying, firstRefresh, queuedRefresh]);
@@ -1377,7 +1398,7 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
-  it("keeps stale last-known rows when a normal refresh races a held Retry bootstrap", async () => {
+  it("keeps last-known rows when a normal refresh races a held Retry bootstrap", async () => {
     const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
     let latest = emptyDirectoryState();
     const directory = new SessionDirectory({
@@ -1401,24 +1422,33 @@ describe("SessionDirectory", () => {
     const pagesBeforeRefresh = fake.listCalls.filter((call) => call.subscribe === undefined).length;
     const normalRefresh = directory.refresh();
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(latest.status).toBe("stale");
+    await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Last known",
+      1_500,
+    );
     expect(latest.live).toBe(false);
     expect(latest.inventoryComplete).toBe(false);
     expect(latest.staleReason).not.toBeNull();
-    expect(latest.entries[0]?.title).toBe("Last known");
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesBeforeRefresh);
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined).length).toBeGreaterThan(
+      pagesBeforeRefresh,
+    );
 
     held.release();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,
+      1_500,
+    );
     await Promise.all([retrying, normalRefresh]);
-    expect(latest.status).toBe("ready");
-    expect(latest.live).toBe(true);
-    expect(latest.inventoryComplete).toBe(true);
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(pagesBeforeRefresh + 1);
+    expect(settled.entries[0]?.title).toBe("Last known");
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined).length).toBeGreaterThan(
+      pagesBeforeRefresh,
+    );
     await directory.dispose();
   });
 
-  it("keeps the latest Retry stale and does not walk while its subscription is held", async () => {
+  it("starts the latest Retry's provisional walk while its subscription is held", async () => {
     const fake = fakeDirectory([[entry("agent-a", { title: "Last known" })]]);
     let latest = emptyDirectoryState();
     const directory = new SessionDirectory({
@@ -1438,20 +1468,74 @@ describe("SessionDirectory", () => {
     const secondRetry = directory.retry();
     await second.started;
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(latest.status).toBe("stale");
+    await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Last known",
+      1_500,
+    );
     expect(latest.live).toBe(false);
     expect(latest.inventoryComplete).toBe(false);
-    expect(latest.entries[0]?.title).toBe("Last known");
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(initialPages);
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined).length).toBeGreaterThan(
+      initialPages,
+    );
 
     second.release();
     first.release();
     await Promise.all([firstRetry, secondRetry]);
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,
+      1_500,
+    );
+    expect(settled.entries[0]?.title).toBe("Last known");
     await directory.dispose();
   });
 
-  it("runs one fresh walk after the latest Retry and keeps it live when the old subscription settles late", async () => {
+  it("applies an update buffered after activation over the reconciling walk", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Before" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const subscribe = fake.holdNextSubscribe();
+    const page = fake.holdNextPage();
+    const retrying = directory.retry();
+    await page.started;
+
+    subscribe.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...entry("agent-a", { title: "After activation" }).agent,
+        updatedAt: "2026-10-18T10:05:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+    page.release();
+
+    const settled = await waitForState(
+      () => latest,
+      (state) =>
+        state.status === "ready" &&
+        state.live === true &&
+        state.inventoryComplete === true &&
+        state.entries[0]?.title === "After activation",
+      1_500,
+    );
+    await retrying;
+    expect(settled.entries[0]?.updatedAt).toBe("2026-10-18T10:05:00.000Z");
+    expect(fake.listCalls.filter((call) => call.subscribe !== undefined)).toHaveLength(2);
+
+    await directory.dispose();
+  });
+
+  it("keeps the latest Retry live when the old subscription settles late", async () => {
     const fake = fakeDirectory([[entry("agent-a")]]);
     let latest = emptyDirectoryState();
     const directory = new SessionDirectory({
@@ -1474,16 +1558,24 @@ describe("SessionDirectory", () => {
 
     second.release();
     await Promise.all([firstRetry, secondRetry]);
-    expect(latest.status).toBe("ready");
-    expect(latest.live).toBe(true);
-    expect(latest.inventoryComplete).toBe(true);
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,
+      1_500,
+    );
+    const pageCallsAfterSettled = fake.listCalls.filter(
+      (call) => call.subscribe === undefined,
+    ).length;
+    expect(pageCallsAfterSettled).toBeGreaterThan(initialPages + 1);
 
     first.release();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(latest.status).toBe("ready");
-    expect(latest.live).toBe(true);
-    expect(latest.inventoryComplete).toBe(true);
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(initialPages + 1);
+    expect(settled.status).toBe("ready");
+    expect(settled.live).toBe(true);
+    expect(settled.inventoryComplete).toBe(true);
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(
+      pageCallsAfterSettled,
+    );
     await directory.dispose();
   });
 
@@ -1710,10 +1802,12 @@ describe("SessionDirectory", () => {
     const previousPages = latest.pages;
     const previousReadAt = latest.lastUpdatedAt;
     const subscribe = fake.holdNextSubscribe();
+    const heldPage = fake.holdNextPage();
     const changing = directory.setIncludeArchived(true);
     await subscribe.started;
-    fake.failNext();
+    fake.failAlways();
     subscribe.release();
+    heldPage.release();
     await changing;
 
     expect(latest.includeArchived).toBe(true);
@@ -1751,7 +1845,7 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
-  it("serializes a second refresh while the first waits for the re-subscribe", async () => {
+  it("serializes a second refresh while the first walks before the re-subscribe", async () => {
     const fake = fakeDirectory([[entry("agent-a")]]);
     let latest = emptyDirectoryState();
     const directory = new SessionDirectory({
@@ -1765,25 +1859,34 @@ describe("SessionDirectory", () => {
     await directory.start();
     fake.emitError(new Error("live updates stopped"));
     fake.listCalls.length = 0;
+    const page = fake.holdNextPage();
     const subscribe = fake.holdNextSubscribe();
     const first = directory.refresh();
-    await subscribe.started;
-    const second = directory.refresh();
-    const page = fake.holdNextPage();
-    subscribe.release();
     await page.started;
+    const pagesDuringFirstWalk = fake.listCalls.filter(
+      (call) => call.subscribe === undefined,
+    ).length;
+    const second = directory.refresh();
     const third = directory.refresh();
 
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(1);
+    expect(
+      fake.listCalls.filter((call) => call.subscribe === undefined),
+    ).toHaveLength(pagesDuringFirstWalk);
 
+    subscribe.release();
     page.release();
+    await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,
+      1_500,
+    );
     await Promise.all([first, second, third]);
     expect(latest.entries.map((item) => item.id)).toContain("agent-a");
 
     await directory.dispose();
   });
 
-  it("does not walk after dispose while the subscription is pending", async () => {
+  it("does not start another page after dispose while the subscription is pending", async () => {
     const fake = fakeDirectory([[entry("agent-a")]]);
     const directory = new SessionDirectory({
       client: () => fake.client,
@@ -1791,14 +1894,21 @@ describe("SessionDirectory", () => {
       onChange: () => undefined,
     });
 
+    const page = fake.holdNextPage();
     const subscribe = fake.holdNextSubscribe();
     const starting = directory.start();
-    await subscribe.started;
+    await page.started;
+    const pagesStarted = fake.listCalls.filter(
+      (call) => call.subscribe === undefined,
+    ).length;
     await directory.dispose();
+    page.release();
     subscribe.release();
     await starting;
 
-    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(0);
+    expect(
+      fake.listCalls.filter((call) => call.subscribe === undefined),
+    ).toHaveLength(pagesStarted);
   });
 
   it("opens one subscription when refresh races a pending connect", async () => {

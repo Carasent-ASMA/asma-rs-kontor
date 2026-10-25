@@ -10,9 +10,9 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readConfig } from "./config";
 import { readFloor } from "./floor";
 import {
-  CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, checkCreate, createOutcomeSchema, createRequestSchema,
-  deskKind, deskName, executeCreate, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateOptions, topicProblem,
-  type CreateDesk, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type JiraIssue, type LeadWorkspace,
+  CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createOutcomeSchema, createRequestSchema,
+  deskIssueProblem, deskKind, deskName, executeCreate, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateOptions, topicProblem,
+  type CreateDesk, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type JiraIssue, type JiraIssueClass, type LeadWorkspace,
 } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -39,7 +39,7 @@ export function createSwitchFile(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "create.json");
 }
 
-function createStateRoot(): string {
+export function createStateRoot(): string {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-create-v1");
 }
 
@@ -130,6 +130,22 @@ export function personaFor(role: CreateRole, start: CreateStart): PersonaKind {
 export function personaPrompt(kind: PersonaKind, fields: { desk: string; workspace: string; workspaceId: string; topic: string; title: string; key: string | null }): string {
   return PERSONAS[kind].template.replace(/\{(desk|workspace|workspaceId|topic|title|key)\}/g, (_, name: keyof typeof fields) => fields[name] ?? "");
 }
+/**
+ * A New-session lead's persona, issued again unchanged for a takeover successor on `provider` in the same lead
+ * workspace. Its kind comes from the persona label and its fields from the `title.auto` the session was created with;
+ * a template revision this host no longer issues, or fields that do not rebuild that title, refuse.
+ */
+export function reissuePersona(labels: Record<string, string>, provider: string, place: { desk: string; workspace: string; workspaceId: string }): { text: string; supported: boolean; version: string } | { refused: string } {
+  const kind = (Object.keys(PERSONAS) as PersonaKind[]).find((entry) => [personaVersion(entry, true), personaVersion(entry, false)].includes(labels.persona ?? ""));
+  if (!kind) return { refused: "This session's persona is not a revision this host issues now, so it cannot be issued again unchanged." };
+  const title = labels[TITLE_AUTO_LABEL] ?? "", [role, scope, topic] = title.split(TITLE_SEPARATOR) as [CreateRole, string?, string?];
+  const key = scope === CREATE_SCOPE ? null : scope ?? null, start: CreateStart = key ? "from-jira" : "ad-hoc";
+  if (!CREATE_ROLES.includes(role) || !topic || leadTitle(role, key, topic) !== title || personaFor(role, start) !== kind || leadWorkspaceName(role, start) !== place.workspace.toUpperCase())
+    return { refused: "This session's persona fields no longer match its created title and lead workspace, so its persona cannot be issued again unchanged." };
+  const supported = PERSONA_PROVIDERS.includes(provider);
+  return { text: personaPrompt(kind, { ...place, topic, title, key }), supported, version: personaVersion(kind, supported) };
+}
+
 /** The persona text with no task: for an unverified provider it rides here, and a source summary always does. */
 export function bootstrapPrompt(persona: string, source: string | null, supported: boolean): string | null {
   const parts: string[] = [];
@@ -159,6 +175,10 @@ export type SeatCreateSpec = {
   workspaceName: string;
   /** The desk checkout that scopes the provider catalog. */
   cwd: string;
+  /** A takeover's immutable placement; unlike a new lead, it may never adopt a moved workspace. */
+  expectedPlacement?: { workspaceId: string; cwd: string };
+  /** A takeover's sealed evidence bounds. Ordinary New session requests have no such bound. */
+  effectValidity?: { route: { observedAt: string; validUntil: string }; continuity: { observedAt: string; validUntil: string } };
   /** Creates the missing lead workspace and reads it back; null when it already exists. */
   createWorkspace: (() => Promise<{ id: string; cwd: string }>) | null;
   /** Re-validates the target at create time; null when it still matches. */
@@ -171,6 +191,33 @@ export type SeatCreateOutcome = CreateOutcome;
 export type SeatCreatePlan = { spec: SeatCreateSpec } | { refused: string; requestId: string; title: string };
 export type SeatCreateBuilder = () => Promise<SeatCreatePlan>;
 export type SeatCreate = (requestId: string, build: SeatCreateBuilder) => Promise<SeatCreateOutcome>;
+
+/** Checks the selector's bound and the owner receipt's bound, without evaluating or selecting any route. */
+export function effectValidityProblem(spec: SeatCreateSpec): string | null {
+  if (!spec.effectValidity) return null;
+  const now = Date.now();
+  for (const [kind, bound] of Object.entries(spec.effectValidity)) {
+    const start = Date.parse(bound.observedAt), end = Date.parse(bound.validUntil);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || now < start || now > end)
+      return kind === "route" ? "The selected route's health evidence expired or is dated in the future. No further takeover effect was dispatched."
+        : "Its owner/wake continuity receipt is stale or dated in the future. No further takeover effect was dispatched.";
+  }
+  return null;
+}
+
+const EXPECTED_CHECKOUT_CHANGED = "The expected checkout or workspace changed. No successor will be dispatched.";
+function placementProblem(spec: SeatCreateSpec, workspace: PaseoWorkspace | null): string | null {
+  const expected = spec.expectedPlacement;
+  return expected && (spec.workspaceId !== expected.workspaceId || spec.cwd !== expected.cwd || !workspace || workspace.archivingAt
+    || workspace.id !== expected.workspaceId || workspace.workspaceDirectory !== expected.cwd
+    || (workspace.title ?? workspace.name ?? "").trim().toUpperCase() !== spec.workspaceName.toUpperCase()) ? EXPECTED_CHECKOUT_CHANGED : null;
+}
+/** Used at the retirement and dispatch boundaries; the expected placement is durable data in the reviewed spec. */
+export async function expectedPlacementProblem(client: { workspaces: { ref(id: string): Pick<WorkspaceHandle, "refresh"> } }, spec: SeatCreateSpec): Promise<string | null> {
+  if (!spec.expectedPlacement) return null;
+  try { return placementProblem(spec, await client.workspaces.ref(spec.expectedPlacement.workspaceId).refresh()); }
+  catch { return "The expected checkout could not be read. No successor will be dispatched."; }
+}
 
 const recordSchema = z.object({
   request: z.object({
@@ -294,31 +341,45 @@ export function readbackDifferences(agent: Agent, request: CreateRecord["request
   return differences;
 }
 
-/** Why an issue cannot start a lead on this desk; null when it can. */
-export function deskIssueProblem(desk: Pick<CreateDesk, "project" | "kind">, issue: JiraIssue): string | null {
-  if (!issue.open) return `${issue.key} is ${issue.status}; choose an open issue.`;
-  if (desk.kind === "adam" && !issue.epic) return `${issue.key} is a ${issue.type}, not an epic. ${desk.project} takes epics; a non-epic issue belongs on DESK • TICKETS.`;
-  if (desk.kind === "tickets" && issue.epic) return `${issue.key} is an epic. ${desk.project} takes non-epic issues; an epic belongs on DESK • ADAM.`;
-  if (desk.kind === "tickets" && issue.parent?.open) return `${issue.key} is under the active epic ${issue.parent.key} (${issue.parent.statusCategory}). It is delivered in that epic's ESW; choose an issue without an active parent epic.`;
-  return null;
-}
-
 /** One live Jira search through asma-cli; a failure is distinct from an empty result. */
-export type JiraSearch = (input: { query: string; issueClass: "epic" | "non-epic" | null; openOnly: boolean }) => Promise<{ issues: JiraIssue[]; failure: string | null }>;
-const jiraSearchOutput = z.object({ issues: z.array(jiraIssueSchema) }).strict();
+export type JiraSearchInput = { query: string; issueClass: JiraIssueClass | null; openOnly: boolean };
+export type JiraSearchResult = { issues: JiraIssue[]; hasMore: boolean; nextPageToken: string | null; failure: string | null };
+export type JiraSearch = (input: JiraSearchInput) => Promise<JiraSearchResult>;
+const jiraSearchOutput = z.object({
+  issues: z.array(jiraIssueSchema),
+  hasMore: z.boolean(),
+  nextPageToken: z.string().nullable().optional(),
+}).strict();
 const executeFile = promisify(execFile);
 
-export const asmaJiraSearch: JiraSearch = async (input) => {
-  const args = ["jira", "search", "--query", input.query, "--limit", "100", ...(input.issueClass ? ["--class", input.issueClass] : []), ...(input.openOnly ? [] : ["--all"])];
+/** The CLI arguments for one search; the 50 cap is applied before the result ever reaches the picker. */
+export function jiraSearchArgs(input: JiraSearchInput): string[] {
+  return ["jira", "search", "--query", input.query, "--limit", "50",
+    ...(input.issueClass ? ["--class", input.issueClass] : []), ...(input.openOnly ? [] : ["--all"])];
+}
+
+/** Parse the CLI page without dropping its identity, timestamp or continuation fields. */
+export function parseJiraSearchOutput(stdout: string): Omit<JiraSearchResult, "failure"> {
+  const parsed = jiraSearchOutput.parse(JSON.parse(stdout));
+  return { issues: parsed.issues, hasMore: parsed.hasMore, nextPageToken: parsed.nextPageToken ?? null };
+}
+
+type JiraExecute = (file: string, args: readonly string[], options: { timeout: number; maxBuffer: number; encoding: "utf8" }) => Promise<{ stdout: string }>;
+
+/** The CLI boundary, injectable so the contract can be tested without a live Jira or a child process. */
+export async function runJiraSearch(input: JiraSearchInput, execute: JiraExecute = executeFile): Promise<JiraSearchResult> {
   try {
-    const { stdout } = await executeFile("asma", args, { timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8" });
-    return { issues: jiraSearchOutput.parse(JSON.parse(stdout)).issues, failure: null };
-  } catch (error) { return { issues: [], failure: errorText(error) }; }
-};
+    const { stdout } = await execute("asma", jiraSearchArgs(input), { timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8" });
+    return { ...parseJiraSearchOutput(stdout), failure: null };
+  } catch (error) { return { issues: [], hasMore: false, nextPageToken: null, failure: errorText(error) }; }
+}
+
+export const asmaJiraSearch: JiraSearch = (input) => runJiraSearch(input);
 
 /** The source session's last assistant message is its handoff summary; null when it wrote none. */
-export async function sourceSummary(client: CreateClient, agentId: string): Promise<string | null> {
+export async function sourceSummary(client: { agents: { ref(id: string): Pick<AgentHandle, "timeline"> } }, agentId: string): Promise<string | null> {
   const page = await client.agents.ref(agentId).timeline.refetch({ limit: 100, direction: "tail" });
+  if ("error" in page && page.error) throw new Error("The source summary could not be refreshed.");
   for (let index = page.entries.length - 1; index >= 0; index--) {
     const item = page.entries[index]!.item;
     if (item.type === "assistant_message" && item.text.trim()) return item.text.trim();
@@ -425,16 +486,56 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const profile = config?.config.agentProfiles?.find((entry) => [entry.name, entry.id].some((value) => value.trim().toUpperCase() === role));
     let pending: CreateOutcome | null = null;
     try { pending = await unsettled(); } catch (error) { return { enabled: false, disabledReason: errorText(error), desks: [], catalogProjectId: null, providers: [], profile: null, issues: [], jiraProblem: null, pending: null, notes }; }
+    // The issue chooses its desk, so the search spans every type; an ineligible issue stays listed with its reason.
     let issues: JiraIssue[] = [], jiraProblem: string | null = null;
-    if (desk && start === "from-jira" && desk.kind !== "pr-review" && desk.kind !== "other") {
-      const result = await jira({ query: scope.issueKey ?? "", issueClass: desk.kind === "adam" ? "epic" : "non-epic", openOnly: true });
+    if (desk && start === "from-jira") {
+      const issueClass = scope.issueClass ?? (desk.kind === "adam" ? "epic" : desk.kind === "tickets" ? "non-epic" : "eligible");
+      const result = await jira({ query: scope.issueKey ?? "", issueClass, openOnly: true });
       if (result.failure) jiraProblem = `Jira could not be read: ${result.failure}`;
-      else issues = result.issues.filter((issue) => deskIssueProblem(desk, issue) === null);
+      else issues = result.issues;
     }
     return { enabled: disabledReason === null, disabledReason, desks, catalogProjectId: desk?.projectId ?? null, providers,
       profile: profile ? { name: profile.name, provider: profile.provider, model: profile.model ?? null, modeId: profile.modeId ?? null, effort: profile.thinkingOptionId ?? null } : null,
       issues, jiraProblem, pending, notes };
   }
+
+  /**
+   * Everything a creation checks before its intent: no unsettled request, the named workspace and its directory, the
+   * route on this host, the caller's target and a free title. `replacing` is the session a takeover retires first, so
+   * its own title does not count as taken.
+   */
+  async function validate(spec: SeatCreateSpec, replacing: string | null = null): Promise<{ problem: string } | { cwd: string; workspaceId: string | null }> {
+    let cwd = spec.cwd;
+    const workspaceId = spec.workspaceId;
+    try {
+      const earlier = await unsettled();
+      if (earlier) return { problem: `An earlier creation, “${earlier.title}”, is not settled. Check it first.` };
+      if (workspaceId) {
+        const snapshot = await client.workspaces.ref(workspaceId).refresh();
+        const placement = placementProblem(spec, snapshot);
+        if (placement) return { problem: placement };
+        if (!snapshot || snapshot.archivingAt || !snapshot.workspaceDirectory || (snapshot.title ?? snapshot.name ?? "").trim().toUpperCase() !== spec.workspaceName.toUpperCase()) {
+          return { problem: `That workspace is no longer a ${spec.workspaceName} workspace on this host.` };
+        }
+        cwd = snapshot.workspaceDirectory;
+      }
+      const choice = choiceProblem(createProviders(await client.providers.snapshot({ cwd })), spec);
+      if (choice) return { problem: choice };
+      const target = await spec.revalidate?.();
+      if (target) return { problem: target };
+      if (workspaceId) {
+        const agents = await allPages((cursor) => client.agents.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
+        if (agents.some(({ agent }) => agent.id !== replacing && !agent.archivedAt && agent.workspaceId === workspaceId && agent.title === spec.title)) return { problem: `“${spec.title}” already names a session in ${spec.workspaceName}. Choose another topic.` };
+      }
+    } catch (error) { return { problem: `The host could not be read: ${errorText(error)}.` }; }
+    return { cwd, workspaceId };
+  }
+
+  /** The creation checks alone, switch included, for a caller that must pass them before an earlier effect. Writes nothing. */
+  const preflight = (spec: SeatCreateSpec, replacing: string | null) => serial(async () => {
+    const off = createSwitchProblem(switchFile);
+    return off ? { problem: off } : validate(spec, replacing);
+  });
 
   /** The one internal creation core: spec, validate, durable intent, one idempotent create, readback. */
   const createSeat: SeatCreate = (requestId, build) => serial(async () => {
@@ -448,26 +549,10 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     if ("refused" in plan) return refusedOutcome(requestId, plan.title, plan.refused);
     const spec = plan.spec;
     const failure = (message: string) => refusedOutcome(requestId, spec.title, message);
-    let cwd = spec.cwd, workspaceId = spec.workspaceId;
-    try {
-      const earlier = await unsettled();
-      if (earlier) return failure(`An earlier creation, “${earlier.title}”, is not settled. Check it first.`);
-      if (workspaceId) {
-        const snapshot = await client.workspaces.ref(workspaceId).refresh();
-        if (!snapshot || snapshot.archivingAt || !snapshot.workspaceDirectory || (snapshot.title ?? snapshot.name ?? "").trim().toUpperCase() !== spec.workspaceName.toUpperCase()) {
-          return failure(`That workspace is no longer a ${spec.workspaceName} workspace on this host.`);
-        }
-        cwd = snapshot.workspaceDirectory;
-      }
-      const choice = choiceProblem(createProviders(await client.providers.snapshot({ cwd })), spec);
-      if (choice) return failure(choice);
-      const target = await spec.revalidate?.();
-      if (target) return failure(target);
-      if (workspaceId) {
-        const agents = await allPages((cursor) => client.agents.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
-        if (agents.some(({ agent }) => !agent.archivedAt && agent.workspaceId === workspaceId && agent.title === spec.title)) return failure(`“${spec.title}” already names a session in ${spec.workspaceName}. Choose another topic.`);
-      }
-    } catch (error) { return failure(`The host could not be read: ${errorText(error)}.`); }
+    const checked = await validate(spec);
+    if ("problem" in checked) return failure(checked.problem);
+    const { cwd } = checked;
+    let { workspaceId } = checked;
     const record: CreateRecord = { request: { requestId, title: spec.title, cwd, workspaceId: workspaceId ?? spec.anchorWorkspaceId,
       labels: spec.labels, provider: spec.provider, model: spec.model, effort: spec.effort, modeId: spec.modeId, at: new Date().toISOString() }, outcome: null };
     try { await writeRecord(record); } catch (error) {
@@ -491,6 +576,11 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Intent persistence and earlier host reads may have outlived the workspace we validated.
+      const placement = await expectedPlacementProblem(client, spec);
+      if (placement) return settle(record, outcome(record, "refused", null, placement));
+      const expired = effectValidityProblem(spec);
+      if (expired) return settle(record, outcome(record, "refused", null, expired));
       const handle = await Promise.race([
         client.workspaces.ref(record.request.workspaceId).agents.create({ idempotencyKey: requestId, title: spec.title, labels: spec.labels,
           ...(spec.persona.supported ? { config: { provider: `${spec.provider}/${spec.model}`, ...(spec.modeId ? { modeId: spec.modeId } : {}), ...(spec.effort ? { thinkingOptionId: spec.effort } : {}), systemPrompt: spec.persona.text } }
@@ -523,7 +613,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       const gate = deskIssueProblem(desk, issue);
       if (gate) return refusal(gate);
       key = wanted;
-      topic = issueTopic(issue.summary);
+      topic = input.topic === undefined ? issueTopic(issue.summary) : normalizeTopic(input.topic);
     } else {
       topic = normalizeTopic(input.topic ?? "");
     }
@@ -575,7 +665,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     });
   }
 
-  return { options, create: (input: CreateRequest) => createSeat(input.requestId, () => buildNewSession(input)), check, createSeat };
+  return { options, create: (input: CreateRequest) => createSeat(input.requestId, () => buildNewSession(input)), check, createSeat, preflight, record: readRecord };
 }
 
 export function contributeSessionCreate(server: PluginServerContext): void {

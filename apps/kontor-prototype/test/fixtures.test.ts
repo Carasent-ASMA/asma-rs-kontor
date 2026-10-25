@@ -44,6 +44,8 @@ describe("current plugin contracts", () => {
     expect(await callPluginRpc(checkCreate, invokeRpc, { requestId: request.requestId })).toEqual(first);
     const bound = await callPluginRpc(executeCreate, invokeRpc, { requestId: crypto.randomUUID(), role: "TPM" as const, start: "from-jira" as const, projectId: "prj_proof_adam", issueKey: "ASMA-100", provider: "codex", model: "gpt-6.1-sol", effort: "xhigh", modeId: "fixture-mode" });
     expect(bound).toMatchObject({ state: "verified", title: "TPM • ASMA-100 • Deliver the desk layout", workspaceId: "wks_proof_tpm" });
+    const edited = await callPluginRpc(executeCreate, invokeRpc, { requestId: crypto.randomUUID(), role: "LSA" as const, start: "from-jira" as const, projectId: "prj_proof_adam", issueKey: "ASMA-100", topic: "Desk follow-up", provider: "codex", model: "gpt-6.1-sol", effort: "xhigh", modeId: "fixture-mode" });
+    expect(edited).toMatchObject({ state: "verified", title: "LSA • ASMA-100 • Desk follow-up", workspaceId: "wks_proof_lsa" });
     const refused = await callPluginRpc(executeCreate, invokeRpc, { ...request, requestId: crypto.randomUUID(), projectId: "not-a-fixture" });
     expect(refused.state).toBe("refused");
     expect(refused.agentId).toBeNull();

@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use kontor_fleet::{Eligibility, FleetError};
+use kontor_fleet::{Eligibility, FleetError, MAX_ROUTE_HEALTH_AGE_SECONDS, RouteHealth};
 use kontor_fleet_activation::rule;
 use kontor_mcp::{CallerTier, Envelope, Gate, LocalOperation, ToolSpec};
 
@@ -68,7 +68,8 @@ pub(crate) fn run(
 /// `planning_pair@1` pair, against the activated bundle.
 ///
 /// The request names exactly one mode. Single mode takes `binding_key` and the
-/// top-level eligibility, and answers the `FleetSelection`. Joint mode takes
+/// top-level eligibility, optionally with positive `route_health` (H-01,
+/// H-02), and answers the `FleetSelection`. Joint mode takes
 /// `allocation` alone — each slot states its own eligibility (J-02) — and
 /// answers the joint selection from one verified snapshot. Planning pair mode
 /// takes `planning_pair` alone (PP-03, PP-04) and answers the
@@ -87,6 +88,14 @@ fn fleet_policy_resolve(
     arguments: &serde_json::Value,
 ) -> ExitClass {
     let present = |name: &str| arguments.get(name).is_some_and(|value| !value.is_null());
+    if present("route_health") && (present("planning_pair") || present("allocation")) {
+        return output::emit_local(
+            tool.name,
+            "invalid_request",
+            rule::H01,
+            "state route health with --binding-key only",
+        );
+    }
     if present("planning_pair") {
         if present("allocation") || present("binding_key") {
             return output::emit_local(
@@ -147,8 +156,29 @@ fn fleet_policy_resolve(
         unavailable_accounts: set("unavailable_accounts"),
         excluded_vendors: set("excluded_vendors"),
     };
-    let selection = match kontor_fleet_activation::resolve(state_root, binding_key, &eligibility) {
-        Ok(selection) => selection,
+    let health = match arguments
+        .get("route_health")
+        .filter(|value| !value.is_null())
+    {
+        None => None,
+        Some(value) => match serde_json::from_value::<RouteHealth>(value.clone()) {
+            Ok(health) if (1..=MAX_ROUTE_HEALTH_AGE_SECONDS).contains(&health.max_age_seconds) => {
+                Some(health)
+            }
+            _ => {
+                return output::emit_local(
+                    tool.name,
+                    "invalid_request",
+                    rule::H02,
+                    "correct --route-health and send it again",
+                );
+            }
+        },
+    };
+    let selection = match kontor_fleet_activation::load(state_root)
+        .and_then(|activated| activated.resolve(binding_key))
+    {
+        Ok(resolution) => resolution.select_observed(&eligibility, health.as_ref()),
         Err(error) => return refuse(tool, &error),
     };
     let Ok(document) = serde_json::to_value(&selection) else {

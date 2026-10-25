@@ -10,6 +10,7 @@ describe("readConfig", () => {
     const config = readConfig({ HOME: "/Users/test" });
     expect(config.stateRoot).toBe("/Users/test/.local/state/kontor/asma");
     expect(config.mcpCommand).toBe(DEFAULT_MCP_COMMAND);
+    expect(config.cliCommand).toBe("kontor");
     expect(config.mcpEnabled).toBe(true);
     expect(config.serveProfile).toBeNull();
     expect(config.placementRoots).toEqual([]);
@@ -27,6 +28,7 @@ describe("readConfig", () => {
       HOME: "/Users/test",
       KONTOR_PLUGIN_STATE_ROOT: "/srv/kontor",
       KONTOR_PLUGIN_MCP_COMMAND: "/opt/kontor-mcp",
+      KONTOR_PLUGIN_CLI_COMMAND: "/opt/kontor",
       KONTOR_PLUGIN_MCP: "off",
       KONTOR_PLUGIN_SERVE_PROFILE: "leadership",
       KONTOR_PLUGIN_PLACEMENT_ROOTS: "/Users/test/repos, /Users/test/other",
@@ -34,6 +36,7 @@ describe("readConfig", () => {
     });
     expect(config.stateRoot).toBe("/srv/kontor");
     expect(config.mcpCommand).toBe("/opt/kontor-mcp");
+    expect(config.cliCommand).toBe("/opt/kontor");
     expect(config.mcpEnabled).toBe(false);
     expect(config.serveProfile).toBe("leadership");
     expect(config.placementRoots).toEqual(["/Users/test/repos", "/Users/test/other"]);
