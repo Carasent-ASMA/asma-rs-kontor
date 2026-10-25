@@ -214,6 +214,42 @@ class ImpactTests(unittest.TestCase):
         self.assertEqual(log.read_bytes(), original)
         self.assertFalse(receipt.exists())
 
+    def test_unrun_checks_survive_prior_receipt_diagnostics(self) -> None:
+        import hashlib
+
+        prior = Path(self.tmp.name) / "prior.json"
+        prior.write_text('{"exit_code": 1}')
+        self.plan["prior_receipts"] = [
+            {
+                "path": str(prior),
+                "sha256": hashlib.sha256(prior.read_bytes()).hexdigest(),
+                "disposition": "Synthetic retained failure",
+            }
+        ]
+        self.plan["checks"] *= 2
+        plan, _ = self.read_plan()
+        receipt = Path(self.tmp.name) / "diagnostics.json"
+        calls = []
+
+        def run(argv, log, stream, cwd):
+            calls.append(argv)
+            log.write_text("synthetic command\n")
+            if len(calls) == 2:
+                prior.write_text("synthetic external evidence change")
+                return 7
+            return 0
+
+        with mock.patch.object(verifier.lanes, "run_streaming", run):
+            self.assertEqual(
+                verifier.run_gates(self.root, plan, receipt, "archive"), 1
+            )
+        saved = json.loads(receipt.read_text())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(saved["not_run"], [plan["checks"][1]])
+        self.assertEqual(
+            saved["checks"][-1]["command"], ["prior-receipt-readback"]
+        )
+
     def test_no_default_implicit_full_gate(self) -> None:
         with mock.patch.object(
             sys, "argv", ["verify-tree.py", "--mode", "archive"]

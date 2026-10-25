@@ -253,6 +253,7 @@ def run_gates(tree: Path, plan: dict, receipt: Path, mode: str) -> int:
         if status:
             code = 1
             break
+    executed_count = len(results)
     source_error = None
     try:
         export_fingerprint(tree, plan["tree"])
@@ -294,7 +295,7 @@ def run_gates(tree: Path, plan: dict, receipt: Path, mode: str) -> int:
             "external": plan["external"],
             "prior_receipts": plan.get("prior_receipts", []),
             "checks": results,
-            "not_run": commands[len(results) :],
+            "not_run": commands[executed_count:],
             "committed_export": mode == "archive",
             "verified_export_blobs": len(source_before),
             "source_error": source_error,
