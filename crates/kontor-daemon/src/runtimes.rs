@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontor_api::state::RuntimeRegistry;
+use kontor_catalog::native::NativeCensusSource;
 use kontor_core::id::{
     ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeKindKey, TaskId, TopologyNodeId,
 };
@@ -40,6 +41,7 @@ use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoCheckpoint, PaseoConfig, PaseoExecutionScope, PaseoTaskScope,
 };
+use kontor_runtime_paseo::census::{PaseoCensus, PaseoCensusConfig};
 use kontor_runtime_paseo::client::PaseoLiveTransport;
 use kontor_runtime_paseo::mcp::PaseoMcpHttp;
 use kontor_runtime_paseo::posture::PermissionAllowance;
@@ -532,6 +534,58 @@ pub fn zerosub_transport(settings: &RuntimeSettings) -> Option<PaseoLiveTranspor
         )
         .ok()
     })
+}
+
+/// The stable identity of one Paseo runtime instance.
+///
+/// The endpoint, not the daemon's per-boot `serverId`, is the instance: the
+/// native ids survive a daemon restart, so a census that keyed them by boot
+/// would create a second identity for every session after every restart.
+#[must_use]
+pub fn native_runtime_instance(endpoint: &str) -> String {
+    format!("paseo:{endpoint}")
+}
+
+/// Compose the read-only native census sources this fleet configures.
+///
+/// Every distinct Paseo endpoint is one runtime instance. A second configured
+/// plane pointing at the same endpoint is the same instance, so it is deduped
+/// rather than read twice. The census gets its own persistent client id
+/// (`<plane>-census`), which is deliberately not the governance adapter's and
+/// not the ZeroSub poller's: the daemon keys a resumable session on it, and a
+/// shared identity would couple the census to an unrelated reconnect.
+///
+/// Composition failure is logged and skipped. The native census is
+/// observational; a malformed source must not stop governed scheduling, and a
+/// missing source is visible as `never_collected` rather than as an empty
+/// directory.
+#[must_use]
+pub fn native_census_sources(settings: &RuntimeSettings) -> Vec<Arc<dyn NativeCensusSource>> {
+    let mut seen = BTreeSet::new();
+    let mut sources: Vec<Arc<dyn NativeCensusSource>> = Vec::new();
+    for setting in &settings.runtimes {
+        let RuntimeSetting::Paseo(paseo) = setting;
+        if !seen.insert(paseo.endpoint.clone()) {
+            continue;
+        }
+        let config = PaseoCensusConfig::new(
+            native_runtime_instance(&paseo.endpoint),
+            paseo.executable.clone(),
+            SecretString::from(paseo.host_target.clone()),
+            paseo.endpoint.clone(),
+            format!("{}-census", paseo.client_id),
+            paseo.timeout_seconds,
+        );
+        match PaseoCensus::new(config) {
+            Ok(census) => sources.push(Arc::new(census)),
+            Err(error) => tracing::warn!(
+                detail = %error,
+                endpoint = %paseo.endpoint,
+                "the native census source could not be composed"
+            ),
+        }
+    }
+    sources
 }
 
 /// Build one Paseo execution plane.
@@ -1307,6 +1361,41 @@ mod tests {
         assert!(
             compose_paseo(&setting, None, None).is_ok(),
             "a named pattern is a legitimate, bounded exception"
+        );
+    }
+
+    #[test]
+    fn the_native_census_connection_is_distinct_and_endpoint_scoped() {
+        let settings = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![paseo("paseo.agent")],
+        };
+        let sources = native_census_sources(&settings);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].client_id(), "kontor-mini-1-census");
+        assert_ne!(
+            sources[0].client_id(),
+            "kontor-mini-1",
+            "the census must not borrow the governance adapter's resumable identity"
+        );
+        assert_eq!(
+            sources[0].runtime_instance(),
+            native_runtime_instance("ws://127.0.0.1:6767/ws")
+        );
+        assert!(
+            sources[0]
+                .runtime_instance()
+                .starts_with("paseo:ws://127.0.0.1:6767/ws")
+        );
+
+        let deduped = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![paseo("paseo.agent"), paseo("paseo.agent-2")],
+        };
+        assert_eq!(
+            native_census_sources(&deduped).len(),
+            1,
+            "two planes on one endpoint are one native instance"
         );
     }
 

@@ -20,6 +20,9 @@ kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 # SQLite build and nothing from `kontor-store`: no governed table, no governed
 # authority and no enrollment requirement.
 rusqlite = { workspace = true }
+# The native census source is an async read contract shared with the provider
+# adapter; the adapter implements it without the catalog learning a transport.
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Plan front matter is YAML. The same parser the plugin uses keeps the local

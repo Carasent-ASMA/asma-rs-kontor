@@ -13847,6 +13847,105 @@
         }
       }
     },
+    "/v1/work-catalog/native/inventory": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "One generation-consistent native inventory.",
+        "operationId": "native_inventory",
+        "parameters": [
+          {
+            "name": "include_removed",
+            "in": "path",
+            "description": "Include native observations removed at the active generation.",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "runtime",
+            "in": "path",
+            "description": "Only this stable runtime instance.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "A bounded row limit per collection. TASK-004 owns cursors.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeInventoryView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/work-catalog/native/status": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "The native census's freshness, coverage and counts.",
+        "operationId": "native_status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeCatalogStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/work-catalog/status": {
       "get": {
         "tags": [
@@ -24664,6 +24763,229 @@
           "retired"
         ]
       },
+      "NativeCatalogStatus": {
+        "type": "object",
+        "description": "The native census's freshness, coverage and counts.",
+        "required": [
+          "schema_version",
+          "source",
+          "generation",
+          "attempted_generation",
+          "collector",
+          "collection",
+          "counts",
+          "snapshot"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the last complete native generation finished."
+          },
+          "attempted_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The latest attempted native generation.",
+            "minimum": 0
+          },
+          "collection": {
+            "$ref": "#/components/schemas/NativeCollectionStatus",
+            "description": "The latest native attempt and its coverage."
+          },
+          "collector": {
+            "$ref": "#/components/schemas/CollectorStatus",
+            "description": "The collector lease."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/NativeCounts",
+            "description": "Current native counts."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last complete native generation.",
+            "minimum": 0
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The native census document version.",
+            "minimum": 0
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/SnapshotStatus",
+            "description": "Whether the native fallback snapshot is present and at which generation."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReadSource",
+            "description": "Whether this answer came from the database or the fallback snapshot."
+          }
+        }
+      },
+      "NativeCheckout": {
+        "type": "object",
+        "description": "Checkout facts carried by one directory entry.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Checked-out branch."
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Working directory."
+          },
+          "is_git": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the directory is a Git checkout."
+          },
+          "is_paseo_owned_worktree": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether Paseo provisioned the worktree itself."
+          },
+          "worktree_root": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Linked worktree root."
+          }
+        }
+      },
+      "NativeCollectionStatus": {
+        "type": "object",
+        "description": "The latest native collection attempt.",
+        "required": [
+          "state",
+          "generation",
+          "attempt_generation",
+          "runtimes_configured",
+          "runtimes_complete",
+          "projects_observed",
+          "workspaces_observed",
+          "sessions_observed",
+          "archived_sessions",
+          "include_archived",
+          "diagnostics",
+          "coverage"
+        ],
+        "properties": {
+          "archived_sessions": {
+            "type": "integer",
+            "description": "Archived sessions observed in this attempt.",
+            "minimum": 0
+          },
+          "attempt_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The latest attempted generation, which may be ahead.",
+            "minimum": 0
+          },
+          "coverage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeRuntimeCoverage"
+            },
+            "description": "Per-runtime coverage."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Attempt-level diagnostics."
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Measured wall-clock duration.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural failure, never a credential."
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the attempt finished."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last complete native generation.",
+            "minimum": 0
+          },
+          "include_archived": {
+            "type": "boolean",
+            "description": "Whether archive scope was requested."
+          },
+          "projects_observed": {
+            "type": "integer",
+            "description": "Projects observed in this attempt.",
+            "minimum": 0
+          },
+          "retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The earliest instant this catalog will retry after a failure."
+          },
+          "runtimes_complete": {
+            "type": "integer",
+            "description": "Runtime instances read to completion.",
+            "minimum": 0
+          },
+          "runtimes_configured": {
+            "type": "integer",
+            "description": "Runtime instances configured for this attempt.",
+            "minimum": 0
+          },
+          "sessions_observed": {
+            "type": "integer",
+            "description": "Sessions observed in this attempt.",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the attempt started."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectionState",
+            "description": "The attempt's own state."
+          },
+          "workspaces_observed": {
+            "type": "integer",
+            "description": "Workspaces observed in this attempt.",
+            "minimum": 0
+          }
+        }
+      },
       "NativeContainerParentDto": {
         "type": "object",
         "description": "Complete native parent identity reported for a child container.",
@@ -24691,6 +25013,112 @@
           "runtime_kind": {
             "type": "string",
             "description": "Runtime family."
+          }
+        }
+      },
+      "NativeCounts": {
+        "type": "object",
+        "description": "Counts at the active native generation.",
+        "required": [
+          "projects",
+          "workspaces",
+          "sessions",
+          "archived_sessions",
+          "tombstones"
+        ],
+        "properties": {
+          "archived_sessions": {
+            "type": "integer",
+            "description": "Active sessions carrying an archive stamp.",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "integer",
+            "description": "Active native projects.",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "Active native sessions, archived included.",
+            "minimum": 0
+          },
+          "tombstones": {
+            "type": "integer",
+            "description": "Removed native observations visible at this generation.",
+            "minimum": 0
+          },
+          "workspaces": {
+            "type": "integer",
+            "description": "Active native workspaces.",
+            "minimum": 0
+          }
+        }
+      },
+      "NativeInventoryView": {
+        "type": "object",
+        "description": "One generation-consistent native inventory.",
+        "required": [
+          "schema_version",
+          "generation",
+          "source",
+          "archive_scope",
+          "projects",
+          "workspaces",
+          "sessions",
+          "truncated"
+        ],
+        "properties": {
+          "archive_scope": {
+            "type": "boolean",
+            "description": "Whether the walk that produced this generation requested archived sessions."
+          },
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When that generation finished."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The active complete generation.",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeProjectRecord"
+            },
+            "description": "Native projects."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The native census document version.",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeSessionRecord"
+            },
+            "description": "Native sessions."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReadSource",
+            "description": "Whether this answer came from the database or the fallback snapshot."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether any collection was bounded by the caller's limit."
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeWorkspaceRecord"
+            },
+            "description": "Native workspaces."
           }
         }
       },
@@ -24883,6 +25311,200 @@
         },
         "additionalProperties": false
       },
+      "NativeProjectRecord": {
+        "type": "object",
+        "description": "One native observation with catalog state and history.",
+        "required": [
+          "runtime_instance",
+          "project_id",
+          "display_name",
+          "root_path",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "custom_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Raw custom name."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Resolved display name."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this project was first observed."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete census."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Native project id."
+          },
+          "project_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project key as the daemon reports it."
+          },
+          "project_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native project kind."
+          },
+          "root_path": {
+            "type": "string",
+            "description": "Project root path."
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Active or removed at this generation."
+          }
+        }
+      },
+      "NativeRuntimeCoverage": {
+        "type": "object",
+        "description": "One runtime instance's coverage in the latest attempt.",
+        "required": [
+          "runtime_instance",
+          "client_id",
+          "protocol_version",
+          "features",
+          "include_archived",
+          "state",
+          "project_pages",
+          "workspace_pages",
+          "session_pages",
+          "projects",
+          "workspaces",
+          "sessions",
+          "archived_sessions",
+          "diagnostics"
+        ],
+        "properties": {
+          "archived_sessions": {
+            "type": "integer",
+            "description": "Archived sessions observed.",
+            "minimum": 0
+          },
+          "client_id": {
+            "type": "string",
+            "description": "Persistent connection identity."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Runtime-specific diagnostics."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural failure for this runtime only."
+          },
+          "features": {
+            "type": "object",
+            "description": "Advertised runtime features.",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "include_archived": {
+            "type": "boolean",
+            "description": "Whether archive scope was requested."
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Semantic permissions on the connection."
+          },
+          "project_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Project list pages.",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "integer",
+            "description": "Projects observed.",
+            "minimum": 0
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The requested session protocol version.",
+            "minimum": 0
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "server_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime's boot identity."
+          },
+          "server_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime application version."
+          },
+          "session_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Session pages.",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "Sessions observed.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/NativeRuntimeState",
+            "description": "What happened to this runtime."
+          },
+          "workspace_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Workspace pages.",
+            "minimum": 0
+          },
+          "workspaces": {
+            "type": "integer",
+            "description": "Workspaces observed.",
+            "minimum": 0
+          }
+        }
+      },
       "NativeRuntimeRefusal": {
         "oneOf": [
           {
@@ -24907,6 +25529,260 @@
           }
         ],
         "description": "A closed, non-secret refusal emitted by a native session runtime.\n\nArbitrary runtime text never enters this type. The only carried value is a\nvalidated foreign identifier needed to correct placement configuration and\ncorrelate the refusal with the runtime's own registry."
+      },
+      "NativeRuntimeState": {
+        "type": "string",
+        "description": "Whether one runtime was read.",
+        "enum": [
+          "scanned",
+          "incomplete",
+          "failed"
+        ]
+      },
+      "NativeSessionRecord": {
+        "type": "object",
+        "description": "One native session observation.",
+        "required": [
+          "runtime_instance",
+          "session_id",
+          "provider",
+          "status",
+          "cwd",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The archive stamp."
+          },
+          "attention_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Paseo's attention hint."
+          },
+          "checkout": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NativeCheckout",
+                "description": "Placement checkout facts."
+              }
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native creation instant."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this session was first observed."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete census."
+          },
+          "last_user_message_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last user-message instant."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model name."
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native parent session."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native project id."
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project display name."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider name."
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Native session id."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Active or removed at this generation."
+          },
+          "status": {
+            "type": "string",
+            "description": "Native lifecycle status."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display title."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native update instant."
+          },
+          "workspace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native workspace id."
+          },
+          "workspace_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Workspace display name."
+          }
+        }
+      },
+      "NativeWorkspaceRecord": {
+        "type": "object",
+        "description": "One native workspace observation.",
+        "required": [
+          "runtime_instance",
+          "workspace_id",
+          "project_id",
+          "name",
+          "directory",
+          "kind",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "archiving_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Archive intent."
+          },
+          "directory": {
+            "type": "string",
+            "description": "Absolute working directory."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this workspace was first observed."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Native workspace kind."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete census."
+          },
+          "name": {
+            "type": "string",
+            "description": "Resolved display name."
+          },
+          "project_custom_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project custom name."
+          },
+          "project_display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project display name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Native project id."
+          },
+          "project_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project kind."
+          },
+          "project_root_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project root path."
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Active or removed at this generation."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Raw title override."
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "Native workspace id."
+          },
+          "worktree_slug": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Paseo-owned worktree basename."
+          }
+        }
       },
       "NeedsHumanDto": {
         "type": "object",

@@ -11080,10 +11080,16 @@ mod task_scope_tests {
         let workspace = PaseoWorkspace {
             id: "wks_ecp".to_owned(),
             project_id: "prj_epic".to_owned(),
+            project_display_name: None,
+            project_custom_name: None,
+            project_root_path: None,
+            project_kind: None,
             workspace_directory: "/repo".to_owned(),
             workspace_kind: PaseoWorkspaceKind::Directory,
             name: "ECP · ASMA-7869 · Kontor Operational MVP".to_owned(),
             title: None,
+            archiving_at: None,
+            worktree_slug: None,
             git_runtime: None,
         };
 
@@ -11109,10 +11115,16 @@ mod task_scope_tests {
         let workspace = PaseoWorkspace {
             id: "wks_existing".to_owned(),
             project_id: "prj_epic".to_owned(),
+            project_display_name: None,
+            project_custom_name: None,
+            project_root_path: None,
+            project_kind: None,
             workspace_directory: "/repo/op-01".to_owned(),
             workspace_kind: PaseoWorkspaceKind::Worktree,
             name: "TSW · ASMA-7870 · OP-01".to_owned(),
             title: None,
+            archiving_at: None,
+            worktree_slug: None,
             git_runtime: Some(crate::wire::PaseoGitRuntime {
                 is_paseo_owned_worktree: true,
             }),

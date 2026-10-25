@@ -35,6 +35,85 @@ pub struct EntriesQuery {
     pub limit: Option<usize>,
 }
 
+/// Filters accepted by the native inventory read.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+pub struct NativeInventoryQuery {
+    /// Include native observations removed at the active generation.
+    #[serde(default)]
+    pub include_removed: bool,
+    /// Only this stable runtime instance.
+    pub runtime: Option<String>,
+    /// A bounded row limit per collection. TASK-004 owns cursors.
+    pub limit: Option<usize>,
+}
+
+/// The native census's freshness, coverage and counts.
+#[utoipa::path(
+    get, path = "/v1/work-catalog/native/status", tag = "work-catalog",
+    responses(
+        (status = 200, body = kontor_catalog::native::NativeCatalogStatus),
+        (status = 401), (status = 403), (status = 503)
+    )
+)]
+pub async fn native_status(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<kontor_catalog::native::NativeCatalogStatus>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog = state.catalog().ok_or_else(|| {
+        state.refuse(
+            ApiErrorCode::Unavailable,
+            "the work catalog is not composed in this realm",
+        )
+    })?;
+    catalog.native_status().map(Json).map_err(|error| {
+        warn!(detail = %error, "native work census status read failed");
+        state.refuse(
+            ApiErrorCode::Unavailable,
+            "the native census is unavailable",
+        )
+    })
+}
+
+/// One generation-consistent native inventory.
+#[utoipa::path(
+    get, path = "/v1/work-catalog/native/inventory", tag = "work-catalog",
+    params(NativeInventoryQuery),
+    responses(
+        (status = 200, body = kontor_catalog::native::NativeInventoryView),
+        (status = 400), (status = 401), (status = 403), (status = 503)
+    )
+)]
+pub async fn native_inventory(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Query(query): Query<NativeInventoryQuery>,
+) -> Result<Json<kontor_catalog::native::NativeInventoryView>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog = state.catalog().ok_or_else(|| {
+        state.refuse(
+            ApiErrorCode::Unavailable,
+            "the work catalog is not composed in this realm",
+        )
+    })?;
+    let filter = kontor_catalog::native::NativeInventoryFilter {
+        include_removed: query.include_removed,
+        runtime_instance: query.runtime,
+        limit: query.limit.unwrap_or(10_000),
+    };
+    catalog
+        .native_inventory(&filter)
+        .map(Json)
+        .map_err(|error| {
+            warn!(detail = %error, "native work census inventory read failed");
+            state.refuse(
+                ApiErrorCode::Unavailable,
+                "the native census is unavailable",
+            )
+        })
+}
+
 /// The catalog's freshness, coverage, ownership and conflicts.
 #[utoipa::path(
     get, path = "/v1/work-catalog/status", tag = "work-catalog",

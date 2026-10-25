@@ -11,9 +11,143 @@ mod harness;
 use std::path::Path;
 use std::process::Command;
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use harness::{Call, World};
 use kontor_catalog::Catalog;
+use kontor_catalog::native::{
+    NativeCensus, NativeCensusSource, NativeCheckout, NativePageCounts, NativeProject,
+    NativeSession, NativeWorkspace,
+};
 use tempfile::TempDir;
+
+#[derive(Debug)]
+struct NativeSource {
+    answers: std::sync::Mutex<std::collections::VecDeque<NativeCensus>>,
+}
+
+impl NativeSource {
+    fn new(answers: Vec<NativeCensus>) -> Arc<Self> {
+        Arc::new(Self {
+            answers: std::sync::Mutex::new(answers.into()),
+        })
+    }
+}
+
+#[async_trait]
+impl NativeCensusSource for NativeSource {
+    fn runtime_instance(&self) -> &str {
+        "paseo:ws://127.0.0.1:6767/ws"
+    }
+
+    fn client_id(&self) -> &str {
+        "kontor-mini-1-census"
+    }
+
+    async fn observe(&self) -> NativeCensus {
+        self.answers
+            .lock()
+            .expect("the fixture queue")
+            .pop_front()
+            .expect("an answer was queued")
+    }
+}
+
+fn native_census() -> NativeCensus {
+    let runtime = "paseo:ws://127.0.0.1:6767/ws".to_owned();
+    NativeCensus {
+        runtime_instance: runtime.clone(),
+        client_id: "kontor-mini-1-census".to_owned(),
+        server_id: Some("srv-api".to_owned()),
+        server_version: Some("0.11.4".to_owned()),
+        protocol_version: 1,
+        permissions: Some(vec!["workspace.read".to_owned()]),
+        features: BTreeMap::new(),
+        include_archived: true,
+        complete: true,
+        error: None,
+        diagnostics: Vec::new(),
+        pages: NativePageCounts {
+            project_pages: 1,
+            workspace_pages: 1,
+            session_pages: 1,
+        },
+        projects: vec![NativeProject {
+            runtime_instance: runtime.clone(),
+            project_id: "prj_desk".to_owned(),
+            display_name: "DESK • ADAM".to_owned(),
+            custom_name: None,
+            project_key: Some("remote:desk".to_owned()),
+            root_path: "/repo".to_owned(),
+            project_kind: Some("git".to_owned()),
+        }],
+        workspaces: vec![NativeWorkspace {
+            runtime_instance: runtime.clone(),
+            workspace_id: "wks_adam".to_owned(),
+            project_id: "prj_desk".to_owned(),
+            name: "ADAM".to_owned(),
+            title: None,
+            directory: "/repo/adam".to_owned(),
+            kind: "worktree".to_owned(),
+            archiving_at: None,
+            worktree_slug: None,
+            project_display_name: Some("DESK • ADAM".to_owned()),
+            project_custom_name: None,
+            project_root_path: Some("/repo".to_owned()),
+            project_kind: Some("git".to_owned()),
+        }],
+        sessions: vec![
+            NativeSession {
+                runtime_instance: runtime.clone(),
+                session_id: "agt_live".to_owned(),
+                workspace_id: Some("wks_adam".to_owned()),
+                project_id: Some("prj_desk".to_owned()),
+                project_name: Some("DESK • ADAM".to_owned()),
+                workspace_name: Some("ADAM".to_owned()),
+                title: Some("Implement".to_owned()),
+                provider: "claude".to_owned(),
+                model: Some("opus".to_owned()),
+                status: "idle".to_owned(),
+                archived_at: None,
+                attention_reason: None,
+                cwd: "/repo/adam".to_owned(),
+                created_at: None,
+                updated_at: None,
+                last_user_message_at: None,
+                parent_session_id: None,
+                checkout: Some(NativeCheckout {
+                    cwd: Some("/repo/adam".to_owned()),
+                    branch: Some("main".to_owned()),
+                    worktree_root: None,
+                    is_git: Some(true),
+                    is_paseo_owned_worktree: None,
+                }),
+            },
+            NativeSession {
+                runtime_instance: runtime,
+                session_id: "agt_archived".to_owned(),
+                workspace_id: Some("wks_adam".to_owned()),
+                project_id: Some("prj_desk".to_owned()),
+                project_name: Some("DESK • ADAM".to_owned()),
+                workspace_name: Some("ADAM".to_owned()),
+                title: Some("Implement".to_owned()),
+                provider: "claude".to_owned(),
+                model: Some("opus".to_owned()),
+                status: "closed".to_owned(),
+                archived_at: Some("2026-10-24T00:00:00Z".to_owned()),
+                attention_reason: None,
+                cwd: "/repo/adam".to_owned(),
+                created_at: None,
+                updated_at: None,
+                last_user_message_at: None,
+                parent_session_id: None,
+                checkout: None,
+            },
+        ],
+    }
+}
 
 fn git(root: &Path, arguments: &[&str]) {
     let output = Command::new("git")
@@ -142,5 +276,101 @@ async fn the_work_catalog_boundary_is_authenticated_and_generation_consistent() 
     assert_eq!(
         model_catalog.status, 200,
         "the model catalog namespace is untouched by the work catalog"
+    );
+}
+
+#[tokio::test]
+async fn the_native_census_is_visible_through_the_authenticated_work_catalog() {
+    let world = World::open_empty().await;
+    let catalog = world
+        .daemon
+        .catalog()
+        .expect("the daemon composes the catalog");
+    let settings = kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        ..kontor_catalog::CatalogSettings::default()
+    };
+    std::fs::write(
+        Catalog::settings_path(world.directory.path()),
+        serde_json::to_vec_pretty(&settings).expect("settings"),
+    )
+    .expect("the settings are installed");
+
+    let source = NativeSource::new(vec![native_census()]);
+    let sources: Vec<Arc<dyn NativeCensusSource>> = vec![source as Arc<dyn NativeCensusSource>];
+    let report = catalog
+        .collect_native_once(&sources)
+        .await
+        .expect("the native census completes");
+    assert!(report.complete);
+    assert_eq!(report.sessions, 2);
+    assert_eq!(report.archived_sessions, 1);
+
+    let anonymous = Call::get("/v1/work-catalog/native/status")
+        .anonymous()
+        .send(&world)
+        .await;
+    assert_eq!(anonymous.status, 401);
+    assert_eq!(anonymous.code(), "unauthenticated");
+    let anonymous_inventory = Call::get("/v1/work-catalog/native/inventory")
+        .anonymous()
+        .send(&world)
+        .await;
+    assert_eq!(anonymous_inventory.status, 401);
+
+    let status = Call::get("/v1/work-catalog/native/status")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(status.status, 200, "{}", status.body);
+    let status = status.json();
+    assert_eq!(status["schema_version"], 1);
+    assert_eq!(status["source"], "database");
+    assert_eq!(status["generation"], report.generation);
+    assert_eq!(status["collection"]["state"], "complete");
+    assert_eq!(status["collection"]["include_archived"], true);
+    assert_eq!(
+        status["collection"]["coverage"][0]["client_id"],
+        "kontor-mini-1-census"
+    );
+    assert_eq!(status["counts"]["sessions"], 2);
+    assert_eq!(status["counts"]["archived_sessions"], 1);
+    assert_eq!(status["snapshot"]["current"], true);
+
+    let inventory = Call::get("/v1/work-catalog/native/inventory")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(inventory.status, 200, "{}", inventory.body);
+    let inventory = inventory.json();
+    assert_eq!(inventory["schema_version"], 1);
+    assert_eq!(inventory["source"], "database");
+    assert_eq!(inventory["archive_scope"], true);
+    assert_eq!(inventory["sessions"].as_array().map(Vec::len), Some(2));
+    let same_title: Vec<_> = inventory["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter(|session| session["title"] == "Implement")
+        .collect();
+    assert_eq!(same_title.len(), 2);
+    assert_ne!(same_title[0]["session_id"], same_title[1]["session_id"]);
+    assert!(
+        inventory["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .any(|session| session["archived_at"] == "2026-10-24T00:00:00Z")
+    );
+
+    let plan_status = Call::get("/v1/work-catalog/status")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(plan_status.status, 200);
+    assert_eq!(
+        plan_status.json()["attempted_generation"],
+        0,
+        "the native census must not advance plan discovery"
     );
 }

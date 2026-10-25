@@ -9477,6 +9477,26 @@ pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
         path: "/v1/openapi.json",
         reason: "the contract document itself, consumed by tests and build tooling",
     },
+    NonAgentRoute {
+        method: Method::Get,
+        path: "/v1/work-catalog/status",
+        reason: "an observer-tier catalog read; TASK-004 owns the plugin projection",
+    },
+    NonAgentRoute {
+        method: Method::Get,
+        path: "/v1/work-catalog/entries",
+        reason: "an observer-tier catalog read; TASK-004 owns the plugin projection",
+    },
+    NonAgentRoute {
+        method: Method::Get,
+        path: "/v1/work-catalog/native/status",
+        reason: "an observer-tier native census read; TASK-004 owns the plugin projection",
+    },
+    NonAgentRoute {
+        method: Method::Get,
+        path: "/v1/work-catalog/native/inventory",
+        reason: "an observer-tier native census read; TASK-004 owns the plugin projection",
+    },
 ];
 
 #[cfg(test)]
@@ -10104,8 +10124,8 @@ mod tests {
     }
 
     #[test]
-    fn the_allowlist_names_two_routes_no_tool_also_claims() {
-        assert_eq!(NON_AGENT_ROUTES.len(), 2);
+    fn the_allowlist_names_only_routes_no_tool_also_claims() {
+        assert_eq!(NON_AGENT_ROUTES.len(), 6);
         for route in NON_AGENT_ROUTES {
             assert!(
                 !route.reason.is_empty(),

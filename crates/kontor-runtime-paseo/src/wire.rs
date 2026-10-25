@@ -708,6 +708,12 @@ pub struct PaseoProject {
     /// The project's root directory.
     #[serde(default, rename = "projectRootPath")]
     pub root_path: String,
+    /// The native project kind, when the daemon reports one.
+    #[serde(default, rename = "projectKind")]
+    pub project_kind: Option<String>,
+    /// The raw custom display name, when the project has been renamed.
+    #[serde(default, rename = "projectCustomName")]
+    pub custom_name: Option<String>,
 }
 
 /// The answer to `project.list.request`.
@@ -784,6 +790,22 @@ pub struct PaseoWorkspace {
     /// the session readback is mandatory.
     #[serde(default, rename = "projectId")]
     pub project_id: String,
+    /// The resolved project display name carried on the workspace descriptor.
+    ///
+    /// Preserved for the headless census: the workspace is the only read that
+    /// names both a workspace and its project, so dropping this would force a
+    /// second lookup for metadata the daemon already sent.
+    #[serde(default, rename = "projectDisplayName")]
+    pub project_display_name: Option<String>,
+    /// The raw project rename override, when one exists.
+    #[serde(default, rename = "projectCustomName")]
+    pub project_custom_name: Option<String>,
+    /// The project root path carried on the workspace descriptor.
+    #[serde(default, rename = "projectRootPath")]
+    pub project_root_path: Option<String>,
+    /// The native project kind carried on the workspace descriptor.
+    #[serde(default, rename = "projectKind")]
+    pub project_kind: Option<String>,
     /// The absolute working directory.
     #[serde(default, rename = "workspaceDirectory")]
     pub workspace_directory: String,
@@ -796,6 +818,12 @@ pub struct PaseoWorkspace {
     /// The raw title override, when the workspace has one.
     #[serde(default)]
     pub title: Option<String>,
+    /// When Paseo began archiving this workspace, if it is being retired.
+    #[serde(default, rename = "archivingAt")]
+    pub archiving_at: Option<String>,
+    /// The basename Paseo assigned to its own worktree, when it made one.
+    #[serde(default, rename = "worktreeSlug")]
+    pub worktree_slug: Option<String>,
     /// Git facts, including whether Paseo made this tree for itself.
     ///
     /// `true` means Paseo provisioned a tree of its own rather than registering
@@ -828,6 +856,13 @@ impl PaseoWorkspace {
 pub struct PaseoWorkspacePage {
     /// The workspaces on this page.
     pub entries: Vec<PaseoWorkspace>,
+    /// Projects with no active workspace, reported on the first page.
+    ///
+    /// This is the daemon's own empty-project projection: a project whose last
+    /// workspace was archived still exists, so a census that only walked
+    /// workspaces would lose it.
+    #[serde(default, rename = "emptyProjects")]
+    pub empty_projects: Vec<PaseoProject>,
     /// Where the next page starts, when there is one.
     #[serde(rename = "pageInfo")]
     pub page_info: PaseoPageInfo,
@@ -1026,6 +1061,21 @@ pub struct PaseoAgent {
     /// The display title.
     #[serde(default)]
     pub title: Option<String>,
+    /// When the session was created.
+    #[serde(default, rename = "createdAt")]
+    pub created_at: Option<String>,
+    /// When the session was last updated.
+    #[serde(default, rename = "updatedAt")]
+    pub updated_at: Option<String>,
+    /// When the last user message arrived.
+    #[serde(default, rename = "lastUserMessageAt")]
+    pub last_user_message_at: Option<String>,
+    /// The native parent session, when the agent snapshot carries the field.
+    ///
+    /// Current daemons also plant the parent in a label, which
+    /// [`Self::parent_agent_id`] falls back to.
+    #[serde(default, rename = "parentAgentId")]
+    pub parent_agent_id: Option<String>,
     /// Every correlation label, verbatim.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -1078,7 +1128,9 @@ impl PaseoAgent {
     /// otherwise by reading one value twice would be a check that cannot fail.
     #[must_use]
     pub fn parent_agent_id(&self) -> Option<&str> {
-        self.label(label::PARENT_AGENT)
+        self.parent_agent_id
+            .as_deref()
+            .or_else(|| self.label(label::PARENT_AGENT))
     }
 
     /// The provider's own session id, when Paseo exposes one.
@@ -1276,11 +1328,66 @@ pub struct PaseoAgentAnswer {
     pub error: Option<String>,
 }
 
+/// The checkout facts a directory entry carries for one session.
+///
+/// The remote URL is deliberately absent: Paseo permits credentials in a
+/// remote, and this adapter never needs one to identify a workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoDirectoryCheckout {
+    /// The working directory Paseo placed the session in.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Whether Paseo classified the directory as a Git checkout.
+    #[serde(default, rename = "isGit")]
+    pub is_git: Option<bool>,
+    /// The worktree root, when the checkout is a linked worktree.
+    #[serde(default, rename = "worktreeRoot")]
+    pub worktree_root: Option<String>,
+    /// The branch checked out at read time.
+    #[serde(default, rename = "currentBranch")]
+    pub current_branch: Option<String>,
+    /// Whether Paseo provisioned this worktree itself.
+    #[serde(default, rename = "isPaseoOwnedWorktree")]
+    pub is_paseo_owned_worktree: Option<bool>,
+    /// The main repository root for a linked worktree.
+    #[serde(default, rename = "mainRepoRoot")]
+    pub main_repo_root: Option<String>,
+}
+
+/// The project placement a directory entry carries for one session.
+///
+/// `projectKey` is the native `projectId` on the current daemon (Paseo's
+/// session readback uses the term it uses for the project filter); the
+/// workspace read remains the authority for the directory and the project
+/// display name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoDirectoryProject {
+    /// The native project id.
+    #[serde(rename = "projectKey")]
+    pub project_key: String,
+    /// The resolved project display name.
+    #[serde(default, rename = "projectName")]
+    pub project_name: String,
+    /// The workspace display name, when the daemon reports one.
+    #[serde(default, rename = "workspaceName")]
+    pub workspace_name: Option<String>,
+    /// Checkout facts for this session's workspace.
+    #[serde(default)]
+    pub checkout: Option<PaseoDirectoryCheckout>,
+}
+
 /// One row of `fetch_agents_response`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaseoAgentEntry {
     /// The agent.
     pub agent: PaseoAgent,
+    /// The project and workspace placement the directory resolved for it.
+    ///
+    /// Older responses omit it, and a session with no placement is still a
+    /// session: the census records the exact native id with no project rather
+    /// than inventing one.
+    #[serde(default)]
+    pub project: Option<PaseoDirectoryProject>,
 }
 
 /// One page of `fetch_agents_response`.
@@ -2367,6 +2474,10 @@ mod tests {
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: Some("KON-MVP-11 Implement".to_owned()),
+            created_at: None,
+            updated_at: None,
+            last_user_message_at: None,
+            parent_agent_id: None,
             labels: [
                 (label::ROLE.to_owned(), "implement".to_owned()),
                 (label::ROLE_SLOT.to_owned(), "implement-a".to_owned()),
@@ -2415,6 +2526,10 @@ mod tests {
             workspace_id: Some("wks_1".to_owned()),
             cwd: "/w/task-1".to_owned(),
             title: None,
+            created_at: None,
+            updated_at: None,
+            last_user_message_at: None,
+            parent_agent_id: None,
             labels: [
                 (label::ROLE.to_owned(), "implement".to_owned()),
                 (label::ROLE_SLOT.to_owned(), "implement-a".to_owned()),

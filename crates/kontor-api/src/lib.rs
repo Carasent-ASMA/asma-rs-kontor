@@ -312,6 +312,14 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/realm", get(control::realm))
         .route("/v1/work-catalog/status", get(work_catalog::status))
         .route("/v1/work-catalog/entries", get(work_catalog::entries))
+        .route(
+            "/v1/work-catalog/native/status",
+            get(work_catalog::native_status),
+        )
+        .route(
+            "/v1/work-catalog/native/inventory",
+            get(work_catalog::native_inventory),
+        )
         .route("/v1/projects/{project_id}/memory", get(memory::list))
         .route("/v1/projects/{project_id}/memory/experiences:propose", post(memory::propose_experience))
         .route("/v1/projects/{project_id}/memory/recall:preview", post(memory::recall_preview))

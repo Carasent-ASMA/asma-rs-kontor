@@ -1035,6 +1035,26 @@ impl PaseoRpc {
         )
     }
 
+    /// `fetch_workspaces_request` for the host-wide directory census.
+    ///
+    /// No project filter: the headless census must see every workspace,
+    /// including the ones outside every governed project. The daemon returns
+    /// project metadata on each workspace, and the first page also carries
+    /// projects whose workspace list is empty.
+    #[must_use]
+    pub fn workspace_census_page(request_id: String, limit: u32, cursor: Option<&str>) -> Self {
+        let mut page = serde_json::json!({ "limit": limit });
+        if let Some(cursor) = cursor {
+            page["cursor"] = serde_json::json!(cursor);
+        }
+        Self::read(
+            "fetch_workspaces_request",
+            "fetch_workspaces_response",
+            request_id,
+            serde_json::json!({ "page": page }),
+        )
+    }
+
     /// Read terminals in one exact workspace and directory; both selectors are required.
     #[must_use]
     pub fn workspace_terminals(request_id: String, workspace_id: &str, cwd: &str) -> Self {
@@ -1840,6 +1860,20 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
     /// # Errors
     /// As [`PaseoTransport::run`].
     async fn drain_stream(&self, agent_id: &str) -> RuntimeResult<Vec<serde_json::Value>>;
+
+    /// Discard the current connection so the next read re-gates from a fresh
+    /// push.
+    ///
+    /// A read-only census calls this before every walk. A socket that survived
+    /// a laptop sleep can look open while every request times out, so a
+    /// transport that only reconnects on a finished reader would retry forever
+    /// on the same dead connection. The stable client id resumes the same
+    /// Paseo session; only the socket is replaced.
+    ///
+    /// The default is a no-op: recorded fixtures have no socket to discard.
+    async fn reset_connection(&self) -> RuntimeResult<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2224,6 +2258,12 @@ fn decode_session_frame(message: &Message) -> Option<serde_json::Value> {
 impl PaseoTransport for PaseoLiveTransport {
     async fn server_identity(&self) -> RuntimeResult<PaseoServerInfo> {
         self.gated().await
+    }
+
+    async fn reset_connection(&self) -> RuntimeResult<()> {
+        let mut held = self.connection.lock().await;
+        *held = None;
+        Ok(())
     }
 
     async fn run(&self, command: &PaseoCommand) -> RuntimeResult<PaseoOutput> {

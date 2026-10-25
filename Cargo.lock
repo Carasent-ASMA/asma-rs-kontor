@@ -2689,6 +2689,7 @@ dependencies = [
 name = "kontor-catalog"
 version = "0.2.1"
 dependencies = [
+ "async-trait",
  "hex",
  "kontor-core",
  "rusqlite",
@@ -2981,6 +2982,7 @@ version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
+ "kontor-catalog",
  "kontor-core",
  "kontor-fleet",
  "kontor-runtime",
