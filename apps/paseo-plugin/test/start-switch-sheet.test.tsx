@@ -32,6 +32,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useState: <T,>(initial: T | (() => T)) => model.useState(initial),
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps),
+  useCallback: <T,>(callback: T) => callback,
   useSyncExternalStore: <T,>(_subscribe: unknown, read: () => T) => read() }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts }));
@@ -46,6 +47,8 @@ import { AnchoredMenu } from "../client/anchored-menu";
 import { configureRecentStorage, recordVisit, readRecent } from "../client/recent-sessions";
 import { Action, Copy } from "../client/page-controls";
 import { sessionEntry } from "./session-fixtures";
+import { ArchiveSessionButton } from "../client/session-lifecycle-view";
+import { DEFAULT_RECOVERY_TARGET, type LifecycleRow } from "../shared/session-lifecycle";
 
 type Element = ReactElement<Record<string, unknown>>;
 /** The element tree; the hook-free `Choices` and `SwitchRowItem` are drawn so their semantics are visible. */
@@ -142,10 +145,10 @@ describe("Start or switch sheet", () => {
     let tree: Element[] = [];
     const render = () => { model.cursor = 0; model.effect = 0; tree = elements(StartSwitchSheet(all)); return tree; };
     render();
-    return { render, onOpen, onShowAll, onClose, get tree() { return tree; } };
+    return { render, props: all, onOpen, onShowAll, onClose, get tree() { return tree; } };
   }
 
-  it("is a labelled dialog whose rows are menu items that open through the screen, with no archive control", () => {
+  it("is a labelled dialog with independent Open and shared 44px archive controls", () => {
     const s = sheet();
     const root = s.tree[0]!;
     expect(root.props).toMatchObject({ testID: "kontor-switch-sheet", dialog: true, label: "Start or switch session", placement: { align: "end", width: 400, maxHeight: 560 } });
@@ -154,7 +157,9 @@ describe("Start or switch sheet", () => {
     expect(row.props).toMatchObject({ role: "menuitem", accessibilityLabel: expect.stringMatching(/^LSA • ASMA-1 • Route, Opened .+ · /) });
     (row.props.onPress as () => void)();
     expect(s.onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-a" }));
-    expect(text(s.tree)).not.toMatch(/Archive|✕|×/);
+    const archive = s.tree.find((node) => node.type === ArchiveSessionButton)!;
+    expect(archive.props).toMatchObject({ session: expect.objectContaining({ id: "agent-a" }), compact: true, disabled: false });
+    expect(elements(row.props.children as ReactNode).some((node) => node.type === ArchiveSessionButton)).toBe(false);
     expect(byTestId(s.tree, "kontor-switch-search")?.props).toMatchObject({ accessibilityLabel: "Jump to any session", autoFocus: true });
   });
 
@@ -163,6 +168,71 @@ describe("Start or switch sheet", () => {
     await settle();
     expect(model.rpc["sessions.create-options"]).toHaveBeenCalledWith({ projectId: "prj-adam" });
     expect(s.tree[0]!.props.testID).toBe("kontor-switch-sheet");
+  });
+
+  const archiveRow = (patch: Partial<LifecycleRow> = {}) => ({ id: "agent-a", title: "LSA • ASMA-1 • Route", workspaceId: "wks-a", cwd: "/fixture", provider: "codex", model: null, effort: null, mode: null,
+    nativeStatus: "idle", fingerprint: "fixture", category: "candidate", eligible: true, reason: "Fixture eligible.", children: [], outcome: "pending", message: null, ...patch }) as LifecycleRow;
+  function archiveFixture(execute = vi.fn(async () => archiveRow({ outcome: "archived", runtime: "closed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Exact read." } })), previewRow = archiveRow()) {
+    const preview = vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000002", action: "archive", scope: "filtered", createdAt: "2026-10-25", target: DEFAULT_RECOVERY_TARGET, rows: [previewRow] }));
+    model.rpc["sessions.lifecycle-preview"] = preview; model.rpc["sessions.lifecycle-execute-item"] = execute;
+    return { preview, execute };
+  }
+  const archiveAction = (s: ReturnType<typeof sheet>) => s.tree.find((node) => node.type === ArchiveSessionButton)!;
+  it("archive X reads nothing on mount and performs one exact-ID existing preview/execute despite repeated taps, leaving Open alone", async () => {
+    let finish!: (value: LifecycleRow) => void;
+    const execute = vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; }));
+    const rpc = archiveFixture(execute), s = sheet();
+    expect(rpc.preview).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+    const press = archiveAction(s).props.onPress as () => void;
+    press(); press(); await settle(); s.render();
+    expect(archiveAction(s).props).toMatchObject({ pending: true, disabled: true });
+    expect(rpc.preview).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: "archive", scope: "filtered", agentIds: ["agent-a"] }));
+    expect(execute).toHaveBeenCalledExactlyOnceWith({ reviewId: "00000000-0000-4000-8000-000000000002", agentId: "agent-a" });
+    expect(s.onOpen).not.toHaveBeenCalled(); expect(s.onClose).not.toHaveBeenCalled();
+    finish(archiveRow({ outcome: "archived", runtime: "closed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Confirmed." } }));
+    await settle(); s.render();
+    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeUndefined();
+    expect(text(s.tree)).toContain("Archived LSA • ASMA-1 • Route.");
+  });
+  it("archive X retains a refused row and reports its existing reason without dispatch", async () => {
+    const rpc = archiveFixture(undefined, archiveRow({ eligible: false, outcome: "blocked", reason: "A managed child is protected." })), s = sheet();
+    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(rpc.execute).not.toHaveBeenCalled(); expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    expect(byTestId(s.tree, "kontor-switch-archive-result")?.props).toMatchObject({ accessibilityRole: "alert", children: "A managed child is protected." });
+  });
+  it("archive X never calls an uncertain reply success and offers the existing Sessions review path without resending", async () => {
+    const rpc = archiveFixture(vi.fn(async () => archiveRow({ outcome: "uncertain", runtime: "unconfirmed", availability: { agentId: "agent-a", state: "readable", archivedAt: null, checkedAt: "2026-10-25", revision: "fixture", reason: "Not archived on this read." } }))), s = sheet();
+    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(archiveAction(s).props.disabled).toBe(true); expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    expect(text(s.tree)).not.toContain("Archived LSA"); expect(text(s.tree)).toContain("archive result unknown");
+    (action(s.tree, "Open Sessions to review archive")!.props.onPress as () => void)();
+    expect(s.onShowAll).toHaveBeenCalledExactlyOnceWith(""); expect(rpc.execute).toHaveBeenCalledTimes(1);
+  });
+  it("archive X keeps a lost reply visible and requires review before another send", async () => {
+    const rpc = archiveFixture(vi.fn(async () => { throw new Error("Reply lost"); })), s = sheet();
+    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(text(s.tree)).toContain("Archive did not report a result: Reply lost");
+    expect(archiveAction(s).props.disabled).toBe(true);
+    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(rpc.preview).toHaveBeenCalledTimes(1); expect(rpc.execute).toHaveBeenCalledTimes(1);
+    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    expect(action(s.tree, "Open Sessions to review archive")).toBeDefined();
+  });
+  it("archive X follows confirmed native archive membership while keeping runtime-unconfirmed wording", async () => {
+    archiveFixture(vi.fn(async () => archiveRow({ outcome: "archived", runtime: "unconfirmed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Membership only." } })));
+    const s = sheet(); (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeUndefined();
+    expect(text(s.tree)).toContain("runtime stop not confirmed"); expect(text(s.tree)).not.toContain("Archived LSA");
+  });
+  it("archive X rejects late results after a host switch, including the same ID on the new host", async () => {
+    let finish!: (value: LifecycleRow) => void;
+    archiveFixture(vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; })));
+    const s = sheet(); (archiveAction(s).props.onPress as () => void)(); await settle();
+    s.props.hostId = "host-b"; s.render();
+    finish(archiveRow({ outcome: "archived", runtime: "closed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Old host result." } }));
+    await settle(); s.render();
+    expect(byTestId(s.tree, "kontor-switch-archive-result")).toBeUndefined();
+    expect(s.props.directory.entries[0]!.archivedAt).toBeNull();
   });
 
   it("covers the screen on a phone and does not steal focus there", () => {
