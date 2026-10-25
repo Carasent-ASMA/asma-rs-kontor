@@ -371,7 +371,9 @@ export async function loadWorkCatalog(
   }
 }
 
-/** Register the catalog read whatever the floor; it only observes. */
-export function contributeWorkCatalog(server: Pick<PluginServerContext, "handle">): void {
-  server.handle(readWorkCatalog, () => loadWorkCatalog());
+/** Register the catalog read whatever the floor; it only observes. The disposer aborts a read still in flight. */
+export function contributeWorkCatalog(server: Pick<PluginServerContext, "handle">): () => void {
+  const stop = new AbortController();
+  server.handle(readWorkCatalog, () => loadWorkCatalog(readConfig(), { signal: stop.signal }));
+  return () => stop.abort();
 }
