@@ -224,11 +224,12 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeUndefined();
     expect(text(s.tree)).toContain("runtime stop not confirmed"); expect(text(s.tree)).not.toContain("Archived LSA");
   });
-  it("archive X rejects late results after a host switch, including the same ID on the new host", async () => {
+  it.each([false, true])("archive X rejects late results after a host switch, including A→B→A (return=%s)", async (returnToFirstHost) => {
     let finish!: (value: LifecycleRow) => void;
     archiveFixture(vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; })));
     const s = sheet(); (archiveAction(s).props.onPress as () => void)(); await settle();
     s.props.hostId = "host-b"; s.render();
+    if (returnToFirstHost) { s.props.hostId = "host-a"; s.render(); }
     finish(archiveRow({ outcome: "archived", runtime: "closed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Old host result." } }));
     await settle(); s.render();
     expect(byTestId(s.tree, "kontor-switch-archive-result")).toBeUndefined();
