@@ -58,7 +58,8 @@ function App(){const root=useRef(null),anchor=useRef(null);const [open,setOpen]=
 {open?(mode==='composer'?<View style={{width:'100%',maxWidth:520,alignSelf:'center',maxHeight:innerHeight-40}}><StartSwitchPopover host={{id:'fixture-a'}} theme={{colors}} layout={{compact:innerWidth<700}} workspaceId="adhoc" close={()=>setOpen(false)} openScreen={()=>{}} screenId="kontor"/></View>:<StartSwitchSheet anchor={anchor} root={root} rootSize={{width:innerWidth,height:innerHeight}} compact={innerWidth<700} colors={colors} hostId="fixture-a" hostStatus="online" directory={{entries:[],status:'ready',live:true,lastUpdatedAt:Date.now(),error:null,staleReason:null,pages:1,includeArchived:false}} canOpen onClose={()=>setOpen(false)} onOpen={()=>{}} onOpenCreated={()=>({ok:true})} onShowAll={()=>{}}/>):null}
 </View></Host.Provider>;}createRoot(document.getElementById('root')).render(<App/>);
 `);
-const report = { cases: [], synthetic: true, nativePhoneAndAT: 'unverified', backendNewestEligible50: 'UNRESOLVED: fixture does not qualify the installed backend', actualJiraIcons: 'UNRESOLVED: contract has type names only' };
+// browser-7: add PR REVIEW → From Jira browse regression once 702b removes the non-lead desk Jira gate.
+const report = { cases: [], synthetic: true, nativePhoneAndAT: 'unverified', backendNewestEligible50: 'UNRESOLVED: fixture does not qualify the installed backend', actualJiraIcons: 'UNRESOLVED: contract has type names only', prReviewFromJiraBrowse: 'BLOCKED: server gate at session-create options() until 702b' };
 let server, browser;
 const run = async (name, test) => { try { await test(); report.cases.push({ name, status: 'PASS' }); } catch (error) { report.cases.push({ name, status: 'FAIL', error: String(error.stack) }); } };
 async function start(width, mode = 'screen', height = 844) {

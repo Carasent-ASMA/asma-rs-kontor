@@ -1,6 +1,6 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CreateOptions, CreateOutcome } from "../shared/session-create";
+import type { CreateOptions, CreateOutcome, CreateScope } from "../shared/session-create";
 import type { DirectoryEntry, DirectoryState } from "../client/session-directory";
 
 const model = vi.hoisted(() => ({
@@ -995,17 +995,29 @@ describe("New session form", () => {
       expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
     });
 
-    it("is offered from PR REVIEW too, because the issue chooses the desk", async () => {
-      model.rpc["sessions.create-options"] = vi.fn(async () => OPTIONS);
-      const f = form();
+    /** Mirrors session-create options() gate at 0a37388c:441-448 until 702b opens browse from non-lead desks. */
+    const serverGatedJiraBrowse = (input: CreateScope, catalog: typeof JIRA) => {
+      const desk = catalog.desks.find((entry) => entry.projectId === (input.projectId ?? catalog.catalogProjectId));
+      if (input.start !== "from-jira") return catalog.issues;
+      if (!desk || desk.kind === "pr-review" || desk.kind === "other") return [];
+      return catalog.issues;
+    };
+
+    it("offers From Jira on PR REVIEW but the server gate leaves browse empty until 702b opens search", async () => {
+      model.rpc["sessions.create-options"] = vi.fn(async (input: CreateScope) => ({
+        ...JIRA,
+        catalogProjectId: input.projectId ?? JIRA.catalogProjectId,
+        issues: serverGatedJiraBrowse(input, JIRA),
+      }));
+      const f = form({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-adam" } });
       choose(f, "DESK • PR REVIEW");
-      f.setOptions({ status: "ready", options: { ...OPTIONS, catalogProjectId: "prj-pr" } });
+      f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-pr", issues: [] } });
       expect(radio(f.tree, "From Jira ticket")!.props["aria-disabled"]).toBe(false);
       choose(f, "From Jira ticket");
       await flushPicker(f);
-      pickJira(f, "ASMA-100");
-      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira", issueKey: "ASMA-100" });
+      expect(model.rpc["sessions.create-options"]).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: "prj-pr", start: "from-jira", issueClass: "eligible" }));
+      expect(jiraRow(f.tree, "ASMA-100")).toBeUndefined();
+      expect(text(f.tree)).toContain("No open ASMA issue matches");
     });
 
     it("names a ticket desk with no checkout instead of hiding the ticket", async () => {
