@@ -881,3 +881,164 @@ fn a_planning_pair_request_carries_no_caller_or_native_authority() {
         "placement evidence only"
     );
 }
+
+/// One `default`-mode xhigh observation for single-mode route health.
+fn observation(account: &str, model: &str, state: &str, at: &str) -> serde_json::Value {
+    serde_json::json!({
+        "account": account, "model": model, "effort": "xhigh", "mode": "default",
+        "state": state, "observed_at": at, "revision": format!("{account}@{at}"),
+    })
+}
+
+fn route_health(observations: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "mode": "default",
+        "observations": observations,
+    })
+}
+
+fn excluded(envelope: &serde_json::Value, path: &str) -> Vec<serde_json::Value> {
+    envelope["body"]
+        .pointer(path)
+        .and_then(serde_json::Value::as_array)
+        .expect("considered routes")
+        .iter()
+        .map(|considered| considered["excluded"].clone())
+        .collect()
+}
+
+#[test]
+fn stated_route_health_is_the_only_availability_and_fails_closed() {
+    let realm = Realm::aligned();
+    let key = realm.leadership("lsa");
+    let with = |health: &serde_json::Value| {
+        resolve(realm.path(), &key, &["--route-health", &health.to_string()])
+    };
+
+    // No observation is not availability: the defined block, not a route.
+    let (exit, envelope) = with(&route_health(&serde_json::json!([])));
+    assert_eq!(exit, 3, "{envelope}");
+    assert_eq!(envelope["body"]["code"], "placement_blocked");
+    assert_eq!(
+        excluded(&envelope, "/selection/considered"),
+        ["route_unobserved", "route_unobserved"]
+    );
+
+    // An unknown first route is passed over; a fresh positive one is chosen,
+    // and the stated health is echoed so the receipt reproduces the choice.
+    let health = route_health(&serde_json::json!([
+        observation(
+            "codex-work",
+            "gpt-5.6-sol",
+            "unknown",
+            "2026-10-25T08:59:59Z"
+        ),
+        observation(
+            "claude-personal",
+            "claude-opus-5",
+            "available",
+            "2026-10-25T08:59:00Z"
+        ),
+    ]));
+    let (exit, envelope) = with(&health);
+    assert_eq!(exit, 0, "{envelope}");
+    assert_eq!(
+        envelope["body"]["selected"]["rung"]["provider"],
+        "claude-personal"
+    );
+    assert_eq!(
+        excluded(&envelope, "/considered"),
+        [
+            serde_json::json!("route_health_unknown"),
+            serde_json::Value::Null
+        ]
+    );
+    assert_eq!(envelope["body"]["route_health"], health);
+
+    // Stale, unavailable and later-dated observations admit nothing.
+    let (exit, envelope) = with(&route_health(&serde_json::json!([
+        observation(
+            "codex-work",
+            "gpt-5.6-sol",
+            "available",
+            "2026-10-25T08:58:59Z"
+        ),
+        observation(
+            "claude-personal",
+            "claude-opus-5",
+            "available",
+            "2026-10-25T09:00:01Z"
+        ),
+    ])));
+    assert_eq!(exit, 3, "{envelope}");
+    assert_eq!(
+        excluded(&envelope, "/selection/considered"),
+        ["route_health_stale", "route_health_unknown"]
+    );
+    let (exit, envelope) = with(&route_health(&serde_json::json!([observation(
+        "codex-work",
+        "gpt-5.6-sol",
+        "unavailable",
+        "2026-10-25T08:59:59Z"
+    )])));
+    assert_eq!(exit, 3, "{envelope}");
+    assert_eq!(
+        excluded(&envelope, "/selection/considered"),
+        ["route_unavailable_now", "route_unobserved"]
+    );
+
+    // An observer is still refused; the tier is unchanged.
+    let (exit, document) = kontor(
+        realm.path(),
+        &[
+            "--tier",
+            "observer",
+            "fleet-policy-resolve",
+            "--binding-key",
+            &key,
+            "--route-health",
+            &health.to_string(),
+        ],
+    );
+    assert_eq!(exit, 3, "{document}");
+    assert_eq!(document["code"], "forbidden");
+
+    // Out-of-range age, and route health outside single mode, are refused.
+    for age in [0, 3601] {
+        let mut wide = health.clone();
+        wide["max_age_seconds"] = serde_json::json!(age);
+        assert_refused(&with(&wide), 2, "invalid_request", rule::H02);
+    }
+    let allocation = serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [{"slot_id": "judge", "role": "judge", "binding_key": TEAM}],
+    })
+    .to_string();
+    let (exit, document) = kontor(
+        realm.path(),
+        &[
+            "--tier",
+            "admin",
+            "fleet-policy-resolve",
+            "--allocation",
+            &allocation,
+            "--route-health",
+            &health.to_string(),
+        ],
+    );
+    assert_eq!(exit, 2, "{document}");
+    assert_eq!(document["rule"], rule::H01);
+
+    // Undeclared fields and non-canonical times never reach the selector.
+    for (field, value) in [
+        ("policy", serde_json::json!({})),
+        ("as_of", serde_json::json!("2026-10-25T10:00:00+01:00")),
+    ] {
+        let mut smuggled = health.clone();
+        smuggled[field] = value;
+        let (exit, document) = with(&smuggled);
+        assert_eq!(exit, 2, "{document}");
+        assert_eq!(document["code"], "invalid_request", "{document}");
+        assert_eq!(document["dispatched"], false);
+    }
+}

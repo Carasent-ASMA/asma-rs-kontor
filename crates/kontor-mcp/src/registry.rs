@@ -262,6 +262,70 @@ const FLEET_PLANNING_PAIR: &[FieldSpec] = &[field(
     "Exactly two members, seat-a then seat-b.",
 )];
 
+/// One route observation of single-mode route health (`kontor_fleet_policy_resolve`).
+const FLEET_ROUTE_OBSERVATION: &[FieldSpec] = &[
+    field(
+        "account",
+        ArgType::Text,
+        "The account alias the route runs on.",
+    ),
+    field("model", ArgType::Text, "The provider-native model id."),
+    optional_field(
+        "effort",
+        ArgType::Enum(&[
+            "off",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+            "ultracode",
+        ]),
+        "The raw effort; omitted when the route exposes no lever.",
+    ),
+    optional_field(
+        "mode",
+        ArgType::Text,
+        "The permission mode the read holds for; omitted when it is not mode-specific.",
+    ),
+    field(
+        "state",
+        ArgType::Enum(&["available", "unavailable", "unknown"]),
+        "What the read said. Only available admits the route.",
+    ),
+    field("observed_at", ArgType::Timestamp, "When the read was made."),
+    field(
+        "revision",
+        ArgType::Text,
+        "The host evidence the read came from.",
+    ),
+];
+
+/// Single-mode positive route health (`kontor_fleet_policy_resolve`).
+const FLEET_ROUTE_HEALTH: &[FieldSpec] = &[
+    field(
+        "as_of",
+        ArgType::Timestamp,
+        "The instant the selection is judged at; stated so the receipt reproduces.",
+    ),
+    field(
+        "max_age_seconds",
+        ArgType::U32,
+        "How old an observation may be at as_of and still count, 1 to 3600.",
+    ),
+    optional_field(
+        "mode",
+        ArgType::Text,
+        "The permission mode the seat keeps; only observations of it count.",
+    ),
+    field(
+        "observations",
+        ArgType::ObjectArray(FLEET_ROUTE_OBSERVATION),
+        "At most one per route. A route with none, several, an unknown, stale or later-dated one is passed over.",
+    ),
+];
+
 /// The exact published planning pair document an invocation pins.
 const PLANNING_PAIR_PROFILE_REF: &[FieldSpec] = &[
     field(
@@ -6883,6 +6947,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::TextArray,
                 "Single mode only: vendors the seat must avoid, such as the vendor of the seat it must be independent of.",
+            ),
+            opt(
+                "route_health",
+                Place::Body,
+                ArgType::Object(FLEET_ROUTE_HEALTH),
+                "Single mode only: positive per-route health as observed by the caller. When stated, a route is eligible only on one fresh available observation of its account, model, effort and mode; empty exclusions are not availability.",
             ),
             opt(
                 "allocation",

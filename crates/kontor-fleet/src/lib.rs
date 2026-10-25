@@ -25,7 +25,7 @@ mod leadership;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kontor_core::id::{ContentHash, RoleSlotId};
+use kontor_core::id::{ContentHash, RoleSlotId, SignedDuration, Timestamp};
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
@@ -302,6 +302,16 @@ pub enum ExclusionReason {
     AccountUnavailableNow,
     /// The seat must avoid the model's vendor for this selection.
     VendorExcluded,
+    /// Route health was stated and no observation covers this route.
+    RouteUnobserved,
+    /// The route's health is unknown: the read could not tell, several
+    /// observations cover the route, or the one that does is dated after the
+    /// selection.
+    RouteHealthUnknown,
+    /// The route's observation is older than the stated maximum age.
+    RouteHealthStale,
+    /// The route was observed unable to take a seat now.
+    RouteUnavailableNow,
 }
 
 /// One chain entry, or one of its accounts, that the policy removed.
@@ -332,6 +342,106 @@ pub struct Eligibility {
     pub excluded_vendors: BTreeSet<String>,
 }
 
+/// The longest [`RouteHealth::max_age_seconds`] a caller may state.
+pub const MAX_ROUTE_HEALTH_AGE_SECONDS: u32 = 3600;
+
+/// What one host read said about one route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteHealthState {
+    /// The read positively showed the route can take a seat.
+    Available,
+    /// The read showed the route cannot take a seat.
+    Unavailable,
+    /// The read could not tell.
+    Unknown,
+}
+
+/// One observation of one exact route: its account, model and effort, under
+/// the permission mode the seat would keep.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteObservation {
+    /// The account alias the route runs on.
+    pub account: String,
+    /// The provider-native model id.
+    pub model: String,
+    /// The raw effort, or none when the route exposes no lever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortLevel>,
+    /// The permission mode the read holds for, or none when it is not
+    /// mode-specific.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// What the read said.
+    pub state: RouteHealthState,
+    /// When the read was made.
+    pub observed_at: Timestamp,
+    /// The host evidence the read came from, so it can be traced.
+    pub revision: String,
+}
+
+/// Positive per-route health for one selection, as the caller observed it.
+///
+/// Without it a selection is negative-only: every route the [`Eligibility`]
+/// does not exclude is admitted. With it, a route is admitted only on exactly
+/// one observation of its account, model, effort and `mode` that says
+/// `available` and is at most `max_age_seconds` old at `as_of`. No
+/// observation, several, an `unknown` one, a stale one or one dated after
+/// `as_of` is not availability, and neither is an empty exclusion set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteHealth {
+    /// The instant the selection is judged at. It is stated, never read from
+    /// a clock, so the receipt reproduces the choice.
+    pub as_of: Timestamp,
+    /// How old, in seconds before `as_of`, an observation may be and still
+    /// count.
+    pub max_age_seconds: u32,
+    /// The permission mode the seat keeps; only an observation of this mode
+    /// counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// The observations, in any order.
+    pub observations: Vec<RouteObservation>,
+}
+
+impl RouteHealth {
+    /// Why the observations do not admit `rung`, or `None` when they do.
+    #[must_use]
+    pub fn verdict(&self, rung: &ModelRung) -> Option<ExclusionReason> {
+        let matching: Vec<&RouteObservation> = self
+            .observations
+            .iter()
+            .filter(|observation| {
+                observation.account == rung.provider.0
+                    && observation.model == rung.model.0
+                    && observation.effort == rung.effort
+                    && observation.mode == self.mode
+            })
+            .collect();
+        let [observation] = matching.as_slice() else {
+            return Some(if matching.is_empty() {
+                ExclusionReason::RouteUnobserved
+            } else {
+                ExclusionReason::RouteHealthUnknown
+            });
+        };
+        let age = self.as_of.duration_since(observation.observed_at);
+        if age.is_negative() {
+            Some(ExclusionReason::RouteHealthUnknown)
+        } else if age > SignedDuration::from_secs(i64::from(self.max_age_seconds)) {
+            Some(ExclusionReason::RouteHealthStale)
+        } else {
+            match observation.state {
+                RouteHealthState::Available => None,
+                RouteHealthState::Unavailable => Some(ExclusionReason::RouteUnavailableNow),
+                RouteHealthState::Unknown => Some(ExclusionReason::RouteHealthUnknown),
+            }
+        }
+    }
+}
+
 /// One route a selection considered, and why it was passed over if it was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConsideredRoute {
@@ -354,6 +464,9 @@ pub struct FleetSelection {
     pub provenance: FleetProvenance,
     /// The eligibility the choice was made under.
     pub eligibility: Eligibility,
+    /// The route health the choice was made under, when one was stated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_health: Option<RouteHealth>,
     /// The chosen route, or `None` when nothing is eligible.
     pub selected: Option<FleetRoute>,
     /// Every resolved route, in chain order, with its verdict.
@@ -370,6 +483,20 @@ impl FleetResolution {
     /// else is read.
     #[must_use]
     pub fn select(&self, eligibility: &Eligibility) -> FleetSelection {
+        self.select_observed(eligibility, None)
+    }
+
+    /// [`Self::select`], where a route the eligibility admits must also be
+    /// admitted by `health` when one is stated.
+    ///
+    /// Equally deterministic: `health` carries its own `as_of`, and nothing
+    /// reads a clock.
+    #[must_use]
+    pub fn select_observed(
+        &self,
+        eligibility: &Eligibility,
+        health: Option<&RouteHealth>,
+    ) -> FleetSelection {
         let mut selected = None;
         let considered = self
             .routes
@@ -383,7 +510,7 @@ impl FleetResolution {
                 } else if eligibility.excluded_vendors.contains(&route.vendor) {
                     Some(ExclusionReason::VendorExcluded)
                 } else {
-                    None
+                    health.and_then(|health| health.verdict(&route.rung))
                 };
                 if excluded.is_none() && selected.is_none() {
                     selected = Some(route.clone());
@@ -397,6 +524,7 @@ impl FleetResolution {
         FleetSelection {
             provenance: self.provenance.clone(),
             eligibility: eligibility.clone(),
+            route_health: health.cloned(),
             selected,
             considered,
             excluded_by_policy: self.excluded.clone(),
