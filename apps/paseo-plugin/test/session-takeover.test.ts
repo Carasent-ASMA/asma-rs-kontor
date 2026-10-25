@@ -12,8 +12,8 @@ const ordinary = takeoverAdapter({ labels: {} });
 const health: RouteHealth = {
   as_of: "2026-10-25T09:00:00Z", max_age_seconds: 60, mode: "default",
   observations: [
-    { account: "codex-work", model: "gpt-5.6-sol", effort: "xhigh", mode: "default", state: "unknown", observed_at: "2026-10-25T08:59:59Z", revision: "r1" },
-    { account: "claude-personal", model: "claude-opus-5", effort: "xhigh", mode: "default", state: "available", observed_at: "2026-10-25T08:59:30Z", revision: "r2" },
+    { account: "codex-b", model: "gpt-5.6-sol", effort: "xhigh", mode: "default", state: "unknown", observed_at: "2026-10-25T08:59:59Z", revision: "r1" },
+    { account: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default", state: "available", observed_at: "2026-10-25T08:59:30Z", revision: "r2" },
   ],
 };
 
@@ -21,11 +21,11 @@ const route = (provider: string, model: string, step: number) =>
   ({ rung: { provider, model, effort: "xhigh" }, step, sub_step: 1, vendor: provider.startsWith("codex") ? "openai" : "anthropic" });
 /** A FleetSelection as the CLI prints it: keys sorted, the stated evidence echoed. */
 function selection(excluded: [string | null, string | null], selected: boolean, overrides: Record<string, unknown> = {}) {
-  const considered = [route("codex-work", "gpt-5.6-sol", 1), route("claude-personal", "claude-opus-5", 2)]
+  const considered = [route("codex-b", "gpt-5.6-sol", 1), route("claude-a", "claude-opus-5", 2)]
     .map((entry, index) => ({ ...(excluded[index] ? { excluded: excluded[index] } : {}), route: entry }));
   return { considered, eligibility: { excluded_vendors: [], unavailable_accounts: [] }, excluded_by_policy: [],
     provenance: { binding_key: KEY, chain: "codex-first", policy_hash: "a".repeat(64), schema_version: 2 },
-    route_health: health, selected: selected ? route("claude-personal", "claude-opus-5", 2) : null, ...overrides };
+    route_health: health, selected: selected ? route("claude-a", "claude-opus-5", 2) : null, ...overrides };
 }
 const answered = (body: unknown) => ({ body, status: 200, tool: "kontor_fleet_policy_resolve" });
 const blocked = (body: unknown) => ({ body: { code: "placement_blocked", message: "no route", selection: body }, status: 409, tool: "kontor_fleet_policy_resolve" });
@@ -129,10 +129,10 @@ describe("the fixed local fleet selection read", () => {
     expect(result).toEqual({
       state: "selected", message: expect.any(String),
       provenance: { policyHash: "a".repeat(64), bindingKey: KEY, chain: "codex-first" },
-      selected: { account: "claude-personal", model: "claude-opus-5", effort: "xhigh", vendor: "anthropic", step: 2, subStep: 1 },
+      selected: { account: "claude-a", model: "claude-opus-5", effort: "xhigh", vendor: "anthropic", step: 2, subStep: 1 },
       considered: [
-        { account: "codex-work", model: "gpt-5.6-sol", effort: "xhigh", vendor: "openai", step: 1, subStep: 1, excluded: "route_health_unknown" },
-        { account: "claude-personal", model: "claude-opus-5", effort: "xhigh", vendor: "anthropic", step: 2, subStep: 1, excluded: null },
+        { account: "codex-b", model: "gpt-5.6-sol", effort: "xhigh", vendor: "openai", step: 1, subStep: 1, excluded: "route_health_unknown" },
+        { account: "claude-a", model: "claude-opus-5", effort: "xhigh", vendor: "anthropic", step: 2, subStep: 1, excluded: null },
       ],
       digest: createHash("sha256").update(JSON.stringify(body)).digest("hex"),
     });

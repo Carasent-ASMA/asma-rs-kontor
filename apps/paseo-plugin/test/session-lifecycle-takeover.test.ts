@@ -24,13 +24,13 @@ function agent(id: string, patch: Partial<Agent> = {}): Agent {
 const WORKSPACE = { id: "wks-1", projectId: "prj-1", projectDisplayName: "DESK • ADAM", projectRootPath: "/fixtures", projectKind: "directory", workspaceKind: "local_checkout",
   name: "TSW", title: null, workspaceDirectory: "/fixtures/wks-1", archivingAt: null, status: "done", statusEnteredAt: null, activityAt: null, scripts: [] } as PaseoWorkspace;
 const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-25", entries: [
-  { provider: "claude-personal", label: "Claude personal", enabled: true, status: "ready", defaultModeId: "default",
-    models: [{ provider: "claude-personal", id: "claude-opus-5", label: "Opus 5", thinkingOptions: [{ id: "xhigh", label: "X-High" }] }],
+  { provider: "claude-a", label: "Claude A", enabled: true, status: "ready", defaultModeId: "default",
+    models: [{ provider: "claude-a", id: "claude-opus-5", label: "Opus 5", thinkingOptions: [{ id: "xhigh", label: "X-High" }] }],
     modes: [{ id: "default", label: "Default", colorTier: "safe" }] },
 ] };
 const health = (mode: string | null): RouteHealth => ({ as_of: "2026-10-25T09:00:00Z", max_age_seconds: 60, ...(mode ? { mode } : {}),
-  observations: [{ account: "claude-personal", model: "claude-opus-5", effort: "xhigh", ...(mode ? { mode } : {}), state: "available", observed_at: "2026-10-25T08:59:30Z", revision: "r1" }] });
-const route = { rung: { provider: "claude-personal", model: "claude-opus-5", effort: "xhigh" }, step: 1, sub_step: 1, vendor: "anthropic" };
+  observations: [{ account: "claude-a", model: "claude-opus-5", effort: "xhigh", ...(mode ? { mode } : {}), state: "available", observed_at: "2026-10-25T08:59:30Z", revision: "r1" }] });
+const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" }, step: 1, sub_step: 1, vendor: "anthropic" };
 
 const dirs: string[] = [];
 afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -119,8 +119,8 @@ describe("takeover review", () => {
     expect(h.effects.resolve).toHaveLength(0);
     const chosen = await h.service.review({ agentId: "agent-1", reviewId: first.reviewId, revision: 2, bindingKey: KEY });
     expect(chosen).toMatchObject({ revision: 3, state: "ready", association: { bindingKey: KEY, source: "chosen" },
-      route: { bindingKey: KEY, chain: "claude-first", selected: { account: "claude-personal", model: "claude-opus-5", effort: "xhigh" } },
-      successor: { title: "Fix the parser", workspaceId: "wks-1", cwd: "/fixtures/wks-1", provider: "claude-personal", model: "claude-opus-5", effort: "xhigh", mode: "default", persona: null } });
+      route: { bindingKey: KEY, chain: "claude-first", selected: { account: "claude-a", model: "claude-opus-5", effort: "xhigh" } },
+      successor: { title: "Fix the parser", workspaceId: "wks-1", cwd: "/fixtures/wks-1", provider: "claude-a", model: "claude-opus-5", effort: "xhigh", mode: "default", persona: null } });
     expect(chosen.digest).toMatch(/^[a-f0-9]{64}$/);
     // Refreshing keeps the choice and the one request; the digest is reissued.
     const refreshed = await h.service.review({ agentId: "agent-1", reviewId: first.reviewId, revision: 3, bindingKey: null });
@@ -241,7 +241,7 @@ describe("takeover apply", () => {
     expect(h.effects.archive).toEqual(["agent-1"]);
     expect(h.effects.create).toHaveLength(1);
     expect(h.effects.create[0]).toMatchObject({ idempotencyKey: review.successor!.requestId, title: "Fix the parser",
-      config: { provider: "claude-personal/claude-opus-5", modeId: "default", thinkingOptionId: "xhigh" },
+      config: { provider: "claude-a/claude-opus-5", modeId: "default", thinkingOptionId: "xhigh" },
       labels: { role: "SWE", epic: "ASMA-1", "create.request": review.successor!.requestId, [TAKEOVER_PREDECESSOR_LABEL]: "agent-1" } });
     expect(h.effects.create[0]!.labels).not.toHaveProperty("note");
     expect(h.effects.create[0]!.config).not.toHaveProperty("systemPrompt");
@@ -399,7 +399,7 @@ describe("persona issued again for a successor", () => {
   it("rebuilds a New-session lead's persona from its created title and refuses anything it cannot rebuild unchanged", () => {
     const labels = { persona: personaVersion("lsa-bound", true), "title.auto": "LSA • ASMA-100 • Route review" };
     const place = { desk: "DESK • ADAM", workspace: "LSA", workspaceId: "wks-lsa" };
-    const issued = reissuePersona(labels, "claude-personal", place);
+    const issued = reissuePersona(labels, "claude-a", place);
     expect(issued).toMatchObject({ supported: false, version: personaVersion("lsa-bound", false) });
     expect("text" in issued && issued.text).toContain("Scope: epic ASMA-100.");
     expect(reissuePersona(labels, "claude", place)).toMatchObject({ supported: true, version: personaVersion("lsa-bound", true) });
