@@ -601,7 +601,7 @@ The plugin also reads the host-local Kontor work catalog through the existing
 observer `kontor-mcp` boundary (`--credential-tier observer`; no credential is
 forwarded). `work-catalog.read` takes the exact host `serverId`, asks for the
 composite per-source status, the native status and up to three bounded pages of
-native inventory and entries. The Overview **Sources and coverage** disclosure
+native inventory (up to five pages) and entries (up to three pages). The Overview **Sources and coverage** disclosure
 shows each source's state, generation, source `asOf`, coverage, retry deadline,
 conflicts and pending verification.
 
@@ -617,12 +617,14 @@ The RPC answers one of three modes:
 - `unavailable`: there is no usable answer and no snapshot; the direct readers
   below remain active.
 
-The shared inventory adapter (`client/shared-inventory.ts`) prefers a complete
-live catalog, then a usable direct directory, then the labelled snapshot. Native
-rows are mapped by exact session id; live labels, permissions, attention,
-telemetry and availability overlay only for that exact id. A complete exact-empty
-catalog is empty; a truncated inventory or a missing archived scope is visibly
-partial. Native send/stop/open actions stay direct Paseo operations.
+The shared inventory adapter (`client/shared-inventory.ts`) prefers a
+database-backed complete live catalog, then a usable direct directory, then the
+labelled snapshot. A `catalog` answer whose native view source is `snapshot` is
+the daemon's fallback, not live: direct wins when usable. Native rows are mapped
+by exact session id; live labels, permissions, attention, telemetry and
+availability overlay only for that exact id. A complete exact-empty catalog is
+empty; a truncated inventory or a missing archived scope is visibly partial.
+Native send/stop/open actions stay direct Paseo operations.
 
 The plugin never opens `catalog.db`, never presents its own check time as source
 freshness, and never rewrites the source catalog, source IDs, approved hashes or

@@ -115,6 +115,31 @@ describe("the shared native inventory adapter", () => {
     expect(adapted.workspaces.projects.map((project) => project.projectId)).toEqual(["project-1"]);
   });
 
+  it("does not let the daemon's native snapshot override a usable direct directory", () => {
+    const live = sessionEntry("session-direct", { labels: { epic: "ASMA-1" } });
+    const daemonSnapshot = catalog(native({ view: nativeView({ source: "snapshot" }) }));
+    const adapted = adapt({
+      direct: { status: "ready", live: true, entries: [live], inventoryComplete: true, lastUpdatedAt: Date.parse(AS_OF) },
+      catalog: daemonSnapshot,
+    });
+    expect(adapted.directory.source).toBe("direct");
+    expect(adapted.directory.entries).toEqual([live]);
+    expect(adapted.workspaces.source).toBe("direct");
+  });
+
+  it("uses the daemon's native snapshot only when both live sources cannot answer", () => {
+    const adapted = adapt({
+      workspaces: { readAt: null, projectsReadAt: null, error: "Paseo is unavailable", projectError: "Paseo is unavailable" },
+      catalog: catalog(native({ view: nativeView({ source: "snapshot" }) })),
+    });
+    expect(adapted.directory.source).toBe("catalog-snapshot");
+    expect(adapted.directory.status).toBe("stale");
+    expect(adapted.directory.entries.map((entry) => entry.id)).toEqual(["session-a", "session-b"]);
+    expect(adapted.directory.staleReason).toContain("last-known native snapshot");
+    expect(adapted.directory.inventoryComplete).toBe(true);
+    expect(adapted.workspaces.source).toBe("catalog-snapshot");
+  });
+
   it("restores the direct directory when the catalog is unavailable", () => {
     const live = sessionEntry("session-direct", { labels: { epic: "ASMA-1" } });
     const adapted = adapt({

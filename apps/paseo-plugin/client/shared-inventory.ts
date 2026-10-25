@@ -39,7 +39,7 @@ export type SharedWorkspaceDirectory = {
   readonly readAt: string | null;
   readonly projectError: string | null;
   readonly projectsReadAt: string | null;
-  readonly source: "catalog" | "direct";
+  readonly source: "catalog" | "catalog-snapshot" | "direct";
   readonly partial: boolean;
 };
 
@@ -91,12 +91,6 @@ function catalogPartialReason(view: WorkCatalogNativeView, includeArchived: bool
   if (includeArchived && !view.archiveScope) return "The shared catalog did not collect archived sessions; the archived view is partial.";
   if (timeOf(view.asOf) === null) return "The shared catalog inventory has no completion instant; this read is partial.";
   return "The shared catalog inventory is partial.";
-}
-
-function nativeWarning(view: WorkCatalogNativeView): string | null {
-  return view.source === "snapshot"
-    ? "The shared catalog is serving its fallback native snapshot; the direct directory is unavailable."
-    : null;
 }
 
 function catalogEntry(
@@ -175,7 +169,7 @@ function catalogDirectory(
 
 function snapshotDirectory(view: WorkCatalogNativeView, includeArchived: boolean): DirectoryState {
   const partial = !catalogComplete(view, includeArchived);
-  const state = catalogDirectory(view, [], includeArchived, partial, "Shared catalog last-known native snapshot; the live catalog and Paseo directory are unavailable.");
+  const state = catalogDirectory(view, [], includeArchived, partial, "Shared catalog last-known native snapshot; the live native catalog and Paseo directory are unavailable.");
   return { ...state, source: "catalog-snapshot", inventoryComplete: !partial };
 }
 
@@ -214,7 +208,7 @@ function directWorkspaces(direct: DirectWorkspaceDirectory): SharedWorkspaceDire
   };
 }
 
-function catalogWorkspaces(view: WorkCatalogNativeView, partial: boolean): SharedWorkspaceDirectory {
+function catalogWorkspaces(view: WorkCatalogNativeView, partial: boolean, source: "catalog" | "catalog-snapshot" = "catalog"): SharedWorkspaceDirectory {
   const projectById = new Map(view.projects.map((project) => [project.projectId, project]));
   return {
     entries: view.workspaces.map((workspace) => {
@@ -239,7 +233,7 @@ function catalogWorkspaces(view: WorkCatalogNativeView, partial: boolean): Share
     readAt: view.asOf,
     projectError: partial ? "Shared catalog project inventory is partial." : null,
     projectsReadAt: view.asOf,
-    source: "catalog",
+    source,
     partial,
   };
 }
@@ -266,19 +260,23 @@ export function adaptSharedInventory(input: {
   readonly catalog: WorkCatalogRead | null;
   readonly includeArchived: boolean;
 }): SharedInventory {
-  const live = usableCatalogView(input.catalog?.native.mode === "catalog" ? input.catalog.native : null);
-  const snapshot = usableCatalogView(input.catalog?.native.mode === "snapshot" ? input.catalog.native : null);
+  const usable = usableCatalogView(input.catalog?.native ?? null);
+  // `mode: "catalog"` is not enough: the daemon can answer from its own
+  // last-known native snapshot. Only a database-backed view is a complete live
+  // catalog; a daemon snapshot follows the same direct-first rule as the
+  // plugin's own snapshot.
+  const live = usable !== null && usable.read.mode === "catalog" && usable.view.source === "database" ? usable : null;
+  const snapshot = usable !== null && (usable.read.mode === "snapshot" || usable.view.source === "snapshot") ? usable : null;
   const liveComplete = live !== null && catalogComplete(live.view, input.includeArchived);
-  const liveWarning = live === null ? null : nativeWarning(live.view);
   const directUsable = directIsUsable(input.direct);
 
   const directory =
     liveComplete && live !== null
-      ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, false, liveWarning)
+      ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, false, null)
       : directUsable
         ? directDirectory(input.direct)
         : live !== null
-          ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, true, liveWarning)
+          ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, true, null)
           : snapshot !== null
             ? snapshotDirectory(snapshot.view, input.includeArchived)
             : unavailableDirectory(input.direct);
@@ -291,7 +289,7 @@ export function adaptSharedInventory(input: {
         : live !== null
           ? catalogWorkspaces(live.view, true)
           : snapshot !== null
-            ? catalogWorkspaces(snapshot.view, !catalogComplete(snapshot.view, input.includeArchived))
+            ? catalogWorkspaces(snapshot.view, !catalogComplete(snapshot.view, input.includeArchived), "catalog-snapshot")
             : directWorkspaces(input.directWorkspaces);
 
   return { directory, workspaces };

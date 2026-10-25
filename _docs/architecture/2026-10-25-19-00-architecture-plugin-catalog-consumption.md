@@ -75,7 +75,8 @@ allowlist entry.
 bounded `kontor_work_catalog_native_inventory` pages and up to three bounded
 `kontor_work_catalog_entries` pages (1,000 rows each). The composite status is the
 source of truth for freshness; the entries are mapped to plan summaries by the
-preserved operator `source_ids`.
+preserved operator `source_ids`. The plan pages are read before the optional
+native inventory so a slow native tool cannot delay or hide them.
 
 ## Native inventory is selected by exact host identity
 
@@ -86,21 +87,27 @@ exist, with a positive generation and a completion instant. A missing, ambiguous
 or incomplete match is an unavailable native read, not a best-effort title match.
 
 The native inventory request pins the exact runtime instance and asks for up to
-three pages of 1,000 rows with `include_removed: false`. Every page must carry
-the same runtime instance, generation, `as_of`, source and archive scope. Rows
-are deduplicated by native id. `truncated`, a missing completion instant, or an
-archived request against `archiveScope: false` is a visible partial, never an
-exact empty host.
+five pages of 1,000 rows with `include_removed: false`. The 5,000-row native view
+bound covers the known production census with headroom. Every page
+must carry the same runtime instance, generation, `as_of`, source and archive
+scope. Rows are deduplicated by native id. `truncated`, a missing completion
+instant, or an archived request against `archiveScope: false` is a visible
+partial, never an exact empty host. A native view that is still larger than the
+bound stays visibly partial rather than silently reporting a complete total.
 
 `client/shared-inventory.ts` is the one adapter at the screen composition point.
-It prefers a complete live catalog, maps native projects, workspaces and sessions
-to the existing directory shapes, and overlays live labels, pending permissions,
-needs-input, attention, active-turn, telemetry and availability only by exact
-session id. A complete exact-empty catalog is empty; it is not treated as
+It prefers a database-backed complete live catalog, maps native projects,
+workspaces and sessions to the existing directory shapes, and overlays live
+labels, pending permissions, needs-input, attention, active-turn, telemetry and
+availability only by exact session id. A `catalog`-mode answer whose native view
+source is `snapshot` is the daemon's own fallback, not a complete live catalog:
+a usable direct directory wins, and the daemon snapshot is used only when direct
+cannot answer. A complete exact-empty catalog is empty; it is not treated as
 unavailable. If the catalog cannot answer, a usable direct directory takes over;
 a partial catalog remains visible with its marker; the last-known native
 snapshot is used only when neither live source can answer. A snapshot keeps its
-saved native `asOf`, never the plugin check time.
+saved native `asOf`, never the plugin check time, and its pill/read label says
+last-known rather than complete live.
 
 Sessions tree/list/groups, archive filters, project and context selectors,
 Start/switch, Overview, AI teams, Search, Activity/Inbox, Settings associations
@@ -148,8 +155,9 @@ honest limit instead of turning a declaration into a verification.
 
 - No catalog or plugin write to Jira, Paseo, plans, settings or the governed
   store; no session mutation and no enrollment.
-- The plugin's native inventory is bounded to three pages and carries native
-  ids only; a truncated inventory or a missing archive scope says so.
+- The plugin's native inventory is bounded to five pages / 5,000 rows, covering
+  the known production census; a larger or archive-incomplete inventory stays
+  visibly partial.
 - Catalog-served rows are not merged with direct-only rows. A complete catalog
   wins, including an exact empty host; direct rows fill in only when the catalog
   cannot answer completely.

@@ -32,6 +32,8 @@ export const WORK_CATALOG_OUTPUT_LIMIT = 8 * 1024 * 1024;
 export const WORK_CATALOG_SNAPSHOT_LIMIT = 8 * 1024 * 1024;
 export const WORK_CATALOG_PAGE_LIMIT = 1_000;
 export const WORK_CATALOG_MAX_PAGES = 3;
+/** Native census bound: five 1,000-row pages cover the known production census. */
+export const WORK_CATALOG_NATIVE_MAX_PAGES = 5;
 export const WORK_CATALOG_SNAPSHOT_FILE = "work-catalog-snapshot.json";
 
 const SOURCES_TOOL = "kontor_work_catalog_sources";
@@ -362,7 +364,7 @@ async function observeNative(session: JsonRpcSession, hostId: string): Promise<N
     const runtimeInstance = matches[0]!.runtime_instance;
     const pages: DaemonNativeInventory[] = [];
     let cursor: string | null = null;
-    for (let page = 0; page < WORK_CATALOG_MAX_PAGES; page += 1) {
+    for (let page = 0; page < WORK_CATALOG_NATIVE_MAX_PAGES; page += 1) {
       const view = daemonNativeInventorySchema.parse(await callTool(session, NATIVE_INVENTORY_TOOL, {
         instance: runtimeInstance,
         include_removed: false,
@@ -371,7 +373,7 @@ async function observeNative(session: JsonRpcSession, hostId: string): Promise<N
       }));
       pages.push(view);
       const next = view.next_cursor ?? null;
-      if (next === null || page === WORK_CATALOG_MAX_PAGES - 1) break;
+      if (next === null || page === WORK_CATALOG_NATIVE_MAX_PAGES - 1) break;
       cursor = next;
     }
     return {

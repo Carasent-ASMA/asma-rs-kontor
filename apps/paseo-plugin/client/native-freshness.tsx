@@ -26,7 +26,12 @@ export function inventoryReadLabel(state: Pick<DirectoryState, "lastUpdatedAt" |
   }
   // The timestamp records the latest successful walk, including partial reads.
   const readAt = new Date(state.lastUpdatedAt).toISOString();
-  const source = state.source === "catalog" ? "shared catalog " : state.source === "catalog-snapshot" ? "shared catalog snapshot " : "";
+  if (state.source === "catalog-snapshot") {
+    return state.inventoryComplete === false
+      ? `Last-known shared catalog snapshot is partial · read ${readAt}`
+      : `Last-known shared catalog snapshot read ${readAt}`;
+  }
+  const source = state.source === "catalog" ? "shared catalog " : "";
   if (state.inventoryComplete === true) return `Last complete ${source}read ${readAt}`;
   if (state.inventoryComplete === false) return `Last partial ${source}inventory read ${readAt}`;
   return `Last ${source}inventory read ${readAt} · completeness Unknown`;
