@@ -21,10 +21,10 @@ vi.mock("@getpaseo/plugin/client", () => ({
   getPaseoClient: (hostId: string) => react.hosts.get(hostId),
   useRpc: (rpc: { name: string }) => rpc.name === "sessions.lifecycle-dispositions" ? react.dispositions : async () => ({}),
 }));
-import { disposeRetainedDirectories, startHostDirectory, useSessionDirectory, type HostStatus } from "../client/use-session-directory";
+import { bindHostDirectory, disposeRetainedDirectories, startHostDirectory, useSessionDirectory, type HostStatus } from "../client/use-session-directory";
 import { useSessionAvailability } from "../client/use-session-availability";
 import { forgetWorkspaceDirectories, useWorkspaceDirectory } from "../client/use-workspace-directory";
-import type { AgentDirectoryPage } from "../client/session-directory";
+import type { AgentDirectoryPage, DirectoryState } from "../client/session-directory";
 import { sessionEntry } from "./session-fixtures";
 
 type Observer = {
@@ -43,12 +43,13 @@ const sessions = (count: number) => Array.from({ length: count }, (_, index) => 
 /** A fictional host: offset cursors over `rows`, one owned subscription per subscribe call. */
 function fakeHost(hostId: string, rows: AgentDirectoryPage[]) {
   const host = {
-    rows, calls: [] as PaseoAgentListOptions[], observers: [] as Observer[], released: 0, gate: null as Promise<void> | null,
+    rows, calls: [] as PaseoAgentListOptions[], observers: [] as Observer[], released: 0, gate: null as Promise<void> | null, subscribeGate: null as Promise<void> | null,
     workspaces: vi.fn(async () => ({ entries: [{ id: `${hostId}-wks` }], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } })),
     projects: vi.fn(async () => ({ projects: [{ projectId: `${hostId}-prj` }] })),
     get subscribes() { return host.calls.filter((call) => call.subscribe); },
     get walks() { return host.calls.filter((call) => !call.subscribe); },
     holdWalk() { let release!: () => void; host.gate = new Promise((resolve) => { release = resolve; }); return () => { host.gate = null; release(); }; },
+    holdSubscribe() { let release!: () => void; host.subscribeGate = new Promise((resolve) => { release = resolve; }); return () => { host.subscribeGate = null; release(); }; },
   };
   const list = async (options: PaseoAgentListOptions = {}) => {
     host.calls.push(options);
@@ -57,6 +58,7 @@ function fakeHost(hostId: string, rows: AgentDirectoryPage[]) {
     const result = { requestId: "fixture", entries: visible.slice(start, end),
       pageInfo: { hasMore: end < visible.length, nextCursor: end < visible.length ? String(end) : null, prevCursor: null } };
     if (!options.subscribe) { if (host.gate) await host.gate; return result; }
+    if (host.subscribeGate) await host.subscribeGate;
     const snapshot = { ...result, subscriptionId: `sub-${host.calls.length}` } as PaseoAgentListResult & { subscriptionId: string };
     return { ...snapshot, subscription: {
       subscriptionId: snapshot.subscriptionId, ready: Promise.resolve(snapshot),
@@ -66,6 +68,78 @@ function fakeHost(hostId: string, rows: AgentDirectoryPage[]) {
   };
   react.hosts.set(hostId, { agents: { list }, workspaces: { list: host.workspaces }, projects: { list: host.projects } });
   return host;
+}
+
+type Deferred<T> = {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: Error) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+type OwnerSubscriptionResult = PaseoAgentListResult & {
+  subscriptionId: string;
+  subscription: {
+    subscriptionId: string;
+    ready: Promise<PaseoAgentListResult>;
+    subscribe: (observer: Observer) => () => void;
+    release: () => Promise<void>;
+  };
+};
+
+function ownerFixture() {
+  const subscriptions: Deferred<OwnerSubscriptionResult>[] = [];
+  const reads: Deferred<PaseoAgentListResult>[] = [];
+  let state: DirectoryState | null = null;
+  const list = (options: PaseoAgentListOptions = {}) => {
+    if (options.subscribe) {
+      const gate = deferred<OwnerSubscriptionResult>();
+      subscriptions.push(gate);
+      return gate.promise;
+    }
+    const gate = deferred<PaseoAgentListResult>();
+    reads.push(gate);
+    return gate.promise;
+  };
+  react.hosts.set("host-a", { agents: { list } });
+  const stop = bindHostDirectory((next) => {
+    state = next;
+  });
+  return {
+    subscriptions,
+    reads,
+    state: () => state,
+    stop,
+    activate(index: number) {
+      const snapshot = {
+        requestId: "fixture",
+        entries: [agent("a")],
+        pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+        subscriptionId: `sub-${index + 1}`,
+      };
+      subscriptions[index]!.resolve({
+        ...snapshot,
+        subscription: {
+          subscriptionId: snapshot.subscriptionId,
+          ready: Promise.resolve(snapshot),
+          subscribe: (observer: Observer) => {
+            observer.snapshot(snapshot);
+            return () => undefined;
+          },
+          release: async () => undefined,
+        },
+      });
+    },
+  };
 }
 
 function render<T>(draw: () => T): T { react.cursor = 0; const value = draw(); for (const run of react.queue.splice(0)) run(); return value; }
@@ -82,24 +156,29 @@ beforeEach(async () => {
 afterEach(() => { unmount(); vi.useRealTimers(); });
 
 describe("returning to Kontor reuses the host's live session directory", () => {
-  it("walks once on first entry with a one-row subscription bootstrap, then returns to live rows without a read", async () => {
+  it("reconciles once on first entry after a provisional page, then returns to live rows without a read", async () => {
     const host = fakeHost("host-a", sessions(450));
     kontor(); await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
     expect(kontor().state.entries).toHaveLength(450);
     expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 25 }]);
-    expect(host.walks.map((call) => call.page)).toEqual([{ limit: 200 }, { limit: 200, cursor: "200" }, { limit: 200, cursor: "400" }]);
+    expect(host.walks.map((call) => call.page)).toEqual([
+      { limit: 200 },
+      { limit: 200 },
+      { limit: 200, cursor: "200" },
+      { limit: 200, cursor: "400" },
+    ]);
 
     unmount();
     const first = kontor();
     expect(first.state).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
     expect(first.state.entries).toHaveLength(450);
     await settle();
-    expect(host.calls).toHaveLength(4);
+    expect(host.calls).toHaveLength(5);
     expect(host.released).toBe(0);
   });
 
-  it("reuses the directory a host contribution already started instead of walking twice", async () => {
+  it("reuses the directory a host contribution already started without another reconnect", async () => {
     const host = fakeHost("host-a", sessions(450));
 
     startHostDirectory("host-a");
@@ -114,15 +193,101 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     });
     expect(kontor().state.entries).toHaveLength(450);
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(3);
+    expect(host.walks).toHaveLength(4);
   });
 
-  it("joins an in-flight sidebar reconnect instead of starting a third walk", async () => {
+  it("joins a pending subscription after provisional rows are ready", async () => {
+    const host = fakeHost("host-a", sessions(450));
+    const release = host.holdSubscribe();
+    let latest: DirectoryState | null = null;
+    const unbind = bindHostDirectory((state) => {
+      latest = state;
+    });
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(latest).toMatchObject({
+      status: "ready",
+      live: false,
+      inventoryComplete: false,
+    });
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(3);
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(host.subscribes).toHaveLength(1);
+    expect(host.walks).toHaveLength(3);
+
+    release();
+    await settle();
+    expect(latest).toMatchObject({
+      status: "ready",
+      live: true,
+      inventoryComplete: true,
+    });
+    expect(host.subscribes).toHaveLength(1);
+    unbind();
+  });
+
+  it("starts a fresh connection when a retained subscription rejects after provisional rows are ready", async () => {
+    const host = ownerFixture();
+    startHostDirectory("host-a");
+    await settle();
+    host.reads[0]!.resolve({
+      requestId: "fixture",
+      entries: [agent("a")],
+      pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+    });
+    await settle();
+    host.subscriptions[0]!.reject(new Error("subscription timeout"));
+    await settle();
+    expect(host.state()).toMatchObject({
+      status: "ready",
+      live: false,
+      inventoryComplete: false,
+    });
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(host.subscriptions).toHaveLength(2);
+    expect(host.reads).toHaveLength(2);
+    host.stop();
+  });
+
+  it("starts a fresh connection when activation reconciliation fails", async () => {
+    const host = ownerFixture();
+    startHostDirectory("host-a");
+    await settle();
+    host.reads[0]!.resolve({
+      requestId: "fixture",
+      entries: [agent("a")],
+      pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
+    });
+    await settle();
+    host.activate(0);
+    await settle();
+    host.reads[1]!.reject(new Error("reconcile failure"));
+    await settle();
+    expect(host.state()).toMatchObject({
+      status: "stale",
+      live: false,
+      inventoryComplete: false,
+    });
+
+    startHostDirectory("host-a");
+    await settle();
+    expect(host.subscriptions).toHaveLength(2);
+    expect(host.reads).toHaveLength(3);
+    host.stop();
+  });
+
+  it("joins an in-flight sidebar reconnect without a second subscription", async () => {
     const host = fakeHost("host-a", sessions(3));
     kontor();
     await settle();
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     unmount();
 
     startHostDirectory("host-a", "offline");
@@ -132,7 +297,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
 
     expect(kontor().state).toMatchObject({ status: "ready", live: true });
     expect(host.subscribes).toHaveLength(2);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("renders the 25-row bootstrap as an incomplete read while the remaining pages load", async () => {
@@ -151,7 +316,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     });
     expect(provisional.state.entries).toHaveLength(25);
     expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 25 }]);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
 
     release();
     await settle();
@@ -168,7 +333,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     const first = kontor();
     expect(first.state.entries.map((entry) => entry.title).sort()).toEqual(["Renamed while away", "Session s-0"]);
     expect(first.state.live).toBe(true);
-    expect(host.calls).toHaveLength(2);
+    expect(host.calls).toHaveLength(3);
   });
 
   it("lets a first walk still in flight finish for the reopened screen instead of restarting it", async () => {
@@ -181,7 +346,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     release(); await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true });
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(3);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("keeps the last rows visibly stale and walks again on return when live updates had stopped", async () => {
@@ -194,7 +359,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true });
     expect(host.subscribes).toHaveLength(2);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("reconciles a host reconnect that happened while Kontor was closed", async () => {
@@ -207,7 +372,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(first.state).toMatchObject({ status: "ready", live: true });
     expect(first.state.entries.map((entry) => entry.id).sort()).toEqual(["s-1", "s-2"]);
     await settle();
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(3);
   });
 
   it("walks again on return after the host went offline", async () => {
@@ -227,17 +392,17 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(kontor("host-b").state.entries).toEqual([]);
     await settle();
     expect(kontor("host-b").state.entries.map((entry) => entry.id)).toEqual(["b-only"]);
-    expect(a.calls).toHaveLength(2);
-    expect(b.calls).toHaveLength(2);
+    expect(a.calls).toHaveLength(3);
+    expect(b.calls).toHaveLength(3);
   });
 
-  it("walks once with archived sessions when the returning scope includes them", async () => {
+  it("reconciles once with archived sessions when the returning scope includes them", async () => {
     const host = fakeHost("host-a", [agent("live"), agent("archived", "2026-10-21T00:00:00.000Z")]);
     kontor(); await settle(); unmount();
     kontor("host-a", "online", true); await settle();
     expect(kontor("host-a", "online", true).state.entries.map((entry) => entry.id).sort()).toEqual(["archived", "live"]);
     expect(host.subscribes.map((call) => call.filter)).toEqual([{ includeArchived: false }, { includeArchived: true }]);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("lets the composer popover read the shared directory without changing the screen's Archived rows", async () => {
@@ -253,7 +418,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(ids(popover!.state)).toEqual(["archived", "live"]);
     expect(popover!.state.includeArchived).toBe(true);
     expect(host.subscribes.map((call) => call.filter)).toEqual([{ includeArchived: true }]);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     // The popover may open before the screen ever did; it then starts the ordinary active-session directory.
     unmount(); await disposeRetainedDirectories();
     const cold = fakeHost("host-a", [agent("live"), agent("archived", "2026-10-21T00:00:00.000Z")]);
@@ -268,7 +433,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(host.released).toBe(1);
     expect(kontor().state.entries).toEqual([]);
     await settle();
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 });
 

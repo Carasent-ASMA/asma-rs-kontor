@@ -21,6 +21,7 @@ type DirectoryListener = (state: DirectoryState) => void;
 type ConnectionAttempt = {
   readonly token: number;
   readonly promise: Promise<void>;
+  settled: boolean;
 };
 
 type RetainedDirectory = {
@@ -93,11 +94,16 @@ function startConnection(record: RetainedDirectory): void {
     .reconnect()
     .catch(() => undefined)
     .finally(() => {
-      if (record.connection?.token === token) {
+      const connection = record.connection;
+      if (connection?.token !== token) {
+        return;
+      }
+      connection.settled = true;
+      if (!record.directory.hasPendingConnection()) {
         record.connection = null;
       }
     });
-  record.connection = { token, promise };
+  record.connection = { token, promise, settled: false };
 }
 
 function claimOwner(record: RetainedDirectory): void {
@@ -133,6 +139,12 @@ function retain(hostId: string, includeArchived: boolean): RetainedDirectory {
       bootstrapLimit: BOOTSTRAP_LIMIT,
       onChange: (next) => {
         record.state = next;
+        if (
+          record.connection?.settled &&
+          !record.directory.hasPendingConnection()
+        ) {
+          record.connection = null;
+        }
         for (const listener of [...listeners]) {
           notifyListener(record, listener, next);
         }
@@ -153,7 +165,10 @@ function applyHostStatus(
     // offline-to-online transition. A second caller joins the reconnect that
     // is already in flight, even while the retained rows still read stale.
     if (record.connection !== null) {
-      return;
+      if (!record.connection.settled || record.directory.hasPendingConnection()) {
+        return;
+      }
+      record.connection = null;
     }
     // A remount over a live or still-loading directory reuses it; a new,
     // offline or degraded one reconnects and walks every page.
