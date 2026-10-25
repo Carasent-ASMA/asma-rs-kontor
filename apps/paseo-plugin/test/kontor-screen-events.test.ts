@@ -67,7 +67,7 @@ import { historicalPlanProgress } from "../client/page-data";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { SessionsScreen } from "../client/sessions-screen";
 import { NativeFreshnessPill } from "../client/native-freshness";
-import { Copy } from "../client/page-controls";
+import { KontordBanner } from "../client/kontord-banner";
 import { DEFAULT_PLAN_VIEW, type PlanView } from "../client/plan-reader";
 import { ReadOnlyPage } from "../client/read-only-pages";
 import { TeamsSourcePage } from "../client/teams-source-page";
@@ -210,19 +210,16 @@ describe("Kontor shell native actions", () => {
       expect(screen.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostStatus).toBe(status);
     }
   });
-  it("shows kontord in one line off Sessions and gives the pages its sentence, apart from the native host status", () => {
-    const line = (screen: ReturnType<typeof mount>) => {
-      const row = screen.elements().find((node) => node.props.testID === "kontor-kontord-line");
-      return row ? elements(row).find((node) => node.type === Copy)?.props.children : undefined;
-    };
+  it("shows the kontord banner off Sessions and gives the pages its sentence, apart from the native host status", () => {
+    const line = (screen: ReturnType<typeof mount>) => screen.elements().find((node) => node.type === KontordBanner)?.props.status;
     // Each screen gets its own hook state.
     const fresh = (compact: boolean, route: Partial<KontorRoute>) => { model.slots = []; return mount(compact, route); };
     const unknown = fresh(false, { tab: "Overview" });
-    expect(line(unknown)).toBe("kontord on this host: unknown.");
+    expect(line(unknown)).toBeNull();
     model.kontorStatus = { observation: "ready", composition: "composed", checkedAt: new Date(0).toISOString() };
     const ready = fresh(false, { tab: "Overview" });
     model.hosts = [{ serverId: ready.props.host.id, label: "Host", status: "online" }]; ready.render();
-    expect(line(ready)).toBe(`kontord on this host: answering. Kontor adds its observer MCP to eligible new agents. Checked ${new Date(0).toLocaleTimeString()}.`);
+    expect(line(ready)).toEqual(model.kontorStatus);
     expect(ready.elements().find((node) => node.type === ReadOnlyPage)?.props.kontord).toBe("kontord on this host: answering.");
     expect(ready.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostStatus).toBe("online");
     expect(fresh(true, { tab: "Settings" }).elements().find((node) => node.type === OrganizationSettingsPage)?.props.kontord).toBe("kontord on this host: answering.");

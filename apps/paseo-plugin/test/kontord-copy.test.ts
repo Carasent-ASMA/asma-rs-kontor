@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { kontordBanner, kontordLine, kontordSentence } from "../client/kontord-copy";
+import { kontordBanner, kontordSentence } from "../client/kontord-copy";
 import { useKontorStatus } from "../client/use-kontor-status";
 import type { KontorStatus } from "../shared/kontor-status";
 
@@ -18,18 +18,13 @@ describe("kontord copy", () => {
     expect(kontordSentence(status("unknown"))).toBe("kontord on this host: unknown.");
     expect(kontordSentence(status("unknown", "mcp-off"))).toBe("kontord on this host: not checked; the Kontor MCP is off.");
     expect(kontordSentence(status("ready", "floor-off"))).toBe("kontord on this host: answering.");
-    const checked = `Checked ${new Date(0).toLocaleTimeString()}.`;
-    expect(kontordLine(status("ready"))).toBe(`kontord on this host: answering. Kontor adds its observer MCP to eligible new agents. ${checked}`);
-    expect(kontordLine(status("unknown", "mcp-off"))).toBe(`kontord on this host: not checked; the Kontor MCP is off. Kontor does not add its observer MCP: the Kontor MCP is off. ${checked}`);
-    expect(kontordLine(status("unavailable", "floor-off"))).toBe(`kontord on this host: not answering. Kontor does not add its observer MCP: the floor is off. ${checked}`);
     for (const observation of ["ready", "unavailable", "refused", "unknown"] as const) {
-      for (const composition of ["composed", "mcp-off", "floor-off"] as const) expect(kontordLine(status(observation, composition))).not.toContain("not enabled");
+      for (const composition of ["composed", "mcp-off", "floor-off"] as const) expect(Object.values(kontordBanner(status(observation, composition))).join(" ")).not.toContain("not enabled");
     }
   });
 
   it("reads an offline, unread or failed status as unknown, with no composition or check time", () => {
     expect(kontordSentence(null)).toBe("kontord on this host: unknown.");
-    expect(kontordLine(null)).toBe("kontord on this host: unknown.");
   });
 });
 

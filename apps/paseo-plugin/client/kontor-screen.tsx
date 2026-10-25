@@ -15,7 +15,8 @@ import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
 import { useResponsibility } from "./use-responsibility";
 import { useKontorStatus } from "./use-kontor-status";
-import { kontordLine, kontordSentence } from "./kontord-copy";
+import { kontordSentence } from "./kontord-copy";
+import { KontordBanner } from "./kontord-banner";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import { useSessionRetirementProjection } from "./use-session-lifecycle";
@@ -23,7 +24,7 @@ import { emptyDirectoryState, type DirectoryEntry } from "./session-directory";
 import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, Copy, IconButton, type Colors } from "./page-controls";
+import { Action, IconButton, type Colors } from "./page-controls";
 import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
@@ -351,7 +352,7 @@ function HostScreen(props: PluginScreenProps) {
       </View>
     </View>}
     {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}
-    {route.tab === "Sessions" ? null : <View testID="kontor-kontord-line" style={{ paddingHorizontal: layout.compact ? 8 : 12, paddingVertical: 3 }}><Copy colors={colors} muted small>{kontordLine(kontorStatus)}</Copy></View>}
+    {route.tab === "Sessions" ? null : <KontordBanner status={kontorStatus} compact={layout.compact} colors={colors} />}
     <View style={{ flex: 1 }}>{page}</View>
     {layout.compact ? navigation : null}
     {menus}

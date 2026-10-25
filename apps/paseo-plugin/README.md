@@ -1086,11 +1086,13 @@ error is never read, and it is killed after the answer, 64 KiB of output
 The RPC is registered whatever `floor.json` says, and nothing else waits for it:
 Sessions, Paseo-direct work and the hooks work the same without a realm.
 
-The Kontor screen shows the observation, the composition and the check time in
-one line on every view except Sessions. Each place that names a governed
+On every view except Sessions, the Kontor screen shows a status banner: a plain
+title, the check time and an info button whose details, opened by tap or
+keyboard, explain the composition. Only `ready` says `Kontor connected`, and only
+`ready` with `floor-off` adds `Navigation-only mode`; `mcp-off` says
+`Kontor not checked`, with no time. Each place that names a governed
 feature says it is not shown here and gives the same observation. An offline
-host, an unread status or a failed read shows `unknown`, with no composition or
-time. The native host status is never changed.
+host, an unread status or a failed read shows `unknown`, with no mode or time. The native host status is never changed.
 
 ## Install and uninstall
 
