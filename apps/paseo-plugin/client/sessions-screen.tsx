@@ -108,8 +108,9 @@ import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpande
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
+import { CompactRetirementNotice, SessionCompactContent, compactRetirementNotice, sessionRowDetails } from "./session-compact-content";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
+import { Action, COARSE_POINTER, Disclosure, IconButton } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { readTime } from "./page-data";
@@ -460,11 +461,6 @@ export const SessionRow = memo(function SessionRow({
   const meta = [displayContext, archived, history, sessionAvailabilityLabel(entry)].filter((part): part is string => !!part).join(" · ");
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
-  // Compact: the title and context lead, then model/report metadata can wrap.
-  // The state badge stays visible; the native ID remains in the accessible label.
-  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history, sessionAvailabilityLabel(entry)]
-    .filter((part): part is string => !!part)
-    .join(" · ");
 
   return (
     <Pressable
@@ -490,51 +486,10 @@ export const SessionRow = memo(function SessionRow({
         backgroundColor: pressed || hovered || highlighted ? colors.surface2 : undefined,
       })}
     >
-      {compact && compactContext !== undefined ? (
-        <>
-          {/* The title keeps the whole line; the context and the age take the line below, so neither squeezes it. */}
-          <View style={{ flex: 1, minWidth: 0 }}>
-          <Text testID="sessions-row-title" numberOfLines={3} style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
-            {displayTitle ?? entry.title}
-          </Text>
-          <View style={{ minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-            {compactMeta ? (
-              <Text testID="sessions-row-meta" numberOfLines={2} style={{ flex: 1, minWidth: 0, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>
-                {compactMeta}
-              </Text>
-            ) : null}
-            {age}
-          </View>
-          <SessionUsage entry={entry} colors={colors} />
-          {lifecycleFeedback}
-          {retirementFeedback}
-          </View>
-          <SessionStateMarker state={state} colors={colors} />
-        </>
-      ) : compact ? (
-          <View style={{ flex: 1, minWidth: 0 }}>
-          {/* As on results: the title has its line to itself and up to three lines, so a nested row still shows where titles that share a role and task differ; the state and the age lead the usage line. */}
-          <Text
-            testID="sessions-row-title"
-            numberOfLines={3}
-            style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}
-          >
-            {displayTitle ?? entry.title}
-            {compactMeta ? (
-              <Text testID="sessions-row-meta" style={{ color: colors.foregroundMuted, fontSize: 12 }}>
-                {`  ${compactMeta}`}
-              </Text>
-            ) : null}
-          </Text>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
-            <SessionStateMarker state={state} colors={colors} />
-            {age}
-            <SessionUsage entry={entry} colors={colors} />
-          </View>
-          {lifecycleFeedback}
-          {retirementFeedback}
-          </View>
-      ) : (
+      {compact ? <SessionCompactContent entry={entry} colors={colors} title={displayTitle} context={compactContext ?? displayContext ?? entry.workspaceName ?? entry.projectName ?? undefined} time={time}>
+        {lifecycleFeedback}
+        {retirementFeedback}
+      </SessionCompactContent> : (
         <>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -756,6 +711,10 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           backgroundColor: pressed || hovered ? colors.surface2 : undefined,
         })}
       >
+        {compact ? <SessionCompactContent entry={entry} colors={colors} context={provenance.parts.join(" › ")} time={time}>
+          {lifecycleFeedback}
+          {retirementFeedback}
+        </SessionCompactContent> : <>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="sessions-row-title" numberOfLines={compact ? 3 : 1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
             {entry.title}
@@ -778,10 +737,12 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           {time ? rowAge(time, compact, colors) : null}
           <SessionUsage entry={entry} colors={colors} />
         </View> : null}
+        </>}
       </Pressable>
       {details}
-      <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
-        accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
+      {compact ? <IconButton ref={(node) => treeButtonRef(entry.id, node)} colors={colors} label={`Show ${entry.title} in the tree`} icon="ListTree" onPress={() => onShowInTree(entry)} />
+        : <Action ref={(node) => treeButtonRef(entry.id, node)} small colors={colors} label="Show in tree"
+          accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />}
       {lifecycleAction}
     </View>
   );
@@ -2871,6 +2832,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
         <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]), derivedSource(detailsEntry))} colors={colors} />
+        <SessionDetailSection title="Native status and availability" values={sessionRowDetails(detailsEntry)} colors={colors} />
         {retirement?.projections.get(detailsEntry.id) ? <SessionRetirementDetails projection={retirement.projections.get(detailsEntry.id)!} colors={colors} /> : null}
         {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Assignment" colors={colors} values={[
           { label: assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}` : `Assigned to ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
@@ -3230,8 +3192,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
           const id = item.kind === "result" || item.kind === "session" ? item.entry.id : null;
           const projection = id === null ? null : retirement?.projections.get(id) ?? null;
-          const retirementFeedback = projection ? <SessionRetirementSummary projection={projection} colors={colors} /> : null;
-          const retirementLabel = projection ? `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : undefined;
+          const retirementFeedback = projection ? compact ? <CompactRetirementNotice projection={projection} colors={colors} /> : <SessionRetirementSummary projection={projection} colors={colors} /> : null;
+          const retirementLabel = projection ? compact ? compactRetirementNotice(projection) ?? undefined : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : undefined;
           const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && id ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
           // A row still listed keeps its unresolved archive's state after the batch that sent it is gone.
           const lifecycleFeedback = <ArchiveRowFeedback row={outcome ?? recovery.items.find((entry) => entry.ref.agentId === id)?.row ?? undefined} colors={colors} />;

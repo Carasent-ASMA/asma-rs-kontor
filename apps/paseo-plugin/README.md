@@ -80,7 +80,13 @@ pill is the in-session return control where the composer supports it.
   replaced by older content. `sources.read` is unchanged. A source whose summary
   is present while its exact read is pending shows **Reading…**, distinctly from
   an unavailable source. Sessions demands no exact source read.
-- **Token counts.** Row input/output and separate cache-read counts use stable
+- **Compact rows.** Phone rows keep the human title, concise context, canonical
+  state icon, model and last-update time. Archived membership and actionable
+  warnings stay visible. Routine retirement/availability explanations, exact
+  model IDs and token reports remain in Details. The existing In tree action
+  uses a 44 pt icon target on compact layouts; opening and archive controls keep
+  their separate targets and exact-session behavior. Wide rows stay unchanged.
+- **Token counts.** Wide-row input/output and separate cache-read counts use stable
   compact units across device locales: K = 1,000 and M = 1,000,000, with at most
   one decimal (300K, 1.2M). Rounding carries across unit boundaries. The arrows,
   ≥ lower-bound mark, missing values and provider-report scope stay the same.

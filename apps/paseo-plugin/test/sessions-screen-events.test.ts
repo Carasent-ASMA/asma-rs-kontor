@@ -1,3 +1,4 @@
+import { SessionCompactContent } from "../client/session-compact-content";
 import { SessionScopeSelector } from "../client/session-scope-selector";
 import { SessionScopeChip } from "../client/session-scope-chip";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -352,6 +353,7 @@ function walk(node: unknown): ElementLike[] {
     return node.flatMap(walk);
   }
   const element = node as ElementLike;
+  if (element.type === SessionCompactContent) return walk(SessionCompactContent(element.props as Parameters<typeof SessionCompactContent>[0]));
   const children = element.props.children;
   // A FlatList draws its header element inside its own scroll content.
   const header = element.props.ListHeaderComponent;
@@ -1641,8 +1643,11 @@ describe("SessionsScreen toolbar events", () => {
       const element = child as ElementLike & { type: unknown };
       return element.type === SessionUsage ? "usage" : element.type === SessionStateMarker ? "state" : String(element.props.testID ?? "other");
     });
-    expect(kinds(lineOf("sessions-row-title"))).toEqual(compact ? ["sessions-row-title"] : ["sessions-row-title", "sessions-row-age", "other", "state"]);
-    if (compact) expect(kinds(lineOf("sessions-row-age"))).toEqual(["state", "sessions-row-age", "usage"]);
+    if (compact) {
+      expect(textOf(findByTestID(drawn, "sessions-row-model"))).toBe("—");
+      expect(walk(findByTestID(drawn, "sessions-row-title")).some(node => node.props.testID === "sessions-row-meta")).toBe(false);
+      expect(walk(drawn).filter(node => node.type === SessionStateMarker)).toHaveLength(1);
+    } else expect(kinds(lineOf("sessions-row-title"))).toEqual(["sessions-row-title", "sessions-row-age", "other", "state"]);
     const row = findByTestID(drawn, "sessions-row-found");
     expect(String(row.props.accessibilityLabel).endsWith(". Updated 3 hours ago")).toBe(true);
     // The details button sits between the row and Show in tree, and opens the details only.
@@ -1650,7 +1655,7 @@ describe("SessionsScreen toolbar events", () => {
     const details = parts[1]!;
     expect((details as ElementLike & { type: unknown }).type).toBe(SessionDetailsButton);
     expect(details.props).toMatchObject({ title: "SWE • found", expanded: false });
-    expect(String(parts[2]!.props.accessibilityLabel)).toBe("Show SWE • found in the tree");
+    expect(String(compact ? parts[2]!.props.label : parts[2]!.props.accessibilityLabel)).toBe("Show SWE • found in the tree");
     (details.props.onPress as () => void)(); harness.flush();
     const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
     expect(dialog.props.label).toBe("Details: SWE • found");
@@ -1676,11 +1681,14 @@ describe("SessionsScreen toolbar events", () => {
       // The whole title is drawn; compact gives it a line of its own and three lines to reach the subject.
       expect(textOf(shown)).toBe(title);
       expect(shown.props.numberOfLines).toBe(compact ? 3 : 1);
-      const line = walk(drawn).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes("sessions-row-title")).at(-1)!;
-      expect([line.props.children].flat(2).filter(Boolean)).toHaveLength(compact ? 1 : 4);
+      if (compact) expect(textOf(shown)).not.toContain("Other work");
+      else {
+        const line = walk(drawn).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes("sessions-row-title")).at(-1)!;
+        expect([line.props.children].flat(2).filter(Boolean)).toHaveLength(4);
+      }
       // The row and Show in tree keep the full title in their names.
       expect(String(findByTestID(drawn, `sessions-row-${id}`).props.accessibilityLabel).startsWith(`${title}. `)).toBe(true);
-      expect(String((drawn.props.children as ElementLike[])[2]!.props.accessibilityLabel)).toBe(`Show ${title} in the tree`);
+      expect(String((drawn.props.children as ElementLike[])[2]!.props[compact ? "label" : "accessibilityLabel"])).toBe(`Show ${title} in the tree`);
     }
   });
 
@@ -2043,7 +2051,9 @@ function textOf(node: unknown): string {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textOf).join("");
-  return textOf((node as ElementLike).props.children);
+  const element = node as ElementLike;
+  if (element.type === SessionCompactContent) return textOf(SessionCompactContent(element.props as Parameters<typeof SessionCompactContent>[0]));
+  return textOf(element.props.children);
 }
 
 /** Shallow rendering stops at components; expand the slim-line ones to reach their controls. */
@@ -2159,7 +2169,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(readSessionView("host-a").status).toBe("all");
     expect(sessionRowIds().sort()).toEqual(["closed","error","old"]);
   });
-  it("keeps a compact title and context together, with its Updated time, wrapped report metadata and state badge", () => {
+  it("keeps a compact title/context readable with model, Updated time and archived state, without routine prose", () => {
     patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
@@ -2171,21 +2181,13 @@ describe("SessionsScreen mobile filter page", () => {
     expect((leaf.props.style as (state: { pressed: boolean }) => { minHeight: number })({ pressed: false }).minHeight).toBe(44);
     const title = findByTestID(leaf, "sessions-row-title");
     expect(title.props.numberOfLines).toBe(3);
-    // The context is nested inside the title's text, which wraps to three lines, not a line of its own.
-    expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
-    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · Other work › No epic linked › RSW • review · Archived");
-    const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
-    // The Updated value stays untruncated; model/report metadata can wrap beneath the title.
+    expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(false);
+    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("Other work › No epic linked › RSW • review");
+    expect(textOf(findByTestID(leaf, "sessions-row-model"))).toBe("sol");
+    expect(textOf(findByTestID(leaf, "sessions-row-archived"))).toBe("Archived");
+    expect(textOf(leaf)).not.toMatch(/Availability unknown|Retirement|Native running|Not archived/);
     const age = findByTestID(leaf, "sessions-row-age");
-    expect(lines.filter((line) => !walk(title).includes(line))).toEqual([age]);
-    // The title has the first line to itself; the state and the age lead the usage line beneath it.
-    const content = leaf.props.children as ElementLike;
-    const [first, usageLine] = [content.props.children].flat().filter(Boolean) as ElementLike[];
-    expect(first).toBe(title);
-    expect(([usageLine!.props.children].flat(2).filter(Boolean) as (ElementLike & { type: unknown })[])
-      .map((child) => child.type === SessionStateMarker ? "state" : child.type === SessionUsage ? "usage" : child.props.testID)).toEqual(["state", "sessions-row-age", "usage"]);
-    expect(walk(content)).toContain(age);
-    expect(walk(content).some((element) => element.type === SessionUsage && (element.props.entry as { id: string }).id === "0123456789abcdef")).toBe(true);
+    expect(walk(leaf).some((element) => element.type === SessionUsage)).toBe(false);
     expect(leaf.props.accessibilityLabel).toContain("Last usage report, not a session total. Input tokens: 100.");
     expect(leaf.props.accessibilityLabel).toContain("Output tokens: 20.");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
