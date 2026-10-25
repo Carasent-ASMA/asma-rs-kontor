@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { confirmedEpic, jiraCapture, portfolioRows, withJiraCapture } from "../client/page-data";
 import type { DirectoryEntry } from "../client/session-directory";
 import { organizationIcon } from "../client/desk-icon";
-import { associationLabel, buildOrganizationTree, epicDetail, inEpicScope, organizationScope, sessionEpic, visibleSessions, type OrganizationGroup } from "../client/session-organization";
+import { associationLabel, buildOrganizationTree, epicDetail, filterOrganizationTree, inEpicScope, organizationScope, sessionEpic, visibleSessions, type OrganizationGroup } from "../client/session-organization";
 import { epicScopeChoices, matchesEpicScope } from "../client/session-scope";
 import { relateSplitProjects } from "../client/split-project-rows";
 import { sessionProvenance, taskSessions } from "../client/session-results";
@@ -197,5 +197,33 @@ describe("what a session's own metadata settles", () => {
     // The epic filter reads the same resolver: one known epic; every other kind of work is without a linked epic.
     expect(epicScopeChoices(entries, {}).map(({ label }) => label)).toEqual(["ASMA-1", "No epic linked"]);
     expect(entries.filter((entry) => matchesEpicScope(entry, { kind: "unknown" }, {})).length).toBe(8);
+    // Details name the same association the row does; only an unsettled epic reads Unknown.
+    expect(cases.map(([entry]) => epicDetail(sessionEpic(entry, {})))).toEqual([
+      "ASMA-1, from the epic label", "Ad hoc, created by Kontor as ad hoc work", "Ad hoc, created by Kontor as ad hoc work",
+      "Ticket ASMA-9, a standalone ticket, checked in Jira when Kontor created the session",
+      "Unknown, sources disagree: the epic label says ASMA-1; the jira.epic label says ASMA-2",
+      "Unknown, no epic or task label", "Unknown, no epic or task label; the ticket label ASMA-9 was not written by Kontor at creation",
+      "Unknown, no epic or task label", "Unknown, no epic or task label"]);
+  });
+
+  it("keeps a declared task unlinked, with the reason, when no source files it, whatever intent Kontor recorded", () => {
+    const labels = { task: "ASMA-8640", persona: "kontor-lsa-adhoc@abc", "create.request": "request-1" };
+    const unavailable = jiraCapture([read("jira", capture(OCT24, { "ASMA-8639": ["ASMA-8640"] }), "unavailable")]);
+    expect(sessionEpic(seat("unavailable", "desk", "LSA • ADHOC • x", labels, unavailable), {})).toEqual({ epic: null, note: "no Jira capture read for ASMA-8640", association: "unlinked" });
+    expect(sessionEpic(seat("missing", "desk", "LSA • ADHOC • x", labels), {})).toEqual({ epic: null, note: `ASMA-8640 is not in the Jira capture of ${OCT21}`, association: "unlinked" });
+    expect(sessionEpic(seat("ticket", "desk", "x", { ...labels, ticket: "ASMA-9" }), {}).association).toBe("unlinked");
+    expect(sessionEpic(seat("filed", "desk", "x", labels, fresh), {}).epic).toBe("ASMA-8639");
+    // A verified ticket that also names itself as the task is still that ticket.
+    expect(sessionEpic(seat("self", "desk", "x", { ticket: "ASMA-9", task: "asma-9", "create.request": "request-1" }), {}).association).toBe("ticket");
+  });
+
+  it("counts only the epics a filter leaves visible", () => {
+    const two = jiraCapture([read("jira", capture(OCT24, { "ASMA-8633": ["ASMA-8637"], "ASMA-8639": ["ASMA-8640"] }))]);
+    const entries = [seat("a", "asma-8637", "SWE • a", { task: "ASMA-8637" }, two), seat("b", "asma-8640", "SWE • b", { task: "ASMA-8640" }, two)];
+    const tree = buildOrganizationTree({ entries });
+    expect(tree[0]!.detail).toBe("2 epics");
+    const filtered = filterOrganizationTree(tree, (entry) => entry.id === "a");
+    expect([filtered[0]!.detail, epicGroups(filtered[0]!.groups).map(({ epic }) => epic)]).toEqual(["1 epic", ["ASMA-8633"]]);
+    expect(filterOrganizationTree(tree, (entry) => entry.id === "nothing")).toEqual([]);
   });
 });

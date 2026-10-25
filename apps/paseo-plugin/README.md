@@ -653,8 +653,9 @@ A session's epic is its display mapping, else what its `epic`, `jira.epic`,
 `origin.epic` and `asma.epic` labels name together with the historical Jira
 projection's epic for each key those labels or its `jira.issue`, `task` or
 `asma.task` label name. Every named epic must agree. When they disagree, the
-session shows as **Epic sources disagree** and nothing below applies. Without an
-epic, a session Kontor created (it carries `create.request`) shows as **Ticket
+session shows as **Epic sources disagree** and nothing below applies. A task
+label that no source files under an epic keeps the session at **No epic linked**,
+with the reason, and nothing below applies. Otherwise a session Kontor created (it carries `create.request`) shows as **Ticket
 <KEY>** when Kontor wrote its `ticket` label after checking the issue in Jira, or
 as **Ad hoc** when its `persona` label starts `kontor-lsa-adhoc@` or
 `kontor-lsa-adhoc+bootstrap@`; the hash after `@` is never read. Anything else
@@ -662,8 +663,9 @@ shows as **No epic linked**, never as "no epic": no source here shows that a tas
 has no parent. A `ticket` or persona label without `create.request`, a parent
 session, a title, a project or a workspace never settles any of these. Each kind
 has its own row and icon, apart from the epic flag, and a workstream counts each
-distinct epic once. Session details name the sources and the capture's
-observation time, or why the epic is unknown; a key the capture does not hold is
+distinct epic it shows once, under a filter too. Session details name the
+association and its sources: the capture's observation time, or why the epic is
+unknown; a key the capture does not hold is
 not covered by it, which is not the same as having no epic. A
 workspace carries no labels, so a project's unmapped workspaces without sessions form a
 No epic linked group that says so beside the project's known epics. A capture
