@@ -49,7 +49,7 @@ const sid=i=>'00000000-0000-4000-8000-'+String(i).padStart(12,'0');
 const sessions=Array.from({length:70},(_,i)=>({agent:{id:sid(i+1),title:'Human context '+(i+1)+' with a long readable session name',status:i%3===0?'error':'closed',archivedAt:i>=50?'2026-10-20':null,createdAt:new Date(1000000*(i+1)).toISOString(),updatedAt:new Date(1000000*(70-i)).toISOString(),provider:'fixture',cwd:'/fixture',labels:{}},project:null}));
 const issues=Array.from({length:90},(_,i)=>({id:'jira-'+(900-i),key:'ASMA-'+(900-i),created:new Date(1000*(900-i)).toISOString(),summary:(i===89?'Outside initial window':'Long readable issue title '+i)+' for the shared picker and keyboard layout',epic:i%2===0,type:i%2===0?'Epic':i%3===0?'Bug':'Task',status:'In Development',statusCategory:'In Progress',open:true,parent:null}));
 const issueClassMatches=(row,issueClass)=>issueClass==='epic'?row.epic:issueClass==='non-epic'?!row.epic:true;
-const desks=[{projectId:'adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/adam',lead:{ADHOC:'adhoc',LSA:'lsa',TPM:'tpm'}},{projectId:'tickets',project:'DESK • TICKETS',desk:'TICKETS',kind:'tickets',cwd:'/fixture/tickets',lead:{ADHOC:'adhoc-t',LSA:'lsa-t',TPM:'tpm-t'}}];
+const desks=[{projectId:'adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/adam',lead:{ADHOC:'adhoc',LSA:'lsa',TPM:'tpm'}},{projectId:'tickets',project:'DESK • TICKETS',desk:'TICKETS',kind:'tickets',cwd:'/fixture/tickets',lead:{ADHOC:'adhoc-t',LSA:'lsa-t',TPM:'tpm-t'}},{projectId:'pr-review',project:'DESK • PR REVIEW',desk:'PR REVIEW',kind:'pr-review',cwd:'/fixture/pr',lead:{ADHOC:null,LSA:'pr-lsa',TPM:'pr-tpm'}}];
 window.fixture={calls:[],mode:'normal',sourceTitle:null,client:host=>({agents:{list:async input=>{window.fixture.calls.push({name:'agents.list',host,input});const offset=input.page.cursor?35:0;return {entries:sessions.slice(offset,offset+35),pageInfo:{hasMore:offset===0,nextCursor:offset===0?'page2':null}};},ref:id=>({refresh:async()=>{window.fixture.calls.push({name:'agent.refresh',id,host});if(window.fixture.mode==='transport')throw new Error('Fixture transport timeout');if(window.fixture.mode==='absent')return null;const entry=sessions.find(row=>row.agent.id===id);return entry?{...entry,agent:{...entry.agent,title:window.fixture.sourceTitle||entry.agent.title}}:null;},timeline:{refetch:async()=>{if(window.fixture.mode==='context-error')throw new Error('Fixture timeline unavailable');return {entries:window.fixture.mode==='no-message'?[]:[{item:{type:'assistant_message',text:'Last assistant message fixture'}}]};}}})}}),
 rpc:async(name,input,host)=>{window.fixture.calls.push({name,input,host});if(name==='sessions.create-options'){const query=(input.issueKey||'').toLowerCase();if(query==='slow')await new Promise(resolve=>{window.fixture.releaseSlow=resolve;});if(query==='transport')throw new Error('Fixture Jira transport');const issueClass=input.issueClass||'eligible';const matches=issues.filter(issue=>issueClassMatches(issue,issueClass)&&(!query||issue.summary.toLowerCase().includes(query)||issue.key.toLowerCase()===query));return {enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:input.projectId||'adam',issues:input.start==='from-jira'?matches.slice(0,50):[],jiraProblem:null,desks,profile:null,providers:[{id:'fixture',label:'Fixture provider',available:true,note:null,persona:'supported',status:'ready',models:[{id:'fixture',label:'Fixture model',efforts:[],defaultEffort:null}],defaultModel:'fixture',modes:[],defaultMode:null}]};}
 if(name==='sessions.create')return {requestId:input.requestId,state:'verified',title:'Fixture create',agentId:'fixture-created',workspaceId:'lsa',message:'Fixture only',differences:[],persona:'supported',checkedAt:new Date().toISOString()};throw new Error('Unexpected RPC '+name);}};
@@ -58,8 +58,7 @@ function App(){const root=useRef(null),anchor=useRef(null);const [open,setOpen]=
 {open?(mode==='composer'?<View style={{width:'100%',maxWidth:520,alignSelf:'center',maxHeight:innerHeight-40}}><StartSwitchPopover host={{id:'fixture-a'}} theme={{colors}} layout={{compact:innerWidth<700}} workspaceId="adhoc" close={()=>setOpen(false)} openScreen={()=>{}} screenId="kontor"/></View>:<StartSwitchSheet anchor={anchor} root={root} rootSize={{width:innerWidth,height:innerHeight}} compact={innerWidth<700} colors={colors} hostId="fixture-a" hostStatus="online" directory={{entries:[],status:'ready',live:true,lastUpdatedAt:Date.now(),error:null,staleReason:null,pages:1,includeArchived:false}} canOpen onClose={()=>setOpen(false)} onOpen={()=>{}} onOpenCreated={()=>({ok:true})} onShowAll={()=>{}}/>):null}
 </View></Host.Provider>;}createRoot(document.getElementById('root')).render(<App/>);
 `);
-// browser-7: add PR REVIEW → From Jira browse regression once 702b removes the non-lead desk Jira gate.
-const report = { cases: [], synthetic: true, nativePhoneAndAT: 'unverified', backendNewestEligible50: 'UNRESOLVED: fixture does not qualify the installed backend', actualJiraIcons: 'UNRESOLVED: contract has type names only', prReviewFromJiraBrowse: 'BLOCKED: server gate at session-create options() until 702b' };
+const report = { cases: [], synthetic: true, nativePhoneAndAT: 'unverified', backendNewestEligible50: 'UNRESOLVED: fixture does not qualify the installed backend', actualJiraIcons: 'UNRESOLVED: contract has type names only', prReviewFromJiraBrowse: 'synthetic loopback only' };
 let server, browser;
 const run = async (name, test) => { try { await test(); report.cases.push({ name, status: 'PASS' }); } catch (error) { report.cases.push({ name, status: 'FAIL', error: String(error.stack) }); } };
 async function start(width, mode = 'screen', height = 844) {
@@ -190,6 +189,27 @@ async function bounds(page, width, height, name) {
       await topic.press('Escape');
       await expect(page.getByRole('dialog')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Start or switch' })).toBeFocused();
+    } finally { await context.close(); }
+  });
+  for (const width of [320, 390, 1440]) await run(width + '-pr-review-from-jira-browse-and-desk-routing', async () => {
+    const { page, context } = await start(width, 'screen');
+    try {
+      await page.getByRole('radio', { name: 'DESK • PR REVIEW', exact: true }).click();
+      await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
+      const search = page.getByRole('combobox', { name: 'Choose a Jira issue' });
+      await expect(page.getByRole('option')).toHaveCount(50);
+      await search.fill('ASMA-900');
+      await expect(page.getByRole('option')).toHaveCount(1);
+      await page.getByRole('option').click();
+      await expect(page.getByTestId('kontor-new-session-desk')).toContainText('DESK • ADAM');
+      await page.getByRole('button', { name: 'Change Jira issue' }).click();
+      await search.fill('ASMA-899');
+      await expect(page.getByRole('option')).toHaveCount(1);
+      await page.getByRole('option').click();
+      await expect(page.getByTestId('kontor-new-session-desk')).toContainText('DESK • TICKETS');
+      const calls = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create-options' && call.input?.projectId === 'pr-review' && call.input?.start === 'from-jira'));
+      assert.ok(calls.length >= 1);
+      assert.equal(calls.some(call => call.input?.issueClass === 'eligible'), true);
     } finally { await context.close(); }
   });
   for (const width of [320, 390, 1440]) await run(width + '-jira-filter-clears-stale-activedescendant', async () => {
