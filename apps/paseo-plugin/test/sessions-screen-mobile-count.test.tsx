@@ -198,8 +198,10 @@ describe("matchingCount", () => {
   it("is exact only for a live, complete read of the membership in view", () => {
     const count = (patch: Partial<DirectoryState>, includeArchived = false, freshness = "Live") => matchingCount({ count: 1, state: ready(patch), includeArchived, freshness, blocked: null }).text;
     expect(count({})).toBe("1 matching session");
+    expect(count({ includeArchived: true })).toBe("1 matching session");
+    expect(count({ includeArchived: true }, true)).toBe("1 matching session");
     expect(count({}, true)).toBe("…");
-    expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("…");
+    expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("—");
     expect(count({ inventoryComplete: undefined })).toBe("1 matching session · partial");
     expect(count({}, false, "Reconnecting")).toBe("1 matching session · reconnecting");
   });

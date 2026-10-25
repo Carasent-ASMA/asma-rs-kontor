@@ -11,7 +11,7 @@ import type { SourceRead } from '../shared/read-sources';
 const model = vi.hoisted(() => ({ sources: [] as unknown[], snapshots: {} as Record<string, unknown>, errors: {} as Record<string, string>, reads: {} as Record<string, SourceRead>, available: true, sourceError: null as string | null, details: false }));
 vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useContext: () => null, useMemo: (factory: () => unknown) => factory(), useCallback: (value: unknown) => value, useEffect() {}, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [typeof initial === 'boolean' ? model.details : typeof initial === 'function' ? initial() : initial, () => {}] }));
 vi.mock('react-native', () => ({ ScrollView: 'ScrollView', SafeAreaView: 'SafeAreaView', KeyboardAvoidingView: 'KeyboardAvoidingView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
-vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-settings-host', status: 'online' }] }));
+vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-settings-host', status: 'online' }], useRpc: () => async () => null }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', ScrollView: 'ScrollView', FlatList: 'FlatList', Icon: 'Icon', Modal: Object.assign(() => null, { Content: () => null }), useToast: () => ({ error() {} }) }));
 vi.mock('../client/use-responsibility', () => ({ useResponsibility: () => null }));
 vi.mock('../client/use-kontor-status', () => ({ useKontorStatus: () => null }));

@@ -1,5 +1,5 @@
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
-import { matchesStatus, MORE_STATUS_FILTERS, QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
+import { matchesStatus, MORE_STATUS_FILTERS, QUICK_STATUS_FILTERS, readCoversMembership, type StatusFilter } from "./session-view";
 
 export type SessionStateCount = {
   readonly text: string;
@@ -39,8 +39,8 @@ export function sessionStateCounts(input: {
     const matched = count(candidates), total = count(universe);
     let result: SessionStateCount;
     if (blocked !== null) result = { text: "…", label: `Matching sessions not evaluated: ${blocked} is not evaluated` };
-    else if (state.includeArchived !== includeArchived || state.lastUpdatedAt === null) {
-      result = state.status === "error" && state.includeArchived === includeArchived
+    else if (!readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null) {
+      result = state.status === "error" && readCoversMembership(state, includeArchived)
         ? { text: "—", label: "Session count unavailable: this membership could not be read" }
         : { text: "…", label: "Reading sessions for this membership" };
     } else if (freshness !== "Live" || state.inventoryComplete !== true) {

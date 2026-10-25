@@ -1,4 +1,4 @@
-import { freshAvailability } from "../shared/session-lifecycle";
+import { freshAvailability, nativeArchiveMembership } from "../shared/session-lifecycle";
 import type {
   OwnedSubscription,
   PaseoAgentListOptions,
@@ -70,6 +70,8 @@ export type DirectoryEntry = {
   readonly updatedAt: string;
   /** When the last prompt was submitted; absent from entries built before it was read. */
   readonly lastUserMessageAt?: string | null;
+  /** Native active-turn presence, including a turn whose startedAt Paseo no longer reports. */
+  readonly activeTurn?: boolean;
   /** When the running turn started; Paseo loses it on a restart. */
   readonly activeTurnStartedAt?: string | null;
   readonly cwd: string;
@@ -104,8 +106,7 @@ export function hasEarlierError(entry: DirectoryEntry): boolean {
 
 /** Only native archive metadata or a fresh exact-ID read can establish archive membership. */
 export function isArchivedSession(entry: DirectoryEntry): boolean {
-  const evidence = freshAvailability(entry);
-  return (entry.archivedAt ?? null) !== null || evidence?.state === "readable" && !!evidence.archivedAt;
+  return nativeArchiveMembership(entry).archived;
 }
 
 /** Retained error history does not create a current Attention signal. */
@@ -248,6 +249,7 @@ export function toDirectoryEntry(
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
     lastUserMessageAt: agent.lastUserMessageAt ?? null,
+    activeTurn: agent.activeTurn !== null && agent.activeTurn !== undefined,
     activeTurnStartedAt: agent.activeTurn?.startedAt ?? null,
     cwd,
     workspaceId: agent.workspaceId ?? null,
