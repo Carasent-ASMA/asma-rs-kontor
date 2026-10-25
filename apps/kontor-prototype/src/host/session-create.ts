@@ -1,6 +1,6 @@
 import { issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, createRequestSchema, type CreateOptions, type CreateOutcome, type CreateRequest, type CreateScope, type JiraIssue } from "../../../paseo-plugin/shared/session-create";
 
-const ISSUE: JiraIssue = { key: "ASMA-100", summary: "Deliver the desk layout", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null };
+const ISSUE: JiraIssue = { id: "100", key: "ASMA-100", summary: "Deliver the desk layout", created: "2026-10-01T10:00:00.000+0000", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null };
 const DESK = { projectId: "prj_proof_adam", project: "DESK • ADAM", desk: "ADAM", kind: "adam" as const, cwd: "/fixture/prj_proof_adam",
   lead: { ADHOC: "wks_proof_adhoc", LSA: "wks_proof_lsa", TPM: "wks_proof_tpm" } };
 const PROFILES = {

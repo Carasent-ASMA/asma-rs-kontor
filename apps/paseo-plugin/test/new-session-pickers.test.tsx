@@ -145,6 +145,28 @@ describe("Jira picker", () => {
     hooks.read.mockResolvedValueOnce({ issues: [], jiraProblem: null }); draw().props.onRetry(); draw(); await vi.advanceTimersByTimeAsync(250);
     expect(draw().props.message).toContain("No open ASMA issue matches");
   });
+  it("refetches and clears Searching when the active type filter is pressed again", async () => {
+    hooks.read.mockResolvedValue({ issues: [issue("ASMA-1", true), issue("ASMA-2", false)], jiraProblem: null });
+    const props = { colors, desks: [{ project: "DESK • ADAM", kind: "adam" }, { project: "DESK • TICKETS", kind: "tickets" }], scope: { role: "LSA" }, initialQuery: "", selected: null, onSelect: vi.fn(), onBack: vi.fn() } as unknown as Parameters<typeof JiraIssuePicker>[0];
+    const draw = () => render(() => JiraIssuePicker(props));
+    const pressFilter = (node: unknown, label: string): void => {
+      if (!node || typeof node !== "object") return;
+      const props = (node as { props?: { label?: string; onPress?: () => void; children?: unknown } }).props;
+      if (props?.label === label && props.onPress) { props.onPress(); return; }
+      for (const child of [props?.children].flat(2)) pressFilter(child, label);
+    };
+    draw(); await vi.advanceTimersByTimeAsync(250);
+    expect(draw().props.busy).toBe(false);
+    pressFilter(draw().props.filters, "Epics"); draw(); await vi.advanceTimersByTimeAsync(250);
+    expect(hooks.read).toHaveBeenLastCalledWith(expect.objectContaining({ issueClass: "epic" }));
+    pressFilter(draw().props.filters, "All"); draw(); await vi.advanceTimersByTimeAsync(250);
+    expect(hooks.read).toHaveBeenLastCalledWith(expect.objectContaining({ issueClass: "eligible" }));
+    expect(draw().props.busy).toBe(false);
+    expect(draw().props.message).not.toContain("Searching");
+    pressFilter(draw().props.filters, "All"); draw(); await vi.advanceTimersByTimeAsync(250);
+    expect(draw().props.busy).toBe(false);
+    expect(hooks.read.mock.calls.filter((call) => call[0]?.issueClass === "eligible").length).toBeGreaterThan(1);
+  });
 });
 
 describe("source picker continuations", () => {

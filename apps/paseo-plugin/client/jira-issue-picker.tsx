@@ -47,7 +47,11 @@ export function JiraIssuePicker({ colors, scope, desks, initialQuery, selected, 
     message={issues.length ? `${issues.length} results. Choose an issue; its type decides the desk.` : "No open ASMA issue matches."}
     filters={<View role="group" accessibilityLabel="Issue type" style={{ flexDirection: "row", gap: 6 }}>
       {([ ["all", "All"], ["epic", "Epics"], ["non-epic", "Tickets"] ] as const).map(([id, label]) => (
-        <Action key={id} label={label} colors={colors} selected={filter === id} onPress={() => { setBusy(true); setFilter(id); }} />
+        <Action key={id} label={label} colors={colors} selected={filter === id} onPress={() => {
+          setBusy(true);
+          if (filter === id) setRevision((value) => value + 1);
+          else setFilter(id);
+        }} />
       ))}
     </View>}
     rows={issues.map((issue) => ({ id: issue.key, title: `${issue.key} · ${issue.summary}`, detail: `${issue.type} · ${issue.status}`, icon: issueTypeIcon(issue.type),
