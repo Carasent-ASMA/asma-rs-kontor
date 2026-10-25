@@ -1,0 +1,305 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "type": "object",
+ "properties": {
+  "schema": {
+   "type": "string",
+   "const": "kontor/epic-identity@1"
+  },
+  "order": {
+   "type": "integer",
+   "exclusiveMinimum": 0,
+   "maximum": 9007199254740991
+  },
+  "as_of": {
+   "type": "string"
+  },
+  "source": {
+   "type": "object",
+   "properties": {
+    "kind": {
+     "type": "string",
+     "const": "jira-rest"
+    },
+    "realm": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 253
+    }
+   },
+   "required": [
+    "kind",
+    "realm"
+   ],
+   "additionalProperties": false
+  },
+  "scope": {
+   "type": "object",
+   "properties": {
+    "jql": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 2000
+    },
+    "project": {
+     "type": "string",
+     "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "declared": {
+     "maxItems": 5000,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^ASMA-[1-9]\\d*$"
+     }
+    }
+   },
+   "required": [
+    "jql",
+    "project",
+    "declared"
+   ],
+   "additionalProperties": false
+  },
+  "provenance": {
+   "type": "object",
+   "properties": {
+    "collector": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 80
+    },
+    "adapter": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "label_keys": {
+     "maxItems": 32,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     }
+    },
+    "sessions": {
+     "type": "object",
+     "properties": {
+      "read": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 100000
+      },
+      "unreadable": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 100000
+      }
+     },
+     "required": [
+      "read",
+      "unreadable"
+     ],
+     "additionalProperties": false
+    }
+   },
+   "required": [
+    "collector",
+    "adapter",
+    "label_keys",
+    "sessions"
+   ],
+   "additionalProperties": false
+  },
+  "coverage": {
+   "type": "object",
+   "properties": {
+    "scope_issues": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 5000
+    },
+    "declared": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 5000
+    },
+    "found": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 5000
+    },
+    "missing": {
+     "maxItems": 5000,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^ASMA-[1-9]\\d*$"
+     }
+    },
+    "out_of_scope": {
+     "maxItems": 5000,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*-[1-9]\\d*$"
+     }
+    },
+    "unresolved": {
+     "maxItems": 5000,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^ASMA-[1-9]\\d*$"
+     }
+    }
+   },
+   "required": [
+    "scope_issues",
+    "declared",
+    "found",
+    "missing",
+    "out_of_scope",
+    "unresolved"
+   ],
+   "additionalProperties": false
+  },
+  "conflicts": {
+   "maxItems": 5000,
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "const": "moved_key"
+     },
+     "key": {
+      "type": "string",
+      "pattern": "^ASMA-[1-9]\\d*$"
+     },
+     "current": {
+      "type": "string",
+      "pattern": "^ASMA-[1-9]\\d*$"
+     },
+     "observed_at": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "key",
+     "current",
+     "observed_at"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "issues": {
+   "maxItems": 5000,
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[1-9]\\d{0,19}$"
+     },
+     "key": {
+      "type": "string",
+      "pattern": "^ASMA-[1-9]\\d*$"
+     },
+     "type": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+     },
+     "level": {
+      "type": "integer",
+      "minimum": -1,
+      "maximum": 9
+     },
+     "parent": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]*-[1-9]\\d*$"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "labels": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 255
+      }
+     },
+     "status": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+     },
+     "cat": {
+      "type": "string",
+      "enum": [
+       "new",
+       "indeterminate",
+       "done"
+      ]
+     },
+     "updated": {
+      "type": "string"
+     },
+     "summary": {
+      "type": "string",
+      "maxLength": 1000
+     },
+     "observed_at": {
+      "type": "string"
+     },
+     "via": {
+      "type": "string",
+      "enum": [
+       "scope",
+       "declared",
+       "parent"
+      ]
+     }
+    },
+    "required": [
+     "id",
+     "key",
+     "type",
+     "level",
+     "parent",
+     "labels",
+     "status",
+     "cat",
+     "updated",
+     "summary",
+     "observed_at",
+     "via"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "schema",
+  "order",
+  "as_of",
+  "source",
+  "scope",
+  "provenance",
+  "coverage",
+  "conflicts",
+  "issues"
+ ],
+ "additionalProperties": false
+}
