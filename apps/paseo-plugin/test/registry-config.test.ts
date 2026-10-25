@@ -41,6 +41,17 @@ describe("operator registry configuration", () => {
     expect((await readWorkstreamRegistry()).diagnostics.join()).toContain("unavailable");
     await writeFile(config, "invalid"); expect((await readWorkstreamRegistry()).workstreams).toEqual({});
   });
+  it("keeps a desk's match rule and native project and drops unrelated desk fields", async () => {
+    const workspace = join(root, "workspace"); const file = await registry(workspace);
+    await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: {}, desks: {
+      "pr-review-desk": { name: "PR Review Desk", paseo_project_from: "config/orchestration/pr-desk.yml desk.project", match: "first", row_by: "workspace" },
+      "adam-adhoc": { name: "Adam • Ad-hoc", paseo_project: "DESK • ADAM", match: "fallback", row_by: "tab", rows: "one per tab" },
+    } }));
+    expect((await readWorkstreamRegistry(workspace)).desks).toEqual({
+      "pr-review-desk": { name: "PR Review Desk", match: "first" },
+      "adam-adhoc": { name: "Adam • Ad-hoc", paseo_project: "DESK • ADAM", match: "fallback" },
+    });
+  });
   it("rejects a relative operator-config location instead of inferring cwd", async () => {
     const workspace = join(root, "workspace"); await registry(workspace);
     await writeFile(config, JSON.stringify({ workspaceRoot: workspace }));

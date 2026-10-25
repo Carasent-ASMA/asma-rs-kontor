@@ -15,6 +15,7 @@ vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-set
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', ScrollView: 'ScrollView', FlatList: 'FlatList', Icon: 'Icon', Modal: Object.assign(() => null, { Content: () => null }), useToast: () => ({ error() {} }) }));
 vi.mock('../client/use-responsibility', () => ({ useResponsibility: () => null }));
 vi.mock('../client/use-kontor-status', () => ({ useKontorStatus: () => null }));
+vi.mock('../client/use-work-catalog', () => ({ useWorkCatalog: () => null }));
 vi.mock('../client/use-read-sources', () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: model.snapshots, teamsErrors: model.errors, teamsBindingDiagnostics: [], error: model.sourceError, available: model.available, loading: false, demand: () => {}, refresh: async () => {} }) }));
 vi.mock('../client/use-session-directory', () => ({ useSessionDirectory: () => ({ state: { entries: [], status: 'ready', live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false } }) }));
 vi.mock('../client/use-workspace-directory', () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
