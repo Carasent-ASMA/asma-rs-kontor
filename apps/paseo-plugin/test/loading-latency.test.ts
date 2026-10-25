@@ -76,6 +76,10 @@ function scriptedDirectory(initialSubscriptionSucceeds: boolean) {
   const subscribeStarts: number[] = [];
   const pageStarts: number[] = [];
   let hangSubscriptions = !initialSubscriptionSucceeds;
+  let holdNextSubscription = false;
+  let holdNextPage = false;
+  let releaseSubscription: (() => void) | null = null;
+  let releasePage: (() => void) | null = null;
   let observer: SubscriptionObserver | null = null;
 
   const subscriptionResult = () => {
@@ -116,9 +120,21 @@ function scriptedDirectory(initialSubscriptionSucceeds: boolean) {
               );
             });
           }
+          if (holdNextSubscription) {
+            holdNextSubscription = false;
+            await new Promise<void>((resolve) => {
+              releaseSubscription = resolve;
+            });
+          }
           return subscriptionResult();
         }
         pageStarts.push(Date.now());
+        if (holdNextPage) {
+          holdNextPage = false;
+          await new Promise<void>((resolve) => {
+            releasePage = resolve;
+          });
+        }
         const index = options.page?.cursor
           ? Number.parseInt(options.page.cursor.replace("cursor-", ""), 10)
           : 0;
@@ -141,22 +157,39 @@ function scriptedDirectory(initialSubscriptionSucceeds: boolean) {
     failSubscription() {
       observer?.error?.(new Error("live updates stopped"));
     },
+    holdNextSubscription() {
+      holdNextSubscription = true;
+      hangSubscriptions = false;
+    },
+    releaseHeldSubscription() {
+      releaseSubscription?.();
+      releaseSubscription = null;
+    },
+    holdNextPage() {
+      holdNextPage = true;
+    },
+    releaseHeldPage() {
+      releasePage?.();
+      releasePage = null;
+    },
   };
 }
 
-async function settleAtTimeout(promise: Promise<void>) {
-  let settled = false;
-  void promise.finally(() => {
-    settled = true;
-  });
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
-    await Promise.resolve();
-    if (settled) {
-      break;
-    }
-  }
-  await promise;
+async function waitForState(
+  read: () => DirectoryState | null,
+  predicate: (state: DirectoryState) => boolean,
+  timeoutMs = 2_000,
+): Promise<DirectoryState> {
+  return vi.waitFor(
+    () => {
+      const state = read();
+      if (!state || !predicate(state)) {
+        throw new Error("state did not settle");
+      }
+      return state;
+    },
+    { timeout: timeoutMs },
+  );
 }
 
 function loadingDirectory(fake: ReturnType<typeof scriptedDirectory>) {
@@ -177,18 +210,20 @@ describe("session directory loading latency", () => {
     vi.useRealTimers();
   });
 
-  it("does not serialize a second subscription timeout before a cold first page", async () => {
+  it("starts the inventory immediately when the subscription is slow, then keeps one partial read", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const fake = scriptedDirectory(false);
     const { directory, latest } = loadingDirectory(fake);
 
     const startedAt = Date.now();
-    await settleAtTimeout(directory.start());
+    const starting = directory.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await starting;
 
     expect(fake.pageStarts).toHaveLength(3);
-    expect(fake.pageStarts[0]! - startedAt).toBe(TIMEOUT_MS);
-    expect(fake.subscribeStarts.filter((at) => at <= fake.pageStarts[0]!)).toHaveLength(1);
+    expect(fake.pageStarts[0]! - startedAt).toBe(0);
+    expect(fake.subscribeStarts).toHaveLength(1);
     expect(latest()).toMatchObject({
       status: "ready",
       live: false,
@@ -197,11 +232,21 @@ describe("session directory loading latency", () => {
     });
     expect(latest()!.entries).toHaveLength(ROWS);
 
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+    expect(fake.subscribeStarts).toHaveLength(1);
+    expect(fake.pageStarts).toHaveLength(3);
+    expect(latest()).toMatchObject({
+      status: "ready",
+      live: false,
+      inventoryComplete: false,
+      staleReason: "Live updates are unavailable; the inventory may be incomplete.",
+    });
+
     await directory.dispose();
   });
 
   it.each(["reconnect", "retry"] as const)(
-    "does not serialize a second subscription timeout before the %s first page",
+    "starts the %s inventory immediately when the subscription is slow",
     async (operation) => {
       vi.useFakeTimers();
       vi.setSystemTime(0);
@@ -210,35 +255,95 @@ describe("session directory loading latency", () => {
 
       await directory.start();
       expect(latest()).toMatchObject({ status: "ready", live: true, pages: 3 });
-      expect(latest()!.entries).toHaveLength(ROWS);
 
       if (operation === "reconnect") {
         directory.markHostOffline();
       } else {
         fake.failSubscription();
       }
-      expect(latest()).toMatchObject({ status: "stale" });
-      expect(latest()!.entries).toHaveLength(ROWS);
-
       fake.hangSubscriptions();
       fake.subscribeStarts.length = 0;
       fake.pageStarts.length = 0;
+
       const startedAt = Date.now();
-      await settleAtTimeout(operation === "reconnect" ? directory.reconnect() : directory.retry());
+      const operationPromise = operation === "reconnect" ? directory.reconnect() : directory.retry();
+      await vi.advanceTimersByTimeAsync(0);
+      await operationPromise;
 
       expect(fake.pageStarts).toHaveLength(3);
-      expect(fake.pageStarts[0]! - startedAt).toBe(TIMEOUT_MS);
-      expect(fake.subscribeStarts.filter((at) => at <= fake.pageStarts[0]!)).toHaveLength(1);
+      expect(fake.pageStarts[0]! - startedAt).toBe(0);
+      expect(fake.subscribeStarts).toHaveLength(1);
       expect(latest()).toMatchObject({
         status: "ready",
         live: false,
         inventoryComplete: false,
-        pages: 3,
-        staleReason: "Live updates are unavailable; the inventory may be incomplete.",
       });
       expect(latest()!.entries).toHaveLength(ROWS);
+
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+      expect(fake.subscribeStarts).toHaveLength(1);
+      expect(fake.pageStarts).toHaveLength(3);
 
       await directory.dispose();
     },
   );
+
+  it("reconciles once when a held subscription activates after the provisional walk", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const fake = scriptedDirectory(false);
+    fake.hangSubscriptions();
+    const { directory, latest } = loadingDirectory(fake);
+
+    fake.holdNextSubscription();
+    await directory.start();
+    expect(latest()).toMatchObject({ status: "ready", live: false, inventoryComplete: false });
+    expect(fake.pageStarts).toHaveLength(3);
+
+    fake.releaseHeldSubscription();
+    const reconciled = await waitForState(
+      () => latest(),
+      (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,
+    );
+
+    expect(reconciled.entries).toHaveLength(ROWS);
+    expect(reconciled.pages).toBe(3);
+    expect(fake.subscribeStarts).toHaveLength(1);
+    expect(fake.pageStarts).toHaveLength(6);
+
+    await directory.dispose();
+  });
+
+  it("supersedes a provisional walk when the subscription activates during it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const fake = scriptedDirectory(false);
+    fake.hangSubscriptions();
+    const { directory, latest } = loadingDirectory(fake);
+
+    fake.holdNextSubscription();
+    fake.holdNextPage();
+    const starting = directory.start();
+    await waitForState(
+      () => latest(),
+      (state) => state.status === "loading" && state.entries.length === 0,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fake.pageStarts).toHaveLength(1);
+
+    fake.releaseHeldSubscription();
+    fake.releaseHeldPage();
+    await starting;
+    const settled = await waitForState(
+      () => latest(),
+      (state) => state.status === "ready" && state.live === true && state.inventoryComplete === true,
+    );
+
+    expect(settled.entries).toHaveLength(ROWS);
+    expect(settled.pages).toBe(3);
+    expect(fake.subscribeStarts).toHaveLength(1);
+    expect(fake.pageStarts).toHaveLength(4);
+
+    await directory.dispose();
+  });
 });

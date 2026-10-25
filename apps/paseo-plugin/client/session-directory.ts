@@ -487,6 +487,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
   let unsubscribe: (() => void) | null = null;
   let subscriptionActive = false;
+  let subscriptionEpoch = 0;
+  let refreshSubscriptionEpoch = -1;
   let pendingUpdates: PendingUpdate[] = [];
   let pendingOverflow = false;
   let hostOnline = false;
@@ -651,6 +653,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     const runGeneration = generation;
     const runEpoch = readEpoch;
+    const runSubscriptionEpoch = subscriptionEpoch;
+    refreshSubscriptionEpoch = runSubscriptionEpoch;
     const controller = new AbortController();
     refreshAbort = controller;
     let collected: CollectedDirectory;
@@ -692,13 +696,14 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     applyPendingUpdates();
     pages = collected.pages;
     lastUpdatedAt = Date.now();
-    inventoryComplete = subscriptionActive;
+    const observedLive = subscriptionActive && subscriptionEpoch === runSubscriptionEpoch;
+    inventoryComplete = observedLive;
     error = null;
-    staleReason = subscriptionActive
+    staleReason = observedLive
       ? null
       : "Live updates are unavailable; the inventory may be incomplete.";
     status = "ready";
-    live = subscriptionActive;
+    live = observedLive;
     if (pendingOverflow) {
       pendingOverflow = false;
       refreshQueued = true;
@@ -725,6 +730,39 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
         subscriptionAttempt = null;
       }
     }
+  }
+
+  function startSubscription(expectedGeneration: number): void {
+    if (disposed || expectedGeneration !== generation || subscriptionActive) {
+      return;
+    }
+    const attempt = subscriptionAttempt;
+    if (attempt && attempt.generation === expectedGeneration) {
+      return;
+    }
+    void openSubscription(expectedGeneration).catch(() => undefined);
+  }
+
+  function handleSubscriptionActivated(expectedGeneration: number): void {
+    if (disposed || expectedGeneration !== generation) {
+      return;
+    }
+    subscriptionEpoch += 1;
+    if (refreshing) {
+      if (refreshSubscriptionEpoch === subscriptionEpoch) {
+        return;
+      }
+      readEpoch += 1;
+      abortRefresh();
+      pendingUpdates = [];
+      pendingOverflow = false;
+      refreshQueued = true;
+      return;
+    }
+    if (status === "ready" && live && inventoryComplete && staleReason === null) {
+      return;
+    }
+    void refresh("Reconciling the full session directory after live updates became available.");
   }
 
   async function openSubscriptionOnce(expectedGeneration: number): Promise<void> {
@@ -765,9 +803,17 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       }
       subscriptionActive = false;
       live = false;
-      error = describeDirectoryError(subscriptionError);
-      status = entries.size > 0 ? "stale" : "error";
-      staleReason = entries.size > 0 ? "Live updates are unavailable." : null;
+      if (entries.size === 0 && lastUpdatedAt === null && refreshAbort === null) {
+        error = describeDirectoryError(subscriptionError);
+        status = "error";
+        staleReason = null;
+      } else {
+        error = null;
+        staleReason = "Live updates are unavailable; the inventory may be incomplete.";
+        if (status === "idle" || status === "loading") {
+          status = entries.size > 0 ? "stale" : "loading";
+        }
+      }
       emit();
       scheduleRetry();
       return;
@@ -839,6 +885,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           scheduleRetry();
         },
       });
+      handleSubscriptionActivated(expectedGeneration);
     } catch (subscriptionError) {
       subscriptionActive = false;
       live = false;
@@ -863,8 +910,12 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     // reconnect are both fenced by this value.
     abortRefresh();
     abortSubscriptionAttempt();
+    refreshQueued = false;
+    pendingUpdates = [];
+    pendingOverflow = false;
     generation += 1;
     const connectionGeneration = generation;
+    releaseSubscription(connectionGeneration);
     live = false;
     inventoryComplete = false;
     error = null;
@@ -878,10 +929,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       staleReason = "Reconnected to the Paseo host; reconciling the full directory.";
       emit();
     }
-    await openSubscription(connectionGeneration);
-    if (disposed || connectionGeneration !== generation) {
-      return;
-    }
+    startSubscription(connectionGeneration);
     await refreshNow("Reconciling the full session directory.", connectionGeneration);
   }
 
@@ -928,14 +976,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     refreshPromise = (async () => {
       const refreshGeneration = generation;
       if (!subscriptionActive && !subscriptionAttempted) {
-        const attempt = subscriptionAttempt;
-        if (attempt && attempt.generation === refreshGeneration) {
-          return;
-        }
-        await openSubscription(refreshGeneration);
-        if (disposed || refreshGeneration !== generation) {
-          return;
-        }
+        startSubscription(refreshGeneration);
       }
       do {
         refreshQueued = false;
