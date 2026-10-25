@@ -13,6 +13,7 @@ import { useKeyboardSettings } from "./use-keyboard-settings";
 import { useBackShortcut } from "./keyboard-shortcuts";
 import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
+import { useWorkCatalog } from "./use-work-catalog";
 import { useResponsibility } from "./use-responsibility";
 import { useKontorStatus } from "./use-kontor-status";
 import { kontordSentence } from "./kontord-copy";
@@ -94,6 +95,7 @@ function HostScreen(props: PluginScreenProps) {
   const [, setTeamsViewRevision] = useState(0);
   const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived: route.tab === "Sessions" || includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  const workCatalog = useWorkCatalog(host.id, hostStatus);
   const responsibility = useResponsibility(host.id, hostStatus);
   // kontord is optional: its line never changes the native host status, and Sessions never waits for it.
   const kontorStatus = useKontorStatus(host.id, hostStatus);
@@ -343,7 +345,7 @@ function HostScreen(props: PluginScreenProps) {
       }) }} taskTeams={taskTeams} />;
   else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => toggle("context")} onDocumentLink={openDocumentLink} onCopy={copy} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     teamsSources={sourceState.sources.filter((source) => source.kind === "teams")} teamsJsonReads={Object.fromEntries(Object.entries(sourceState.reads).filter(([, read]) => read.source.kind === "teams"))}
-    teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available}
+    teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available} catalog={workCatalog}
     sourceError={sourceState.error} kontord={kontord} query={query} setQuery={setSearch} onSource={(sourceId) => selectSource(sourceId, "Plan")} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
     onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     scoped={!unscoped} onGraph={() => visit({ tab: "Graph" })}

@@ -50,6 +50,7 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input:
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
+vi.mock("../client/use-work-catalog", () => ({ useWorkCatalog: () => ({ read: null, refresh: () => {} }) }));
 vi.mock("../client/use-read-sources", () => ({ useReadSources: () => { model.sourceCalls++; return { sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true, demand: () => {} }; } }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: model.workspaces, error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));

@@ -20,6 +20,16 @@ describe("bounded historical Jira evidence", () => {
     expect(JSON.stringify(projected)).not.toContain("do-not-copy");
     expect(Object.keys(projected.epics[0]!.children[0]!)).toEqual(["key", "status", "cat"]);
   });
+  it("keeps an epic's captured ws: label through the bounded projection", () => {
+    const raw = { schema: "consumption/data@2", generated: "2026-10-24T16:07+00:00", epics: [
+      { key: "ASMA-8539", ws: "kontor", summary: "dropped", status: "Groomed", cat: "new", children: [{ key: "ASMA-8540", status: "Open", cat: "new" }] },
+    ] };
+    const projected = projectJiraHistory(raw, ["ASMA-8539"], { path: "/captures/data.json", sha256: "c".repeat(64) });
+    expect(projected.epics[0]).toMatchObject({ key: "ASMA-8539", ws: "kontor" });
+    expect(projected.epics[0]?.children[0]).not.toHaveProperty("ws");
+    expect(JSON.stringify(projected)).not.toContain("dropped");
+    expect(() => jiraHistorySchema.parse({ ...projected, epics: [{ ...projected.epics[0]!, ws: "ws:kontor" }] })).toThrow();
+  });
   it("shows three matched tasks out of ten, with seven Unknown, rather than a denominator of three", () => {
     expect(history.epics.map((epic) => [epic.key, epic.children.length]).sort()).toEqual([["ASMA-8190", 17], ["ASMA-8371", 41], ["ASMA-8539", 3]]);
     expect(historicalPlanProgress(graph, [read])).toMatchObject({ total: 10, known: 3, done: 0, unknown: 7 });

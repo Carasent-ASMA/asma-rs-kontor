@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { sourceReadPending, type SourceRead } from "../shared/read-sources";
+import type { WorkCatalogRead } from "../shared/work-catalog";
+import { WorkCatalogStatus } from "./catalog-status";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { confirmedEpic, nativeSummary, portfolioFilter, portfolioRows, readTime, shortDates, type PortfolioFilter, type PortfolioRow } from "./page-data";
 import { inventoryReadLabel } from "./native-freshness";
@@ -13,7 +15,7 @@ type EpicTab = "Plan" | "Board" | "Graph" | "Sessions";
 type Props = {
   colors: Colors; compact?: boolean; contextLabel?: string; scoped?: boolean; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   reads: Readonly<Record<string, SourceRead>>; query: string; setQuery: (query: string) => void;
-  sourceError?: string | null; kontord?: string;
+  sourceError?: string | null; catalog?: WorkCatalogRead | null; kontord?: string;
   onSource: (id: string) => void; onEpicTab: (tab: EpicTab, epicKey: string | null, sourceId: string | null) => void;
 };
 const FILTERS: readonly PortfolioFilter[] = ["all", "active", "review", "decisions", "completed", "delivered"];
@@ -62,15 +64,19 @@ export function OverviewPage(props: Props) {
   const scope = `${props.scoped ? "Project" : "Global"} overview, available without kontord.`;
   const meta = [signalLine(total), !props.scoped && loose ? `${loose} epic unknown` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
   const jiraLabel = observed.length ? `Jira captured ${observed.map(shortDates).join(" / ")}` : "Jira not connected";
+  const catalogCue = props.catalog?.mode === "snapshot" ? "catalog snapshot"
+    : props.catalog?.mode === "unavailable" ? "catalog unavailable"
+    : props.catalog?.mode === "catalog" ? "catalog live" : null;
   return <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ width: "100%", maxWidth: 1100, alignSelf: "center", gap: 14 }}>
     {/* One title and one meta line; scope, exact counts and the read time stay in Sources and coverage. */}
     <View style={{ gap: props.compact ? 3 : 4 }}>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: props.compact ? 21 : 25, fontWeight: "600" }}>{props.contextLabel ?? "All projects"}</Text>
       <Text testID="overview-meta" accessibilityLabel={`${scope} ${sessions} ${inventoryReadLabel(props.directory)}.`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{meta}</Text>
     </View>
-    <Disclosure small label={`Sources and coverage · ${jiraLabel}`} accessibilityLabel={`Sources and coverage · ${jiraLabel}${observed.length ? ", not live" : ""}`} colors={colors}>
+    <Disclosure small label={`Sources and coverage · ${jiraLabel}${catalogCue ? ` · ${catalogCue}` : ""}`} accessibilityLabel={`Sources and coverage · ${jiraLabel}${observed.length ? ", not live" : ""}${catalogCue ? `, ${catalogCue}` : ""}`} colors={colors}>
       <View testID="overview-sources" style={{ gap: 8, paddingTop: 4, paddingBottom: 6 }}>
         <Copy colors={colors} muted small>{scope} Native sessions come from this host. The Native status at the top describes that host connection only; plans, Jira and records are captured sources with their own dates.</Copy>
+        <WorkCatalogStatus state={props.catalog ?? null} colors={colors} />
         <Copy colors={colors} muted small>{sessions}</Copy>
         <Copy colors={colors} muted small>{inventoryReadLabel(props.directory)}</Copy>
         {jira.map((read) => <SourceDetails key={read.source.id} read={read} colors={colors} />)}

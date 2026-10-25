@@ -66,6 +66,8 @@ const clientFiles = [
   "../client/kontord-copy.ts",
   "../client/kontord-banner.tsx",
   "../client/use-kontor-status.ts",
+  "../client/use-work-catalog.ts",
+  "../client/catalog-status.tsx",
   "../index.client.tsx",
   "../client/return-control.ts",
   "../client/session-actions.ts",
@@ -157,6 +159,30 @@ describe("kontord status probe", () => {
     expect(entry).toContain("const stopStatus = contributeKontorStatus(server, floor.enabled);");
     expect(entry).toContain("const stopHooks = floor.enabled ? contribute(server) : () => {};");
     expect(entry).toContain("return () => { stopSources(); stopStatus(); stopHooks(); };");
+  });
+});
+
+describe("shared catalog consumption", () => {
+  const text = source("../server/work-catalog.ts");
+
+  it("starts only the configured observer and names only the two catalog tools", () => {
+    expect(text.match(/spawn\(/g)).toHaveLength(1);
+    expect(text).toContain(`["--state-root", config.stateRoot, "--credential-tier", DEFAULT_CREDENTIAL_TIER, ...(config.serveProfile ? ["--serve-profile", config.serveProfile] : [])]`);
+    expect(text).toContain("spawn(config.mcpCommand, args, {");
+    expect(text).not.toMatch(/shell:/);
+    expect([...new Set(text.match(/kontor_[a-z_]+/g))].sort()).toEqual(["kontor_work_catalog_entries", "kontor_work_catalog_sources"]);
+  });
+
+  it("never opens the daemon database, credential or a network connection", () => {
+    expect(text).not.toMatch(/["'](?:admin|operator)["']|credentials\.json|KONTOR_AUTH|daemon-keypair/);
+    expect(text).not.toMatch(/catalog\.db|kontor\.db|node:http|node:net|fetch\(/);
+    expect(text).toContain(`env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }`);
+    expect(text).toContain(`stdio: ["pipe", "pipe", "ignore"]`);
+    expect(text).toContain(`child.kill("SIGKILL")`);
+    // Its one write is the plugin-owned snapshot inside the plugin config directory.
+    expect(text).toContain("WORK_CATALOG_SNAPSHOT_FILE");
+    expect(text).toContain("await writeFile(temporary, bytes, { mode: 0o600 });");
+    expect(text).not.toMatch(/writeFile\([^,]*read-sources|writeFile\([^,]*settings/);
   });
 });
 

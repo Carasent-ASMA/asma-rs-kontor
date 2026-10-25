@@ -3,6 +3,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { sourceReadPending, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
+import type { WorkCatalogRead } from "../shared/work-catalog";
 import type { Destination } from "./navigation-state";
 import { confirmedEpic, inboxEntries, readTime, searchRecords, shortDates } from "./page-data";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
@@ -23,7 +24,7 @@ type PageProps = {
   contextLabel?: string; scoped?: boolean; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   compact?: boolean; onChooseSource?: () => void; onDocumentLink?: (target: string) => void; onExternalLink?: (target: string) => void;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
-  sourceError: string | null; query: string; setQuery: (query: string) => void;
+  sourceError: string | null; catalog?: WorkCatalogRead | null; query: string; setQuery: (query: string) => void;
   /** What kontor.status observed on this host; unknown when absent. */
   kontord?: string;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
