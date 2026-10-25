@@ -8,7 +8,7 @@ import { readConfig, type KontorPluginConfig } from "./config";
 import { parent } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
-import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
+import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
 import { BINDING_KEY, GOVERNED_ELSEWHERE, resolveTakeoverRoute, resolverInstant, takeoverAdapter, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute } from "./session-takeover";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
@@ -703,6 +703,11 @@ const sameDigest = (left: string, right: string) => left.length === right.length
 const releaseMessage = (reviewId: string) => `kontor-takeover-${reviewId}`;
 const settledTakeover = (result: TakeoverOutcome) => result.state === "refused" || result.state === "succeeded";
 const takeoverRevision = (agent: Agent) => hash(JSON.stringify([lifecycleRevision(agent), agent.title, agent.createdAt]));
+const CONTINUITY_STALE = "Its owner/wake continuity receipt is stale or dated in the future. Nothing is retired.";
+function freshContinuity(receipt: TakeoverContinuity): boolean {
+  const age = Date.now() - Date.parse(receipt.observedAt);
+  return age >= 0 && age <= 60_000;
+}
 async function writeDurable(file: string, value: unknown) {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`, output = await open(temporary, "wx", 0o600);
@@ -805,6 +810,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (labels.persona !== undefined) {
       const issued = reissuePersona(labels, selected.account, { desk: workspace.projectCustomName ?? workspace.projectDisplayName ?? "", workspace: (workspace.title ?? workspace.name ?? "").trim(), workspaceId: workspace.id });
       if ("refused" in issued) return answer("refused", issued.refused);
+      if (!issued.supported) return answer("refused", "This route only sends the role card as a bootstrap message. Instruction delivery and acceptance are not qualified for that profile, so this session cannot be taken over on it.");
       persona = issued;
     }
     if (direct.basis === "orchestrated") limits = [...limits, SUPERVISOR_LIMIT];
@@ -819,8 +825,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     } catch (error) { return answer("unknown", `Its continuity receipt could not be read: ${errorText(error)}. Nothing is retired.`); }
     if (continuity.surface === "governed") return answer("refused", GOVERNED_ELSEWHERE);
     if (continuity.surface !== "direct") return answer("unknown", "Its continuity source cannot confirm direct ownership. Nothing is retired.");
-    const age = Date.now() - Date.parse(continuity.observedAt);
-    if (continuity.agentId !== agentId || continuity.requestId !== requestId || age < 0 || age > 60_000 || continuity.wakes === "unknown")
+    if (continuity.agentId !== agentId || continuity.requestId !== requestId || !freshContinuity(continuity) || continuity.wakes === "unknown")
       return answer("unknown", "Its wake-continuity receipt is stale, unknown or names another session or successor request. Nothing is retired.");
     if (direct.basis === "orchestrated" ? continuity.owner?.agentId !== direct.owner || continuity.owner.revision !== ownerRevision : continuity.owner !== null)
       return answer("refused", "Its continuity receipt does not confirm its current owner and binding revision. Nothing is retired.");
@@ -829,23 +834,29 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       requestId, title: first.title!, provider: selected.account, model: selected.model, effort: selected.effort, modeId: mode,
       labels: { ...carried, ...(parent(first) ? { "paseo.parent-agent-id": parent(first)! } : {}), ...(persona ? { persona: persona.version } : {}), [CREATE_REQUEST_LABEL]: requestId, [TAKEOVER_PREDECESSOR_LABEL]: agentId },
       workspaceId: workspace.id, anchorWorkspaceId: workspace.id, workspaceName: (workspace.title ?? workspace.name ?? "").trim(), cwd: first.cwd,
+      expectedPlacement: { workspaceId: workspace.id, cwd: first.cwd },
       createWorkspace: null, revalidate: null,
       // A plain session stays plain: no persona, no system prompt.
       persona: persona ? { text: persona.text, supported: persona.supported } : { text: "", supported: false },
       bootstrap: bootstrapPrompt(persona?.text ?? "", summary, persona?.supported ?? true),
     };
     const checked = await deps.create.preflight(spec, agentId);
+    if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
     if ("problem" in checked) return answer("refused", checked.problem);
     if (checked.cwd !== first.cwd) return answer("refused", CWD_DRIFT);
     try {
-      if (childrenOf(first, await inventory(client, "archive")).length) return answer("refused", "A child appeared during preflight. Nothing is retired.");
+      const children = childrenOf(first, await inventory(client, "archive"));
+      if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
+      if (children.length) return answer("refused", "A child appeared during preflight. Nothing is retired.");
       if (direct.basis === "orchestrated") {
         const supervisor = await exact(direct.owner);
+        if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
         if (!supervisor || supervisor.archivedAt != null || lifecycleRevision(supervisor) !== ownerRevision) return answer("unknown", "Its owner changed during preflight. Nothing is retired.");
       }
     } catch (error) { return answer("unknown", `The final continuity check failed: ${errorText(error)}.`); }
     // Reads above (a history read can load the provider runtime) may move the record; pin the state they leave.
     const last = await exact(agentId);
+    if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
     if (!last) return answer("unknown", "This session could not be read again after its checks.");
     const again = takeoverRefusal(last);
     if (again) return answer("refused", again);
@@ -959,6 +970,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         return refuse("Another action took this session's fence first.");
       const latest = await exact(agentId);
       if (!latest || takeoverRevision(latest) !== pinned.predecessor) return finish(outcome(record, "refused", "intent", "This session changed during preflight. Nothing was done; review again.", null, "review"));
+      const placement = await expectedPlacementProblem(client, spec);
+      if (placement) return finish(outcome(record, "refused", "preflight", placement, null, "review"));
+      // No await between this freshness check and archive dispatch: preflight and intent persistence consume time.
+      if (!freshContinuity(pinned.continuity)) return finish(outcome(record, "refused", "preflight", CONTINUITY_STALE, null, "review"));
     } catch (error) { return finish(outcome(record, "refused", "preflight", `Preflight failed: ${errorText(error)}. Nothing was done.`, null, "review")); }
     let phase: TakeoverOutcome["phase"] = "intent";
     try {

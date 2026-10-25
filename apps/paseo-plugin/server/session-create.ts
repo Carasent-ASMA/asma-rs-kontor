@@ -175,6 +175,8 @@ export type SeatCreateSpec = {
   workspaceName: string;
   /** The desk checkout that scopes the provider catalog. */
   cwd: string;
+  /** A takeover's immutable placement; unlike a new lead, it may never adopt a moved workspace. */
+  expectedPlacement?: { workspaceId: string; cwd: string };
   /** Creates the missing lead workspace and reads it back; null when it already exists. */
   createWorkspace: (() => Promise<{ id: string; cwd: string }>) | null;
   /** Re-validates the target at create time; null when it still matches. */
@@ -187,6 +189,20 @@ export type SeatCreateOutcome = CreateOutcome;
 export type SeatCreatePlan = { spec: SeatCreateSpec } | { refused: string; requestId: string; title: string };
 export type SeatCreateBuilder = () => Promise<SeatCreatePlan>;
 export type SeatCreate = (requestId: string, build: SeatCreateBuilder) => Promise<SeatCreateOutcome>;
+
+const EXPECTED_CHECKOUT_CHANGED = "The expected checkout or workspace changed. No successor will be dispatched.";
+function placementProblem(spec: SeatCreateSpec, workspace: PaseoWorkspace | null): string | null {
+  const expected = spec.expectedPlacement;
+  return expected && (spec.workspaceId !== expected.workspaceId || spec.cwd !== expected.cwd || !workspace || workspace.archivingAt
+    || workspace.id !== expected.workspaceId || workspace.workspaceDirectory !== expected.cwd
+    || (workspace.title ?? workspace.name ?? "").trim().toUpperCase() !== spec.workspaceName.toUpperCase()) ? EXPECTED_CHECKOUT_CHANGED : null;
+}
+/** Used at the retirement and dispatch boundaries; the expected placement is durable data in the reviewed spec. */
+export async function expectedPlacementProblem(client: { workspaces: { ref(id: string): Pick<WorkspaceHandle, "refresh"> } }, spec: SeatCreateSpec): Promise<string | null> {
+  if (!spec.expectedPlacement) return null;
+  try { return placementProblem(spec, await client.workspaces.ref(spec.expectedPlacement.workspaceId).refresh()); }
+  catch { return "The expected checkout could not be read. No successor will be dispatched."; }
+}
 
 const recordSchema = z.object({
   request: z.object({
@@ -481,6 +497,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       if (earlier) return { problem: `An earlier creation, “${earlier.title}”, is not settled. Check it first.` };
       if (workspaceId) {
         const snapshot = await client.workspaces.ref(workspaceId).refresh();
+        const placement = placementProblem(spec, snapshot);
+        if (placement) return { problem: placement };
         if (!snapshot || snapshot.archivingAt || !snapshot.workspaceDirectory || (snapshot.title ?? snapshot.name ?? "").trim().toUpperCase() !== spec.workspaceName.toUpperCase()) {
           return { problem: `That workspace is no longer a ${spec.workspaceName} workspace on this host.` };
         }
@@ -543,6 +561,9 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Intent persistence and earlier host reads may have outlived the workspace we validated.
+      const placement = await expectedPlacementProblem(client, spec);
+      if (placement) return settle(record, outcome(record, "refused", null, placement));
       const handle = await Promise.race([
         client.workspaces.ref(record.request.workspaceId).agents.create({ idempotencyKey: requestId, title: spec.title, labels: spec.labels,
           ...(spec.persona.supported ? { config: { provider: `${spec.provider}/${spec.model}`, ...(spec.modeId ? { modeId: spec.modeId } : {}), ...(spec.effort ? { thinkingOptionId: spec.effort } : {}), systemPrompt: spec.persona.text } }
