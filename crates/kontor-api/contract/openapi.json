@@ -13667,48 +13667,49 @@
         "parameters": [
           {
             "name": "kind",
-            "in": "path",
+            "in": "query",
             "description": "`plan` or `execution_unit`.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "scope",
-            "in": "path",
+            "in": "query",
             "description": "A repository id, worktree root, path prefix, logical plan id or workstream key.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "include_removed",
-            "in": "path",
+            "in": "query",
             "description": "Include tombstoned entries. Defaults to false.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "boolean"
+              "type": "boolean",
+              "default": false
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "description": "A bounded row limit. TASK-004 owns cursors; this is a hard bound only.",
-            "required": true,
+            "in": "query",
+            "description": "A bounded row limit.",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "An opaque continuation from the prior page. Bound to its generation and filter.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -13748,36 +13749,40 @@
         "parameters": [
           {
             "name": "include_removed",
-            "in": "path",
+            "in": "query",
             "description": "Include native observations removed at the active generation.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "boolean"
+              "type": "boolean",
+              "default": false
             }
           },
           {
-            "name": "runtime",
-            "in": "path",
+            "name": "instance",
+            "in": "query",
             "description": "Only this stable runtime instance.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "description": "A bounded row limit per collection. TASK-004 owns cursors.",
-            "required": true,
+            "in": "query",
+            "description": "A bounded row limit per collection.",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "An opaque continuation from the prior page. Bound to its generation and filter.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -13821,6 +13826,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NativeCatalogStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/work-catalog/sources": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "Per-source freshness, coverage, errors, retry deadlines and conflicts.",
+        "operationId": "sources",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSourcesView"
                 }
               }
             }
@@ -16328,6 +16363,179 @@
           "title": {
             "type": "string",
             "description": "The current display title."
+          }
+        }
+      },
+      "CatalogSource": {
+        "type": "string",
+        "description": "One source of observations in the shared catalog.",
+        "enum": [
+          "plan",
+          "jira",
+          "native"
+        ]
+      },
+      "CatalogSourceConflict": {
+        "type": "object",
+        "description": "One conflict observed at a source.",
+        "required": [
+          "kind",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "A stable conflict kind."
+          },
+          "message": {
+            "type": "string",
+            "description": "A structural description."
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the conflict was observed, when the source records it."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The plan, issue or runtime the conflict is about."
+          }
+        }
+      },
+      "CatalogSourceCoverage": {
+        "type": "object",
+        "description": "One bounded coverage line for a source.",
+        "required": [
+          "subject",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "A bounded structural detail, never file bytes or a credential."
+          },
+          "state": {
+            "type": "string",
+            "description": "The stable state spelling for this line."
+          },
+          "subject": {
+            "type": "string",
+            "description": "What the line covers, such as a repository or a sweep mode."
+          }
+        }
+      },
+      "CatalogSourceState": {
+        "type": "string",
+        "description": "The state of one source's latest attempt.",
+        "enum": [
+          "not_configured",
+          "never_collected",
+          "complete",
+          "incomplete",
+          "failed"
+        ]
+      },
+      "CatalogSourceStatus": {
+        "type": "object",
+        "description": "Freshness, coverage, errors and conflicts for one source.",
+        "required": [
+          "source",
+          "state",
+          "generation",
+          "attempted_generation",
+          "coverage",
+          "conflicts",
+          "pending_verification"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the latest complete generation finished. Never the request\ninstants or the instant this status was read."
+          },
+          "attempted_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How far collection has attempted; may be ahead of `generation`.",
+            "minimum": 0
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceConflict"
+            },
+            "description": "Bounded visible conflicts."
+          },
+          "coverage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceCoverage"
+            },
+            "description": "Bounded coverage lines."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The latest structural failure, never source content."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last complete generation, or `0` before the first one.",
+            "minimum": 0
+          },
+          "pending_verification": {
+            "type": "integer",
+            "description": "Associations this source has not verified. The frozen v1 association\ncontract cannot claim verification, so plan declarations remain pending\nuntil a collector with its own evidence contract proves them.",
+            "minimum": 0
+          },
+          "retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The earliest instant this source will retry, when it named one."
+          },
+          "source": {
+            "$ref": "#/components/schemas/CatalogSource",
+            "description": "Which source this describes."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CatalogSourceState",
+            "description": "The latest attempt's state."
+          }
+        }
+      },
+      "CatalogSourcesView": {
+        "type": "object",
+        "description": "The per-source observer status across every catalog source.",
+        "required": [
+          "schema_version",
+          "sources"
+        ],
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The contract version.",
+            "minimum": 0
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceStatus"
+            },
+            "description": "One row per source, in plan, Jira, native order."
           }
         }
       },
@@ -20989,6 +21197,13 @@
             "description": "The active complete generation this answer describes.",
             "minimum": 0
           },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An opaque continuation for the next page, bound to this generation and\nfilter. A reader that presents it after the generation advanced is\nrefused rather than shown a page from a mix of generations."
+          },
           "schema_version": {
             "type": "integer",
             "format": "int32",
@@ -21001,7 +21216,7 @@
           },
           "truncated": {
             "type": "boolean",
-            "description": "Whether the result was bounded. TASK-004 owns cursors."
+            "description": "Whether a further page exists. Equivalent to `next_cursor.is_some()`."
           }
         }
       },
@@ -24828,6 +25043,13 @@
             "description": "The active complete generation.",
             "minimum": 0
           },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An opaque continuation bound to this generation and filter. It carries\none offset per collection, so a page never mixes generations."
+          },
           "projects": {
             "type": "array",
             "items": {
@@ -24854,7 +25076,7 @@
           },
           "truncated": {
             "type": "boolean",
-            "description": "Whether any collection was bounded by the caller's limit."
+            "description": "Whether a further page exists. Equivalent to `next_cursor.is_some()`."
           },
           "workspaces": {
             "type": "array",

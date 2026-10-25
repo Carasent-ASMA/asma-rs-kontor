@@ -629,3 +629,97 @@ async fn native_collection_does_not_advance_plan_freshness() {
         plan_entries.entries
     );
 }
+
+#[tokio::test]
+async fn native_inventory_pages_are_generation_fenced() {
+    let fixture = Fixture::open(&[], None, 30);
+    let source = FakeSource::new(vec![
+        census(
+            vec![project("prj_desk", "DESK • ADAM", "/repo")],
+            vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+            vec![
+                session("agt_a", "A", "wks_adam", None),
+                session("agt_b", "B", "wks_adam", None),
+                session("agt_c", "C", "wks_adam", None),
+            ],
+        ),
+        census(
+            vec![project("prj_desk", "DESK • ADAM", "/repo")],
+            vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+            vec![
+                session("agt_a", "A", "wks_adam", None),
+                session("agt_b", "B", "wks_adam", None),
+            ],
+        ),
+    ]);
+    let first_sweep = collect(&fixture.catalog, &source).await;
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let page = fixture
+            .catalog
+            .native_inventory(&NativeInventoryFilter {
+                limit: 2,
+                cursor,
+                ..NativeInventoryFilter::default()
+            })
+            .expect("a native page");
+        assert_eq!(page.generation, first_sweep.generation);
+        seen.extend(
+            page.sessions
+                .iter()
+                .map(|session| session.session_id.clone()),
+        );
+        pages += 1;
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 2);
+    seen.sort();
+    assert_eq!(seen, ["agt_a", "agt_b", "agt_c"]);
+
+    let stale = fixture.catalog.native_inventory(&NativeInventoryFilter {
+        limit: 1,
+        cursor: Some(format!(
+            "n1:{}:0:0:1:0000000000000000",
+            first_sweep.generation
+        )),
+        ..NativeInventoryFilter::default()
+    });
+    assert!(matches!(
+        stale,
+        Err(kontor_catalog::CatalogError::InvalidCursor { .. })
+    ));
+
+    let second_sweep = collect(&fixture.catalog, &source).await;
+    assert_ne!(second_sweep.generation, first_sweep.generation);
+    // An incomplete or complete later generation still fences the old cursor.
+    let stale = fixture.catalog.native_inventory(&NativeInventoryFilter {
+        limit: 1,
+        cursor: Some(format!("n1:{}:0:0:1:{}", first_sweep.generation, {
+            // The fingerprint is opaque; a cursor from another generation is
+            // refused by its generation only after the filter matches.
+            let view = fixture
+                .catalog
+                .native_inventory(&NativeInventoryFilter {
+                    limit: 1,
+                    ..NativeInventoryFilter::default()
+                })
+                .expect("a page");
+            view.next_cursor
+                .as_deref()
+                .and_then(|cursor| cursor.rsplit(':').next())
+                .unwrap_or_default()
+                .to_owned()
+        })),
+        ..NativeInventoryFilter::default()
+    });
+    assert!(matches!(
+        stale,
+        Err(kontor_catalog::CatalogError::StaleCursor { generation, active })
+            if generation == first_sweep.generation && active == second_sweep.generation
+    ));
+}

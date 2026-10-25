@@ -125,6 +125,7 @@ fn the_contract_document_names_every_route_the_router_exposes() {
         "/v1/runs/{agent_run_id}",
         "/v1/runtime-bindings",
         "/v1/work-catalog/status",
+        "/v1/work-catalog/sources",
         "/v1/work-catalog/entries",
         "/v1/work-catalog/native/status",
         "/v1/work-catalog/native/inventory",

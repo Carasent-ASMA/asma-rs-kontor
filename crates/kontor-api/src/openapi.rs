@@ -76,6 +76,7 @@ impl Modify for RealmBearer {
         crate::control::health,
         crate::control::realm,
         crate::work_catalog::status,
+        crate::work_catalog::sources,
         crate::work_catalog::entries,
         crate::work_catalog::native_status,
         crate::work_catalog::native_inventory,

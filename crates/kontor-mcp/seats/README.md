@@ -11,7 +11,7 @@ admin-scoped.
 | Seat | File | Tier | Reaches |
 | --- | --- | :---: | --- |
 | Paseo Lead Architect | [`paseo-lead.json`](paseo-lead.json) | `admin` | The whole tool vocabulary |
-| Worker | [`worker.json`](worker.json) | `operator` | The registry's `worker` serve profile (25 tools): reads of its own work, claiming, turn settlement and observation, artifacts, gates, session follow-up, intake, memory and experience proposals and recall, context, open questions |
+| Worker | [`worker.json`](worker.json) | `operator` | The registry's `worker` serve profile (31 tools): reads of its own work and the observational catalog, claiming, turn settlement and observation, artifacts, gates, session follow-up, intake, memory and experience proposals and recall, context, open questions |
 | Reviewer | [`reviewer.json`](reviewer.json) | `observer` | Reads only |
 
 ## Filling in the two values

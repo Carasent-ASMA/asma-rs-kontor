@@ -342,8 +342,8 @@ mod tests {
         );
         assert_eq!(
             served.len(),
-            26,
-            "the worker profile includes artifact recovery, OpenQuestion reads and reports, and typed gap recording"
+            31,
+            "the worker profile includes the observational catalog, artifact recovery, OpenQuestion reads and reports, and typed gap recording"
         );
     }
 
@@ -472,8 +472,8 @@ mod tests {
         );
         assert_eq!(
             served.len(),
-            14,
-            "the worker profile includes OpenQuestion reads"
+            19,
+            "the worker profile includes the observational catalog and OpenQuestion reads"
         );
         assert!(
             !served.contains("kontor_ticket_claim"),

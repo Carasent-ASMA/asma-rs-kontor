@@ -91,6 +91,14 @@ closed_enum! {
         StaleBinding => "stale_binding",
         /// The requested position is outside the retained control-plane history.
         ResnapshotRequired => "resnapshot_required",
+        /// The cursor names a catalog generation that is no longer active.
+        ///
+        /// Distinct from `revision_conflict`: the caller's filter was valid and
+        /// the catalog is healthy, but the generation a previous page came from
+        /// has completed and been replaced. A page may not be assembled from two
+        /// generations, so the only correct action is to read again from the
+        /// first page.
+        StaleCursor => "stale_cursor",
         /// The session's content must be read again from the runtime.
         TimelineRefetchRequired => "timeline_refetch_required",
         /// Startup reconciliation has not finished, so scheduling is still shut.
@@ -207,7 +215,7 @@ impl ApiErrorCode {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             // The position the caller wants is genuinely gone.
-            Self::ResnapshotRequired => StatusCode::GONE,
+            Self::ResnapshotRequired | Self::StaleCursor => StatusCode::GONE,
             // The request is well formed and the state it presented is current;
             // what is missing is an accounting the caller must supply or excuse.
             // Same reasoning as `UnsupportedCapability`: not a server defect.
@@ -272,6 +280,9 @@ impl ApiErrorCode {
             }
             Self::StaleBinding => "settle the run to learn what its runtime now reports",
             Self::ResnapshotRequired => "read a fresh snapshot and resume from its cursor",
+            Self::StaleCursor => {
+                "read the catalog again without a cursor; a page may not span two generations"
+            }
             Self::TimelineRefetchRequired => "read the session timeline again from the runtime",
             Self::ReconciliationPending => "wait for startup reconciliation to finish, then retry",
             Self::CapacityExhausted => {

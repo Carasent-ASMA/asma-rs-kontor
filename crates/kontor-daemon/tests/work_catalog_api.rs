@@ -374,3 +374,118 @@ async fn the_native_census_is_visible_through_the_authenticated_work_catalog() {
         "the native census must not advance plan discovery"
     );
 }
+
+#[tokio::test]
+async fn entry_cursors_and_per_source_status_are_served_and_fenced() {
+    let world = World::open_empty().await;
+    let catalog = world
+        .daemon
+        .catalog()
+        .expect("the daemon composes the catalog");
+    let checkout = disposable_checkout();
+    for (name, epic) in [("beta", "ASMA-9991"), ("gamma", "ASMA-9992")] {
+        std::fs::write(
+            checkout.path().join(format!("plans/{name}.md")),
+            format!(
+                "---\nepic: {epic}\nworkstream: kontor\n---\n# {name} plan\n\n```plan-graph\n{{\"schema_version\":1,\"epic\":{{\"jira\":\"{epic}\",\"kontor_id\":null}},\"tasks\":[],\"edges\":[],\"external_fences\":[]}}\n```\n"
+            ),
+        )
+        .expect("the plan");
+    }
+    git(checkout.path(), &["add", "-A"]);
+    git(checkout.path(), &["commit", "-q", "-m", "more plans"]);
+    let settings = kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: checkout.path().to_path_buf(),
+            include_github_plans: false,
+        }],
+        ..kontor_catalog::CatalogSettings::default()
+    };
+    std::fs::write(
+        Catalog::settings_path(world.directory.path()),
+        serde_json::to_vec_pretty(&settings).expect("settings"),
+    )
+    .expect("the settings are installed");
+    let report = catalog.collect_once().await.expect("the sweep completes");
+    assert!(report.finished);
+
+    let first = Call::get("/v1/work-catalog/entries?limit=1")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first = first.json();
+    assert_eq!(first["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(first["truncated"], true);
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("a continuation")
+        .to_owned();
+
+    let second = Call::get(format!(
+        "/v1/work-catalog/entries?limit=1&cursor={}",
+        cursor.replace(':', "%3A")
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second = second.json();
+    assert_eq!(second["generation"], first["generation"]);
+    assert_ne!(
+        first["entries"][0]["logical_plan_id"],
+        second["entries"][0]["logical_plan_id"]
+    );
+
+    let sources = Call::get("/v1/work-catalog/sources")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(sources.status, 200, "{}", sources.body);
+    let sources = sources.json();
+    assert_eq!(sources["schema_version"], 1);
+    assert_eq!(sources["sources"].as_array().map(Vec::len), Some(3));
+    assert_eq!(sources["sources"][0]["source"], "plan");
+    assert_eq!(sources["sources"][0]["state"], "complete");
+    assert_eq!(sources["sources"][0]["as_of"], first["as_of"]);
+    assert_eq!(sources["sources"][1]["source"], "jira");
+    assert_eq!(sources["sources"][1]["state"], "not_configured");
+    assert_eq!(sources["sources"][2]["source"], "native");
+
+    let anonymous = Call::get("/v1/work-catalog/sources")
+        .anonymous()
+        .send(&world)
+        .await;
+    assert_eq!(anonymous.status, 401);
+
+    let wrong = Call::get(format!(
+        "/v1/work-catalog/entries?kind=execution_unit&cursor={}",
+        cursor.replace(':', "%3A")
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(wrong.status, 400);
+    assert_eq!(wrong.code(), "invalid_request");
+
+    std::fs::write(
+        checkout.path().join("plans/api.md"),
+        "---\nepic: ASMA-9990\nworkstream: kontor\n---\n# API plan revised\n",
+    )
+    .expect("the plan changes");
+    git(checkout.path(), &["add", "-A"]);
+    git(checkout.path(), &["commit", "-q", "-m", "revise"]);
+    let later = catalog.collect_once().await.expect("the sweep completes");
+    assert_ne!(later.generation, report.generation);
+
+    let stale = Call::get(format!(
+        "/v1/work-catalog/entries?limit=1&cursor={}",
+        cursor.replace(':', "%3A")
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 410);
+    assert_eq!(stale.code(), "stale_cursor");
+}

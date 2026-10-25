@@ -1015,6 +1015,11 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_task_get",
             "kontor_run_get",
             "kontor_realm_get",
+            "kontor_work_catalog_status",
+            "kontor_work_catalog_sources",
+            "kontor_work_catalog_entries",
+            "kontor_work_catalog_native_status",
+            "kontor_work_catalog_native_inventory",
             "kontor_code_help_get",
             "kontor_intake_receipt_get",
             "kontor_ticket_comments_list",
@@ -1071,6 +1076,11 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
     ServeProfile {
         name: "leadership",
         tools: &[
+            "kontor_work_catalog_status",
+            "kontor_work_catalog_sources",
+            "kontor_work_catalog_entries",
+            "kontor_work_catalog_native_status",
+            "kontor_work_catalog_native_inventory",
             "kontor_completion_get",
             "kontor_completion_remediate",
             "kontor_open_questions_list",
@@ -1502,6 +1512,120 @@ pub static REGISTRY: &[ToolSpec] = &[
         kind: OpKind::Read,
         args: &[],
         about: "This realm's identity, locality and freshness.",
+    },
+    // TASK-004: the host-local observational catalog. These are reads only and
+    // never reach a runtime, a store write or the governed model catalog at
+    // `/v1/catalog`.
+    ToolSpec {
+        name: "kontor_work_catalog_status",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/work-catalog/status",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "The plan catalog's generation, coverage, errors and conflicts.",
+    },
+    ToolSpec {
+        name: "kontor_work_catalog_sources",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/work-catalog/sources",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "Per-source freshness, coverage, errors, retry deadlines and conflicts across plan, Jira and native observations.",
+    },
+    ToolSpec {
+        name: "kontor_work_catalog_entries",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/work-catalog/entries",
+        },
+        kind: OpKind::Read,
+        args: &[
+            opt(
+                "kind",
+                Place::Query,
+                ArgType::Enum(&["plan", "execution_unit"]),
+                "Only this entry kind.",
+            ),
+            opt(
+                "scope",
+                Place::Query,
+                ArgType::Text,
+                "A repository id, root, path prefix, logical plan id or workstream key.",
+            ),
+            opt(
+                "include_removed",
+                Place::Query,
+                ArgType::Bool,
+                "Include tombstoned entries.",
+            ),
+            opt(
+                "limit",
+                Place::Query,
+                ArgType::U32,
+                "Maximum entries per page.",
+            ),
+            opt(
+                "cursor",
+                Place::Query,
+                ArgType::Text,
+                "A continuation from the prior page; it may not cross catalog generations.",
+            ),
+        ],
+        about: "One generation-consistent page of catalog entries.",
+    },
+    ToolSpec {
+        name: "kontor_work_catalog_native_status",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/work-catalog/native/status",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "The native Paseo census's generation, per-runtime coverage and retry deadline.",
+    },
+    ToolSpec {
+        name: "kontor_work_catalog_native_inventory",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/work-catalog/native/inventory",
+        },
+        kind: OpKind::Read,
+        args: &[
+            opt(
+                "include_removed",
+                Place::Query,
+                ArgType::Bool,
+                "Include observations removed at the active generation.",
+            ),
+            opt(
+                "instance",
+                Place::Query,
+                ArgType::Text,
+                "Only this stable runtime instance.",
+            ),
+            opt(
+                "limit",
+                Place::Query,
+                ArgType::U32,
+                "Maximum rows per collection.",
+            ),
+            opt(
+                "cursor",
+                Place::Query,
+                ArgType::Text,
+                "A continuation from the prior page; it may not cross native generations.",
+            ),
+        ],
+        about: "One generation-consistent native inventory of projects, workspaces and sessions.",
     },
     ToolSpec {
         name: "kontor_run_get",
@@ -9322,26 +9446,6 @@ pub static NON_AGENT_ROUTES: &[NonAgentRoute] = &[
         path: "/v1/openapi.json",
         reason: "the contract document itself, consumed by tests and build tooling",
     },
-    NonAgentRoute {
-        method: Method::Get,
-        path: "/v1/work-catalog/status",
-        reason: "an observer-tier catalog read; TASK-004 owns the plugin projection",
-    },
-    NonAgentRoute {
-        method: Method::Get,
-        path: "/v1/work-catalog/entries",
-        reason: "an observer-tier catalog read; TASK-004 owns the plugin projection",
-    },
-    NonAgentRoute {
-        method: Method::Get,
-        path: "/v1/work-catalog/native/status",
-        reason: "an observer-tier native census read; TASK-004 owns the plugin projection",
-    },
-    NonAgentRoute {
-        method: Method::Get,
-        path: "/v1/work-catalog/native/inventory",
-        reason: "an observer-tier native census read; TASK-004 owns the plugin projection",
-    },
 ];
 
 #[cfg(test)]
@@ -9758,8 +9862,8 @@ mod tests {
         // a tool to a seat's surface stays a decision rather than a side effect.
         assert_eq!(
             worker.tools.len(),
-            26,
-            "worker includes artifact recovery, question and gap reporting, and readback"
+            31,
+            "worker includes the observational catalog, artifact recovery, question and gap reporting, and readback"
         );
         assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
@@ -9957,6 +10061,11 @@ mod tests {
         assert_eq!(
             leadership.tools,
             [
+                "kontor_work_catalog_status",
+                "kontor_work_catalog_sources",
+                "kontor_work_catalog_entries",
+                "kontor_work_catalog_native_status",
+                "kontor_work_catalog_native_inventory",
                 "kontor_completion_get",
                 "kontor_completion_remediate",
                 "kontor_open_questions_list",
@@ -9968,9 +10077,58 @@ mod tests {
         );
     }
 
+    /// TASK-004: the observer catalog reads are read-only, at observer tier,
+    /// and deliberately served to the working and leadership surfaces.
+    #[test]
+    fn the_observer_catalog_reads_are_reads_and_served_where_expected() {
+        for (name, path) in [
+            ("kontor_work_catalog_status", "/v1/work-catalog/status"),
+            ("kontor_work_catalog_sources", "/v1/work-catalog/sources"),
+            ("kontor_work_catalog_entries", "/v1/work-catalog/entries"),
+            (
+                "kontor_work_catalog_native_status",
+                "/v1/work-catalog/native/status",
+            ),
+            (
+                "kontor_work_catalog_native_inventory",
+                "/v1/work-catalog/native/inventory",
+            ),
+        ] {
+            let tool = ToolSpec::find(name).expect("the observer catalog tool");
+            assert_eq!(tool.tier, CallerTier::Observer);
+            assert_eq!(tool.kind, OpKind::Read);
+            assert_eq!(tool.route(), Some((Method::Get, path)));
+            assert_eq!(
+                tool.args_in(Place::Header).count(),
+                0,
+                "{name} is a read, not a committed write"
+            );
+            for profile in ["worker", "leadership"] {
+                assert!(
+                    ServeProfile::find(profile)
+                        .expect("a declared profile")
+                        .allows(name),
+                    "{profile} should read the observational catalog"
+                );
+            }
+            for profile in [
+                "consultation",
+                kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
+                kontor_core::planning_pair::CALLER_SERVE_PROFILE,
+            ] {
+                assert!(
+                    !ServeProfile::find(profile)
+                        .expect("a declared profile")
+                        .allows(name),
+                    "{profile} is a consultation surface, not a catalog browser"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_allowlist_names_only_routes_no_tool_also_claims() {
-        assert_eq!(NON_AGENT_ROUTES.len(), 6);
+        assert_eq!(NON_AGENT_ROUTES.len(), 2);
         for route in NON_AGENT_ROUTES {
             assert!(
                 !route.reason.is_empty(),

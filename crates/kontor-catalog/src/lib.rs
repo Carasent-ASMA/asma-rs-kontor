@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kontor_core::id::Timestamp;
+use kontor_core::id::{SignedDuration, Timestamp};
 use tracing::{info, warn};
 
 pub use config::{
@@ -47,8 +47,10 @@ pub use config::{
     RepositoryConfig, SourceKind, SourceRevisionKind,
 };
 pub use contract::{
-    CATALOG_CONTRACT_VERSION, CatalogEntry, CatalogStatus, CollectionState, ConfigOrigin,
-    ContentKind, EntriesView, EntryFilter, EntryKind, EntryState, ReadSource, RevisionKind,
+    CATALOG_CONTRACT_VERSION, CatalogEntry, CatalogSource, CatalogSourceConflict,
+    CatalogSourceCoverage, CatalogSourceState, CatalogSourceStatus, CatalogSourcesView,
+    CatalogStatus, CollectionState, ConfigOrigin, ContentKind, EntriesView, EntryFilter, EntryKind,
+    EntryState, ReadSource, RevisionKind,
 };
 pub use jira::{JiraCatalog, JiraCatalogError, JiraSweepReport, poll_jira_until_stopped};
 pub use jira_contract::{
@@ -82,6 +84,20 @@ pub enum CatalogError {
     #[error("catalog configuration refused: {detail}")]
     Config {
         /// A structural explanation; never file bytes.
+        detail: String,
+    },
+    /// A cursor names a generation that is no longer the active answer.
+    #[error("the cursor generation {generation} is not the active generation {active}")]
+    StaleCursor {
+        /// The generation carried by the cursor.
+        generation: u64,
+        /// The generation this read would answer from.
+        active: u64,
+    },
+    /// A cursor is malformed or was issued for another filter.
+    #[error("the catalog cursor is not valid for this read: {detail}")]
+    InvalidCursor {
+        /// A structural explanation.
         detail: String,
     },
     /// Neither the database nor a snapshot could answer.
@@ -774,7 +790,7 @@ impl Catalog {
             .database
             .read_native_inventory(filter.include_removed, filter.runtime_instance.as_deref())
         {
-            Ok(stored) => Ok(native_inventory_view(
+            Ok(stored) => native_inventory_view(
                 native::NATIVE_CENSUS_VERSION,
                 stored.generation,
                 stored.as_of,
@@ -784,11 +800,11 @@ impl Catalog {
                 stored.workspaces,
                 stored.sessions,
                 filter,
-            )),
+            ),
             Err(database_error) => match self.read_native_snapshot() {
                 Ok(Some(snapshot)) => {
                     let archive_scope = snapshot.status.collection.include_archived;
-                    Ok(native_inventory_view(
+                    native_inventory_view(
                         snapshot.schema_version,
                         snapshot.generation,
                         Some(snapshot.written_at),
@@ -798,7 +814,7 @@ impl Catalog {
                         snapshot.workspaces,
                         snapshot.sessions,
                         filter,
-                    ))
+                    )
                 }
                 Ok(None) => Err(CatalogError::Unavailable {
                     detail: format!(
@@ -996,12 +1012,18 @@ impl Catalog {
 
     /// One generation-consistent entries answer, with the basic filters.
     ///
+    /// A cursor is bound to the generation and filter that issued it. Presenting
+    /// it after the active generation moved is refused rather than answered from
+    /// two generations, because a page that spans a sweep is not one observation.
+    ///
     /// # Errors
-    /// Neither the database nor a compatible snapshot could answer.
+    /// Neither the database nor a compatible snapshot could answer, the cursor
+    /// belongs to another generation, or it is malformed.
     pub fn entries(&self, filter: &EntryFilter) -> Result<EntriesView, CatalogError> {
         match self.database.read_entries(filter.include_removed) {
             Ok(read) => {
-                let (entries, truncated) = filter_entries(read.entries, filter);
+                let (entries, truncated, next_cursor) =
+                    filter_entries(read.entries, filter, read.generation)?;
                 Ok(EntriesView {
                     schema_version: CATALOG_CONTRACT_VERSION,
                     generation: read.generation,
@@ -1009,11 +1031,13 @@ impl Catalog {
                     source: ReadSource::Database,
                     entries,
                     truncated,
+                    next_cursor,
                 })
             }
             Err(database_error) => match self.read_snapshot() {
                 Ok(Some(snapshot)) => {
-                    let (entries, truncated) = filter_entries(snapshot.entries, filter);
+                    let (entries, truncated, next_cursor) =
+                        filter_entries(snapshot.entries, filter, snapshot.generation)?;
                     Ok(EntriesView {
                         schema_version: CATALOG_CONTRACT_VERSION,
                         generation: snapshot.generation,
@@ -1021,6 +1045,7 @@ impl Catalog {
                         source: ReadSource::Snapshot,
                         entries,
                         truncated,
+                        next_cursor,
                     })
                 }
                 Ok(None) => Err(CatalogError::Unavailable {
@@ -1035,6 +1060,350 @@ impl Catalog {
                         error_class(&database_error)
                     ),
                 }),
+            },
+        }
+    }
+
+    /// Per-source freshness, coverage, errors, retry deadlines and conflicts.
+    ///
+    /// A source that cannot be read is reported as failed in its own row rather
+    /// than failing the whole answer: the observer surface exists to say which
+    /// observation is missing. It never substitutes the request instant for a
+    /// source's completion instant.
+    ///
+    /// # Errors
+    /// The catalog settings could not be read. An unreadable source is a row.
+    pub fn sources(&self) -> Result<CatalogSourcesView, CatalogError> {
+        let effective = self.effective_settings();
+        let sources = vec![
+            self.plan_source_status(&effective),
+            self.jira_source_status(&effective),
+            self.native_source_status(),
+        ];
+        Ok(CatalogSourcesView {
+            schema_version: CATALOG_CONTRACT_VERSION,
+            sources,
+        })
+    }
+
+    fn plan_source_status(&self, effective: &EffectiveSettings) -> CatalogSourceStatus {
+        let pending_verification = self.database.count_unverified_associations().unwrap_or(0);
+        let mut coverage = Vec::new();
+        let mut conflicts = Vec::new();
+        match self.status() {
+            Ok(status) => {
+                let read = match status.source {
+                    ReadSource::Database => "database",
+                    ReadSource::Snapshot => "fallback snapshot",
+                };
+                coverage.push(CatalogSourceCoverage {
+                    subject: "collection".to_owned(),
+                    state: collection_state_name(status.collection.state).to_owned(),
+                    detail: format!(
+                        "{} of {} repositories read, {} files, {} entries, read from {read}",
+                        status.collection.repositories_scanned,
+                        status.collection.repositories_configured,
+                        status.collection.files_seen,
+                        status.collection.entries_observed
+                    ),
+                });
+                for repository in &status.collection.coverage {
+                    coverage.push(CatalogSourceCoverage {
+                        subject: repository.root.clone(),
+                        state: repository_state_name(repository.state).to_owned(),
+                        detail: format!(
+                            "{} files, {} entries{}",
+                            repository.files_seen,
+                            repository.entries_observed,
+                            repository
+                                .error
+                                .as_ref()
+                                .map(|error| format!("; {error}"))
+                                .unwrap_or_default()
+                        ),
+                    });
+                }
+                coverage.push(CatalogSourceCoverage {
+                    subject: "registry".to_owned(),
+                    state: registry_state_name(status.registry.state).to_owned(),
+                    detail: format!(
+                        "{} workstreams; {} diagnostics",
+                        status.registry.workstreams,
+                        status.registry.diagnostics.len()
+                    ),
+                });
+                coverage.push(CatalogSourceCoverage {
+                    subject: "snapshot".to_owned(),
+                    state: if status.snapshot.current {
+                        "current"
+                    } else if status.snapshot.present {
+                        "stale"
+                    } else {
+                        "absent"
+                    }
+                    .to_owned(),
+                    detail: status
+                        .snapshot
+                        .written_at
+                        .as_ref()
+                        .map(|written| format!("written {written}"))
+                        .unwrap_or_else(|| "no fallback written".to_owned()),
+                });
+                conflicts = status
+                    .conflicts
+                    .into_iter()
+                    .take(MAX_SOURCE_CONFLICTS)
+                    .map(|conflict| CatalogSourceConflict {
+                        kind: conflict_kind_name(conflict.kind).to_owned(),
+                        subject: conflict.logical_plan_id,
+                        message: conflict.message,
+                        observed_at: Some(conflict.observed_at),
+                    })
+                    .collect();
+                CatalogSourceStatus {
+                    source: CatalogSource::Plan,
+                    state: catalog_source_state(status.collection.state),
+                    generation: status.generation,
+                    attempted_generation: status.attempted_generation,
+                    as_of: status.as_of.clone(),
+                    error: status.collection.error.clone(),
+                    retry_at: match status.collection.state {
+                        CollectionState::Complete | CollectionState::NeverCollected => None,
+                        _ => retry_after(
+                            status.collection.finished_at.as_deref(),
+                            effective.settings.cadence_seconds,
+                        ),
+                    },
+                    coverage,
+                    conflicts,
+                    pending_verification,
+                }
+            }
+            Err(error) => CatalogSourceStatus {
+                source: CatalogSource::Plan,
+                state: CatalogSourceState::Failed,
+                generation: 0,
+                attempted_generation: 0,
+                as_of: None,
+                error: Some(error.to_string()),
+                retry_at: None,
+                coverage,
+                conflicts,
+                pending_verification,
+            },
+        }
+    }
+
+    fn jira_source_status(&self, effective: &EffectiveSettings) -> CatalogSourceStatus {
+        let configured = effective
+            .settings
+            .jira
+            .as_ref()
+            .is_some_and(|jira| jira.enabled);
+        if !configured {
+            return CatalogSourceStatus {
+                source: CatalogSource::Jira,
+                state: CatalogSourceState::NotConfigured,
+                generation: 0,
+                attempted_generation: 0,
+                as_of: None,
+                error: None,
+                retry_at: None,
+                coverage: vec![CatalogSourceCoverage {
+                    subject: "configuration".to_owned(),
+                    state: "not_configured".to_owned(),
+                    detail: "No enabled Jira section is configured for this catalog.".to_owned(),
+                }],
+                conflicts: Vec::new(),
+                pending_verification: 0,
+            };
+        }
+        match self.database.jira_checkpoint().and_then(|checkpoint| {
+            self.database
+                .read_jira_evidence(false)
+                .map(|evidence| (checkpoint, evidence))
+        }) {
+            Ok((checkpoint, evidence)) => {
+                let mut coverage = Vec::new();
+                let mut pending_verification = 0;
+                if let Some(coverage_value) = &evidence.coverage {
+                    coverage.push(CatalogSourceCoverage {
+                        subject: "scope".to_owned(),
+                        state: coverage_value.state.as_str().to_owned(),
+                        detail: format!(
+                            "{:?} sweep, {} scope issues, {} pages, complete={}, census={}",
+                            coverage_value.mode,
+                            coverage_value.scope_issues,
+                            coverage_value.pages,
+                            coverage_value.complete,
+                            coverage_value.census
+                        )
+                        .to_lowercase(),
+                    });
+                    coverage.push(CatalogSourceCoverage {
+                        subject: "declared keys".to_owned(),
+                        state: if coverage_value.missing.is_empty()
+                            && coverage_value.unresolved.is_empty()
+                        {
+                            "complete"
+                        } else {
+                            "pending"
+                        }
+                        .to_owned(),
+                        detail: format!(
+                            "{} of {} found, {} missing, {} out of scope, {} unresolved parents",
+                            coverage_value.found,
+                            coverage_value.declared,
+                            coverage_value.missing.len(),
+                            coverage_value.out_of_scope.len(),
+                            coverage_value.unresolved.len()
+                        ),
+                    });
+                    pending_verification =
+                        coverage_value.missing.len() + coverage_value.unresolved.len();
+                    coverage.push(CatalogSourceCoverage {
+                        subject: "schedule".to_owned(),
+                        state: if coverage_value.overdue {
+                            "overdue"
+                        } else {
+                            "on_schedule"
+                        }
+                        .to_owned(),
+                        detail: format!(
+                            "last full sweep {}, next full sweep {}",
+                            coverage_value
+                                .last_full_sweep_at
+                                .as_deref()
+                                .unwrap_or("none"),
+                            coverage_value
+                                .next_full_sweep_at
+                                .as_deref()
+                                .unwrap_or("none")
+                        ),
+                    });
+                }
+                let conflicts = evidence
+                    .aliases
+                    .into_iter()
+                    .take(MAX_SOURCE_CONFLICTS)
+                    .map(|alias| CatalogSourceConflict {
+                        kind: "moved_key".to_owned(),
+                        subject: Some(alias.old_key.clone()),
+                        message: format!(
+                            "Jira answered {} with its current key {}.",
+                            alias.old_key, alias.current_key
+                        ),
+                        observed_at: Some(alias.observed_at),
+                    })
+                    .collect();
+                CatalogSourceStatus {
+                    source: CatalogSource::Jira,
+                    state: match evidence.latest_state {
+                        jira_contract::JiraCollectionState::NeverCollected => {
+                            CatalogSourceState::NeverCollected
+                        }
+                        jira_contract::JiraCollectionState::Complete => {
+                            CatalogSourceState::Complete
+                        }
+                        jira_contract::JiraCollectionState::Incomplete => {
+                            CatalogSourceState::Incomplete
+                        }
+                        jira_contract::JiraCollectionState::Failed => CatalogSourceState::Failed,
+                    },
+                    generation: evidence.generation,
+                    attempted_generation: checkpoint.generation,
+                    as_of: evidence.as_of,
+                    error: evidence.latest_error,
+                    retry_at: evidence.backoff_until,
+                    coverage,
+                    conflicts,
+                    pending_verification,
+                }
+            }
+            Err(error) => CatalogSourceStatus {
+                source: CatalogSource::Jira,
+                state: CatalogSourceState::Failed,
+                generation: 0,
+                attempted_generation: 0,
+                as_of: None,
+                error: Some(error.to_string()),
+                retry_at: None,
+                coverage: Vec::new(),
+                conflicts: Vec::new(),
+                pending_verification: 0,
+            },
+        }
+    }
+
+    fn native_source_status(&self) -> CatalogSourceStatus {
+        match self.native_status() {
+            Ok(status) => {
+                let mut coverage: Vec<CatalogSourceCoverage> = status
+                    .collection
+                    .coverage
+                    .into_iter()
+                    .take(MAX_SOURCE_COVERAGE_ROWS)
+                    .map(|runtime| CatalogSourceCoverage {
+                        subject: runtime.runtime_instance.clone(),
+                        state: native_runtime_state_name(runtime.state).to_owned(),
+                        detail: format!(
+                            "{} projects, {} workspaces, {} sessions ({} archived), pages {}/{}/{}",
+                            runtime.projects,
+                            runtime.workspaces,
+                            runtime.sessions,
+                            runtime.archived_sessions,
+                            runtime.project_pages,
+                            runtime.workspace_pages,
+                            runtime.session_pages
+                        ),
+                    })
+                    .collect();
+                coverage.push(CatalogSourceCoverage {
+                    subject: "archive coverage".to_owned(),
+                    state: if status.collection.include_archived {
+                        "covered"
+                    } else {
+                        "not_covered"
+                    }
+                    .to_owned(),
+                    detail: format!(
+                        "{} of {} runtimes complete",
+                        status.collection.runtimes_complete, status.collection.runtimes_configured
+                    ),
+                });
+                coverage.push(CatalogSourceCoverage {
+                    subject: "read source".to_owned(),
+                    state: match status.source {
+                        ReadSource::Database => "database",
+                        ReadSource::Snapshot => "fallback_snapshot",
+                    }
+                    .to_owned(),
+                    detail: "The native census answered from this read source.".to_owned(),
+                });
+                CatalogSourceStatus {
+                    source: CatalogSource::Native,
+                    state: catalog_source_state(status.collection.state),
+                    generation: status.generation,
+                    attempted_generation: status.attempted_generation,
+                    as_of: status.as_of,
+                    error: status.collection.error,
+                    retry_at: status.collection.retry_at,
+                    coverage,
+                    conflicts: Vec::new(),
+                    pending_verification: 0,
+                }
+            }
+            Err(error) => CatalogSourceStatus {
+                source: CatalogSource::Native,
+                state: CatalogSourceState::Failed,
+                generation: 0,
+                attempted_generation: 0,
+                as_of: None,
+                error: Some(error.to_string()),
+                retry_at: None,
+                coverage: Vec::new(),
+                conflicts: Vec::new(),
+                pending_verification: 0,
             },
         }
     }
@@ -1198,7 +1567,7 @@ fn native_inventory_view(
     workspaces: Vec<native::NativeWorkspaceRecord>,
     sessions: Vec<native::NativeSessionRecord>,
     filter: &native::NativeInventoryFilter,
-) -> native::NativeInventoryView {
+) -> Result<native::NativeInventoryView, CatalogError> {
     let limit = if filter.limit == 0 {
         10_000
     } else {
@@ -1218,25 +1587,118 @@ fn native_inventory_view(
         .into_iter()
         .filter(|session| matches(&session.runtime_instance))
         .collect();
-    let truncated = projects.len() > limit || workspaces.len() > limit || sessions.len() > limit;
-    native::NativeInventoryView {
+    let (project_offset, workspace_offset, session_offset) = match filter.cursor.as_deref() {
+        Some(cursor) => parse_native_cursor(cursor, filter, generation)?,
+        None => (0, 0, 0),
+    };
+    let page = |len: usize, offset: usize| {
+        let start = offset.min(len);
+        let end = start.saturating_add(limit).min(len);
+        (start, end)
+    };
+    let (project_start, project_end) = page(projects.len(), project_offset);
+    let (workspace_start, workspace_end) = page(workspaces.len(), workspace_offset);
+    let (session_start, session_end) = page(sessions.len(), session_offset);
+    let next_cursor = (project_end < projects.len()
+        || workspace_end < workspaces.len()
+        || session_end < sessions.len())
+    .then(|| encode_native_cursor(generation, project_end, workspace_end, session_end, filter));
+    Ok(native::NativeInventoryView {
         schema_version,
         generation,
         as_of,
         source,
         archive_scope,
-        projects: projects.into_iter().take(limit).collect(),
-        workspaces: workspaces.into_iter().take(limit).collect(),
-        sessions: sessions.into_iter().take(limit).collect(),
-        truncated,
-    }
+        projects: projects[project_start..project_end].to_vec(),
+        workspaces: workspaces[workspace_start..workspace_end].to_vec(),
+        sessions: sessions[session_start..session_end].to_vec(),
+        truncated: next_cursor.is_some(),
+        next_cursor,
+    })
 }
 
-fn filter_entries(entries: Vec<CatalogEntry>, filter: &EntryFilter) -> (Vec<CatalogEntry>, bool) {
+const NATIVE_CURSOR_VERSION: &str = "n1";
+
+fn native_cursor_fingerprint(filter: &native::NativeInventoryFilter) -> String {
+    let removed = if filter.include_removed { "1" } else { "0" };
+    let runtime = filter.runtime_instance.as_deref().unwrap_or("");
+    let digest = config::sha256(format!("{removed}\u{0}{runtime}").as_bytes());
+    digest[..16].to_owned()
+}
+
+fn encode_native_cursor(
+    generation: u64,
+    project_offset: usize,
+    workspace_offset: usize,
+    session_offset: usize,
+    filter: &native::NativeInventoryFilter,
+) -> String {
+    format!(
+        "{NATIVE_CURSOR_VERSION}:{generation}:{project_offset}:{workspace_offset}:{session_offset}:{}",
+        native_cursor_fingerprint(filter)
+    )
+}
+
+fn parse_native_cursor(
+    cursor: &str,
+    filter: &native::NativeInventoryFilter,
+    generation: u64,
+) -> Result<(usize, usize, usize), CatalogError> {
+    let mut parts = cursor.split(':');
+    let version = parts.next();
+    let cursor_generation = parts.next().and_then(|value| value.parse::<u64>().ok());
+    let project_offset = parts.next().and_then(|value| value.parse::<usize>().ok());
+    let workspace_offset = parts.next().and_then(|value| value.parse::<usize>().ok());
+    let session_offset = parts.next().and_then(|value| value.parse::<usize>().ok());
+    let fingerprint = parts.next();
+    let (
+        Some(NATIVE_CURSOR_VERSION),
+        Some(cursor_generation),
+        Some(project_offset),
+        Some(workspace_offset),
+        Some(session_offset),
+        Some(fingerprint),
+    ) = (
+        version,
+        cursor_generation,
+        project_offset,
+        workspace_offset,
+        session_offset,
+        fingerprint,
+    )
+    else {
+        return Err(CatalogError::InvalidCursor {
+            detail: "the cursor is not a native catalog continuation".to_owned(),
+        });
+    };
+    if parts.next().is_some() || fingerprint != native_cursor_fingerprint(filter) {
+        return Err(CatalogError::InvalidCursor {
+            detail: "the cursor was issued for another native filter".to_owned(),
+        });
+    }
+    if cursor_generation != generation {
+        return Err(CatalogError::StaleCursor {
+            generation: cursor_generation,
+            active: generation,
+        });
+    }
+    Ok((project_offset, workspace_offset, session_offset))
+}
+
+const ENTRY_CURSOR_VERSION: &str = "v1";
+const MAX_ENTRY_PAGE: usize = 1000;
+const MAX_SOURCE_CONFLICTS: usize = 64;
+const MAX_SOURCE_COVERAGE_ROWS: usize = 64;
+
+fn filter_entries(
+    entries: Vec<CatalogEntry>,
+    filter: &EntryFilter,
+    generation: u64,
+) -> Result<(Vec<CatalogEntry>, bool, Option<String>), CatalogError> {
     let limit = if filter.limit == 0 {
-        1000
+        MAX_ENTRY_PAGE
     } else {
-        filter.limit.min(1000)
+        filter.limit.min(MAX_ENTRY_PAGE)
     };
     let scope = filter.scope.as_deref().filter(|scope| !scope.is_empty());
     let mut matched = Vec::new();
@@ -1251,9 +1713,123 @@ fn filter_entries(entries: Vec<CatalogEntry>, filter: &EntryFilter) -> (Vec<Cata
         }
         matched.push(entry);
     }
-    let truncated = matched.len() > limit;
-    matched.truncate(limit);
-    (matched, truncated)
+    let offset = match filter.cursor.as_deref() {
+        Some(cursor) => parse_cursor(cursor, filter, generation)?,
+        None => 0,
+    };
+    if offset >= matched.len() {
+        return Ok((Vec::new(), false, None));
+    }
+    let page_end = offset.saturating_add(limit).min(matched.len());
+    let next_cursor =
+        (page_end < matched.len()).then(|| encode_cursor(generation, page_end, filter));
+    let page = matched.into_iter().skip(offset).take(limit).collect();
+    Ok((page, next_cursor.is_some(), next_cursor))
+}
+
+fn cursor_filter_fingerprint(filter: &EntryFilter) -> String {
+    let kind = filter.kind.map(EntryKind::as_str).unwrap_or("");
+    let scope = filter.scope.as_deref().unwrap_or("");
+    let removed = if filter.include_removed { "1" } else { "0" };
+    let digest = config::sha256(format!("{kind}\u{0}{scope}\u{0}{removed}").as_bytes());
+    digest[..16].to_owned()
+}
+
+fn encode_cursor(generation: u64, offset: usize, filter: &EntryFilter) -> String {
+    format!(
+        "{ENTRY_CURSOR_VERSION}:{generation}:{offset}:{}",
+        cursor_filter_fingerprint(filter)
+    )
+}
+
+fn parse_cursor(
+    cursor: &str,
+    filter: &EntryFilter,
+    generation: u64,
+) -> Result<usize, CatalogError> {
+    let mut parts = cursor.split(':');
+    let version = parts.next();
+    let cursor_generation = parts.next().and_then(|value| value.parse::<u64>().ok());
+    let offset = parts.next().and_then(|value| value.parse::<usize>().ok());
+    let fingerprint = parts.next();
+    let (Some(ENTRY_CURSOR_VERSION), Some(cursor_generation), Some(offset), Some(fingerprint)) =
+        (version, cursor_generation, offset, fingerprint)
+    else {
+        return Err(CatalogError::InvalidCursor {
+            detail: "the cursor is not a catalog continuation".to_owned(),
+        });
+    };
+    if parts.next().is_some() || fingerprint != cursor_filter_fingerprint(filter) {
+        return Err(CatalogError::InvalidCursor {
+            detail: "the cursor was issued for another filter".to_owned(),
+        });
+    }
+    if cursor_generation != generation {
+        return Err(CatalogError::StaleCursor {
+            generation: cursor_generation,
+            active: generation,
+        });
+    }
+    Ok(offset)
+}
+
+fn catalog_source_state(state: CollectionState) -> CatalogSourceState {
+    match state {
+        CollectionState::NeverCollected => CatalogSourceState::NeverCollected,
+        CollectionState::Complete => CatalogSourceState::Complete,
+        CollectionState::Incomplete => CatalogSourceState::Incomplete,
+        CollectionState::Failed => CatalogSourceState::Failed,
+    }
+}
+
+fn collection_state_name(state: CollectionState) -> &'static str {
+    match state {
+        CollectionState::NeverCollected => "never_collected",
+        CollectionState::Complete => "complete",
+        CollectionState::Incomplete => "incomplete",
+        CollectionState::Failed => "failed",
+    }
+}
+
+fn repository_state_name(state: contract::RepositoryState) -> &'static str {
+    match state {
+        contract::RepositoryState::Scanned => "scanned",
+        contract::RepositoryState::NotReached => "not_reached",
+        contract::RepositoryState::Failed => "failed",
+    }
+}
+
+fn registry_state_name(state: contract::RegistryState) -> &'static str {
+    match state {
+        contract::RegistryState::Absent => "absent",
+        contract::RegistryState::Ready => "ready",
+        contract::RegistryState::Invalid => "invalid",
+    }
+}
+
+fn conflict_kind_name(kind: contract::ConflictKind) -> &'static str {
+    match kind {
+        contract::ConflictKind::DivergentWorktree => "divergent_worktree",
+        contract::ConflictKind::AmbiguousRename => "ambiguous_rename",
+        contract::ConflictKind::DuplicateExplicitId => "duplicate_explicit_id",
+        contract::ConflictKind::DuplicateEpic => "duplicate_epic",
+        contract::ConflictKind::PinMismatch => "pin_mismatch",
+        contract::ConflictKind::AssociationConflict => "association_conflict",
+    }
+}
+
+fn native_runtime_state_name(state: native::NativeRuntimeState) -> &'static str {
+    match state {
+        native::NativeRuntimeState::Scanned => "scanned",
+        native::NativeRuntimeState::Incomplete => "incomplete",
+        native::NativeRuntimeState::Failed => "failed",
+    }
+}
+
+fn retry_after(finished_at: Option<&str>, cadence_seconds: u64) -> Option<String> {
+    let finished = finished_at?.parse::<Timestamp>().ok()?;
+    let seconds = i64::try_from(cadence_seconds).ok()?;
+    Some((finished + SignedDuration::from_secs(seconds)).to_string())
 }
 
 fn entry_matches_scope(entry: &CatalogEntry, scope: &str) -> bool {
@@ -1413,8 +1989,36 @@ mod tests {
 
     #[test]
     fn a_zero_limit_uses_the_bounded_default() {
-        let (entries, truncated) = filter_entries(Vec::new(), &EntryFilter::default());
+        let (entries, truncated, cursor) =
+            filter_entries(Vec::new(), &EntryFilter::default(), 0).expect("an empty page");
         assert!(entries.is_empty());
         assert!(!truncated);
+        assert!(cursor.is_none());
+    }
+
+    #[test]
+    fn a_cursor_is_bound_to_its_generation_and_filter() {
+        let filter = EntryFilter {
+            kind: Some(EntryKind::Plan),
+            limit: 1,
+            ..EntryFilter::default()
+        };
+        let cursor = encode_cursor(7, 1, &filter);
+        assert_eq!(
+            parse_cursor(&cursor, &filter, 7).expect("the same generation"),
+            1
+        );
+        assert!(matches!(
+            parse_cursor(&cursor, &filter, 8),
+            Err(CatalogError::StaleCursor { .. })
+        ));
+        let other = EntryFilter {
+            kind: Some(EntryKind::ExecutionUnit),
+            ..filter
+        };
+        assert!(matches!(
+            parse_cursor(&cursor, &other, 7),
+            Err(CatalogError::InvalidCursor { .. })
+        ));
     }
 }
