@@ -23,29 +23,44 @@ use crate::{Caller, CallerCapability};
 /// Filters accepted by the entries read.
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
 pub struct EntriesQuery {
     /// `plan` or `execution_unit`.
+    #[param(required = false)]
     pub kind: Option<String>,
     /// A repository id, worktree root, path prefix, logical plan id or workstream key.
+    #[param(required = false)]
     pub scope: Option<String>,
     /// Include tombstoned entries. Defaults to false.
     #[serde(default)]
+    #[param(required = false, default = false)]
     pub include_removed: bool,
-    /// A bounded row limit. TASK-004 owns cursors; this is a hard bound only.
+    /// A bounded row limit.
+    #[param(required = false)]
     pub limit: Option<usize>,
+    /// An opaque continuation from the prior page. Bound to its generation and filter.
+    #[param(required = false)]
+    pub cursor: Option<String>,
 }
 
 /// Filters accepted by the native inventory read.
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
 pub struct NativeInventoryQuery {
     /// Include native observations removed at the active generation.
     #[serde(default)]
+    #[param(required = false, default = false)]
     pub include_removed: bool,
     /// Only this stable runtime instance.
-    pub runtime: Option<String>,
-    /// A bounded row limit per collection. TASK-004 owns cursors.
+    #[param(required = false)]
+    pub instance: Option<String>,
+    /// A bounded row limit per collection.
+    #[param(required = false)]
     pub limit: Option<usize>,
+    /// An opaque continuation from the prior page. Bound to its generation and filter.
+    #[param(required = false)]
+    pub cursor: Option<String>,
 }
 
 /// The native census's freshness, coverage and counts.
@@ -99,19 +114,27 @@ pub async fn native_inventory(
     })?;
     let filter = kontor_catalog::native::NativeInventoryFilter {
         include_removed: query.include_removed,
-        runtime_instance: query.runtime,
+        runtime_instance: query.instance,
         limit: query.limit.unwrap_or(10_000),
+        cursor: query.cursor,
     };
-    catalog
-        .native_inventory(&filter)
-        .map(Json)
-        .map_err(|error| {
+    catalog.native_inventory(&filter).map(Json).map_err(|error| match error {
+        kontor_catalog::CatalogError::StaleCursor { .. } => state.refuse(
+            ApiErrorCode::StaleCursor,
+            "the cursor belongs to a native generation that is no longer active; read again without a cursor",
+        ),
+        kontor_catalog::CatalogError::InvalidCursor { .. } => state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "the cursor is not a valid continuation for this native read",
+        ),
+        error => {
             warn!(detail = %error, "native work census inventory read failed");
             state.refuse(
                 ApiErrorCode::Unavailable,
                 "the native census is unavailable",
             )
-        })
+        }
+    })
 }
 
 /// The catalog's freshness, coverage, ownership and conflicts.
@@ -135,6 +158,31 @@ pub async fn status(
     })?;
     catalog.status().map(Json).map_err(|error| {
         warn!(detail = %error, "work catalog status read failed");
+        state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
+    })
+}
+
+/// Per-source freshness, coverage, errors, retry deadlines and conflicts.
+#[utoipa::path(
+    get, path = "/v1/work-catalog/sources", tag = "work-catalog",
+    responses(
+        (status = 200, body = kontor_catalog::contract::CatalogSourcesView),
+        (status = 401), (status = 403), (status = 503)
+    )
+)]
+pub async fn sources(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<kontor_catalog::contract::CatalogSourcesView>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let catalog = state.catalog().ok_or_else(|| {
+        state.refuse(
+            ApiErrorCode::Unavailable,
+            "the work catalog is not composed in this realm",
+        )
+    })?;
+    catalog.sources().map(Json).map_err(|error| {
+        warn!(detail = %error, "work catalog source status read failed");
         state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
     })
 }
@@ -174,9 +222,20 @@ pub async fn entries(
         scope: query.scope,
         include_removed: query.include_removed,
         limit: query.limit.unwrap_or(1000),
+        cursor: query.cursor,
     };
-    catalog.entries(&filter).map(Json).map_err(|error| {
-        warn!(detail = %error, "work catalog entries read failed");
-        state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
+    catalog.entries(&filter).map(Json).map_err(|error| match error {
+        kontor_catalog::CatalogError::StaleCursor { .. } => state.refuse(
+            ApiErrorCode::StaleCursor,
+            "the cursor belongs to a catalog generation that is no longer active; read again without a cursor",
+        ),
+        kontor_catalog::CatalogError::InvalidCursor { .. } => state.refuse(
+            ApiErrorCode::InvalidRequest,
+            "the cursor is not a valid continuation for this read",
+        ),
+        error => {
+            warn!(detail = %error, "work catalog entries read failed");
+            state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
+        }
     })
 }

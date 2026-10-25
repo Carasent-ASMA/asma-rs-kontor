@@ -813,6 +813,43 @@ impl Database {
         })
     }
 
+    /// Count active associations that no source has verified.
+    ///
+    /// The frozen v1 contract cannot mark an association verified, so this is
+    /// the honest pending set: plan declarations and explicit operator
+    /// associations still awaiting a collector with its own evidence contract.
+    ///
+    /// # Errors
+    /// SQLite refused.
+    pub fn count_unverified_associations(&self) -> Result<usize, StoreError> {
+        let connection = self.lock();
+        let active: i64 = connection.query_row(
+            "SELECT active_generation FROM catalog_scope WHERE scope = ?1",
+            [crate::contract::HOST_SCOPE],
+            |row| row.get(0),
+        )?;
+        let active = u64::try_from(active)
+            .map_err(|_| StoreError::Corrupt("negative active generation".to_owned()))?;
+        if active == 0 {
+            return Ok(0);
+        }
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*)
+             FROM catalog_associations a
+             JOIN catalog_logical_plans p
+               ON p.logical_plan_id = a.logical_plan_id
+             WHERE a.verified = 0
+               AND a.dangling = 0
+               AND a.last_seen_generation = ?1
+               AND p.state = 'active'
+               AND p.visible_generation = ?1",
+            params![generation_to_sql(active)],
+            |row| row.get(0),
+        )?;
+        usize::try_from(count)
+            .map_err(|_| StoreError::Corrupt("negative association count".to_owned()))
+    }
+
     /// Record which effective configuration a sweep used.
     ///
     /// # Errors

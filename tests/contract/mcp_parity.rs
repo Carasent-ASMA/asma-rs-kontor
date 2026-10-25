@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 231 mapped operations and exactly six allowlisted ones. The canary is not a
-//! claim that 231 is forever — it is what makes a later change to the daemon's
+//! 236 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 236 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -549,7 +549,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        233,
+        236,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,20 +565,19 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        232,
+        235,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
         NON_AGENT_ROUTES.len(),
-        6,
+        2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
-    // Every registry operation plus health and the four observer-tier catalog
-    // reads is documented. The other allowlisted route serves the document
-    // itself and is not self-documented.
+    // Every registry operation plus health is documented. The other allowlisted
+    // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        234,
+        237,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -609,6 +608,11 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
     use kontor_mcp::CallerTier;
     let expected: BTreeMap<&str, CallerTier> = BTreeMap::from([
         ("kontor_realm_get", CallerTier::Observer),
+        ("kontor_work_catalog_status", CallerTier::Observer),
+        ("kontor_work_catalog_sources", CallerTier::Observer),
+        ("kontor_work_catalog_entries", CallerTier::Observer),
+        ("kontor_work_catalog_native_status", CallerTier::Observer),
+        ("kontor_work_catalog_native_inventory", CallerTier::Observer),
         ("kontor_run_get", CallerTier::Observer),
         ("kontor_runtime_bindings_list", CallerTier::Observer),
         ("kontor_task_get", CallerTier::Observer),

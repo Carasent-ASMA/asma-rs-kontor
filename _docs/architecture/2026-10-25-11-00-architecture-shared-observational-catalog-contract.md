@@ -34,7 +34,9 @@ valid catalog and reports a complete sweep with zero coverage.
 The Rust types in `crates/kontor-catalog/src/contract.rs` are the contract.
 `CATALOG_CONTRACT_VERSION = 1` is carried on every status and entries body. A
 field may change only with a contract-version change; storage migrations add
-columns behind these types.
+columns behind these types. TASK-004's `next_cursor` and the composite sources
+view are additive: a reader that ignores them still reads the same generations,
+so the version stays 1 and an existing snapshot remains valid.
 
 ### Three identities, never collapsed
 
@@ -115,13 +117,16 @@ credential is still required.
 
 | Route | Answer |
 | --- | --- |
-| `GET /v1/work-catalog/status` | Freshness (`generation`, `as_of`), collector ownership, coverage, counts, registry projection, diagnostics, conflicts, dangling associations, snapshot state |
-| `GET /v1/work-catalog/entries?kind=&scope=&include_removed=&limit=` | One generation-consistent entries view. `scope` matches a repository id, worktree root, path prefix, logical plan id or workstream key |
+| `GET /v1/work-catalog/status` | The plan source's freshness (`generation`, `as_of`), collector ownership, coverage, counts, registry projection, diagnostics, conflicts, dangling associations and snapshot state |
+| `GET /v1/work-catalog/sources` | Per-source freshness, coverage, errors, retry deadline, conflicts and pending verification for the plan, Jira and native sources in one bounded view |
+| `GET /v1/work-catalog/entries?kind=&scope=&include_removed=&limit=&cursor=` | One generation-consistent entries page. `scope` matches a repository id, worktree root, path prefix, logical plan id or workstream key. `next_cursor` is an opaque continuation bound to the generation and filter; a cursor from a replaced generation is refused with `stale_cursor` (410), never answered from two generations |
+| `GET /v1/work-catalog/native/inventory?include_removed=&instance=&limit=&cursor=` | One generation-consistent native page; its cursor carries one offset per collection and is fenced the same way |
 
 `/v1/work-catalog` is deliberately distinct from `/v1/catalog`, which serves the
-governed model/work-profile catalog. TASK-004 owns MCP tools, pagination cursors,
-plugin consumption and its versioned snapshot; this task exposes no cursor and
-no plugin surface.
+governed model/work-profile catalog. TASK-004 adds the composite sources read,
+generation-bound cursors, the fixed observer MCP tools and the plugin's versioned
+last-known snapshot. A fallback source status carries the generation's completion
+instant as `as_of`; request time is never presented as source freshness.
 
 ## Configuration precedence and migration
 

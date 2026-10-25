@@ -548,8 +548,13 @@ pub struct EntriesView {
     pub source: ReadSource,
     /// The matching entries.
     pub entries: Vec<CatalogEntry>,
-    /// Whether the result was bounded. TASK-004 owns cursors.
+    /// Whether a further page exists. Equivalent to `next_cursor.is_some()`.
     pub truncated: bool,
+    /// An opaque continuation for the next page, bound to this generation and
+    /// filter. A reader that presents it after the generation advanced is
+    /// refused rather than shown a page from a mix of generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Where a read answer came from.
@@ -562,7 +567,7 @@ pub enum ReadSource {
     Snapshot,
 }
 
-/// A basic entry query. Pagination is explicitly out of scope for TASK-001.
+/// A basic entry query.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntryFilter {
     /// Only this kind.
@@ -573,6 +578,97 @@ pub struct EntryFilter {
     pub include_removed: bool,
     /// A hard row bound. The reader clamps it.
     pub limit: usize,
+    /// An opaque continuation from a prior [`EntriesView::next_cursor`].
+    pub cursor: Option<String>,
+}
+
+/// One source of observations in the shared catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogSource {
+    /// Local plan and execution-unit discovery.
+    Plan,
+    /// Read-only Jira observation.
+    Jira,
+    /// Headless native Paseo census.
+    Native,
+}
+
+/// The state of one source's latest attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogSourceState {
+    /// The source has no active configuration for this catalog.
+    NotConfigured,
+    /// The source is configured but no complete generation exists.
+    NeverCollected,
+    /// The latest attempt read everything it needed.
+    Complete,
+    /// The latest attempt stopped before every fact was answered.
+    Incomplete,
+    /// The latest attempt could not start or lost its channel.
+    Failed,
+}
+
+/// One bounded coverage line for a source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CatalogSourceCoverage {
+    /// What the line covers, such as a repository or a sweep mode.
+    pub subject: String,
+    /// The stable state spelling for this line.
+    pub state: String,
+    /// A bounded structural detail, never file bytes or a credential.
+    pub detail: String,
+}
+
+/// One conflict observed at a source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CatalogSourceConflict {
+    /// A stable conflict kind.
+    pub kind: String,
+    /// The plan, issue or runtime the conflict is about.
+    pub subject: Option<String>,
+    /// A structural description.
+    pub message: String,
+    /// When the conflict was observed, when the source records it.
+    pub observed_at: Option<String>,
+}
+
+/// Freshness, coverage, errors and conflicts for one source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CatalogSourceStatus {
+    /// Which source this describes.
+    pub source: CatalogSource,
+    /// The latest attempt's state.
+    pub state: CatalogSourceState,
+    /// The last complete generation, or `0` before the first one.
+    pub generation: u64,
+    /// How far collection has attempted; may be ahead of `generation`.
+    pub attempted_generation: u64,
+    /// The instant the latest complete generation finished. Never the request
+    /// instants or the instant this status was read.
+    pub as_of: Option<String>,
+    /// The latest structural failure, never source content.
+    pub error: Option<String>,
+    /// The earliest instant this source will retry, when it named one.
+    pub retry_at: Option<String>,
+    /// Bounded coverage lines.
+    pub coverage: Vec<CatalogSourceCoverage>,
+    /// Bounded visible conflicts.
+    pub conflicts: Vec<CatalogSourceConflict>,
+    /// Associations this source has not verified. The frozen v1 association
+    /// contract cannot claim verification, so plan declarations remain pending
+    /// until a collector with its own evidence contract proves them.
+    pub pending_verification: usize,
+}
+
+/// The per-source observer status across every catalog source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CatalogSourcesView {
+    /// The contract version.
+    pub schema_version: u32,
+    /// One row per source, in plan, Jira, native order.
+    pub sources: Vec<CatalogSourceStatus>,
 }
 
 /// The fallback snapshot document.

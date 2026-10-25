@@ -593,8 +593,12 @@ pub struct NativeInventoryView {
     pub workspaces: Vec<NativeWorkspaceRecord>,
     /// Native sessions.
     pub sessions: Vec<NativeSessionRecord>,
-    /// Whether any collection was bounded by the caller's limit.
+    /// Whether a further page exists. Equivalent to `next_cursor.is_some()`.
     pub truncated: bool,
+    /// An opaque continuation bound to this generation and filter. It carries
+    /// one offset per collection, so a page never mixes generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// A native inventory query.
@@ -606,6 +610,8 @@ pub struct NativeInventoryFilter {
     pub runtime_instance: Option<String>,
     /// A hard row bound per collection.
     pub limit: usize,
+    /// An opaque continuation from a prior [`NativeInventoryView::next_cursor`].
+    pub cursor: Option<String>,
 }
 
 /// One finished native sweep.

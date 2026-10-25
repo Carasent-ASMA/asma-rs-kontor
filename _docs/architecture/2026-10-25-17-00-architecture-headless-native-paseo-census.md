@@ -124,11 +124,13 @@ plan reads:
 | Route | Answer |
 | --- | --- |
 | `GET /v1/work-catalog/native/status` | Native generation, attempted generation, as-of, collector, retry instant, per-runtime coverage, counts and snapshot state |
-| `GET /v1/work-catalog/native/inventory?include_removed=&runtime=&limit=` | One generation-consistent native inventory for projects, workspaces and sessions |
+| `GET /v1/work-catalog/native/inventory?include_removed=&instance=&limit=` | One generation-consistent native inventory for projects, workspaces and sessions |
 
 `include_removed` exposes observations removed at the active generation.
-`runtime` selects one runtime instance. `limit` is a hard bound per
-collection; TASK-004 owns cursors and the plugin projection.
+`instance` selects one runtime instance. `limit` is a hard bound per
+collection; `next_cursor` continues the same generation and is refused when it
+moved. The plugin projection is documented in
+[`2026-10-25-19-00-architecture-plugin-catalog-consumption.md`](2026-10-25-19-00-architecture-plugin-catalog-consumption.md).
 
 ## Composition
 

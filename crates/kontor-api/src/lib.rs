@@ -311,6 +311,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/work-catalog/status", get(work_catalog::status))
+        .route("/v1/work-catalog/sources", get(work_catalog::sources))
         .route("/v1/work-catalog/entries", get(work_catalog::entries))
         .route(
             "/v1/work-catalog/native/status",
