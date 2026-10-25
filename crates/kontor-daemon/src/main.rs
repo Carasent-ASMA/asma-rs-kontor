@@ -17,6 +17,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use kontor_api::state::BarrierState;
@@ -342,9 +343,17 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
     // a catalog failure degrades coverage and nothing else.
     if let Some(catalog) = daemon.catalog() {
         tokio::spawn(kontor_catalog::poll_until_stopped(
-            catalog,
+            Arc::clone(&catalog),
             daemon.state().signals().stops(),
         ));
+        let native_census = daemon.native_census();
+        if !native_census.is_empty() {
+            tokio::spawn(kontor_catalog::poll_native_until_stopped(
+                catalog,
+                native_census,
+                daemon.state().signals().stops(),
+            ));
+        }
     }
     // Publication checks run only where an operator installed the GitHub App;
     // without the document the gateway is absent and nothing is posted.

@@ -470,6 +470,11 @@ pub struct Daemon {
     /// A failure here degrades catalog coverage only: the daemon still serves,
     /// schedules and reconciles exactly as before.
     catalog: Option<Arc<kontor_catalog::Catalog>>,
+    /// The read-only native census sources this Realm configures.
+    ///
+    /// Empty means no native runtime was configured. A source never gates
+    /// governed startup or scheduling.
+    native_census: Vec<Arc<dyn kontor_catalog::native::NativeCensusSource>>,
     /// Held for its `Drop`. The claim on the state root lasts exactly as long as
     /// this value does.
     lock: StateRootLock,
@@ -501,7 +506,7 @@ impl Daemon {
     /// selecting capacity requires opening the store but precedes credentials
     /// and service composition. A failed start releases its state-root lock.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, None, None)
+        Self::start_with_supervision(config, runtimes, None, None, None, Vec::new())
     }
 
     /// Start with a scripted exact-provider reporter for black-box contracts.
@@ -515,7 +520,7 @@ impl Daemon {
         runtimes: RuntimeRegistry,
         usage_poller: usage::UsagePoller,
     ) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, Some(usage_poller), None)
+        Self::start_with_supervision(config, runtimes, None, Some(usage_poller), None, Vec::new())
     }
 
     /// Start with an explicitly composed governed summarizer transport.
@@ -531,7 +536,14 @@ impl Daemon {
         runtimes: RuntimeRegistry,
         succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
     ) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, None, Some(succession_summarizer))
+        Self::start_with_supervision(
+            config,
+            runtimes,
+            None,
+            None,
+            Some(succession_summarizer),
+            Vec::new(),
+        )
     }
 
     fn start_with_supervision(
@@ -540,6 +552,7 @@ impl Daemon {
         supervision: Option<SupervisionPolicy>,
         usage_poller: Option<usage::UsagePoller>,
         succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
+        native_census: Vec<Arc<dyn kontor_catalog::native::NativeCensusSource>>,
     ) -> Result<Self, StartupError> {
         // The address can be judged before touching the state root. Capacity
         // selection must wait for the store: a durable policy supersedes the seed.
@@ -700,6 +713,7 @@ impl Daemon {
             usage_poller,
             github_publication,
             catalog,
+            native_census,
             lock,
         })
     }
@@ -732,7 +746,15 @@ impl Daemon {
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
         let succession_summarizer = succession_summarizer::read(&config.state_root, &registry)
             .map_err(|source| StartupError::SuccessionSummarizer { source })?;
-        Self::start_with_supervision(config, registry, supervision, None, succession_summarizer)
+        let native_census = runtimes::native_census_sources(&settings);
+        Self::start_with_supervision(
+            config,
+            registry,
+            supervision,
+            None,
+            succession_summarizer,
+            native_census,
+        )
     }
 
     /// This Realm's identity.
@@ -812,6 +834,15 @@ impl Daemon {
     #[must_use]
     pub fn catalog(&self) -> Option<Arc<kontor_catalog::Catalog>> {
         self.catalog.clone()
+    }
+
+    /// The read-only native census sources this daemon configured.
+    ///
+    /// The caller spawns the poller; the daemon owns no native loop itself, for
+    /// the same reason plan discovery is a sibling and not a startup step.
+    #[must_use]
+    pub fn native_census(&self) -> Vec<Arc<dyn kontor_catalog::native::NativeCensusSource>> {
+        self.native_census.clone()
     }
 
     /// The configuration this daemon started with.
@@ -1968,6 +1999,7 @@ mod tests {
             Some(v1_policy),
             None,
             None,
+            Vec::new(),
         )
         .expect("v1 daemon");
         assert!(
@@ -1985,6 +2017,7 @@ mod tests {
             Some(v2_policy),
             None,
             None,
+            Vec::new(),
         )
         .expect("v2 daemon");
         v2.state().barrier().settle(BarrierState::Open);

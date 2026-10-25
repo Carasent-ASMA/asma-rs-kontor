@@ -39,9 +39,16 @@ use crate::contract::{
 };
 
 /// The schema generation this build implements.
-pub const CATALOG_SCHEMA_VERSION: i64 = 1;
+pub const CATALOG_SCHEMA_VERSION: i64 = 3;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_catalog.sql")];
+/// Every migration this build can apply, keyed by the schema version it
+/// produces. The key rather than the array index decides whether a migration
+/// applies, so TASK-002's `0002` can merge beside this task's `0003` without
+/// either branch misreading an existing database.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_catalog.sql")),
+    (3, include_str!("../migrations/0003_native_census.sql")),
+];
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
 
@@ -848,7 +855,7 @@ impl Database {
         Ok((entries.generation, entries.as_of, entries.entries))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -882,10 +889,8 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     if version == CATALOG_SCHEMA_VERSION {
         return Ok(());
     }
-    let pending = usize::try_from(version)
-        .map_err(|_| StoreError::Corrupt("negative schema version".to_owned()))?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    for migration in &MIGRATIONS[pending..] {
+    for (_, migration) in MIGRATIONS.iter().filter(|(target, _)| *target > version) {
         transaction.execute_batch(migration)?;
     }
     let applied: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
