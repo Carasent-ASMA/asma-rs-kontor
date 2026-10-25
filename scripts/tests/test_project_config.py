@@ -389,16 +389,37 @@ class TestLanesTests(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
-    def test_the_full_lane_does_not_require_a_project_selection(self) -> None:
+    def test_execution_without_impact_never_starts_a_suite(self) -> None:
+        for lane in ["fast", "heavy", "full"]:
+            with self.subTest(lane=lane), mock.patch.object(
+                sys, "argv", ["test-lanes.py", "--lane", lane]
+            ), mock.patch.object(self.module.subprocess, "run") as run:
+                with self.assertRaisesRegex(self.module.LaneError, "--impact"):
+                    self.module.main()
+                run.assert_not_called()
+
+    def test_legacy_lanes_delegate_the_same_explicit_impact(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
-        with mock.patch.dict(
-            os.environ, {"KONTOR_CONFIG_DIR": "", "KONTOR_CONFIG_FILE": ""}
-        ), mock.patch.object(
-            sys, "argv", ["test-lanes.py", "--lane", "full"]
-        ), mock.patch.object(
+        for lane in ["fast", "heavy", "full"]:
+            with self.subTest(lane=lane), mock.patch.object(
+                sys, "argv", ["test-lanes.py", "--lane", lane,
+                              "--impact", "impact.json", "--mode", "archive"]
+            ), mock.patch.object(
+                self.module.subprocess, "run", return_value=completed
+            ) as run:
+                self.assertEqual(self.module.main(), 0)
+                argv = run.call_args.args[0]
+                self.assertIn("--impact", argv)
+                self.assertIn("archive", argv)
+                self.assertNotIn("--workspace", argv)
+
+    def test_package_hints_cannot_refresh_the_lock(self) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+        with mock.patch.object(
             self.module.subprocess, "run", return_value=completed
-        ):
-            self.assertEqual(self.module.main(), 0)
+        ) as run:
+            self.assertEqual(self.module.cargo_metadata(), {})
+            self.assertIn("--locked", run.call_args.args[0])
 
     def test_the_default_base_comes_from_the_project(self) -> None:
         self.assertEqual(

@@ -4,7 +4,7 @@
 > **Status:** 🟢 Approved
 > **Category:** architecture
 > **Scope:** `asma-rs-kontor` repository verification and merge policy
-> **Summary:** Kontor does not run continuous integration in GitHub Actions. The complete verification set runs locally against the exact candidate commit and its results are recorded before merge; changing this policy later requires an explicit decision.
+> **Summary:** Kontor does not run continuous integration in GitHub Actions. Impact-selected verification runs locally against the exact candidate commit and its results are recorded before merge. Igor amended DEC-002 on 2026-10-25; automatic full suites are not the merge gate.
 
 ---
 
@@ -36,9 +36,17 @@ deployment and release procedures.
   > It builds, tests, lints and audits nothing and replaces
   > none of the local gates below. This document records no separate decision
   > for it.
-- **DEC-002:** The implementing or integrating seat runs the complete applicable
-  gate set locally against the exact candidate commit before merge. The command
-  results are recorded in the pull request or owning durable delivery evidence.
+- **DEC-002 (amended by Igor, 2026-10-25):** Run tests for changed or added
+  behavior and concretely affected callers/contracts only. Do not automatically
+  run a full repository, workspace, crate, package or plugin test suite. The
+  implementing/integrating seat records the exact head/tree/base, changed-path
+  impact analysis, selected tests/commands and applicability dispositions before
+  merge. A filename/package match alone is not an impact analysis.
+
+  The dated operator decision was relayed by ROOT and recorded as
+  `OPERATOR-DECISION-AND-DISPATCH.json` in the owning ASMA-8539 delivery evidence
+  on 2026-10-25. It supersedes the blanket full-suite requirement, not independent
+  review, affected security checks, behavioral acceptance or old failure records.
 - **DEC-003:** Local verification is required merge evidence. The absence of a
   GitHub status check does not waive, weaken or imply completion of any gate.
 - **DEC-004:** GitHub remains the source review and pull-request merge surface;
@@ -50,31 +58,52 @@ deployment and release procedures.
 
 ## Required Local Gate Set
 
-Run the gates relevant to the change during development, then run this complete
-set from the candidate revision before merge:
+Select and record these obligations at the exact candidate revision:
+
+- Tests for every changed/added behavior and directly affected callers/contracts,
+  including cross-package consumers. Select relevant cases from mixed-purpose
+  files; a wholly focused test file can run as a file. Shared plugin contracts
+  can affect the prototype even when no prototype file changed.
+- Relevant build, typecheck, format, dependency/lock and security checks for the
+  changed and actually shipped artifact. Check bundled runtime dependencies even
+  when a manifest labels them `devDependencies`. Use locked/frozen inputs; never
+  regenerate locks as a verification side effect.
+- Independent QA and AUD at that head; affected UI/browser evidence and actual
+  installed artifact/readback when the release contract requires them.
+- Complete qualification of modified Rust executor/contract behavior (including
+  ASMA-8641), its affected adapter/daemon callers and integration cases. This
+  does not imply testing the entire crate or workspace. A fake adapter cannot
+  replace evidence for the actual modified adapter.
+
+Use the existing committed-export verifier with an explicit reviewed impact
+plan, as documented in [CONTRIBUTING](../../CONTRIBUTING.md#tests-and-evidence):
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo audit
-cargo deny check
-pnpm install --frozen-lockfile
-pnpm --filter kontor-console verify:api
-pnpm -r typecheck
-pnpm -r test
-pnpm audit --prod
-python3 scripts/verify-tree.py --mode archive
+python3 scripts/verify-tree.py --mode archive --impact /tmp/impact.json --receipt /tmp/verification.json
 ```
 
-A gate that is genuinely inapplicable or cannot run must be recorded with the
-exact reason and disposition; it must not disappear silently from the receipt.
-Additional focused, mutation, runtime or release checks remain mandatory when
-the affected contract requires them.
+The plan names tests, commands, callers/contracts and reasons. Package/dependent
+hints from `test-lanes.py --dry-run` are advisory only; JavaScript/prototype
+imports and runtime contracts need explicit analysis. No command runs without
+an impact plan. Legacy lane names do not authorize broader suites.
+
+The receipt preserves exact candidate/export identity, selected commands/logs,
+failures and unrun checks. An exit zero proves only the selected local checks;
+external QA/AUD/browser/installed obligations remain separate. Staged/inplace
+results are development evidence, not committed-export merge evidence.
+
+Every inapplicable check needs its exact reason and disposition. Distinguish
+unchanged/unshipped code with no affected contract from a relevant check that
+failed or cannot run; the latter is unresolved, never `not_applicable` or PASS.
+Retain failed historical wrappers/receipts as FAIL, along with their actual
+scope and any separately owned remediation. Never overwrite or relabel them,
+retry until green, add a security waiver, or infer machine contention from a
+single isolated pass. Reuse valid exact-head evidence; rerun only missing or
+invalidated affected checks. No blanket waiver is introduced.
 
 ## Rationale
 
-- **RAT-001:** Kontor delivery already executes and records the complete gate set
+- **RAT-001:** Kontor delivery executes and records impact-selected checks
   locally, so push and pull-request workflows duplicate the same verification.
 - **RAT-002:** Running on both GitHub `push` and `pull_request` events duplicated
   each branch's hosted work without changing the acceptance boundary.
@@ -112,7 +141,7 @@ the affected contract requires them.
 ### Keep GitHub Actions on push and pull requests
 
 - **ALT-001:** Rejected because it executes duplicate hosted runs for the same
-  branch while the delivery workflow already requires the full local suite.
+  branch; the amended delivery workflow records focused local evidence.
 
 ### Keep one GitHub Actions trigger
 

@@ -1,30 +1,10 @@
 #!/usr/bin/env python3
-"""Run verification in lanes so development never waits for the heavy suite.
+"""Inspect affected packages or run an explicit impact-selected verification.
 
-The suite is dominated by a handful of slow integration binaries
-(`kontor-store` above all), so a single "run everything" gate makes the inner
-loop wait the same fifty minutes whether the change touched one test file or
-the migration chain. This script splits that into lanes:
-
-  fast    the affected packages whose tests finish quickly, plus formatting,
-          linting and the console checks the change touches. When the change
-          also reaches a slow package it says so and exits 3 — the signal to
-          run the heavy lane — after still reporting the quick results.
-  heavy   the slow packages' tests and the console gates, run without
-          streaming into the caller's terminal. A compact JSON receipt records
-          per-target results and short failure excerpts, so a reviewer or a
-          triage seat reads kilobytes instead of the raw log.
-  full    the complete gate set, delegated to `scripts/verify-tree.py`
-          (`--archive` runs it against `git archive HEAD` after a commit).
-
-Affected selection: changed files (merged commits and the working tree) are
-mapped to workspace packages, and a change under a package's `src/` extends the
-selection to every package that depends on it in `cargo metadata`. Couplings
-the Rust graph cannot see are listed in GLOB_RULES below and add their own
-checks.
-
-Exit codes: 0 pass · 1 gate/test failure · 2 usage or tooling failure ·
-3 heavy lane required.
+Igor's 2026-10-25 decision forbids automatic full suites. Package/dependent
+selection is a planning hint, not caller/contract coverage. Execution requires
+--impact and delegates to verify-tree.py; legacy lane names never broaden it.
+Existing log parsing and compact receipts are shared with that verifier.
 """
 
 from __future__ import annotations
@@ -117,7 +97,7 @@ def changed_files(
 
 def cargo_metadata() -> dict:
     proc = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1"],
+        ["cargo", "metadata", "--locked", "--format-version", "1"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -212,26 +192,14 @@ def classify(
     }
 
 
-def cargo_test_command(packages: list[str]) -> list[str]:
-    command = ["cargo", "test"]
-    for package in packages:
-        command += ["-p", package]
-    return command + ["--locked"]
-
-
-def cargo_clippy_command(packages: list[str]) -> list[str]:
-    command = ["cargo", "clippy"]
-    for package in packages:
-        command += ["-p", package]
-    return command + ["--all-targets", "--", "-D", "warnings"]
-
-
-def run_streaming(command: list[str], log_path: Path, stream: bool) -> int:
+def run_streaming(
+    command: list[str], log_path: Path, stream: bool, cwd: Path | None = None
+) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w") as log:
+    with log_path.open("x") as log:
         process = subprocess.Popen(
             command,
-            cwd=REPO_ROOT,
+            cwd=cwd or REPO_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -310,10 +278,11 @@ def write_receipt(
     exit_code: int,
     streamed: bool,
     requested: str | None,
-    project: ProjectConfig,
+    project: ProjectConfig | None,
+    extra: dict | None = None,
 ) -> Path:
     payload = {
-        "config": project.as_record(),
+        "config": project.as_record() if project else None,
         "lane": lane,
         "exit_code": exit_code,
         "streamed": streamed,
@@ -325,13 +294,15 @@ def write_receipt(
             for name, excerpt in receipt.get("failures", {}).items()
         },
     }
+    payload.update(extra or {})
     if requested:
         path = Path(requested)
     else:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = REPO_ROOT / "target" / "test-lanes" / f"{lane}-{stamp}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    with path.open("x") as output:
+        output.write(json.dumps(payload, indent=2) + "\n")
     return path
 
 
@@ -433,30 +404,6 @@ def record_timings(log_path: Path) -> None:
     print(f"recorded {len(targets)} targets into {TIMINGS_PATH.relative_to(REPO_ROOT)}")
 
 
-def lane_commands(plan: dict, lane: str) -> list[list[str]]:
-    commands: list[list[str]] = []
-    console: list[list[str]] = []
-    if plan["verify_api"]:
-        console.append(["pnpm", "--filter", "kontor-console", "verify:api"])
-    if plan["console_tests"]:
-        console += [["pnpm", "-r", "typecheck"], ["pnpm", "-r", "test"]]
-    if lane == "fast":
-        commands.append(["cargo", "fmt", "--all", "--", "--check"])
-        if plan["light"]:
-            commands.append(cargo_clippy_command(plan["light"]))
-            commands.append(cargo_test_command(plan["light"]))
-        if console:
-            commands.append(["pnpm", "install", "--frozen-lockfile"])
-            commands += console
-    elif lane == "heavy":
-        packages = plan["heavy"] or sorted(heavy_packages())
-        commands.append(cargo_test_command(packages))
-        commands.append(["pnpm", "install", "--frozen-lockfile"])
-        commands.append(["pnpm", "-r", "typecheck"])
-        commands.append(["pnpm", "-r", "test"])
-    return commands
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", choices=["fast", "heavy", "full"])
@@ -486,6 +433,10 @@ def main() -> int:
         metavar="LOG",
         help="rebuild scripts/test-timings.json from a full cargo test log",
     )
+    parser.add_argument("--impact", type=Path, help="reviewed exact-head JSON plan")
+    parser.add_argument(
+        "--mode", choices=["staged", "archive", "inplace"], default="inplace"
+    )
     args = parser.parse_args()
 
     if args.record_timings:
@@ -494,10 +445,18 @@ def main() -> int:
     if not args.lane:
         parser.error("--lane is required unless --record-timings is used")
 
-    if args.lane == "full":
-        command = ["python3", "scripts/verify-tree.py", "--mode", "inplace"]
-        print("$ " + " ".join(command))
+    if args.impact:
+        command = [
+            sys.executable, str(REPO_ROOT / "scripts/verify-tree.py"),
+            "--mode", args.mode, "--impact", str(args.impact.resolve()),
+        ]
+        if args.receipt:
+            command += ["--receipt", str(Path(args.receipt).resolve())]
+        if args.dry_run:
+            command.append("--dry-run")
         return subprocess.run(command, cwd=REPO_ROOT).returncode
+    if not args.dry_run or args.lane == "full":
+        raise LaneError("--impact is required; no automatic suite execution")
 
     try:
         project = load_project(
@@ -524,46 +483,9 @@ def main() -> int:
     if extra:
         print(f"extra checks: {', '.join(extra)}")
 
-    if args.dry_run:
-        for command in lane_commands(plan, args.lane):
-            print("$ " + " ".join(command))
-        if args.lane == "fast" and (plan["heavy"] or plan["e2e_required"]):
-            print("heavy lane required: " + ", ".join(plan["heavy"] or ["kontor-tests-e2e"]))
-        return 0
-
-    if args.lane == "fast" and plan["full_required"]:
-        print("full lane required: a build or tooling file changed")
-        return 3
-
-    commands = lane_commands(plan, args.lane)
-    if not commands:
-        print("nothing affected; fast lane has no work")
-        return 0
-    stream = args.stream or args.lane == "fast"
-    receipts = []
-    exit_code = 0
-    log_dir = REPO_ROOT / "target" / "test-lanes"
-    for command in commands:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        log_path = log_dir / f"{args.lane}-{stamp}-{len(receipts)}.log"
-        print("$ " + " ".join(command))
-        code = run_streaming(command, log_path, stream)
-        parsed = parse_log(log_path.read_text())
-        parsed["command"] = " ".join(command)
-        receipts.append(parsed)
-        if code != 0:
-            exit_code = 1
-            break
-    print_summary(receipts)
-    receipt_path = write_receipt(
-        args.lane, receipts, exit_code, stream, args.receipt, project
-    )
-    print(f"receipt: {receipt_path}")
-    if exit_code == 0 and args.lane == "fast" and (plan["heavy"] or plan["e2e_required"]):
-        heavy = plan["heavy"] or ["kontor-tests-e2e"]
-        print(f"heavy lane required: {', '.join(heavy)}")
-        return 3
-    return exit_code
+    print("Planning hints only; inspect direct callers/contracts, including JS "
+          "consumers, then supply --impact. No commands were run.")
+    return 0
 
 
 if __name__ == "__main__":

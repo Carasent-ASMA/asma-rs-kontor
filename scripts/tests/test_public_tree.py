@@ -275,30 +275,28 @@ class TreeTests(unittest.TestCase):
 
 
 class VerifyTreeTests(unittest.TestCase):
-    def test_verify_tree_runs_the_check_and_its_tests_first(self) -> None:
+    def test_verifier_keeps_public_tree_as_first_check(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "verify_tree", SCRIPTS_DIR / "verify-tree.py"
         )
         assert spec is not None and spec.loader is not None
-        verify_tree = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(verify_tree)
-        commands: list[list[str]] = []
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        commands = []
 
-        def first_two_gates(cmd: list[str], cwd: Path) -> None:
+        def stop(cmd, log, stream, cwd):
             commands.append(cmd)
-            if len(commands) == 2:
-                raise SystemExit("stop after the second gate")
+            raise SystemExit("stop before execution")
 
-        verify_tree.run = first_two_gates
-        with self.assertRaises(SystemExit):
-            verify_tree.run_gates(Path("/nonexistent-tree"))
-        self.assertEqual(
-            commands,
-            [
-                [sys.executable, "scripts/public_tree.py", "."],
-                [sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests"],
-            ],
-        )
+        verifier.lanes.run_streaming = stop
+        verifier.export_fingerprint = lambda *_: {}
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                verifier.run_gates(Path(tmp), {"checks": [], "tree": "synthetic"},
+                                   Path(tmp) / "receipt.json", "archive")
+        self.assertEqual(commands, [[
+            sys.executable, "-B", "scripts/public_tree.py", "."
+        ]])
 
 
 if __name__ == "__main__":

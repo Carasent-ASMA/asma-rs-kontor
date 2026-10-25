@@ -99,62 +99,102 @@ license and advisory gates.
 
 Kontor does not use GitHub Actions CI; the repository's one workflow is the
 publication branch/title check described under [Pull requests](#pull-requests),
-and it builds and tests nothing. Run the gates relevant to your change, then
-the complete set locally against the exact candidate commit before requesting
-merge. Record the commands and results in the pull request or owning
-delivery evidence; a GitHub check is not a substitute and its absence is not a
-waiver. The governing, explicitly reversible decision is the
-[local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md).
+and it builds and tests nothing. Igor's **2026-10-25 decision** requires tests
+for changed/added behavior and specifically affected callers/contracts, with no
+automatic full repository/workspace/crate/package/plugin suites. The governing
+[local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md)
+amends DEC-002; missing GitHub checks are not a waiver.
+
+Before running checks, record an impact plan at the exact candidate head/tree
+and base. Trace imports/callers and contracts, including non-plugin consumers
+of shared plugin modules. Package hints alone are insufficient. Keep relevant
+scoped build/typecheck/format, dependency/lock/security, independent QA/AUD,
+affected browser/UI and installed-readback obligations. Runtime libraries
+bundled from `devDependencies` remain security scope. Rust executor/contract
+changes still require all affected behavior and actual adapter/caller proof,
+not an automatic crate/workspace suite.
+
+The existing verifier executes explicit argv commands without a shell:
 
 ```sh
-python3 -B -m unittest discover -s scripts/tests
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo audit
-cargo deny check
-pnpm install --frozen-lockfile
-pnpm --filter kontor-console verify:api
-pnpm -r typecheck
-pnpm -r test
-pnpm audit --prod
+python3 scripts/verify-tree.py --mode archive --impact /tmp/impact.json --receipt /tmp/verification.json
 ```
 
-The KON-MVP-18 e2e pilot inside `cargo test --workspace` still writes a run
-bundle into `docs/evidence/KON-MVP-18/<run-id>/` on every run; delete it and
-never commit it. Receipts stay with the run that produced them.
+`archive` extracts `git archive HEAD` without untracked files or local overlays.
+`staged` exports the index; `inplace` requires unchanged tracked files. Those
+last two modes are development evidence only. All modes check the public-tree
+boundary, then only the commands selected in the plan. There is no implicit
+Cargo workspace test, recursive pnpm test, whole-plugin suite or lock refresh.
 
-During development, `scripts/test-lanes.py` runs only what a change reaches:
+The JSON plan uses this shape (replace identities and selection with the actual
+reviewed diff; these commands illustrate a Python-tooling-only change):
+
+```json
+{
+  "head": "<exact candidate commit>",
+  "tree": "<exact candidate Git tree>",
+  "base": "<exact base commit>",
+  "impact_analysis": "Trace changed behavior, direct callers and contracts; explain cross-package exclusions.",
+  "impact": [
+    {
+      "path": "scripts/verify-tree.py",
+      "reason": "Changed verifier; list every other changed path and affected caller in additional rows.",
+      "tests": ["scripts/tests/test_verify_tree.py"]
+    }
+  ],
+  "checks": [
+    {
+      "kind": "tests",
+      "cwd": ".",
+      "argv": ["python3", "-B", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_verify_tree.py"],
+      "reason": "Focused verifier behavior; no other tooling changed.",
+      "tests": ["scripts/tests/test_verify_tree.py"]
+    }
+  ],
+  "not_applicable": {
+    "build": "Python-only change; no compiled artifact changes.",
+    "typecheck": "No typed runtime or contract changes.",
+    "format": "Replace with actual scoped formatting evidence or an exact reason.",
+    "dependencies": "No manifest/lock/dependency or release-graph change.",
+    "security": "Replace with changed-tooling security evidence or an exact impact-based reason."
+  },
+  "external": {
+    "qa": "Required: exact-head independent QA receipt, pending here.",
+    "aud": "Required: exact-head independent AUD receipt, pending here.",
+    "browser": "No UI change in this illustrative tooling diff.",
+    "installed": "No runtime artifact changed in this illustrative tooling diff."
+  },
+  "prior_receipts": []
+}
+```
+
+All changed/deleted paths must appear in `impact`; include affected unchanged
+callers with the selected test names too. Use relevant cases (`-t`, Rust exact
+filters, or explicit unittest names) in mixed-purpose files. Whole focused new
+files are valid. `checks.kind` is `tests`, `build`, `typecheck`, `format`,
+`dependencies` or `security`. Each absent kind requires an exact
+`not_applicable` reason. These reasons are reviewed, not an automatic waiver.
+A relevant blocked/failed check remains unresolved, never inapplicable.
+
+`external` records separate review/runtime obligations, not automatic approval.
+Reuse prior evidence via `prior_receipts` rows with `path`, `sha256` and its
+unchanged result/disposition. Failed historical receipts stay FAIL, including
+failed broad wrappers; diagnostic passes do not replace them. The verifier
+refuses existing receipt/log paths and records selected results and remaining
+unrun commands. Its zero exit covers local selected checks only. No retry loop,
+ignore, timeout relaxation or security waiver is implied.
+
+The existing package/dependent planner remains available for **hints only**:
 
 ```sh
 KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane fast --dry-run
-KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane fast
-KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane heavy
-python3 scripts/test-lanes.py --lane full             # no project selection needed
+python3 scripts/test-lanes.py --lane fast --mode archive --impact /tmp/impact.json --receipt /tmp/verification.json
 ```
 
-- The full lane delegates to `scripts/verify-tree.py` and does not read the
-  project selection. The fast and heavy lanes do; pass `KONTOR_CONFIG_FILE` or
-  `KONTOR_CONFIG_DIR`, or the tool refuses by name.
-- The selection is the files changed since the merge base with
-  `origin/master` (`--base <rev>` to change it), plus uncommitted files unless
-  `--no-worktree`, plus any `--changed <path>`. A change under a package's
-  `src/` or its `Cargo.toml` also selects every workspace package that depends
-  on it.
-- Heavy packages are `kontor-store`, `kontor-daemon` and `kontor-tests-e2e`,
-  plus any package with a test target of 60 s or more in
-  `scripts/test-timings.json`; refresh that file from a full `cargo test` log
-  with `--record-timings <log>`.
-- Exit codes: `0` pass, `1` a gate or test failed, `2` usage or tooling
-  failure, `3` a bigger lane is needed — `fast` exits `3` after its own checks
-  when the change reaches a heavy package, and before running anything when it
-  touches the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` or
-  `scripts/` (run `full`).
-- Logs and receipts land in `target/test-lanes/` (`--receipt <path>` to choose
-  the receipt).
-
-A lane is development feedback, not merge evidence; the complete set above
-still runs against the candidate commit.
+Legacy `fast`, `heavy` and `full` execution all delegate to the same explicit
+impact plan; none expands to package suites. `--record-timings <log>` only
+imports a retained log and launches no tests. Logs/receipts use
+`target/test-lanes/` by default. Use a new receipt path for every attempt.
 
 Store and daemon integration tests open realms cloned from one migrated template
 (`crates/kontor-store/tests/support/mod.rs`,
@@ -175,19 +215,13 @@ Tests must be deterministic and clean up every process and temporary resource.
 Live daemon/runtime tests must be explicitly opt-in; ordinary tests must not
 depend on network access, provider accounts or a user's runtime state.
 
-After committing, verify the committed export rather than only the working
-tree:
-
-```sh
-python3 scripts/verify-tree.py --mode archive
-```
-
-It extracts `git archive HEAD` into a temporary directory without `.git`,
-checks that the committed `Cargo.lock` satisfies every manifest under
-`--locked` (it does not regenerate the lock; available updates print as notes),
-and runs every gate above except `pnpm --filter kontor-console verify:api`,
-which runs separately. `--mode staged` does the same for the staged tree before
-a commit exists; `--mode inplace` runs the gates in the current tree.
+After committing, use the impact-selected `--mode archive` command above.
+The head, Git tree and exact base diff must match the plan. The verifier checks
+every tracked export blob and mode before and after selected commands; a
+command that changes tracked source cannot produce a passing receipt. A changed head or
+impact requires updated coverage/evidence; do not transfer a previous PASS to a
+different candidate. Assess lock completeness with the applicable locked/frozen
+command in the plan, not a fresh dependency resolution.
 
 ## The selected project configuration
 
