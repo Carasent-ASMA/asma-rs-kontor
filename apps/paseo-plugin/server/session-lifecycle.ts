@@ -673,10 +673,8 @@ export type TakeoverContinuity = z.infer<typeof continuitySchema>;
 export type TakeoverDeps = {
   config: Pick<KontorPluginConfig, "cliCommand" | "stateRoot" | "placementRoots">;
   create: Pick<ReturnType<typeof createSessionCreateService>, "createSeat" | "check" | "preflight" | "record">;
-  /** Configured profiles a session may be associated with; discovery only, the resolver validates the one chosen. */
-  choices: () => Promise<ProfileChoice[]>;
-  /** Operator fleet `domains.accounts` allowlist; unverifiable or conflicting catalogs fail closed. */
-  accountCatalog: () => Promise<ConfiguredAccountCatalog>;
+  /** One operator configured-source read per assess: profile choices and account-alias catalog share one revision. */
+  operatorFleetDiscovery: () => Promise<{ choices: ProfileChoice[]; catalog: ConfiguredAccountCatalog }>;
   /** The host's route evidence for one checkout and permission mode; only a qualified positive source may call a route available. */
   evidence: (input: { mode: string | null; cwd: string; catalog: ConfiguredAccountCatalog }) => RouteHealth | Promise<RouteHealth>;
   /** A qualified owner/wake read. Missing support is unknown and blocks retirement. */
@@ -793,9 +791,15 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       created = hash(JSON.stringify(record));
     }
     // The chain: one chosen here from the server's choices, else the one recorded for this exact ID. Never inferred.
-    let recorded: string | null, choices: ProfileChoice[] | null = null;
+    let recorded: string | null, choices: ProfileChoice[] | null = null, fleetCatalog: ConfiguredAccountCatalog | null = null;
     try { recorded = (await readDurable(associationPath(agentId), associationSchema))?.bindingKey ?? null; } catch (error) { return answer("unknown", `Its recorded chain could not be read: ${errorText(error)}.`); }
-    try { choices = await deps.choices(); } catch (error) { if (!recorded || chosen) return answer("unknown", `The configured profiles could not be read: ${errorText(error)}.`); }
+    try {
+      const discovery = await deps.operatorFleetDiscovery();
+      choices = discovery.choices;
+      fleetCatalog = discovery.catalog;
+    } catch (error) {
+      if (!recorded || chosen) return answer("unknown", `The configured profiles could not be read: ${errorText(error)}.`);
+    }
     association = { bindingKey: recorded, source: recorded ? "recorded" : null, choices: choices ?? [] };
     if (chosen) {
       if (!choices!.some((choice) => choice.bindingKey === chosen)) return answer("refused", "That profile is not one this host offers.");
@@ -806,10 +810,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     }
     const mode = first.currentModeId ?? first.runtimeInfo?.modeId ?? null;
     if (!mode) return answer("unknown", "This session's permission mode cannot be read, so a successor's permission boundary cannot be confirmed.");
-    let health: RouteHealth, catalog: ConfiguredAccountCatalog;
+    let health: RouteHealth;
     const routeEvidenceAt = new Date().toISOString();
-    try { catalog = await deps.accountCatalog(); }
-    catch (error) { return answer("unknown", `The configured account catalog could not be read: ${errorText(error)}.`); }
+    const catalog = fleetCatalog;
+    if (!catalog) return answer("unknown", "The configured account catalog could not be read: the operator fleet source names no verifiable configured account aliases.");
     try { health = await Promise.resolve(deps.evidence({ mode, cwd: first.cwd, catalog })); }
     catch (error) { return answer("unknown", `Provider route evidence could not be read: ${errorText(error)}.`); }
     const sessionRefusal = sessionLocalRefusalForTakeover(first, mode, routeEvidenceAt);
@@ -1063,19 +1067,15 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   };
 }
 
-/** Discovery only: the operator fleet source's bindings, as the Teams read gives them. The fixed resolver validates
- *  the one chosen against the activated policy; nothing here is selection authority. */
-async function configuredProfiles(): Promise<ProfileChoice[]> {
+/** One configured-source operator read: profile choices and account-alias catalog share the same snapshot revision. */
+export async function readOperatorFleetDiscovery(): Promise<{ choices: ProfileChoice[]; catalog: ConfiguredAccountCatalog }> {
   const catalog = sourceCatalog(), snapshot = await createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats).read({ sourceId: "operator" });
   if (snapshot.data?.kind !== "fleet") throw new Error(`the operator fleet source is ${snapshot.status}`);
-  return snapshot.data.bindings.filter((binding) => binding.chainResolved && BINDING_KEY.test(binding.reference)).slice(0, 200).map((binding) => ({ bindingKey: binding.reference, chain: binding.chainName }));
-}
-async function operatorAccountCatalog(): Promise<ConfiguredAccountCatalog> {
-  const catalog = sourceCatalog(), snapshot = await createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats).read({ sourceId: "operator" });
-  if (snapshot.data?.kind !== "fleet") throw new Error(`the operator fleet source is ${snapshot.status}`);
+  const choices = snapshot.data.bindings.filter((binding) => binding.chainResolved && BINDING_KEY.test(binding.reference)).slice(0, 200)
+    .map((binding) => ({ bindingKey: binding.reference, chain: binding.chainName }));
   const built = configuredAccountCatalogFromFleet(snapshot.data.domains, snapshot.sha256 ?? snapshot.readAt);
   if (!built) throw new Error("The operator fleet source names no verifiable configured account aliases.");
-  return built;
+  return { choices, catalog: built };
 }
 export function contributeSessionLifecycle(server: PluginServerContext) {
   const root = join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-lifecycle-v1");
@@ -1088,8 +1088,7 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
   server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
   const takeover = (paseo: PaseoApi) => createTakeoverService(paseo, root, {
-    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), choices: configuredProfiles,
-    accountCatalog: operatorAccountCatalog,
+    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), operatorFleetDiscovery: readOperatorFleetDiscovery,
     evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
   });
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));

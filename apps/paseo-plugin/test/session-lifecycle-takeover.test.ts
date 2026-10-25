@@ -86,9 +86,9 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   };
   const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
   const observedAt = new Date().toISOString();
-  const accountCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
-  const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, choices: async () => choices,
-    accountCatalog: async () => accountCatalog,
+  const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
+  const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create,
+    operatorFleetDiscovery: async () => ({ choices, catalog: fleetCatalog }),
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
   };
@@ -113,6 +113,15 @@ describe("takeover review", () => {
     expect(applyTakeover.input.safeParse({ ...confirmation, requestId: confirmation.reviewId }).success).toBe(false);
     expect(applyTakeover.input.safeParse({ ...confirmation, digest: "guessed" }).success).toBe(false);
   });
+  it("calls operator fleet discovery once per takeover assess", async () => {
+    let reads = 0;
+    const h = await host();
+    const discovery = h.deps.operatorFleetDiscovery;
+    h.deps.operatorFleetDiscovery = async () => { reads++; return discovery(); };
+    await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(reads).toBe(1);
+  });
+
   it("offers the server's profiles, never infers a chain, and keeps one successor request across revisions", async () => {
     const h = await host();
     // Role, epic and title are on the session; none of them chooses a chain.
