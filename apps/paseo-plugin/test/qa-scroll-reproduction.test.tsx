@@ -19,7 +19,7 @@ vi.mock('react', async (original) => ({ ...await original<typeof import('react')
     return [hooks.states.get(key), (value: unknown) => hooks.states.set(key, value)];
   },
 }));
-vi.mock('react-native', () => ({ ScrollView: 'ScrollView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
+vi.mock('react-native', () => ({ ActivityIndicator: 'ActivityIndicator', ScrollView: 'ScrollView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', Icon: 'Icon' }));
 import { ReadOnlyPage } from '../client/read-only-pages';
 import { DEFAULT_TEAMS_SOURCE_VIEW, DEFAULT_TEAMS_VIEW, TeamsSourcePage, type TeamsView } from '../client/teams-source-page';

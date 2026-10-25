@@ -11,7 +11,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   const index = hooks.cursor++; if (!(index in hooks.values)) hooks.values[index] = initial;
   return [hooks.values[index] as T, (value: T) => { hooks.values[index] = value; }];
 } }));
-vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput" }));
 import { DEFAULT_TEAMS_SOURCE_VIEW, DEFAULT_TEAMS_VIEW, TeamsSourcePage, type TeamsView } from "../client/teams-source-page";
 type Element = ReactElement<Record<string, unknown>>;

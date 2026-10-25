@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 import { ScrollView, Icon } from "@getpaseo/plugin/client/react-native";
-import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
+import { Action, COARSE_POINTER, Disclosure, NO_PRESS_DELAY, pressFeedback, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { useControlHelp } from "./control-help";
 import { RESUME_PROMPT, TAKEOVER_LIMIT, unresolvedArchive, type ProjectionConflict, type SessionProjection } from "../shared/session-lifecycle";
@@ -13,9 +13,9 @@ export function ArchiveSessionButton({ session, onPress, colors, disabled = fals
   const help = useControlHelp("Archive session", buttonRef);
   return <>
     <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={pending ? `Archiving ${session.title}…` : `Archive session: ${session.title} (${session.id})`} accessibilityHint="Stop and archive this exact session. History and files remain. Sessions with managed children are protected."
-      disabled={disabled} accessibilityState={{ disabled, busy: pending }} onPress={() => { help.dismiss(); onPress(); }}
-      style={{ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
-      <Icon name="X" size={14} color={colors.foregroundMuted} />
+      disabled={disabled} accessibilityState={{ disabled, busy: pending }} aria-busy={pending || undefined} {...NO_PRESS_DELAY} onPress={() => { help.dismiss(); onPress(); }}
+      style={({ pressed }: { pressed: boolean }) => ({ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", borderRadius: 6, ...pressFeedback(colors, pressed), opacity: pending ? 1 : disabled ? 0.4 : pressed ? 0.7 : 1 })}>
+      {pending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : <Icon name="X" size={14} color={colors.foregroundMuted} />}
     </Pressable>
   </>;
 }
