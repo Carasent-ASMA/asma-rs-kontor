@@ -12,6 +12,7 @@ type Queued = { readonly slot: Slot; readonly fn: () => void | (() => void); rea
 const { harness, fake } = vi.hoisted(() => {
   const slots: Slot[] = [];
   let cursor = 0, dirty = false, component: (() => unknown) | null = null, tree: unknown = null, effects: Queued[] = [];
+  let commit: ((tree: unknown) => void) | null = null;
   const same = (a?: readonly unknown[], b?: readonly unknown[]) => !!a && !!b && a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
   const next = () => slots[cursor] ?? (slots[cursor] = {});
   const hooks = {
@@ -29,13 +30,14 @@ const { harness, fake } = vi.hoisted(() => {
     let guard = 0;
     do {
       dirty = false; cursor = 0; effects = []; tree = component!();
+      const refCommit = commit; commit = null; refCommit?.(tree);
       for (const item of effects) { if (item.deps && same(item.slot.deps, item.deps)) continue; item.slot.cleanup?.(); const cleanup = item.fn(); item.slot.deps = item.deps; item.slot.cleanup = typeof cleanup === "function" ? cleanup : undefined; }
     } while (dirty && ++guard < 20);
     return tree;
   }
   return {
-    harness: { ...hooks, render(fn: () => unknown) { component = fn; return draw(); }, flush: draw,
-      unmount() { for (const slot of slots) slot.cleanup?.(); slots.length = 0; component = null; tree = null; } },
+    harness: { ...hooks, beforeEffects(fn: (tree: unknown) => void) { commit = fn; }, render(fn: () => unknown) { component = fn; return draw(); }, flush: draw,
+      unmount() { for (const slot of slots) slot.cleanup?.(); slots.length = 0; component = null; tree = null; commit = null; } },
     fake: { state: null as unknown, toast: { show: vi.fn(), error: vi.fn() } },
   };
 });
@@ -137,6 +139,92 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); clearSessionViews(); 
 afterEach(() => { harness.unmount(); vi.useRealTimers(); delete (globalThis as { document?: unknown }).document; });
 
 describe("Sessions list place across live updates", () => {
+  function pendingVisibleCell() {
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    const props = list().props;
+    const reads: ((...values: number[]) => void)[] = [];
+    const cell = (props.CellRendererComponent as (props: object) => Element)({ cellKey: "s43", index: 43, item: (props.data as unknown[])[43], children: null });
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => reads.push(done) });
+    scrolled(4265, 6000);
+    expect(reads).toHaveLength(1);
+    settle();
+    return reads;
+  }
+
+  it("does not replace queued pre-update geometry when post-update cell refs commit before follow", () => {
+    const reads = pendingVisibleCell();
+    harness.beforeEffects((tree) => {
+      const props = walk(tree).find((element) => element.props.testID === "sessions-list")!.props;
+      const item = (props.data as unknown[])[0];
+      const cell = (props.CellRendererComponent as (props: object) => Element)({ cellKey: "s43", index: 0, item, children: null });
+      (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => reads.push(done) });
+    });
+    liveUpdate("s43");
+    expect(reads).toHaveLength(1);
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(65);
+  });
+
+  it("resolves a pending capture from its original viewport after a native content clamp", () => {
+    const reads = pendingVisibleCell();
+    liveUpdate("s43");
+    scrolled(4000, 4700); // Browser/native clamp, not a reader move: max = 4700 - 700.
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(65);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("does not apply a delayed live-update capture over a newly started drag", () => {
+    const reads = pendingVisibleCell();
+    liveUpdate("s43");
+    (list().props.onScrollBeginDrag as () => void)();
+    scrollTo.mockClear();
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(4265);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("keeps a queued pre-update exact-ID capture when a live reorder settles before its callback", () => {
+    const reads = pendingVisibleCell();
+    liveUpdate("s43");
+    expect(ids()[0]).toBe("s43");
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(65); // The same exact s43 stays at -65px, rather than estimated s44 winning.
+    expect(scrollTo).toHaveBeenLastCalledWith({ offset: 65, animated: false });
+    expect(reads).toHaveLength(1); // Consume the queued geometry; do not request replacement evidence.
+  });
+
+  it("keeps the same anchor when its geometry arrives before the live reorder", () => {
+    const reads = pendingVisibleCell();
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    liveUpdate("s43");
+    expect(offsetNow()).toBe(65);
+  });
+
+  it("lets a newer reader scroll invalidate geometry queued before a live reorder", () => {
+    const reads = pendingVisibleCell();
+    liveUpdate("s43");
+    scrolled(2000, 6000);
+    scrollTo.mockClear();
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(2000);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("maps a queued exact-ID capture through every intervening live update", () => {
+    const reads = pendingVisibleCell();
+    liveUpdate("s43");
+    arrive("arrival-after-reorder");
+    liveUpdate("s2");
+    const props = list().props;
+    const index = ids().indexOf("s43");
+    const top = (props.getItemLayout as ItemLayout)(props.data, index).offset;
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(top + 65);
+    expect(reads).toHaveLength(1);
+  });
+
   it("keeps the original anchor through a temporary notice resize and a delayed duplicate scroll", () => {
     patchSessionView("host-a", { status: "all", layout: "flat" });
     mount();
@@ -409,6 +497,22 @@ function measure(layout: Layout, item: unknown, height: number, width = 320) {
 }
 
 describe("row layout by measured row", () => {
+  it("applies queued pre-update geometry to a present exact ID after follow has already run", () => {
+    let offset = 4265;
+    const moved = vi.fn((by?: number, from?: number) => { if (by !== undefined) offset = (from ?? offset) + by; });
+    const layout = createRowLayout(moved);
+    const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
+    const reads: ((...values: number[]) => void)[] = [];
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => reads.push(done) });
+    layout.capture(rows, false, offset, 300, 6000);
+    const next = [rows[43]!, ...rows.filter((_, index) => index !== 43)];
+    offset += layout.follow(rows, next, false, offset, 300, 6000, true);
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offset).toBe(65);
+    expect(reads).toHaveLength(1);
+  });
+
   it("captures the exact first session when its virtualized cell mounts after the scroll event", () => {
     const layout = createRowLayout();
     const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
