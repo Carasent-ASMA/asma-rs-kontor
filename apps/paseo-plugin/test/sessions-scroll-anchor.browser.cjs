@@ -1,6 +1,6 @@
 // ASMA-8644: live updates keep the reader's place in the Sessions list. A reader at the top stays at the top, one at
-// the end stays at the end, and in between the first session in view that the update did not move keeps its
-// distance from the viewport top. While a finger is on the list, or within the screen's declared wait after the
+// the end stays at the end, and in between the exact first visible session keeps its viewport-relative offset
+// while present; only a session explicitly excluded by the fixture update permits fallback. While a finger is on the list, or within the screen's declared wait after the
 // reader's last scroll, the screen writes no offset. Synthetic SessionsScreen on react-native-web over the
 // 84-session and the 436-session (long-list) fixtures; no native-device claim.
 // Needs the kontor-prototype dev server (`vite`, not `preview`): live updates go through its fixture runtime module.
@@ -108,8 +108,8 @@ async function onFilters(page, compact, act) {
 
 /**
  * Whether the reader kept their place from one reading to the next through these changes: at the top still at the top,
- * at the end still at the end, and in between the first session in view that kept its distance from the viewport top;
- * only sessions the changes moved or removed may come before it. A list that got shorter under the reader, even for
+ * at the end still at the end, and in between the exact first visible ID at the same viewport offset;
+ * only an ID explicitly leaving the filter permits a surviving visible neighbor. A list that got shorter under the reader, even for
  * one frame, may clamp the offset; that is recorded.
  */
 function judge(before, after, missing) {
@@ -330,7 +330,7 @@ async function check(browser, input) {
       // A wheel sent while a re-read replaces the rows can be dropped; one retry, recorded.
       if (state.offset === previous) { trace.push({ phase: 'up', retry: previous }); await wheel(page, -step); state = await metrics(page); }
       assert.ok(state.offset < previous, `${name}: scrolling up did not move up (${previous} to ${state.offset})`);
-      if (steps % 2) state = await cycle(page, trace, 'up', { endId: end.id, refresh: steps % 7 === 0, below: steps % 5 === 0, changes });
+      if (steps % 2) state = await cycle(page, trace, 'up', { endId: end.id, refresh: steps % 7 === 0, below: steps % 5 === 0, changes, status });
     }
     await page.screenshot({ path: path.join(output, `${name}-top.png`) });
     if (!short) {

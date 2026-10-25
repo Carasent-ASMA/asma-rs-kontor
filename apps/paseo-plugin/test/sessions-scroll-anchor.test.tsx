@@ -321,6 +321,52 @@ describe("Sessions list place across live updates", () => {
     expect(inView(offsetNow()).find(row => row.key === first.key)).toEqual(first);
   });
 
+  it("gives a real drag precedence even when it lands on a recent own placement", () => {
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    scrolled(4200);
+    settle();
+    arrive("first-arrival");
+    const prior = offsetNow();
+    arrive("second-arrival");
+    (list().props.onScrollBeginDrag as () => void)();
+    scrolled(prior);
+    scrollTo.mockClear();
+    liveUpdate("s43");
+    expect(offsetNow()).toBe(prior);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("uses a surviving neighbor when an exact ID leaves Current but stays in the native directory", () => {
+    patchSessionView("host-a", { status: "current", layout: "flat" });
+    mount();
+    scrolled(4200);
+    settle();
+    const [first, next] = inView(4200);
+    const id = first!.key.slice("result:".length);
+    fake.state = ready((fake.state as DirectoryState).entries.map(entry => entry.id === id ? { ...entry, status: "closed" as const } : entry));
+    harness.flush();
+    expect((fake.state as DirectoryState).entries.some(entry => entry.id === id)).toBe(true);
+    expect(ids()).not.toContain(id);
+    expect(inView(offsetNow()).find(row => row.key === next!.key)).toEqual(next);
+  });
+
+  it("does not mistake delayed own-scroll callbacks for a reader gesture", () => {
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    scrolled(4200);
+    settle();
+    const first = inView(4200)[0]!;
+    arrive("first-arrival");
+    const older = offsetNow();
+    arrive("second-arrival");
+    const latest = offsetNow();
+    scrolled(older); // The first placement's event arrives after the screen requested the second.
+    scrolled(latest);
+    liveUpdate(first.key.slice("result:".length));
+    expect(inView(offsetNow()).find(row => row.key === first.key)).toEqual(first);
+  });
+
   it("native keeps its own scroll view; only a browser opts out of scroll anchoring", () => {
     patchSessionView("host-a", { status: "all", layout: "flat" });
     mount();
@@ -343,6 +389,47 @@ function measure(layout: Layout, item: unknown, height: number, width = 320) {
 }
 
 describe("row layout by measured row", () => {
+  it("captures the exact first session when its virtualized cell mounts after the scroll event", () => {
+    const layout = createRowLayout();
+    const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
+    layout.capture(rows, false, 4265, 300, 6000); // Estimates nominate r44, but the actual viewport starts at r43.
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => done(0, 4200, 320, 96, 0, 4200) });
+    const next = [rows[43]!, ...rows.filter((_, index) => index !== 43)];
+    expect(layout.follow(rows, next, false, 4265, 300, 6000, true)).toBe(-4200);
+  });
+
+  it("discards an earlier asynchronous geometry read after a new reader scroll", () => {
+    const layout = createRowLayout();
+    const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
+    const reads: ((...values: number[]) => void)[] = [];
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => reads.push(done) });
+    layout.capture(rows, false, 4265, 300, 6000);
+    layout.capture(rows, false, 2000, 300, 6000);
+    reads[0]!(0, 4200, 320, 96, 0, 4200); // A delayed answer from the earlier viewport cannot capture r43.
+    reads[1]!(0, 4200, 320, 96, 0, 4200);
+    const next = [rows[43]!, ...rows.filter((_, index) => index !== 43)];
+    expect(layout.follow(rows, next, false, 2000, 300, 6000, true)).toBe(96);
+  });
+
+  it("uses current cell geometry after a spacer moves without a new size layout event", () => {
+    const moves = vi.fn();
+    const layout = createRowLayout(moves);
+    const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
+    let top = 4200;
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => done(0, top, 320, 96, 0, top) });
+    (cell.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 3900, width: 320, height: 96 } } });
+    // The virtualized spacer moved this same-size cell. Its old onLayout y is no longer its position.
+    layout.capture(rows, false, 4265, 300, 6000);
+    const next = [rows[43]!, ...rows.filter((_, index) => index !== 43)];
+    expect(layout.follow(rows, next, false, 4265, 300, 6000, true)).toBe(-4200);
+    top = 33;
+    layout.restate(next, false);
+    expect(moves).toHaveBeenLastCalledWith(33);
+  });
+
   it("keeps a row's offset through a re-sort that keeps the rows above it", () => {
     const layout = createRowLayout();
     const rows = ["a", "b", "c", "d", "e"].map(result);
@@ -369,18 +456,34 @@ describe("row layout by measured row", () => {
     expect(layout.layout(rows, 1, false)).toEqual({ index: 1, length: 50, offset: 50 });
   });
 
-  it("anchors the reported visible cell rather than an estimated index after an unmeasured jump", () => {
-    const layout = createRowLayout();
+  it("retains a reported anchor position when only estimates or rows below it change", () => {
+    const moves = vi.fn();
+    const layout = createRowLayout(moves);
     const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
     const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
-    (cell.props.ref as (node: unknown) => void)?.({});
+    (cell.props.ref as (node: unknown) => void)?.({ measure: (done: (...values: number[]) => void) => done(0, 4200, 320, 96, 0, 4200) });
+    (cell.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 4200, width: 320, height: 96 } } });
+    layout.capture(rows, false, 4265, 300, 6000);
+    measure(layout, rows[55]!, 160);
+    const next = [...rows.slice(0, 50), rows[55]!, ...rows.slice(50, 55), ...rows.slice(56)];
+    expect(layout.follow(rows, next, false, 4265, 300, 6000, true)).toBe(0);
+  });
+
+  it("anchors the reported visible cell rather than an estimated index after an unmeasured jump", () => {
+    const moves = vi.fn();
+    const layout = createRowLayout(moves);
+    const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)?.({ measure: (done: (...values: number[]) => void) => done(0, 4200, 320, 96, 0, 4200) });
     (cell.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 4200, width: 320, height: 96 } } });
     layout.capture(rows, false, 4265, 300, 6000);
     const next = [rows[43]!, ...rows.filter((_, index) => index !== 43)];
     expect(layout.follow(rows, next, false, 4265, 300, 6000, true)).toBe(-4200);
     const redrawn = layout.Cell({ cellKey: "r43", index: 0, item: rows[43]!, children: null } as never) as unknown as Element;
     (redrawn.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 33, width: 320, height: 96 } } });
-    expect(layout.restate(next, false)).toBe(33);
+    (redrawn.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => done(0, 33, 320, 96, 0, 33) });
+    expect(layout.restate(next, false)).toBe(0);
+    expect(moves).toHaveBeenLastCalledWith(33);
   });
 
   it("holds a present exact ID through reorders and subsequent height measurements", () => {
