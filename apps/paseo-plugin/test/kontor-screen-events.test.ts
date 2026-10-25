@@ -18,6 +18,8 @@ const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
   directoryInputs: [] as Array<{ hostId: string; includeArchived: boolean }>, sourceCalls: 0,
+  /** This render's effects; `commit()` runs the ones whose dependencies changed, as React does. */
+  effects: [] as Array<{ effect: () => void | (() => void); deps?: readonly unknown[] }>,
   keyboardSave: vi.fn(async () => true),
   kontorStatus: null as import("../shared/kontor-status").KontorStatus | null,
   keyboard: { status: "loading" } as { status: "loading" } | { status: "ready"; values: { backShortcut: "off" | "cmd-backquote" } },
@@ -32,7 +34,7 @@ vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(), useState: <T,>(initial: T | (() => T)) => model.useState(initial),
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback,
-  useEffect: () => {},
+  useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => { model.effects.push({ effect, deps }); },
 }));
 vi.mock("react-native", () => ({
   Linking: { openURL: vi.fn(async () => {}) },
@@ -74,6 +76,7 @@ import { TeamsSourcePage } from "../client/teams-source-page";
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { KeyboardSettingsCard } from "../client/keyboard-settings-card";
 import { StartSwitchSheet, switchRows } from "../client/start-switch-sheet";
+import { handOffOpen, takeHandOff, withdrawHandOff } from "../client/session-actions";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
 const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -83,7 +86,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directoryInputs = []; model.sourceCalls = 0; });
+beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directoryInputs = []; model.sourceCalls = 0; model.effects = []; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -97,19 +100,30 @@ function moreViews(menu: ReactElement<Record<string, unknown>> | undefined): str
   expect(items.every((item) => item.type === MenuItem)).toBe(true);
   return items.map((item) => String(item.props.label));
 }
-function mount(compact: boolean, initial?: Partial<KontorRoute>) {
-  const props: PluginScreenProps = { host: { id: `shell-${++sequence}`, label: "Host" }, layout: { compact, platform: "ios" }, params: {}, navigation: { openAgent: vi.fn(), openWorkspace: vi.fn(), openBrowser: vi.fn() },
+function mount(compact: boolean, initial?: Partial<KontorRoute>, at: { hostId?: string; params?: Record<string, string> } = {}) {
+  const props: PluginScreenProps = { host: { id: at.hostId ?? `shell-${++sequence}`, label: "Host" }, layout: { compact, platform: "ios" }, params: at.params ?? {}, navigation: { openAgent: vi.fn(), openWorkspace: vi.fn(), openBrowser: vi.fn() },
     theme: { colors: { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } } };
   if (initial) navigate(props.host.id, initial);
   const entry = KontorScreen(props);
   const component = entry.type as (props: PluginScreenProps) => ReactNode;
   let tree: ReactNode, drawn = 0;
-  const render = () => { model.cursor = 0; drawn = model.updates; tree = component(props); };
+  const committed: (readonly unknown[] | undefined)[] = [];
+  const render = () => { model.cursor = 0; model.effects = []; drawn = model.updates; tree = component(props); };
   render();
   return {
     props, render,
     /** Like React, draws again only when a state update was scheduled since the last render. */
     flush() { if (model.updates !== drawn) render(); },
+    /** Runs this render's effects whose dependencies changed since the last commit, then draws any update. */
+    commit() {
+      model.effects.forEach(({ effect, deps }, index) => {
+        const last = committed[index];
+        if (deps && last && deps.length === last.length && deps.every((dep, at) => Object.is(dep, last[at]))) return;
+        committed[index] = deps;
+        effect();
+      });
+      this.flush();
+    },
     action(label: string) { const action = elements(tree).find((element) => element.props.label === label); if (!action) throw new Error(`Missing action ${label}`); return action; },
     click(label: string) { const action = this.action(label); const press = action.props.onPress; expect(typeof press).toBe("function"); if (typeof press === "function") press(); render(); },
     elements() { return elements(tree); },
@@ -902,5 +916,104 @@ describe("Start or switch entry", () => {
     (screen.props as { navigation?: unknown }).navigation = undefined; screen.render();
     screen.click("Start or switch session");
     expect(screen.elements().find((node) => node.type === StartSwitchSheet)!.props.canOpen).toBe(false);
+  });
+});
+
+describe("composer popover hand-off", () => {
+  const created: CreateOutcome = { requestId: "00000000-0000-4000-8000-000000000002", state: "verified", title: "LSA • ADHOC • Popover", agentId: "popover-exact-id", workspaceId: "wks-adam",
+    message: "Created and verified.", differences: [], persona: "supported", checkedAt: "2026-10-25" };
+  /** The Kontor screen as `openScreen` draws it for a popover request: the key alone rides in the URL. */
+  const arrive = (hostId: string, target: string, initial: Partial<KontorRoute> = { tab: "Overview" }) => {
+    const screen = mount(false, initial, { hostId, params: { target } });
+    screen.commit();
+    return screen;
+  };
+  let host = "";
+  beforeEach(() => { withdrawHandOff(); host = `pop-${++sequence}`; });
+
+  it("opens the exact host and session ID once; a re-render, a remount, Back or a StrictMode rerun replays nothing", () => {
+    const key = handOffOpen(host, { kind: "session", agentId: "native" });
+    const screen = arrive(host, key);
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "native", serverId: host });
+    expect(readRecent(host).record.visits.map((visit) => visit.id)).toEqual(["native"]);
+    screen.render(); screen.commit();
+    // The same URL drawn again: a remount after Back, or StrictMode's second mount.
+    model.slots = [];
+    const again = arrive(host, key);
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledTimes(1);
+    expect(again.props.navigation!.openAgent).not.toHaveBeenCalled();
+    expect(readRecent(host).record.visits.map((visit) => visit.id)).toEqual(["native"]);
+    expect(model.toastError).not.toHaveBeenCalled();
+  });
+
+  it("opens a newer request while the screen stays mounted", () => {
+    const screen = arrive(host, handOffOpen(host, { kind: "session", agentId: "native" }));
+    model.entries = [...model.entries, sessionEntry("second")];
+    screen.props.params = { target: handOffOpen(host, { kind: "session", agentId: "second" }) };
+    screen.render(); screen.commit();
+    expect(vi.mocked(screen.props.navigation!.openAgent).mock.calls).toEqual([[{ agentId: "native", serverId: host }], [{ agentId: "second", serverId: host }]]);
+  });
+
+  it("says nothing and opens nothing for a used, replaced, unknown or foreign key, and never consumes another host's request", () => {
+    const foreign = handOffOpen(`${host}-other`, { kind: "session", agentId: "native" });
+    const screen = arrive(host, "unknown-key");
+    expect(takeHandOff(`${host}-other`, foreign)).toEqual({ kind: "session", agentId: "native" });
+    model.slots = [];
+    const wrongHost = arrive(host, handOffOpen(`${host}-other`, { kind: "session", agentId: "native" }));
+    for (const drawn of [screen, wrongHost]) expect(drawn.props.navigation!.openAgent).not.toHaveBeenCalled();
+    expect(model.toastError).not.toHaveBeenCalled();
+    expect(readRecent(host).record.visits).toEqual([]);
+  });
+
+  it("does nothing without a request and leaves a pending one for its own screen", () => {
+    const key = handOffOpen(host, { kind: "session", agentId: "native" });
+    const screen = mount(false, { tab: "Overview" }, { hostId: host });
+    screen.commit();
+    expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
+    expect(takeHandOff(host, key)).toEqual({ kind: "session", agentId: "native" });
+  });
+
+  it("toasts a refusal, records no visit and consumes the request so it cannot retry itself", () => {
+    const key = handOffOpen(host, { kind: "session", agentId: "gone" });
+    const screen = arrive(host, key);
+    expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
+    expect(model.toastError).toHaveBeenCalledExactlyOnceWith("That session is no longer in the directory. Refresh the list and try again.");
+    expect(readRecent(host).record.visits).toEqual([]);
+    expect(takeHandOff(host, key)).toBeNull();
+  });
+
+  it("opens a created session by its readback ID, and a failed open keeps the created identity in the toast", () => {
+    const screen = arrive(host, handOffOpen(host, { kind: "created", outcome: created }));
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "popover-exact-id", serverId: host });
+    expect(readRecent(host).record.visits.map((visit) => visit.id)).toEqual(["popover-exact-id"]);
+    model.slots = [];
+    const failing = mount(false, { tab: "Overview" }, { hostId: `${host}-fail`, params: { target: handOffOpen(`${host}-fail`, { kind: "created", outcome: created }) } });
+    vi.mocked(failing.props.navigation!.openAgent).mockImplementation(() => { throw new Error("navigation failed"); });
+    failing.commit();
+    expect(model.toastError).toHaveBeenCalledExactlyOnceWith("Created “LSA • ADHOC • Popover” (session ID popover-exact-id). navigation failed");
+    expect(readRecent(`${host}-fail`).record.visits).toEqual([]);
+  });
+
+  it("applies a long search to unscoped Sessions as the sheet's Show all does, opening nothing", () => {
+    const screen = arrive(host, handOffOpen(host, { kind: "search", query: "route review" }), { tab: "Board", projectId: "prj-unrelated", epicKey: "ASMA-1" });
+    const route = hostNavigation(host).route;
+    expect(route).toMatchObject({ tab: "Sessions", ...NO_SCOPE });
+    expect(readSessionView(sessionScopeKey(host, route))).toMatchObject({ query: "route review", membership: "sessions", includeArchived: false, scrollOffset: 0 });
+    expect(screen.elements().find((node) => node.type === SessionsScreen)?.props.viewScope).toBe(sessionScopeKey(host, route));
+    expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
+    expect(readRecent(host).record.visits).toEqual([]);
+  });
+
+  it("leaves the screen's saved Sessions view and its Archived choice as they were when it opens a session", () => {
+    const initial = { tab: "Sessions" as const, ...NO_SCOPE };
+    navigate(host, initial);
+    const scope = sessionScopeKey(host, hostNavigation(host).route);
+    patchSessionView(scope, { query: "kept", membership: "archived", includeArchived: true, scrollOffset: 80 });
+    const before = readSessionView(scope);
+    const screen = arrive(host, handOffOpen(host, { kind: "session", agentId: "native" }), initial);
+    expect(screen.props.navigation!.openAgent).toHaveBeenCalledOnce();
+    expect(readSessionView(scope)).toEqual(before);
+    expect(hostNavigation(host).route).toMatchObject(initial);
+    expect(model.directoryInputs.every((input) => input.includeArchived)).toBe(true);
   });
 });
