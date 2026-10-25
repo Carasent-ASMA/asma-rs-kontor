@@ -34,8 +34,10 @@ export function epicIdentitySource(exports: readonly EpicIdentity[]): EpicIdenti
   const latest = exports.reduce<EpicIdentity | undefined>((newest, next) => newest === undefined || next.order > newest.order ? next : newest, undefined);
   if (!latest) return undefined;
   const byKey = new Map(latest.issues.map((issue) => [issue.key, issue]));
+  // A parent may be named by a key Jira now returns under another; that is the same issue.
+  const alias = new Map(latest.conflicts.map(({ key, current }) => [key, current]));
   const epicOf = (key: string, depth = 0): string | null | undefined => {
-    const issue = byKey.get(key);
+    const issue = byKey.get(alias.get(key) ?? key);
     if (!issue || depth > 4) return undefined;
     return issue.level === 1 ? issue.key : issue.level > 1 || issue.parent === null ? null : epicOf(issue.parent, depth + 1);
   };

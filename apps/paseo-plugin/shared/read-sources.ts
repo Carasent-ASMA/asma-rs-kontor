@@ -88,6 +88,9 @@ export const epicIdentitySchema = z.object({
     keys.add(issue.key);
   }
   for (const conflict of value.conflicts) if (!keys.has(conflict.current)) context.addIssue({ code: "custom", message: `Moved key ${conflict.key} names an issue the export lacks` });
+  // Every declared key has an answer: its issue, the issue it moved to, or not returned. Otherwise a reader would take it as never requested.
+  const answered = new Set([...keys, ...value.conflicts.map(({ key }) => key), ...value.coverage.missing]);
+  for (const key of value.scope.declared) if (!answered.has(key)) context.addIssue({ code: "custom", message: `Declared key ${key} has no answer in the export` });
 });
 export type EpicIdentity = z.infer<typeof epicIdentitySchema>;
 export type JiraIssue = z.infer<typeof jiraIssueSchema>;

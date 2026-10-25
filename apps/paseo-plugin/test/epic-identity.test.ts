@@ -12,7 +12,8 @@ import { readConfiguredSource, readConfiguredSummary } from "../server/read-sour
 import { sessionEntry } from "./session-fixtures";
 
 // The collector's own synthetic run: ASMA-10 epic > ASMA-11 story > ASMA-12 sub-task; ASMA-20 epic > ASMA-41, which
-// Jira returns for ASMA-40; ASMA-30 a task with no epic; ASMA-50, whose parent ASMA-51 is not returned; ASMA-404 not returned.
+// Jira returns for ASMA-40; ASMA-30 a task with no epic; ASMA-50, whose parent ASMA-51 is not returned; ASMA-60, whose parent
+// ASMA-2 Jira returns as ASMA-20; ASMA-404 not returned.
 const exported = epicIdentitySchema.parse(JSON.parse(execFileSync("python3", [join(__dirname, "../scripts/export-epic-identity.py"), "--self-check"], { encoding: "utf8" })));
 const AS_OF = exported.as_of;
 const source = { id: "identity", title: "Jira identity", kind: "jira" as const, path: "/configured/identity.json", projectId: null, epic: null, workstream: null, revisionKind: "working copy" as const };
@@ -29,8 +30,8 @@ const epicGroups = (groups: readonly OrganizationGroup[]): OrganizationGroup[] =
 describe("current Jira identity export", () => {
   it("reads every label the resolver reads, and the reader accepts what the collector writes", () => {
     expect(exported.provenance.label_keys).toEqual([...EPIC_LABELS, ...TASK_JIRA_LABELS, "ticket"]);
-    expect(exported.issues.map(({ key, via }) => [key, via])).toEqual([["ASMA-10", "scope"], ["ASMA-11", "parent"], ["ASMA-12", "declared"], ["ASMA-20", "declared"], ["ASMA-30", "declared"], ["ASMA-41", "declared"], ["ASMA-50", "declared"]]);
-    expect(exported.coverage).toMatchObject({ declared: 6, found: 5, missing: ["ASMA-51", "ASMA-404"], out_of_scope: ["EX-1"], unresolved: ["ASMA-50"] });
+    expect(exported.issues.map(({ key, via }) => [key, via])).toEqual([["ASMA-10", "scope"], ["ASMA-11", "parent"], ["ASMA-12", "declared"], ["ASMA-20", "declared"], ["ASMA-30", "declared"], ["ASMA-41", "declared"], ["ASMA-50", "declared"], ["ASMA-60", "declared"]]);
+    expect(exported.coverage).toMatchObject({ declared: 7, found: 6, missing: ["ASMA-51", "ASMA-404"], out_of_scope: ["EX-1"], unresolved: ["ASMA-50"] });
     expect(epicIdentitySource([exported])?.unanswered.get("ASMA-50")).toBe("the parent of ASMA-50 was not read");
   });
 
@@ -39,6 +40,8 @@ describe("current Jira identity export", () => {
     expect(() => epicIdentitySchema.parse({ ...exported, issues: [...exported.issues, exported.issues[0]] })).toThrow(/duplicate/);
     expect(() => epicIdentitySchema.parse({ ...exported, conflicts: [{ ...exported.conflicts[0]!, current: "ASMA-77" }] })).toThrow(/lacks/);
     expect(() => epicIdentitySchema.parse({ ...exported, assignee: "not read" })).toThrow();
+    // A declared key with no issue, move or missing entry is refused, so no reader takes it as never requested.
+    expect(() => epicIdentitySchema.parse({ ...exported, issues: exported.issues.filter(({ key }) => key !== "ASMA-30") })).toThrow(/Declared key ASMA-30 has no answer/);
     expect(() => epicIdentitySchema.parse({ ...exported, issues: [{ ...exported.issues[0]!, summary: undefined }] })).toThrow();
   });
 
@@ -53,6 +56,13 @@ describe("current Jira identity export", () => {
         expect(sourceReadPending(result)).toBe(false);
         const story = await reader({ ...source, path, epic: "ASMA-11" });
         expect([story.status, story.diagnostics[0]]).toEqual(["unavailable", expect.stringContaining("not an epic in the Jira identity export")]);
+      }
+      // An export that drops a declared key's answer is refused at the boundary: its keys never reach the resolver as unrequested.
+      const incomplete = join(directory, "incomplete.json");
+      await writeFile(incomplete, JSON.stringify({ ...exported, issues: exported.issues.filter(({ key }) => key !== "ASMA-30") }));
+      for (const reader of [readConfiguredSource, readConfiguredSummary]) {
+        const result = await reader({ ...source, path: incomplete });
+        expect([result.status, result.epicIdentity ?? null, result.diagnostics.join(" ")]).toEqual(["unavailable", null, expect.stringContaining("Declared key ASMA-30 has no answer")]);
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
@@ -90,6 +100,16 @@ describe("current Jira identity export", () => {
       .toEqual({ epic: null, note: `a standalone ticket, checked in Jira when Kontor created the session; ASMA-30 (Task) has no epic in Jira as observed ${AS_OF}`, association: "ticket", ticket: "ASMA-30" });
     expect(sessionEpic(at("filed-ticket", { ticket: "ASMA-12", "create.request": "request-1" }), {})).toEqual({ epic: "ASMA-10", note: `from Jira as observed ${AS_OF} for ASMA-12`, association: "epic" });
     expect(sessionEpic(at("gone-ticket", { ticket: "ASMA-404", "create.request": "request-1" }), {}).note).toBe(`a standalone ticket, checked in Jira when Kontor created the session; Jira did not return ASMA-404 as of ${AS_OF}`);
+  });
+
+  it("files an issue under its epic through a parent key Jira now returns under another", () => {
+    // ASMA-60's parent is ASMA-2, which Jira returned as epic ASMA-20.
+    expect(epicIdentitySource([exported])?.issues.get("ASMA-60")).toMatchObject({ key: "ASMA-60", parent: "ASMA-2", epic: "ASMA-20" });
+    expect(sessionEpic(at("moved-parent", { task: "ASMA-60" }), {})).toEqual({ epic: "ASMA-20", note: `from Jira as observed ${AS_OF} for ASMA-60`, association: "epic" });
+    // A sub-task below a story whose parent moved climbs the same way.
+    const deeper = structuredClone(exported);
+    deeper.issues.push({ ...deeper.issues.find(({ key }) => key === "ASMA-12")!, id: "100061", key: "ASMA-61", parent: "ASMA-60" });
+    expect(epicIdentitySource([deeper])?.issues.get("ASMA-61")?.epic).toBe("ASMA-20");
   });
 
   it("reads an epic key Jira now returns under another as that one issue, keeping the old key in the note", () => {

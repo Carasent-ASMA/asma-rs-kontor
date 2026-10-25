@@ -100,6 +100,10 @@ def collect(jira, rejected: type[BaseException], scope_jql: str, project: str, d
     issues: dict[str, dict] = {}
     missing: list[str] = []
     conflicts: list[dict] = []
+    moved: dict[str, str] = {}  # A key Jira returned under another, to that current key.
+
+    def read(key: str) -> bool:
+        return key in issues or key in moved
 
     def take(raws: list[dict], via: str) -> None:
         observed = stamp(now())
@@ -107,19 +111,20 @@ def collect(jira, rejected: type[BaseException], scope_jql: str, project: str, d
             issues.setdefault(raw["key"], issue(raw, via, observed))
 
     def lookup(keys: list[str], via: str) -> None:
-        wanted = [key for key in keys if key not in issues]
+        wanted = [key for key in keys if not read(key)]
         for start in range(0, len(wanted), BATCH):
             try:
                 take(jira.search(f"key in ({','.join(wanted[start:start + BATCH])})", FIELDS), via)
             except rejected:
                 pass  # A key Jira does not know rejects the whole search; each remaining key is read alone below.
-        for key in [key for key in wanted if key not in issues]:
+        for key in [key for key in wanted if not read(key)]:
             raw = jira.get(f"/rest/api/3/issue/{key}", {"fields": FIELDS})
             if raw is None:
                 missing.append(key)
                 continue
             take([raw], via)
             if raw["key"] != key:
+                moved[key] = raw["key"]
                 conflicts.append({"kind": "moved_key", "key": key, "current": raw["key"], "observed_at": stamp(now())})
 
     take(jira.search(scope_jql, FIELDS), "scope")
@@ -128,12 +133,11 @@ def collect(jira, rejected: type[BaseException], scope_jql: str, project: str, d
     in_scope = [key for key in declared if own.fullmatch(key)]
     lookup(in_scope, "declared")
     for _ in range(PARENT_ROUNDS):
-        parents = sorted({i["parent"] for i in issues.values() if i["level"] < 1 and i["parent"] and i["parent"] not in issues} - set(missing), key=key_order)
+        parents = sorted({i["parent"] for i in issues.values() if i["level"] < 1 and i["parent"] and not read(i["parent"])} - set(missing), key=key_order)
         if not parents:
             break
         lookup(parents, "parent")
-    unresolved = sorted((i["key"] for i in issues.values() if i["level"] < 1 and i["parent"] and i["parent"] not in issues), key=key_order)
-    moved = {conflict["key"] for conflict in conflicts}
+    unresolved = sorted((i["key"] for i in issues.values() if i["level"] < 1 and i["parent"] and not read(i["parent"])), key=key_order)
     return {"schema": SCHEMA, "order": int(started.timestamp() * 1000), "as_of": stamp(now()),
             "source": {"kind": "jira-rest", "realm": jira.realm},
             "scope": {"jql": scope_jql, "project": project, "declared": in_scope},
@@ -154,7 +158,8 @@ def self_check() -> dict:
         **({"parent": {"key": parent}} if parent else {})}}
     known = {i["key"]: i for i in [raw("ASMA-10", "Epic", 1, labels=["ws:alpha"]), raw("ASMA-11", "Story", 0, "ASMA-10"),
                                    raw("ASMA-12", "Sub-task", -1, "ASMA-11"), raw("ASMA-20", "Epic", 1),
-                                   raw("ASMA-30", "Task", 0), raw("ASMA-41", "Story", 0, "ASMA-20"), raw("ASMA-50", "Story", 0, "ASMA-51")]}
+                                   raw("ASMA-30", "Task", 0), raw("ASMA-41", "Story", 0, "ASMA-20"), raw("ASMA-50", "Story", 0, "ASMA-51"),
+                                   raw("ASMA-60", "Story", 0, "ASMA-2")]}
     calls: list[str] = []
 
     class Synthetic:
@@ -173,13 +178,13 @@ def self_check() -> dict:
         def get(self, path: str, query: dict) -> dict | None:
             calls.append(path)
             key = path.rsplit("/", 1)[1]
-            return known["ASMA-41"] if key == "ASMA-40" else known.get(key)
+            return {"ASMA-40": known["ASMA-41"], "ASMA-2": known["ASMA-20"]}.get(key) or known.get(key)
 
     with tempfile.TemporaryDirectory() as home:
         for name, record in {"a": {"labels": {"task": " asma-12 ", "role": "SWE"}}, "b": {"archivedAt": "x", "labels": {"epic": "ASMA-20"}},
                              "c": {"labels": {"jira.issue": "ASMA-404", "ticket": "ASMA-30", "asma.task": "EX-1"}},
                              "d": {"labels": {"task": "ASMA-40", "epic": "not a key", "origin.epic": "ASMA-11, ASMA-12"}}, "e": {},
-                             "g": {"labels": {"task": "ASMA-50"}}}.items():
+                             "g": {"labels": {"task": "ASMA-50", "jira.issue": "ASMA-60"}}}.items():
             os.makedirs(os.path.join(home, "agents", name))
             with open(os.path.join(home, "agents", name, f"{name}.json"), "w", encoding="utf-8") as handle:
                 json.dump(record, handle)
@@ -187,21 +192,23 @@ def self_check() -> dict:
         with open(os.path.join(home, "agents", "f", "f.json"), "w", encoding="utf-8") as handle:
             handle.write("{")
         declared, sessions = declared_keys(home)
-    assert declared == ["ASMA-12", "ASMA-20", "ASMA-30", "ASMA-40", "ASMA-50", "ASMA-404", "EX-1"], declared
+    assert declared == ["ASMA-12", "ASMA-20", "ASMA-30", "ASMA-40", "ASMA-50", "ASMA-60", "ASMA-404", "EX-1"], declared
     assert sessions == {"read": 6, "unreadable": 1}, sessions
     ticks = iter(range(1000))
     out = collect(Synthetic(), module.RejectedQuery, "project = ASMA AND issuetype = Epic", "ASMA", declared, sessions,
                   lambda: datetime(2026, 1, 1, 12, 0, next(ticks), tzinfo=timezone.utc))
     by_key = {i["key"]: i for i in out["issues"]}
-    assert list(by_key) == ["ASMA-10", "ASMA-11", "ASMA-12", "ASMA-20", "ASMA-30", "ASMA-41", "ASMA-50"], list(by_key)
+    assert list(by_key) == ["ASMA-10", "ASMA-11", "ASMA-12", "ASMA-20", "ASMA-30", "ASMA-41", "ASMA-50", "ASMA-60"], list(by_key)
     assert by_key["ASMA-12"]["via"] == "declared" and by_key["ASMA-11"]["via"] == "parent" and by_key["ASMA-10"]["via"] == "scope"
     assert by_key["ASMA-11"]["parent"] == "ASMA-10" and by_key["ASMA-30"]["parent"] is None and by_key["ASMA-10"]["updated"] == "2026-01-01T08:00:00Z"
-    assert out["conflicts"] == [{"kind": "moved_key", "key": "ASMA-40", "current": "ASMA-41", "observed_at": out["conflicts"][0]["observed_at"]}]
-    assert out["coverage"] == {"scope_issues": 1, "declared": 6, "found": 5, "missing": ["ASMA-51", "ASMA-404"], "out_of_scope": ["EX-1"],
+    # ASMA-60's parent ASMA-2 comes back as epic ASMA-20: one alias, read once, and the story is resolved.
+    assert [(c["key"], c["current"]) for c in out["conflicts"]] == [("ASMA-40", "ASMA-41"), ("ASMA-2", "ASMA-20")], out["conflicts"]
+    assert by_key["ASMA-60"]["parent"] == "ASMA-2" and calls.count("/rest/api/3/issue/ASMA-2") == 1, calls
+    assert out["coverage"] == {"scope_issues": 1, "declared": 7, "found": 6, "missing": ["ASMA-51", "ASMA-404"], "out_of_scope": ["EX-1"],
                                "unresolved": ["ASMA-50"]}, out["coverage"]
     # One rejected batch, then one read per key it held; a parent Jira does not return is read once, not every round.
     assert calls[1].startswith("key in (ASMA-12,") and "/rest/api/3/issue/ASMA-404" in calls and calls[-1] == "/rest/api/3/issue/ASMA-51", calls
-    assert calls.count("key in (ASMA-11,ASMA-51)") == 1 and calls.count("/rest/api/3/issue/ASMA-51") == 1, calls
+    assert calls.count("key in (ASMA-2,ASMA-11,ASMA-51)") == 1 and calls.count("/rest/api/3/issue/ASMA-51") == 1, calls
     assert out["order"] == 1767268800000 and out["as_of"] > out["issues"][0]["observed_at"]
     assert tuple(out["provenance"]["label_keys"]) == LABEL_KEYS
     return out

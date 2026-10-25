@@ -805,8 +805,10 @@ follows parents up to the epic. Each issue keeps its ID, key, type and level,
 parent, labels, status, update time and summary with its observation time. The
 document records the scope, provenance, coverage (keys declared, found, not
 returned, outside the project, or with a parent not read), moved keys and an
-`order`; the plugin uses the export with the highest order only. Coverage does
-not depend on `ws:` labels, so an epic only Jira knows is covered too. A key
+`order`; the plugin uses the export with the highest order only. A parent named
+by a key Jira now returns under another is that issue, read once. The plugin
+refuses a document in which a declared key has no issue, move or not-returned
+entry. Coverage does not depend on `ws:` labels, so an epic only Jira knows is covered too. A key
 declared after the export is not covered, and Jira answers alike for a deleted
 issue and one the account may not read, so a key not returned is never read as
 deleted. Nothing is written to Jira, Paseo or disk. A plugin older than this
