@@ -4175,6 +4175,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/work-catalog/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One generation-consistent entries answer. */
+        get: operations["entries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-catalog/native/inventory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One generation-consistent native inventory. */
+        get: operations["native_inventory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-catalog/native/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The native census's freshness, coverage and counts. */
+        get: operations["native_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-catalog/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-source freshness, coverage, errors, retry deadlines and conflicts. */
+        get: operations["sources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-catalog/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The catalog's freshness, coverage, ownership and conflicts. */
+        get: operations["status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4399,6 +4484,20 @@ export interface components {
             /** @description Dedicated ASW node. */
             topology_node_id: string;
         };
+        /** @description A known identity of one logical plan. */
+        Alias: {
+            /** @description Why this alias exists. */
+            kind: components["schemas"]["AliasKind"];
+            /** @description When the alias was observed. */
+            observed_at: string;
+            /** @description The prior or explicit value. */
+            value: string;
+        };
+        /**
+         * @description The kind of a retained identity.
+         * @enum {string}
+         */
+        AliasKind: "renamed_from" | "source_id" | "explicit_id";
         /**
          * @description What `provider-account-profiles/{id}:amend` is asked for.
          *
@@ -4829,6 +4928,36 @@ export interface components {
             /** @description Pinned workflow whose declared artifact this satisfies. */
             workflow_id: string;
         };
+        /** @description One operator or plan association. */
+        Association: {
+            /** @description Whether the associated plan is removed or the source vanished. */
+            dangling: boolean;
+            /** @description Which authority stated it. */
+            kind: components["schemas"]["AssociationKind"];
+            /** @description A structural note, never file content. */
+            note?: string | null;
+            /** @description The relation named. */
+            relation: components["schemas"]["AssociationRelation"];
+            /** @description The operator source id when `kind` is explicit. */
+            source_id?: string | null;
+            /** @description The relation's value: a workstream key, an epic key or a project id. */
+            value: string;
+            /**
+             * @description Always `false` in contract version 1. A later verified join must not
+             *     reuse this field without an evidence contract.
+             */
+            verified: boolean;
+        };
+        /**
+         * @description Who stated an association.
+         * @enum {string}
+         */
+        AssociationKind: "explicit_operator" | "plan_declaration";
+        /**
+         * @description What an association relates.
+         * @enum {string}
+         */
+        AssociationRelation: "workstream" | "epic" | "project";
         Attest: {
             /** Format: int64 */
             expected_revision: number;
@@ -5267,6 +5396,172 @@ export interface components {
              */
             account_profile_ids?: string[];
         };
+        /** @description Current counts, all derived from the active generation. */
+        CatalogCounts: {
+            /** @description Conflicts at the active generation. */
+            conflicts: number;
+            /** @description Distinct content revisions retained. */
+            content_revisions: number;
+            /** @description Explicit associations whose plan or source is no longer present. */
+            dangling_associations: number;
+            /** @description Diagnostics at the active generation. */
+            diagnostics: number;
+            /** @description Logical plans, including removed ones. */
+            logical_plans: number;
+            /** @description Active occurrences. */
+            occurrences: number;
+            /** @description Removed logical plans retained as history. */
+            tombstones: number;
+        };
+        /** @description One logical plan with all its occurrences and associations. */
+        CatalogEntry: {
+            /** @description Known aliases, including an unambiguous rename predecessor. */
+            aliases: components["schemas"]["Alias"][];
+            /** @description Every association, operator-explicit or declared. */
+            associations: components["schemas"]["Association"][];
+            /** @description Entry-level conflicts. */
+            conflicts: components["schemas"]["Conflict"][];
+            /** @description Entry-level diagnostics. */
+            diagnostics: components["schemas"]["Diagnostic"][];
+            /** @description When the logical plan was first observed. */
+            first_seen: string;
+            /** @description A plan or a QNR execution unit. */
+            kind: components["schemas"]["EntryKind"];
+            /** @description When it was last observed in a complete sweep. */
+            last_seen: string;
+            /** @description The stable logical plan id. */
+            logical_plan_id: string;
+            /** @description Every occurrence at the active generation. */
+            occurrences: components["schemas"]["Occurrence"][];
+            /** @description Whether it is live or retained as removed history. */
+            state: components["schemas"]["EntryState"];
+            /** @description The current display title. */
+            title: string;
+        };
+        /**
+         * @description One source of observations in the shared catalog.
+         * @enum {string}
+         */
+        CatalogSource: "plan" | "jira" | "native";
+        /** @description One conflict observed at a source. */
+        CatalogSourceConflict: {
+            /** @description A stable conflict kind. */
+            kind: string;
+            /** @description A structural description. */
+            message: string;
+            /** @description When the conflict was observed, when the source records it. */
+            observed_at?: string | null;
+            /** @description The plan, issue or runtime the conflict is about. */
+            subject?: string | null;
+        };
+        /** @description One bounded coverage line for a source. */
+        CatalogSourceCoverage: {
+            /** @description A bounded structural detail, never file bytes or a credential. */
+            detail: string;
+            /** @description The stable state spelling for this line. */
+            state: string;
+            /** @description What the line covers, such as a repository or a sweep mode. */
+            subject: string;
+        };
+        /**
+         * @description The state of one source's latest attempt.
+         * @enum {string}
+         */
+        CatalogSourceState: "not_configured" | "never_collected" | "complete" | "incomplete" | "failed";
+        /** @description Freshness, coverage, errors and conflicts for one source. */
+        CatalogSourceStatus: {
+            /**
+             * @description The instant the latest complete generation finished. Never the request
+             *     instants or the instant this status was read.
+             */
+            as_of?: string | null;
+            /**
+             * Format: int64
+             * @description How far collection has attempted; may be ahead of `generation`.
+             */
+            attempted_generation: number;
+            /** @description Bounded visible conflicts. */
+            conflicts: components["schemas"]["CatalogSourceConflict"][];
+            /** @description Bounded coverage lines. */
+            coverage: components["schemas"]["CatalogSourceCoverage"][];
+            /** @description The latest structural failure, never source content. */
+            error?: string | null;
+            /**
+             * Format: int64
+             * @description The last complete generation, or `0` before the first one.
+             */
+            generation: number;
+            /**
+             * @description Associations this source has not verified. The frozen v1 association
+             *     contract cannot claim verification, so plan declarations remain pending
+             *     until a collector with its own evidence contract proves them.
+             */
+            pending_verification: number;
+            /** @description The earliest instant this source will retry, when it named one. */
+            retry_at?: string | null;
+            /** @description Which source this describes. */
+            source: components["schemas"]["CatalogSource"];
+            /** @description The latest attempt's state. */
+            state: components["schemas"]["CatalogSourceState"];
+        };
+        /** @description The per-source observer status across every catalog source. */
+        CatalogSourcesView: {
+            /**
+             * Format: int32
+             * @description The contract version.
+             */
+            schema_version: number;
+            /** @description One row per source, in plan, Jira, native order. */
+            sources: components["schemas"]["CatalogSourceStatus"][];
+        };
+        /**
+         * @description The observer status of the whole work catalog.
+         *
+         *     It answers freshness, coverage and collector ownership together because a
+         *     caller that reads only `entries` cannot tell a healthy empty catalog from a
+         *     collector that never ran.
+         */
+        CatalogStatus: {
+            /** @description The instant the latest complete generation finished, if any. */
+            as_of?: string | null;
+            /**
+             * Format: int64
+             * @description How far collection has attempted; may be ahead of `generation`.
+             */
+            attempted_generation: number;
+            /** @description A host-local catalog identity, stable across restarts of this database. */
+            catalog_id: string;
+            /** @description The latest collection attempt and its coverage. */
+            collection: components["schemas"]["CollectionStatus"];
+            /** @description Whether an owner currently holds the collector lease. */
+            collector: components["schemas"]["CollectorStatus"];
+            /** @description Effective operator configuration provenance. */
+            config: components["schemas"]["ConfigStatus"];
+            /** @description Conflicts that are not attached to one entry, or all current conflicts. */
+            conflicts: components["schemas"]["Conflict"][];
+            /** @description Current work-item counts at the active generation. */
+            counts: components["schemas"]["CatalogCounts"];
+            /** @description Dangling explicit associations retained across removal. */
+            dangling_associations: components["schemas"]["DanglingAssociation"][];
+            /** @description Diagnostics that are not attached to one entry. */
+            diagnostics: components["schemas"]["Diagnostic"][];
+            /**
+             * Format: int64
+             * @description The most recent complete generation, or `0` before the first one.
+             */
+            generation: number;
+            /** @description Current registry projection, including diagnostics. */
+            registry: components["schemas"]["RegistryStatus"];
+            /**
+             * Format: int32
+             * @description The contract version this body satisfies.
+             */
+            schema_version: number;
+            /** @description Whether the atomic fallback snapshot is present and at which generation. */
+            snapshot: components["schemas"]["SnapshotStatus"];
+            /** @description Whether this answer came from the database or the fallback snapshot. */
+            source: components["schemas"]["ReadSource"];
+        };
         /** @description Close one pull request's review. */
         ClosePrReviewRequest: {
             /**
@@ -5344,6 +5639,58 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /**
+         * @description The state of the latest collection attempt.
+         * @enum {string}
+         */
+        CollectionState: "never_collected" | "complete" | "incomplete" | "failed";
+        /** @description One collection attempt, complete or not. */
+        CollectionStatus: {
+            /** @description Per-repository coverage for this attempt. */
+            coverage: components["schemas"]["RepositoryCoverage"][];
+            /**
+             * @description Attempt-level structural diagnostics. Unknown registry keys are not
+             *     registry entries and appear here as diagnostics, never as work.
+             */
+            diagnostics: string[];
+            /**
+             * Format: int64
+             * @description Measured wall-clock duration in milliseconds.
+             */
+            duration_ms?: number | null;
+            /** @description Plan documents observed. */
+            entries_observed: number;
+            /** @description A structural failure, never file content and never a credential. */
+            error?: string | null;
+            /** @description Tracked and untracked Markdown files considered. */
+            files_seen: number;
+            /** @description When the attempt finished. */
+            finished_at?: string | null;
+            /**
+             * Format: int64
+             * @description The generation this attempt would have produced.
+             */
+            generation: number;
+            /** @description Configured repository count. */
+            repositories_configured: number;
+            /** @description Repositories read in this attempt. */
+            repositories_scanned: number;
+            /** @description When the attempt started. */
+            started_at?: string | null;
+            /** @description The attempt's own state. */
+            state: components["schemas"]["CollectionState"];
+        };
+        /** @description The collector lease, which makes one owner per scope explicit. */
+        CollectorStatus: {
+            /** @description The last collection failure, structurally redacted. */
+            last_error?: string | null;
+            /** @description When the current lease is allowed to be taken over. */
+            lease_until?: string | null;
+            /** @description The current owner, if a live lease exists. */
+            owner?: string | null;
+            /** @description Whether this process is the current owner. */
+            owner_here: boolean;
         };
         /** @description A bounded page of SHA-256-verified UTF-8 bytes from a registered immutable Git blob. */
         CommitteeArtifactContentDto: {
@@ -5948,6 +6295,42 @@ export interface components {
             seat_binding_id: string;
         };
         /**
+         * @description Where the effective configuration came from.
+         * @enum {string}
+         */
+        ConfigOrigin: "catalog_file" | "migrated_plugin_env" | "migrated_plugin_file" | "none";
+        /** @description Effective configuration provenance. */
+        ConfigStatus: {
+            /** @description Structural diagnostics from resolution. */
+            diagnostics: string[];
+            /** @description Imported explicit operator sources. */
+            explicit_sources: number;
+            /** @description When a migrated configuration was materialized. */
+            imported_at?: string | null;
+            /** @description How this configuration was obtained. */
+            origin: components["schemas"]["ConfigOrigin"];
+            /** @description Configured repositories. */
+            repositories: number;
+            /** @description The SHA-256 of the effective settings document. */
+            revision?: string | null;
+        };
+        /** @description A visible identity or content conflict. */
+        Conflict: {
+            /** @description The kind of conflict. */
+            kind: components["schemas"]["ConflictKind"];
+            /** @description The logical plan it belongs to, when a single plan is implicated. */
+            logical_plan_id?: string | null;
+            /** @description A structural description. */
+            message: string;
+            /** @description When it was observed. */
+            observed_at: string;
+        };
+        /**
+         * @description The conflicts this contract can expose.
+         * @enum {string}
+         */
+        ConflictKind: "divergent_worktree" | "ambiguous_rename" | "duplicate_explicit_id" | "duplicate_epic" | "pin_mismatch" | "association_conflict";
+        /**
          * @description One connector specification revision this build can serve.
          *
          *     `installed` distinguishes "this deployment ships the mapping" from "this
@@ -6206,6 +6589,29 @@ export interface components {
              *     presenting it.
              */
             expected_revision: number;
+        };
+        /**
+         * @description How a file was found.
+         * @enum {string}
+         */
+        ContentKind: "tracked" | "untracked_draft" | "external_source";
+        /** @description One exact content revision. */
+        ContentRevision: {
+            /**
+             * Format: int64
+             * @description The byte length read.
+             */
+            byte_length: number;
+            /** @description The declared epic, when unambiguous. */
+            epic?: string | null;
+            /** @description The file's modification time. */
+            modified_at: string;
+            /** @description The SHA-256 of the exact bytes. */
+            revision_id: string;
+            /** @description The title taken from the first H1, or the path. */
+            title: string;
+            /** @description The declared workstream, when valid. */
+            workstream?: string | null;
         };
         ContextMemoryBinding: {
             /** Format: date-time */
@@ -6850,6 +7256,19 @@ export interface components {
              */
             reserve_minor_units: number;
         };
+        /** @description A retained explicit association whose plan or source is gone. */
+        DanglingAssociation: {
+            /** @description When it was last seen attached. */
+            last_seen: string;
+            /** @description The removed logical plan, when one was identified. */
+            logical_plan_id?: string | null;
+            /** @description The relation. */
+            relation: components["schemas"]["AssociationRelation"];
+            /** @description The operator source id that stated it. */
+            source_id?: string | null;
+            /** @description The value. */
+            value: string;
+        };
         /** @description Declare one long-lived seat a desk holds. */
         DeclareDurableSeatRequest: {
             /** @description Who made the decision. */
@@ -7077,6 +7496,26 @@ export interface components {
             /** @description The subject's topology node. */
             topology_node_id: string;
         };
+        /** @description A one-line diagnostic with no file content. */
+        Diagnostic: {
+            /** @description A stable machine code. */
+            code: string;
+            /** @description The logical plan it belongs to, when known. */
+            logical_plan_id?: string | null;
+            /** @description A structural message that never contains source bytes or credentials. */
+            message: string;
+            /** @description When it was observed. */
+            observed_at: string;
+            /** @description How severe it is. */
+            severity: components["schemas"]["DiagnosticSeverity"];
+            /** @description The occurrence or source the diagnostic is about. */
+            subject?: string | null;
+        };
+        /**
+         * @description Diagnostic severity.
+         * @enum {string}
+         */
+        DiagnosticSeverity: "info" | "warning" | "error";
         /**
          * @description What `execution:disarm` is asked for.
          *
@@ -7246,6 +7685,43 @@ export interface components {
             /** @description The standard role the session's seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
         };
+        /** @description The generation-consistent entries answer. */
+        EntriesView: {
+            /** @description The instant that generation completed. */
+            as_of?: string | null;
+            /** @description The matching entries. */
+            entries: components["schemas"]["CatalogEntry"][];
+            /**
+             * Format: int64
+             * @description The active complete generation this answer describes.
+             */
+            generation: number;
+            /**
+             * @description An opaque continuation for the next page, bound to this generation and
+             *     filter. A reader that presents it after the generation advanced is
+             *     refused rather than shown a page from a mix of generations.
+             */
+            next_cursor?: string | null;
+            /**
+             * Format: int32
+             * @description The contract version.
+             */
+            schema_version: number;
+            /** @description Whether the answer came from the database or the fallback snapshot. */
+            source: components["schemas"]["ReadSource"];
+            /** @description Whether a further page exists. Equivalent to `next_cursor.is_some()`. */
+            truncated: boolean;
+        };
+        /**
+         * @description What a catalog entry is.
+         * @enum {string}
+         */
+        EntryKind: "plan" | "execution_unit";
+        /**
+         * @description Whether an entry is currently observed.
+         * @enum {string}
+         */
+        EntryState: "active" | "removed";
         /** @description Apply request bound to the exact code-correction preview. */
         EpicBacklogCodeCorrectionApplyRequest: {
             /** @description Correct project-unique value to make effective. */
@@ -8836,6 +9312,95 @@ export interface components {
          * @enum {string}
          */
         NativeBindingStateDto: "attached" | "detached" | "retired";
+        /** @description The native census's freshness, coverage and counts. */
+        NativeCatalogStatus: {
+            /** @description When the last complete native generation finished. */
+            as_of?: string | null;
+            /**
+             * Format: int64
+             * @description The latest attempted native generation.
+             */
+            attempted_generation: number;
+            /** @description The latest native attempt and its coverage. */
+            collection: components["schemas"]["NativeCollectionStatus"];
+            /** @description The collector lease. */
+            collector: components["schemas"]["CollectorStatus"];
+            /** @description Current native counts. */
+            counts: components["schemas"]["NativeCounts"];
+            /**
+             * Format: int64
+             * @description The last complete native generation.
+             */
+            generation: number;
+            /**
+             * Format: int32
+             * @description The native census document version.
+             */
+            schema_version: number;
+            /** @description Whether the native fallback snapshot is present and at which generation. */
+            snapshot: components["schemas"]["SnapshotStatus"];
+            /** @description Whether this answer came from the database or the fallback snapshot. */
+            source: components["schemas"]["ReadSource"];
+        };
+        /** @description Checkout facts carried by one directory entry. */
+        NativeCheckout: {
+            /** @description Checked-out branch. */
+            branch?: string | null;
+            /** @description Working directory. */
+            cwd?: string | null;
+            /** @description Whether the directory is a Git checkout. */
+            is_git?: boolean | null;
+            /** @description Whether Paseo provisioned the worktree itself. */
+            is_paseo_owned_worktree?: boolean | null;
+            /** @description Linked worktree root. */
+            worktree_root?: string | null;
+        };
+        /** @description The latest native collection attempt. */
+        NativeCollectionStatus: {
+            /** @description Archived sessions observed in this attempt. */
+            archived_sessions: number;
+            /**
+             * Format: int64
+             * @description The latest attempted generation, which may be ahead.
+             */
+            attempt_generation: number;
+            /** @description Per-runtime coverage. */
+            coverage: components["schemas"]["NativeRuntimeCoverage"][];
+            /** @description Attempt-level diagnostics. */
+            diagnostics: string[];
+            /**
+             * Format: int64
+             * @description Measured wall-clock duration.
+             */
+            duration_ms?: number | null;
+            /** @description A structural failure, never a credential. */
+            error?: string | null;
+            /** @description When the attempt finished. */
+            finished_at?: string | null;
+            /**
+             * Format: int64
+             * @description The last complete native generation.
+             */
+            generation: number;
+            /** @description Whether archive scope was requested. */
+            include_archived: boolean;
+            /** @description Projects observed in this attempt. */
+            projects_observed: number;
+            /** @description The earliest instant this catalog will retry after a failure. */
+            retry_at?: string | null;
+            /** @description Runtime instances read to completion. */
+            runtimes_complete: number;
+            /** @description Runtime instances configured for this attempt. */
+            runtimes_configured: number;
+            /** @description Sessions observed in this attempt. */
+            sessions_observed: number;
+            /** @description When the attempt started. */
+            started_at?: string | null;
+            /** @description The attempt's own state. */
+            state: components["schemas"]["CollectionState"];
+            /** @description Workspaces observed in this attempt. */
+            workspaces_observed: number;
+        };
         /** @description Complete native parent identity reported for a child container. */
         NativeContainerParentDto: {
             /**
@@ -8849,6 +9414,51 @@ export interface components {
             native_id: string;
             /** @description Runtime family. */
             runtime_kind: string;
+        };
+        /** @description Counts at the active native generation. */
+        NativeCounts: {
+            /** @description Active sessions carrying an archive stamp. */
+            archived_sessions: number;
+            /** @description Active native projects. */
+            projects: number;
+            /** @description Active native sessions, archived included. */
+            sessions: number;
+            /** @description Removed native observations visible at this generation. */
+            tombstones: number;
+            /** @description Active native workspaces. */
+            workspaces: number;
+        };
+        /** @description One generation-consistent native inventory. */
+        NativeInventoryView: {
+            /** @description Whether the walk that produced this generation requested archived sessions. */
+            archive_scope: boolean;
+            /** @description When that generation finished. */
+            as_of?: string | null;
+            /**
+             * Format: int64
+             * @description The active complete generation.
+             */
+            generation: number;
+            /**
+             * @description An opaque continuation bound to this generation and filter. It carries
+             *     one offset per collection, so a page never mixes generations.
+             */
+            next_cursor?: string | null;
+            /** @description Native projects. */
+            projects: components["schemas"]["NativeProjectRecord"][];
+            /**
+             * Format: int32
+             * @description The native census document version.
+             */
+            schema_version: number;
+            /** @description Native sessions. */
+            sessions: components["schemas"]["NativeSessionRecord"][];
+            /** @description Whether this answer came from the database or the fallback snapshot. */
+            source: components["schemas"]["ReadSource"];
+            /** @description Whether a further page exists. Equivalent to `next_cursor.is_some()`. */
+            truncated: boolean;
+            /** @description Native workspaces. */
+            workspaces: components["schemas"]["NativeWorkspaceRecord"][];
         };
         /**
          * @description One subject in an epic-wide native-name plan.
@@ -8935,6 +9545,82 @@ export interface components {
              */
             expected_revision: number;
         };
+        /** @description One native observation with catalog state and history. */
+        NativeProjectRecord: {
+            /** @description Raw custom name. */
+            custom_name?: string | null;
+            /** @description Resolved display name. */
+            display_name: string;
+            /** @description When this project was first observed. */
+            first_seen: string;
+            /** @description When it was last observed in a complete census. */
+            last_seen: string;
+            /** @description Native project id. */
+            project_id: string;
+            /** @description Project key as the daemon reports it. */
+            project_key?: string | null;
+            /** @description Native project kind. */
+            project_kind?: string | null;
+            /** @description Project root path. */
+            root_path: string;
+            /** @description Stable runtime instance identity. */
+            runtime_instance: string;
+            /** @description Active or removed at this generation. */
+            state: components["schemas"]["EntryState"];
+        };
+        /** @description One runtime instance's coverage in the latest attempt. */
+        NativeRuntimeCoverage: {
+            /** @description Archived sessions observed. */
+            archived_sessions: number;
+            /** @description Persistent connection identity. */
+            client_id: string;
+            /** @description Runtime-specific diagnostics. */
+            diagnostics: string[];
+            /** @description A structural failure for this runtime only. */
+            error?: string | null;
+            /** @description Advertised runtime features. */
+            features: {
+                [key: string]: boolean;
+            };
+            /** @description Whether archive scope was requested. */
+            include_archived: boolean;
+            /** @description Semantic permissions on the connection. */
+            permissions?: string[] | null;
+            /**
+             * Format: int32
+             * @description Project list pages.
+             */
+            project_pages: number;
+            /** @description Projects observed. */
+            projects: number;
+            /**
+             * Format: int32
+             * @description The requested session protocol version.
+             */
+            protocol_version: number;
+            /** @description Stable runtime instance identity. */
+            runtime_instance: string;
+            /** @description The runtime's boot identity. */
+            server_id?: string | null;
+            /** @description The runtime application version. */
+            server_version?: string | null;
+            /**
+             * Format: int32
+             * @description Session pages.
+             */
+            session_pages: number;
+            /** @description Sessions observed. */
+            sessions: number;
+            /** @description What happened to this runtime. */
+            state: components["schemas"]["NativeRuntimeState"];
+            /**
+             * Format: int32
+             * @description Workspace pages.
+             */
+            workspace_pages: number;
+            /** @description Workspaces observed. */
+            workspaces: number;
+        };
         /**
          * @description A closed, non-secret refusal emitted by a native session runtime.
          *
@@ -8947,6 +9633,90 @@ export interface components {
             caller_agent_id: string;
             /** @enum {string} */
             kind: "caller_agent_not_found";
+        };
+        /**
+         * @description Whether one runtime was read.
+         * @enum {string}
+         */
+        NativeRuntimeState: "scanned" | "incomplete" | "failed";
+        /** @description One native session observation. */
+        NativeSessionRecord: {
+            /** @description The archive stamp. */
+            archived_at?: string | null;
+            /** @description Paseo's attention hint. */
+            attention_reason?: string | null;
+            checkout?: null | components["schemas"]["NativeCheckout"];
+            /** @description Native creation instant. */
+            created_at?: string | null;
+            /** @description Working directory. */
+            cwd: string;
+            /** @description When this session was first observed. */
+            first_seen: string;
+            /** @description When it was last observed in a complete census. */
+            last_seen: string;
+            /** @description Last user-message instant. */
+            last_user_message_at?: string | null;
+            /** @description Model name. */
+            model?: string | null;
+            /** @description Native parent session. */
+            parent_session_id?: string | null;
+            /** @description Native project id. */
+            project_id?: string | null;
+            /** @description Project display name. */
+            project_name?: string | null;
+            /** @description Provider name. */
+            provider: string;
+            /** @description Stable runtime instance identity. */
+            runtime_instance: string;
+            /** @description Native session id. */
+            session_id: string;
+            /** @description Active or removed at this generation. */
+            state: components["schemas"]["EntryState"];
+            /** @description Native lifecycle status. */
+            status: string;
+            /** @description Display title. */
+            title?: string | null;
+            /** @description Native update instant. */
+            updated_at?: string | null;
+            /** @description Native workspace id. */
+            workspace_id?: string | null;
+            /** @description Workspace display name. */
+            workspace_name?: string | null;
+        };
+        /** @description One native workspace observation. */
+        NativeWorkspaceRecord: {
+            /** @description Archive intent. */
+            archiving_at?: string | null;
+            /** @description Absolute working directory. */
+            directory: string;
+            /** @description When this workspace was first observed. */
+            first_seen: string;
+            /** @description Native workspace kind. */
+            kind: string;
+            /** @description When it was last observed in a complete census. */
+            last_seen: string;
+            /** @description Resolved display name. */
+            name: string;
+            /** @description Project custom name. */
+            project_custom_name?: string | null;
+            /** @description Project display name. */
+            project_display_name?: string | null;
+            /** @description Native project id. */
+            project_id: string;
+            /** @description Project kind. */
+            project_kind?: string | null;
+            /** @description Project root path. */
+            project_root_path?: string | null;
+            /** @description Stable runtime instance identity. */
+            runtime_instance: string;
+            /** @description Active or removed at this generation. */
+            state: components["schemas"]["EntryState"];
+            /** @description Raw title override. */
+            title?: string | null;
+            /** @description Native workspace id. */
+            workspace_id: string;
+            /** @description Paseo-owned worktree basename. */
+            worktree_slug?: string | null;
         };
         /**
          * @description The mandatory context a `needs_human` completion carries.
@@ -9024,6 +9794,35 @@ export interface components {
              * @description The canonical epoch both positions belong to.
              */
             timeline_epoch: number;
+        };
+        /** @description One exact file in one checkout or worktree. */
+        Occurrence: {
+            /** @description The exact bytes' revision. */
+            content: components["schemas"]["ContentRevision"];
+            /** @description How the file was found. */
+            content_kind: components["schemas"]["ContentKind"];
+            /** @description The operator's expected hash, when one was declared. */
+            expected_sha256?: string | null;
+            /** @description When this occurrence was first observed. */
+            first_seen: string;
+            /** @description When it was last observed in a complete sweep. */
+            last_seen: string;
+            /** @description The occurrence's stable id. */
+            occurrence_id: string;
+            /** @description Whether the declared pin matches the bytes read. `None` without a pin. */
+            pin_matches?: boolean | null;
+            /** @description The path relative to the repository root. */
+            relative_path: string;
+            /** @description The repository identity (shared across worktrees of one repository). */
+            repository_id: string;
+            /** @description The configured or derived worktree root. */
+            repository_root: string;
+            /** @description The operator's declared revision intent. */
+            revision_kind: components["schemas"]["RevisionKind"];
+            /** @description The explicit source ids that name this occurrence. */
+            source_ids: string[];
+            /** @description Whether the occurrence is live at the active generation. */
+            state: components["schemas"]["EntryState"];
         };
         /**
          * @description One approved memory revision a Context Pack could not carry.
@@ -10503,6 +11302,11 @@ export interface components {
              */
             used_percent: number;
         };
+        /**
+         * @description Where a read answer came from.
+         * @enum {string}
+         */
+        ReadSource: "database" | "snapshot";
         /** @description One task the planner would admit, and what it would run under. */
         ReadyTaskDto: {
             /** @description The account profile it is pinned to, if any. */
@@ -10933,6 +11737,24 @@ export interface components {
             pack: Record<string, never>;
         };
         /**
+         * @description Whether the registry was read.
+         * @enum {string}
+         */
+        RegistryState: "absent" | "ready" | "invalid";
+        /** @description The selected workstream registry's projection. */
+        RegistryStatus: {
+            /** @description Structural diagnostics. Unknown plan keys never add entries here. */
+            diagnostics: string[];
+            /** @description The file read, if one was configured. */
+            path?: string | null;
+            /** @description The SHA-256 of the exact registry bytes. */
+            revision?: string | null;
+            /** @description Whether a registry was absent, readable or refused. */
+            state: components["schemas"]["RegistryState"];
+            /** @description The registered workstream count. Always zero when absent or invalid. */
+            workstreams: number;
+        };
+        /**
          * @description Record one epic's remediation authority.
          *
          *     The same ordered LSA/TPM pair may recover a terminal `needs_human` state
@@ -11080,6 +11902,25 @@ export interface components {
             /** @description The preserved team run. */
             team_run_id: string;
         };
+        /** @description One configured repository's coverage in the latest attempt. */
+        RepositoryCoverage: {
+            /** @description Plan documents observed in this root. */
+            entries_observed: number;
+            /** @description A structural failure for this root only. */
+            error?: string | null;
+            /** @description Files considered in this root. */
+            files_seen: number;
+            /** @description Whether `.github/plans` was explicitly permitted for this root. */
+            github_plans_permitted: boolean;
+            /** @description The checked-out commit at scan time. */
+            head?: string | null;
+            /** @description The repository identity derived from the git common directory. */
+            repository_id?: string | null;
+            /** @description The configured root, as resolved on this host. */
+            root: string;
+            /** @description What happened to this root. */
+            state: components["schemas"]["RepositoryState"];
+        };
         /**
          * @description One repository's integration outcome.
          *
@@ -11114,6 +11955,11 @@ export interface components {
             /** @description The root-pointer revision, for a module that has one. */
             root_pointer_revision?: string | null;
         };
+        /**
+         * @description Whether one configured root was read.
+         * @enum {string}
+         */
+        RepositoryState: "scanned" | "not_reached" | "failed";
         /** @description The caller's one clarification question. */
         RequestPlanningPairClarificationRequest: {
             /** @description One or both members, each once. */
@@ -11227,6 +12073,11 @@ export interface components {
         };
         /** @enum {string} */
         RetrievalMode: "semantic" | "lexical_degraded" | "none";
+        /**
+         * @description The operator's declared revision intent, preserved from the source catalog.
+         * @enum {string}
+         */
+        RevisionKind: "working_copy" | "saved_draft" | "approved_revision";
         /** @description One immutable specification revision, as a caller pins it. */
         RevisionRefDto: {
             /** @description The specification's stable id. */
@@ -12056,6 +12907,22 @@ export interface components {
                  */
                 updated_at: string;
             };
+        };
+        /** @description Whether the fallback snapshot matches the active generation. */
+        SnapshotStatus: {
+            /** @description Whether it is the same generation a reader would get from the database. */
+            current: boolean;
+            /** @description Why it could not be read, when it exists but is unusable. */
+            error?: string | null;
+            /**
+             * Format: int64
+             * @description The generation inside it.
+             */
+            generation?: number | null;
+            /** @description Whether a snapshot file exists. */
+            present: boolean;
+            /** @description When it was written. */
+            written_at?: string | null;
         };
         /** @description What `scheduler:start` is asked for. */
         StartRequest: {
@@ -24857,6 +25724,235 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    entries: {
+        parameters: {
+            query?: {
+                /** @description `plan` or `execution_unit`. */
+                kind?: string;
+                /** @description A repository id, worktree root, path prefix, logical plan id or workstream key. */
+                scope?: string;
+                /** @description Include tombstoned entries. Defaults to false. */
+                include_removed?: boolean;
+                /** @description A bounded row limit. */
+                limit?: number;
+                /** @description An opaque continuation from the prior page. Bound to its generation and filter. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntriesView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    native_inventory: {
+        parameters: {
+            query?: {
+                /** @description Include native observations removed at the active generation. */
+                include_removed?: boolean;
+                /** @description Only this stable runtime instance. */
+                instance?: string;
+                /** @description A bounded row limit per collection. */
+                limit?: number;
+                /** @description An opaque continuation from the prior page. Bound to its generation and filter. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NativeInventoryView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    native_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NativeCatalogStatus"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogSourcesView"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogStatus"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
