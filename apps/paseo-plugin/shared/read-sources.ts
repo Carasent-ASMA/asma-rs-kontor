@@ -54,6 +54,41 @@ export const jiraHistorySchema = z.object({
   }
 });
 export type JiraHistory = z.infer<typeof jiraHistorySchema>;
+const instant = z.string().refine((value) => Number.isFinite(Date.parse(value)), "Invalid observation time");
+const anyJiraKey = z.string().regex(/^[A-Z][A-Z0-9_]*-[1-9]\d*$/);
+const count = z.number().int().nonnegative().max(5000);
+export const EPIC_IDENTITY_SCHEMA = "kontor/epic-identity@1";
+/** One issue as Jira returned it; `via` says whether the scope, a session's label or a child's parent selected it. */
+export const epicIdentityIssueSchema = z.object({
+  id: z.string().regex(/^[1-9]\d{0,19}$/), key: jiraKey, type: z.string().min(1).max(80), level: z.number().int().min(-1).max(9),
+  parent: anyJiraKey.nullable(), labels: z.array(z.string().min(1).max(255)).max(100), status: z.string().min(1).max(160),
+  cat: z.enum(["new", "indeterminate", "done"]), updated: instant, summary: z.string().max(1000), observed_at: instant,
+  via: z.enum(["scope", "declared", "parent"]),
+}).strict();
+/**
+ * The current Jira identity of a configured scope and of every key a session label declared when it was read:
+ * the read-only export `scripts/export-epic-identity.py` writes it until the shared work catalog serves the same.
+ */
+export const epicIdentitySchema = z.object({
+  schema: z.literal(EPIC_IDENTITY_SCHEMA),
+  order: z.number().int().positive(), as_of: instant,
+  source: z.object({ kind: z.literal("jira-rest"), realm: z.string().min(1).max(253) }).strict(),
+  scope: z.object({ jql: z.string().min(1).max(2000), project: z.string().regex(/^[A-Z][A-Z0-9_]*$/), declared: z.array(jiraKey).max(5000) }).strict(),
+  provenance: z.object({ collector: z.string().min(1).max(80), adapter: z.string().min(1).max(200), label_keys: z.array(z.string().min(1).max(64)).max(32),
+    sessions: z.object({ read: count.max(100000), unreadable: count.max(100000) }).strict() }).strict(),
+  coverage: z.object({ scope_issues: count, declared: count, found: count, missing: z.array(jiraKey).max(5000),
+    out_of_scope: z.array(anyJiraKey).max(5000), unresolved: z.array(jiraKey).max(5000) }).strict(),
+  conflicts: z.array(z.object({ kind: z.literal("moved_key"), key: jiraKey, current: jiraKey, observed_at: instant }).strict()).max(5000),
+  issues: z.array(epicIdentityIssueSchema).max(5000),
+}).strict().superRefine((value, context) => {
+  const keys = new Set<string>();
+  for (const issue of value.issues) {
+    if (keys.has(issue.key)) context.addIssue({ code: "custom", message: `Ambiguous duplicate Jira key ${issue.key}` });
+    keys.add(issue.key);
+  }
+  for (const conflict of value.conflicts) if (!keys.has(conflict.current)) context.addIssue({ code: "custom", message: `Moved key ${conflict.key} names an issue the export lacks` });
+});
+export type EpicIdentity = z.infer<typeof epicIdentitySchema>;
 export type JiraIssue = z.infer<typeof jiraIssueSchema>;
 export const workstreamRegistrySchema = z.object({
   path: z.string().nullable(), revision: z.string().nullable(),
@@ -66,7 +101,7 @@ export const sourceReadSchema = z.object({
   source: sourceSummarySchema, status: z.enum(["ready", "partial", "unavailable"]),
   revision: z.string().nullable(), readAt: z.string(), modifiedAt: z.string().nullable(),
   content: z.string().nullable(), graph: canonicalGraphSchema.nullable(), records: recordsSchema.nullable(),
-  diagnostics: z.array(z.string()), jiraHistory: jiraHistorySchema.nullable().optional(),
+  diagnostics: z.array(z.string()), jiraHistory: jiraHistorySchema.nullable().optional(), epicIdentity: epicIdentitySchema.nullable().optional(),
   planMetadata: z.object({ workstream: z.string().nullable(), epic: z.string().nullable(), diagnostics: z.array(z.string()) }).optional(),
 });
 export const listReadSources = defineRpc({ name: "sources.list", input: z.object({}).strict(),
@@ -93,5 +128,5 @@ export type CanonicalGraph = z.infer<typeof canonicalGraphSchema>;
 /** A summary is present but its exact Markdown, graph or JSON records have not been read yet. */
 export function sourceReadPending(read: SourceRead): boolean {
   return read.status !== "unavailable" && read.content === null && read.graph === null
-    && read.records === null && read.jiraHistory === undefined;
+    && read.records === null && read.jiraHistory === undefined && read.epicIdentity === undefined;
 }

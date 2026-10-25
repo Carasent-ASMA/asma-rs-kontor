@@ -6,6 +6,7 @@ import type {
   PaseoAgentUpdate,
   PaseoApi,
 } from "@getpaseo/client";
+import type { EpicIdentity } from "../shared/read-sources";
 import type { SessionAvailability } from "../shared/session-lifecycle";
 import type { SessionTelemetry } from "./session-usage";
 
@@ -97,6 +98,32 @@ export type JiraCapture = {
   readonly epics: ReadonlyMap<string, string | null>;
   /** Observation time of each ready capture; empty when none is ready. */
   readonly observed: readonly string[];
+  /** Current identity of the keys it covers, preferred to the captures for each of them; absent when none is read. */
+  readonly identity?: EpicIdentitySource;
+};
+
+/**
+ * The one current epic identity input: today the newest identity export, later the shared work catalog.
+ * A key it does not cover leaves the epic to the dated captures.
+ */
+export type EpicIdentitySource = {
+  /** When Jira was observed, and the order a later observation exceeds. */
+  readonly asOf: string;
+  readonly order: number;
+  /** The tracker realm, the configured scope and the collector that read it. */
+  readonly provenance: { readonly realm: string; readonly scope: string; readonly collector: string };
+  /** The keys it was asked for and how many it answered. */
+  readonly coverage: EpicIdentity["coverage"];
+  /** Each observed key, or an older key Jira now returns as another, to its current issue. */
+  readonly issues: ReadonlyMap<string, IdentityIssue>;
+  /** Keys it looked up without an answer, with the reason, for example "Jira did not return ASMA-1". */
+  readonly unanswered: ReadonlyMap<string, string>;
+};
+
+/** One issue as the identity observed it; the ID is immutable across key moves, and `epic` is null when none is above it. */
+export type IdentityIssue = {
+  readonly id: string; readonly key: string; readonly type: string; readonly parent: string | null;
+  readonly epic: string | null; readonly updated: string; readonly observedAt: string;
 };
 
 /** An unread error notice can outlive the native error state after recovery or close. */

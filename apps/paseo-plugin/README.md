@@ -650,17 +650,24 @@ epic labels on sessions in each project. An explicit source `projectId` constrai
 it to that project.
 
 A session's epic is its display mapping, else what its `epic`, `jira.epic`,
-`origin.epic` and `asma.epic` labels name together with the historical Jira
-projection's epic for each key those labels or its `jira.issue`, `task` or
-`asma.task` label name. Every named epic must agree. When they disagree, the
+`origin.epic` and `asma.epic` labels name together with the epic of each key
+those labels or its `jira.issue`, `task`, `asma.task` or `ticket` label name.
+That epic comes from the current Jira identity export when it answered for the
+key, else from the historical Jira projection, which says when it was observed.
+A key the identity asked Jira for and got no answer is never filled from the
+projection: a task named only that way stays at **No epic linked** with the
+reason, and an epic label stays the epic with a note that Jira did not verify
+it. A key Jira now returns under another is that same issue, never a second
+epic. Every named epic must agree. When they disagree, the
 session shows as **Epic sources disagree** and nothing below applies. A task
 label that no source files under an epic keeps the session at **No epic linked**,
 with the reason, and nothing below applies. Otherwise a session Kontor created (it carries `create.request`) shows as **Ticket
 <KEY>** when Kontor wrote its `ticket` label after checking the issue in Jira, or
 as **Ad hoc** when its `persona` label starts `kontor-lsa-adhoc@` or
 `kontor-lsa-adhoc+bootstrap@`; the hash after `@` is never read. Anything else
-shows as **No epic linked**, never as "no epic": no source here shows that a task
-has no parent. A `ticket` or persona label without `create.request`, a parent
+shows as **No epic linked**, never as "no epic". Only the identity export can
+show that an issue has no epic above it; the session then stays at **No epic
+linked** and says so, and an epic label naming that issue is a disagreement. A `ticket` or persona label without `create.request`, a parent
 session, a title, a project or a workspace never settles any of these. Each kind
 has its own row and icon, apart from the epic flag, and a workstream counts each
 distinct epic it shows once, under a filter too. Session details name the
@@ -764,8 +771,8 @@ The projection keeps each selected epic's `ws:<key>` label as `ws`. Select Epic
 keys only: a key that is both a selected entry and another entry's child is
 rejected as ambiguous. A plugin older than this change rejects a projection
 carrying `ws`, so install before repointing the source. This capture is the
-resolver's one read-only epic source; a later shared catalog replaces it behind
-the same lookup, and no second collector is added.
+resolver's dated epic source; the current identity export below is preferred
+for every key it covers.
 The projection retains the original observation time, source hash and selected
 keys; reading it later never makes it live. Exact parent/issue keys supply
 historical workflow observations in Overview, Board and Graph, and the epic of a
@@ -775,6 +782,36 @@ canonical plan, including missing/unbound tasks. Neither capture coverage nor a
 known-child count establishes complete Jira inventory, current completion,
 readiness, delivery or epic acceptance. The source's total captured epic count
 is provenance, not a completeness promise. Conflicting observations stay Unknown.
+
+### Current Jira identity export
+
+A `jira` source may instead hold a `kontor/epic-identity@1` export: the current
+Jira identity of a configured scope and of every key a session label declared
+when it was read. It is the resolver's one current epic input, `EpicIdentitySource`,
+until the shared work catalog serves the same answers behind it. Collect it
+read-only with the same Jira adapter as the responsibility projection below:
+
+```bash
+python3 apps/paseo-plugin/scripts/export-epic-identity.py \
+  --scope-jql 'project = ASMA AND issuetype = Epic' > /srv/exports/epic-identity.json
+```
+
+The script reads the scope with `/search/jql`, then every key the resolver's
+labels name on the Paseo agent records under `--paseo-home` (default
+`$PASEO_HOME`, else `~/.paseo`; archived records included, read-only) and any
+explicit keys, in batches; Jira rejects a batch holding a key it does not
+return, and each key of that batch is then read alone with `/issue/{key}`. It
+follows parents up to the epic. Each issue keeps its ID, key, type and level,
+parent, labels, status, update time and summary with its observation time. The
+document records the scope, provenance, coverage (keys declared, found, not
+returned, outside the project, or with a parent not read), moved keys and an
+`order`; the plugin uses the export with the highest order only. Coverage does
+not depend on `ws:` labels, so an epic only Jira knows is covered too. A key
+declared after the export is not covered, and Jira answers alike for a deleted
+issue and one the account may not read, so a key not returned is never read as
+deleted. Nothing is written to Jira, Paseo or disk. A plugin older than this
+change rejects the document, so install before configuring it. `--self-check`
+runs the offline check on synthetic data.
 
 ### My work and assignment (responsibility projection)
 

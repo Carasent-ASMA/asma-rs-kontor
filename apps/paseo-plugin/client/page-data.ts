@@ -1,6 +1,6 @@
-import { hasSessionAttention, type DirectoryEntry, type JiraCapture } from "./session-directory";
+import { hasSessionAttention, type DirectoryEntry, type EpicIdentitySource, type IdentityIssue, type JiraCapture } from "./session-directory";
 import { sessionEpic } from "./session-organization";
-import type { SourceRead } from "../shared/read-sources";
+import type { EpicIdentity, SourceRead } from "../shared/read-sources";
 export function jiraIssueUrl(key: string): string | null {
   return /^ASMA-[1-9]\d*$/.test(key) ? `https://carasent.atlassian.net/browse/${key}` : null;
 }
@@ -26,16 +26,47 @@ export function confirmedEpic(entry: DirectoryEntry): string | null {
   return epic !== null && /^ASMA-[1-9]\d*$/.test(epic) ? epic : null;
 }
 const NO_JIRA_CAPTURE: JiraCapture = { epics: new Map(), observed: [] };
-/** Each captured key's epic across the ready historical Jira captures; one stable value while none is ready. */
+/**
+ * The newest identity export as the resolver's current input; an older order is superseded, never merged. An epic
+ * maps to itself, an issue below one to it, and an issue with no epic above it to null.
+ */
+export function epicIdentitySource(exports: readonly EpicIdentity[]): EpicIdentitySource | undefined {
+  const latest = exports.reduce<EpicIdentity | undefined>((newest, next) => newest === undefined || next.order > newest.order ? next : newest, undefined);
+  if (!latest) return undefined;
+  const byKey = new Map(latest.issues.map((issue) => [issue.key, issue]));
+  const epicOf = (key: string, depth = 0): string | null | undefined => {
+    const issue = byKey.get(key);
+    if (!issue || depth > 4) return undefined;
+    return issue.level === 1 ? issue.key : issue.level > 1 || issue.parent === null ? null : epicOf(issue.parent, depth + 1);
+  };
+  const issues = new Map<string, IdentityIssue>();
+  const unanswered = new Map<string, string>();
+  for (const { id, key, type, parent, updated, observed_at: observedAt } of latest.issues) {
+    const epic = epicOf(key);
+    if (epic === undefined) unanswered.set(key, `the parent of ${key} was not read`);
+    else issues.set(key, { id, key, type, parent, epic, updated, observedAt });
+  }
+  // Jira returned the old key's issue under its current key: one issue, so the old key reads as the current one.
+  for (const { key, current } of latest.conflicts) {
+    if (issues.has(current)) issues.set(key, issues.get(current)!);
+    else unanswered.set(key, unanswered.get(current)!);
+  }
+  for (const key of latest.coverage.missing) unanswered.set(key, `Jira did not return ${key}`);
+  return { asOf: latest.as_of, order: latest.order, provenance: { realm: latest.source.realm, scope: latest.scope.jql, collector: latest.provenance.collector },
+    coverage: latest.coverage, issues, unanswered };
+}
+/** Each captured key's epic across the ready historical Jira captures, with the current identity; one stable value while none is ready. */
 export function jiraCapture(reads: readonly SourceRead[]): JiraCapture {
-  const ready = reads.flatMap((read) => read.source.kind === "jira" && read.status === "ready" && read.jiraHistory ? [read.jiraHistory] : []);
-  if (!ready.length) return NO_JIRA_CAPTURE;
+  const jira = reads.filter((read) => read.source.kind === "jira" && read.status === "ready");
+  const ready = jira.flatMap((read) => read.jiraHistory ? [read.jiraHistory] : []);
+  const identity = epicIdentitySource(jira.flatMap((read) => read.epicIdentity ? [read.epicIdentity] : []));
+  if (!ready.length && !identity) return NO_JIRA_CAPTURE;
   const epics = new Map<string, string | null>();
   for (const history of ready) for (const epic of history.epics) for (const issue of [epic, ...epic.children]) {
     const known = epics.get(issue.key);
     epics.set(issue.key, known === undefined || known === epic.key ? epic.key : null);
   }
-  return { epics, observed: ready.map((history) => history.generated) };
+  return { epics, observed: ready.map((history) => history.generated), ...(identity ? { identity } : {}) };
 }
 /** Entries carrying the capture; the cache, one per capture, keeps an unchanged entry's identity across updates. */
 export function withJiraCapture(entries: readonly DirectoryEntry[], jira: JiraCapture, cache: WeakMap<DirectoryEntry, DirectoryEntry>): DirectoryEntry[] {

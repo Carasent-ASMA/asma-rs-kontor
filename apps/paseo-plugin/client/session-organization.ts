@@ -306,6 +306,8 @@ export const TASK_JIRA_LABELS = ["jira.issue", "task", "asma.task"] as const;
 
 /** Persona label prefixes Kontor writes on a session it creates as ad hoc work; the hash after `@` versions the text. */
 export const AD_HOC_PERSONAS = ["kontor-lsa-adhoc@", "kontor-lsa-adhoc+bootstrap@"] as const;
+/** What the current Jira identity says of a key with no epic above it; it disagrees with any epic. */
+const NO_EPIC = "no epic";
 /** The label Kontor writes on every session it creates, carrying the create request's ID. */
 export const CREATED_BY_KONTOR_LABEL = "create.request";
 
@@ -320,24 +322,34 @@ export type EpicAssociation = "epic" | "conflict" | "ticket" | "adhoc" | "unlink
 export type SessionEpic = { readonly epic: string | null; readonly note: string; readonly association: EpicAssociation; readonly ticket?: string };
 
 /**
- * A display mapping wins. Otherwise the epic labels and the Jira capture's epic for each key they or a task
- * label name must all agree. The capture is dated evidence: it fills an epic nothing names, and a label it
- * disagrees with makes the epic unknown. Null never means "no epic"; no source here shows a task has none.
- * Without an epic, a `ticket` label or the ad hoc persona counts only on a session Kontor created; a title,
- * parent session, project or persona hash never settles anything.
+ * A display mapping wins. Otherwise the epic labels and, for each key they, a task label or the `ticket` label
+ * name, the current Jira identity, else the dated captures, must all agree. The identity answers every key it
+ * covers, and an older key it returns under its current one names that same issue; a capture is dated evidence only
+ * for a key the identity was never asked for, so a key it could not answer stays unanswered. A label they disagree
+ * with makes the epic unknown. Only the identity can show an issue has no epic above it, and that leaves the session
+ * unlinked with the reason, never filed elsewhere. Without an epic, a `ticket` label or the ad hoc persona counts
+ * only on a session Kontor created; a title, parent session, project or persona hash never settles anything.
  */
 export function sessionEpic(entry: DirectoryEntry, mappings: OrganizationInput["displayMappings"]): SessionEpic {
   const mapped = mappedValue(mappings, entry, "epic");
   if (mapped !== null) return { epic: mapped, note: "from a display mapping", association: "epic" };
+  const identity = entry.jira?.identity;
+  // An epic key Jira now returns under another names the same issue as that one.
+  const current = (key: string): string => identity?.issues.get(key.toUpperCase())?.key ?? key;
   const labelled = EPIC_LABELS.flatMap((key) => {
     const value = clean(entry.labels[key]);
-    return value === null ? [] : [{ value, source: `the ${key} label` }];
+    return value === null ? [] : [{ value: current(value), source: `the ${key} label${current(value) === value ? "" : ` ${value.toUpperCase()}`}` }];
   });
   const tasks = [...new Set(TASK_JIRA_LABELS.flatMap((key) => clean(entry.labels[key])?.toUpperCase() ?? []))];
+  const ticket = clean(entry.labels.ticket)?.toUpperCase();
   const observed = entry.jira?.observed.join(" / ");
-  const captured = [...new Set([...labelled.map(({ value }) => value.toUpperCase()), ...tasks])].flatMap((key) => {
+  const declared = [...EPIC_LABELS.flatMap((key) => clean(entry.labels[key])?.toUpperCase() ?? []), ...tasks, ...ticket ? [ticket] : []];
+  const captured = [...new Set(declared)].flatMap((key) => {
+    const issue = identity?.issues.get(key);
+    if (identity && issue) return [{ value: issue.epic ?? NO_EPIC, source: `Jira as observed ${identity.asOf} for ${key}${issue.key === key ? "" : ` (now ${issue.key})`}` }];
+    if (identity?.unanswered.has(key)) return [];
     const epic = entry.jira?.epics.get(key);
-    return epic === undefined ? [] : [{ value: epic, source: epic === null ? `the Jira captures of ${observed} disagree on ${key}` : `the Jira capture of ${observed} for ${key}` }];
+    return epic === undefined ? [] : [{ value: epic === null ? null : current(epic), source: epic === null ? `the Jira captures of ${observed} disagree on ${key}` : `the Jira capture of ${observed} for ${key}` }];
   });
   const claims = [...labelled, ...captured];
   const values = claims.map(({ value }) => value?.toUpperCase() ?? null);
@@ -346,18 +358,34 @@ export function sessionEpic(entry: DirectoryEntry, mappings: OrganizationInput["
     const said = claims.filter((_, index) => values.indexOf(values[index] ?? null) === index);
     return { epic: null, note: `sources disagree: ${said.map(({ value, source }) => value === null ? source : `${source} says ${value}`).join("; ")}`, association: "conflict" };
   }
+  // What the identity said of a key it answered with no epic, or could not answer; a dated capture of it stays apart.
+  const answered = (key: string): string | null => {
+    const issue = identity?.issues.get(key);
+    if (issue) return `${key} (${issue.type}${issue.key === key ? "" : `, now ${issue.key}`}) has no epic in Jira as observed ${identity!.asOf}`;
+    const reason = identity?.unanswered.get(key);
+    const dated = entry.jira?.epics.get(key);
+    return reason ? `${reason} as of ${identity!.asOf}${dated ? `; the Jira capture of ${observed} filed it under ${dated}` : ""}` : null;
+  };
   const epic = labelled[0]?.value ?? captured[0]?.value ?? null;
-  if (epic !== null) return { epic, note: `from ${claims.map(({ source }) => source).join(" and ")}`, association: "epic" };
+  // An epic label stays the assignment when Jira could not answer for a key; the note says what went unverified.
+  const unverified = [...new Set(declared)].filter((key) => identity?.unanswered.has(key)).map((key) => answered(key)).join("; ");
+  if (epic !== null && epic !== NO_EPIC) return { epic, note: `from ${claims.map(({ source }) => source).join(" and ")}${unverified ? `; not verified: ${unverified}` : ""}`, association: "epic" };
   const created = clean(entry.labels[CREATED_BY_KONTOR_LABEL]) !== null;
-  const ticket = clean(entry.labels.ticket)?.toUpperCase();
   const verified = created && ticket !== undefined;
   // A declared task no source files stays unlinked: the intent recorded at creation never stands in for its epic.
-  const named = tasks.filter((key) => !(verified && key === ticket)).join(", ");
-  if (!named && verified) return { epic: null, note: "a standalone ticket, checked in Jira when Kontor created the session", association: "ticket", ticket };
+  const named = tasks.filter((key) => !(verified && key === ticket));
+  const checked = ticket === undefined ? null : answered(ticket);
+  if (!named.length && verified) return { epic: null, note: `a standalone ticket, checked in Jira when Kontor created the session${checked ? `; ${checked}` : ""}`, association: "ticket", ticket };
   const persona = entry.labels.persona ?? "";
-  if (!named && created && AD_HOC_PERSONAS.some((prefix) => persona.startsWith(prefix))) return { epic: null, note: "created by Kontor as ad hoc work", association: "adhoc" };
-  const unverified = ticket ? `; the ticket label ${ticket} was not written by Kontor at creation` : "";
-  return { epic: null, note: `${!named ? "no epic or task label" : observed ? `${named} is not in the Jira capture of ${observed}` : `no Jira capture read for ${named}`}${unverified}`, association: "unlinked" };
+  if (!named.length && created && AD_HOC_PERSONAS.some((prefix) => persona.startsWith(prefix))) return { epic: null, note: "created by Kontor as ad hoc work", association: "adhoc" };
+  const unchecked = ticket === undefined ? "" : created ? `; the ticket ${ticket} is not the declared task` : `; the ticket label ${ticket} has no Kontor creation record`;
+  const uncovered = named.filter((key) => answered(key) === null);
+  const reads = [identity ? `the Jira identity read of ${identity.asOf}` : null, observed ? `the Jira capture of ${observed}` : null].filter((read) => read !== null);
+  const reasons = [
+    ...named.flatMap((key) => answered(key) ?? []),
+    ...uncovered.length ? [reads.length ? `${uncovered.join(", ")} is not in ${reads.join(" or ")}` : `no Jira capture read for ${uncovered.join(", ")}`] : [],
+  ];
+  return { epic: null, note: `${reasons.length ? reasons.join("; ") : "no epic or task label"}${unchecked}`, association: "unlinked" };
 }
 /** What a row or result shows for the session's association: its epic, else the kind of work it is. */
 export function associationLabel({ epic, association, ticket }: SessionEpic): string {

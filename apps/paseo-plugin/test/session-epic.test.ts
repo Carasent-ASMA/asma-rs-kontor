@@ -190,7 +190,7 @@ describe("what a session's own metadata settles", () => {
       expect([entry.id, sessionEpic(entry, {}).association, associationLabel(sessionEpic(entry, {}))]).toEqual([entry.id, association, label]);
       expect(sessionProvenance(entry, {}).parts[1]).toBe(label);
     }
-    expect(sessionEpic(cases[6]![0], {}).note).toBe("no epic or task label; the ticket label ASMA-9 was not written by Kontor at creation");
+    expect(sessionEpic(cases[6]![0], {}).note).toBe("no epic or task label; the ticket label ASMA-9 has no Kontor creation record");
     const entries = cases.map(([entry]) => entry);
     expect(rows(entries)).toEqual([["Other work", "1 epic", [["ASMA-1", null, 1, "Flag"], ["Ad hoc", null, 2, "Sparkles"], ["Epic sources disagree", null, 1, "CircleAlert"],
       ["No epic linked", null, 4, "CircleDashed"], ["Ticket ASMA-9", null, 1, "Ticket"]]]]);
@@ -202,7 +202,7 @@ describe("what a session's own metadata settles", () => {
       "ASMA-1, from the epic label", "Ad hoc, created by Kontor as ad hoc work", "Ad hoc, created by Kontor as ad hoc work",
       "Ticket ASMA-9, a standalone ticket, checked in Jira when Kontor created the session",
       "Unknown, sources disagree: the epic label says ASMA-1; the jira.epic label says ASMA-2",
-      "Unknown, no epic or task label", "Unknown, no epic or task label; the ticket label ASMA-9 was not written by Kontor at creation",
+      "Unknown, no epic or task label", "Unknown, no epic or task label; the ticket label ASMA-9 has no Kontor creation record",
       "Unknown, no epic or task label", "Unknown, no epic or task label"]);
   });
 
@@ -211,7 +211,9 @@ describe("what a session's own metadata settles", () => {
     const unavailable = jiraCapture([read("jira", capture(OCT24, { "ASMA-8639": ["ASMA-8640"] }), "unavailable")]);
     expect(sessionEpic(seat("unavailable", "desk", "LSA • ADHOC • x", labels, unavailable), {})).toEqual({ epic: null, note: "no Jira capture read for ASMA-8640", association: "unlinked" });
     expect(sessionEpic(seat("missing", "desk", "LSA • ADHOC • x", labels), {})).toEqual({ epic: null, note: `ASMA-8640 is not in the Jira capture of ${OCT21}`, association: "unlinked" });
-    expect(sessionEpic(seat("ticket", "desk", "x", { ...labels, ticket: "ASMA-9" }), {}).association).toBe("unlinked");
+    // The ticket Kontor checked is not the declared task; its creation record is not denied.
+    expect(sessionEpic(seat("ticket", "desk", "x", { ...labels, ticket: "ASMA-9" }), {})).toEqual({ epic: null, association: "unlinked",
+      note: `ASMA-8640 is not in the Jira capture of ${OCT21}; the ticket ASMA-9 is not the declared task` });
     expect(sessionEpic(seat("filed", "desk", "x", labels, fresh), {}).epic).toBe("ASMA-8639");
     // A verified ticket that also names itself as the task is still that ticket.
     expect(sessionEpic(seat("self", "desk", "x", { ticket: "ASMA-9", task: "asma-9", "create.request": "request-1" }), {}).association).toBe("ticket");
