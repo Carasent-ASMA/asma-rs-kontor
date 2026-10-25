@@ -158,6 +158,12 @@ export type DirectoryState = {
   /** Whether rows came from a walk with live updates attached; absent means unknown for older consumers. */
   readonly inventoryComplete?: boolean;
   readonly includeArchived: boolean;
+  /** Which inventory supplied the rows; absent means the older direct reader. */
+  readonly source?: "direct" | "catalog" | "catalog-snapshot" | "unavailable";
+  /** The source completion instant the rows are as of, when a catalog supplied them. */
+  readonly sourceAsOf?: string | null;
+  readonly catalogGeneration?: number | null;
+  readonly catalogRuntimeInstance?: string | null;
 };
 
 export type DirectoryClient = Pick<PaseoApi, "agents">;
@@ -229,7 +235,7 @@ function text(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function searchTextOf(input: {
+export function searchTextOf(input: {
   readonly title: string;
   readonly workspaceName: string | null;
   readonly projectName: string | null;

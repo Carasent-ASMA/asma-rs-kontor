@@ -4,14 +4,15 @@
 > **Status:** implemented on `feat/ASMA-8655-plugin-integration-compatibility-and-degradation`; not merged
 > **Category:** architecture
 > **Scope:** `/v1/work-catalog` entries/cursors and per-source status, the observer MCP tools, `apps/paseo-plugin` catalog consumption and its versioned snapshot
-> **Summary:** TASK-004 makes the shared catalog readable through stable observer tools, pages entries without mixing generations, and lets the plugin prefer the catalog while keeping its direct readers and every operator-owned identity through a daemon outage.
+> **Summary:** TASK-004 makes the shared catalog readable through stable observer tools, pages entries and native inventory without mixing generations, and lets the plugin prefer the catalog while keeping its direct readers, exact native identity and every operator-owned association through a daemon outage.
 
 ## When to Load
 
 Load when changing the work-catalog entries cursor, the composite source status,
-the five observer MCP tools, the plugin's `work-catalog.read` RPC or its
-`work-catalog-snapshot.json`. Do not load for the catalog's storage protocol or
-the Jira/native collectors; those keep their own notes.
+the five observer MCP tools, the plugin's `work-catalog.read` RPC, the shared
+native-inventory adapter or its `work-catalog-snapshot.json`. Do not load for the
+catalog's storage protocol or the Jira/native collectors; those keep their own
+notes.
 
 ## Cursors are generation-bound
 
@@ -70,15 +71,55 @@ allowlist entry.
 `kontor-status.ts`: it starts `kontor-mcp` with `--state-root`,
 `--credential-tier observer` and the optional serve profile, gives the child only
 `PATH` and `HOME`, and never opens, names or forwards a credential. It asks for
-`kontor_work_catalog_sources` and follows up to three bounded
+`kontor_work_catalog_sources`, `kontor_work_catalog_native_status`, up to three
+bounded `kontor_work_catalog_native_inventory` pages and up to three bounded
 `kontor_work_catalog_entries` pages (1,000 rows each). The composite status is the
 source of truth for freshness; the entries are mapped to plan summaries by the
 preserved operator `source_ids`.
 
+## Native inventory is selected by exact host identity
+
+`work-catalog.read` takes `hostId`, the exact Paseo `serverId` of the plugin
+host. It is never a title or label. The server reads the native status and keeps
+the coverage row whose `server_id` equals `hostId`; exactly one such row must
+exist, with a positive generation and a completion instant. A missing, ambiguous
+or incomplete match is an unavailable native read, not a best-effort title match.
+
+The native inventory request pins the exact runtime instance and asks for up to
+three pages of 1,000 rows with `include_removed: false`. Every page must carry
+the same runtime instance, generation, `as_of`, source and archive scope. Rows
+are deduplicated by native id. `truncated`, a missing completion instant, or an
+archived request against `archiveScope: false` is a visible partial, never an
+exact empty host.
+
+`client/shared-inventory.ts` is the one adapter at the screen composition point.
+It prefers a complete live catalog, maps native projects, workspaces and sessions
+to the existing directory shapes, and overlays live labels, pending permissions,
+needs-input, attention, active-turn, telemetry and availability only by exact
+session id. A complete exact-empty catalog is empty; it is not treated as
+unavailable. If the catalog cannot answer, a usable direct directory takes over;
+a partial catalog remains visible with its marker; the last-known native
+snapshot is used only when neither live source can answer. A snapshot keeps its
+saved native `asOf`, never the plugin check time.
+
+Sessions tree/list/groups, archive filters, project and context selectors,
+Start/switch, Overview, AI teams, Search, Activity/Inbox, Settings associations
+and Board/Graph all read that adapted result. Native actions (send, stop, open
+agent or workspace) stay direct Paseo operations through the plugin host; the
+adapter never invents an action path or writes Paseo.
+
+## Snapshot version and host binding
+
 On a successful read the plugin writes its own
-`<paseo>/plugin-config/kontor/work-catalog-snapshot.json` atomically. It holds
-`schema: kontor/plugin-work-catalog@1`, `version: 1`, `savedAt` (the plugin's
-check time) and `sourceAsOf` (the oldest source completion instant in the view).
+`<paseo>/plugin-config/kontor/work-catalog-snapshot.json` atomically. Version 2
+(`schema: kontor/plugin-work-catalog@2`, `version: 2`) adds `hostId`, the runtime
+instance, `nativeAsOf` and the native inventory to the plan view. It is bound to
+that host: a different host refuses it rather than reading another host's rows.
+A v1 snapshot remains readable for plan summaries and carries no native
+inventory, so it can never be mistaken for native data. A later native mapping
+failure keeps the previously stored native view instead of replacing it with a
+partial file.
+
 When the observer is absent, restarting or incompatible, the RPC answers
 `mode: snapshot` with that view and the source `asOf`, or `mode: unavailable`
 with no view. It never answers an empty catalog for an unreadable one.
@@ -107,6 +148,9 @@ honest limit instead of turning a declaration into a verification.
 
 - No catalog or plugin write to Jira, Paseo, plans, settings or the governed
   store; no session mutation and no enrollment.
-- The plugin does not consume the native inventory in this task, and its entry
-  view is bounded; a truncated entry view says so.
+- The plugin's native inventory is bounded to three pages and carries native
+  ids only; a truncated inventory or a missing archive scope says so.
+- Catalog-served rows are not merged with direct-only rows. A complete catalog
+  wins, including an exact empty host; direct rows fill in only when the catalog
+  cannot answer completely.
 - No console TypeScript regeneration: the console does not consume these reads.

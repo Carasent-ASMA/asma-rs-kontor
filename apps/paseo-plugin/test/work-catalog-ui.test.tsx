@@ -6,7 +6,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput",
 import { WorkCatalogStatus } from "../client/catalog-status";
 import { ReadOnlyPage } from "../client/read-only-pages";
 import { emptyDirectoryState } from "../client/session-directory";
-import type { WorkCatalogRead, WorkCatalogSource, WorkCatalogView } from "../shared/work-catalog";
+import type { WorkCatalogNativeRead, WorkCatalogNativeView, WorkCatalogRead, WorkCatalogSource, WorkCatalogView } from "../shared/work-catalog";
 
 function text(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -43,7 +43,28 @@ const view: WorkCatalogView = {
   entries: [],
   entriesTruncated: false,
 };
-const live: WorkCatalogRead = { mode: "catalog", checkedAt, sourceAsOf: asOf, view, error: null, snapshot: null };
+const nativeView: WorkCatalogNativeView = {
+  runtimeInstance: "paseo:ws://127.0.0.1:6767/ws",
+  generation: 4,
+  asOf,
+  source: "database",
+  archiveScope: true,
+  truncated: false,
+  projects: [],
+  workspaces: [],
+  sessions: [],
+};
+const native = (overrides: Partial<WorkCatalogNativeRead> = {}): WorkCatalogNativeRead => ({
+  mode: "catalog",
+  hostId: "host-a",
+  runtimeInstance: nativeView.runtimeInstance,
+  checkedAt,
+  view: nativeView,
+  error: null,
+  snapshotSavedAt: null,
+  ...overrides,
+});
+const live: WorkCatalogRead = { mode: "catalog", checkedAt, sourceAsOf: asOf, view, error: null, snapshot: null, native: native() };
 
 describe("the shared-catalog display", () => {
   it("shows per-source freshness, coverage, conflicts and pending verification", () => {
@@ -55,6 +76,7 @@ describe("the shared-catalog display", () => {
     expect(rendered).toContain("3 associations pending verification");
     expect(rendered).toContain("Jira · not configured");
     expect(rendered).toContain("Native Paseo · complete");
+    expect(rendered).toContain("Native inventory: shared catalog paseo:ws://127.0.0.1:6767/ws · generation 4");
     expect(rendered).toContain("Conflict (moved_key, ASMA-1): ASMA-1 moved to ASMA-2");
     expect(rendered).not.toContain(checkedAt);
   });
@@ -77,7 +99,7 @@ describe("the shared-catalog display", () => {
 
   it("keeps an unavailable catalog truthful and says the direct readers remain", () => {
     const rendered = text(WorkCatalogStatus({
-      state: { mode: "unavailable", checkedAt, sourceAsOf: null, view: null, error: "no observer", snapshot: null },
+      state: { mode: "unavailable", checkedAt, sourceAsOf: null, view: null, error: "no observer", snapshot: null, native: native({ mode: "unavailable", runtimeInstance: null, view: null, error: "no native inventory" }) },
       colors: {} as Parameters<typeof WorkCatalogStatus>[0]["colors"],
     }));
     expect(rendered).toContain("Shared catalog unavailable. Direct source readers remain active.");

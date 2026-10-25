@@ -7,7 +7,12 @@ import { readWorkCatalog, type WorkCatalogRead } from "../shared/work-catalog";
  * 30 s cadence. A failed RPC is unavailable, never an empty catalog; the
  * server-side answer already carries a versioned last-known snapshot fallback.
  */
-export function useWorkCatalog(hostId: string, hostStatus: PluginHostSummary["status"]): WorkCatalogRead | null {
+export type WorkCatalogState = {
+  readonly read: WorkCatalogRead | null;
+  readonly refresh: () => void;
+};
+
+export function useWorkCatalog(hostId: string, hostStatus: PluginHostSummary["status"]): WorkCatalogState {
   const online = hostStatus === "online";
   const read = useRpc(readWorkCatalog);
   const query = useQuery({
@@ -16,18 +21,31 @@ export function useWorkCatalog(hostId: string, hostStatus: PluginHostSummary["st
     retry: false,
     staleTime: 0,
     refetchInterval: online ? 30_000 : false,
-    queryFn: () => read({}),
+    queryFn: () => read({ hostId }),
   });
-  if (!online) return null;
+  const refresh = () => { void query["refetch"](); };
+  if (!online) return { read: null, refresh };
   if (query.isError) {
     return {
-      mode: "unavailable",
-      checkedAt: new Date().toISOString(),
-      sourceAsOf: null,
-      view: null,
-      error: query.error instanceof Error ? query.error.message : "the shared catalog read failed",
-      snapshot: null,
+      read: {
+        mode: "unavailable",
+        checkedAt: new Date().toISOString(),
+        sourceAsOf: null,
+        view: null,
+        error: query.error instanceof Error ? query.error.message : "the shared catalog read failed",
+        snapshot: null,
+        native: {
+          mode: "unavailable",
+          hostId,
+          runtimeInstance: null,
+          checkedAt: new Date().toISOString(),
+          view: null,
+          error: query.error instanceof Error ? query.error.message : "the shared catalog read failed",
+          snapshotSavedAt: null,
+        },
+      },
+      refresh,
     };
   }
-  return query.data ?? null;
+  return { read: query.data ?? null, refresh };
 }

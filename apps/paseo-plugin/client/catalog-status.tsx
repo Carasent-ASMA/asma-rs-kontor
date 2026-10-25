@@ -75,6 +75,11 @@ export function WorkCatalogStatus({ state, colors }: { state: WorkCatalogRead | 
       {state.error !== null ? ` ${state.error}` : ""}
     </Text>
     {state.view.sources.map((source) => <SourceBlock key={source.source} source={source} colors={colors} />)}
+    {state.native.mode === "catalog" && state.native.view !== null
+      ? <Copy colors={colors} small>{`Native inventory: shared catalog ${state.native.runtimeInstance} · generation ${state.native.view.generation} · as of ${state.native.view.asOf ?? "Unknown"}${state.native.view.truncated ? " · bounded" : ""}${state.native.view.archiveScope ? "" : " · archived sessions not collected"}.`}</Copy>
+      : state.native.mode === "snapshot" && state.native.view !== null
+        ? <Copy colors={colors} small>{`Native inventory: last-known snapshot${state.native.snapshotSavedAt ? ` saved ${state.native.snapshotSavedAt}` : ""} · ${state.native.runtimeInstance ?? "runtime Unknown"} · as of ${state.native.view.asOf ?? "Unknown"}${state.native.view.truncated ? " · bounded" : ""}.`}</Copy>
+        : <Copy colors={colors} muted small>{`Native inventory unavailable: ${state.native.error ?? "no catalog runtime matched this host"}. Direct Paseo readers remain active.`}</Copy>}
     {state.view.entriesTruncated ? <Copy colors={colors} muted small>Entry pages are bounded; the catalog holds more entries than this view.</Copy> : null}
   </View>;
 }

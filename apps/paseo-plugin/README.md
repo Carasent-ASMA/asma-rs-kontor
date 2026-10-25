@@ -599,20 +599,30 @@ only declares read sources; it does not activate teams or grant execution.
 
 The plugin also reads the host-local Kontor work catalog through the existing
 observer `kontor-mcp` boundary (`--credential-tier observer`; no credential is
-forwarded). `work-catalog.read` asks for the composite per-source status and up
-to three bounded pages of entries. The Overview **Sources and coverage**
-disclosure shows each source's state, generation, source `asOf`, coverage,
-retry deadline, conflicts and pending verification.
+forwarded). `work-catalog.read` takes the exact host `serverId`, asks for the
+composite per-source status, the native status and up to three bounded pages of
+native inventory and entries. The Overview **Sources and coverage** disclosure
+shows each source's state, generation, source `asOf`, coverage, retry deadline,
+conflicts and pending verification.
 
 The RPC answers one of three modes:
 
 - `catalog`: the observer answered; the plugin atomically writes its own
   `$PASEO_HOME/plugin-config/kontor/work-catalog-snapshot.json`
-  (`kontor/plugin-work-catalog@1`, version 1).
+  (`kontor/plugin-work-catalog@2`, version 2). Version 2 is bound to the exact
+  host and adds its native inventory; a different host refuses it. A v1 snapshot
+  remains readable for plan summaries and carries no native inventory.
 - `snapshot`: the observer is absent, restarting or incompatible; the last-known
   snapshot is shown, labelled as such, with its source `asOf`.
 - `unavailable`: there is no usable answer and no snapshot; the direct readers
   below remain active.
+
+The shared inventory adapter (`client/shared-inventory.ts`) prefers a complete
+live catalog, then a usable direct directory, then the labelled snapshot. Native
+rows are mapped by exact session id; live labels, permissions, attention,
+telemetry and availability overlay only for that exact id. A complete exact-empty
+catalog is empty; a truncated inventory or a missing archived scope is visibly
+partial. Native send/stop/open actions stay direct Paseo operations.
 
 The plugin never opens `catalog.db`, never presents its own check time as source
 freshness, and never rewrites the source catalog, source IDs, approved hashes or

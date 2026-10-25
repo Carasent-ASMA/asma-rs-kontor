@@ -54,12 +54,113 @@ export const workCatalogViewSchema = z.object({
   entriesTruncated: z.boolean(),
 }).strict();
 
+/** One native project, reduced to what the plugin displays and groups. */
+export const workCatalogNativeProjectSchema = z.object({
+  projectId: z.string(),
+  displayName: z.string(),
+  customName: z.string().nullable(),
+  projectKey: z.string().nullable(),
+  rootPath: z.string(),
+  projectKind: z.string().nullable(),
+}).strict();
+
+/** One native workspace, reduced to what the plugin displays and groups. */
+export const workCatalogNativeWorkspaceSchema = z.object({
+  workspaceId: z.string(),
+  projectId: z.string(),
+  name: z.string(),
+  title: z.string().nullable(),
+  directory: z.string(),
+  kind: z.string(),
+  archivingAt: z.string().nullable(),
+  worktreeSlug: z.string().nullable(),
+  projectDisplayName: z.string().nullable(),
+  projectCustomName: z.string().nullable(),
+  projectRootPath: z.string().nullable(),
+  projectKind: z.string().nullable(),
+}).strict();
+
+const workCatalogNativeCheckoutSchema = z.object({
+  cwd: z.string().nullable(),
+  branch: z.string().nullable(),
+  worktreeRoot: z.string().nullable(),
+  isGit: z.boolean().nullable(),
+  isPaseoOwnedWorktree: z.boolean().nullable(),
+}).strict();
+
+/** One native session. The session id is identity; the title is display data. */
+export const workCatalogNativeSessionSchema = z.object({
+  sessionId: z.string(),
+  workspaceId: z.string().nullable(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  workspaceName: z.string().nullable(),
+  title: z.string().nullable(),
+  provider: z.string(),
+  model: z.string().nullable(),
+  status: z.string(),
+  archivedAt: z.string().nullable(),
+  attentionReason: z.string().nullable(),
+  cwd: z.string(),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+  lastUserMessageAt: z.string().nullable(),
+  parentSessionId: z.string().nullable(),
+  checkout: workCatalogNativeCheckoutSchema.nullable(),
+}).strict();
+
+/**
+ * One generation-consistent native inventory. Every row carries an exact
+ * native id; a bounded page says so through `truncated` rather than implying a
+ * complete host.
+ */
+export const workCatalogNativeViewSchema = z.object({
+  runtimeInstance: z.string().min(1),
+  generation: z.number().int().nonnegative(),
+  asOf: z.string().nullable(),
+  source: z.enum(["database", "snapshot"]),
+  archiveScope: z.boolean(),
+  truncated: z.boolean(),
+  projects: z.array(workCatalogNativeProjectSchema).max(3000),
+  workspaces: z.array(workCatalogNativeWorkspaceSchema).max(3000),
+  sessions: z.array(workCatalogNativeSessionSchema).max(3000),
+}).strict();
+
+/** The plugin's native-inventory read, independent of the plan-catalog mode. */
+export const workCatalogNativeReadSchema = z.object({
+  mode: z.enum(["catalog", "snapshot", "unavailable"]),
+  hostId: z.string(),
+  runtimeInstance: z.string().nullable(),
+  checkedAt: z.string(),
+  view: workCatalogNativeViewSchema.nullable(),
+  error: z.string().nullable(),
+  snapshotSavedAt: z.string().nullable(),
+}).strict();
+
 /** The versioned last-known snapshot the plugin owns, never the daemon database. */
 export const workCatalogSnapshotSchema = z.object({
   schema: z.literal("kontor/plugin-work-catalog@1"),
   version: z.literal(1),
   savedAt: z.string(),
   sourceAsOf: z.string().nullable(),
+  view: workCatalogViewSchema,
+}).strict();
+
+/**
+ * Snapshot v2 adds the selected host identity and its native inventory. It is
+ * bound to one host; a different host refuses it rather than reading another
+ * host's rows. A v1 snapshot remains readable for the plan view and carries no
+ * native inventory, so a v1 file can never be mistaken for a native snapshot.
+ */
+export const workCatalogSnapshotV2Schema = z.object({
+  schema: z.literal("kontor/plugin-work-catalog@2"),
+  version: z.literal(2),
+  savedAt: z.string(),
+  sourceAsOf: z.string().nullable(),
+  hostId: z.string().min(1),
+  runtimeInstance: z.string().nullable(),
+  nativeAsOf: z.string().nullable(),
+  native: workCatalogNativeViewSchema.nullable(),
   view: workCatalogViewSchema,
 }).strict();
 
@@ -74,6 +175,7 @@ export const workCatalogReadSchema = z.object({
   view: workCatalogViewSchema.nullable(),
   error: z.string().nullable(),
   snapshot: z.object({ savedAt: z.string(), sourceAsOf: z.string().nullable() }).strict().nullable(),
+  native: workCatalogNativeReadSchema,
 }).strict();
 
 /** The daemon's sources document, exactly as the observer tool returns it. */
@@ -142,6 +244,111 @@ export const daemonEntrySchema = z.object({
   last_seen: z.string(),
 }).strict();
 
+const daemonNativeRuntimeCoverageSchema = z.object({
+  runtime_instance: z.string(),
+  client_id: z.string(),
+  server_id: z.string().nullable(),
+  server_version: z.string().nullable(),
+  include_archived: z.boolean(),
+  state: z.enum(["scanned", "incomplete", "failed"]),
+  projects: z.number().int().nonnegative(),
+  workspaces: z.number().int().nonnegative(),
+  sessions: z.number().int().nonnegative(),
+  archived_sessions: z.number().int().nonnegative(),
+  error: z.string().nullable(),
+}).passthrough();
+
+/** The daemon's native status, reduced to the exact identity and coverage. */
+export const daemonNativeStatusSchema = z.object({
+  schema_version: z.literal(1),
+  generation: z.number().int().nonnegative(),
+  attempted_generation: z.number().int().nonnegative(),
+  as_of: z.string().nullable(),
+  collection: z.object({
+    state: z.enum(["never_collected", "complete", "incomplete", "failed"]),
+    include_archived: z.boolean(),
+    coverage: z.array(daemonNativeRuntimeCoverageSchema).max(64),
+  }).passthrough(),
+}).passthrough();
+
+const daemonNativeProjectSchema = z.object({
+  runtime_instance: z.string(),
+  project_id: z.string(),
+  display_name: z.string(),
+  custom_name: z.string().nullable(),
+  project_key: z.string().nullable(),
+  root_path: z.string(),
+  project_kind: z.string().nullable(),
+  state: z.enum(["active", "removed"]),
+  first_seen: z.string(),
+  last_seen: z.string(),
+}).strict();
+
+const daemonNativeWorkspaceSchema = z.object({
+  runtime_instance: z.string(),
+  workspace_id: z.string(),
+  project_id: z.string(),
+  name: z.string(),
+  title: z.string().nullable(),
+  directory: z.string(),
+  kind: z.string(),
+  archiving_at: z.string().nullable(),
+  worktree_slug: z.string().nullable(),
+  project_display_name: z.string().nullable(),
+  project_custom_name: z.string().nullable(),
+  project_root_path: z.string().nullable(),
+  project_kind: z.string().nullable(),
+  state: z.enum(["active", "removed"]),
+  first_seen: z.string(),
+  last_seen: z.string(),
+}).strict();
+
+const daemonNativeCheckoutSchema = z.object({
+  cwd: z.string().nullable(),
+  branch: z.string().nullable(),
+  worktree_root: z.string().nullable(),
+  is_git: z.boolean().nullable(),
+  is_paseo_owned_worktree: z.boolean().nullable(),
+}).strict();
+
+const daemonNativeSessionSchema = z.object({
+  runtime_instance: z.string(),
+  session_id: z.string(),
+  workspace_id: z.string().nullable(),
+  project_id: z.string().nullable(),
+  project_name: z.string().nullable(),
+  workspace_name: z.string().nullable(),
+  title: z.string().nullable(),
+  provider: z.string(),
+  model: z.string().nullable(),
+  status: z.string(),
+  archived_at: z.string().nullable(),
+  attention_reason: z.string().nullable(),
+  cwd: z.string(),
+  created_at: z.string().nullable(),
+  updated_at: z.string().nullable(),
+  last_user_message_at: z.string().nullable(),
+  parent_session_id: z.string().nullable(),
+  checkout: daemonNativeCheckoutSchema.nullable(),
+  state: z.enum(["active", "removed"]),
+  first_seen: z.string(),
+  last_seen: z.string(),
+}).strict();
+
+/** The daemon's page of native projects, workspaces and sessions. */
+export const daemonNativeInventorySchema = z.object({
+  schema_version: z.literal(1),
+  generation: z.number().int().nonnegative(),
+  as_of: z.string().nullable(),
+  source: z.enum(["database", "snapshot"]),
+  archive_scope: z.boolean(),
+  projects: z.array(daemonNativeProjectSchema).max(1000),
+  workspaces: z.array(daemonNativeWorkspaceSchema).max(1000),
+  sessions: z.array(daemonNativeSessionSchema).max(1000),
+  truncated: z.boolean(),
+  next_cursor: z.string().nullable().optional(),
+}).strict();
+
 export const daemonEntriesViewSchema = z.object({
   schema_version: z.literal(1),
   generation: z.number().int().nonnegative(),
@@ -156,9 +363,17 @@ export type WorkCatalogSource = z.infer<typeof workCatalogSourceSchema>;
 export type WorkCatalogEntry = z.infer<typeof workCatalogEntrySchema>;
 export type WorkCatalogView = z.infer<typeof workCatalogViewSchema>;
 export type WorkCatalogSnapshot = z.infer<typeof workCatalogSnapshotSchema>;
+export type WorkCatalogSnapshotV2 = z.infer<typeof workCatalogSnapshotV2Schema>;
+export type WorkCatalogNativeProject = z.infer<typeof workCatalogNativeProjectSchema>;
+export type WorkCatalogNativeWorkspace = z.infer<typeof workCatalogNativeWorkspaceSchema>;
+export type WorkCatalogNativeSession = z.infer<typeof workCatalogNativeSessionSchema>;
+export type WorkCatalogNativeView = z.infer<typeof workCatalogNativeViewSchema>;
+export type WorkCatalogNativeRead = z.infer<typeof workCatalogNativeReadSchema>;
 export type WorkCatalogRead = z.infer<typeof workCatalogReadSchema>;
 export type DaemonSourcesView = z.infer<typeof daemonSourcesViewSchema>;
 export type DaemonEntriesView = z.infer<typeof daemonEntriesViewSchema>;
+export type DaemonNativeStatus = z.infer<typeof daemonNativeStatusSchema>;
+export type DaemonNativeInventory = z.infer<typeof daemonNativeInventorySchema>;
 
 /** An entry's `pendingVerification` counts associations no source has verified. */
 export function pendingAssociations(associations: readonly { verified: boolean; dangling: boolean }[]): number {
@@ -171,8 +386,9 @@ export function oldestSourceAsOf(view: WorkCatalogView): string | null {
   return instants[0] ?? null;
 }
 
+/** A host id is the exact Paseo `serverId`; it is never a label or title. */
 export const readWorkCatalog = defineRpc({
   name: "work-catalog.read",
-  input: z.object({}).strict(),
+  input: z.object({ hostId: z.string().min(1).max(512) }).strict(),
   output: workCatalogReadSchema,
 });
