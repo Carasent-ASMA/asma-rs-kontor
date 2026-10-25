@@ -3203,7 +3203,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
                 outcome={outcome} onCheck={() => { if (canStart) void lifecycle.reconcile(item.entry.id); }} onPress={() => selectForArchive(item.entry)} /> : <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
                 // One X, one status line: no sheet and no focus move. Review archive on the recovery line opens what stays unresolved.
-                onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
+                onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => {
+                  setArchivingId(null);
+                  const changed = entriesRef.current.some(entry => entry.id === item.entry.id && entry.updatedAt !== item.entry.updatedAt && entry.archivedAt === null);
+                  if (changed && result && typeof result !== "string" && (result.outcome === "archived" || result.outcome === "already_archived" || result.outcome === "absent")) toast.show("The session changed while archiving. Showing its current native state.");
+                  else notifyArchive(toast, result);
+                }); }} /> : null;
           if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} retirementFeedback={retirementFeedback} retirementLabel={retirementLabel} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;

@@ -71,6 +71,26 @@ describe("P1 host/cache/action hook races", () => {
     draw(); vi.advanceTimersByTime(AVAILABILITY_TTL_MS + 1);
     expect(draw().entries[0]?.archivedAt).toBe("2026-10-21");
   });
+  it.each(["archived", "absent"] as const)("keeps a newer unarchived row when an in-flight %s reply settles through the Sessions hooks", async (outcome) => {
+    let finish!: (value: unknown) => void;
+    let entries = [entry];
+    const rows = [{ id: entry.id, eligible: true, outcome: "pending", availability: evidence("readable") }];
+    hooks.rpc.mockResolvedValueOnce({ id: "fixture-request", action: "archive", rows }).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const draw = () => render(() => {
+      const availability = useSessionAvailability("host", entries, false);
+      return { availability, lifecycle: useSessionLifecycle("host", rows => availability.reconcile(rows)) };
+    });
+    const request = draw().lifecycle.prepare("archive", "filtered", [entry.id]); await settle();
+    entries = [{ ...entry, updatedAt: "2026-10-25T12:02:00Z", archivedAt: null }]; draw();
+    finish({ ...rows[0], outcome, availability: outcome === "archived"
+      ? { ...evidence("readable"), archivedAt: "2026-10-25T12:01:00Z" }
+      : { ...evidence("missing"), revision: "missing", localRemoval: true } });
+    await request; await settle();
+    expect(draw().availability.entries).toHaveLength(1);
+    expect(draw().availability.entries[0]).toMatchObject({ id: entry.id, updatedAt: entries[0]!.updatedAt, archivedAt: null });
+    expect(hooks.rpc).toHaveBeenCalledTimes(2);
+    expect(hooks.rpc.mock.calls[1]).toEqual([{ reviewId: "fixture-request", agentId: entry.id }]);
+  });
   it("settled exact-ID local removal persists across expiry but never hides the same ID on another host", async () => {
     let host = "host-a";
     const draw = () => render(() => useSessionAvailability(host, [entry], false));

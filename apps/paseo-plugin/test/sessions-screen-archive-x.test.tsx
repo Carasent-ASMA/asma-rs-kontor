@@ -368,6 +368,21 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     expect(archiveX(OTHER).props).toMatchObject({ pending: false, disabled: false });
   });
 
+  it("keeps the newer native row and current-state feedback when an older archive reply settles", async () => {
+    mount(layout); await settle();
+    press(archiveX(SA)); await settle();
+    const state = fake.state as { entries: ReturnType<typeof sessionEntry>[] };
+    fake.state = { ...state, entries: state.entries.map(entry => entry.id === SA ? { ...entry, updatedAt: "2026-10-25T12:02:00Z", archivedAt: null } : entry) };
+    harness.flush();
+    executing.shift()!(archived(SA, "closed", "Archived.")); await settle();
+    expect(listedIds()).toContain(SA);
+    expect(archiveX(SA).props.session).toMatchObject({ id: SA, updatedAt: "2026-10-25T12:02:00Z", archivedAt: null });
+    expect(fake.toast.show).not.toHaveBeenCalledWith(`Archived Session ${SA}.`);
+    expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith("The session changed while archiving. Showing its current native state.");
+    expect(fake.toast.error).not.toHaveBeenCalled();
+    expect(count("sessions.lifecycle-execute-item")).toBe(1); expect(fake.refresh).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["an already-archived target whose exact read fails", () => Promise.reject(new Error("Timeout")), "unknown", "unknown", "Unknown: Native read failed: Timeout. Absence is not confirmed.", false],
     ["an already-archived target whose exact read confirms absence", () => Promise.resolve(null), "missing", "missing", null, false],
