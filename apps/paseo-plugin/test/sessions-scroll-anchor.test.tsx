@@ -137,6 +137,26 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); clearSessionViews(); 
 afterEach(() => { harness.unmount(); vi.useRealTimers(); delete (globalThis as { document?: unknown }).document; });
 
 describe("Sessions list place across live updates", () => {
+  it("keeps the original anchor through a temporary notice resize and a delayed duplicate scroll", () => {
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    const props = list().props;
+    const item = (props.data as unknown[])[43];
+    let top = 43 * 96;
+    const cell = (props.CellRendererComponent as (props: object) => Element)({ cellKey: "r43", index: 43, item, children: null });
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => done(0, top, 320, 96, 0, top) });
+    scrolled(4200, 5760);
+    settle();
+    top -= 30;
+    contentSize(5730);
+    expect(offsetNow()).toBe(4170);
+    settle();
+    top += 30;
+    scrolled(4170, 5760); // Delayed end sample from the screen's placement, with no reader movement.
+    contentSize(5760);
+    expect(offsetNow()).toBe(4200);
+  });
+
   for (const [name, view] of [["All, flat", { status: "all", layout: "flat" }], ["Current, grouped", { status: "current", layout: "grouped" }], ["Recent, flat", { status: "recent", layout: "flat" }]] as const) {
     it(`${name}: re-sorting rows keeps the first row in view where it was, not the list on a moved row`, () => {
       patchSessionView("host-a", view);

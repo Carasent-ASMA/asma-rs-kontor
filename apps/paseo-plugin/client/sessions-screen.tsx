@@ -2234,7 +2234,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       // The screen's own landing keeps the place it held, and so does the browser pulling it back to the end of a
       // list that got shorter: rows shrink before their measurements arrive, and these restate the place. Any other
       // offset, or one the screen placed itself, is read again.
-      if ((!own && !clamped) || placedAtRef.current !== scrollOffsetRef.current) {
+      if ((!own && !clamped && Math.abs(visibleOffset - scrollOffsetRef.current) >= 1) || placedAtRef.current !== scrollOffsetRef.current) {
         rowLayout.capture(rowsRef.current, withHeaderRef.current, visibleOffset, layoutMeasurement.height, contentSize.height);
         clampedByRef.current = 0;
       }
