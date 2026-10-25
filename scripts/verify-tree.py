@@ -261,17 +261,21 @@ def run_gates(tree: Path, plan: dict, receipt: Path, mode: str) -> int:
         source_error = str(exc)
         code = 1
     for ref in plan.get("prior_receipts", []):
-        if (
-            hashlib.sha256(Path(ref["path"]).read_bytes()).hexdigest()
-            != ref["sha256"]
-        ):
+        try:
+            current = hashlib.sha256(
+                Path(ref["path"]).read_bytes()
+            ).hexdigest()
+            failure = None if current == ref["sha256"] else "evidence changed"
+        except OSError as exc:
+            failure = f"evidence could not be read: {exc}"
+        if failure is not None:
             code = 1
             results.append(
                 {
                     "command": ["prior-receipt-readback"],
                     "exit_code": 1,
                     "results": [],
-                    "failures": {"prior_receipt": "evidence changed"},
+                    "failures": {"prior_receipt": failure},
                 }
             )
     # Do not reinterpret old FAILs or grant QA/AUD/runtime acceptance here.

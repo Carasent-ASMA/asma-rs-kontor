@@ -258,6 +258,51 @@ class ImpactTests(unittest.TestCase):
                 verifier.main()
         self.assertEqual(raised.exception.code, 2)
 
+    def test_disappearing_prior_receipt_preserves_failure_and_unrun(
+        self,
+    ) -> None:
+        import hashlib
+
+        prior = Path(self.tmp.name) / "removed-prior.json"
+        prior.write_text('{"exit_code": 1}')
+        self.plan["prior_receipts"] = [
+            {
+                "path": str(prior),
+                "sha256": hashlib.sha256(prior.read_bytes()).hexdigest(),
+                "disposition": "Retained failure; external deletion is not repair",
+            }
+        ]
+        self.plan["checks"] *= 2
+        plan, _ = self.read_plan()
+        receipt = Path(self.tmp.name) / "removed-prior-result.json"
+        calls = []
+
+        def run(argv, log, stream, cwd):
+            calls.append(argv)
+            log.write_text("synthetic command\n")
+            if len(calls) == 2:
+                prior.unlink()
+                return 7
+            return 0
+
+        with mock.patch.object(verifier.lanes, "run_streaming", run):
+            self.assertEqual(
+                verifier.run_gates(self.root, plan, receipt, "archive"), 1
+            )
+        saved = json.loads(receipt.read_text())
+        self.assertEqual(saved["exit_code"], 1)
+        self.assertEqual(saved["checks"][1]["exit_code"], 7)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(saved["not_run"], [plan["checks"][1]])
+        self.assertEqual(
+            saved["checks"][-1]["command"], ["prior-receipt-readback"]
+        )
+        self.assertIn(
+            "could not be read",
+            saved["checks"][-1]["failures"]["prior_receipt"],
+        )
+        self.assertFalse(prior.exists())
+
     def test_missing_executable_retains_failed_receipt(self) -> None:
         self.plan["checks"][0]["argv"] = [
             "missing-executable-for-synthetic-test"
