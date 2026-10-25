@@ -44,6 +44,7 @@ describe("no Kontor write credential", () => {
 });
 
 const clientFiles = [
+  "../client/session-compact-content.tsx",
   "../client/mobile-filters.tsx",
   "../client/anchored-menu.tsx",
   "../client/graph-page.tsx",
