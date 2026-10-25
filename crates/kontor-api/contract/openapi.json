@@ -13733,6 +13733,9 @@
           "403": {
             "description": ""
           },
+          "410": {
+            "description": ""
+          },
           "503": {
             "description": ""
           }
@@ -13804,6 +13807,9 @@
             "description": ""
           },
           "403": {
+            "description": ""
+          },
+          "410": {
             "description": ""
           },
           "503": {

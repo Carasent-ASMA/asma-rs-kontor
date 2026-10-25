@@ -97,7 +97,7 @@ pub async fn native_status(
     params(NativeInventoryQuery),
     responses(
         (status = 200, body = kontor_catalog::native::NativeInventoryView),
-        (status = 400), (status = 401), (status = 403), (status = 503)
+        (status = 400), (status = 401), (status = 403), (status = 410), (status = 503)
     )
 )]
 pub async fn native_inventory(
@@ -193,7 +193,7 @@ pub async fn sources(
     params(EntriesQuery),
     responses(
         (status = 200, body = kontor_catalog::contract::EntriesView),
-        (status = 400), (status = 401), (status = 403), (status = 503)
+        (status = 400), (status = 401), (status = 403), (status = 410), (status = 503)
     )
 )]
 pub async fn entries(
