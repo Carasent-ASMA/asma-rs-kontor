@@ -157,8 +157,9 @@ describe("kontord status probe", () => {
   it("is registered whatever the floor, reports it, and is stopped with the worker", () => {
     const entry = source("../index.server.ts");
     expect(entry).toContain("const stopStatus = contributeKontorStatus(server, floor.enabled);");
+    expect(entry).toContain("const stopCatalog = contributeWorkCatalog(server);");
     expect(entry).toContain("const stopHooks = floor.enabled ? contribute(server) : () => {};");
-    expect(entry).toContain("return () => { stopSources(); stopStatus(); stopHooks(); };");
+    expect(entry).toContain("return () => { stopSources(); stopStatus(); stopCatalog(); stopHooks(); };");
   });
 });
 
