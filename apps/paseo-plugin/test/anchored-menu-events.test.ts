@@ -11,7 +11,7 @@ vi.mock("react", async (original) => ({
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", ScrollView: "ScrollView" }));
 
-import { AnchoredMenu, anchoredPanelOpen, type FocusTarget } from "../client/anchored-menu";
+import { AnchoredMenu, anchoredPanelOpen, panelNestedComboboxTarget, type FocusTarget } from "../client/anchored-menu";
 import { BulkArchiveDialog } from "../client/bulk-archive";
 import { installBackShortcut, type ShortcutEvent } from "../client/keyboard-shortcuts";
 
@@ -242,5 +242,41 @@ describe("anchored menu keys on web", () => {
     page.activeElement = page.body;
     expect(press({ key: "Tab" }).preventDefault).toHaveBeenCalledTimes(1);
     expect(close.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a dialog with Escape from a plain topic field but not from a nested combobox", () => {
+    const topic = node() as Node & { tagName?: string };
+    topic.tagName = "textarea";
+    const combobox = node() as Node & { getAttribute(name: string): string | null };
+    combobox.getAttribute = (name) => (name === "role" ? "combobox" : null);
+    const panel = panelOf([topic, combobox]);
+    const onClose = vi.fn();
+    mount({ panel, dialog: true, onClose });
+    page.activeElement = topic;
+    press({ key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    onClose.mockClear();
+    page.activeElement = combobox;
+    press({ key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panelNestedComboboxTarget(panel, topic)).toBe(false);
+    expect(panelNestedComboboxTarget(panel, combobox)).toBe(true);
+  });
+
+  it("leaves Escape and list keys to a nested combobox inside a dialog", () => {
+    const combobox = node() as Node & { getAttribute(name: string): string | null };
+    combobox.getAttribute = (name) => (name === "role" ? "combobox" : null);
+    const item = node();
+    const panel: Node = { focus: vi.fn(), getClientRects: () => [{}], querySelectorAll: () => [item], contains: (target) => target === panel || target === item || target === combobox };
+    const onClose = vi.fn();
+    mount({ panel, dialog: true, onClose });
+    page.activeElement = combobox;
+    expect(press({ key: "ArrowDown" }).preventDefault).not.toHaveBeenCalled();
+    expect(item.focus).not.toHaveBeenCalled();
+    press({ key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    page.activeElement = item;
+    press({ key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
