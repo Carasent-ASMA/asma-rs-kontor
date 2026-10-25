@@ -169,6 +169,7 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
   const mounted = new Map<string, View>();
   const cellRefs = new Map<string, (node: View | null) => void>();
   let readCapture: (() => void) | null = null;
+  let applyCapture: (() => void) | null = null;
   let captureVersion = 0, capturePending = false;
   let renderedRows: readonly ListRow[] | null = null;
   let following: { readonly rows: readonly ListRow[]; readonly withHeader: boolean } | null = null;
@@ -227,6 +228,39 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       : offset >= Math.max(content, head(withHeader) + table.length) - viewport - LIST_EDGE || first >= table.keys.length ? { at: "end" }
       : sessionAt(rows, withHeader, offset, viewport) ?? { at: "row", key: table.keys[first]!, top: head(withHeader) + table.offsets[first]! };
   };
+  const followPlace = (previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, was: ListPlace, current: boolean): number => {
+    const before = build(previous), after = build(next);
+    // A prior removal can reveal an earlier session. The next update anchors the session now visible.
+    if (current && was.at === "row" && !mounted.size) {
+      const visible = sessionAt(previous, withHeader, offset, viewport);
+      if (visible?.at === "row" && visible.key !== was.key) was = visible;
+    }
+    if (was.at !== "row") {
+      place = was;
+      return was.at === "top" ? 0 : after.length - before.length;
+    }
+    // Reordering does not release an exact native ID. Only a row leaving this view permits fallback.
+    if (after.index.has(was.key)) {
+      const index = after.index.get(was.key)!;
+      const top = mounted.has(was.key) && before.index.get(was.key) === index
+        ? was.top : head(withHeader) + after.offsets[index]!;
+      place = { ...was, top };
+      return top - was.top;
+    }
+    const visible: number[] = [];
+    for (let index = firstShown(before, withHeader, offset); index < before.keys.length && head(withHeader) + before.offsets[index]! < offset + viewport; index += 1) {
+      if (after.index.has(before.keys[index]!)) visible.push(index);
+    }
+    const index = visible.find((index) => isSession(previous[index]!)) ?? visible[0];
+    if (index === undefined) {
+      place = placeAt(next, withHeader, offset, viewport, content);
+      return 0;
+    }
+    const key = before.keys[index]!;
+    const top = head(withHeader) + after.offsets[after.index.get(key)!]!;
+    place = { at: "row", key, top };
+    return top - (head(withHeader) + before.offsets[index]!);
+  };
   const layout = {
     // Stop reissuing an old capture against post-update cells before the parent's layout effect runs.
     renderRows(rows: readonly ListRow[]) { renderedRows = rows; },
@@ -247,12 +281,14 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     /** Back must restore an exact row, not a pixel estimate over rows never measured. */
     bookmark(rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number) {
       readCapture = null;
+      applyCapture = null;
       capturePending = false;
       following = null;
       return { place, offset };
     },
     restore(saved: { readonly place: ListPlace; readonly offset: number }, rows: readonly ListRow[], withHeader: boolean, viewport: number) {
       readCapture = null;
+      applyCapture = null;
       capturePending = false;
       following = null;
       const table = build(rows), content = head(withHeader) + table.length;
@@ -273,6 +309,7 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     capture(rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number) {
       place = placeAt(rows, withHeader, offset, viewport, content);
       readCapture = null;
+      applyCapture = null;
       capturePending = false;
       following = null;
       if (place.at !== "row") return;
@@ -283,24 +320,30 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
         if (following || (renderedRows !== null && renderedRows !== rows)) return;
         const version = ++captureVersion;
         const cells = [...mounted].filter(([key, node]) => table.index.has(key) && typeof node.measure === "function");
-        const visible: { key: string; top: number }[] = [];
+        let first: { readonly key: string; readonly top: number } | null = null;
         let remaining = cells.length;
         capturePending = remaining > 0;
+        applyCapture = remaining ? () => {
+          if (!first || !following) return;
+          const by = followPlace(rows, following.rows, following.withHeader, offset, viewport, content, { at: "row", ...first }, false);
+          resizedCallback(by, offset);
+        } : null;
         for (const [key, node] of cells) node.measure((_x, y, _width, height) => {
           if (readCapture !== read || captureVersion !== version) return;
           const row = rows[table.index.get(key)!]!;
-          if (isSession(row) && y + height > offset + LIST_EDGE && y < offset + viewport) visible.push({ key, top: y });
+          if (isSession(row) && y + height > offset + LIST_EDGE && y < offset + viewport && (!first || y < first.top)) {
+            first = { key, top: y };
+            // Detached offscreen cells may never reply. Visible evidence need not wait for them;
+            // an earlier visible reply can still refine this same request until reader intent replaces it.
+            capturePending = false;
+            place = { at: "row", ...first };
+            applyCapture?.();
+          }
           if (--remaining === 0) {
             capturePending = false;
-            visible.sort((a, b) => a.top - b.top);
-            if (visible[0]) place = { at: "row", ...visible[0] };
-            const deferred = following;
+            applyCapture = null;
+            if (following) readCapture = null;
             following = null;
-            if (deferred && visible[0]) {
-              // Consume the original request's geometry, then map that ID through the latest live rows.
-              const by = layout.follow(rows, deferred.rows, deferred.withHeader, offset, viewport, content, true);
-              resizedCallback(by, offset);
-            }
           }
         });
       };
@@ -312,45 +355,16 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
      * to a surviving visible session; with none, keep the bounded offset.
      */
     follow(previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, current = false): number {
-      if (current && capturePending && readCapture !== null) {
+      if (current && applyCapture !== null) {
         following = { rows: next, withHeader };
-        return 0; // An estimate cannot replace the still-pending exact-ID capture.
+        applyCapture();
+        return 0; // Retain this request's geometry, including any earlier visible reply still queued.
       }
       readCapture = null;
+      applyCapture = null;
       capturePending = false;
       following = null;
-      let was = current ? place : placeAt(previous, withHeader, offset, viewport, content);
-      const before = build(previous), after = build(next);
-      // A prior removal can reveal an earlier session. The next update anchors the session now visible.
-      if (current && was.at === "row" && !mounted.size) {
-        const visible = sessionAt(previous, withHeader, offset, viewport);
-        if (visible?.at === "row" && visible.key !== was.key) was = visible;
-      }
-      if (was.at !== "row") {
-        place = was;
-        return was.at === "top" ? 0 : after.length - before.length;
-      }
-      // Reordering does not release an exact native ID. Only a row leaving this view permits fallback.
-      if (after.index.has(was.key)) {
-        const index = after.index.get(was.key)!;
-        const top = mounted.has(was.key) && before.index.get(was.key) === index
-          ? was.top : head(withHeader) + after.offsets[index]!;
-        place = { ...was, top };
-        return top - was.top;
-      }
-      const visible: number[] = [];
-      for (let index = firstShown(before, withHeader, offset); index < before.keys.length && head(withHeader) + before.offsets[index]! < offset + viewport; index += 1) {
-        if (after.index.has(before.keys[index]!)) visible.push(index);
-      }
-      const index = visible.find((index) => isSession(previous[index]!)) ?? visible[0];
-      if (index === undefined) {
-        place = placeAt(next, withHeader, offset, viewport, content);
-        return 0;
-      }
-      const key = before.keys[index]!;
-      const top = head(withHeader) + after.offsets[after.index.get(key)!]!;
-      place = { at: "row", key, top };
-      return top - (head(withHeader) + before.offsets[index]!);
+      return followPlace(previous, next, withHeader, offset, viewport, content, current ? place : placeAt(previous, withHeader, offset, viewport, content), current);
     },
     /**
      * How far the offset moves to keep the reader's place after a row or the header changed height. Not the end's:

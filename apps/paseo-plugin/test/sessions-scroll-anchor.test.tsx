@@ -152,6 +152,52 @@ describe("Sessions list place across live updates", () => {
     return reads;
   }
 
+  function pendingWindow() {
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    const props = list().props;
+    const reads = new Map<number, (...values: number[]) => void>();
+    for (const index of [1, 43, 44]) {
+      const cell = (props.CellRendererComponent as (props: object) => Element)({ cellKey: `s${index}`, index, item: (props.data as unknown[])[index], children: null });
+      (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => reads.set(index, done) });
+    }
+    const top = (props.getItemLayout as ItemLayout)(props.data, 43).offset;
+    scrolled(top + 65, 6000);
+    settle();
+    return { reads, top };
+  }
+
+  it("uses visible geometry when a detached offscreen cell never replies", () => {
+    const { reads, top } = pendingWindow();
+    reads.get(43)!(0, top, 320, 96, 0, top);
+    reads.get(44)!(0, top + 96, 320, 96, 0, top + 96);
+    // Cell s1 detached before its queued public measure ran: there is no callback to wait for.
+    arrive("arrival-with-detached-cell");
+    expect(offsetNow()).toBe(top + 96 + 65);
+  });
+
+  it("accepts the earlier visible ID's late reply without waiting for a detached cell", () => {
+    const { reads, top } = pendingWindow();
+    liveUpdate("s43");
+    reads.get(44)!(0, top + 96, 320, 96, 0, top + 96);
+    reads.get(43)!(0, top, 320, 96, 0, top);
+    expect(offsetNow()).toBe(65);
+    expect(ids()[0]).toBe("s43");
+  });
+
+  it("retains valid queued geometry when the moved exact cell unmounts before its reply", () => {
+    const reads = pendingVisibleCell();
+    harness.beforeEffects((tree) => {
+      const props = walk(tree).find((element) => element.props.testID === "sessions-list")!.props;
+      const cell = (props.CellRendererComponent as (props: object) => Element)({ cellKey: "s43", index: 0, item: (props.data as unknown[])[0], children: null });
+      (cell.props.ref as (node: unknown) => void)(null);
+    });
+    liveUpdate("s43");
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(65);
+    expect(reads).toHaveLength(1);
+  });
+
   it("does not replace queued pre-update geometry when post-update cell refs commit before follow", () => {
     const reads = pendingVisibleCell();
     harness.beforeEffects((tree) => {
