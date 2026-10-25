@@ -200,6 +200,26 @@ describe("Start or switch sheet", () => {
     expect(rpc.execute).not.toHaveBeenCalled(); expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
     expect(byTestId(s.tree, "kontor-switch-archive-result")?.props).toMatchObject({ accessibilityRole: "alert", children: "A managed child is protected." });
   });
+  it("archive X keeps a newer unarchived native row when an older archive response settles", async () => {
+    let finish!: (value: LifecycleRow) => void;
+    const original = sessionEntry("agent-a", { title: "Exact session", updatedAt: "2026-10-25T12:00:00Z" });
+    const newer = { ...original, updatedAt: "2026-10-25T12:02:00Z" };
+    const rpc = archiveFixture(vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; })));
+    const s = sheet({ directory: directory([original]) });
+    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(archiveAction(s).props).toMatchObject({ pending: true, disabled: true });
+    s.props.directory = directory([newer]); s.render();
+    finish(archiveRow({ title: original.title, outcome: "archived", runtime: "closed", availability: { agentId: original.id, state: "readable", archivedAt: "2026-10-25T12:01:00Z", checkedAt: "2026-10-25T12:01:00Z", revision: original.updatedAt, reason: "Older exact-ID read." } }));
+    await settle(); s.render();
+    expect(byTestId(s.tree, "kontor-switch-row-agent-a")?.props.accessibilityLabel).toContain("Exact session");
+    expect(s.props.directory.entries[0]).toEqual(newer);
+    expect(text(s.tree)).not.toContain("Archived Exact session");
+    expect(text(s.tree)).toContain("current native state");
+    expect(action(s.tree, "Open Sessions to review archive")).toBeDefined();
+    expect(archiveAction(s).props.pending).toBe(false);
+    expect(rpc.preview).toHaveBeenCalledTimes(1); expect(rpc.execute).toHaveBeenCalledTimes(1);
+    expect(s.onOpen).not.toHaveBeenCalled(); expect(s.onClose).not.toHaveBeenCalled();
+  });
   it("archive X never calls an uncertain reply success and offers the existing Sessions review path without resending", async () => {
     const rpc = archiveFixture(vi.fn(async () => archiveRow({ outcome: "uncertain", runtime: "unconfirmed", availability: { agentId: "agent-a", state: "readable", archivedAt: null, checkedAt: "2026-10-25", revision: "fixture", reason: "Not archived on this read." } }))), s = sheet();
     (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();

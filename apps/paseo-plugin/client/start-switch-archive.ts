@@ -5,12 +5,12 @@ import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { bindAvailability, withLocalDispositions } from "./use-session-availability";
 import { useSessionLifecycle } from "./use-session-lifecycle";
 
-/** The same exact-revision settled membership used by Sessions, without mounting its read/probe hook. */
-export function archiveDispositions(entries: readonly DirectoryEntry[], rows: readonly LifecycleRow[]): Record<string, SessionAvailability> {
+/** Bind only the requested snapshot: a newer native row wins over this archive reply. */
+export function archiveDispositions(entries: readonly DirectoryEntry[], rows: readonly LifecycleRow[], request: Pick<DirectoryEntry, "id" | "updatedAt">): Record<string, SessionAvailability> {
   const values: Record<string, SessionAvailability> = {};
   for (const row of rows) {
     const entry = entries.find((candidate) => candidate.id === row.id);
-    if (entry && row.availability && (row.availability.state === "readable" && row.availability.archivedAt || row.outcome === "absent" && row.availability.state === "missing" && row.availability.localRemoval)) {
+    if (entry && entry.id === request.id && entry.updatedAt === request.updatedAt && row.availability && (row.availability.state === "readable" && row.availability.archivedAt || row.outcome === "absent" && row.availability.state === "missing" && row.availability.localRemoval)) {
       values[row.id] = bindAvailability(entry, row.availability);
     }
   }
@@ -23,19 +23,25 @@ export function useStartSwitchArchive(hostId: string, directory: DirectoryState,
   const [settled, setSettled] = useState<{ hostId: string; values: Record<string, SessionAvailability> }>({ hostId, values: {} });
   const [held, setHeld] = useState<{ hostId: string; revisions: Record<string, string> }>({ hostId, revisions: {} });
   const [notice, setNotice] = useState<{ hostId: string; message: string; error: boolean; review: boolean } | null>(null);
-  const [pending, setPending] = useState<{ hostId: string; id: string } | null>(null);
+  const [pending, setPending] = useState<{ hostId: string; id: string; updatedAt: string } | null>(null);
   const active = useRef<typeof pending>(null);
   useEffect(() => () => { active.current = null; }, [hostId]);
   const lifecycle = useSessionLifecycle(hostId, (rows) => {
-    const values = archiveDispositions(entries.current, rows);
+    const request = active.current;
+    if (!request || request.hostId !== hostId) return;
+    const values = archiveDispositions(entries.current, rows, request);
     setSettled((current) => ({ hostId, values: { ...(current.hostId === hostId ? current.values : {}), ...values } }));
   });
   const onArchive = async (entry: DirectoryEntry) => {
     if (!online || active.current || lifecycle.busy || lifecycle.running || entry.archivedAt !== null || held.hostId === hostId && held.revisions[entry.id] === entry.updatedAt) return;
-    const ticket = { hostId, id: entry.id }; active.current = ticket; setPending(ticket); setNotice(null);
+    const ticket = { hostId, id: entry.id, updatedAt: entry.updatedAt }; active.current = ticket; setPending(ticket); setNotice(null);
     const result = await lifecycle.prepare("archive", "filtered", [entry.id]);
     if (active.current !== ticket) return;
     active.current = null; setPending(null);
+    if (!entries.current.some((current) => current.id === ticket.id && current.updatedAt === ticket.updatedAt)) {
+      setNotice({ hostId, message: "The session changed while archiving. Showing its current native state.", error: false, review: true });
+      return;
+    }
     const review = typeof result === "string" || result !== null && unresolvedArchive(result);
     if (review) setHeld((current) => ({ hostId, revisions: { ...(current.hostId === hostId ? current.revisions : {}), [entry.id]: entry.updatedAt } }));
     // Reuse the existing structured outcome wording; a missing reply never becomes success.
