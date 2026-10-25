@@ -21,6 +21,7 @@ const model = vi.hoisted(() => ({
   /** This render's effects; `commit()` runs the ones whose dependencies changed, as React does. */
   effects: [] as Array<{ effect: () => void | (() => void); deps?: readonly unknown[] }>,
   keyboardSave: vi.fn(async () => true),
+  nativeRetry: vi.fn(),
   kontorStatus: null as import("../shared/kontor-status").KontorStatus | null,
   keyboard: { status: "loading" } as { status: "loading" } | { status: "ready"; values: { backShortcut: "off" | "cmd-backquote" } },
   shortcut: null as null | { shortcut: string; web: boolean; root: { readonly current: unknown }; canGoBack: () => boolean; back: () => void },
@@ -45,7 +46,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
   Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError, show: model.toastShow }),
   copyText: (text: string) => model.copyText(text),
 }));
-vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived }, refresh: () => {} }; } }));
+vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived }, refresh: () => {}, retry: model.nativeRetry }; } }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
@@ -86,7 +87,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directoryInputs = []; model.sourceCalls = 0; model.effects = []; });
+beforeEach(() => { model.nativeRetry = vi.fn(); model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directoryInputs = []; model.sourceCalls = 0; model.effects = []; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -142,6 +143,15 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>, at: { hostId?: 
     choices() { return this.menuItems().map((node) => String(node.props.accessibilityLabel)).filter((label) => label.startsWith("Plan: ")).map((label) => label.split(", ")[0]); },
   };
 }
+it("passes the native Retry action through the HostScreen directory facade", () => {
+  const screen = mount(false, { tab: "Sessions" });
+  const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
+  const directory = sessions.props.directory as { retry: () => void };
+  expect(directory.retry).toBe(model.nativeRetry);
+  directory.retry();
+  expect(model.nativeRetry).toHaveBeenCalledOnce();
+});
+
 describe("Kontor shell native actions", () => {
   it("offers a native desk with no workspaces or sessions and supplies it to Sessions", () => {
     model.projects = [{ projectId: "prj_empty", projectKey: "fixture:empty", projectDisplayName: "Desk", projectCustomName: "DESK • RESEARCH", projectRootPath: "/fixture/empty", projectKind: "non_git", projectCustomIconRevision: null, projectIconRevision: "automatic:none:v1" }];
