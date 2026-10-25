@@ -920,6 +920,9 @@ struct FakeState {
     /// The error every hosted-seat census answers with. Sticky, like the
     /// inspection rule: a reconciliation reads the census more than once.
     hosted_census_refusal: Option<RuntimeError>,
+    /// Natives a census leaves out although this fake holds them: a census
+    /// that contradicts the exact read.
+    hosted_census_omitted: BTreeSet<ExternalId>,
     /// The predecessors the latest launch of each binding named as fenced.
     hosted_launch_fences: BTreeMap<SeatBindingId, Vec<ExternalId>>,
     /// Consultation seats keyed by their durable SeatBinding identity.
@@ -1640,6 +1643,7 @@ impl ScriptedFakeRuntime {
                 hosted_activity: BTreeMap::new(),
                 extra_hosted_carriers: BTreeMap::new(),
                 hosted_census_refusal: None,
+                hosted_census_omitted: BTreeSet::new(),
                 hosted_launch_fences: BTreeMap::new(),
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
@@ -2595,6 +2599,12 @@ impl ScriptedFakeRuntime {
     /// Answer hosted-seat censuses again after [`Self::refuse_hosted_census`].
     pub fn answer_hosted_census(&self) {
         self.lock().hosted_census_refusal = None;
+    }
+
+    /// Leave one native out of every hosted-seat census while exact reads
+    /// still find it.
+    pub fn omit_from_hosted_census(&self, native_id: &ExternalId) {
+        self.lock().hosted_census_omitted.insert(native_id.clone());
     }
 
     /// The predecessors the latest launch of this binding named as fenced.
@@ -4742,6 +4752,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         if let Some(extra) = state.extra_hosted_carriers.get(&request.seat_binding_id) {
             carriers.extend(extra.iter().cloned());
         }
+        carriers.retain(|carrier| !state.hosted_census_omitted.contains(&carrier.native_id));
         Ok(HostedSeatCensus {
             carriers,
             observed_at: request.requested_at,

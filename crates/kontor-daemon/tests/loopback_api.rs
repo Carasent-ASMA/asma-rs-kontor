@@ -72489,6 +72489,7 @@ async fn an_operator_takeover_refuses_a_busy_or_contradicted_seat_before_its_cla
         "unknown",
         "second-live-native",
         "archived-and-live",
+        "census-omits-predecessor",
     ] {
         let (composed, binding, native, generation) = hosted_tpm_seat(
             &format!("/tmp/kontor-8641-refuse-{case}"),
@@ -72522,14 +72523,16 @@ async fn an_operator_takeover_refuses_a_busy_or_contradicted_seat_before_its_cla
                     activity: DurableSeatActivity::Idle,
                 },
             ),
-            _ => world.fake.add_hosted_seat_carrier(
+            // Idle, so only its archived reading can refuse it.
+            "archived-and-live" => world.fake.add_hosted_seat_carrier(
                 binding_id,
                 DurableSeatCarrier {
                     native_id: native.clone(),
                     archived: true,
-                    activity: DurableSeatActivity::Unknown,
+                    activity: DurableSeatActivity::Idle,
                 },
             ),
+            _ => world.fake.omit_from_hosted_census(&native),
         }
         let (refused_preview, _) =
             previewed_takeover(world, project, epic, &binding, &native, generation).await;
