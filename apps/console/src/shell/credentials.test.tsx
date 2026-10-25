@@ -118,6 +118,16 @@ describe('keychainStore', () => {
     },
   )
 
+  it.each([null, {}, { baseUrl: ONE.baseUrl }, { baseUrl: '', token: ONE.token }, { baseUrl: 1, token: 2 }])(
+    'refuses a loaded value that is not an endpoint (%j)',
+    async (value) => {
+      invoke.mockResolvedValue(value)
+      const error = await keychainStore.load().catch((cause: unknown) => cause)
+      expect(error).toBeInstanceOf(KeychainError)
+      expect((error as KeychainError).kind).toBe('invalid')
+    },
+  )
+
   it('reports an untyped refusal as unavailable, without its text', async () => {
     mockShell(`command credential_save failed for ${ONE.token}`)
     const error = await keychainStore.save(ONE, '').catch((cause: unknown) => cause)

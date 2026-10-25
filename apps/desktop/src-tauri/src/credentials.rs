@@ -22,6 +22,8 @@
 //! and no value is ever logged. When the store cannot be used, the operation
 //! fails; nothing falls back to a file or to another store.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// The service every entry is filed under.
@@ -219,16 +221,21 @@ fn entry(account: &str) -> Result<keyring_core::Entry, CredentialError> {
     keyring_core::Entry::new_with_modifiers(SERVICE, account, &entry_modifiers()).map_err(classify)
 }
 
-/// The store modifiers every entry is built with.
+/// The store modifiers every entry is built with on this platform.
+pub(crate) fn entry_modifiers() -> HashMap<&'static str, &'static str> {
+    modifiers_for(cfg!(windows))
+}
+
+/// The store modifiers for a Windows or a non-Windows store.
 ///
 /// On Windows, `Local` persistence: the credential stays on this machine
 /// instead of roaming with the profile. The other stores take none.
-pub(crate) fn entry_modifiers() -> std::collections::HashMap<&'static str, &'static str> {
-    let mut modifiers = std::collections::HashMap::new();
-    if cfg!(windows) {
-        modifiers.insert("persistence", "Local");
+fn modifiers_for(windows: bool) -> HashMap<&'static str, &'static str> {
+    if windows {
+        HashMap::from([("persistence", "Local")])
+    } else {
+        HashMap::new()
     }
-    modifiers
 }
 
 /// Map a `keyring` error to its kind, dropping its text.
@@ -624,14 +631,14 @@ mod tests {
 
     #[test]
     fn entries_persist_locally() {
-        let modifiers = entry_modifiers();
-        if cfg!(windows) {
-            // Never `Enterprise`, keyring's default, which roams.
-            assert_eq!(modifiers.get("persistence"), Some(&"Local"));
-            assert_eq!(modifiers.len(), 1);
-        } else {
-            assert!(modifiers.is_empty());
-        }
+        // The Windows choice, checked on every OS. Never `Enterprise`,
+        // keyring's default, which roams with the profile.
+        assert_eq!(
+            modifiers_for(true),
+            HashMap::from([("persistence", "Local")])
+        );
+        assert!(modifiers_for(false).is_empty());
+        assert_eq!(entry_modifiers(), modifiers_for(cfg!(windows)));
     }
 
     #[cfg(not(windows))]
