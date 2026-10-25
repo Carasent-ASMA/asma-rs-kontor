@@ -6,6 +6,7 @@ const help = vi.hoisted(() => ({ hold: vi.fn(), dismiss: vi.fn(), texts: [] as s
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
 vi.mock("react-native", () => ({ Platform: { OS: "web" }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
 vi.mock("../client/control-help", () => ({ useActionHelp: (text: string) => { help.texts.push(text); return { bindings: { "aria-describedby": "help" }, hold: help.hold, dismiss: help.dismiss }; } }));
 
 import { ProviderStateLine, SelectActionBar, SelectActionButton, providerStateText, selectActions, type Owner, type OwnerAnswer, type OwnerReply, type OwnerRequest, type Owners, type RefusalView, type SelectedSession } from "../client/session-select-actions";
@@ -29,25 +30,27 @@ describe("selection actions: availability comes only from the owner's answer", (
   it("lets any native session be selected, archived and running included, and grants nothing for being selected", () => {
     for (const status of ["initializing", "idle", "running", "error", "closed"] as const) for (const archivedAt of [null, ARCHIVED]) {
       const states = selectActions("host-a", [session("a", { status, archivedAt })], {});
-      expect(states.open).toMatchObject({ enabled: true, ids: ["a"] });
-      expect(states.resume.enabled).toBe(false);
+      expect(states.archive.enabled).toBe(archivedAt === null);
       expect(states.takeOver.enabled).toBe(false);
+      expect(states.retry.enabled).toBe(false);
     }
   });
 
-  it("names why each action waits when nothing is selected or several are", () => {
-    const none = selectActions("host-a", [], { resume: lookup(), takeOver: lookup() });
+  it("names why each action waits when nothing is selected, and never takes over or retries a batch", () => {
+    const none = selectActions("host-a", [], { takeOver: lookup(), retry: lookup() });
     for (const state of Object.values(none)) expect(state).toEqual({ enabled: false, line: "Select a session first." });
-    const two = selectActions("host-a", [session("a"), session("b")], { takeOver: lookup(yes("a"), yes("b")) });
-    expect(two.open).toEqual({ enabled: false, line: "Select one session to open." });
+    const two = selectActions("host-a", [session("a"), session("b")], { takeOver: lookup(yes("a"), yes("b")), retry: lookup(yes("a"), yes("b")) });
     expect(two.takeOver).toEqual({ enabled: false, line: "Take over needs exactly one selected session." });
+    expect(two.retry).toEqual({ enabled: false, line: "Retry in this session needs exactly one selected session." });
   });
 
-  it("keeps Take over unavailable with an exact reason while no qualified owner exists", () => {
+  it("keeps Take over unavailable with an exact reason while no owner can pick a route from the seat's chain", () => {
     expect(selectActions("host-a", [session("a", { status: "error" })], {}).takeOver)
-      .toEqual({ enabled: false, line: "Take over needs a qualified handoff profile, and none is available yet." });
+      .toEqual({ enabled: false, line: "Take over is unavailable: no owner here can pick a route from this seat's model chain." });
     expect(selectActions("host-a", [session("a", { status: "error" })], { takeOver: lookup() }).takeOver)
       .toEqual({ enabled: false, line: "Checking whether it can be taken over." });
+    expect(selectActions("host-a", [session("a", { status: "error" })], { takeOver: lookup(no("a", "No model chain is bound to this seat.")) }).takeOver)
+      .toEqual({ enabled: false, line: "No model chain is bound to this seat." });
   });
 
   it("never derives Take over support from a role, scope or title, for any profile", () => {
@@ -74,21 +77,16 @@ describe("selection actions: availability comes only from the owner's answer", (
     const one = [session("a")];
     expect(selectActions("host-a", one, { takeOver: only(yes("a", { hostId: "host-b" })) }).takeOver.enabled).toBe(false);
     expect(selectActions("host-a", one, { takeOver: only(yes("b")) }).takeOver.enabled).toBe(false);
-    expect(selectActions("host-a", one, { resume: only(yes("a", { hostId: "host-b" })) }).resume).toEqual({ enabled: false, line: "Checking whether it can resume." });
+    expect(selectActions("host-a", one, { retry: only(yes("a", { hostId: "host-b" })) }).retry).toEqual({ enabled: false, line: "Checking whether it can retry in this session." });
   });
 
-  it("never offers Resume for an archived session, whatever the owner answers", () => {
-    expect(selectActions("host-a", [session("a", { archivedAt: ARCHIVED, status: "error" })], { resume: lookup(yes("a")) }).resume)
-      .toEqual({ enabled: false, line: "Archived: Resume never revives an archived session." });
-  });
-
-  it("resumes only the owner's eligible sessions and says how many are not", () => {
-    const selected = [session("a", { status: "error" }), session("b", { status: "running" }), session("c", { status: "error", archivedAt: ARCHIVED })];
-    const owners: Owners = { resume: lookup(yes("a"), no("b", "Running: nothing to retry.")) };
-    expect(selectActions("host-a", selected, owners).resume).toMatchObject({ enabled: true, ids: ["a"], line: expect.stringMatching(/^Resume 1 · 2 not eligible\./) });
-    expect(selectActions("host-a", [selected[1]!], owners).resume).toEqual({ enabled: false, line: "Running: nothing to retry." });
-    expect(selectActions("host-a", selected.slice(1), owners).resume).toEqual({ enabled: false, line: "None of the selected sessions can resume: Running: nothing to retry." });
-    expect(selectActions("host-a", [selected[0]!], {}).resume).toEqual({ enabled: false, line: "Resume is not available here." });
+  it("offers Retry in this session only on the owner's answer, and never for an archived session", () => {
+    const one = [session("a", { status: "error" })];
+    expect(selectActions("host-a", one, {}).retry).toEqual({ enabled: false, line: "Retry in this session is not available here." });
+    expect(selectActions("host-a", one, { retry: lookup(no("a", "Waiting for permission/input.")) }).retry).toEqual({ enabled: false, line: "Waiting for permission/input." });
+    expect(selectActions("host-a", one, { retry: lookup(yes("a")) }).retry).toMatchObject({ enabled: true, line: "Consequence for a.", ids: ["a"] });
+    expect(selectActions("host-a", [session("a", { archivedAt: ARCHIVED, status: "error" })], { retry: lookup(yes("a")) }).retry)
+      .toEqual({ enabled: false, line: "Archived: Retry never revives an archived session." });
   });
 
   it("archives only unarchived sessions through the existing review", () => {
@@ -152,6 +150,11 @@ describe("select action button", () => {
     expect(onPress).not.toHaveBeenCalled();
   });
 
+  it("tells assistive tech whether the menu it opens is expanded", () => {
+    const element = SelectActionButton({ testID: "t", icon: "Ellipsis", name: "Actions", line: "Line.", enabled: true, expanded: true, colors, onPress: vi.fn() }) as Element;
+    expect(element.props).toMatchObject({ "aria-expanded": true, accessibilityState: { disabled: false, expanded: true } });
+  });
+
   it("runs an available action once and closes its help", () => {
     const onPress = vi.fn(), element = button(true, onPress);
     (element.props.onPress as () => void)();
@@ -162,80 +165,121 @@ describe("select action button", () => {
 });
 
 describe("select action bar", () => {
-  const setup = (patch: { selected?: SelectedSession[]; owners?: Owners; hostId?: string; blocked?: string; refusal?: RefusalView | "unreadable" | null } = {}) => {
-    const props = { hostId: "host-a", selected: [session("a", { status: "error" })], owners: {} as Owners, zone: "UTC", colors,
-      onOpen: vi.fn(), onArchive: vi.fn(), onClear: vi.fn(), ...patch };
+  const anchorRef = { current: null }, root = { current: null };
+  const setup = (patch: { selected?: SelectedSession[]; owners?: Owners; hostId?: string; blocked?: string; refusal?: RefusalView | "unreadable" | null; selectAll?: unknown } = {}) => {
+    const props = { hostId: "host-a", selected: [session("a", { status: "error" })], owners: {} as Owners, zone: "UTC", colors, anchorRef, root, rootSize: { width: 800, height: 600 },
+      onArchive: vi.fn(), onClear: vi.fn(), ...patch } as Parameters<typeof SelectActionBar>[0];
     const render = () => harness.current.render(() => SelectActionBar(props)) as Element;
     return { props, render };
   };
-  const action = (tree: Element, name: string) => walk(tree).find((node) => node.props.testID === `sessions-select-action-${name}`)!;
+  const byTestID = (tree: Element, testID: string) => walk(tree).find((node) => node.props.testID === testID);
+  const trigger = (tree: Element) => byTestID(tree, "sessions-select-menu-trigger")!;
+  const menu = (tree: Element) => walk(tree).find((node) => node.type === "AnchoredMenu");
+  /** The drawn menu row for an action, or undefined while the menu or that row is not shown. */
+  const item = (tree: Element, name: string) => { const row = walk(menu(tree)?.props.children).find((node) => node.props.action === name); return row && draw(row); };
   const press = (element: Element) => (element.props.onPress as () => void)();
   const textButton = (tree: Element, label: string) => walk(tree).find((node) => node.props.label === label)!;
+  const choose = (render: () => Element, name: string) => { press(trigger(render())); press(item(render(), name)!); };
+  const confirmShown = (tree: Element) => !!byTestID(tree, "sessions-select-confirm");
 
-  it("shows the count, four actions and Clear, with Take over unavailable and its reason", () => {
-    const tree = setup().render();
+  it("is one composite Select: the count, Select all, one Actions menu and Clear, with no Resume", () => {
+    const tree = setup({ selectAll: { type: "SelectAll", props: { testID: "sessions-select-all" } } }).render();
     expect(tree.props).toMatchObject({ role: "toolbar", accessibilityLabel: "Selected session actions" });
     expect(texts(tree)).toContain("1 selected");
-    expect(["open", "archive", "resume", "takeOver", "clear"].map((name) => action(tree, name).props.name))
-      .toEqual(["Open session", "Archive sessions", "Resume session", "Take over session", "Clear selection"]);
-    expect(action(tree, "takeOver").props).toMatchObject({ enabled: false, line: "Take over needs a qualified handoff profile, and none is available yet." });
+    expect(byTestID(tree, "sessions-select-all")).toBeDefined();
+    expect(trigger(tree).props).toMatchObject({ icon: "Ellipsis", name: "Actions for 1 selected session", line: "Archive or take over the selection.", enabled: true, expanded: false, ref: anchorRef });
+    expect(byTestID(tree, "sessions-select-action-clear")).toBeDefined();
+    expect(menu(tree)).toBeUndefined();
+    expect(JSON.stringify(walk(tree).map((node) => node.props.name ?? node.props.label ?? ""))).not.toMatch(/Resume/);
   });
 
-  it("shows why nothing can start while blocked, and runs nothing", () => {
+  it("opens one menu with Archive and Take over, Take over unavailable with its exact reason, and no Retry without an owner", () => {
+    const { props, render } = setup();
+    press(trigger(render()));
+    const tree = render(), open = menu(tree)!;
+    expect(trigger(tree).props.expanded).toBe(true);
+    expect(open.props).toMatchObject({ testID: "sessions-select-menu", label: "Actions for 1 selected session", anchor: anchorRef, root, placement: { align: "end", width: 320 } });
+    expect(item(tree, "archive")!.props).toMatchObject({ role: "menuitem", accessibilityLabel: "Archive…", "aria-disabled": false });
+    const takeOver = item(tree, "takeOver")!;
+    expect(takeOver.props).toMatchObject({ role: "menuitem", accessibilityLabel: "Take over…", "aria-disabled": true, accessibilityState: { disabled: true },
+      accessibilityHint: "Take over is unavailable: no owner here can pick a route from this seat's model chain." });
+    expect(texts(takeOver)).toContain("Take over is unavailable: no owner here can pick a route from this seat's model chain.");
+    expect((takeOver.props.style as (state: object) => object)({ pressed: false })).toMatchObject({ minHeight: 44 });
+    press(takeOver);
+    expect(confirmShown(render())).toBe(false);
+    expect(menu(render())).toBeDefined();
+    expect(item(tree, "retry")).toBeUndefined();
+    expect(props.onArchive).not.toHaveBeenCalled();
+  });
+
+  it("shows Retry in this session only as a secondary row when its owner says the session can retry", () => {
+    for (const [owner, shown] of [[lookup(), false], [lookup(no("a", "Closed or stopped.")), false], [lookup(yes("a")), true]] as const) {
+      const { render } = setup({ owners: { retry: owner } });
+      press(trigger(render()));
+      const row = item(render(), "retry");
+      expect(!!row).toBe(shown);
+      if (row) expect(texts(row)).toEqual(["Retry in this session…", "Consequence for a."]);
+    }
+  });
+
+  it("shows why nothing can start while blocked, and opens nothing", () => {
     const { props, render } = setup({ owners: { takeOver: lookup(yes("a")) }, blocked: "Wait for the archive review to close." });
     const tree = render();
-    for (const name of ["open", "archive", "resume", "takeOver", "clear"]) {
-      expect(action(tree, name).props).toMatchObject({ enabled: false, line: "Wait for the archive review to close." });
-      press(draw(action(tree, name)));
+    for (const name of ["sessions-select-menu-trigger", "sessions-select-action-clear"]) {
+      const button = byTestID(tree, name)!;
+      expect(button.props).toMatchObject({ enabled: false, line: "Wait for the archive review to close." });
+      press(draw(button));
     }
-    expect(props.onOpen).not.toHaveBeenCalled(); expect(props.onArchive).not.toHaveBeenCalled(); expect(props.onClear).not.toHaveBeenCalled();
-    expect(help.hold).toHaveBeenCalledTimes(5);
-    expect(walk(render()).some((node) => node.props.testID === "sessions-select-confirm")).toBe(false);
+    expect(help.hold).toHaveBeenCalledTimes(2);
+    expect(props.onClear).not.toHaveBeenCalled();
+    expect(menu(render())).toBeUndefined();
   });
 
-  it("opens and archives through the existing paths, and never through Take over", () => {
+  it("archives through the existing review and closes the menu", () => {
     const { props, render } = setup({ selected: [session("a"), session("b", { archivedAt: ARCHIVED })] });
-    const tree = render();
-    press(action(tree, "archive")); press(action(tree, "takeOver")); press(action(tree, "clear"));
+    choose(render, "archive");
     expect(props.onArchive).toHaveBeenCalledExactlyOnceWith(["a"]);
+    expect(menu(render())).toBeUndefined();
+    press(byTestID(render(), "sessions-select-action-clear")!);
     expect(props.onClear).toHaveBeenCalledTimes(1);
-    expect(props.onOpen).not.toHaveBeenCalled();
-    const single = setup({ selected: [session("z")] });
-    press(action(single.render(), "open"));
-    expect(single.props.onOpen).toHaveBeenCalledExactlyOnceWith("z");
-    const archiveRef = { current: null };
-    const anchored = harness.current.render(() => SelectActionBar({ ...single.props, archiveRef })) as Element;
-    expect(action(anchored, "archive").props.ref).toBe(archiveRef);
-    expect(action(anchored, "takeOver").props.ref).toBeUndefined();
   });
 
   it("asks once with the owner's consequence and sends nothing before Confirm", async () => {
-    const { props, render } = setup({ owners: { takeOver: lookup(yes("a")) } });
+    const { render } = setup({ owners: { takeOver: lookup(yes("a")) } });
     run.mockResolvedValue([{ hostId: "host-a", agentId: "a", text: "Taken over." }]);
-    press(action(render(), "takeOver"));
+    choose(render, "takeOver");
     const confirm = render();
+    expect(menu(confirm)).toBeUndefined();
     expect(texts(confirm)).toEqual(expect.arrayContaining(["Take over Session a?", "Consequence for a."]));
     expect(run).not.toHaveBeenCalled();
     press(textButton(confirm, "Cancel"));
-    expect(walk(render()).some((node) => node.props.testID === "sessions-select-confirm")).toBe(false);
+    expect(confirmShown(render())).toBe(false);
     expect(run).not.toHaveBeenCalled();
-    press(action(render(), "takeOver"));
+    choose(render, "takeOver");
     press(textButton(render(), "Take over"));
     expect(run).toHaveBeenCalledExactlyOnceWith([{ hostId: "host-a", agentId: "a", revision: "rev-a" }]);
     await Promise.resolve(); await Promise.resolve();
     const done = render();
-    expect(walk(done).find((node) => node.props.testID === "sessions-select-result")!.props).toMatchObject({ role: "status", children: "Taken over." });
-    expect(walk(done).some((node) => node.props.testID === "sessions-select-confirm")).toBe(false);
+    expect(byTestID(done, "sessions-select-result")!.props).toMatchObject({ role: "status", children: "Taken over." });
+    expect(confirmShown(done)).toBe(false);
+  });
+
+  it("retries in this session with its exact revision after its own confirmation", () => {
+    const { render } = setup({ owners: { retry: lookup(yes("a")) } });
+    choose(render, "retry");
+    expect(texts(render())).toEqual(expect.arrayContaining(["Retry Session a in this session?", "Consequence for a."]));
+    press(textButton(render(), "Retry"));
+    expect(run).toHaveBeenCalledExactlyOnceWith([{ hostId: "host-a", agentId: "a", revision: "rev-a" }]);
   });
 
   it("never shows a reply for another session or host, and keeps an unknown outcome unknown", async () => {
-    const { props, render } = setup({ owners: { takeOver: lookup(yes("a")) } });
+    const { render } = setup({ owners: { takeOver: lookup(yes("a")) } });
     run.mockResolvedValueOnce([{ hostId: "host-b", agentId: "a", text: "Wrong host." }, { hostId: "host-a", agentId: "b", text: "Wrong session." }]);
-    press(action(render(), "takeOver")); press(textButton(render(), "Take over"));
+    choose(render, "takeOver"); press(textButton(render(), "Take over"));
     await Promise.resolve(); await Promise.resolve();
     expect(texts(render())).toContain("No result reported. Check the session before trying again.");
     run.mockRejectedValueOnce(new Error("reply lost"));
-    press(action(render(), "takeOver")); press(textButton(render(), "Take over"));
+    choose(render, "takeOver"); press(textButton(render(), "Take over"));
     await Promise.resolve(); await Promise.resolve();
     expect(texts(render())).toContain("Result unknown: reply lost. Check the session before trying again.");
   });
@@ -245,17 +289,17 @@ describe("select action bar", () => {
     ["the same session starts initializing", { selected: [session("a", { status: "initializing" })] }, "This session is starting; v1 cannot take it over."],
     ["the host goes offline", { blocked: "This host is offline." }, "This host is offline."],
     ["the archive review opens", { blocked: "Close the archive review first." }, "Close the archive review first."],
-    ["the owner goes away", { owners: {} }, "Take over needs a qualified handoff profile, and none is available yet."],
+    ["the owner goes away", { owners: {} }, "Take over is unavailable: no owner here can pick a route from this seat's model chain."],
     ["the owner withdraws its answer", { owners: { takeOver: lookup() } }, "Checking whether it can be taken over."],
-    ["the owner now refuses", { owners: { takeOver: lookup(no("a", "Owner or retirement evidence is missing.")) } }, "Owner or retirement evidence is missing."],
+    ["the owner now refuses", { owners: { takeOver: lookup(no("a", "No route in this seat's chain is available.")) } }, "No route in this seat's chain is available."],
     ["the owner answers a new revision", { owners: { takeOver: lookup(yes("a", { revision: "rev-a2" })) } }, "This changed after you opened it. Cancel and choose the action again."],
-    ["the owner answers a new consequence", { owners: { takeOver: lookup(yes("a", { consequence: "Another route." })) } }, "This changed after you opened it. Cancel and choose the action again."],
+    ["the owner picks another route", { owners: { takeOver: lookup(yes("a", { consequence: "Another route." })) } }, "This changed after you opened it. Cancel and choose the action again."],
   ] as const)("rechecks an open confirmation when %s, shows the current reason and calls no owner", (_case, patch, reason) => {
     const { props, render } = setup({ selected: [session("a")], owners: { takeOver: lookup(yes("a")) } });
-    press(action(render(), "takeOver"));
+    choose(render, "takeOver");
     Object.assign(props, patch);
     const tree = render();
-    expect(walk(tree).some((node) => node.props.testID === "sessions-select-confirm")).toBe(true);
+    expect(confirmShown(tree)).toBe(true);
     expect(texts(tree)).toContain(reason);
     expect(textButton(tree, "Take over").props.disabled).toBe(true);
     press(textButton(tree, "Take over"));
@@ -263,70 +307,53 @@ describe("select action bar", () => {
   });
 
   it.each([
-    ["answers a new revision", yes("a", { revision: "rev-a2" })],
-    ["withdraws its answer", undefined],
-    ["now refuses", no("a", "Owner or retirement evidence is missing.")],
-    ["answers a new consequence", yes("a", { consequence: "Another route." })],
-  ] as const)("asks the owner again at Confirm: when it %s after the confirmation was drawn, no owner run happens", (_case, later) => {
+    ["answers a new revision", yes("a", { revision: "rev-a2" }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
+    ["withdraws its answer", undefined, "Nothing was sent. Checking whether it can be taken over."],
+    ["now refuses", no("a", "No route in this seat's chain is available."), "Nothing was sent. No route in this seat's chain is available."],
+    ["picks another route", yes("a", { consequence: "Another route." }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
+  ] as const)("asks the owner again at Confirm: when it %s with no redraw, nothing runs and the reason shows at once", (_case, later, line) => {
     let answer: OwnerAnswer | undefined = yes("a");
     const { render } = setup({ selected: [session("a")], owners: { takeOver: { answer: () => answer, run } } });
-    press(action(render(), "takeOver"));
+    choose(render, "takeOver");
     const drawn = render();
     expect(textButton(drawn, "Take over").props.disabled).toBe(false);
     answer = later;
     press(textButton(drawn, "Take over"));
     expect(run).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["withdraws its answer", undefined, "Nothing was sent. Checking whether it can be taken over."],
-    ["now refuses", no("a", "Owner or retirement evidence is missing."), "Nothing was sent. Owner or retirement evidence is missing."],
-    ["answers a new revision", yes("a", { revision: "rev-a2" }), "Nothing was sent. This changed after you opened it; choose the action again to review it."],
-  ] as const)("when the owner %s with no redraw, Confirm closes the confirmation and says why at once", (_case, later, line) => {
-    let answer: OwnerAnswer | undefined = yes("a");
-    const { render } = setup({ selected: [session("a")], owners: { takeOver: { answer: () => answer, run } } });
-    press(action(render(), "takeOver"));
-    const drawn = render();
-    answer = later;
-    press(textButton(drawn, "Take over"));
     const after = render();
-    expect(walk(after).some((node) => node.props.testID === "sessions-select-confirm")).toBe(false);
-    expect(walk(after).find((node) => node.props.testID === "sessions-select-result")!.props).toMatchObject({ role: "status", children: line });
-    expect(run).not.toHaveBeenCalled();
+    expect(confirmShown(after)).toBe(false);
+    expect(byTestID(after, "sessions-select-result")!.props).toMatchObject({ role: "status", children: line });
   });
 
   it("keeps several replies for one session unknown rather than picking one", async () => {
     const { render } = setup({ owners: { takeOver: lookup(yes("a")) } });
     run.mockResolvedValueOnce([{ hostId: "host-a", agentId: "a", text: "Taken over." }, { hostId: "host-a", agentId: "a", text: "Refused." }]);
-    press(action(render(), "takeOver")); press(textButton(render(), "Take over"));
+    choose(render, "takeOver"); press(textButton(render(), "Take over"));
     await Promise.resolve(); await Promise.resolve();
     const shown = texts(render());
     expect(shown).toContain("Result unknown: more than one reply for this session. Check the session before trying again.");
     expect(shown).not.toContain("Taken over.");
   });
 
-  it("drops an open confirmation and a late reply when the selection changes", async () => {
+  it("drops an open menu, an open confirmation and a late reply when the selection changes", async () => {
     let reply!: (value: readonly OwnerReply[]) => void;
     const { props, render } = setup({ owners: { takeOver: lookup(yes("a")) } });
     run.mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
-    press(action(render(), "takeOver")); press(textButton(render(), "Take over"));
+    choose(render, "takeOver"); press(textButton(render(), "Take over"));
     expect(textButton(render(), "Sending…").props.disabled).toBe(true);
+    expect(trigger(render()).props.enabled).toBe(false);
     props.selected = [session("b")];
     render();
     reply([{ hostId: "host-a", agentId: "a", text: "Taken over." }]);
     await Promise.resolve(); await Promise.resolve();
     const tree = render();
     expect(texts(tree)).not.toContain("Taken over.");
-    expect(walk(tree).some((node) => node.props.testID === "sessions-select-confirm")).toBe(false);
-  });
-
-  it("resumes the owner's eligible sessions with their exact revisions", () => {
-    const selected = [session("a", { status: "error" }), session("b", { status: "running" })];
-    const { props, render } = setup({ selected, owners: { resume: lookup(yes("a"), no("b", "Running: nothing to retry.")) } });
-    press(action(render(), "resume"));
-    expect(texts(render())).toEqual(expect.arrayContaining(["Resume Session a?"]));
-    press(textButton(render(), "Resume"));
-    expect(run).toHaveBeenCalledExactlyOnceWith([{ hostId: "host-a", agentId: "a", revision: "rev-a" }]);
+    expect(confirmShown(tree)).toBe(false);
+    press(trigger(tree));
+    expect(menu(render())).toBeDefined();
+    props.selected = [session("c")];
+    render();
+    expect(menu(render())).toBeUndefined();
   });
 
   it("shows the provider line only for one selected session with an exact read", () => {
