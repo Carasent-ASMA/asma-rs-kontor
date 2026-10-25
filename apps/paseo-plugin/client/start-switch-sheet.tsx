@@ -161,7 +161,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {archive.notice ? <Text testID="kontor-switch-archive-result" accessibilityRole={archive.notice.error ? "alert" : undefined} role={archive.notice.error ? undefined : "status"} accessibilityLiveRegion="polite" style={{ ...muted, color: archive.notice.error ? colors.statusWarning : colors.foreground }}>{archive.notice.message}</Text> : null}
     {archive.notice?.review ? <Action small label="Open Sessions to review archive" colors={colors} onPress={() => onShowAll("")} /> : null}
     {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} action={<ArchiveSessionButton session={row.entry} compact colors={colors}
-      disabled={archive.disabled || archive.held(row.entry)} pending={archive.pendingId === row.entry.id} onPress={() => { void archive.archive(row.entry); }} />} />)}
+      disabled={archive.disabled || archive.held(row.entry)} pending={archive.pendingId === row.entry.id} onPress={() => { void archive.onArchive(row.entry); }} />} />)}
     {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
     {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
     {!query.trim() && (total > rows.length || saved.ids.length > 0) ? <Action small label={`Show all ${total} recent in Sessions`}

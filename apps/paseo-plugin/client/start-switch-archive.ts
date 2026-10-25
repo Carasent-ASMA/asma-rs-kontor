@@ -30,7 +30,7 @@ export function useStartSwitchArchive(hostId: string, directory: DirectoryState,
     const values = archiveDispositions(entries.current, rows);
     setSettled((current) => ({ hostId, values: { ...(current.hostId === hostId ? current.values : {}), ...values } }));
   });
-  const archive = async (entry: DirectoryEntry) => {
+  const onArchive = async (entry: DirectoryEntry) => {
     if (!online || active.current || lifecycle.busy || lifecycle.running || entry.archivedAt !== null || held.hostId === hostId && held.revisions[entry.id] === entry.updatedAt) return;
     const ticket = { hostId, id: entry.id }; active.current = ticket; setPending(ticket); setNotice(null);
     const result = await lifecycle.prepare("archive", "filtered", [entry.id]);
@@ -50,6 +50,6 @@ export function useStartSwitchArchive(hostId: string, directory: DirectoryState,
     disabled: !online || lifecycle.busy || lifecycle.running || active.current !== null,
     held: (entry: DirectoryEntry) => held.hostId === hostId && held.revisions[entry.id] === entry.updatedAt,
     notice: notice?.hostId === hostId ? notice : null,
-    archive,
+    onArchive,
   };
 }
