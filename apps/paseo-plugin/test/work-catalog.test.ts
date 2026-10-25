@@ -10,7 +10,9 @@ import {
   workCatalogSnapshotPath,
   writeWorkCatalogSnapshot,
   WORK_CATALOG_MAX_PAGES,
+  WORK_CATALOG_NATIVE_MAX_PAGES,
   WORK_CATALOG_SNAPSHOT_FILE,
+  WORK_CATALOG_SNAPSHOT_LIMIT,
 } from "../server/work-catalog";
 
 const temporary: string[] = [];
@@ -363,6 +365,45 @@ describe("the plugin's shared catalog read", () => {
     expect(read.native.view?.sessions.map((session) => session.sessionId)).toEqual(["session-a", "session-c"]);
     expect(read.native.view?.truncated).toBe(false);
   });
+
+  it("consumes a census above the old 3,000-row bound within the native bound", async () => {
+    const count = 4_500;
+    const page = (start: number, end: number, next: string | null) => nativePage({
+      sessions: Array.from({ length: end - start }, (_, index) => nativeSession(`session-${start + index}`)),
+      projects: start === 0 ? [nativeProject] : [],
+      workspaces: start === 0 ? [nativeWorkspace] : [],
+      truncated: next !== null,
+      ...(next === null ? {} : { next_cursor: next }),
+    });
+    const fake = await fakeMcp({
+      nativeStatus: nativeStatus({
+        collection: {
+          state: "complete", include_archived: true,
+          coverage: [{
+            runtime_instance: RUNTIME, client_id: "plane-census", server_id: HOST_ID,
+            server_version: "0.11.4", include_archived: true, state: "scanned",
+            projects: 1, workspaces: 1, sessions: count, archived_sessions: 4_000, error: null,
+          }],
+        },
+      }),
+      nativePages: {
+        first: page(0, 1_000, "native-2"),
+        "native-2": page(1_000, 2_000, "native-3"),
+        "native-3": page(2_000, 3_000, "native-4"),
+        "native-4": page(3_000, 4_000, "native-5"),
+        "native-5": page(4_000, count, null),
+      },
+    });
+    const { paseoHome, configDirectory } = await sandbox();
+    const read = await loadWorkCatalog(configFor(fake.command, paseoHome), { hostId: HOST_ID, now: () => Date.parse(AS_OF) });
+    expect(WORK_CATALOG_NATIVE_MAX_PAGES).toBe(5);
+    expect(read.native.mode).toBe("catalog");
+    expect(read.native.view?.sessions).toHaveLength(count);
+    expect(read.native.view?.truncated).toBe(false);
+    const snapshot = await readWorkCatalogSnapshot(join(configDirectory, WORK_CATALOG_SNAPSHOT_FILE), HOST_ID);
+    expect(snapshot?.native?.sessions).toHaveLength(count);
+    expect((await stat(join(configDirectory, WORK_CATALOG_SNAPSHOT_FILE))).size).toBeLessThan(WORK_CATALOG_SNAPSHOT_LIMIT);
+  }, 20_000);
 
   it("keeps the plan catalog when the native observer tool is missing", async () => {
     const fake = await fakeMcp({ refuseNative: true });

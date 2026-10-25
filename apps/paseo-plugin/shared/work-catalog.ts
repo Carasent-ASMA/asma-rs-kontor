@@ -54,6 +54,9 @@ export const workCatalogViewSchema = z.object({
   entriesTruncated: z.boolean(),
 }).strict();
 
+/** The plugin's native view bound: covers the known production census above the old 3,000-row bound. */
+export const WORK_CATALOG_NATIVE_VIEW_MAX = 5_000;
+
 /** One native project, reduced to what the plugin displays and groups. */
 export const workCatalogNativeProjectSchema = z.object({
   projectId: z.string(),
@@ -121,9 +124,9 @@ export const workCatalogNativeViewSchema = z.object({
   source: z.enum(["database", "snapshot"]),
   archiveScope: z.boolean(),
   truncated: z.boolean(),
-  projects: z.array(workCatalogNativeProjectSchema).max(3000),
-  workspaces: z.array(workCatalogNativeWorkspaceSchema).max(3000),
-  sessions: z.array(workCatalogNativeSessionSchema).max(3000),
+  projects: z.array(workCatalogNativeProjectSchema).max(WORK_CATALOG_NATIVE_VIEW_MAX),
+  workspaces: z.array(workCatalogNativeWorkspaceSchema).max(WORK_CATALOG_NATIVE_VIEW_MAX),
+  sessions: z.array(workCatalogNativeSessionSchema).max(WORK_CATALOG_NATIVE_VIEW_MAX),
 }).strict();
 
 /** The plugin's native-inventory read, independent of the plan-catalog mode. */
