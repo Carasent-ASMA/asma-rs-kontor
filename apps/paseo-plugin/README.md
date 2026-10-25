@@ -171,7 +171,8 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   retaining an incompatible search or refinement; presentation preferences stay.
   Partial, stale or unavailable reads show updating/unknown counts. Provider
   blocked requires exact refusal evidence; unchecked errors are never inferred
-  blocked or reported as a verified zero.
+  blocked or reported as a verified zero. Until that evidence has been read,
+  Blocked stays unknown; opening the shortcut does not probe providers.
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.

@@ -14,6 +14,15 @@ function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn>
 }
 
 describe("session-state hand-off", () => {
+  it("refuses a screen without the status handler without opening another destination", () => {
+    const nav = navigation(), onSearch = vi.fn();
+    const key = handOffOpen("host-a", { kind: "state", status: "running", scope: STATUS_SHORTCUT_SCOPE });
+    const input = { hostId: "host-a", key, entries: [], navigation: nav, onSearch };
+    expect(openHandOff(input)).toMatchObject({ ok: false, reason: "navigation", message: expect.stringContaining("cannot open a session-state filter") });
+    expect(openHandOff(input)).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).not.toHaveBeenCalled(); expect(onSearch).not.toHaveBeenCalled();
+  });
+
   it.each(STATUS_SHORTCUTS)("consumes $status and its exact scope once without opening an agent", ({ status }) => {
     const onState = vi.fn(), onSearch = vi.fn(), nav = navigation();
     const target = { kind: "state" as const, status, scope: STATUS_SHORTCUT_SCOPE };
