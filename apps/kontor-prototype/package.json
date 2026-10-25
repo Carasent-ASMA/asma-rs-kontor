@@ -20,8 +20,8 @@
     "react-dom": "19.1.0",
     "react-native-web": "0.21.4",
     "typescript": "5.9.3",
-    "vite": "8.2.1",
-    "vitest": "4.1.10",
-    "zod": "4.4.3"
+    "vite": "8.2.4",
+    "vitest": "4.1.12",
+    "zod": "4.6.6"
   }
 }
