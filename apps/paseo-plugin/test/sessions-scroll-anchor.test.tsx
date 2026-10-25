@@ -167,6 +167,67 @@ describe("Sessions list place across live updates", () => {
     return { reads, top };
   }
 
+  it("keeps a settled exact ID authoritative after its cell detaches before a live reorder", () => {
+    const reads = pendingVisibleCell();
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    const props = list().props;
+    const cell = (props.CellRendererComponent as (props: object) => Element)({ cellKey: "s43", index: 43, item: (props.data as unknown[])[43], children: null });
+    (cell.props.ref as (node: unknown) => void)(null);
+    liveUpdate("s43");
+    expect(ids()[0]).toBe("s43");
+    expect(offsetNow()).toBe(65);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("accounts for header-only growth before the queued capture settles without new reads", () => {
+    const reads = pendingVisibleCell();
+    ((list().props.ListHeaderComponent as Element).props.onLayout as (event: unknown) => void)(layoutEvent(100));
+    expect(reads).toHaveLength(1);
+    reads[0]!(0, 4200, 320, 96, 0, 4200); // Valid geometry from before the header grew.
+    expect(offsetNow()).toBe(4365);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("keeps the same header-only offset when geometry completes before header growth", () => {
+    const reads = pendingVisibleCell();
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    ((list().props.ListHeaderComponent as Element).props.onLayout as (event: unknown) => void)(layoutEvent(100));
+    expect(reads).toHaveLength(2); // Existing settled-row refinement reads the new public geometry.
+    reads[1]!(0, 4300, 320, 96, 0, 4300);
+    expect(offsetNow()).toBe(4365);
+  });
+
+  it("uses the final header layout when several header changes precede the queued reply", () => {
+    const reads = pendingVisibleCell();
+    const changed = (list().props.ListHeaderComponent as Element).props.onLayout as (event: unknown) => void;
+    changed(layoutEvent(100));
+    changed(layoutEvent(60));
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(4325);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("accounts for both header growth and a live reorder during the original capture", () => {
+    const reads = pendingVisibleCell();
+    ((list().props.ListHeaderComponent as Element).props.onLayout as (event: unknown) => void)(layoutEvent(100));
+    liveUpdate("s43");
+    const props = list().props;
+    const top = (props.getItemLayout as ItemLayout)(props.data, 0).offset;
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(top + 65);
+    expect(reads).toHaveLength(1);
+  });
+
+  it("does not restore an old header capture over a newer reader scroll", () => {
+    const reads = pendingVisibleCell();
+    ((list().props.ListHeaderComponent as Element).props.onLayout as (event: unknown) => void)(layoutEvent(100));
+    scrolled(2000, 6100);
+    scrollTo.mockClear();
+    reads[0]!(0, 4200, 320, 96, 0, 4200);
+    expect(offsetNow()).toBe(2000);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("uses visible geometry when a detached offscreen cell never replies", () => {
     const { reads, top } = pendingWindow();
     reads.get(43)!(0, top, 320, 96, 0, top);

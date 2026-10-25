@@ -228,13 +228,10 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       : offset >= Math.max(content, head(withHeader) + table.length) - viewport - LIST_EDGE || first >= table.keys.length ? { at: "end" }
       : sessionAt(rows, withHeader, offset, viewport) ?? { at: "row", key: table.keys[first]!, top: head(withHeader) + table.offsets[first]! };
   };
-  const followPlace = (previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, was: ListPlace, current: boolean): number => {
-    const before = build(previous), after = build(next);
-    // A prior removal can reveal an earlier session. The next update anchors the session now visible.
-    if (current && was.at === "row" && !mounted.size) {
-      const visible = sessionAt(previous, withHeader, offset, viewport);
-      if (visible?.at === "row" && visible.key !== was.key) was = visible;
-    }
+  const followPlace = (previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, was: ListPlace,
+    geometry?: { readonly table: Table; readonly header: number }): number => {
+    const before = geometry?.table ?? build(previous), after = build(next);
+    const beforeHead = geometry?.header ?? head(withHeader);
     if (was.at !== "row") {
       place = was;
       return was.at === "top" ? 0 : after.length - before.length;
@@ -242,13 +239,14 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     // Reordering does not release an exact native ID. Only a row leaving this view permits fallback.
     if (after.index.has(was.key)) {
       const index = after.index.get(was.key)!;
-      const top = mounted.has(was.key) && before.index.get(was.key) === index
-        ? was.top : head(withHeader) + after.offsets[index]!;
+      const top = before.index.get(was.key) === index
+        ? was.top + head(withHeader) - beforeHead + after.offsets[index]! - before.offsets[index]!
+        : head(withHeader) + after.offsets[index]!;
       place = { ...was, top };
       return top - was.top;
     }
     const visible: number[] = [];
-    for (let index = firstShown(before, withHeader, offset); index < before.keys.length && head(withHeader) + before.offsets[index]! < offset + viewport; index += 1) {
+    for (let index = firstShown(before, withHeader, offset + head(withHeader) - beforeHead); index < before.keys.length && beforeHead + before.offsets[index]! < offset + viewport; index += 1) {
       if (after.index.has(before.keys[index]!)) visible.push(index);
     }
     const index = visible.find((index) => isSession(previous[index]!)) ?? visible[0];
@@ -258,8 +256,10 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     }
     const key = before.keys[index]!;
     const top = head(withHeader) + after.offsets[after.index.get(key)!]!;
-    place = { at: "row", key, top };
-    return top - (head(withHeader) + before.offsets[index]!);
+    const by = top - (beforeHead + before.offsets[index]!);
+    // Only a missing anchor permits a new first visible session, including one its removal reveals.
+    place = sessionAt(next, withHeader, offset + by, viewport) ?? { at: "row", key, top };
+    return by;
   };
   const layout = {
     // Stop reissuing an old capture against post-update cells before the parent's layout effect runs.
@@ -319,14 +319,16 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       const read = () => {
         if (following || (renderedRows !== null && renderedRows !== rows)) return;
         const version = ++captureVersion;
+        const geometry = { table: build(rows), header: head(withHeader) };
         const cells = [...mounted].filter(([key, node]) => table.index.has(key) && typeof node.measure === "function");
         let first: { readonly key: string; readonly top: number } | null = null;
         let remaining = cells.length;
         capturePending = remaining > 0;
         applyCapture = remaining ? () => {
-          if (!first || !following) return;
-          const by = followPlace(rows, following.rows, following.withHeader, offset, viewport, content, { at: "row", ...first }, false);
-          resizedCallback(by, offset);
+          if (!first) return;
+          // Layout can change without a row update. Apply its delta from the request's baseline too.
+          const by = followPlace(rows, following?.rows ?? rows, following?.withHeader ?? withHeader, offset, viewport, content, { at: "row", ...first }, geometry);
+          if (following || Math.abs(by) >= 0.5) resizedCallback(by, offset);
         } : null;
         for (const [key, node] of cells) node.measure((_x, y, _width, height) => {
           if (readCapture !== read || captureVersion !== version) return;
@@ -364,7 +366,7 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       applyCapture = null;
       capturePending = false;
       following = null;
-      return followPlace(previous, next, withHeader, offset, viewport, content, current ? place : placeAt(previous, withHeader, offset, viewport, content), current);
+      return followPlace(previous, next, withHeader, offset, viewport, content, current ? place : placeAt(previous, withHeader, offset, viewport, content));
     },
     /**
      * How far the offset moves to keep the reader's place after a row or the header changed height. Not the end's:
