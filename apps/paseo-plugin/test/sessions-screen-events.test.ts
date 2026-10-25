@@ -1049,12 +1049,12 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { query: "" });
     patchSessionView("host-a", { layout: "grouped" });
     renderScreen();
-    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:Epic unknown"]);
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:No epic linked"]);
     chooseLayout("flat");
     setStateFilter("idle");
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
-    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "Epic unknown", "Workspace"]]);
+    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "No epic linked", "Workspace"]]);
     (renderItem({ item: results[0] }).props.onShowInTree as (entry: unknown) => void)(results[0]!.entry); harness.flush();
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}:${row.expanded}`).slice(0, 2)).toEqual(["workstream:Adam:true", "workspace:Workspace:true"]);
     expect(sessionRowIds()).toContain("desk");
@@ -1063,7 +1063,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["SWE:false", "No role:false"]);
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
-    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · Epic unknown · Workspace", "Kontor · Epic unknown · Workspace"]);
+    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · No epic linked · Workspace", "Kontor · No epic linked · Workspace"]);
   });
 
   it.each([
@@ -1554,6 +1554,9 @@ describe("SessionsScreen toolbar events", () => {
     expect(lines({ "session:desk-with-epic": { workstream: "declared" } })["Workstream association"]).toBe("declared");
     expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream association")!.value).toBe("labelled");
     expect(lines({})).not.toHaveProperty("Workstream");
+    expect(lines({})).not.toHaveProperty("Workstream source");
+    const derived = Object.fromEntries(sessionDetailLines(session, { "session:desk-with-epic": { workstream: "kontor" } }, null, "Workstream from the Jira ws:kontor label of ASMA-99101.").map(({ label, value }) => [label, value]));
+    expect(derived).toMatchObject({ "Native desk": "DESK • ADAM", "Workstream association": "kontor", "Workstream source": "Workstream from the Jira ws:kontor label of ASMA-99101." });
     expect(lines({})["Association verification"]).toBe("Workstream registry membership and epic/plan links are not checked here.");
     expect(lines({ "session:desk-with-epic": { workstream: "unregistered-association", epic: "ASMA-99999" } })).toMatchObject({
       "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "unregistered-association",
@@ -1835,7 +1838,7 @@ describe("SessionsScreen toolbar events", () => {
       compactContext: "PR Review desk · Workspace",
       accessibilityContext: "Role AUD from the title. Desk PR Review desk, workspace Workspace",
     });
-    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · Epic unknown · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
+    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · No epic linked · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
     const row = walk(renderItem(listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === "conflict"))).find((element) => "displayContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     // The harness's memo returns the component itself.
     const drawnRow = row.type(row.props);
@@ -2148,7 +2151,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(title.props.numberOfLines).toBe(3);
     // The context is nested inside the title's text, which wraps to three lines, not a line of its own.
     expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
-    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · Other work › Epic unknown › RSW • review · Archived");
+    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · Other work › No epic linked › RSW • review · Archived");
     const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
     // The Updated value stays untruncated; model/report metadata can wrap beneath the title.
     const age = findByTestID(leaf, "sessions-row-age");
@@ -2654,7 +2657,8 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
         ...emptyWorkspaces.map((workspace) => ({ ...workspace, ...esw("8101") }))] });
     expandAll();
   }
-  const epicRows = () => listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.label, row.group.totalCount] as const] : []).sort();
+  // A row reads its label, then its project on the secondary line.
+  const epicRows = () => listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.context ? `${row.group.label} · ${row.group.context}` : row.group.label, row.group.totalCount] as const] : []).sort();
   /** A session's Epic and Linking lines from its own Details; Close and focus return stay with the R5 Details tests above. */
   function placement(id: string) {
     const row = listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id);
@@ -2672,7 +2676,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     renderEsw(compact, await import("./plan-workstream-fixtures"), entries,
       [{ id: "wks_8101_empty_a", name: "ASMA-8107 • Merged producer provenance" }, { id: "wks_8101_empty_b", name: "TSW • ASMA-8107 • Lifecycle merged provenance" }]);
     // ESW • ASMA-8101's unknown row holds only its two empty workspaces, so no session or Details sits behind it.
-    expect(epicRows()).toEqual([["ASMA-8101 · ESW • ASMA-8101", 1], ["Epic unknown · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8101", 0], ["Epic unknown · ESW • ASMA-8108", 1]]);
+    expect(epicRows()).toEqual([["ASMA-8101 · ESW • ASMA-8101", 1], ["No epic linked · ESW • ASMA-7869", 1], ["No epic linked · ESW • ASMA-8101", 0], ["No epic linked · ESW • ASMA-8108", 1]]);
     expect(listRows().flatMap((row) => row.kind === "session" && row.entry.projectKey === "prj_8101" ? [row.entry.id] : [])).toEqual(["labelled-8101"]);
     if (compact) openMobileFilters();
     expect(choiceFacts("other work")).toBe("Other work · no workstream link · 3 sessions · 3 workspaces · 0 plans");
@@ -2699,25 +2703,25 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(placement("dual-8001")).toEqual(dual);
     // With no Jira capture read, the same task-only session is unknown and says why; the labelled one is unchanged.
     renderEsw(compact, plan, shapes.map((entry) => ({ ...entry, jira: jiraCapture([]) })));
-    expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8108", 1]]);
+    expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["No epic linked · ESW • ASMA-8108", 1]]);
     expect(placement("task-8343")).toEqual(["Epic: Unknown, no Jira capture read for ASMA-8343", `Linking: No known ASMA epic, so no plan applies. ${linking}`]);
     expect(placement("dual-8001")).toEqual(dual);
   });
 
-  // A native project split by its sessions' own labels: its Epic unknown row sits under its recognised one and says why,
+  // A native project split by its sessions' own labels: its No epic linked row sits under its recognised one and says why,
   // on a phone too; same-named native projects read apart by one folder of their root. No session moves or merges.
-  it.each([true, false])("shows a split project's Epic unknown row under its recognised row and tells same-named projects apart (compact=%s)", async (compact) => {
+  it.each([true, false])("shows a split project's No epic linked row under its recognised row and tells same-named projects apart (compact=%s)", async (compact) => {
     const folders = ["asma-8564", "asma-8574"];
     const entries = [sessionEntry("labelled-7869", { ...esw("7869"), workspaceId: "wks_7869_a", labels: { "jira.epic": "ASMA-7869" } }), sessionEntry("bare-7869", { ...esw("7869"), workspaceId: "wks_7869_b" }),
       sessionEntry("labelled-8101", { ...esw("8101"), workspaceId: "wks_8101", labels: { "jira.epic": "ASMA-8101" } }),
       ...folders.map((folder) => sessionEntry(`kontor-${folder}`, { projectKey: `prj_${folder}`, projectName: "asma-rs-kontor", workspaceId: `wks_${folder}` }))];
     renderEsw(compact, await import("./plan-workstream-fixtures"), entries, [], folders.map((folder) => ({ id: `prj_${folder}`, name: "asma-rs-kontor", root: `/checkouts/.worktrees/${folder}/asma-rs-kontor` })));
     expect(listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.label, row.group.totalCount, row.group.detail]] : [])).toEqual([
-      ["ASMA-7869 · ESW • ASMA-7869", 1, "1 more session of this project has no known epic"],
-      ["Epic unknown · ESW • ASMA-7869", 1, "1 session with no known epic · same project as ASMA-7869"],
-      ["ASMA-8101 · ESW • ASMA-8101", 1, null],
-      ["Epic unknown · asma-rs-kontor (asma-8564)", 1, "1 session with no known epic"],
-      ["Epic unknown · asma-rs-kontor (asma-8574)", 1, "1 session with no known epic"],
+      ["ASMA-7869", 1, "ESW • ASMA-7869 · 1 more session of this project has no known epic"],
+      ["No epic linked", 1, "ESW • ASMA-7869 · 1 session with no known epic · same project as ASMA-7869"],
+      ["ASMA-8101", 1, "ESW • ASMA-8101"],
+      ["No epic linked", 1, "asma-rs-kontor (asma-8564) · 1 session with no known epic"],
+      ["No epic linked", 1, "asma-rs-kontor (asma-8574) · 1 session with no known epic"],
     ]);
     expect(listRows().flatMap((row) => row.kind === "session" ? [row.entry.id] : []).sort()).toEqual(entries.map((entry) => entry.id).sort());
   });

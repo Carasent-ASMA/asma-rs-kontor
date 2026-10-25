@@ -114,7 +114,7 @@ import { nativeFreshnessLabel } from "./native-freshness";
 import { readTime } from "./page-data";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
-import { planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
+import { derivedWorkstreamNote, planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
 import { relateSplitProjects } from "./split-project-rows";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
 import { useControlHelp } from "./control-help";
@@ -620,7 +620,8 @@ const pageDocument = () => (globalThis as { document?: { activeElement?: unknown
  * A workstream may come from a native desk project when no display mapping or label names it. A session
  * nothing links also says why no plan links it and where an explicit link is made; no name is read.
  */
-export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null): { label: string; value: string }[] {
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null, sourceNote: string | null = null): { label: string; value: string }[] {
+  const source = sourceNote ? [{ label: "Workstream source", value: sourceNote }] : [];
   const role = sessionRole(entry);
   const provenance = sessionProvenance(entry, mappings);
   const lines = [
@@ -635,6 +636,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
       { label: "Workspace", value: provenance.workspace },
       { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
       { label: "Workstream association", value: declared.workstream ?? "Not declared" },
+      ...source,
       { label: "Epic association", value: epicDetail(sessionEpic(entry, mappings)) },
       { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." }];
   }
@@ -643,6 +645,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
   const unlinked = declared.workstream === null && nativeDesk(entry.projectName) === null;
   return [...lines,
     { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
+    ...source,
     { label: "Epic", value: epicDetail(sessionEpic(entry, mappings)) },
     ...(unlinked ? [{ label: "Linking", value: `${planNote ? `${planNote} ` : ""}Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.` }] : []),
     { label: "Workspace", value: provenance.workspace }];
@@ -2067,6 +2070,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   );
 
   const mappings = planMappings ?? preferences.displayMappings;
+  // A key the display-only fallback derived, not a saved mapping or label, names its plans and capture in Details.
+  const derivedSource = (entry: DirectoryEntry) => {
+    const key = declaredScope(entry, preferences.displayMappings).workstream === null ? declaredScope(entry, mappings).workstream : null;
+    return key === null ? null : derivedWorkstreamNote(workstreamSources, workstreamReads, declaredScope(entry, mappings).epic, entry.projectKey, key, preferences.planAssociations[entry.id]);
+  };
   const favorites = preferences.favorites;
   const scoped = useMemo(
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
@@ -2085,7 +2093,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const sortDirection: SortDirection = view.sortDirection ?? defaultSortDirection(sort);
   // An explicit sort orders sessions within each group and the flat results; it never moves a group.
   const leafOrder = useMemo(() => explicitLeafOrder(scoped, sort, sortDirection), [scoped, sort, sortDirection]);
-  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder]);
+  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder, byWorkstream: streams !== null }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder, streams]);
   const flatTree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping: "flat" }), [scoped, preferences, mappings]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
@@ -2167,6 +2175,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
   const workstreamChoices = useMemo(() => work === "all" ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
     [work, workstreamOptions, streams]);
+  // My work counts, never lists, the choices it leaves out.
+  const hiddenChoices = useMemo(() => work === "all" ? [] : workstreamOptions.filter((option) => !workstreamChoices.includes(option)), [work, workstreamOptions, workstreamChoices]);
   // Responsibility facts over this context's inventory, before the other filters.
   const workTally = useMemo(() => {
     if (responsibilityById === null) return null;
@@ -2735,7 +2745,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <Text testID="sessions-sort-help" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{sort === "current" ? "Current order keeps state order, your saved arrangement and Role order." : "Sorted within each group and in results; groups keep their order. Missing times sort last. Choose Current order to arrange."}</Text>
           <WorkstreamSelector options={workstreamChoices} selected={streams} open={view.associationsOpen ?? false} registryLoaded={!!workstreamRegistry?.revision} about={aboutCounts}
             scopeCounts={assignmentCounts ?? undefined} scopeLabel={assignment === "me" ? "assigned to me" : assignment === "unknown" ? "unknown assignment" : `assigned to ${subjectLabel ?? "this person"}`}
-            colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(associationsOpen) => updateView({ associationsOpen, scopeOpen: null })} onChange={chooseStreams} />
+            colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(associationsOpen) => updateView({ associationsOpen, scopeOpen: null })} onChange={chooseStreams}
+            hidden={hiddenChoices} onShowAll={() => chooseWork("all")} />
           <SessionScopeSelector id="scope" label="Desk / workspace scope" selected={shortcut} open={view.scopeOpen === "desk"}
             options={scopeChoices.flatMap(({ id, label }) => id === null ? [] : [{ key: id, label, detail: deskScopes.find((choice) => choice.id === id)?.projectId }])}
             colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(open) => updateView({ scopeOpen: open ? "desk" : null, associationsOpen: false })}
@@ -2843,7 +2854,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <SessionDetailSection title="Timing" colors={colors}>
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
-        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]), derivedSource(detailsEntry))} colors={colors} />
         {retirement?.projections.get(detailsEntry.id) ? <SessionRetirementDetails projection={retirement.projections.get(detailsEntry.id)!} colors={colors} /> : null}
         {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Assignment" colors={colors} values={[
           { label: assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}` : `Assigned to ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },

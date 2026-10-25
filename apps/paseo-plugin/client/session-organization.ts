@@ -3,10 +3,14 @@ import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
 export const OTHER_WORKSTREAM = "Other work";
 export const UNASSIGNED_EPIC = "Unassigned";
 /**
- * What the tree and results show for UNASSIGNED_EPIC: nothing settles the epic, which is not "no epic". Group keys
+ * What the tree and results show for UNASSIGNED_EPIC: nothing links an epic, which is not "no epic". Group keys
  * keep the original word, so saved disclosure still applies.
  */
-export const NO_LINKED_EPIC = "Epic unknown";
+export const NO_LINKED_EPIC = "No epic linked";
+/** A session Kontor created as intentional ad hoc work. */
+export const AD_HOC_WORK = "Ad hoc";
+/** A session whose epic sources disagree; never read as ad hoc or as no epic. */
+export const EPIC_CONFLICT = "Epic sources disagree";
 export const UNASSIGNED_WORKSPACE = "Unassigned workspace";
 
 export type OrganizationGroupKind =
@@ -88,6 +92,10 @@ export type OrganizationGroup = {
   readonly detail: string | null;
   /** Resolved epic of an epic group; null elsewhere and for the no-linked-epic group. */
   readonly epic: string | null;
+  /** How an epic row's sessions settle their epic; absent on other rows. */
+  readonly association?: EpicAssociation;
+  /** An epic row's native project where its workstream spans projects: secondary context, never the label. */
+  readonly context?: string | null;
   /** Workspace-kind groups count workspaces; every other group counts sessions. */
   readonly unit: "sessions" | "workspaces";
   readonly unitTotal: number;
@@ -116,6 +124,8 @@ export type OrganizationInput = {
   readonly projects?: readonly OrganizationProject[];
   /** An explicit sort's position per session ID; it replaces saved and default session order, never group order. */
   readonly leafOrder?: ReadonlyMap<string, number>;
+  /** A workstream filter is active: sessions group by their workstream and epic, not by native desk project or project. */
+  readonly byWorkstream?: boolean;
 };
 export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
 export type OrganizationProject = { readonly id: string; readonly name: string };
@@ -294,42 +304,97 @@ export const EPIC_LABELS = ["epic", "jira.epic", "origin.epic", "asma.epic"] as 
 /** Label keys whose exact value may name a task's Jira key. */
 export const TASK_JIRA_LABELS = ["jira.issue", "task", "asma.task"] as const;
 
-/** A session's epic, null when unknown; the note names the sources that settle it or why it is unknown. */
-export type SessionEpic = { readonly epic: string | null; readonly note: string };
+/** Persona label prefixes Kontor writes on a session it creates as ad hoc work; the hash after `@` versions the text. */
+export const AD_HOC_PERSONAS = ["kontor-lsa-adhoc@", "kontor-lsa-adhoc+bootstrap@"] as const;
+/** What the current Jira identity says of a key with no epic above it; it disagrees with any epic. */
+const NO_EPIC = "no epic";
+/** The label Kontor writes on every session it creates, carrying the create request's ID. */
+export const CREATED_BY_KONTOR_LABEL = "create.request";
 
 /**
- * A display mapping wins. Otherwise the epic labels and the Jira capture's epic for each key they or a task
- * label name must all agree. The capture is dated evidence: it fills an epic nothing names, and a label it
- * disagrees with makes the epic unknown. Null never means "no epic"; no source here shows a task has none.
+ * How a session's epic is settled, in resolution order: an epic; a conflict, which stops there; a declared task
+ * no source files, which stays unlinked; a standalone ticket Kontor verified when it created the session; ad hoc
+ * work Kontor created as such; otherwise unlinked.
+ */
+export type EpicAssociation = "epic" | "conflict" | "ticket" | "adhoc" | "unlinked";
+
+/** A session's epic, null when unknown; the note names the sources that settle it or why it is unknown. */
+export type SessionEpic = { readonly epic: string | null; readonly note: string; readonly association: EpicAssociation; readonly ticket?: string };
+
+/**
+ * A display mapping wins. Otherwise the epic labels and, for each key they, a task label or the `ticket` label
+ * name, the current Jira identity, else the dated captures, must all agree. The identity answers every key it
+ * covers, and an older key it returns under its current one names that same issue; a capture is dated evidence only
+ * for a key the identity was never asked for, so a key it could not answer stays unanswered. A label they disagree
+ * with makes the epic unknown. Only the identity can show an issue has no epic above it, and that leaves the session
+ * unlinked with the reason, never filed elsewhere. Without an epic, a `ticket` label or the ad hoc persona counts
+ * only on a session Kontor created; a title, parent session, project or persona hash never settles anything.
  */
 export function sessionEpic(entry: DirectoryEntry, mappings: OrganizationInput["displayMappings"]): SessionEpic {
   const mapped = mappedValue(mappings, entry, "epic");
-  if (mapped !== null) return { epic: mapped, note: "from a display mapping" };
+  if (mapped !== null) return { epic: mapped, note: "from a display mapping", association: "epic" };
+  const identity = entry.jira?.identity;
+  // An epic key Jira now returns under another names the same issue as that one.
+  const current = (key: string): string => identity?.issues.get(key.toUpperCase())?.key ?? key;
   const labelled = EPIC_LABELS.flatMap((key) => {
     const value = clean(entry.labels[key]);
-    return value === null ? [] : [{ value, source: `the ${key} label` }];
+    return value === null ? [] : [{ value: current(value), source: `the ${key} label${current(value) === value ? "" : ` ${value.toUpperCase()}`}` }];
   });
   const tasks = [...new Set(TASK_JIRA_LABELS.flatMap((key) => clean(entry.labels[key])?.toUpperCase() ?? []))];
+  const ticket = clean(entry.labels.ticket)?.toUpperCase();
   const observed = entry.jira?.observed.join(" / ");
-  const captured = [...new Set([...labelled.map(({ value }) => value.toUpperCase()), ...tasks])].flatMap((key) => {
+  const declared = [...EPIC_LABELS.flatMap((key) => clean(entry.labels[key])?.toUpperCase() ?? []), ...tasks, ...ticket ? [ticket] : []];
+  const captured = [...new Set(declared)].flatMap((key) => {
+    const issue = identity?.issues.get(key);
+    if (identity && issue) return [{ value: issue.epic ?? NO_EPIC, source: `Jira as observed ${identity.asOf} for ${key}${issue.key === key ? "" : ` (now ${issue.key})`}` }];
+    if (identity?.unanswered.has(key)) return [];
     const epic = entry.jira?.epics.get(key);
-    return epic === undefined ? [] : [{ value: epic, source: epic === null ? `the Jira captures of ${observed} disagree on ${key}` : `the Jira capture of ${observed} for ${key}` }];
+    return epic === undefined ? [] : [{ value: epic === null ? null : current(epic), source: epic === null ? `the Jira captures of ${observed} disagree on ${key}` : `the Jira capture of ${observed} for ${key}` }];
   });
   const claims = [...labelled, ...captured];
   const values = claims.map(({ value }) => value?.toUpperCase() ?? null);
   if (new Set(values).size > 1 || values.includes(null)) {
     // One statement per distinct value; labels come first.
     const said = claims.filter((_, index) => values.indexOf(values[index] ?? null) === index);
-    return { epic: null, note: `sources disagree: ${said.map(({ value, source }) => value === null ? source : `${source} says ${value}`).join("; ")}` };
+    return { epic: null, note: `sources disagree: ${said.map(({ value, source }) => value === null ? source : `${source} says ${value}`).join("; ")}`, association: "conflict" };
   }
+  // What the identity said of a key it answered with no epic, or could not answer; a dated capture of it stays apart.
+  const answered = (key: string): string | null => {
+    const issue = identity?.issues.get(key);
+    if (issue) return `${key} (${issue.type}${issue.key === key ? "" : `, now ${issue.key}`}) has no epic in Jira as observed ${identity!.asOf}`;
+    const reason = identity?.unanswered.get(key);
+    const dated = entry.jira?.epics.get(key);
+    return reason ? `${reason} as of ${identity!.asOf}${dated ? `; the Jira capture of ${observed} filed it under ${dated}` : ""}` : null;
+  };
   const epic = labelled[0]?.value ?? captured[0]?.value ?? null;
-  if (epic !== null) return { epic, note: `from ${claims.map(({ source }) => source).join(" and ")}` };
-  const named = tasks.join(", ");
-  return { epic: null, note: !named ? "no epic or task label" : observed ? `${named} is not in the Jira capture of ${observed}` : `no Jira capture read for ${named}` };
+  // An epic label stays the assignment when Jira could not answer for a key; the note says what went unverified.
+  const unverified = [...new Set(declared)].filter((key) => identity?.unanswered.has(key)).map((key) => answered(key)).join("; ");
+  if (epic !== null && epic !== NO_EPIC) return { epic, note: `from ${claims.map(({ source }) => source).join(" and ")}${unverified ? `; not verified: ${unverified}` : ""}`, association: "epic" };
+  const created = clean(entry.labels[CREATED_BY_KONTOR_LABEL]) !== null;
+  const verified = created && ticket !== undefined;
+  // A declared task no source files stays unlinked: the intent recorded at creation never stands in for its epic.
+  const named = tasks.filter((key) => !(verified && key === ticket));
+  const checked = ticket === undefined ? null : answered(ticket);
+  if (!named.length && verified) return { epic: null, note: `a standalone ticket, checked in Jira when Kontor created the session${checked ? `; ${checked}` : ""}`, association: "ticket", ticket };
+  const persona = entry.labels.persona ?? "";
+  if (!named.length && created && AD_HOC_PERSONAS.some((prefix) => persona.startsWith(prefix))) return { epic: null, note: "created by Kontor as ad hoc work", association: "adhoc" };
+  const unchecked = ticket === undefined ? "" : created ? `; the ticket ${ticket} is not the declared task` : `; the ticket label ${ticket} has no Kontor creation record`;
+  const uncovered = named.filter((key) => answered(key) === null);
+  const reads = [identity ? `the Jira identity read of ${identity.asOf}` : null, observed ? `the Jira capture of ${observed}` : null].filter((read) => read !== null);
+  const reasons = [
+    ...named.flatMap((key) => answered(key) ?? []),
+    ...uncovered.length ? [reads.length ? `${uncovered.join(", ")} is not in ${reads.join(" or ")}` : `no Jira capture read for ${uncovered.join(", ")}`] : [],
+  ];
+  return { epic: null, note: `${reasons.length ? reasons.join("; ") : "no epic or task label"}${unchecked}`, association: "unlinked" };
 }
-/** The epic as session details show it, with its sources. */
-export function epicDetail({ epic, note }: SessionEpic): string {
-  return `${epic ?? "Unknown"}, ${note}`;
+/** What a row or result shows for the session's association: its epic, else the kind of work it is. */
+export function associationLabel({ epic, association, ticket }: SessionEpic): string {
+  return epic ?? (association === "ticket" ? `Ticket ${ticket}` : association === "adhoc" ? AD_HOC_WORK : association === "conflict" ? EPIC_CONFLICT : NO_LINKED_EPIC);
+}
+/** The epic as session details show it, with its sources; ad hoc work and a verified ticket name what they are. */
+export function epicDetail(resolved: SessionEpic): string {
+  const known = resolved.association === "adhoc" || resolved.association === "ticket";
+  return `${known ? associationLabel(resolved) : resolved.epic ?? "Unknown"}, ${resolved.note}`;
 }
 
 /** The workstream a display mapping or label names and the session's epic; null where none does, so a declared "Other work" is not read as absent. */
@@ -461,6 +526,8 @@ function group(input: {
   readonly desk?: boolean;
   readonly workspace?: OrganizationWorkspace;
   readonly project?: OrganizationProject;
+  readonly association?: EpicAssociation;
+  readonly context?: string | null;
 }): OrganizationGroup {
   const entries = [
     ...input.groups.flatMap((child) => child.entries),
@@ -534,7 +601,7 @@ function sortGroups(
       const rightDefault = defaults.indexOf(right.label.toLocaleLowerCase());
       if (leftDefault >= 0 && rightDefault >= 0) return leftDefault - rightDefault;
     }
-    return tieBreak?.(left, right) || left.label.localeCompare(right.label);
+    return tieBreak?.(left, right) || left.label.localeCompare(right.label) || (left.context ?? "").localeCompare(right.context ?? "");
   });
 }
 
@@ -778,8 +845,13 @@ function buildEpicGroup(input: {
   readonly emptyWorkspaces?: readonly OrganizationWorkspace[];
   readonly projectKey?: string;
   readonly displayLabel?: string;
+  /** Kept for an epic row; a session without one says what it is instead. */
+  readonly association?: SessionEpic;
+  readonly context?: string | null;
 }): OrganizationGroup {
-  const epicKey = `${input.workstreamKey}/project:${segment(input.projectKey ?? "unknown")}/epic:${segment(normalizedPrefix(input.epic))}`;
+  // An unlinked row keeps its original key, so saved disclosure still applies; other kinds of work get their own.
+  const kind = input.association && input.association.association !== "epic" && input.association.association !== "unlinked" ? `/${input.association.association}${input.association.ticket ? `:${segment(input.association.ticket)}` : ""}` : "";
+  const epicKey = `${input.workstreamKey}/project:${segment(input.projectKey ?? "unknown")}/epic:${segment(normalizedPrefix(input.epic))}${kind}`;
   // A workspace carries no labels: without a session nothing can name its epic, so say so rather than leave
   // Epic unknown beside the project's known epic looking like a contradiction.
   const sessionless = input.epic === UNASSIGNED_EPIC && !input.entries.length ? input.emptyWorkspaces?.length ?? 0 : 0;
@@ -801,6 +873,8 @@ function buildEpicGroup(input: {
       emptyWorkspaces: input.emptyWorkspaces,
     }),
     epic: input.epic === UNASSIGNED_EPIC ? null : input.epic,
+    association: input.epic === UNASSIGNED_EPIC ? input.association?.association ?? "unlinked" : "epic",
+    context: input.context ?? null,
   });
 }
 
@@ -834,6 +908,9 @@ export function organizationGroupRank(value: OrganizationGroup): number {
   return value.desk ? 0 : workstreamRank(value.label);
 }
 
+/** The project key of an epic grouped across projects under a workstream filter. */
+const ACROSS_PROJECTS = "*";
+
 function buildHierarchy(input: {
   readonly entries: readonly DirectoryEntry[];
   readonly projects?: readonly OrganizationProject[];
@@ -841,14 +918,19 @@ function buildHierarchy(input: {
   readonly displayMappings: OrganizationInput["displayMappings"];
   readonly nativeOrder: ReadonlyMap<string, number>;
   readonly workspaces?: readonly OrganizationWorkspace[];
+  readonly byWorkstream?: boolean;
 }): OrganizationGroup[] {
-  const nativeDesks = buildNativeDesks(input, input.nativeOrder);
+  // Under a workstream filter, a desk session filed under another workstream leaves the desk, and a known epic is one group across projects.
+  const filed = (entry: DirectoryEntry) => !!input.byWorkstream && nativeDesk(entry.projectName) !== null
+    && normalizedPrefix(organizationScope(entry, input.displayMappings).workstream) !== nativeDesk(entry.projectName);
+  const across = (epic: string) => !!input.byWorkstream && epic !== UNASSIGNED_EPIC;
+  const nativeDesks = buildNativeDesks({ ...input, entries: input.entries.filter((entry) => !filed(entry)) }, input.nativeOrder);
   const nativeIds = new Set(nativeDesks.map((desk) => desk.project!.id));
   const workstreams = new Map<
     string,
     {
       label: string;
-      epics: Map<string, { label: string; projectKey: string; projectName: string; entries: DirectoryEntry[]; emptyWorkspaces?: OrganizationWorkspace[] }>;
+      epics: Map<string, { label: string; projectKey: string; projectName: string; entries: DirectoryEntry[]; emptyWorkspaces?: OrganizationWorkspace[]; association?: SessionEpic }>;
       /** Desk work with no linked epic: its workspaces sit directly under the desk. */
       desk: DirectoryEntry[];
       deskEmpty: OrganizationWorkspace[];
@@ -857,7 +939,7 @@ function buildHierarchy(input: {
     }
   >();
   for (const entry of input.entries) {
-    if (entry.projectKey && nativeIds.has(entry.projectKey)) continue;
+    if (entry.projectKey && nativeIds.has(entry.projectKey) && !filed(entry)) continue;
     const scope = organizationScope(entry, input.displayMappings);
     const workstreamKey = normalizedPrefix(scope.workstream);
     let workstream = workstreams.get(workstreamKey);
@@ -872,12 +954,16 @@ function buildHierarchy(input: {
       continue;
     }
     const projectKey = entry.projectKey ?? `unknown:${entry.workspaceId ?? entry.cwd ?? entry.id}`;
-    const epicKey = JSON.stringify([projectKey, normalizedPrefix(scope.epic)]);
+    // Sessions without an epic part by what they are: ad hoc, a verified ticket, conflicting sources or unlinked.
+    const association = scope.epic === UNASSIGNED_EPIC ? sessionEpic(entry, input.displayMappings) : undefined;
+    const kind = association && association.association !== "unlinked" ? [association.association, association.ticket ?? ""] : [];
+    const together = across(scope.epic) || (!!input.byWorkstream && association?.association === "ticket");
+    const epicKey = JSON.stringify([together ? ACROSS_PROJECTS : projectKey, normalizedPrefix(scope.epic), ...kind]);
     const epic = workstream.epics.get(epicKey);
     if (epic) {
       epic.entries.push(entry);
     } else {
-      workstream.epics.set(epicKey, { label: scope.epic, projectKey, projectName: entry.projectName ?? "Project unknown", entries: [entry] });
+      workstream.epics.set(epicKey, { label: scope.epic, projectKey: together ? ACROSS_PROJECTS : projectKey, projectName: entry.projectName ?? "Project unknown", entries: [entry], association });
     }
   }
   const groups: OrganizationGroup[] = [];
@@ -895,9 +981,9 @@ function buildHierarchy(input: {
     // A workspace carries no desk label, so a desk workstream or its native desk project makes it desk work.
     if (epic === UNASSIGNED_EPIC && (workstreamRank(stream) === 0 || desk !== null)) { parent.deskEmpty.push(workspace); parent.isDesk = true; continue; }
     const projectKey = workspace.projectKey ?? `unknown:${workspace.id}`;
-    const epicKey = JSON.stringify([projectKey, normalizedPrefix(epic)]);
+    const epicKey = JSON.stringify([across(epic) ? ACROSS_PROJECTS : projectKey, normalizedPrefix(epic)]);
     let target = parent.epics.get(epicKey);
-    if (!target) { target = { label: epic, projectKey, projectName: workspace.projectName ?? "Project unknown", entries: [], emptyWorkspaces: [] }; parent.epics.set(epicKey, target); }
+    if (!target) { target = { label: epic, projectKey: across(epic) ? ACROSS_PROJECTS : projectKey, projectName: workspace.projectName ?? "Project unknown", entries: [], emptyWorkspaces: [] }; parent.epics.set(epicKey, target); }
     target.emptyWorkspaces = [...(target.emptyWorkspaces ?? []), workspace];
   }
   for (const [key, workstream] of workstreams) {
@@ -913,7 +999,9 @@ function buildHierarchy(input: {
         nativeOrder: input.nativeOrder,
         emptyWorkspaces: epic.emptyWorkspaces,
         projectKey: epic.projectKey,
-        displayLabel: multipleProjects ? `${epicLabel(epic.label)} · ${epic.projectName}` : epicLabel(epic.label),
+        displayLabel: epic.association ? associationLabel(epic.association) : epicLabel(epic.label),
+        association: epic.association,
+        context: multipleProjects && epic.projectKey !== ACROSS_PROJECTS ? epic.projectName : null,
       }),
     );
     const deskWorkspaces = workspaceChildren({
@@ -924,7 +1012,6 @@ function buildHierarchy(input: {
       nativeOrder: input.nativeOrder,
       emptyWorkspaces: workstream.deskEmpty,
     });
-    const assigned = epics.filter((epic) => epic.epic !== null).length;
     groups.push(
       group({
         key: workstreamKey,
@@ -937,7 +1024,7 @@ function buildHierarchy(input: {
         groups: sortGroups([...epics, ...deskWorkspaces], workstreamKey, input.siblingOrder, (child) =>
           child.kind !== "epic" ? 1 : child.epic === null ? 2 : 0,
         ),
-        detail: assigned > 0 ? `${assigned} epic${assigned === 1 ? "" : "s"}` : null,
+        detail: epicCount(epics),
         desk: workstream.isDesk,
       }),
     );
@@ -1127,7 +1214,14 @@ export function buildOrganizationTree(organization: OrganizationInput): Organiza
     nativeOrder,
     workspaces: input.workspaces,
     projects: input.projects,
+    byWorkstream: input.byWorkstream,
   });
+}
+
+/** Distinct epics among a workstream's children; one epic in several projects is still one epic. */
+function epicCount(children: readonly OrganizationGroup[]): string | null {
+  const count = new Set(children.flatMap((child) => child.kind !== "epic" || child.epic === null ? [] : [normalizedPrefix(child.epic)])).size;
+  return count > 0 ? `${count} epic${count === 1 ? "" : "s"}` : null;
 }
 
 function filterGroup(
@@ -1152,6 +1246,8 @@ function filterGroup(
       ...current,
       sessions,
       groups,
+      // A filtered workstream counts the epics it still shows.
+      detail: current.kind === "workstream" ? epicCount(groups) : current.detail,
       visibleCount: visible.length,
       aggregate: aggregateValues(visible),
       unitVisible: current.unit === "workspaces" ? groups.length : visible.length,

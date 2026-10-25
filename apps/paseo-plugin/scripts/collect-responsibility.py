@@ -131,6 +131,10 @@ class SameOriginRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class RejectedQuery(SystemExit):
+    """Jira refused the request itself (HTTP 400), for example a search naming a key it does not know."""
+
+
 class Jira:
     def __init__(self, base: str, headers: dict) -> None:
         self.base, self.headers = base, headers
@@ -166,12 +170,14 @@ class Jira:
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None
+            if error.code == 400:
+                raise RejectedQuery(f"Jira read {path} was rejected with HTTP 400") from None
             raise SystemExit(f"Jira read {path} failed with HTTP {error.code}") from None
 
-    def search(self, jql: str) -> list[dict]:
+    def search(self, jql: str, fields: str = FIELDS) -> list[dict]:
         issues, token = [], None
         while True:
-            page = self.get("/rest/api/3/search/jql", {"jql": jql, "fields": FIELDS, "maxResults": 100, **({"nextPageToken": token} if token else {})})
+            page = self.get("/rest/api/3/search/jql", {"jql": jql, "fields": fields, "maxResults": 100, **({"nextPageToken": token} if token else {})})
             issues += page["issues"]
             token = page.get("nextPageToken")
             if not token or page.get("isLast", False):

@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { parseDocument } from "yaml";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
-import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, readSourceSummaries, recordsSchema,
+import { canonicalGraphSchema, EPIC_IDENTITY_SCHEMA, epicIdentitySchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, readSourceSummaries, recordsSchema, WORKSTREAM_CONFLICT,
   sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type SourceSummaryRead, type WorkstreamRegistry } from "../shared/read-sources";
 import { GRAPH_FENCE, planMetadata } from "./plan-metadata";
 import type { organizationSettingsSchema } from "../shared/organization";
@@ -104,6 +104,18 @@ const exportPlan: ExportPlan = async (path) => {
   });
   return result.stdout;
 };
+/** A `jira` source holds a historical projection or a current identity export; a configured epic must be one it observed. */
+function jiraDocument(source: ReadSourceSummary, content: string): Pick<SourceRead, "jiraHistory" | "epicIdentity"> {
+  const raw: unknown = JSON.parse(content);
+  if (typeof raw === "object" && raw !== null && "schema" in raw && raw.schema === EPIC_IDENTITY_SCHEMA) {
+    const identity = epicIdentitySchema.parse(raw);
+    if (source.epic !== null && !identity.issues.some((issue) => issue.key === source.epic && issue.level === 1)) throw new Error("Configured epic is not an epic in the Jira identity export");
+    return { epicIdentity: identity };
+  }
+  const history = jiraHistorySchema.parse(raw);
+  if (source.epic !== null && !history.epics.some((epic) => epic.key === source.epic)) throw new Error("Configured epic is absent from historical Jira projection");
+  return { jiraHistory: history };
+}
 /** A fresh export of the exact catalog file; no cached graph or Markdown inference. */
 export async function readConfiguredSource(source: ReadSourceSummary, exporter: ExportPlan = exportPlan): Promise<SourceRead> {
   const result: SourceRead = { source, status: "unavailable", revision: null, readAt: new Date().toISOString(),
@@ -117,9 +129,7 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
     if (source.expectedSha256 && source.expectedSha256 !== revision) throw new Error(`Configured revision mismatch: expected ${source.expectedSha256}, read ${revision}`);
     result.modifiedAt = (await stat(path)).mtime.toISOString();
     if (source.kind === "jira") {
-      const history = jiraHistorySchema.parse(JSON.parse(content));
-      if (source.epic !== null && !history.epics.some((epic) => epic.key === source.epic)) throw new Error("Configured epic is absent from historical Jira projection");
-      result.jiraHistory = history;
+      Object.assign(result, jiraDocument(source, content));
       result.status = "ready";
       return result;
     }
@@ -135,7 +145,7 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
     result.planMetadata = planMetadata(content);
     result.diagnostics.push(...result.planMetadata.diagnostics);
     if (source.workstream !== null && result.planMetadata.workstream !== null && source.workstream !== result.planMetadata.workstream) {
-      result.diagnostics.push("Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.");
+      result.diagnostics.push(WORKSTREAM_CONFLICT);
       result.planMetadata.workstream = null;
     }
     result.status = "partial";
@@ -174,9 +184,7 @@ export async function readConfiguredSummary(source: ReadSourceSummary): Promise<
     if (source.expectedSha256 && source.expectedSha256 !== revision) throw new Error(`Configured revision mismatch: expected ${source.expectedSha256}, read ${revision}`);
     result.modifiedAt = (await stat(path)).mtime.toISOString();
     if (source.kind === "jira") {
-      const history = jiraHistorySchema.parse(JSON.parse(content));
-      if (source.epic !== null && !history.epics.some((epic) => epic.key === source.epic)) throw new Error("Configured epic is absent from historical Jira projection");
-      result.jiraHistory = history;
+      Object.assign(result, jiraDocument(source, content));
       result.status = "ready";
       return result;
     }
@@ -191,7 +199,7 @@ export async function readConfiguredSummary(source: ReadSourceSummary): Promise<
     result.planMetadata = planMetadata(content);
     result.diagnostics.push(...result.planMetadata.diagnostics);
     if (source.workstream !== null && result.planMetadata.workstream !== null && source.workstream !== result.planMetadata.workstream) {
-      result.diagnostics.push("Catalog and frontmatter workstreams conflict; automatic workstream association is disabled.");
+      result.diagnostics.push(WORKSTREAM_CONFLICT);
       result.planMetadata.workstream = null;
     }
     if (source.epic !== null && result.planMetadata.epic !== null && source.epic !== result.planMetadata.epic) throw new Error("Configured epic differs from frontmatter epic");

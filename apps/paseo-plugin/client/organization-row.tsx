@@ -132,7 +132,8 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   const top = row.depth === 0;
   const height = 44;
   const roleView = group.kind === "role" && group.parentKey === ROLE_ROOT_KEY;
-  const name = roleView && group.shortCode === null ? label : `${KIND_NAMES[group.kind]} ${label}`;
+  // A row without a known epic is not an epic, so its label alone names it.
+  const name = (roleView && group.shortCode === null) || (group.kind === "epic" && group.epic === null) ? label : `${KIND_NAMES[group.kind]} ${label}`;
   const summary = `${stale ? "Last known: " : ""}${groupStateSummary(group.aggregate)}`;
   // Session visibility is already the badge's primary count. Workspaces and the prefilter total are different facts.
   const secondaryCount = group.unit === "workspaces" ? `${groupCount(group)} workspace${group.unitTotal === 1 ? "" : "s"}`

@@ -10,8 +10,8 @@ import { Action, COARSE_POINTER, Copy, type Colors } from "./page-controls";
 export function SourceDetails({ read, colors, expanded, bare = false, summary, notes }: { read: SourceRead; colors: Colors; expanded?: boolean; bare?: boolean; summary?: ReactNode; notes?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const lines = <>
-    <Copy colors={colors} muted small>{read.source.title} · {read.status} · {read.source.kind === "jira" ? "Historical Jira snapshot" : read.source.revisionKind}</Copy>
-    <Copy colors={colors} muted small>{read.source.kind === "jira" ? `Observed ${read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}</Copy>
+    <Copy colors={colors} muted small>{read.source.title} · {read.status} · {read.source.kind !== "jira" ? read.source.revisionKind : read.epicIdentity ? "Jira identity read" : "Historical Jira snapshot"}</Copy>
+    <Copy colors={colors} muted small>{read.source.kind === "jira" ? `Observed ${read.epicIdentity?.as_of ?? read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}</Copy>
   </>;
   const toggle = expanded === undefined ? <View style={{ alignSelf: "flex-start" }}><Action small={!COARSE_POINTER} colors={colors} label="Source details" icon="Info" iconOnly accessibilityLabel={`Source details: ${read.source.title}`} expanded={open} onPress={() => setOpen(!open)} /></View> : null;
   return <View style={{ gap: 2 }}>
@@ -26,6 +26,10 @@ export function SourceDetails({ read, colors, expanded, bare = false, summary, n
       {read.jiraHistory ? <>
         <Copy colors={colors} small>{read.jiraHistory.schema} · original capture contains {read.jiraHistory.provenance.capturedEpics} epics; this projection has {read.jiraHistory.epics.length}. Neither count establishes complete inventory.</Copy>
         <Copy colors={colors} small>{read.jiraHistory.provenance.path} · SHA-256 {read.jiraHistory.provenance.sha256}</Copy>
+      </> : null}
+      {read.epicIdentity ? <>
+        <Copy colors={colors} small>{read.epicIdentity.schema} · {read.epicIdentity.issues.length} issues: {read.epicIdentity.coverage.scope_issues} from the scope {read.epicIdentity.scope.jql}, {read.epicIdentity.coverage.found} of {read.epicIdentity.coverage.declared} keys sessions declared; {read.epicIdentity.coverage.missing.length} not returned. Keys declared later are not covered.</Copy>
+        <Copy colors={colors} small>{read.epicIdentity.source.realm} · {read.epicIdentity.provenance.collector} · {read.epicIdentity.provenance.sessions.read} session records read</Copy>
       </> : null}
       {read.diagnostics.map((diagnostic, index) => <Copy key={index} colors={colors} small>{diagnostic}</Copy>)}
     </> : null}

@@ -1,5 +1,5 @@
 import type { DirectoryEntry } from "./session-directory";
-import { sessionEpic, type OrganizationInput } from "./session-organization";
+import { NO_LINKED_EPIC, sessionEpic, type OrganizationInput } from "./session-organization";
 
 export type EpicScope = { readonly kind: "known"; readonly key: string } | { readonly kind: "unknown" };
 export type ScopeChoice = { readonly key: string; readonly label: string; readonly detail?: string };
@@ -15,7 +15,7 @@ export function epicScopeChoice(key: string | null): EpicScope | null {
 }
 
 export function epicScopeLabel(scope: EpicScope): string {
-  return scope.kind === "unknown" ? "Epic unknown" : scope.key;
+  return scope.kind === "unknown" ? NO_LINKED_EPIC : scope.key;
 }
 
 export function matchesEpicScope(entry: DirectoryEntry, scope: EpicScope | null | undefined, mappings: Mappings): boolean {
@@ -31,5 +31,5 @@ export function epicScopeChoices(entries: readonly DirectoryEntry[], mappings: M
     return epic === null ? [] : [epic.toUpperCase()];
   }));
   return [...keys].sort().map((key) => ({ key: `known:${key}`, label: key }))
-    .concat({ key: "unknown", label: "Epic unknown" });
+    .concat({ key: "unknown", label: NO_LINKED_EPIC });
 }

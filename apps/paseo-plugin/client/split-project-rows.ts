@@ -2,9 +2,10 @@ import type { OrganizationGroup } from "./session-organization";
 
 /**
  * Presentation over a built hierarchy tree; membership, keys and counts stay as built. A native project whose
- * sessions settle different epics shows one row per epic, so its Epic unknown row is placed and worded beside the
- * same project's recognised rows, and sibling rows that different native projects label alike get a folder name.
- * Projects match by native ID only, never by title; nothing here assigns an epic or a workstream.
+ * sessions settle different epics shows one row per epic, so its rows without a known epic are placed and worded
+ * beside the same project's recognised rows, and sibling rows that different native projects label alike get a
+ * folder name. A row's project and folder are its secondary line, never its label. Projects match by native ID
+ * only, never by title; nothing here assigns an epic or a workstream.
  */
 export function relateSplitProjects(tree: readonly OrganizationGroup[], roots: ReadonlyMap<string, string> = new Map()): OrganizationGroup[] {
   const places = tree.flatMap((top) => top.kind !== "workstream" ? [] : top.groups.flatMap((group) => {
@@ -36,9 +37,10 @@ export function relateSplitProjects(tree: readonly OrganizationGroup[], roots: R
     if (top.kind !== "workstream") return top;
     const children = top.groups.map((group) => {
       const name = group.kind === "epic" ? names.get(projectOf(group) ?? "") : undefined;
-      return { ...group, label: name ? `${group.label} (${name})` : group.label, detail: details.get(group.key) ?? group.detail };
+      const context = [group.context, name ? `(${name})` : null].filter(Boolean).join(" ") || null;
+      return { ...group, context, detail: [context, details.get(group.key) ?? group.detail].filter(Boolean).join(" · ") || null };
     });
-    // An Epic unknown row follows its project's last recognised row in the same workstream, not the end of it.
+    // A row without a known epic follows its project's last recognised row in the same workstream, not the end of it.
     const follows = new Map<string, OrganizationGroup[]>();
     for (const group of children) {
       if (group.kind !== "epic" || group.epic !== null) continue;
@@ -89,7 +91,8 @@ function projectNames(streams: readonly (readonly OrganizationGroup[])[], roots:
       const project = group.kind === "epic" ? projectOf(group) : null;
       if (project && !first.has(project)) first.set(project, first.size);
       const name = project ? names.get(project) : undefined;
-      const label = name ? `${group.label} (${name})` : group.label;
+      const shown = group.context ? `${group.label} · ${group.context}` : group.label;
+      const label = name ? `${shown} (${name})` : shown;
       byLabel.set(label, (byLabel.get(label) ?? new Set()).add(project ?? `row:${group.key}`));
     }
     return [...byLabel.values()].filter((rows) => rows.size > 1).map((rows) => [...rows].filter((row) => first.has(row)));

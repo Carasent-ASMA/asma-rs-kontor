@@ -72,6 +72,7 @@ const PERSONA_TEMPLATE = [
   "- When the work gets a confirmed epic key (a Jira readback you made, an approved plan carrying it, or the operator's explicit confirmation), rename once to \"LSA • <KEY> • <topic>\" and set the labels epic=<KEY> and title.auto=<the new title>.",
   "- Change the topic only at a checkpoint (key promotion, a plan title set or changed, or an explicit instruction), at most once per checkpoint. A topic has 3 to 48 characters and never contains • or ·.",
   "- If your title differs from title.auto, the operator renamed you: never change the title again. You may still set epic.",
+  "- A session you create gets the labels of its own confirmed scope: epic=<KEY>, task=<KEY> when it works one task, and role=<code>. Never copy yours or a sibling's; omit a key nothing confirms.",
   "- Never write a kontor.* label or an orchestration label.",
 ].join("\n");
 /** Identifies the persona text a session was given; recorded in its `persona` label. */
