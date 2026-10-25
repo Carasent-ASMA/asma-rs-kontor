@@ -77,6 +77,8 @@ const clientFiles = [
   "../client/toolbar-visibility.ts",
   "../client/use-session-directory.ts",
   "../client/start-switch-sheet.tsx",
+  "../client/start-switch-statuses.tsx",
+  "../client/session-state-shortcuts.ts",
   "../client/new-lsa-form.tsx",
   "../client/recent-sessions.ts",
 ] as const;
