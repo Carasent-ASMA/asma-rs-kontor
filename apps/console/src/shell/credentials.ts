@@ -73,12 +73,15 @@ export function rememberedBaseUrl(): string {
 /** Why the desktop shell could not use the OS credential store. */
 export type KeychainErrorKind = 'unavailable' | 'locked' | 'denied' | 'not_found' | 'invalid'
 
+/** How to connect anyway when the keychain refuses. */
+const SESSION_ONLY = 'untick “Keep this endpoint” to connect for this session only'
+
 const KEYCHAIN_MESSAGES: Record<KeychainErrorKind, string> = {
-  unavailable: 'the OS keychain is not available on this machine; connect without keeping the endpoint',
-  locked: 'the OS keychain is locked; unlock it and try again',
-  denied: 'access to the OS keychain was denied',
+  unavailable: `the OS keychain is not available on this machine; ${SESSION_ONLY}`,
+  locked: `the OS keychain is locked; unlock it and try again, or ${SESSION_ONLY}`,
+  denied: `access to the OS keychain was denied; ${SESSION_ONLY}`,
   not_found: 'no endpoint is saved in the OS keychain',
-  invalid: 'the saved endpoint is not valid; forget it and connect again',
+  invalid: `the saved endpoint is not valid; forget it, or ${SESSION_ONLY}`,
 }
 
 /** A refusal from the OS credential store. The message never carries a value. */
@@ -104,7 +107,11 @@ export const keychainStore: CredentialStore = {
 
   async load(): Promise<Endpoint | null> {
     try {
-      return await keychain<Endpoint>('credential_load', {})
+      const saved = await keychain<unknown>('credential_load', {})
+      if (!isEndpoint(saved)) {
+        throw new KeychainError('invalid')
+      }
+      return saved
     } catch (cause) {
       if (cause instanceof KeychainError && cause.kind === 'not_found') {
         return null
@@ -129,6 +136,16 @@ export const keychainStore: CredentialStore = {
       }
     }
   },
+}
+
+function isEndpoint(value: unknown): value is Endpoint {
+  const candidate = value as Partial<Endpoint> | null
+  return (
+    typeof candidate?.baseUrl === 'string' &&
+    candidate.baseUrl !== '' &&
+    typeof candidate.token === 'string' &&
+    candidate.token !== ''
+  )
 }
 
 /** Call one `credential_*` command, turning its refusal into a `KeychainError`. */

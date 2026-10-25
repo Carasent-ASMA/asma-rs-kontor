@@ -8,11 +8,13 @@
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { App } from './App'
 import { Connect } from './Connect'
 import { KeychainError, keychainStore } from './credentials'
+import desktopCommands from '../../../desktop/src-tauri/src/lib.rs?raw'
 
-const invoke = vi.hoisted(() => vi.fn())
-vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri: () => true }))
+const { invoke, isTauri } = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(() => true) }))
+vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri }))
 
 /** MOCK shell: entries keyed by profile, or every command refused with `refusal`. */
 function mockShell(refusal?: unknown) {
@@ -47,6 +49,7 @@ let webStorageWrites: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   invoke.mockReset()
+  isTauri.mockReturnValue(true)
   webStorageWrites = vi.spyOn(Storage.prototype, 'setItem')
 })
 
@@ -156,5 +159,57 @@ describe('Connect with the keychain store', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('the OS keychain is locked')
     fireEvent.click(screen.getByRole('button', { name: 'Forget the saved endpoint' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('the OS keychain is locked')
+  })
+})
+
+describe('the store App selects', () => {
+  it('is the keychain store inside the desktop shell', async () => {
+    mockShell()
+    render(<App />)
+    expect(await screen.findByLabelText('Keep this endpoint in the OS keychain')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Use the saved endpoint' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('credential_load', { profile: 'default' }))
+  })
+
+  it('is the browser store outside it', async () => {
+    isTauri.mockReturnValue(false)
+    render(<App />)
+    expect(await screen.findByText(/running in a browser/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Keep this endpoint in the OS keychain')).toBeNull()
+    expect(invoke).not.toHaveBeenCalled()
+  })
+})
+
+describe('the shell contract', () => {
+  /** Each registered `credential_*` command and its arguments as JS names. */
+  function rustCommands(): Map<string, string[]> {
+    const registered = /generate_handler!\[([^\]]*)\]/.exec(desktopCommands)?.[1] ?? ''
+    const commands = new Map<string, string[]>()
+    for (const [, name, params] of desktopCommands.matchAll(/async fn (credential_\w+)\(([^)]*)\)/g)) {
+      if (!name || !registered.includes(name)) continue
+      const args = [...(params ?? '').matchAll(/(\w+):/g)].map(([, arg]) =>
+        // Tauri renames a command's snake_case arguments to camelCase.
+        (arg ?? '').replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+      )
+      commands.set(name, args.sort())
+    }
+    return commands
+  }
+
+  it('sends exactly the commands and arguments the shell registers', async () => {
+    mockShell()
+    await keychainStore.save(ONE, '')
+    await keychainStore.load()
+    await keychainStore.clear()
+
+    const sent = new Map(
+      invoke.mock.calls.map((call) => [
+        call[0] as string,
+        Object.keys(call[1] as Record<string, string>).sort(),
+      ]),
+    )
+    const shell = rustCommands()
+    expect(shell.size).toBeGreaterThan(0)
+    expect(sent).toEqual(shell)
   })
 })
