@@ -2,19 +2,29 @@ import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { adhocTitle, checkCreate, executeCreate, normalizeTopic, topicProblem, TOPIC_MAX, type CreateOptions, type CreateOutcome } from "../shared/session-create";
+import { checkCreate, executeCreate, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
+  type CreateOptions, type CreateOutcome, type CreateRole, type CreateScope, type CreateStart } from "../shared/session-create";
 import { Action, COARSE_POINTER, Copy, Disclosure, type Colors } from "./page-controls";
 import type { CreateOptionsState } from "./start-switch-sheet";
 import type { OpenSessionResult } from "./session-actions";
 
-export type CreateDraft = { readonly topic: string; readonly workspaceId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null };
+export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; readonly start?: CreateStart; readonly projectId?: string;
+  readonly issueKey?: string; readonly sourceAgentId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null };
+
+const AD_HOC = "ad-hoc" as const, FROM_JIRA = "from-jira" as const;
+const startNote = (desk: CreateOptions["desks"][number] | null, start: CreateStart, role: CreateRole): string | null => {
+  if (start === AD_HOC) return role === "TPM" ? "TPM is key-bound; choose From Jira ticket." : null;
+  return desk && (desk.kind === "pr-review" || desk.kind === "other") ? `${desk.project} offers ad hoc sessions only.` : null;
+};
 
 /**
  * Defaults fill only unspecified choices. An explicit or saved choice that disappears stays invalid until
  * the operator chooses again; a catalog refresh never silently substitutes another model or permission mode.
  */
 export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
-  const desk = (draft.workspaceId ? options.desks.find((entry) => entry.workspaceId === draft.workspaceId) : options.desks[0]) ?? null;
+  const role = draft.role ?? "LSA", start = draft.start ?? AD_HOC;
+  const desk = (draft.projectId ? options.desks.find((entry) => entry.projectId === draft.projectId)
+    : options.desks.find((entry) => entry.projectId === options.catalogProjectId) ?? options.desks[0]) ?? null;
   const profile = options.profile;
   const providerId = draft.provider ?? profile?.provider ?? options.providers.find((entry) => entry.available)?.id;
   const provider = options.providers.find((entry) => entry.id === providerId) ?? null;
@@ -27,18 +37,27 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   const mode = provider?.available ? provider.modes.find((entry) => entry.id === modeId) ?? null : null;
   const staleEffort = !effort && (!!effortId || !!model?.efforts.length);
   const staleMode = !mode && (!!modeId || !!provider?.modes.length);
-  const topic = normalizeTopic(draft.topic);
+  const issue = start === FROM_JIRA && draft.issueKey ? options.issues.find((entry) => entry.key === draft.issueKey) ?? null : null;
+  const topic = start === AD_HOC ? normalizeTopic(draft.topic) : issue ? issueTopic(issue.summary) : "";
+  const title = start === FROM_JIRA ? (issue ? leadTitle(role, issue.key, topic) : "") : leadTitle(role, null, topic);
+  const workspaceName = leadWorkspaceName(role, start);
+  const sourceAgentId = draft.sourceAgentId?.trim() || null;
   let problem: string | null = null;
-  if (!options.enabled) problem = options.disabledReason ?? "New LSA is off on this host.";
+  if (!options.enabled) problem = options.disabledReason ?? "New session is off on this host.";
   else if (options.pending) problem = `An earlier creation, “${options.pending.title}”, is not settled. Check it first.`;
-  else if (!desk) problem = options.desks.length ? "The selected desk is no longer available. Choose a listed desk or Refresh desks." : "No desk on this host has an ADAM workspace.";
-  else if (options.catalogWorkspaceId !== desk.workspaceId) problem = "Refresh this desk's provider catalog before creating a session.";
+  else if (!desk) problem = options.desks.length ? "The selected desk is no longer available. Choose a listed desk or Refresh desks." : "No desk on this host has lead workspaces.";
+  else if (options.catalogProjectId !== desk.projectId) problem = "Refresh this desk's provider catalog before creating a session.";
+  else if (role === "TPM" && start === AD_HOC) problem = "Ad hoc creates an LSA only. Choose LSA, or start from a Jira ticket.";
+  else if (start === FROM_JIRA && (desk.kind === "pr-review" || desk.kind === "other")) problem = `${desk.project} offers ad hoc sessions only; From Jira is not available there.`;
+  else if (start === FROM_JIRA && options.jiraProblem) problem = options.jiraProblem;
+  else if (start === FROM_JIRA && !issue) problem = "Choose a Jira issue.";
+  else if (start === AD_HOC && topicProblem(topic)) problem = topicProblem(topic);
   else if (!provider?.available) problem = provider?.note ?? (providerId ? `Provider ${providerId} is no longer active. Choose an active provider.` : "No active provider is available for this desk.");
   else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : "No selectable model.";
   else if (staleEffort) problem = `Effort ${effortId ?? "none"} is no longer offered for ${model.label}. Choose an available effort.`;
   else if (staleMode) problem = `Mode ${modeId ?? "none"} is no longer offered by ${provider.label}. Choose an available mode.`;
-  else problem = topicProblem(topic);
-  return { desk, provider, model, effort, mode, topic, title: adhocTitle(topic), problem, fromProfile: preset !== null, staleEffort, staleMode };
+  return { desk, role, start, issue, provider, model, effort, mode, topic, title, workspaceName,
+    workspaceMissing: !!desk && !desk.lead[workspaceName], sourceAgentId, problem, fromProfile: preset !== null, staleEffort, staleMode };
 }
 
 /** A version-4 UUID for the request's idempotency; not a secret. */
@@ -57,7 +76,8 @@ const HEADINGS: Record<CreateOutcome["state"], string> = {
 };
 
 export function personaLine(persona: CreateOutcome["persona"], providerLabel: string): string {
-  return persona === "supported" ? "Persona: sent as the system prompt; Claude and Codex apply it at creation." : `Persona delivery unverified: ${providerLabel} is not confirmed to apply a system prompt.`;
+  return persona === "supported" ? "Persona: sent as the system prompt; Claude and Codex apply it at creation."
+    : `Persona: delivered as a bootstrap prompt before the first task, because ${providerLabel} does not apply a system prompt.`;
 }
 
 type Phase =
@@ -68,13 +88,13 @@ type Phase =
   | { readonly kind: "lost"; readonly requestId: string; readonly title: string; readonly message: string };
 
 export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel }: {
-  hostId: string; colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: (workspaceId?: string) => void; canOpen: boolean;
+  hostId: string; colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: (scope?: CreateScope) => void; canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult; onCancel: () => void;
   /** A sheet close invalidates pending continuations immediately, before React's unmount cleanup. */
   isActive?: () => boolean;
 }) {
   const execute = useRpc(executeCreate), check = useRpc(checkCreate);
-  const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", workspaceId: options.status === "ready" ? options.options.catalogWorkspaceId ?? undefined : undefined }));
+  const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", role: "LSA", start: AD_HOC, projectId: options.status === "ready" ? options.options.catalogProjectId ?? undefined : undefined }));
   const [phase, setPhase] = useState<Phase>({ kind: "draft" });
   const [advanced, setAdvanced] = useState(!compact);
   const submitted = useRef(false);
@@ -105,6 +125,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     try { result = onOpenCreated(outcome); }
     catch (error) { result = { ok: false, reason: "failed", message: error instanceof Error ? error.message : "Paseo could not open this session." }; }
     if (!result.ok) opening.current = null;
+    // `handed` is another screen's hand-off: nothing has opened yet, so the open action stays spent.
     if (isCurrent()) setOpenState(result.ok ? { requestId: outcome.requestId, status: result.handoff ? "handed" : "opened" } : { requestId: outcome.requestId, status: "failed", message: result.message });
   };
   const finish = (outcome: CreateOutcome, requestId: string, title: string) => {
@@ -114,7 +135,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       return;
     }
     setPhase({ kind: "result", outcome });
-    if (outcome.state === "unknown" || outcome.state === "refused") onRefresh(draft.workspaceId);
+    if (outcome.state === "unknown" || outcome.state === "refused") onRefresh({ projectId: draft.projectId, role: draft.role, start: draft.start });
   };
   const runCheck = (requestId: string, title: string) => {
     if (!isCurrent()) return;
@@ -161,7 +182,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     const text = options.status === "error" ? `Kontor could not read this host's options (${options.message}).` : options.status === "offline" ? "Host offline. Nothing can be created until it reconnects." : "Reading this host's desks and providers…";
     return wrap(<>
       <Copy colors={colors} muted>{text}</Copy>
-      {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh(draft.workspaceId)} /> : null}
+      {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh({ projectId: draft.projectId, role: draft.role, start: draft.start })} /> : null}
     </>);
   }
   const problem = options.status === "ready" ? choice.problem : options.status === "error"
@@ -175,24 +196,51 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     submitted.current = true;
     const requestId = newRequestId(), title = choice.title;
     setPhase({ kind: "busy", requestId, label: `Creating “${title}”…` });
-    execute({ requestId, topic: choice.topic, workspaceId: choice.desk.workspaceId, provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null })
+    execute({ requestId, role: choice.role, start: choice.start, projectId: choice.desk.projectId,
+      ...(choice.start === AD_HOC ? { topic: choice.topic } : { issueKey: choice.issue?.key ?? null }),
+      sourceAgentId: choice.sourceAgentId, provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null })
       .then((outcome) => finish(outcome, requestId, title),
         (error: unknown) => { if (isCurrent()) setPhase({ kind: "lost", requestId, title, message: `The Kontor server did not answer (${error instanceof Error ? error.message : String(error)}).` }); });
   };
   const set = (patch: Partial<CreateDraft>) => setDraft({ ...draft, ...patch });
+  const refresh = (patch: Partial<CreateDraft>) => onRefresh({ projectId: patch.projectId ?? choice.desk?.projectId, role: patch.role ?? choice.role, start: patch.start ?? choice.start });
   const summary = choice.desk ? [choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ") : "Choose a desk first";
-  const providerEmpty = !choice.desk ? ready.desks.length ? "Choose an available desk to read its providers." : "Provider choices require an ADAM workspace."
-    : ready.catalogWorkspaceId !== choice.desk.workspaceId ? "Refresh choices to read this desk's providers." : "No active provider is available for this desk.";
+  const providerEmpty = !choice.desk ? (ready.desks.length ? "Choose an available desk to read its providers." : "Provider choices require a desk working directory.")
+    : ready.catalogProjectId !== choice.desk.projectId ? "Refresh choices to read this desk's providers." : "No active provider is available for this desk.";
+  const fromJira = choice.start === FROM_JIRA;
   return wrap(<>
-    <View style={{ gap: 4 }}>
+    <Choices label="Role" colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {
+      const nextStart: CreateStart = role === "TPM" && choice.start === AD_HOC ? FROM_JIRA : choice.start;
+      set({ role: role as CreateRole, start: nextStart }); refresh({ role: role as CreateRole, start: nextStart }); }}
+      options={[{ id: "LSA", label: "LSA · Lead Software Architect" }, { id: "TPM", label: "TPM · Technical Program Manager" }]} />
+    <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId, issueKey: undefined }); refresh({ projectId }); }}
+      options={ready.desks.map((desk) => ({ id: desk.projectId, label: desk.project }))} empty="No desk on this host has lead workspaces." />
+    <Choices label="Start" colors={colors} tall={tall} selected={choice.start} onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); }}
+      options={[
+        { id: AD_HOC, label: "Ad hoc", disabled: choice.role === "TPM", note: startNote(choice.desk, AD_HOC, choice.role) },
+        { id: FROM_JIRA, label: "From Jira ticket", disabled: !!choice.desk && (choice.desk.kind === "pr-review" || choice.desk.kind === "other"), note: startNote(choice.desk, FROM_JIRA, choice.role) },
+      ]} />
+    {fromJira ? <View style={{ gap: 4 }}>
+      <Choices label="Jira issue" colors={colors} tall={tall} selected={choice.issue?.key ?? null} onSelect={(issueKey) => set({ issueKey })}
+        options={ready.issues.map((issue) => ({ id: issue.key, label: `${issue.key} · ${issue.summary}`, note: `${issue.type} · ${issue.status}` }))} empty="No eligible issue on this desk." />
+      {ready.jiraProblem ? <Text testID="kontor-new-lsa-jira" style={{ color: colors.statusWarning, fontSize: 12 }}>{ready.jiraProblem}</Text> : null}
+      {choice.issue ? <Text style={muted}>Parent: {choice.issue.parent ? `${choice.issue.parent.key} · ${choice.issue.parent.statusCategory}` : "none"}.</Text> : null}
+    </View> : <View style={{ gap: 4 }}>
       <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Topic</Text>
       <TextInput testID="kontor-new-lsa-topic" accessibilityLabel="Topic" placeholder="What this session is about" autoFocus={!compact} maxLength={TOPIC_MAX} value={draft.topic}
         onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
         placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
-      <Text testID="kontor-new-lsa-title" style={muted}>Title: {choice.title}. The session promotes ADHOC to a confirmed epic key itself.</Text>
+    </View>}
+    <View style={{ gap: 4 }}>
+      <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Source session (optional)</Text>
+      <TextInput testID="kontor-new-session-source" accessibilityLabel="Source session" placeholder="Session ID whose handoff summary the lead reads first"
+        value={draft.sourceAgentId ?? ""} onChangeText={(sourceAgentId) => set({ sourceAgentId })}
+        placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
+      <Text style={muted}>Its handoff summary is read to the new lead before its first task.</Text>
     </View>
-    <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.workspaceId ?? null} onSelect={(workspaceId) => { set({ workspaceId }); onRefresh(workspaceId); }}
-      options={ready.desks.map((desk) => ({ id: desk.workspaceId, label: `${desk.project} / ADAM` }))} empty="No desk on this host has an ADAM workspace." />
+    <Text testID="kontor-new-lsa-title" style={muted}>{choice.title ? `Title: ${choice.title}. ` : ""}
+      {fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The session stays ad hoc and writes a handoff summary when a key is confirmed."}
+      {choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}</Text>
     <Disclosure small label={`Provider, model and mode: ${summary || "none available"}`} accessibilityLabel={`Provider, model and mode. ${summary || "None available"}`} colors={colors} open={advanced} onToggle={setAdvanced}>
       <View style={{ gap: 10, paddingTop: 4 }}>
         <Text style={muted}>{choice.fromProfile ? `Defaults from the host's ${ready.profile!.name} profile.` : "Defaults: the provider's own."}</Text>
@@ -212,16 +260,16 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     {ready.providers.some((provider) => provider.status === "unknown") ? <Text style={muted}>Some provider availability is unknown.</Text> : null}
     {ready.providers.some((provider) => provider.status === "error") ? <Text style={muted}>Some providers could not be read.</Text> : null}
     {ready.providers.some((provider) => provider.status === "unavailable") ? <Text style={muted}>Some providers are unavailable.</Text> : null}
-    <Action small label={choice.desk ? "Refresh choices" : "Refresh desks"} colors={colors} onPress={() => onRefresh(draft.workspaceId)} />
+    <Action small label={choice.desk ? "Refresh choices" : "Refresh desks"} colors={colors} onPress={() => onRefresh({ projectId: choice.desk?.projectId, role: choice.role, start: choice.start })} />
     {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
     {choice.provider ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
     {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}
     {problem ? <Text testID="kontor-new-lsa-problem" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 12 }}>{problem}</Text> : null}
   </>, <>
       <Action small label="Cancel" colors={colors} onPress={onCancel} />
-      <Pressable testID="kontor-new-lsa-create" accessibilityRole="button" accessibilityLabel={`Create ${choice.title}`} accessibilityHint={problem ?? undefined} accessibilityState={{ disabled: !!problem }} aria-disabled={!!problem}
+      <Pressable testID="kontor-new-lsa-create" accessibilityRole="button" accessibilityLabel={`Create ${choice.title || "session"}`} accessibilityHint={problem ?? undefined} accessibilityState={{ disabled: !!problem }} aria-disabled={!!problem}
         disabled={!!problem} onPress={submit} style={{ minHeight: tall ? 44 : 30, paddingHorizontal: 12, borderRadius: 6, justifyContent: "center", backgroundColor: problem ? colors.surface2 : colors.accent, opacity: problem ? 0.6 : 1 }}>
-        <Text style={{ color: problem ? colors.foregroundMuted : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Create LSA</Text>
+        <Text style={{ color: problem ? colors.foregroundMuted : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Create session</Text>
       </Pressable>
   </>);
 }

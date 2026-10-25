@@ -61,9 +61,15 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const NOW = Date.parse("2026-10-22T12:00:00.000Z");
 const COLORS = { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } as never;
+const ISSUE_EPIC = { key: "ASMA-100", summary: "Deliver the desk layout", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
+const ISSUE_STORY = { key: "ASMA-103", summary: "Replace New LSA with a role-aware New session", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
 const OPTIONS: CreateOptions = {
-  enabled: true, disabledReason: null, pending: null, notes: [], catalogWorkspaceId: "wks-adam",
-  desks: [{ workspaceId: "wks-adam", projectId: "prj-adam", desk: "ADAM", project: "DESK • ADAM" }, { workspaceId: "wks-pr", projectId: "prj-pr", desk: "PR REVIEW", project: "DESK • PR REVIEW" }],
+  enabled: true, disabledReason: null, pending: null, notes: [], catalogProjectId: "prj-adam", issues: [ISSUE_EPIC], jiraProblem: null,
+  desks: [
+    { projectId: "prj-adam", project: "DESK • ADAM", desk: "ADAM", kind: "adam", cwd: "/fixtures/adam", lead: { ADHOC: "wks-adhoc", LSA: "wks-lsa", TPM: "wks-tpm" } },
+    { projectId: "prj-tickets", project: "DESK • TICKETS", desk: "TICKETS", kind: "tickets", cwd: "/fixtures/tickets", lead: { ADHOC: "wks-t-adhoc", LSA: "wks-t-lsa", TPM: "wks-t-tpm" } },
+    { projectId: "prj-pr", project: "DESK • PR REVIEW", desk: "PR REVIEW", kind: "pr-review", cwd: "/fixtures/pr", lead: { ADHOC: null, LSA: "wks-pr-lsa", TPM: "wks-pr-tpm" } },
+  ],
   providers: [
     { id: "claude", label: "Claude", status: "ready", available: true, note: null, persona: "supported", defaultModel: "opus", defaultMode: "default",
       models: [{ id: "opus", label: "Opus", efforts: [{ id: "high", label: "High" }, { id: "max", label: "Max" }], defaultEffort: "high" }, { id: "sonnet", label: "Sonnet", efforts: [], defaultEffort: null }],
@@ -74,7 +80,7 @@ const OPTIONS: CreateOptions = {
   profile: { name: "lsa", provider: "claude", model: "opus", modeId: "default", effort: "max" },
 };
 const outcome = (state: CreateOutcome["state"], patch: Partial<CreateOutcome> = {}): CreateOutcome => ({ requestId: "00000000-0000-4000-8000-000000000001", state, title: "LSA • ADHOC • Route review",
-  agentId: state === "verified" || state === "differences" ? "agent-new" : null, workspaceId: "wks-adam", message: `Fixture ${state}.`, differences: [], persona: "supported", checkedAt: "2026-10-22", ...patch });
+  agentId: state === "verified" || state === "differences" ? "agent-new" : null, workspaceId: "wks-adhoc", message: `Fixture ${state}.`, differences: [], persona: "supported", checkedAt: "2026-10-22", ...patch });
 const reply = (state: CreateOutcome["state"], patch: Partial<CreateOutcome> = {}) => async (input: { requestId: string }) => outcome(state, { ...patch, requestId: input.requestId });
 const prompted = (id: string, at: number, overrides: Parameters<typeof sessionEntry>[1] = {}) => ({ ...sessionEntry(id, overrides), lastUserMessageAt: new Date(at).toISOString() });
 const directory = (entries: DirectoryEntry[], live = true): DirectoryState => ({ entries, status: "ready", live, lastUpdatedAt: NOW, error: null, staleReason: null, pages: 1, includeArchived: false });
@@ -116,11 +122,11 @@ describe("Start or switch rows", () => {
     expect(rows.map((row) => row.entry.id)).not.toContain("agent-archived");
   });
 
-  it("says why New LSA is not offered", () => {
+  it("says why New session is not offered", () => {
     expect(createAvailability({ status: "offline" })).toContain("host offline");
     expect(createAvailability({ status: "loading" })).toBeNull();
-    expect(createAvailability({ status: "error", message: "timeout" })).toBe("New LSA unavailable: Kontor could not read this host's options (timeout).");
-    expect(createAvailability({ status: "ready", options: { ...OPTIONS, enabled: false, disabledReason: "New LSA is off on this host." } })).toBe("New LSA is off on this host.");
+    expect(createAvailability({ status: "error", message: "timeout" })).toBe("New session unavailable: Kontor could not read this host's options (timeout).");
+    expect(createAvailability({ status: "ready", options: { ...OPTIONS, enabled: false, disabledReason: "New session is off on this host." } })).toBe("New session is off on this host.");
     expect(createAvailability({ status: "ready", options: OPTIONS })).toBeNull();
   });
 });
@@ -150,6 +156,13 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-search")?.props).toMatchObject({ accessibilityLabel: "Jump to any session", autoFocus: true });
   });
 
+  it("asks for the desk of the project context it was opened in", async () => {
+    const s = sheet({ initialScope: { projectId: "prj-adam" } });
+    await settle();
+    expect(model.rpc["sessions.create-options"]).toHaveBeenCalledWith({ projectId: "prj-adam" });
+    expect(s.tree[0]!.props.testID).toBe("kontor-switch-sheet");
+  });
+
   it("covers the screen on a phone and does not steal focus there", () => {
     const s = sheet({ compact: true, rootSize: { width: 320, height: 640 } });
     expect(s.tree[0]!.props.placement).toEqual({ align: "stretch", width: 0, cover: true });
@@ -167,13 +180,13 @@ describe("Start or switch sheet", () => {
     expect(model.focusControl).toHaveBeenCalledTimes(2);
   });
 
-  it("offers New LSA only after the host's options say it is on, and opens the form in place", async () => {
+  it("offers New session only after the host's options say it is on, and opens the form in place", async () => {
     const s = sheet();
-    expect(action(s.tree, "New LSA")).toBeUndefined();
+    expect(action(s.tree, "New session")).toBeUndefined();
     await settle(); s.render();
     expect(model.rpc["sessions.create-options"]).toHaveBeenCalledTimes(1);
-    (action(s.tree, "New LSA")!.props.onPress as () => void)(); s.render();
-    expect(s.tree[0]!.props.label).toBe("New LSA session");
+    (action(s.tree, "New session")!.props.onPress as () => void)(); s.render();
+    expect(s.tree[0]!.props.label).toBe("New session");
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
     expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true });
     expect(form.props.hostId).toBe("host-a");
@@ -185,7 +198,7 @@ describe("Start or switch sheet", () => {
   it.each(["Close", "Back", "Cancel"])("invalidates the creation continuation immediately on %s", async (leave) => {
     const s = sheet();
     await settle(); s.render();
-    (action(s.tree, "New LSA")!.props.onPress as () => void)(); s.render();
+    (action(s.tree, "New session")!.props.onPress as () => void)(); s.render();
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
     const active = form.props.isActive as () => boolean;
     expect(active()).toBe(true);
@@ -196,13 +209,13 @@ describe("Start or switch sheet", () => {
   });
 
   it.each([
-    ["the switch is off", async () => ({ ...OPTIONS, enabled: false, disabledReason: "New LSA is off on this host. The operator turns it on at the host computer." }), "New LSA is off on this host. The operator turns it on at the host computer."],
-    ["the options read failed", async () => { throw new Error("handler crashed"); }, "New LSA unavailable: Kontor could not read this host's options (handler crashed)."],
-  ])("states why New LSA is absent when %s", async (_label, read, message) => {
+    ["the switch is off", async () => ({ ...OPTIONS, enabled: false, disabledReason: "New session is off on this host. The operator turns it on at the host computer." }), "New session is off on this host. The operator turns it on at the host computer."],
+    ["the options read failed", async () => { throw new Error("handler crashed"); }, "New session unavailable: Kontor could not read this host's options (handler crashed)."],
+  ])("states why New session is absent when %s", async (_label, read, message) => {
     model.rpc["sessions.create-options"] = vi.fn(read);
     const s = sheet();
     await settle(); s.render();
-    expect(action(s.tree, "New LSA")).toBeUndefined();
+    expect(action(s.tree, "New session")).toBeUndefined();
     expect(byTestId(s.tree, "kontor-switch-create-status")?.props.children).toBe(message);
   });
 
@@ -215,10 +228,10 @@ describe("Start or switch sheet", () => {
   });
 
   it("keeps Check reachable for a pending creation after the operator turns creation off", async () => {
-    model.rpc["sessions.create-options"]!.mockResolvedValue({ ...OPTIONS, enabled: false, disabledReason: "New LSA is off on this host.", pending: outcome("unknown") });
+    model.rpc["sessions.create-options"]!.mockResolvedValue({ ...OPTIONS, enabled: false, disabledReason: "New session is off on this host.", pending: outcome("unknown") });
     const s = sheet();
     await settle(); s.render();
-    expect(action(s.tree, "New LSA")).toBeUndefined();
+    expect(action(s.tree, "New session")).toBeUndefined();
     (action(s.tree, "Check creation")!.props.onPress as () => void)(); s.render();
     expect(s.tree.find((node) => node.type === NewLsaForm)?.props.options).toMatchObject({ status: "ready", options: { enabled: false, pending: { state: "unknown" } } });
   });
@@ -293,11 +306,12 @@ describe("Start or switch popover from the composer pill", () => {
   it("draws the shared body in the host's surface: no nested sheet, title, Close or second scroller, with Open Kontor inside", async () => {
     const p = pop();
     await settle(); p.render();
+    expect(model.rpc["sessions.create-options"]).toHaveBeenCalledWith({ workspaceId: "wks-adam" });
     expect(p.tree.some((node) => node.type === AnchoredMenu)).toBe(false);
     expect(text(p.tree)).not.toContain("Start or switch");
     expect(action(p.tree, "Close")).toBeUndefined();
     expect(action(p.tree, "Open Kontor")?.props).toMatchObject({ icon: "Building2" });
-    expect(action(p.tree, "New LSA")).toBeDefined();
+    expect(action(p.tree, "New session")).toBeDefined();
     expect(byTestId(p.tree, "kontor-switch-list")).toMatchObject({ type: "View", props: { role: "menu", accessibilityLabel: "Recent sessions" } });
     expect(p.tree.some((node) => node.type === "ScrollView")).toBe(false);
     expect(byTestId(p.tree, "kontor-switch-search")?.props.autoFocus).toBe(true);
@@ -368,10 +382,10 @@ describe("Start or switch popover from the composer pill", () => {
   it("hands a created session to Kontor as a hand-off, not an open, and keeps the outcome when Kontor cannot open", async () => {
     const p = pop();
     await settle(); p.render();
-    (action(p.tree, "New LSA")!.props.onPress as () => void)(); p.render();
+    (action(p.tree, "New session")!.props.onPress as () => void)(); p.render();
     const form = p.tree.find((node) => node.type === NewLsaForm)!;
     expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" } });
-    expect(text(p.tree)).toContain("New LSA");
+    expect(text(p.tree)).toContain("New session");
     expect(action(p.tree, "Close")).toBeUndefined();
     const onOpenCreated = form.props.onOpenCreated as (outcome: CreateOutcome) => OpenSessionResult;
     expect(onOpenCreated(outcome("verified"))).toEqual({ ok: true, handoff: true });
@@ -395,10 +409,10 @@ describe("Start or switch popover from the composer pill", () => {
   });
 });
 
-describe("New LSA draft", () => {
+describe("New session draft", () => {
   it("starts from the host's LSA profile, then each provider's own defaults", () => {
     const draft = resolveDraft(OPTIONS, { topic: " Route   review " });
-    expect(draft).toMatchObject({ desk: { workspaceId: "wks-adam" }, provider: { id: "claude" }, model: { id: "opus" }, effort: { id: "max" }, mode: { id: "default" },
+    expect(draft).toMatchObject({ desk: { projectId: "prj-adam" }, role: "LSA", start: "ad-hoc", provider: { id: "claude" }, model: { id: "opus" }, effort: { id: "max" }, mode: { id: "default" },
       topic: "Route review", title: "LSA • ADHOC • Route review", problem: null, fromProfile: true });
     expect(resolveDraft(OPTIONS, { topic: "Route review", provider: "opencode" })).toMatchObject({ model: { id: "big" }, effort: null, mode: null, fromProfile: false, problem: null });
     expect(resolveDraft({ ...OPTIONS, profile: null }, { topic: "Route review" })).toMatchObject({ provider: { id: "claude" }, effort: { id: "high" }, fromProfile: false });
@@ -407,13 +421,17 @@ describe("New LSA draft", () => {
   it.each([
     [{ ...OPTIONS, enabled: false, disabledReason: "Switched off." }, "Route review", "Switched off."],
     [{ ...OPTIONS, pending: outcome("unknown") }, "Route review", "An earlier creation, “LSA • ADHOC • Route review”, is not settled. Check it first."],
-    [{ ...OPTIONS, desks: [] }, "Route review", "No desk on this host has an ADAM workspace."],
+    [{ ...OPTIONS, desks: [] }, "Route review", "No desk on this host has lead workspaces."],
     [{ ...OPTIONS, providers: [OPTIONS.providers[1]!] }, "Route review", "Provider claude is no longer active. Choose an active provider."],
     [OPTIONS, "Route review", "Provider error: not signed in.", "gemini"],
     [OPTIONS, "ab", "Type a topic of at least 3 characters."],
     [OPTIONS, "A • B", "A topic cannot contain • or ·, which separate title parts."],
   ])("names the reason Create is disabled", (options, topic, problem, provider?: string) => {
     expect(resolveDraft(options, { topic, provider }).problem).toBe(problem);
+  });
+
+  it("starts on the desk the options were scoped to", () => {
+    expect(resolveDraft({ ...OPTIONS, catalogProjectId: "prj-tickets" }, { topic: "Route review" }).desk?.projectId).toBe("prj-tickets");
   });
 
   it("makes version-4 request IDs", () => {
@@ -424,7 +442,7 @@ describe("New LSA draft", () => {
 
   it("promises the persona only where it is confirmed", () => {
     expect(personaLine("supported", "Claude")).toContain("Claude and Codex apply it");
-    expect(personaLine("unverified", "OpenCode")).toBe("Persona delivery unverified: OpenCode is not confirmed to apply a system prompt.");
+    expect(personaLine("unverified", "OpenCode")).toBe("Persona: delivered as a bootstrap prompt before the first task, because OpenCode does not apply a system prompt.");
   });
 
   it("keeps invalidated explicit and saved choices invalid instead of replacing them", () => {
@@ -441,7 +459,7 @@ describe("New LSA draft", () => {
   });
 });
 
-describe("New LSA form", () => {
+describe("New session form", () => {
   function form(options: CreateOptionsState = { status: "ready", options: OPTIONS }, props: Partial<Parameters<typeof NewLsaForm>[0]> = {}) {
     const onRefresh = vi.fn(), onOpenCreated = vi.fn<(outcome: CreateOutcome) => OpenSessionResult>(() => ({ ok: true })), onCancel = vi.fn();
     const all = { hostId: "host-a", colors: COLORS, compact: false, options, onRefresh, canOpen: true, onOpenCreated, onCancel, ...props };
@@ -500,33 +518,33 @@ describe("New LSA form", () => {
 
   it("requires a catalog scoped to a newly selected desk", () => {
     const f = form(); f.type("Route review");
-    (f.tree.find((node) => node.props.accessibilityLabel === "DESK • PR REVIEW / ADAM")!.props.onPress as () => void)(); f.render();
-    expect(f.onRefresh).toHaveBeenCalledWith("wks-pr");
+    (f.tree.find((node) => node.props.accessibilityLabel === "DESK • PR REVIEW")!.props.onPress as () => void)(); f.render();
+    expect(f.onRefresh).toHaveBeenCalledWith({ projectId: "prj-pr", role: "LSA", start: "ad-hoc" });
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
     expect(text(f.tree)).toContain("Refresh this desk's provider catalog");
-    f.setOptions({ status: "ready", options: { ...OPTIONS, catalogWorkspaceId: "wks-pr" } });
+    f.setOptions({ status: "ready", options: { ...OPTIONS, catalogProjectId: "prj-pr" } });
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
   });
 
   it("offers truthful recovery when the selected desk vanishes but another ADAM workspace remains", () => {
     const f = form(); f.type("Route review");
-    const vanished = { ...OPTIONS, desks: [OPTIONS.desks[1]!], catalogWorkspaceId: null, providers: [] };
+    const vanished = { ...OPTIONS, desks: [OPTIONS.desks[2]!], catalogProjectId: null, providers: [] };
     f.setOptions({ status: "ready", options: vanished });
     expect(text(f.tree)).toContain("The selected desk is no longer available. Choose a listed desk or Refresh desks.");
     expect(text(f.tree)).toContain("Choose an available desk to read its providers.");
-    expect(text(f.tree)).not.toContain("No desk on this host has an ADAM workspace.");
+    expect(text(f.tree)).not.toContain("No desk on this host has lead workspaces.");
     expect(text(f.tree)).not.toContain("No active provider on this host.");
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    const remaining = () => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • PR REVIEW / ADAM")!;
+    const remaining = () => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • PR REVIEW")!;
     expect(remaining().props["aria-checked"]).toBe(false);
     f.press("Refresh desks");
-    expect(f.onRefresh).toHaveBeenLastCalledWith("wks-adam");
+    expect(f.onRefresh).toHaveBeenLastCalledWith(expect.objectContaining({ role: "LSA", start: "ad-hoc" }));
     f.setOptions({ status: "ready", options: vanished });
     expect(remaining().props["aria-checked"]).toBe(false);
     (remaining().props.onPress as () => void)(); f.render();
-    expect(f.onRefresh).toHaveBeenLastCalledWith("wks-pr");
+    expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-pr", role: "LSA", start: "ad-hoc" });
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.setOptions({ status: "ready", options: { ...OPTIONS, desks: vanished.desks, catalogWorkspaceId: "wks-pr" } });
+    f.setOptions({ status: "ready", options: { ...OPTIONS, desks: vanished.desks, catalogProjectId: "prj-pr" } });
     expect(remaining().props["aria-checked"]).toBe(true);
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
     expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
@@ -536,14 +554,14 @@ describe("New LSA form", () => {
 
   it("retains the keyboard-selected desk and draft through loading and failed scoped reads, with no implicit submit", () => {
     model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const options = { ...OPTIONS, desks: [OPTIONS.desks[0]!, { workspaceId: "wks-ops", projectId: "prj-ops", desk: "OPS", project: "DESK • OPS" }] };
+    const options = { ...OPTIONS, desks: [OPTIONS.desks[0]!, { projectId: "prj-ops", project: "DESK • OPS", desk: "OPS", kind: "other" as const, cwd: "/fixtures/ops", lead: { ADHOC: null, LSA: null, TPM: null } }] };
     const f = form({ status: "ready", options }); f.type("Route review");
-    const desk = (label: string) => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === `DESK • ${label} / ADAM`)!;
+    const desk = (label: string) => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === `DESK • ${label}`)!;
     const focus = [vi.fn(), vi.fn()];
     (desk("ADAM").props.onKeyDown as (event: object) => void)({ key: "ArrowRight", preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: { parentElement: { querySelectorAll: () => focus.map((focus) => ({ focus })) } } });
     f.render();
     expect(focus[1]).toHaveBeenCalledTimes(1);
-    expect(f.onRefresh).toHaveBeenCalledExactlyOnceWith("wks-ops");
+    expect(f.onRefresh).toHaveBeenCalledExactlyOnceWith({ projectId: "prj-ops", role: "LSA", start: "ad-hoc" });
     for (const state of [{ status: "loading" }, { status: "error", message: "scoped read failed" }] as const) {
       f.setOptions(state);
       expect(desk("OPS")?.props).toMatchObject({ "aria-checked": true, tabIndex: 0 });
@@ -553,12 +571,12 @@ describe("New LSA form", () => {
       f.press("kontor-new-lsa-create");
       expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
     }
-    f.setOptions({ status: "ready", options: { ...options, catalogWorkspaceId: "wks-ops" } });
+    f.setOptions({ status: "ready", options: { ...options, catalogProjectId: "prj-ops" } });
     expect(desk("OPS")?.props).toMatchObject({ "aria-checked": true, tabIndex: 0 });
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
     expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
     f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ workspaceId: "wks-ops", topic: "Route review" }));
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ projectId: "prj-ops", topic: "Route review" }));
   });
 
   it.each(["offline", "host change"])("discards retained presentation options on %s", (change) => {
@@ -617,8 +635,8 @@ describe("New LSA form", () => {
   it("offers active choices as radios and keeps unavailable providers out of the picker", () => {
     const f = form();
     const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
-    expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Desk", "Provider", "Model", "Effort", "Mode"]);
-    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM / ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
+    expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Role", "Desk", "Start", "Provider", "Model", "Effort", "Mode"]);
+    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
     expect(radios.some((node) => String(node.props.accessibilityLabel).includes("Gemini"))).toBe(false);
     expect(radios.every((node) => (node.props.style as (state: { focused: boolean }) => { minHeight: number })({ focused: false }).minHeight >= 44)).toBe(true);
   });
@@ -639,12 +657,12 @@ describe("New LSA form", () => {
       expect(event.preventDefault).toHaveBeenCalled();
       return focus;
     };
-    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([0, -1]);
+    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([0, -1, -1]);
     key("Desk", 1, " ");
-    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([false, true]);
-    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([-1, 0]);
+    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([false, true, false]);
+    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([-1, 0, -1]);
     expect(key("Desk", 1, "ArrowLeft")[0]!.focus).toHaveBeenCalledTimes(1);
-    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([true, false]);
+    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([true, false, false]);
     expect(key("Provider", 0, "ArrowRight")[1]!.focus).toHaveBeenCalledTimes(1);
     expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([false, true]);
     expect(key("Provider", 1, "ArrowDown")[0]!.focus).toHaveBeenCalledTimes(1);
@@ -657,7 +675,7 @@ describe("New LSA form", () => {
     const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
     expect(radios.length).toBeGreaterThan(0);
     expect(radios.every((node) => node.props.onKeyDown === undefined && node.props.tabIndex === undefined)).toBe(true);
-    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM / ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
+    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
     expect(radios.every((node) => !node.props.disabled)).toBe(true);
   });
 
@@ -667,7 +685,7 @@ describe("New LSA form", () => {
     model.rpc["sessions.create"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
     f.type(" Route   review ");
     f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), topic: "Route review", workspaceId: "wks-adam", provider: "claude", model: "opus", effort: "max", modeId: "default" });
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), role: "LSA", start: "ad-hoc", projectId: "prj-adam", topic: "Route review", sourceAgentId: null, provider: "claude", model: "opus", effort: "max", modeId: "default" });
     expect(text(f.tree)).toContain("Nothing is reported until the host answers.");
     expect(byTestId(f.tree, "kontor-new-lsa-create")).toBeUndefined();
     const requestId = model.rpc["sessions.create"]!.mock.calls[0]![0].requestId;
@@ -873,5 +891,45 @@ describe("New LSA form", () => {
     expect(byTestId(f.tree, "kontor-new-lsa-topic")).toBeUndefined();
     expect(byTestId(f.tree, "kontor-new-lsa-unknown")).toBeDefined();
     expect(action(f.tree, "Check")).toBeDefined();
+  });
+
+  it("switches TPM to From Jira ticket, selects the epic and submits the issue key without a topic", () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const f = form();
+    const radio = (label: string) => f.tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith(label))!;
+    (radio("TPM")!.props.onPress as () => void)(); f.render();
+    expect(radio("From Jira ticket").props["aria-checked"]).toBe(true);
+    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Choose a Jira issue.");
+    (radio("ASMA-100")!.props.onPress as () => void)(); f.render();
+    expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Deliver the desk layout.");
+    f.press("kontor-new-lsa-create");
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ role: "TPM", start: "from-jira", issueKey: "ASMA-100", projectId: "prj-adam" }));
+    expect(model.rpc["sessions.create"]!.mock.calls[0]![0]).not.toHaveProperty("topic");
+  });
+
+  it("offers From Jira ticket on ADAM and TICKETS only and states why PR REVIEW refuses it", () => {
+    const f = form();
+    (f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • PR REVIEW")!.props.onPress as () => void)(); f.render();
+    const fromJira = f.tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith("From Jira ticket"))!;
+    expect(fromJira.props["aria-disabled"]).toBe(true);
+    expect(fromJira.props.accessibilityLabel).toContain("offers ad hoc sessions only");
+    expect(f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • TICKETS")).toBeDefined();
+  });
+
+  it("says when the chosen role workspace is missing and will be created", () => {
+    const f = form({ status: "ready", options: { ...OPTIONS, desks: OPTIONS.desks.map((desk) => desk.projectId === "prj-adam" ? { ...desk, lead: { ...desk.lead, ADHOC: null } } : desk) } });
+    f.type("Route review");
+    expect(text(f.tree)).toContain("The ADHOC workspace is created on this desk.");
+  });
+
+  it("keeps the handed state from a popover hand-off and spends the Open action", async () => {
+    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+    const f = form();
+    f.onOpenCreated.mockReturnValueOnce({ ok: true, handoff: true });
+    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
+    f.press("Open session");
+    expect(text(f.tree)).toContain("Opening in Kontor…");
+    expect(action(f.tree, "Open session")).toBeUndefined();
+    expect(f.onOpenCreated).toHaveBeenCalledTimes(1);
   });
 });

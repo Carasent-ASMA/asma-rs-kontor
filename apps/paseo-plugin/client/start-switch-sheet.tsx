@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
-import { readCreateOptions, type CreateOptions, type CreateOutcome } from "../shared/session-create";
+import { readCreateOptions, type CreateOptions, type CreateOutcome, type CreateScope } from "../shared/session-create";
 import { handOffOpen, withdrawHandOff, type HandOffTarget, type OpenSessionResult } from "./session-actions";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { ControlHelpProvider } from "./control-help";
@@ -29,27 +29,36 @@ export type CreateOptionsState =
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+// Only the schema's keys travel: a caller may hand its whole draft for convenience.
+const clean = (next?: CreateScope): CreateScope => next ? {
+  ...(next.projectId !== undefined ? { projectId: next.projectId } : {}),
+  ...(next.workspaceId !== undefined ? { workspaceId: next.workspaceId } : {}),
+  ...(next.role !== undefined ? { role: next.role } : {}),
+  ...(next.start !== undefined ? { start: next.start } : {}),
+  ...(next.issueKey !== undefined ? { issueKey: next.issueKey } : {}),
+} : {};
+
 /** The host's create options, read when the sheet opens and again on `refresh`; never while the host is offline. */
-export function useCreateOptions(online: boolean): { state: CreateOptionsState; refresh: (workspaceId?: string) => void } {
+export function useCreateOptions(online: boolean, initial: CreateScope = {}): { state: CreateOptionsState; refresh: (scope?: CreateScope) => void } {
   const read = useRpc(readCreateOptions);
   const [state, setState] = useState<CreateOptionsState>({ status: online ? "loading" : "offline" });
   const [revision, setRevision] = useState(0);
-  const [workspaceId, setWorkspaceId] = useState<string | undefined>();
+  const [scope, setScope] = useState<CreateScope>(clean(initial));
   useEffect(() => {
     if (!online) { setState({ status: "offline" }); return; }
     let live = true;
     setState({ status: "loading" });
-    read(workspaceId ? { workspaceId } : {}).then((options) => { if (live) setState({ status: "ready", options }); }, (error: unknown) => { if (live) setState({ status: "error", message: errorText(error) }); });
+    read(Object.keys(scope).length ? scope : {}).then((options) => { if (live) setState({ status: "ready", options }); }, (error: unknown) => { if (live) setState({ status: "error", message: errorText(error) }); });
     return () => { live = false; };
-  }, [online, revision, workspaceId]);
-  return { state, refresh: (workspaceId) => { setWorkspaceId(workspaceId); setRevision((value) => value + 1); } };
+  }, [online, revision, scope]);
+  return { state, refresh: (next) => { setScope(clean(next ?? initial)); setRevision((value) => value + 1); } };
 }
 
-/** What the sheet says about New LSA when it cannot offer it; null when it can. */
+/** What the sheet says about New session when it cannot offer it; null when it can. */
 export function createAvailability(state: CreateOptionsState): string | null {
-  if (state.status === "offline") return "New LSA: host offline. Nothing can be created until it reconnects.";
+  if (state.status === "offline") return "New session: host offline. Nothing can be created until it reconnects.";
   if (state.status === "loading") return null;
-  if (state.status === "error") return `New LSA unavailable: Kontor could not read this host's options (${state.message}).`;
+  if (state.status === "error") return `New session unavailable: Kontor could not read this host's options (${state.message}).`;
   return state.options.enabled ? null : state.options.disabledReason;
 }
 
@@ -89,14 +98,16 @@ type StartSwitchProps = {
   onOpen: (entry: DirectoryEntry) => void; onShowAll: (query: string) => void; onClose: () => void;
   /** Inside the host's own popover or bottom sheet, which owns the title, dismissal and scrolling; Open Kontor joins the actions. */
   popover?: { readonly openKontor: () => void };
+  /** The workspace or project the dialog was opened in; its desk becomes the default. */
+  initialScope?: CreateScope;
 };
 
 /**
  * One body for switching and starting, drawn by the Kontor screen's sheet and by the composer pill's popover: Recent
- * and a search over every session, plus New LSA as a header action when the host allows it. Rows open only through
+ * and a search over every session, plus New session as a header action when the host allows it. Rows open only through
  * `onOpen`, so each surface keeps its own single open path and its refusals.
  */
-export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose, popover }: StartSwitchProps) {
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose, popover, initialScope }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">("switch");
   const creation = useRef({ hostId, open: false });
   const scope = creation.current;
@@ -106,7 +117,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const [recent, setRecent] = useState(() => readRecent(hostId));
   const [showSaved, setShowSaved] = useState(false);
   const saved = readSavedHistory();
-  const create = useCreateOptions(hostStatus === "online");
+  const create = useCreateOptions(hostStatus === "online", initialScope);
   const now = Date.now();
   const { rows, total } = switchRows(directory.entries, query, now, recent.record);
   const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live });
@@ -118,14 +129,14 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const header = mode === "new"
     ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 4 }}>
       <IconButton label="Back to recent sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />
-      {heading("New LSA")}{close}
+      {heading("New session")}{close}
     </View>
     : <View style={{ gap: 4, paddingBottom: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         {popover ? <View style={{ flex: 1, flexDirection: "row" }}><Action small icon="Building2" label="Open Kontor" colors={colors} onPress={popover.openKontor} /></View> : heading("Start or switch")}
         {create.state.status === "ready" && create.state.options.pending
           ? <Action small label="Check creation" accessibilityLabel="Check pending session creation" colors={colors} onPress={startNew} />
-          : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New LSA" accessibilityLabel="New LSA session" colors={colors} onPress={startNew} /> : null}
+          : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New session" accessibilityLabel="New session" colors={colors} onPress={startNew} /> : null}
         {close}
       </View>
       <TextInput testID="kontor-switch-search" accessibilityLabel="Jump to any session" placeholder="Jump to any session…" autoFocus={!compact} value={query} onChangeText={setQuery}
@@ -167,7 +178,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
     : popover ? <View {...list}>{items}</View>
     : <ScrollView {...list} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
-  return { label: mode === "new" ? "New LSA session" : "Start or switch session", header, body, dismiss };
+  return { label: mode === "new" ? "New session" : "Start or switch session", header, body, dismiss };
 }
 
 /** The Kontor screen's sheet around the shared body; closing it returns focus to its trigger. */
@@ -184,7 +195,7 @@ export function StartSwitchSheet({ anchor, root, rootSize, onClose, ...props }: 
  * session navigation, so each open is handed once to the Kontor screen, which opens it by exact ID (`openHandOff`).
  * Whether this app lets plugins open sessions is the screen's to say, so rows stay openable here.
  */
-export function StartSwitchPopover({ host, theme, layout, close, openScreen, screenId }: PluginButtonContentProps & { openScreen: (input: PluginOpenScreenInput) => void; screenId: string }) {
+export function StartSwitchPopover({ host, theme, layout, workspaceId, close, openScreen, screenId }: PluginButtonContentProps & { openScreen: (input: PluginOpenScreenInput) => void; screenId: string }) {
   const hostStatus = useHosts().find((candidate) => candidate.serverId === host.id)?.status ?? "offline";
   // Reads the shared directory without setting its Archived choice; Recent and search leave archived sessions out.
   const directory = useSessionDirectory({ hostId: host.id, hostStatus });
@@ -205,7 +216,7 @@ export function StartSwitchPopover({ host, theme, layout, close, openScreen, scr
       const failure = handOff({ kind: "created", outcome });
       return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };
     },
-    onClose: close, popover: { openKontor: () => report(go()) } });
+    onClose: close, initialScope: { workspaceId }, popover: { openKontor: () => report(go()) } });
   return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}</View></ControlHelpProvider>;
 }
 

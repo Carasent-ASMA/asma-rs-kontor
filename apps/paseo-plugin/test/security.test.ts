@@ -153,10 +153,12 @@ describe("kontord status probe", () => {
 describe("bounded session create", () => {
   const text = source("../server/session-create.ts");
 
-  it("creates through one idempotent native call and never prompts, archives, renames or patches", () => {
+  it("creates through one idempotent native call and one lead workspace, and never archives, renames or patches", () => {
     expect(text.match(/agents\.create\(/g)).toHaveLength(1);
-    expect(text).toContain("agents.create({ idempotencyKey: input.requestId,");
-    expect(text).not.toMatch(/\.send\(|\.archive\(|ref\([^)]*\)\.update\(|setTitle|respondToPermission|config\.patch|initialPrompt|workspaces\.create/);
+    expect(text).toContain("agents.create({ idempotencyKey: requestId,");
+    expect(text.match(/workspaces\.create\(/g)).toHaveLength(1);
+    expect(text).toContain("client.workspaces.create({ source:");
+    expect(text).not.toMatch(/\.send\(|\.archive\(|ref\([^)]*\)\.update\(|setTitle|respondToPermission|config\.patch|initialPrompt/);
   });
 
   it("only reads the operator's create switch", () => {

@@ -129,14 +129,15 @@ export const fakePaseo = refusingProxy("paseo", {
 // Configured sources (plugin RPC) --------------------------------------------
 
 const lifecycleRpc = fixtureLifecycle(fixtureSessions, simulateUpdate);
-const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario.inventory === "desks", (request, title) => {
+const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario.inventory === "desks", (request, title, workspaceId) => {
   const id = `agt_fixture_create_${request.requestId}`;
   const seed = baseSessions()[0]!;
+  const workspaceName = request.start === "ad-hoc" ? "ADHOC" : request.role;
   const row: FixtureSession = { ...seed, agent: { ...seed.agent, id, title, status: "idle", requiresAttention: false, attentionReason: null,
-    workspaceId: request.workspaceId, cwd: "/fixture/prj_proof_adam", provider: request.provider, model: request.model,
+    workspaceId, cwd: "/fixture/prj_proof_adam", provider: request.provider, model: request.model,
     effectiveThinkingOptionId: request.effort ?? undefined, currentModeId: request.modeId ?? undefined, archivedAt: null,
-    labels: { role: "LSA", scope: "ADHOC", "create.request": request.requestId }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    project: { projectKey: "prj_proof_adam", projectName: "DESK • ADAM", workspaceName: "ADAM" } };
+    labels: { role: request.role, scope: request.issueKey ?? "ADHOC", "create.request": request.requestId }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    project: { projectKey: "prj_proof_adam", projectName: "DESK • ADAM", workspaceName } };
   sessions.set(id, row);
   for (const observer of observers) observer.update?.({ type: "agent_update", payload: { kind: "upsert", agent: row.agent, project: row.project } });
   logHostEvent("simulated.update", `Created ${id} in fixture memory only`);

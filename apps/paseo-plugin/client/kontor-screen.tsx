@@ -105,6 +105,12 @@ function HostScreen(props: PluginScreenProps) {
   const planMappings = useMemo(() => planWorkstreamMappings(sourceState.sources, sourceState.reads, directory.state.entries,
     workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName })), saved.displayMappings, saved.planAssociations, sourceState.registry),
     [sourceState.sources, sourceState.reads, directory.state.entries, workspaces.entries, saved.displayMappings, saved.planAssociations, sourceState.registry]);
+  // New session starts on the desk of the project or epic context the sheet was opened in.
+  const switchScope = useMemo(() => {
+    const epic = route.epicKey?.trim().toLocaleLowerCase();
+    const projectId = route.projectId ?? (epic ? workspaces.entries.find((workspace) => saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === epic)?.projectId : undefined);
+    return projectId ? { projectId } : {};
+  }, [route.projectId, route.epicKey, workspaces.entries, saved.displayMappings]);
   const presentation = sourceState.error && !sourceState.available
     ? { ...organization, state: { ...organization.state, status: "error" as const, error: "Plugin source service unavailable; organization preferences are not current." } }
     : organization;
@@ -296,7 +302,7 @@ function HostScreen(props: PluginScreenProps) {
       {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
-  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state}
+  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state} initialScope={switchScope}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
     onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
     onShowAll={showAll} /> : null;

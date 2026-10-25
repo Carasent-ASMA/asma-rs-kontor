@@ -50,13 +50,14 @@ const values=new Map(); configureRecentStorage({read:key=>values.get(key),write:
 let stale=false,settingsRequired=false,deskVanished=false;
 const model=(id,label)=>({id,label,efforts:settingsRequired?[{id:'high',label:'High effort'}]:[],defaultEffort:settingsRequired?'high':null});
 const provider=(id,label,status,available)=>({id,label,status,available,note:available?null:status,persona:'supported',models:available?[model('first','Active model'),model('second','Second model')]:[],defaultModel:'first',modes:settingsRequired?[{id:'default',label:'Default mode',dangerous:false}]:[],defaultMode:settingsRequired?'default':null});
-const catalog=workspaceId=>({enabled:true,disabledReason:null,pending:null,notes:[],catalogWorkspaceId:deskVanished&&workspaceId==='wks-adam'?null:workspaceId||'wks-adam',desks:[...(!deskVanished?[{workspaceId:'wks-adam',projectId:'project-adam',desk:'ADAM',project:'DESK • ADAM'}]:[]),...(scenario==='two-desks'?[{workspaceId:'wks-ops',projectId:'project-ops',desk:'OPS',project:'DESK • OPS'}]:[]),...(scenario==='vanished-desk'?[{workspaceId:'wks-pr',projectId:'project-pr',desk:'PR REVIEW',project:'DESK • PR REVIEW'}]:[])],profile:scenario==='nullable-refresh'?{name:'LSA',provider:'active',model:'first',effort:'retired',modeId:'retired'}:null,
- providers:scenario==='empty'||deskVanished&&workspaceId==='wks-adam'?[]:scenario==='loading'?[provider('loading','Loading provider','loading',false)]:[ {...provider('active','Active provider','ready',true),models:stale?[model('first','Active model')]:[model('first','Active model'),model('second','Second model')]}, provider('disabled','Disabled provider','disabled',false),provider('error','Error provider','error',false)]});
+const desk=(projectId,project,name,kind,lead={ADHOC:null,LSA:null,TPM:null})=>({projectId,project,desk:name,kind,cwd:'/fixture/'+projectId,lead});
+const catalog=scope=>({enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:deskVanished&&(scope.projectId||'project-adam')==='project-adam'?null:scope.projectId||'project-adam',issues:[],jiraProblem:null,desks:[...(!deskVanished?[desk('project-adam','DESK • ADAM','ADAM','adam',{ADHOC:'wks-adhoc',LSA:'wks-lsa',TPM:'wks-tpm'})]:[]),...(scenario==='two-desks'?[desk('project-ops','DESK • OPS','OPS','other')]:[]),...(scenario==='vanished-desk'?[desk('project-pr','DESK • PR REVIEW','PR REVIEW','pr-review',{ADHOC:'wks-pr-adhoc',LSA:'wks-pr-lsa',TPM:'wks-pr-tpm'})]:[])],profile:scenario==='nullable-refresh'?{name:'LSA',provider:'active',model:'first',effort:'retired',modeId:'retired'}:null,
+ providers:scenario==='empty'||deskVanished&&(scope.projectId||'project-adam')==='project-adam'?[]:scenario==='loading'?[provider('loading','Loading provider','loading',false)]:[ {...provider('active','Active provider','ready',true),models:stale?[model('first','Active model')]:[model('first','Active model'),model('second','Second model')]}, provider('disabled','Disabled provider','disabled',false),provider('error','Error provider','error',false)]});
 window.fixture={calls:[],opens:[],timings:[],failOpen:scenario==='open-failed', invalidateModel:()=>{stale=true;},restoreSettings:()=>{settingsRequired=true;},vanishDesk:()=>{deskVanished=true;},recent:host=>readRecent(host).record,
  rpc:async(name,input,host)=>{const started=performance.now();window.fixture.calls.push({name,input,host});
-  if(name==='sessions.create-options'){if(scenario==='two-desks'&&input.workspaceId)await new Promise(resolve=>{window.fixture.finishCatalog=resolve;});await new Promise(resolve=>setTimeout(resolve,10));window.fixture.timings.push({phase:'catalog',ms:performance.now()-started});return catalog(input.workspaceId);}
-  if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,180));window.fixture.timings.push({phase:'create-fixture',ms:performance.now()-started});return {requestId:input.requestId,state:scenario==='unknown'?'unknown':'verified',title:'LSA • ADHOC • '+input.topic,agentId:scenario==='unknown'?null:'fixture-created-exact',workspaceId:input.workspaceId,message:scenario==='unknown'?'Creation may still complete.':'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
-  if(name==='sessions.create-check')return {requestId:input.requestId,state:'unknown',title:'LSA • ADHOC • Route review',agentId:null,workspaceId:'wks-adam',message:'Creation may still complete.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};
+  if(name==='sessions.create-options'){if(scenario==='two-desks'&&input.projectId)await new Promise(resolve=>{window.fixture.finishCatalog=resolve;});await new Promise(resolve=>setTimeout(resolve,10));window.fixture.timings.push({phase:'catalog',ms:performance.now()-started});return catalog(input);}
+  if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,180));window.fixture.timings.push({phase:'create-fixture',ms:performance.now()-started});return {requestId:input.requestId,state:scenario==='unknown'?'unknown':'verified',title:'LSA • ADHOC • '+input.topic,agentId:scenario==='unknown'?null:'fixture-created-exact',workspaceId:'wks-adhoc',message:scenario==='unknown'?'Creation may still complete.':'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
+  if(name==='sessions.create-check')return {requestId:input.requestId,state:'unknown',title:'LSA • ADHOC • Route review',agentId:null,workspaceId:'wks-adhoc',message:'Creation may still complete.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};
   throw new Error('Unexpected RPC in isolated fixture: '+name);
  }};
 function App(){const root=useRef(null),anchor=useRef(null);const [host,setHost]=useState('fixture-a'),[open,setOpen]=useState(true),[opened,setOpened]=useState('');
@@ -76,7 +77,7 @@ async function pageFor(width, scenario = 'ready', theme = 'light') {
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
   await page.goto(server.resolvedUrls.local[0] + '?scenario=' + scenario + '&theme=' + theme);
-  await page.getByRole('button', { name: 'New LSA session', exact: true }).click();
+  await page.getByRole('button', { name: 'New session', exact: true }).click();
   return { page, context };
 }
 async function createdWaitingForOpen(page) {
@@ -141,8 +142,8 @@ async function run(name, test) {
         const topic = page.getByRole('textbox', { name: 'Topic', exact: true });
         await topic.fill('Route review');
         await topic.evaluate(input => { input.setSelectionRange(2, 7); window.fixture.topicElement = input; });
-        const adam = page.getByRole('radio', { name: 'DESK • ADAM / ADAM', exact: true });
-        const ops = page.getByRole('radio', { name: 'DESK • OPS / ADAM', exact: true });
+        const adam = page.getByRole('radio', { name: 'DESK • ADAM', exact: true });
+        const ops = page.getByRole('radio', { name: 'DESK • OPS', exact: true });
         await ops.evaluate(radio => { window.fixture.deskElement = radio; });
         await adam.focus(); await adam.press('ArrowRight');
         await page.waitForFunction(() => typeof window.fixture.finishCatalog === 'function');
@@ -162,7 +163,7 @@ async function run(name, test) {
         await expect(page.getByTestId('kontor-new-lsa-create')).toBeEnabled();
         await assertSelection();
         const calls = await page.evaluate(() => window.fixture.calls);
-        assert.deepEqual(calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { workspaceId: 'wks-ops' }]);
+        assert.deepEqual(calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { projectId: 'project-ops', role: 'LSA', start: 'ad-hoc' }]);
         assert.equal(calls.filter(call => call.name === 'sessions.create').length, 0);
         assert.deepEqual(await page.evaluate(() => window.fixture.opens), []);
         await page.screenshot({ path: path.join(output, `${width}-two-desks.png`) });
@@ -170,12 +171,12 @@ async function run(name, test) {
         await (await createdWaitingForOpen(page)).click();
         await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
         const creates = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
-        assert.equal(creates.length, 1); assert.equal(creates[0].input.workspaceId, 'wks-ops');
+        assert.equal(creates.length, 1); assert.equal(creates[0].input.projectId, 'project-ops');
       } finally { await context.close(); }
     });
     await run('invalidated-selection', async () => {
       const { page, context } = await pageFor(390);
-      try { await page.getByRole('button', { name: /^Provider, model and mode\./ }).click(); await page.getByRole('radio', { name: 'Second model', exact: true }).click(); await page.evaluate(() => window.fixture.invalidateModel()); await page.getByRole('button', { name: 'Refresh choices', exact: true }).click(); await page.getByText(/Model second is no longer active/).waitFor(); assert.equal(await page.getByRole('radio', { name: 'Active model', exact: true }).getAttribute('aria-checked'), 'false'); assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true); } finally { await context.close(); }
+      try { await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review'); await page.getByRole('button', { name: /^Provider, model and mode\./ }).click(); await page.getByRole('radio', { name: 'Second model', exact: true }).click(); await page.evaluate(() => window.fixture.invalidateModel()); await page.getByRole('button', { name: 'Refresh choices', exact: true }).click(); await page.getByText(/Model second is no longer active/).waitFor(); assert.equal(await page.getByRole('radio', { name: 'Active model', exact: true }).getAttribute('aria-checked'), 'false'); assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true); } finally { await context.close(); }
     });
     for (const width of [320, 390, 1440]) await run(`${width}-vanished-desk-recovery`, async () => {
       const { page, context } = await pageFor(width, 'vanished-desk');
@@ -188,9 +189,9 @@ async function run(name, test) {
         await expect(problem).toHaveText('The selected desk is no longer available. Choose a listed desk or Refresh desks.');
         await page.getByRole('button', { name: 'Provider, model and mode. Choose a desk first', exact: true }).waitFor();
         await page.getByText('Choose an available desk to read its providers.', { exact: true }).waitFor();
-        assert.equal(await page.getByText('No desk on this host has an ADAM workspace.', { exact: true }).count(), 0);
+        assert.equal(await page.getByText('No desk on this host has lead workspaces.', { exact: true }).count(), 0);
         assert.equal(await page.getByText(/No active provider.*host/).count(), 0);
-        const remaining = page.getByRole('radio', { name: 'DESK • PR REVIEW / ADAM', exact: true });
+        const remaining = page.getByRole('radio', { name: 'DESK • PR REVIEW', exact: true });
         assert.equal(await remaining.getAttribute('aria-checked'), 'false');
         await expect(page.getByTestId('kontor-new-lsa-create')).toBeDisabled();
         await page.getByRole('button', { name: 'Refresh desks', exact: true }).click();
@@ -203,7 +204,7 @@ async function run(name, test) {
         assert.equal(await remaining.getAttribute('aria-checked'), 'true');
         assert.equal(await page.getByRole('textbox', { name: 'Topic', exact: true }).inputValue(), 'Route review');
         const state = await page.evaluate(() => ({ calls: window.fixture.calls, opens: window.fixture.opens, visits: window.fixture.recent('fixture-a').visits }));
-        assert.deepEqual(state.calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { workspaceId: 'wks-adam' }, { workspaceId: 'wks-adam' }, { workspaceId: 'wks-pr' }]);
+        assert.deepEqual(state.calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { projectId: 'project-adam', role: 'LSA', start: 'ad-hoc' }, { role: 'LSA', start: 'ad-hoc' }, { projectId: 'project-pr', role: 'LSA', start: 'ad-hoc' }]);
         assert.equal(state.calls.filter(call => call.name === 'sessions.create').length, 0);
         assert.deepEqual(state.opens, []); assert.deepEqual(state.visits, []);
       } finally { await context.close(); }
