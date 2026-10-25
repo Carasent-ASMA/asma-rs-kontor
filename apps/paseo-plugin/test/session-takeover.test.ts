@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  GOVERNED_ELSEWHERE, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute, resolverInstant, routeHealthFromProviderSnapshot, takeoverAdapter, takeoverRouteInputSchema,
-  type ResolverRun, type RouteHealth,
+  GOVERNED_ELSEWHERE, configuredAccountCatalogFromFleet, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute, resolverInstant,
+  routeEvidenceDigest, routeEvidenceFreshEnough, routeEvidenceSemanticPayload, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover,
+  takeoverAdapter, takeoverPinnedMatches, takeoverRouteInputSchema, type ResolverRun, type RouteHealth,
 } from "../server/session-takeover";
 
 const KEY = "team/01936f5a-0000-7000-8000-000000000102/implement";
@@ -173,6 +174,8 @@ describe("the fixed local fleet selection read", () => {
 });
 
 describe("route health from provider snapshot", () => {
+  const catalog = configuredAccountCatalogFromFleet([{ accounts: ["claude-a", "codex-b", "codex-a"] }], "fleet-rev-1")!;
+  const asOf = Date.parse("2026-10-25T09:00:00.000Z");
   const snapshot = { requestId: "snap-1", generatedAt: "2026-10-25T08:59:00.000Z", entries: [
     { provider: "claude-a", enabled: true, status: "ready", modes: [{ id: "default" }],
       models: [{ id: "claude-opus-5", thinkingOptions: [{ id: "xhigh" }, { id: "not-an-effort" }] }] },
@@ -181,7 +184,7 @@ describe("route health from provider snapshot", () => {
   ] };
 
   it("maps ready accounts to available routes and others to unknown or unavailable", () => {
-    const built = routeHealthFromProviderSnapshot(snapshot, "default", Date.parse("2026-10-25T09:00:00.000Z"));
+    const built = routeHealthFromProviderSnapshot(snapshot, "default", catalog, asOf);
     expect(built.max_age_seconds).toBe(300);
     expect(built.mode).toBe("default");
     expect(built.observations).toEqual([
@@ -192,16 +195,77 @@ describe("route health from provider snapshot", () => {
   });
 
   it("treats a ready provider without the session mode as unknown for that route", () => {
-    const built = routeHealthFromProviderSnapshot(snapshot, "bypassPermissions", Date.parse("2026-10-25T09:00:00.000Z"));
+    const built = routeHealthFromProviderSnapshot(snapshot, "bypassPermissions", catalog, asOf);
     expect(built.observations.find((entry) => entry.account === "claude-a")?.state).toBe("unknown");
+  });
+
+  it("never treats an unmapped harness provider id as a configured account", () => {
+    const adversarial = routeHealthFromProviderSnapshot({ ...snapshot, entries: [{ provider: "claude", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "claude-opus-5" }] }] }, "default", catalog, asOf);
+    expect(adversarial.observations[0]?.state).toBe("unknown");
+  });
+
+  it.each([
+    ["invalid generatedAt", { requestId: "snap-2", generatedAt: "not-a-date" }],
+    ["missing requestId", { requestId: "  ", generatedAt: "2026-10-25T08:59:00.000Z" }],
+    ["future generatedAt", { requestId: "snap-3", generatedAt: "2026-10-25T10:00:00.000Z" }],
+  ] as const)("fail-closes %s without substituting review time as freshness", (_label, timing) => {
+    const closed = routeHealthFromProviderSnapshot({ ...snapshot, ...timing }, "default", catalog, asOf);
+    expect(closed.observations.every((entry) => entry.state === "unknown")).toBe(true);
+    expect(closed.observations[0]?.revision).toBe("unqualified-snapshot");
+  });
+
+  it("fail-closes ready routes when modes evidence is missing for a requested session mode", () => {
+    const noModes = routeHealthFromProviderSnapshot({ ...snapshot, entries: [{ provider: "claude-a", enabled: true, status: "ready", models: [{ id: "claude-opus-5", thinkingOptions: [{ id: "xhigh" }] }] }] }, "bypassPermissions", catalog, asOf);
+    expect(noModes.observations.every((entry) => entry.state === "unknown")).toBe(true);
+    const emptyModes = routeHealthFromProviderSnapshot({ ...snapshot, entries: [{ provider: "claude-a", enabled: true, status: "ready", modes: [], models: [{ id: "claude-opus-5" }] }] }, "bypassPermissions", catalog, asOf);
+    expect(emptyModes.observations.every((entry) => entry.state === "unknown")).toBe(true);
+  });
+});
+
+describe("route evidence semantic identity", () => {
+  const catalog = configuredAccountCatalogFromFleet([{ accounts: ["claude-a"] }], "fleet-rev-1")!;
+  const asOf = Date.parse("2026-10-25T09:00:00.000Z");
+  const snap = (requestId: string) => routeHealthFromProviderSnapshot({ requestId, generatedAt: "2026-10-25T08:59:00.000Z", entries: [
+    { provider: "claude-a", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "claude-opus-5", thinkingOptions: [{ id: "xhigh" }] }] },
+  ] }, "default", catalog, asOf);
+
+  it("ignores transport requestId when digesting evidence", () => {
+    const a = snap("req-a"), b = snap("req-b");
+    expect(routeEvidenceDigest(a, null, catalog.revision)).toBe(routeEvidenceDigest(b, null, catalog.revision));
+    expect(routeEvidenceSemanticPayload(a, null, catalog.revision)).toEqual(routeEvidenceSemanticPayload(b, null, catalog.revision));
+  });
+
+  it("ignores refusal observation clock when digesting canonical refusal identity", () => {
+    const health = snap("req-a");
+    const refusalA = { kind: "quota" as const, failureAt: "unknown", observedAt: "2026-10-25T09:00:00.000Z", message: "429", route: { provider: "claude-a", model: "claude-opus-5" } };
+    const refusalB = { ...refusalA, observedAt: "2026-10-25T09:00:01.000Z" };
+    expect(routeEvidenceDigest(health, refusalA, catalog.revision)).toBe(routeEvidenceDigest(health, refusalB, catalog.revision));
+  });
+
+  it("changes digest on semantic snapshot or refusal identity drift", () => {
+    const base = snap("req-a");
+    const stale = routeHealthFromProviderSnapshot({ requestId: "req-a", generatedAt: "2026-10-25T08:59:00.000Z", entries: [
+      { provider: "claude-a", enabled: true, status: "error", modes: [{ id: "default" }], models: [{ id: "claude-opus-5" }] },
+    ] }, "default", catalog, asOf);
+    expect(routeEvidenceDigest(stale, null, catalog.revision)).not.toBe(routeEvidenceDigest(base, null, catalog.revision));
+    const refusal = { kind: "quota" as const, failureAt: "unknown", observedAt: "2026-10-25T09:00:00.000Z", message: "429", route: { provider: "codex-b", model: "gpt-5.6-sol" } };
+    expect(routeEvidenceDigest(base, refusal, catalog.revision)).not.toBe(routeEvidenceDigest(base, null, catalog.revision));
+  });
+
+  it("rejects future or over-max-age observations for freshness revalidation", () => {
+    const fresh = snap("req-a");
+    expect(routeEvidenceFreshEnough(fresh, asOf)).toBe(true);
+    const future = { ...fresh, observations: fresh.observations.map((entry) => ({ ...entry, observed_at: resolverInstant(asOf + 60_000) })) };
+    expect(routeEvidenceFreshEnough(future, asOf)).toBe(false);
   });
 });
 
 describe("session-local refusal join", () => {
+  const catalog = configuredAccountCatalogFromFleet([{ accounts: ["claude-a", "codex-b"] }], "fleet-rev-1")!;
   const base = routeHealthFromProviderSnapshot({ requestId: "s", generatedAt: "2026-10-25T09:00:00.000Z", entries: [
     { provider: "claude-a", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "claude-opus-5", thinkingOptions: [{ id: "xhigh" }] }] },
     { provider: "codex-b", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "gpt-5.6-sol", thinkingOptions: [{ id: "xhigh" }] }] },
-  ] }, "default", Date.parse("2026-10-25T09:00:00.000Z"));
+  ] }, "default", catalog, Date.parse("2026-10-25T09:00:00.000Z"));
 
   it("marks matching account observations unavailable on explicit quota evidence without touching other accounts", () => {
     const joined = joinSessionLocalRefusalToRouteHealth(base, {
@@ -214,5 +278,47 @@ describe("session-local refusal join", () => {
 
   it("leaves health unchanged when the predecessor carries no explicit refusal", () => {
     expect(joinSessionLocalRefusalToRouteHealth(base, null)).toBe(base);
+  });
+
+  it("does not let generic ready clear a correlated quota refusal on another account", () => {
+    const workRefusal = sessionLocalRefusalForTakeover({ provider: "claude-a", model: "claude-opus-5", status: "error", lastError: "429 quota" }, "default", "2026-10-25T09:00:00.000Z");
+    const joined = joinSessionLocalRefusalToRouteHealth(base, workRefusal, "default");
+    expect(joined.observations.find((entry) => entry.account === "claude-a")?.state).toBe("unavailable");
+    expect(joined.observations.find((entry) => entry.account === "codex-b")?.state).toBe("available");
+  });
+
+  it("does not join refusal when no route observation matches account and model", () => {
+    const refusal = sessionLocalRefusalForTakeover({ provider: "claude-a", model: "claude-opus-5", status: "error", lastError: "429 quota" }, "default", "2026-10-25T09:00:00.000Z");
+    const mismatchedModel = joinSessionLocalRefusalToRouteHealth(base, refusal, "default");
+    const noObservation = routeHealthFromProviderSnapshot({ requestId: "s", generatedAt: "2026-10-25T09:00:00.000Z", entries: [
+      { provider: "claude-a", enabled: true, status: "ready", modes: [{ id: "default" }], models: [{ id: "other-model", thinkingOptions: [{ id: "xhigh" }] }] },
+    ] }, "default", catalog, Date.parse("2026-10-25T09:00:00.000Z"));
+    expect(joinSessionLocalRefusalToRouteHealth(noObservation, refusal, "default")).toBe(noObservation);
+    expect(mismatchedModel.observations.find((entry) => entry.account === "claude-a")?.state).toBe("unavailable");
+  });
+});
+
+describe("takeover pinned equivalence", () => {
+  const pin = (evidence: string, selectedAccount = "claude-a") => ({
+    predecessor: "pred", owner: takeoverAdapter({ labels: {} }), ownerRevision: null, created: null, bindingKey: KEY,
+    route: { provenance: { policyHash: "a".repeat(64), bindingKey: KEY, chain: "c" }, selected: { account: selectedAccount, model: "m", effort: "xhigh", vendor: "v", step: 1, subStep: 1 }, considered: [], validity: { observedAt: "2026-10-25T09:00:00Z", validUntil: "2026-10-25T09:05:00Z" } },
+    evidence, continuity: { agentId: "a", requestId: REQUEST, revision: "r", observedAt: "2026-10-25T09:00:00.000Z", surface: "direct" as const, wakes: "clear" as const, owner: null },
+    spec: { requestId: REQUEST, title: "t", provider: selectedAccount, model: "m", effort: "xhigh", modeId: "default", labels: {}, workspaceId: "w", anchorWorkspaceId: "w", workspaceName: "w", cwd: "/c",
+      expectedPlacement: { workspaceId: "w", cwd: "/c" }, createWorkspace: null, revalidate: null, persona: { text: "", supported: false }, bootstrap: "b",
+      effectValidity: { route: { observedAt: "2026-10-25T09:00:00Z", validUntil: "2026-10-25T09:00:30Z" }, continuity: { observedAt: "2026-10-25T09:00:00.000Z", validUntil: "2026-10-25T09:01:00.000Z" } } },
+  });
+
+  it("accepts refreshed effect deadlines when semantic evidence and route selection are unchanged", () => {
+    const reviewed = pin("evidence-1");
+    const current = pin("evidence-1");
+    current.route.validity = { observedAt: "2026-10-25T09:00:01Z", validUntil: "2026-10-25T09:05:01Z" };
+    current.spec.effectValidity = { route: { observedAt: "2026-10-25T09:00:01Z", validUntil: "2026-10-25T09:05:01Z" }, continuity: current.spec.effectValidity.continuity };
+    expect(takeoverPinnedMatches(reviewed, current)).toBe(true);
+  });
+
+  it("refuses semantic route or evidence drift", () => {
+    const reviewed = pin("evidence-1");
+    expect(takeoverPinnedMatches(reviewed, pin("evidence-2"))).toBe(false);
+    expect(takeoverPinnedMatches(reviewed, pin("evidence-1", "codex-b"))).toBe(false);
   });
 });

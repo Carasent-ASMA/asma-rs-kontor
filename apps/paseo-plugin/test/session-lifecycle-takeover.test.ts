@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, type TakeoverDeps } from "../server/session-lifecycle";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
-import { resolverInstant, routeHealthFromProviderSnapshot, type ResolverRun, type RouteHealth } from "../server/session-takeover";
+import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -24,7 +24,7 @@ function agent(id: string, patch: Partial<Agent> = {}): Agent {
 }
 const WORKSPACE = { id: "wks-1", projectId: "prj-1", projectDisplayName: "DESK • ADAM", projectRootPath: "/fixtures", projectKind: "directory", workspaceKind: "local_checkout",
   name: "TSW", title: null, workspaceDirectory: "/fixtures/wks-1", archivingAt: null, status: "done", statusEnteredAt: null, activityAt: null, scripts: [] } as PaseoWorkspace;
-const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-25", entries: [
+const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-25T08:59:00.000Z", entries: [
   { provider: "claude-a", label: "Claude A", enabled: true, status: "ready", defaultModeId: "default",
     models: [{ provider: "claude-a", id: "claude-opus-5", label: "Opus 5", thinkingOptions: [{ id: "xhigh", label: "X-High" }] }],
     modes: [{ id: "default", label: "Default", colorTier: "safe" }] },
@@ -86,7 +86,9 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   };
   const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
   const observedAt = new Date().toISOString();
+  const accountCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, choices: async () => choices,
+    accountCatalog: async () => accountCatalog,
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
   };
@@ -176,10 +178,11 @@ describe("takeover review", () => {
   it("blocks the configured chain when the predecessor's current quota lastError matches the snapshot account", async () => {
     const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", status: "error", lastError: "429 usage limit exceeded" }) });
     let seenCwd = "";
-    h.deps.evidence = ({ mode, cwd }) => {
+    const catalog = configuredAccountCatalogFromFleet([{ accounts: ["claude-a"] }], "test-catalog-rev")!;
+    h.deps.evidence = ({ mode, cwd, catalog: cat }) => {
       seenCwd = cwd;
       const asOf = Date.now();
-      return routeHealthFromProviderSnapshot({ ...SNAPSHOT, generatedAt: new Date(asOf).toISOString() }, mode, asOf);
+      return routeHealthFromProviderSnapshot({ ...SNAPSHOT, generatedAt: new Date(asOf).toISOString() }, mode, cat ?? catalog, asOf);
     };
     h.deps.run = async (_command, args) => JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 409, body: { code: "placement_blocked", message: "no route", selection: {
       considered: [{ route, excluded: "route_unavailable_now" }], provenance: { binding_key: KEY, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 },
@@ -193,16 +196,47 @@ describe("takeover review", () => {
   it("reads positive route evidence from the host provider snapshot at the session checkout", async () => {
     const h = await host();
     let seenCwd = "";
-    h.deps.evidence = ({ mode, cwd }) => {
+    h.deps.evidence = ({ mode, cwd, catalog }) => {
       seenCwd = cwd;
       const asOf = Date.now();
-      return routeHealthFromProviderSnapshot({ ...SNAPSHOT, generatedAt: new Date(asOf).toISOString() }, mode, asOf);
+      return routeHealthFromProviderSnapshot({ ...SNAPSHOT, generatedAt: new Date(asOf).toISOString() }, mode, catalog, asOf);
     };
     const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
     expect(seenCwd).toBe("/fixtures/wks-1");
     expect(review.limits.join(" ")).not.toContain("No host source of positive route health");
     expect(review.state).toBe("ready");
     expect(h.effects.resolve[0]?.find((arg) => arg.startsWith("--route-health="))).toContain("\"state\":\"available\"");
+  });
+
+  it("apply succeeds when only the provider snapshot requestId changes but semantic evidence is unchanged", async () => {
+    const h = await host();
+    const asOf = Date.parse("2026-10-25T09:00:00.000Z");
+    vi.setSystemTime(asOf);
+    h.deps.continuity = async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt: new Date(asOf).toISOString(), surface: "direct", wakes: "clear", owner: null });
+    let requestId = "transport-req-1";
+    h.deps.evidence = ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot({ ...SNAPSHOT, requestId, generatedAt: "2026-10-25T08:59:00.000Z", entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) }, mode, catalog, asOf);
+    const review = await h.ready();
+    expect(review.state).toBe("ready");
+    requestId = "transport-req-2";
+    vi.setSystemTime(asOf + 1000);
+    const result = await h.apply(review);
+    expect(result.state).toBe("succeeded");
+    expect([h.effects.archive.length, h.effects.create.length]).toEqual([1, 1]);
+    vi.useRealTimers();
+  });
+
+  it("apply revalidates the same quota refusal when only the observation clock advances within freshness", async () => {
+    const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", model: "claude-opus-5", status: "error", lastError: "429 usage limit exceeded" }) });
+    const asOf = Date.parse("2026-10-25T09:00:00.000Z");
+    vi.setSystemTime(asOf);
+    h.deps.evidence = ({ mode, catalog }) => routeHealthFromProviderSnapshot({ ...SNAPSHOT, requestId: "req-stable", generatedAt: "2026-10-25T08:59:00.000Z" }, mode, catalog, asOf);
+    h.deps.run = async (_command, args) => JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 409, body: { code: "placement_blocked", message: "no route", selection: {
+      considered: [{ route, excluded: "route_unavailable_now" }], provenance: { binding_key: KEY, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 },
+      route_health: JSON.parse(args.at(-1)!.slice("--route-health=".length)), selected: null } } });
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("blocked");
+    vi.setSystemTime(asOf + 1000);
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("blocked");
+    vi.useRealTimers();
   });
 
   it("refuses to retire without fresh, exact owner and wake proof", async () => {
@@ -315,11 +349,11 @@ describe("takeover apply", () => {
       }
       if (field === "evidence") {
         const prior = h.deps.evidence;
-        h.deps.evidence = (input) => Promise.resolve(prior(input)).then((resolved) => ({ ...resolved, observations: resolved.observations.map((entry) => ({ ...entry, revision: "r2" })) }));
+        h.deps.evidence = (input) => Promise.resolve(prior(input)).then((resolved) => ({ ...resolved, observations: resolved.observations.map((entry) => ({ ...entry, state: "unknown" as const })) }));
       }
       if (field === "deadline") {
-        const prior = h.deps.run!;
-        h.deps.run = async (...args) => { const receipt = JSON.parse(await prior(...args)); receipt.body.selected_validity.valid_until = resolverInstant(Date.parse(receipt.body.selected_validity.valid_until) + 1000); return JSON.stringify(receipt); };
+        const prior = h.deps.evidence!;
+        h.deps.evidence = (input) => Promise.resolve(prior(input)).then((resolved) => ({ ...resolved, max_age_seconds: resolved.max_age_seconds + 60 }));
       }
       if (field === "policy") {
         const prior = h.deps.run!;

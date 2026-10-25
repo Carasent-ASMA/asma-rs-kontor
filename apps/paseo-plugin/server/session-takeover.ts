@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { PaseoAgentListResult } from "@getpaseo/client";
 import type { KontorPluginConfig } from "./config";
 import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, parent, seatBinding } from "./labels";
-import type { RefusalObservation } from "../shared/provider-block";
+import { observeRefusal, type RefusalAgent, type RefusalObservation } from "../shared/provider-block";
 import { CREATE_REQUEST_LABEL } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -101,7 +101,10 @@ function routeObservationState(entry: ProviderRouteSnapshot["entries"][number], 
   if (entry.enabled === false) return "unavailable";
   if (entry.enabled !== true) return "unknown";
   if (entry.status === "ready") {
-    if (mode && entry.modes?.length && !entry.modes.some((candidate) => candidate.id === mode)) return "unknown";
+    if (mode) {
+      if (!entry.modes?.length) return "unknown";
+      if (!entry.modes.some((candidate) => candidate.id === mode)) return "unknown";
+    }
     return "available";
   }
   if (entry.status === "loading" || entry.status === "unknown") return "unknown";
@@ -109,14 +112,39 @@ function routeObservationState(entry: ProviderRouteSnapshot["entries"][number], 
   return "unknown";
 }
 
+/** Configured native account aliases from operator fleet `domains.accounts`; not activation or availability proof. */
+export type ConfiguredAccountCatalog = { accounts: ReadonlySet<string>; revision: string };
+
+/** Builds the account-alias allowlist from trusted operator fleet domains; conflicting duplicates fail closed. */
+export function configuredAccountCatalogFromFleet(domains: readonly { accounts: readonly string[] }[], revision: string): ConfiguredAccountCatalog | null {
+  const list = domains.flatMap((domain) => domain.accounts);
+  if (!list.length || new Set(list).size !== list.length) return null;
+  return { accounts: new Set(list), revision };
+}
+
+function qualifiedSnapshotTiming(snapshot: ProviderRouteSnapshot, asOfMs: number): { observedAt: string; revision: string } | null {
+  const requestId = snapshot.requestId.trim();
+  if (!requestId) return null;
+  const generatedMs = Date.parse(snapshot.generatedAt);
+  if (!Number.isFinite(generatedMs) || generatedMs > asOfMs) return null;
+  const observedAt = resolverInstant(generatedMs);
+  if (Date.parse(observedAt) > asOfMs) return null;
+  return { observedAt, revision: `${requestId}@${snapshot.generatedAt}` };
+}
+
 /** Maps the host provider snapshot into bounded per-route observations for the fleet selector. */
-export function routeHealthFromProviderSnapshot(snapshot: ProviderRouteSnapshot, mode: string | null, asOfMs = Date.now()): RouteHealth {
-  const generated = Date.parse(snapshot.generatedAt);
-  const observedAt = resolverInstant(Number.isFinite(generated) ? generated : asOfMs);
-  const revision = `${snapshot.requestId}@${snapshot.generatedAt}`;
+export function routeHealthFromProviderSnapshot(snapshot: ProviderRouteSnapshot, mode: string | null, catalog: ConfiguredAccountCatalog | null, asOfMs = Date.now()): RouteHealth {
+  const as_of = resolverInstant(asOfMs);
+  const timing = qualifiedSnapshotTiming(snapshot, asOfMs);
+  const observedAt = timing?.observedAt ?? as_of;
+  const revision = timing?.revision ?? "unqualified-snapshot";
+  const snapshotQualified = timing !== null;
   const observations: RouteHealth["observations"] = [];
   for (const entry of snapshot.entries) {
-    const state = routeObservationState(entry, mode);
+    const accountProven = catalog !== null && catalog.accounts.has(entry.provider);
+    const readiness = routeObservationState(entry, mode);
+    const state: RouteHealth["observations"][number]["state"] = !snapshotQualified || !accountProven ? "unknown"
+      : readiness === "available" ? "available" : readiness;
     const models = (entry.models ?? []).filter((model) => model.isSelectable !== false);
     for (const model of models) {
       type Effort = NonNullable<RouteHealth["observations"][number]["effort"]>;
@@ -131,30 +159,97 @@ export function routeHealthFromProviderSnapshot(snapshot: ProviderRouteSnapshot,
       }
     }
   }
-  return { as_of: resolverInstant(asOfMs), max_age_seconds: ROUTE_HEALTH_MAX_AGE_SECONDS, ...(mode ? { mode } : {}), observations };
+  return { as_of, max_age_seconds: ROUTE_HEALTH_MAX_AGE_SECONDS, ...(mode ? { mode } : {}), observations };
 }
 
-function observationMatchesRefusal(observation: RouteHealth["observations"][number], refusal: RefusalObservation): boolean {
-  return observation.account === refusal.route.provider
-    && (!refusal.route.model || observation.model === refusal.route.model);
+function observationMatchesRefusal(observation: RouteHealth["observations"][number], refusal: RefusalObservation, mode: string | null): boolean {
+  if (observation.account !== refusal.route.provider) return false;
+  if (mode && observation.mode !== mode) return false;
+  if (refusal.route.model && observation.model !== refusal.route.model) return false;
+  return true;
 }
 
 /**
- * Fail-closed tightening from the predecessor's current agent refusal (`lastError` / `providerUnavailable` only).
- * Not quota-window proof, timeline recovery, or persisted refusal memory; no host reads beyond the agent snapshot
- * already used in review.
+ * Canonical session-local refusal on the predecessor already read in review: exact account/model correlation only.
+ * Not quota-window proof, timeline recovery, or persisted refusal memory.
  */
-export function joinSessionLocalRefusalToRouteHealth(health: RouteHealth, refusal: RefusalObservation | null): RouteHealth {
+export function sessionLocalRefusalForTakeover(agent: RefusalAgent & { model?: string | null; runtimeInfo?: { model?: string | null } | null }, mode: string | null, observedAt: string): RefusalObservation | null {
+  const refusal = observeRefusal(agent, observedAt);
+  if (!refusal) return null;
+  const agentModel = agent.runtimeInfo?.model ?? agent.model ?? null;
+  if (agentModel && refusal.route.model && agentModel !== refusal.route.model) return null;
+  if (mode && refusal.route.model && agentModel && agentModel !== refusal.route.model) return null;
+  return refusal;
+}
+
+/**
+ * Known correlated refusal wins over generic snapshot readiness; it never clears from snapshot alone.
+ * Not quota-window proof; no reads beyond the agent snapshot already used in review.
+ */
+export function joinSessionLocalRefusalToRouteHealth(health: RouteHealth, refusal: RefusalObservation | null, mode: string | null = health.mode ?? null): RouteHealth {
   if (!refusal) return health;
-  const state: RouteHealth["observations"][number]["state"] = refusal.kind === "unknown" ? "unknown" : "unavailable";
+  const refusalState: RouteHealth["observations"][number]["state"] = refusal.kind === "unknown" ? "unknown" : "unavailable";
   const tag = `session-refusal:${refusal.kind}@${refusal.observedAt}`;
   let changed = false;
   const observations = health.observations.map((observation) => {
-    if (!observationMatchesRefusal(observation, refusal)) return observation;
+    if (!observationMatchesRefusal(observation, refusal, mode)) return observation;
     changed = true;
+    const state: RouteHealth["observations"][number]["state"] = observation.state === "unavailable" || refusalState === "unavailable" ? "unavailable" : refusalState;
     return { ...observation, state, revision: `${observation.revision}+${tag}` };
   });
   return changed ? { ...health, observations } : health;
+}
+
+/** Semantic route/refusal facts for review/apply pinning; transport requestId, revision and observation clocks are excluded. */
+export function routeEvidenceSemanticPayload(health: RouteHealth, refusal: RefusalObservation | null, catalogRevision: string | null) {
+  return {
+    catalogRevision,
+    maxAgeSeconds: health.max_age_seconds,
+    mode: health.mode ?? null,
+    observations: health.observations.map(({ account, model, effort, mode, state }) =>
+      ({ account, model, effort: effort ?? null, mode: mode ?? null, state })),
+    refusal: refusal ? { kind: refusal.kind, failureAt: refusal.failureAt, route: refusal.route, message: refusal.message } : null,
+  };
+}
+
+/** True when every observation timestamp is at or before asOf and within max_age_seconds. */
+export function routeEvidenceFreshEnough(health: RouteHealth, asOfMs = Date.now()): boolean {
+  const ceiling = health.max_age_seconds * 1000;
+  for (const observation of health.observations) {
+    const observed = Date.parse(observation.observed_at);
+    if (!Number.isFinite(observed) || observed > asOfMs || asOfMs - observed > ceiling) return false;
+  }
+  return true;
+}
+
+/** Pins semantic evidence identity and freshness policy, not transport requestId or raw observation clocks. */
+export function routeEvidenceDigest(health: RouteHealth, refusal: RefusalObservation | null, catalogRevision: string | null): string {
+  return createHash("sha256").update(JSON.stringify(routeEvidenceSemanticPayload(health, refusal, catalogRevision))).digest("hex");
+}
+
+const takeoverSpecPin = (spec: { effectValidity?: unknown }) => {
+  const { effectValidity, ...rest } = spec;
+  return rest;
+};
+
+/** Apply recomputes pins; transport-only evidence refresh is allowed when semantic identity and freshness hold. */
+export function takeoverPinnedMatches(reviewed: {
+  predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
+  route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: unknown;
+  spec: { effectValidity?: unknown };
+}, current: {
+  predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
+  route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: unknown;
+  spec: { effectValidity?: unknown };
+}): boolean {
+  if (reviewed.predecessor !== current.predecessor || reviewed.bindingKey !== current.bindingKey) return false;
+  if (reviewed.created !== current.created || reviewed.ownerRevision !== current.ownerRevision) return false;
+  if (!isDeepStrictEqual(reviewed.owner, current.owner) || !isDeepStrictEqual(reviewed.continuity, current.continuity)) return false;
+  if (!isDeepStrictEqual(reviewed.route.provenance, current.route.provenance)) return false;
+  if (!isDeepStrictEqual(reviewed.route.selected, current.route.selected)) return false;
+  if (!isDeepStrictEqual(reviewed.route.considered, current.route.considered)) return false;
+  if (reviewed.evidence !== current.evidence) return false;
+  return isDeepStrictEqual(takeoverSpecPin(reviewed.spec), takeoverSpecPin(current.spec));
 }
 
 const TOOL = "kontor_fleet_policy_resolve";

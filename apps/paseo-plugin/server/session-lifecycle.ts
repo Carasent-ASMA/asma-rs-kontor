@@ -9,7 +9,11 @@ import { parent } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
-import { BINDING_KEY, GOVERNED_ELSEWHERE, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute, routeHealthFromProviderSnapshot, takeoverAdapter, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute } from "./session-takeover";
+import {
+  BINDING_KEY, GOVERNED_ELSEWHERE, configuredAccountCatalogFromFleet, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
+  routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, takeoverAdapter, takeoverPinnedMatches,
+  type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute,
+} from "./session-takeover";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
@@ -671,8 +675,10 @@ export type TakeoverDeps = {
   create: Pick<ReturnType<typeof createSessionCreateService>, "createSeat" | "check" | "preflight" | "record">;
   /** Configured profiles a session may be associated with; discovery only, the resolver validates the one chosen. */
   choices: () => Promise<ProfileChoice[]>;
+  /** Operator fleet `domains.accounts` allowlist; unverifiable or conflicting catalogs fail closed. */
+  accountCatalog: () => Promise<ConfiguredAccountCatalog>;
   /** The host's route evidence for one checkout and permission mode; only a qualified positive source may call a route available. */
-  evidence: (input: { mode: string | null; cwd: string }) => RouteHealth | Promise<RouteHealth>;
+  evidence: (input: { mode: string | null; cwd: string; catalog: ConfiguredAccountCatalog }) => RouteHealth | Promise<RouteHealth>;
   /** A qualified owner/wake read. Missing support is unknown and blocks retirement. */
   continuity?: (agentId: string, requestId: string) => Promise<TakeoverContinuity | null>;
   run?: ResolverRun;
@@ -800,11 +806,14 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     }
     const mode = first.currentModeId ?? first.runtimeInfo?.modeId ?? null;
     if (!mode) return answer("unknown", "This session's permission mode cannot be read, so a successor's permission boundary cannot be confirmed.");
-    let health: RouteHealth;
+    let health: RouteHealth, catalog: ConfiguredAccountCatalog;
     const routeEvidenceAt = new Date().toISOString();
-    try { health = await Promise.resolve(deps.evidence({ mode, cwd: first.cwd })); }
+    try { catalog = await deps.accountCatalog(); }
+    catch (error) { return answer("unknown", `The configured account catalog could not be read: ${errorText(error)}.`); }
+    try { health = await Promise.resolve(deps.evidence({ mode, cwd: first.cwd, catalog })); }
     catch (error) { return answer("unknown", `Provider route evidence could not be read: ${errorText(error)}.`); }
-    health = joinSessionLocalRefusalToRouteHealth(health, observeRefusal(first, routeEvidenceAt));
+    const sessionRefusal = sessionLocalRefusalForTakeover(first, mode, routeEvidenceAt);
+    health = joinSessionLocalRefusalToRouteHealth(health, sessionRefusal, mode);
     if (!health.observations.length) limits = [...limits, UNOBSERVED_LIMIT];
     route = await resolveTakeoverRoute(deps.config, direct, { agentId, bindingKey: association.bindingKey }, health, deps.run);
     if (route.state !== "selected" || !route.selected || !route.provenance || !route.validity) return answer(route.state === "selected" ? "unknown" : route.state, route.message);
@@ -868,7 +877,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (takeoverRevision(last) !== takeoverRevision(first)) return answer("unknown", "This session changed during its continuity checks. Review it again; nothing is retired.");
     return answer("ready", `Takes over on ${selected.account}/${selected.model}, the first route in chain ${route.provenance.chain} with fresh positive evidence.`, {
       predecessor: takeoverRevision(last), owner: direct, ownerRevision, created, bindingKey: association.bindingKey!,
-      route: { provenance: route.provenance, selected: route.selected, considered: route.considered, validity: route.validity }, evidence: hash(JSON.stringify({ ...health, as_of: null })), continuity, spec,
+      route: { provenance: route.provenance, selected: route.selected, considered: route.considered, validity: route.validity },
+      evidence: routeEvidenceDigest(health, sessionRefusal, catalog.revision), continuity, spec,
     });
   }
 
@@ -966,11 +976,13 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       return kept;
     };
     const finish = async (result: TakeoverOutcome) => await write(result) ? result : { ...result, message: `${result.message} This session's fence changed meanwhile, so this result was not recorded.` };
-    const spec = pinned.spec, named = { requestId: spec.requestId, agentId: null, title: spec.title };
+    let spec = pinned.spec;
+    const named = { requestId: spec.requestId, agentId: null, title: spec.title };
     try {
       const now = await assess(agentId, record.chosen, record.requestId);
-      if (!now.pinned || JSON.stringify(now.pinned) !== JSON.stringify(pinned))
+      if (!now.pinned || !takeoverPinnedMatches(pinned, now.pinned))
         return finish(outcome(record, "refused", "preflight", `${now.pinned ? "This session, its owner, its chain or its route evidence changed since review." : now.message} Nothing was done; review again.`, null, "review"));
+      spec = { ...spec, effectValidity: now.pinned.spec.effectValidity };
       if (!await write(outcome(record, "uncertain", "intent", "Takeover intent recorded before any effect. If nothing follows, Check reads the outcome; nothing is resent.", named, "check")))
         return refuse("Another action took this session's fence first.");
       const latest = await exact(agentId);
@@ -1058,6 +1070,13 @@ async function configuredProfiles(): Promise<ProfileChoice[]> {
   if (snapshot.data?.kind !== "fleet") throw new Error(`the operator fleet source is ${snapshot.status}`);
   return snapshot.data.bindings.filter((binding) => binding.chainResolved && BINDING_KEY.test(binding.reference)).slice(0, 200).map((binding) => ({ bindingKey: binding.reference, chain: binding.chainName }));
 }
+async function operatorAccountCatalog(): Promise<ConfiguredAccountCatalog> {
+  const catalog = sourceCatalog(), snapshot = await createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats).read({ sourceId: "operator" });
+  if (snapshot.data?.kind !== "fleet") throw new Error(`the operator fleet source is ${snapshot.status}`);
+  const built = configuredAccountCatalogFromFleet(snapshot.data.domains, snapshot.sha256 ?? snapshot.readAt);
+  if (!built) throw new Error("The operator fleet source names no verifiable configured account aliases.");
+  return built;
+}
 export function contributeSessionLifecycle(server: PluginServerContext) {
   const root = join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-lifecycle-v1");
   server.handle(lifecycleCapabilities, (_input, { paseo }) => createLifecycleService(paseo, root).capabilities());
@@ -1070,7 +1089,8 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
   const takeover = (paseo: PaseoApi) => createTakeoverService(paseo, root, {
     config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), choices: configuredProfiles,
-    evidence: async ({ mode, cwd }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode),
+    accountCatalog: operatorAccountCatalog,
+    evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
   });
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));
   server.handle(applyTakeover, (input, { paseo }) => takeover(paseo).apply(input));
