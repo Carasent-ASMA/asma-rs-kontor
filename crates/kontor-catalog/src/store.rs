@@ -246,7 +246,7 @@ impl Database {
     /// # Errors
     /// Any SQLite refusal, a too-new schema, or an unusable directory.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
         let journal: String =
             connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
@@ -256,7 +256,7 @@ impl Database {
             ));
         }
         connection.pragma_update(None, "foreign_keys", true)?;
-        migrate(&connection)?;
+        migrate(&mut connection)?;
         let now = Timestamp::now().to_string();
         connection.execute(
             "INSERT OR IGNORE INTO catalog_scope
@@ -871,7 +871,7 @@ fn bounded(text: &str) -> String {
     text.chars().take(4096).collect()
 }
 
-fn migrate(connection: &Connection) -> Result<(), StoreError> {
+fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version > CATALOG_SCHEMA_VERSION {
         return Err(StoreError::SchemaTooNew {
@@ -884,7 +884,7 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
     }
     let pending = usize::try_from(version)
         .map_err(|_| StoreError::Corrupt("negative schema version".to_owned()))?;
-    let transaction = connection.unchecked_transaction()?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for migration in &MIGRATIONS[pending..] {
         transaction.execute_batch(migration)?;
     }
