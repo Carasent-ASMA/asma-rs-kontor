@@ -107,14 +107,14 @@ describe("source picker data", () => {
   });
 });
 
-const issue = (key: string, epic: boolean, type = epic ? "Epic" : "Task"): JiraIssue => ({ key, epic, type, summary: `Title ${key}`, status: "Open", statusCategory: "To Do", open: true, parent: null });
+const issue = (key: string, epic: boolean, type = epic ? "Epic" : "Task"): JiraIssue => ({
+  id: `jira-${key}`, key, created: "2026-01-01T00:00:00.000Z", epic, type, summary: `Title ${key}`, status: "Open", statusCategory: "To Do", open: true, parent: null,
+});
 describe("Jira picker", () => {
-  it("filters real epic metadata, caps rendered rows at50, and maps only explicit type names to host glyphs", () => {
+  it("keeps backend rows intact except exact-key postfilter and maps only explicit type names to host glyphs", () => {
     const rows = Array.from({ length: 100 }, (_, i) => issue(`ASMA-${100 - i}`, i % 2 === 0));
-    expect(jiraPickerRows(rows, "all")).toHaveLength(50);
-    expect(jiraPickerRows(rows, "non-epic")).toHaveLength(50);
-    expect(jiraPickerRows(rows, "epic").every((row) => row.epic)).toBe(true);
-    expect(jiraPickerRows([issue("ASMA-10", true), issue("ASMA-100", true)], "all", "asma-10").map((row) => row.key)).toEqual(["ASMA-10"]);
+    expect(jiraPickerRows(rows)).toHaveLength(100);
+    expect(jiraPickerRows([issue("ASMA-10", true), issue("ASMA-100", true)], "asma-10").map((row) => row.key)).toEqual(["ASMA-10"]);
     expect(issueTypeIcon("Bug")).toBe("Bug"); expect(issueTypeIcon("Epic")).toBe("Zap");
     expect(issueTypeIcon("User Story")).toBe("BookOpen"); expect(issueTypeIcon("Task")).toBe("SquareCheck");
     expect(issueTypeIcon("Sub-task")).toBe("ListTree"); expect(issueTypeIcon("custom issue type")).toBe("Tag");
@@ -129,7 +129,7 @@ describe("Jira picker", () => {
     expect(draw().props.rows.map((row: { id: string }) => row.id)).toEqual(["ASMA-999"]);
     first.resolve({ issues: [issue("ASMA-1", true)], jiraProblem: null }); await tick();
     expect(draw().props.rows.map((row: { id: string }) => row.id)).toEqual(["ASMA-999"]);
-    expect(hooks.read).toHaveBeenLastCalledWith({ role: "LSA", start: "from-jira", issueKey: "outside browse window" });
+    expect(hooks.read).toHaveBeenLastCalledWith({ role: "LSA", start: "from-jira", issueKey: "outside browse window", issueClass: "eligible" });
     expect(draw().props.selected).toBe("ASMA-1");
     hooks.read.mockRejectedValueOnce(new Error("network")); draw().props.onQuery("retry"); draw(); await vi.advanceTimersByTimeAsync(250);
     expect(draw().props.error).toContain("network");

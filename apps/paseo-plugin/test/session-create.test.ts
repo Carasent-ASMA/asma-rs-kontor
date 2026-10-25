@@ -289,14 +289,15 @@ describe("create options", () => {
     expect((await s.service.options({ role: "TPM" })).profile).toMatchObject({ name: "tpm", provider: "opencode", model: "big" });
   });
 
-  it("lists every open issue of every type from any desk, an ineligible one included, and searches by the given text", async () => {
+  it("lists only open epics on ADAM and only non-epic issues without an active parent on TICKETS", async () => {
     const s = await setup();
-    for (const projectId of ["prj-adam", "prj-tickets", "prj-pr"]) {
-      expect((await s.service.options({ projectId, role: "LSA", start: "from-jira" })).issues.map((issue) => issue.key)).toEqual(["ASMA-100", "ASMA-101", "ASMA-102", "ASMA-103"]);
-      expect(s.jira).toHaveBeenLastCalledWith({ query: "", issueClass: null, openOnly: true });
-    }
-    expect((await s.service.options({ role: "TPM", start: "from-jira", issueKey: "ASMA-103" })).issues.map((issue) => issue.key)).toEqual(["ASMA-103"]);
-    expect(s.jira).toHaveBeenLastCalledWith({ query: "ASMA-103", issueClass: null, openOnly: true });
+    expect((await s.service.options({ projectId: "prj-adam", role: "LSA", start: "from-jira" })).issues.map((issue) => issue.key)).toEqual(["ASMA-100"]);
+    const tickets = await s.service.options({ projectId: "prj-tickets", role: "TPM", start: "from-jira" });
+    expect(tickets.issues.map((issue) => issue.key)).toEqual(["ASMA-102", "ASMA-103"]);
+    expect(s.jira).toHaveBeenCalledWith({ query: "", issueClass: "non-epic", openOnly: true });
+    s.jira.mockClear();
+    expect((await s.service.options({ projectId: "prj-pr", role: "LSA", start: "from-jira" })).issues).toEqual([]);
+    expect(s.jira).not.toHaveBeenCalled();
     s.jira.mockClear();
     await s.service.options({ projectId: "prj-adam", start: "ad-hoc" });
     expect(s.jira).not.toHaveBeenCalled();
