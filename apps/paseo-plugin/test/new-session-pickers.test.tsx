@@ -29,7 +29,7 @@ vi.mock("@getpaseo/plugin/client", () => ({ useRpc: () => hooks.read, getPaseoCl
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput" }));
 vi.mock("../client/page-controls", () => ({ Action: "Action", NO_PRESS_DELAY: {}, pressFeedback: () => ({}) }));
 
-import { isSourceId, readSource, readSourceCatalog, sourceRows } from "../client/source-picker";
+import { isSourceId, readSource, readSourceCatalog, sourceRows, sourceTokenMatches } from "../client/source-picker";
 import { issueTypeIcon, jiraPickerRows, JiraIssuePicker } from "../client/jira-issue-picker";
 import { SourceSessionPicker } from "../client/source-session-picker";
 import { SearchPicker } from "../client/search-picker";
@@ -66,6 +66,16 @@ describe("source picker data", () => {
     expect(sourceRows(rows, "title 0", false).map((entry) => entry.id)).toContain("id-0");
     expect(sourceRows(rows, "id-0", false).map((entry) => entry.id)).toEqual(["id-0"]);
     expect(isSourceId(` ${id} `)).toBe(true);
+  });
+  it("matches title words without numeric substring false positives across the full catalog", () => {
+    const sid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const rows = Array.from({ length: 70 }, (_, i) => sessionEntry(sid(i + 1), {
+      title: `Human context ${i + 1} with a long readable session name`, createdAt: new Date(1000000 * (i + 1)).toISOString(),
+    }));
+    expect(sourceRows(rows, "Human context 1 with", false)).toHaveLength(1);
+    expect(sourceRows(rows, "Human context 1 with", false)[0]!.id).toBe(sid(1));
+    expect(sourceTokenMatches("Human context 10 with", "1")).toBe(false);
+    expect(sourceTokenMatches("Human context 1 with", "1")).toBe(true);
   });
   it("collects every host page including archived and rejects incomplete paging", async () => {
     const f = sourceClient();

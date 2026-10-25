@@ -8,11 +8,20 @@ export type SourceChoice = SourceRead & { hostId: string };
 export const sourceState = (entry: SourceSession) => `${entry.archivedAt ? "Archived · " : ""}${entry.status}`;
 export const isSourceId = (query: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query.trim());
 
+/** Title tokens match whole words/numbers; hyphenated keys stay substring-friendly for IDs. */
+export function sourceTokenMatches(haystack: string, token: string): boolean {
+  const text = haystack.toLocaleLowerCase().replace(/\n/g, " "), part = token.toLocaleLowerCase();
+  if (!part) return true;
+  if (part.includes("-")) return text.includes(part);
+  const escaped = part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^0-9a-z])${escaped}(?:$|[^0-9a-z])`, "i").test(text);
+}
+
 /** Scope and match precede the browse limit; a title search covers every collected page. */
 export function sourceRows(entries: readonly SourceSession[], query: string, includeArchived: boolean): SourceSession[] {
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const rows = entries.filter((entry) => (includeArchived || !entry.archivedAt)
-    && tokens.every((token) => `${entry.title}\n${entry.id}`.toLocaleLowerCase().includes(token)))
+    && tokens.every((token) => sourceTokenMatches(`${entry.title}\n${entry.id}`, token)))
     .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0) || a.id.localeCompare(b.id));
   return tokens.length ? rows : rows.slice(0, 10);
 }

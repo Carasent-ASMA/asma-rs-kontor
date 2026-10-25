@@ -132,14 +132,31 @@ async function bounds(page, width, height, name) {
       await page.screenshot({ path: path.join(output, 'source-context-unavailable.png') });
     } finally { await context.close(); }
   });
-  for (const mode of ['screen', 'composer']) await run(mode + '-combobox-arrow-enter-escape', async () => {
-    const { page, context } = await start(390, mode);
+  for (const width of [320, 390]) for (const mode of ['screen', 'composer']) await run(width + '-' + mode + '-combobox-keyboard', async () => {
+    const { page, context } = await start(width, mode);
     try {
       await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
       const search = page.getByRole('combobox', { name: 'Choose a Jira issue' }); await search.fill('Outside initial window');
-      await expect(page.getByRole('option')).toHaveCount(1); await search.press('ArrowDown');
-      await expect(search).toHaveAttribute('aria-activedescendant', /ASMA-811/); await search.press('Enter');
-      await page.getByRole('button', { name: 'Change Jira issue' }).click(); await search.press('Escape');
+      const option = page.locator('#kontor-jira-picker-option-ASMA-811');
+      await expect(page.getByRole('option')).toHaveCount(1);
+      await search.press('ArrowDown');
+      await expect(search).toHaveAttribute('aria-activedescendant', 'kontor-jira-picker-option-ASMA-811');
+      await expect(option).toHaveAttribute('aria-selected', 'true');
+      await search.press('Home');
+      await expect(search).toHaveAttribute('aria-activedescendant', 'kontor-jira-picker-option-ASMA-811');
+      await search.press('End');
+      await expect(search).toHaveAttribute('aria-activedescendant', 'kontor-jira-picker-option-ASMA-811');
+      await search.press('ArrowUp');
+      await expect(search).toHaveAttribute('aria-activedescendant', 'kontor-jira-picker-option-ASMA-811');
+      await search.press('Enter');
+      await page.getByRole('button', { name: 'Change Jira issue' }).click();
+      await search.fill('Outside initial window');
+      await expect(page.getByRole('option')).toHaveCount(1);
+      await search.press('ArrowDown');
+      await search.press('Tab');
+      if (mode === 'screen') await expect(page.getByRole('dialog')).toContainText('Choose a Jira issue');
+      else await expect(page.getByRole('button', { name: 'Clear choose a jira issue search', exact: true })).toBeFocused();
+      await search.press('Escape');
       await expect(page.getByRole('button', { name: 'Change Jira issue' })).toBeFocused();
     } finally { await context.close(); }
   });
