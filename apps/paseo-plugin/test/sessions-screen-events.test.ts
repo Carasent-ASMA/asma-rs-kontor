@@ -830,11 +830,12 @@ describe("SessionsScreen toolbar events", () => {
 
   it("retains injected directory ownership, project/epic filtering and partial-read truth", () => {
     patchSessionView("host-a:linked", { query: "", scrollOffset: 0, ...toolbarOpenPatch(true) });
+    const retry = vi.fn();
     const supplied = { state: { ...emptyDirectoryState(), status: "ready" as const,
       entries: [sessionEntry("match", { projectKey: "project-a", labels: { epic: "ASMA-1" } }),
         sessionEntry("other-project", { projectKey: "project-b", labels: { epic: "ASMA-1" } }),
         sessionEntry("other-epic", { projectKey: "project-a", labels: { epic: "ASMA-2" } })],
-      pages: 1, lastUpdatedAt: 0, staleReason: "Live updates are unavailable; the inventory may be incomplete." }, refresh: vi.fn() };
+      pages: 1, lastUpdatedAt: 0, staleReason: "Live updates are unavailable; the inventory may be incomplete." }, refresh: vi.fn(), retry };
     const onIncludeArchived = vi.fn();
     harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" },
       layout: { compact: true, platform: "ios" }, theme: { colors } as PluginTheme, params: {},
@@ -851,7 +852,7 @@ describe("SessionsScreen toolbar events", () => {
     const banner = findByTestID(harness.current(), "sessions-source-banner");
     expect(banner.props.message).toContain("Inventory read attempt");
     expect(banner.props.message).not.toContain("Last complete read");
-    (banner.props.onAction as () => void)(); expect(supplied.refresh).toHaveBeenCalledOnce();
+    (banner.props.onAction as () => void)(); expect(retry).toHaveBeenCalledOnce(); expect(supplied.refresh).not.toHaveBeenCalled();
   });
 
   it("keeps the actual directory hook disabled for an injected inventory and isolates late host reads", async () => {

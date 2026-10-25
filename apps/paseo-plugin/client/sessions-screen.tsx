@@ -1526,7 +1526,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     includeArchived: true,
     enabled: directory === undefined,
   });
-  const { state: rawState, refresh } = directory ?? localDirectory;
+  const { state: rawState, refresh, retry = refresh } = directory ?? localDirectory;
   // Read when an action settles, not when it started: a live, complete directory already streams that row's change.
   const liveDirectory = useRef(false);
   liveDirectory.current = rawState.status === "ready" && rawState.live && rawState.inventoryComplete === true;
@@ -2513,7 +2513,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           }: ${updatedLabel(state.lastUpdatedAt)}.`}
           tone={state.status === "error" ? "danger" : "warning"}
           actionLabel="Retry"
-          onAction={refresh}
+          onAction={retry}
           colors={colors}
           {...noticeProps}
         />

@@ -8,6 +8,7 @@ import {
   collectDirectory,
   deriveNeedsInput,
   emptyDirectoryState,
+  DIRECTORY_REQUEST_TIMEOUT_MS,
   SessionDirectory,
   sortDirectoryEntries,
   toDirectoryEntry,
@@ -329,6 +330,16 @@ describe("collectDirectory", () => {
     ]);
     expect(fake.listCalls.every((call) => call.page?.limit === 200)).toBe(true);
     expect(fake.listCalls.every((call) => call.filter?.includeArchived === false)).toBe(true);
+    expect(fake.listCalls.every((call) => call.timeout === DIRECTORY_REQUEST_TIMEOUT_MS)).toBe(true);
+  });
+
+  it("settles a page wait when a newer directory read supersedes it", async () => {
+    const controller = new AbortController();
+    const list = vi.fn(() => new Promise<never>(() => undefined));
+    const client = { agents: { list } } as unknown as DirectoryClient;
+    const read = collectDirectory(client, false, controller.signal);
+    controller.abort();
+    await expect(read).rejects.toThrow(/superseded/);
   });
 
   it("rejects a repeated cursor instead of returning a partial inventory", async () => {
@@ -1154,6 +1165,204 @@ describe("SessionDirectory", () => {
         state.entries[0]?.updatedAt === "2026-10-18T10:02:00.000Z",
     );
     expect(settled.entries[0]?.status).toBe("idle");
+
+    await directory.dispose();
+  });
+
+  it("aborts a pre-reconnect read that never settles and starts a fresh walk", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Old" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const held = fake.holdNextPage();
+    const oldRefresh = directory.refresh();
+    await held.started;
+    fake.setPages([[entry("agent-a", { title: "Fresh" })]]);
+
+    directory.markHostOffline();
+    const reconnecting = directory.reconnect();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Fresh",
+      1_500,
+    );
+    await reconnecting;
+
+    expect(settled.live).toBe(true);
+    expect(settled.entries.map((item) => item.id)).toEqual(["agent-a"]);
+    expect(settled.entries[0]?.title).toBe("Fresh");
+
+    held.release();
+    await oldRefresh;
+    expect(latest.entries[0]?.title).toBe("Fresh");
+
+    await directory.dispose();
+  });
+
+  it("settles a pre-reconnect subscription that never returns before reconnecting", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    const held = fake.holdNextSubscribe();
+    const starting = directory.start();
+    await held.started;
+
+    directory.markHostOffline();
+    await starting;
+
+    const reconnecting = directory.reconnect();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries.length === 1,
+      1_500,
+    );
+    await reconnecting;
+
+    expect(settled.live).toBe(true);
+    expect(settled.entries[0]?.id).toBe("agent-a");
+
+    held.release();
+    await directory.dispose();
+  });
+
+  it("Retry supersedes a held read while last-known rows stay stale until the fresh walk completes", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Old" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const oldHeld = fake.holdNextPage();
+    const oldRefresh = directory.refresh();
+    await oldHeld.started;
+    fake.setPages([[entry("agent-a", { title: "Fresh" })]]);
+
+    const retryHeld = fake.holdNextPage();
+    const retrying = directory.retry();
+    await retryHeld.started;
+
+    expect(latest.status).toBe("stale");
+    expect(latest.live).toBe(false);
+    expect(latest.entries.map((item) => item.id)).toEqual(["agent-a"]);
+    expect(latest.entries[0]?.title).toBe("Old");
+    expect(latest.staleReason).toMatch(/Reconnected/);
+
+    retryHeld.release();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Fresh",
+      1_500,
+    );
+    await retrying;
+
+    expect(settled.live).toBe(true);
+    expect(settled.entries[0]?.title).toBe("Fresh");
+
+    oldHeld.release();
+    await oldRefresh;
+    expect(latest.entries[0]?.title).toBe("Fresh");
+
+    await directory.dispose();
+  });
+
+  it("uses one fresh generation for repeated Retry and fences both late reads", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Old" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const firstHeld = fake.holdNextPage();
+    const oldRefresh = directory.refresh();
+    await firstHeld.started;
+
+    const secondHeld = fake.holdNextPage();
+    const firstRetry = directory.retry();
+    await secondHeld.started;
+
+    fake.setPages([[entry("agent-a", { title: "Latest retry" })]]);
+    const thirdHeld = fake.holdNextPage();
+    const secondRetry = directory.retry();
+    await thirdHeld.started;
+
+    thirdHeld.release();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Latest retry",
+      1_500,
+    );
+    await Promise.all([firstRetry, secondRetry]);
+
+    expect(settled.live).toBe(true);
+    expect(settled.entries[0]?.title).toBe("Latest retry");
+
+    firstHeld.release();
+    secondHeld.release();
+    await oldRefresh;
+    expect(latest.entries[0]?.title).toBe("Latest retry");
+
+    await directory.dispose();
+  });
+
+  it("starts a fresh walk for each reconnect while an earlier read is held", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { title: "Old" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const firstHeld = fake.holdNextPage();
+    const oldRefresh = directory.refresh();
+    await firstHeld.started;
+
+    fake.setPages([[entry("agent-a", { title: "First reconnect" })]]);
+    const secondHeld = fake.holdNextPage();
+    const firstReconnect = directory.reconnect();
+    await secondHeld.started;
+
+    fake.setPages([[entry("agent-a", { title: "Latest reconnect" })]]);
+    const latestReconnect = directory.reconnect();
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.title === "Latest reconnect",
+      1_500,
+    );
+    await Promise.all([firstReconnect, latestReconnect]);
+
+    expect(settled.entries[0]?.title).toBe("Latest reconnect");
+    firstHeld.release();
+    secondHeld.release();
+    await oldRefresh;
+    expect(latest.entries[0]?.title).toBe("Latest reconnect");
 
     await directory.dispose();
   });

@@ -232,6 +232,7 @@ export function useSessionDirectory(input: {
 }): {
   readonly state: DirectoryState;
   readonly refresh: () => void;
+  readonly retry?: () => void;
 } {
   const { hostId, hostStatus, includeArchived, enabled = true } = input;
   const initialArchived = includeArchived ?? false;
@@ -278,6 +279,9 @@ export function useSessionDirectory(input: {
   const refresh = useCallback(() => {
     void directoryRef.current?.directory.refresh("Refreshing at your request.");
   }, []);
+  const retry = useCallback(() => {
+    void directoryRef.current?.directory.retry();
+  }, []);
 
-  return { state, refresh };
+  return { state, refresh, retry };
 }

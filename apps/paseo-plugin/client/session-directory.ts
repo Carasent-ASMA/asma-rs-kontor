@@ -29,6 +29,7 @@ export const DIRECTORY_MAX_PAGES = 1_000;
 export const PENDING_UPDATE_LIMIT = 256;
 export const DEFAULT_RETRY_DELAY_MS = 500;
 export const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+export const DIRECTORY_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Structured labels that carry workflow identifiers and PR references. They are
@@ -343,6 +344,33 @@ function filterOptions(includeArchived: boolean): NonNullable<PaseoAgentListOpti
   return includeArchived ? { includeArchived: true } : { includeArchived: false };
 }
 
+function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(new Error("The session directory read was superseded."));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      cleanup();
+      reject(new Error("The session directory read was superseded."));
+    };
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Reads every page of the native agent directory. The loop never stops on a
  * visible page count and rejects a repeated or malformed cursor instead of
@@ -362,14 +390,19 @@ export async function collectDirectory(
     if (signal?.aborted) {
       throw new Error("Directory walk aborted.");
     }
-    const result = await client.agents.list({
-      filter: filterOptions(includeArchived),
-      sort: AGENT_SORT,
-      page: {
-        limit: DIRECTORY_PAGE_LIMIT,
-        ...(cursor === undefined ? {} : { cursor }),
-      },
-    });
+    const result = await abortable(
+      client.agents.list({
+        filter: filterOptions(includeArchived),
+        sort: AGENT_SORT,
+        page: {
+          limit: DIRECTORY_PAGE_LIMIT,
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        signal,
+        timeout: DIRECTORY_REQUEST_TIMEOUT_MS,
+      }),
+      signal,
+    );
     pages += 1;
     for (const entry of result.entries) {
       if (!includeArchived && (entry.agent.archivedAt ?? null) !== null) {
@@ -410,6 +443,7 @@ export interface SessionDirectory {
   getState(): DirectoryState;
   start(): Promise<void>;
   reconnect(): Promise<void>;
+  retry(): Promise<void>;
   markHostOffline(reason?: string): void;
   setIncludeArchived(includeArchived: boolean): Promise<void>;
   refresh(reason?: string): Promise<void>;
@@ -474,7 +508,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     readonly generation: number;
     readonly promise: Promise<void>;
   } | null = null;
-  const directoryAbort = new AbortController();
+  let refreshAbort: AbortController | null = null;
+  let subscriptionAbort: AbortController | null = null;
 
   function getState(): DirectoryState {
     return {
@@ -495,6 +530,16 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     options.onChange(getState());
+  }
+
+  function abortRefresh(): void {
+    refreshAbort?.abort();
+    refreshAbort = null;
+  }
+
+  function abortSubscriptionAttempt(): void {
+    subscriptionAbort?.abort();
+    subscriptionAbort = null;
   }
 
   function releaseSubscription(): void {
@@ -602,12 +647,14 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     const runGeneration = generation;
     const runEpoch = readEpoch;
+    const controller = new AbortController();
+    refreshAbort = controller;
     let collected: CollectedDirectory;
     try {
       collected = await collectDirectory(
         options.client(),
         includeArchived,
-        directoryAbort.signal,
+        controller.signal,
       );
     } catch (refreshError) {
       if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
@@ -625,6 +672,10 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
       scheduleRetry();
       return;
+    } finally {
+      if (refreshAbort === controller) {
+        refreshAbort = null;
+      }
     }
     if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
       return;
@@ -684,14 +735,27 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     // Only a cold directory hydrates from a larger first page. Every later
     // subscription keeps the minimal page; its rows come from the walk instead.
     const hydrationLimit = entries.size === 0 ? bootstrapLimit : 1;
+    const controller = new AbortController();
+    subscriptionAbort = controller;
     try {
-      result = await options.client().agents.list({
-        filter: filterOptions(includeArchived),
-        sort: AGENT_SORT,
-        page: { limit: hydrationLimit },
-        subscribe: {},
-      });
+      result = await abortable(
+        options.client().agents.list({
+          filter: filterOptions(includeArchived),
+          sort: AGENT_SORT,
+          page: { limit: hydrationLimit },
+          subscribe: {},
+          signal: controller.signal,
+          timeout: DIRECTORY_REQUEST_TIMEOUT_MS,
+        }),
+        controller.signal,
+      );
+      if (subscriptionAbort === controller) {
+        subscriptionAbort = null;
+      }
     } catch (subscriptionError) {
+      if (subscriptionAbort === controller) {
+        subscriptionAbort = null;
+      }
       if (expectedGeneration !== generation || disposed) {
         return;
       }
@@ -740,6 +804,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           // over the reconciled inventory. The read epoch also fences a page
           // walk that started before this snapshot: it must not publish old
           // inventory as ready/live while the fresh reconciliation is pending.
+          abortRefresh();
           readEpoch += 1;
           pendingUpdates = [];
           pendingOverflow = false;
@@ -792,6 +857,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     // Every connection attempt gets a new generation. A queued update from the
     // previous subscription and an in-flight page walk from before the
     // reconnect are both fenced by this value.
+    abortRefresh();
+    abortSubscriptionAttempt();
     generation += 1;
     const connectionGeneration = generation;
     if (entries.size === 0) {
@@ -805,7 +872,15 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
     }
     await openSubscription(connectionGeneration);
-    await refresh("Reconciling the full session directory.");
+    await refreshNow("Reconciling the full session directory.");
+  }
+
+  async function refreshNow(reason: string): Promise<void> {
+    const previous = refreshPromise;
+    if (previous) {
+      await previous.catch(() => undefined);
+    }
+    await refresh(reason);
   }
 
   async function refresh(reason = "Refreshing the session directory."): Promise<void> {
@@ -870,11 +945,24 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     await connect();
   }
 
+  async function retry(): Promise<void> {
+    if (disposed) {
+      return;
+    }
+    if (!hostOnline) {
+      markHostOffline();
+      return;
+    }
+    await connect();
+  }
+
   function markHostOffline(
     reason = "The Paseo host is disconnected. Showing the last inventory.",
   ): void {
     hostOnline = false;
     clearRetryTimer();
+    abortRefresh();
+    abortSubscriptionAttempt();
     generation += 1;
     live = false;
     subscriptionActive = false;
@@ -897,6 +985,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     includeArchived = nextIncludeArchived;
     clearRetryTimer();
+    abortRefresh();
+    abortSubscriptionAttempt();
     // The new scope applies immediately, including while its replacement read waits or fails.
     if (!includeArchived) {
       for (const [id, entry] of entries) if (isArchivedSession(entry)) entries.delete(id);
@@ -932,7 +1022,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     disposed = true;
-    directoryAbort.abort();
+    abortRefresh();
+    abortSubscriptionAttempt();
     clearRetryTimer();
     generation += 1;
     live = false;
@@ -944,6 +1035,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     getState,
     start,
     reconnect,
+    retry,
     markHostOffline,
     setIncludeArchived,
     refresh,
