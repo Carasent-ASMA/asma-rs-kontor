@@ -80,7 +80,13 @@ pill is the in-session return control where the composer supports it.
   replaced by older content. `sources.read` is unchanged. A source whose summary
   is present while its exact read is pending shows **Reading…**, distinctly from
   an unavailable source. Sessions demands no exact source read.
-- **Token counts.** Row input/output and separate cache-read counts use stable
+- **Compact rows.** Phone rows keep the human title, concise context, canonical
+  state icon, model and last-update time. Archived membership and actionable
+  warnings stay visible. Routine retirement/availability explanations, exact
+  model IDs and token reports remain in Details. The existing In tree action
+  uses a 44 pt icon target on compact layouts; opening and archive controls keep
+  their separate targets and exact-session behavior. Wide rows stay unchanged.
+- **Token counts.** Wide-row input/output and separate cache-read counts use stable
   compact units across device locales: K = 1,000 and M = 1,000,000, with at most
   one decimal (300K, 1.2M). Rounding carries across unit boundaries. The arrows,
   ≥ lower-bound mark, missing values and provider-report scope stay the same.
@@ -158,11 +164,25 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 
 - **One sheet.** **Start or switch** in the Kontor context row (an icon button
   on compact layouts) and the global Command Center item **Start or switch
-  Kontor session…** open one sheet. With no query it lists up to 8 Recent
-  sessions; typing matches every non-archived session by title, place and
-  labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
-  the query to Sessions unscoped. A row opens by native ID through the same
-  path as Sessions. Rows carry no archive control.
+  Kontor session…** open one sheet. With no query it lists the first 8 Recent
+  sessions, and **Show all N recent in Sessions** opens Sessions on Recent with
+  every kept visit and the saved entries; typing matches every non-archived
+  session by title, place and labels, Recent first, at most 20 rows, and
+  **Show all N in Sessions** hands the query to Sessions unscoped. A row opens by native ID through the same
+  path as Sessions. A separate 44px archive X uses the same control and exact-ID
+  archive preflight/action as Sessions; it never opens the row. Pending and
+  refusal/result feedback stays in the sheet. Confirmed native membership removes
+  the row; uncertain outcomes stay visible for review in Sessions and are never
+  called success. Opening the sheet adds no archive or inventory read.
+- **State shortcuts.** The shared sheet and chat popover show Running,
+  Questions (Needs input), Provider blocked and Errors over this host's
+  nonarchived sessions in all projects. These counts use the retained directory,
+  not the eight Recent rows. A shortcut opens the same Sessions filter without
+  retaining an incompatible search or refinement; presentation preferences stay.
+  Partial, stale or unavailable reads show updating/unknown counts. Provider
+  blocked requires exact refusal evidence; unchecked errors are never inferred
+  blocked or reported as a verified zero. Until that evidence has been read,
+  Blocked stays unknown; opening the shortcut does not probe providers.
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.
@@ -176,17 +196,29 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   This is local user storage, not a detected signed-in identity; **Working as**
   is an assignment filter and never determines ownership of visits. People
   sharing one app/browser profile share its history.
-  It keeps 20 visits for 14 days, pruned on reads and writes. Archived and
-  absent sessions are hidden while their unexpired visits are kept, including
-  during partial/offline reads. **Clear recent on this device** clears the
+  It keeps the last 500 distinct sessions opened, with no age limit; visits an
+  older build trimmed are not recoverable. Archived and absent sessions are
+  hidden while their visits are kept, including during partial/offline reads. **Clear recent on this device** clears the
   selected host only. Without a device store it lasts until Paseo restarts;
   an unreadable new record stays untouched until Clear; the sheet says which.
   Source and install evidence: [Unreleased release note](../../CHANGELOG.md#unreleased).
-- **Saved history.** The old `kontor.recent@1` value mixed opens and returns
+- **Recent in Sessions.** **Recent** is the first state filter and where a view
+  first read in an app session, and **Reset view**, land, even when Recent is
+  empty or was just cleared: the empty list says so and offers **Show Current**
+  and **Show All**, never falling back on its own. A state chosen in the app
+  session is kept. Recent lists every kept visit that search, scope and
+  filters leave, in open order, as one list; the saved Grouped/Flat choice stays
+  checked but disabled, and its help says why. An explicit sort reorders it and
+  the applied filters add "not open order". Below the list Recent states what
+  it keeps, how many are shown, hidden by search, scope or filters, or not found
+  in this host's current list, and where it is remembered.
+- **Saved entries.** The old `kontor.recent@1` value mixed opens and returns
   without recording their source or host. Its bytes are preserved, including
-  on Clear. **Show saved history** exposes its session IDs separately, with
-  unknown original host and opening times. Old timestamps are never imported
-  as opens or used to order Recently viewed. No earlier opening times can be
+  on Clear. Sessions lists its IDs under Recent, after the kept visits, as
+  **Saved entries · visit time and host unknown**, in stored order: an entry in
+  this host's list opens like any row and records a real visit; the others are
+  named as not found in this host's current list. Saved entries are never
+  counted, timed or ordered as visits. No earlier opening times can be
   recovered from this record.
 - **DEFERRED FUTURE WORK — native Paseo session views (Igor, 2026-10-23).**
   Openings through the native sidebar or other Paseo screens are outside the
@@ -214,7 +246,7 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   privacy and cross-device acceptance. A Paseo change is not automatically
   required to synchronize visits initiated through Kontor. Native views from
   outside Kontor still need the separate view-event capability above.
-- **New LSA (bounded create).** Available by default when
+- **New session (bounded create).** Available by default when
   `$PASEO_HOME/plugin-config/kontor/create.json`
   (default `~/.paseo/plugin-config/kontor/create.json`) is absent on the host
   computer. The operator can write exactly `{"create":"off"}` to disable it
@@ -222,21 +254,31 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   unreadable path (including a dangling symlink in any component) keeps it off.
   The sheet says why. The file is read on every request and never written by
   the plugin.
-  Submitting **New LSA** creates one Adam tab in a desk's `ADAM` workspace (in a
-  project named `DESK • <name>`), titled `LSA • ADHOC • <topic>`. A topic has 3
-  to 48 characters after NFC normalization and never contains `•`, `·` or a
-  control character. The labels are `role=LSA`, `title.auto=<title>`,
-  `persona=kontor-lsa-adhoc@<hash>` and `create.request=<request ID>`; never a
-  `kontor.*` or orchestration label. Provider, model, effort and mode default
-  to the host's `LSA` agent profile, else the provider's own defaults; a
-  dangerous mode is marked. The provider catalog is read from the selected
-  desk's working directory. Pickers show only enabled, ready providers and
-  their selectable models. Loading, unknown, unavailable and failed reads
-  have separate messages and a **Refresh choices** action. An empty catalog
-  blocks creation. A saved or selected choice that disappears stays invalid
-  until the operator chooses again; refresh never silently substitutes it.
-  Submit revalidates workspace, catalog and duplicate title before recording
-  intent. No first prompt is sent.
+  Submitting **New session** creates one Adam lead in the desk's lead
+  workspace. Ad hoc is LSA-only and lands in `ADHOC`; From Jira ticket puts an
+  `LSA` or `TPM` in `LSA` or `TPM`. A missing lead workspace is created on the
+  desk and read back before the session is dispatched. The title is
+  `<ROLE> • <KEY|ADHOC> • <topic>`; a topic has 3 to 48 characters after NFC
+  normalization and never contains `•`, `·` or a control character. A From
+  Jira topic comes from the issue summary, cut to the title budget. Labels are
+  `role`, `epic` or `ticket` for a bound lead, `title.auto`, a versioned
+  `persona` and `create.request`; never a `kontor.*` or orchestration label.
+  `DESK • ADAM` offers epics only, `DESK • TICKETS` offers non-epic issues with
+  no active parent epic (an issue under one is refused, naming the epic), and
+  `DESK • PR REVIEW` offers ad hoc only, keeping the existing PR desk creation
+  path. The server re-reads the issue at create time; a mismatched desk and
+  issue type, a Done or unknown issue, or an unavailable Jira refuses without
+  creating anything. Provider, model, effort and mode default to the host's
+  role profile, else the provider's own defaults; a dangerous mode is marked.
+  The provider catalog is read from the selected desk's working directory.
+  Pickers show only enabled, ready providers and their selectable models.
+  Loading, unknown, unavailable and failed reads have separate messages and a
+  **Refresh choices** action. An empty catalog blocks creation. A saved or
+  selected choice that disappears stays invalid until the operator chooses
+  again; refresh never silently substitutes it. Submit revalidates workspace,
+  catalog and duplicate title before recording intent. A named source session's
+  last assistant message is read as its handoff summary and is refused when
+  absent; it is given to the new lead before its first task.
 - **Truthful outcome.** The request is recorded on the host, under
   `$PASEO_HOME/plugin-state/kontor/session-create-v1/`, before one idempotent
   native create. Success is claimed only from an exact readback: **Created and
@@ -261,15 +303,16 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   finished rendering. When the app lacks plugin navigation, use Sessions to
   find the displayed ID. Nothing is
   created while the host is offline.
-- **Persona and rename.** The LSA persona goes in the system prompt. Its
-  delivery is confirmed only for Claude and Codex; other providers show
-  "Persona delivery unverified". A plugin cannot rename a session, so the
-  persona tells the session to rename itself with Paseo MCP `update_agent`, and
-  only while its title equals `title.auto`. It renames once, to
-  `LSA • <KEY> • <topic>`, when it has a confirmed epic key, and sets `epic` and
-  `title.auto`. It changes the topic only at a checkpoint. Once its title
-  differs from `title.auto`, which means the operator renamed it, it never
-  renames again.
+- **Personas, Jira duty and the wall protocol.** There are three personas,
+  each versioned by its own hash: ad-hoc LSA, bound LSA and bound TPM. None
+  renames itself. The ad-hoc LSA writes a handoff summary when a key is
+  confirmed and asks the operator to start the bound lead with it named as the
+  source. The bound personas carry the Jira duty (create ASMA issues when the
+  work needs them and move them through their states) and the wall protocol
+  (stop, comment with evidence and options, record a hold, ask one A/B/C
+  question, then continue). The persona goes in the system prompt for Claude
+  and Codex. For every other provider it is sent as one labelled bootstrap
+  prompt with no task; its `persona` label carries `+bootstrap`.
 
 ## Organization and read-only pages
 
@@ -333,15 +376,19 @@ associations in Details; they never become workspace-like parents within a desk.
 Optional role subgroups below a workspace are a presentation view. Empty native
 workspaces remain visible, and a desk with none says **No native workspaces in
 this desk**. Desk counts describe actual workspaces and sessions. Same-named
-projects and workspaces remain separate by native ID.
+projects and workspaces remain separate by native ID. Under every desk, `LSA`,
+`TPM` and `ADHOC` workspaces show first in that order whatever the saved order;
+other workspaces follow in their saved order. A desk without them shows no
+placeholder, a legacy `ADAM` workspace still renders until archived, and a
+legacy `DESK • QSW` project still renders as a desk until it is retired.
 
 Outside native desks, the workstream/epic tree and repeated workspace-kind/role
 prefix groups keep their existing behavior. Explicit epic contexts and workstream
 association filters explore declared associations without changing native placement.
 
 Filters also offers searchable **Desk / workspace scope** and **Epic scope**.
-The four scope shortcuts pair icons with counts and short captions (All, Review,
-Adam, Outside). Their full names and scope explanations appear on hover or
+The five scope shortcuts pair icons with counts and short captions (All, Review,
+Adam, Tickets, Outside). Their full names and scope explanations appear on hover or
 keyboard focus and in accessible names/hints; touch keeps the captions. Counts
 describe the current project/epic context before search and other filters.
 Each shortcut has a 44 pt target, a pressed state, a focus border and an
@@ -360,15 +407,19 @@ native lifecycle and attention signals can overlap those displayed states. The
 Legend provides the same scope and desk explanations on touch screens and
 describes whether the current tree counts matches or retained context.
 Desk rows retain their full names: PR Review uses
-a pull request, Adam a bot, QA a flask and QSW a bolt; unknown desks use an
-armchair. These glyphs describe presentation, never durable desk configuration.
+a pull request, Adam a bot, QA a flask and Tickets a ticket; unknown desks,
+including a legacy QSW desk, use an armchair. These glyphs describe presentation,
+never durable desk configuration.
 An exact desk choice uses the native project ID, distinguishing identical names;
 workstream choices keep canonical association keys, and epic choices use the same
 label/mapping/Jira-capture resolver as Details. Conflicting or missing epic
-evidence matches **Epic unknown**, never a title-derived epic. All three scope
+evidence matches **No epic linked**, never a title-derived epic. All three scope
 dimensions compose with the other filters. Active scopes remain visible above
 the list, can be removed individually, and **Clear scope** removes just these
 dimensions. Empty selections and unavailable keys stay explicit until cleared.
+
+In My work the selector counts the registered and plan-only choices it leaves
+out, without listing them, and offers Show in All work.
 
 The workstream association choices list only values resolved from sessions in the
 current scope: session mapping, workspace mapping, `desk` label, `workstream`
@@ -376,10 +427,10 @@ label, native DESK project fallback, then Other work, in that order. These choic
 are neither a native project inventory nor a complete registry of workstreams.
 Native projects/workspaces have their own context scope and native IDs. Sessions
 of non-desk projects without declarations remain under Other work and their
-epic, or Epic unknown; no workstream is inferred from their titles.
+epic, or No epic linked; no workstream is inferred from their titles.
 
 A native project whose sessions settle different epics shows one row per epic.
-Its Epic unknown row follows the project's last recognised row when both are in
+Its rows without a known epic follow the project's last recognised row when both are in
 one workstream, and stays in place when they are not. Either way the rows name
 each other: how many of the project's sessions have no known epic, how many of
 its workspaces have no sessions, and in which workstreams. Rows match by native
@@ -387,7 +438,9 @@ project ID, never by name. Projects whose sibling rows read alike, directly or
 through another such project, are named together: one folder of each project's
 root, the last one where the roots differ and below any home folder, or their
 position when the roots cannot tell them apart safely or a name would make a row
-read like any other sibling. Compact rows
+read like any other sibling. A row's project and folder lead its secondary line
+and never become part of its label, so no project or checkout name reads as an
+epic. Compact rows
 show a group's detail under its label, in up to two lines. No session moves,
 merges or hides, and no epic or workstream is assigned.
 
@@ -617,9 +670,16 @@ Settings › Presentation and associations can map it or link a plan. No project
 session name links a session.
 
 Display precedence is: saved session mapping, saved workspace mapping, desk label,
-workstream label, native desk classification, then an unambiguous declared-plan
-fallback through an exact epic or explicit session-to-plan association. Explicit
-plan project bindings constrain that fallback. Missing, unavailable or conflicting
+workstream label, native desk classification — except a registry desk marked
+`match: fallback`, whose `paseo_project` sessions continue — then an applicable
+ready plan declaring the workstream of the session's epic, then that epic's `ws:`
+label in a ready Jira capture. An applicable ready plan and a label that disagree
+link nothing, and Details says the sources disagree. An explicit session-to-plan
+association uses plans alone. These associations drive workstream filters and
+counts. The unfiltered tree keeps each native desk project's sessions under that
+desk; under a workstream filter, sessions group by workstream and epic, one epic
+row across projects. Details names the plans or capture behind a derived
+workstream. Explicit plan project bindings constrain that fallback. Missing, unavailable or conflicting
 plans do not attach arbitrarily. Derived mappings remain in memory and never write
 preferences or native labels. Plan context includes the declaration and exact source
 revision; graphless plans have no task graph or inferred lifecycle. Historical,
@@ -633,14 +693,32 @@ epic labels on sessions in each project. An explicit source `projectId` constrai
 it to that project.
 
 A session's epic is its display mapping, else what its `epic`, `jira.epic`,
-`origin.epic` and `asma.epic` labels name together with the historical Jira
-projection's epic for each key those labels or its `jira.issue`, `task` or
-`asma.task` label name. Every named epic must agree. When they disagree, or
-nothing names one, the epic is unknown and shows as Epic unknown, never as "no
-epic": no source here shows that a task has no parent. Session details name the
-sources and the capture's observation time, or why the epic is unknown. A
-workspace carries no labels, so a project's unmapped workspaces without sessions form an
-Epic unknown group that says so beside the project's known epics. A capture
+`origin.epic` and `asma.epic` labels name together with the epic of each key
+those labels or its `jira.issue`, `task`, `asma.task` or `ticket` label name.
+That epic comes from the current Jira identity export when it answered for the
+key, else from the historical Jira projection, which says when it was observed.
+A key the identity asked Jira for and got no answer is never filled from the
+projection: a task named only that way stays at **No epic linked** with the
+reason, and an epic label stays the epic with a note that Jira did not verify
+it. A key Jira now returns under another is that same issue, never a second
+epic. Every named epic must agree. When they disagree, the
+session shows as **Epic sources disagree** and nothing below applies. A task
+label that no source files under an epic keeps the session at **No epic linked**,
+with the reason, and nothing below applies. Otherwise a session Kontor created (it carries `create.request`) shows as **Ticket
+<KEY>** when Kontor wrote its `ticket` label after checking the issue in Jira, or
+as **Ad hoc** when its `persona` label starts `kontor-lsa-adhoc@` or
+`kontor-lsa-adhoc+bootstrap@`; the hash after `@` is never read. Anything else
+shows as **No epic linked**, never as "no epic". Only the identity export can
+show that an issue has no epic above it; the session then stays at **No epic
+linked** and says so, and an epic label naming that issue is a disagreement. A `ticket` or persona label without `create.request`, a parent
+session, a title, a project or a workspace never settles any of these. Each kind
+has its own row and icon, apart from the epic flag, and a workstream counts each
+distinct epic it shows once, under a filter too. Session details name the
+association and its sources: the capture's observation time, or why the epic is
+unknown; a key the capture does not hold is
+not covered by it, which is not the same as having no epic. A
+workspace carries no labels, so a project's unmapped workspaces without sessions form a
+No epic linked group that says so beside the project's known epics. A capture
 cannot see a later move in Jira, so a label and a capture that agree can both be
 stale. Other label keys, project names, titles and sibling labels never assign
 an epic. The tree, results, Overview counts, the context picker and project
@@ -732,6 +810,12 @@ bun apps/paseo-plugin/scripts/export-jira-history.ts /srv/captures/consumption-d
 
 This explicit offline exporter is separate from the consumption pipeline and
 writes only the bounded JSON to stdout. The plugin retains its 2 MiB read cap.
+The projection keeps each selected epic's `ws:<key>` label as `ws`. Select Epic
+keys only: a key that is both a selected entry and another entry's child is
+rejected as ambiguous. A plugin older than this change rejects a projection
+carrying `ws`, so install before repointing the source. This capture is the
+resolver's dated epic source; the current identity export below is preferred
+for every key it covers.
 The projection retains the original observation time, source hash and selected
 keys; reading it later never makes it live. Exact parent/issue keys supply
 historical workflow observations in Overview, Board and Graph, and the epic of a
@@ -741,6 +825,38 @@ canonical plan, including missing/unbound tasks. Neither capture coverage nor a
 known-child count establishes complete Jira inventory, current completion,
 readiness, delivery or epic acceptance. The source's total captured epic count
 is provenance, not a completeness promise. Conflicting observations stay Unknown.
+
+### Current Jira identity export
+
+A `jira` source may instead hold a `kontor/epic-identity@1` export: the current
+Jira identity of a configured scope and of every key a session label declared
+when it was read. It is the resolver's one current epic input, `EpicIdentitySource`,
+until the shared work catalog serves the same answers behind it. Collect it
+read-only with the same Jira adapter as the responsibility projection below:
+
+```bash
+python3 apps/paseo-plugin/scripts/export-epic-identity.py \
+  --scope-jql 'project = ASMA AND issuetype = Epic' > /srv/exports/epic-identity.json
+```
+
+The script reads the scope with `/search/jql`, then every key the resolver's
+labels name on the Paseo agent records under `--paseo-home` (default
+`$PASEO_HOME`, else `~/.paseo`; archived records included, read-only) and any
+explicit keys, in batches; Jira rejects a batch holding a key it does not
+return, and each key of that batch is then read alone with `/issue/{key}`. It
+follows parents up to the epic. Each issue keeps its ID, key, type and level,
+parent, labels, status, update time and summary with its observation time. The
+document records the scope, provenance, coverage (keys declared, found, not
+returned, outside the project, or with a parent not read), moved keys and an
+`order`; the plugin uses the export with the highest order only. A parent named
+by a key Jira now returns under another is that issue, read once. The plugin
+refuses a document in which a declared key has no issue, move or not-returned
+entry. Coverage does not depend on `ws:` labels, so an epic only Jira knows is covered too. A key
+declared after the export is not covered, and Jira answers alike for a deleted
+issue and one the account may not read, so a key not returned is never read as
+deleted. Nothing is written to Jira, Paseo or disk. A plugin older than this
+change rejects the document, so install before configuring it. `--self-check`
+runs the offline check on synthetic data.
 
 ### My work and assignment (responsibility projection)
 
@@ -769,8 +885,8 @@ never turns on a filter. While the projection is loading or unavailable it is
 kept, never shown as unset; **Forget on this device** removes it. A change of
 Working as ends an Assigned to me or Unknown assignment **Show in tree**.
 **Clear filters** returns to All work and Any assignment and keeps Working as,
-the sort, layout and grouping; **Reset view** returns to My work, Any assignment,
-Current order and the saved layout/grouping, keeping Working as. Layout is an
+the sort, layout and grouping; **Reset view** returns to Recent, My work, Any
+assignment, Current order and the saved layout/grouping, keeping Working as. Layout is an
 optional field in the existing version 1 host organization document. Legacy
 Flat grouping reads as Flat with Desks & workstreams remembered; reading it
 does not migrate the stored document. Settings retains its draft/revision
@@ -1081,11 +1197,13 @@ error is never read, and it is killed after the answer, 64 KiB of output
 The RPC is registered whatever `floor.json` says, and nothing else waits for it:
 Sessions, Paseo-direct work and the hooks work the same without a realm.
 
-The Kontor screen shows the observation, the composition and the check time in
-one line on every view except Sessions. Each place that names a governed
+On every view except Sessions, the Kontor screen shows a status banner: a plain
+title, the check time and an info button whose details, opened by tap or
+keyboard, explain the composition. Only `ready` says `Kontor connected`, and only
+`ready` with `floor-off` adds `Navigation-only mode`; `mcp-off` says
+`Kontor not checked`, with no time. Each place that names a governed
 feature says it is not shown here and gives the same observation. An offline
-host, an unread status or a failed read shows `unknown`, with no composition or
-time. The native host status is never changed.
+host, an unread status or a failed read shows `unknown`, with no mode or time. The native host status is never changed.
 
 ## Install and uninstall
 
@@ -1184,6 +1302,7 @@ All values are optional and read from the daemon environment:
 | --- | --- | --- |
 | `KONTOR_PLUGIN_STATE_ROOT` | `~/.local/state/kontor/asma` | State root argument passed to `kontor-mcp`. |
 | `KONTOR_PLUGIN_MCP_COMMAND` | `kontor-mcp` | Command used for the composed server. |
+| `KONTOR_PLUGIN_CLI_COMMAND` | `kontor` | Command a confirmed native takeover runs for its one local fleet selection read (`fleet-policy-resolve`). |
 | `KONTOR_PLUGIN_MCP` | on | `off` skips the MCP server; the hooks and guard stay active. |
 | `KONTOR_PLUGIN_SERVE_PROFILE` | none | Optional `--serve-profile` narrowing. |
 | `KONTOR_PLUGIN_PLACEMENT_ROOTS` | none | Comma-separated extra containment roots. |
@@ -1255,7 +1374,7 @@ pnpm --filter @carasent/kontor-paseo-plugin test
 apps/paseo-plugin/scripts/closure-suite.sh
 ```
 
-`test/session-create.test.ts` pins New LSA availability with no switch or
+`test/session-create.test.ts` pins New session availability with no switch or
 explicit `on`, refusal for explicit `off` or invalid/unreadable switches,
 and the workspace, provider, duplicate-request, intent and readback guards.
 Availability alone never creates a session or sends a first prompt.
@@ -1390,10 +1509,12 @@ reload; a readable, unknown, timeout, authentication or wrong-ID reply cannot
 hide a present session. Availability evidence still expires after one minute;
 a settled action reconciles its exact stale list snapshot until it changes.
 The action outcome remains visible when its row disappears.
-The Current default is part of the combined Sessions view.
+The Current filter and the Recent default are part of the combined Sessions view.
 
 **Select** shares a wrapping row with the mutually exclusive **Grouped** and
-**Flat** layout choices. The row uses icons with accessible names and
+**Flat** layout choices. On compact layouts **Search** comes first in that row,
+so the quick filter row keeps its space for states; opened, the search field
+takes a line of its own with Clear or Close. The row uses icons with accessible names and
 long-press, hover and keyboard help;
 all three targets are at least 44 pt. The layout group uses a subtle fill and
 check mark, with no enclosing frame. **Select** enters bulk

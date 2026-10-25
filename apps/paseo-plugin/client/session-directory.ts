@@ -1,4 +1,4 @@
-import { freshAvailability } from "../shared/session-lifecycle";
+import { freshAvailability, nativeArchiveMembership } from "../shared/session-lifecycle";
 import type {
   OwnedSubscription,
   PaseoAgentListOptions,
@@ -6,6 +6,7 @@ import type {
   PaseoAgentUpdate,
   PaseoApi,
 } from "@getpaseo/client";
+import type { EpicIdentity } from "../shared/read-sources";
 import type { SessionAvailability } from "../shared/session-lifecycle";
 import type { SessionTelemetry } from "./session-usage";
 
@@ -28,6 +29,7 @@ export const DIRECTORY_MAX_PAGES = 1_000;
 export const PENDING_UPDATE_LIMIT = 256;
 export const DEFAULT_RETRY_DELAY_MS = 500;
 export const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+export const DIRECTORY_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Structured labels that carry workflow identifiers and PR references. They are
@@ -70,6 +72,8 @@ export type DirectoryEntry = {
   readonly updatedAt: string;
   /** When the last prompt was submitted; absent from entries built before it was read. */
   readonly lastUserMessageAt?: string | null;
+  /** Native active-turn presence, including a turn whose startedAt Paseo no longer reports. */
+  readonly activeTurn?: boolean;
   /** When the running turn started; Paseo loses it on a restart. */
   readonly activeTurnStartedAt?: string | null;
   readonly cwd: string;
@@ -95,6 +99,32 @@ export type JiraCapture = {
   readonly epics: ReadonlyMap<string, string | null>;
   /** Observation time of each ready capture; empty when none is ready. */
   readonly observed: readonly string[];
+  /** Current identity of the keys it covers, preferred to the captures for each of them; absent when none is read. */
+  readonly identity?: EpicIdentitySource;
+};
+
+/**
+ * The one current epic identity input: today the newest identity export, later the shared work catalog.
+ * A key it does not cover leaves the epic to the dated captures.
+ */
+export type EpicIdentitySource = {
+  /** When Jira was observed, and the order a later observation exceeds. */
+  readonly asOf: string;
+  readonly order: number;
+  /** The tracker realm, the configured scope and the collector that read it. */
+  readonly provenance: { readonly realm: string; readonly scope: string; readonly collector: string };
+  /** The keys it was asked for and how many it answered. */
+  readonly coverage: EpicIdentity["coverage"];
+  /** Each observed key, or an older key Jira now returns as another, to its current issue. */
+  readonly issues: ReadonlyMap<string, IdentityIssue>;
+  /** Keys it looked up without an answer, with the reason, for example "Jira did not return ASMA-1". */
+  readonly unanswered: ReadonlyMap<string, string>;
+};
+
+/** One issue as the identity observed it; the ID is immutable across key moves, and `epic` is null when none is above it. */
+export type IdentityIssue = {
+  readonly id: string; readonly key: string; readonly type: string; readonly parent: string | null;
+  readonly epic: string | null; readonly updated: string; readonly observedAt: string;
 };
 
 /** An unread error notice can outlive the native error state after recovery or close. */
@@ -104,8 +134,7 @@ export function hasEarlierError(entry: DirectoryEntry): boolean {
 
 /** Only native archive metadata or a fresh exact-ID read can establish archive membership. */
 export function isArchivedSession(entry: DirectoryEntry): boolean {
-  const evidence = freshAvailability(entry);
-  return (entry.archivedAt ?? null) !== null || evidence?.state === "readable" && !!evidence.archivedAt;
+  return nativeArchiveMembership(entry).archived;
 }
 
 /** Retained error history does not create a current Attention signal. */
@@ -248,6 +277,7 @@ export function toDirectoryEntry(
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
     lastUserMessageAt: agent.lastUserMessageAt ?? null,
+    activeTurn: agent.activeTurn !== null && agent.activeTurn !== undefined,
     activeTurnStartedAt: agent.activeTurn?.startedAt ?? null,
     cwd,
     workspaceId: agent.workspaceId ?? null,
@@ -314,6 +344,33 @@ function filterOptions(includeArchived: boolean): NonNullable<PaseoAgentListOpti
   return includeArchived ? { includeArchived: true } : { includeArchived: false };
 }
 
+function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(new Error("The session directory read was superseded."));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      cleanup();
+      reject(new Error("The session directory read was superseded."));
+    };
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Reads every page of the native agent directory. The loop never stops on a
  * visible page count and rejects a repeated or malformed cursor instead of
@@ -333,14 +390,19 @@ export async function collectDirectory(
     if (signal?.aborted) {
       throw new Error("Directory walk aborted.");
     }
-    const result = await client.agents.list({
-      filter: filterOptions(includeArchived),
-      sort: AGENT_SORT,
-      page: {
-        limit: DIRECTORY_PAGE_LIMIT,
-        ...(cursor === undefined ? {} : { cursor }),
-      },
-    });
+    const result = await abortable(
+      client.agents.list({
+        filter: filterOptions(includeArchived),
+        sort: AGENT_SORT,
+        page: {
+          limit: DIRECTORY_PAGE_LIMIT,
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        signal,
+        timeout: DIRECTORY_REQUEST_TIMEOUT_MS,
+      }),
+      signal,
+    );
     pages += 1;
     for (const entry of result.entries) {
       if (!includeArchived && (entry.agent.archivedAt ?? null) !== null) {
@@ -379,8 +441,10 @@ export async function collectDirectory(
  */
 export interface SessionDirectory {
   getState(): DirectoryState;
+  hasPendingConnection(): boolean;
   start(): Promise<void>;
   reconnect(): Promise<void>;
+  retry(): Promise<void>;
   markHostOffline(reason?: string): void;
   setIncludeArchived(includeArchived: boolean): Promise<void>;
   refresh(reason?: string): Promise<void>;
@@ -424,6 +488,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
   let unsubscribe: (() => void) | null = null;
   let subscriptionActive = false;
+  let subscriptionEpoch = 0;
+  let refreshSubscriptionEpoch = -1;
   let pendingUpdates: PendingUpdate[] = [];
   let pendingOverflow = false;
   let hostOnline = false;
@@ -445,7 +511,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     readonly generation: number;
     readonly promise: Promise<void>;
   } | null = null;
-  const directoryAbort = new AbortController();
+  let refreshAbort: AbortController | null = null;
+  let subscriptionAbort: AbortController | null = null;
 
   function getState(): DirectoryState {
     return {
@@ -468,7 +535,25 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     options.onChange(getState());
   }
 
-  function releaseSubscription(): void {
+  function hasPendingConnection(): boolean {
+    return !disposed && (subscriptionAttempt !== null || refreshing);
+  }
+
+  function abortRefresh(): void {
+    refreshAbort?.abort();
+    refreshAbort = null;
+  }
+
+  function abortSubscriptionAttempt(): void {
+    subscriptionAbort?.abort();
+    subscriptionAbort = null;
+  }
+
+  function releaseSubscription(expectedGeneration: number = generation): void {
+    if (expectedGeneration !== generation) {
+      return;
+    }
+    subscriptionActive = false;
     const currentUnsubscribe = unsubscribe;
     unsubscribe = null;
     if (currentUnsubscribe) {
@@ -573,12 +658,16 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     const runGeneration = generation;
     const runEpoch = readEpoch;
+    const runSubscriptionEpoch = subscriptionEpoch;
+    refreshSubscriptionEpoch = runSubscriptionEpoch;
+    const controller = new AbortController();
+    refreshAbort = controller;
     let collected: CollectedDirectory;
     try {
       collected = await collectDirectory(
         options.client(),
         includeArchived,
-        directoryAbort.signal,
+        controller.signal,
       );
     } catch (refreshError) {
       if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
@@ -596,6 +685,10 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
       scheduleRetry();
       return;
+    } finally {
+      if (refreshAbort === controller) {
+        refreshAbort = null;
+      }
     }
     if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
       return;
@@ -608,13 +701,14 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     applyPendingUpdates();
     pages = collected.pages;
     lastUpdatedAt = Date.now();
-    inventoryComplete = subscriptionActive;
+    const observedLive = subscriptionActive && subscriptionEpoch === runSubscriptionEpoch;
+    inventoryComplete = observedLive;
     error = null;
-    staleReason = subscriptionActive
+    staleReason = observedLive
       ? null
       : "Live updates are unavailable; the inventory may be incomplete.";
     status = "ready";
-    live = subscriptionActive;
+    live = observedLive;
     if (pendingOverflow) {
       pendingOverflow = false;
       refreshQueued = true;
@@ -643,11 +737,42 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
   }
 
+  function startSubscription(expectedGeneration: number): void {
+    if (disposed || expectedGeneration !== generation || subscriptionActive) {
+      return;
+    }
+    const attempt = subscriptionAttempt;
+    if (attempt && attempt.generation === expectedGeneration) {
+      return;
+    }
+    void openSubscription(expectedGeneration).catch(() => undefined);
+  }
+
+  function handleSubscriptionActivated(expectedGeneration: number): void {
+    if (disposed || expectedGeneration !== generation) {
+      return;
+    }
+    subscriptionEpoch += 1;
+    if (refreshing) {
+      if (refreshSubscriptionEpoch === subscriptionEpoch) {
+        return;
+      }
+      readEpoch += 1;
+      abortRefresh();
+      refreshQueued = true;
+      return;
+    }
+    if (status === "ready" && live && inventoryComplete && staleReason === null) {
+      return;
+    }
+    void refresh("Reconciling the full session directory after live updates became available.");
+  }
+
   async function openSubscriptionOnce(expectedGeneration: number): Promise<void> {
     if (disposed || expectedGeneration !== generation) {
       return;
     }
-    releaseSubscription();
+    releaseSubscription(expectedGeneration);
     let result: PaseoAgentListResult & {
       subscriptionId: string;
       subscription: OwnedSubscription<PaseoAgentListResult>;
@@ -655,22 +780,43 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     // Only a cold directory hydrates from a larger first page. Every later
     // subscription keeps the minimal page; its rows come from the walk instead.
     const hydrationLimit = entries.size === 0 ? bootstrapLimit : 1;
+    const controller = new AbortController();
+    subscriptionAbort = controller;
     try {
-      result = await options.client().agents.list({
-        filter: filterOptions(includeArchived),
-        sort: AGENT_SORT,
-        page: { limit: hydrationLimit },
-        subscribe: {},
-      });
+      result = await abortable(
+        options.client().agents.list({
+          filter: filterOptions(includeArchived),
+          sort: AGENT_SORT,
+          page: { limit: hydrationLimit },
+          subscribe: {},
+          signal: controller.signal,
+          timeout: DIRECTORY_REQUEST_TIMEOUT_MS,
+        }),
+        controller.signal,
+      );
+      if (subscriptionAbort === controller) {
+        subscriptionAbort = null;
+      }
     } catch (subscriptionError) {
+      if (subscriptionAbort === controller) {
+        subscriptionAbort = null;
+      }
       if (expectedGeneration !== generation || disposed) {
         return;
       }
       subscriptionActive = false;
       live = false;
-      error = describeDirectoryError(subscriptionError);
-      status = entries.size > 0 ? "stale" : "error";
-      staleReason = entries.size > 0 ? "Live updates are unavailable." : null;
+      if (entries.size === 0 && lastUpdatedAt === null && refreshAbort === null) {
+        error = describeDirectoryError(subscriptionError);
+        status = "error";
+        staleReason = null;
+      } else {
+        error = null;
+        staleReason = "Live updates are unavailable; the inventory may be incomplete.";
+        if (status === "idle" || status === "loading") {
+          status = entries.size > 0 ? "stale" : "loading";
+        }
+      }
       emit();
       scheduleRetry();
       return;
@@ -684,7 +830,12 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     subscriptionActive = true;
     // The page is evidence, not a completed inventory: render it now, keep the
     // status "loading" and lastUpdatedAt null until the full walk finishes.
-    if (hydrationLimit > 1 && result.entries.length > 0) {
+    if (
+      hydrationLimit > 1 &&
+      result.entries.length > 0 &&
+      entries.size === 0 &&
+      lastUpdatedAt === null
+    ) {
       for (const entry of result.entries) {
         if (!includeArchived && (entry.agent.archivedAt ?? null) !== null) {
           continue;
@@ -702,7 +853,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           }
           snapshots += 1;
           if (snapshots === 1) {
-            live = status === "ready";
+            live = status === "ready" && inventoryComplete;
             emit();
             return;
           }
@@ -711,6 +862,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           // over the reconciled inventory. The read epoch also fences a page
           // walk that started before this snapshot: it must not publish old
           // inventory as ready/live while the fresh reconciliation is pending.
+          abortRefresh();
           readEpoch += 1;
           pendingUpdates = [];
           pendingOverflow = false;
@@ -733,7 +885,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           live = false;
           // Buffered updates belong to the subscription that just failed. A
           // walk still in flight must not replay them over its fresh rows.
-          releaseSubscription();
+          releaseSubscription(expectedGeneration);
           error = describeDirectoryError(subscriptionError);
           status = entries.size > 0 ? "stale" : "error";
           staleReason = entries.size > 0 ? "Live updates stopped." : null;
@@ -741,6 +893,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
           scheduleRetry();
         },
       });
+      handleSubscriptionActivated(expectedGeneration);
     } catch (subscriptionError) {
       subscriptionActive = false;
       live = false;
@@ -763,8 +916,17 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     // Every connection attempt gets a new generation. A queued update from the
     // previous subscription and an in-flight page walk from before the
     // reconnect are both fenced by this value.
+    abortRefresh();
+    abortSubscriptionAttempt();
+    refreshQueued = false;
+    pendingUpdates = [];
+    pendingOverflow = false;
     generation += 1;
     const connectionGeneration = generation;
+    releaseSubscription(connectionGeneration);
+    live = false;
+    inventoryComplete = false;
+    error = null;
     if (entries.size === 0) {
       status = "loading";
       staleReason = null;
@@ -775,11 +937,29 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       staleReason = "Reconnected to the Paseo host; reconciling the full directory.";
       emit();
     }
-    await openSubscription(connectionGeneration);
-    await refresh("Reconciling the full session directory.");
+    startSubscription(connectionGeneration);
+    await refreshNow("Reconciling the full session directory.", connectionGeneration);
+  }
+
+  async function refreshNow(reason: string, expectedGeneration = generation): Promise<void> {
+    const previous = refreshPromise;
+    if (previous) {
+      await previous.catch(() => undefined);
+    }
+    if (disposed || expectedGeneration !== generation) {
+      return;
+    }
+    if (status === "ready" && live && inventoryComplete && staleReason === null) {
+      return;
+    }
+    await refreshWith(reason, true);
   }
 
   async function refresh(reason = "Refreshing the session directory."): Promise<void> {
+    await refreshWith(reason, false);
+  }
+
+  async function refreshWith(reason: string, subscriptionAttempted: boolean): Promise<void> {
     if (disposed) {
       return;
     }
@@ -802,16 +982,14 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
     }
     refreshPromise = (async () => {
-      if (!subscriptionActive) {
-        await openSubscription(generation);
-        if (disposed) {
-          return;
-        }
+      const refreshGeneration = generation;
+      if (!subscriptionActive && !subscriptionAttempted) {
+        startSubscription(refreshGeneration);
       }
       do {
         refreshQueued = false;
         await runRefresh();
-      } while (refreshQueued && !disposed);
+      } while (refreshQueued && !disposed && refreshGeneration === generation);
     })();
     try {
       await refreshPromise;
@@ -841,15 +1019,28 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     await connect();
   }
 
+  async function retry(): Promise<void> {
+    if (disposed) {
+      return;
+    }
+    if (!hostOnline) {
+      markHostOffline();
+      return;
+    }
+    await connect();
+  }
+
   function markHostOffline(
     reason = "The Paseo host is disconnected. Showing the last inventory.",
   ): void {
     hostOnline = false;
     clearRetryTimer();
+    abortRefresh();
+    abortSubscriptionAttempt();
     generation += 1;
     live = false;
     subscriptionActive = false;
-    releaseSubscription();
+    releaseSubscription(generation);
     if (entries.size > 0) {
       status = "stale";
       staleReason = reason;
@@ -868,6 +1059,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     includeArchived = nextIncludeArchived;
     clearRetryTimer();
+    abortRefresh();
+    abortSubscriptionAttempt();
     // The new scope applies immediately, including while its replacement read waits or fails.
     if (!includeArchived) {
       for (const [id, entry] of entries) if (isArchivedSession(entry)) entries.delete(id);
@@ -878,7 +1071,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     error = null;
     live = false;
     subscriptionActive = false;
-    releaseSubscription();
+    releaseSubscription(generation);
     if (hostOnline) {
       inventoryComplete = false;
       status = entries.size > 0 ? "stale" : "loading";
@@ -903,18 +1096,21 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     disposed = true;
-    directoryAbort.abort();
+    abortRefresh();
+    abortSubscriptionAttempt();
     clearRetryTimer();
     generation += 1;
     live = false;
     subscriptionActive = false;
-    await releaseSubscription();
+    await releaseSubscription(generation);
   }
 
   const directory: SessionDirectory = {
     getState,
+    hasPendingConnection,
     start,
     reconnect,
+    retry,
     markHostOffline,
     setIncludeArchived,
     refresh,

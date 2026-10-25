@@ -1,0 +1,180 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { jiraHistorySchema, WORKSTREAM_CONFLICT, type JiraHistory, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
+import { projectJiraHistory } from "../server/jira-history";
+import { readConfiguredSource } from "../server/read-sources";
+import { jiraCapture } from "../client/page-data";
+import { capturedWorkstreams, derivedWorkstreamNote, planFallbackNote, planWorkstreamMappings, planWorkstreamOptions } from "../client/plan-workstreams";
+import { buildOrganizationTree, filterOrganizationTree, organizationScope, visibleSessions, type OrganizationGroup } from "../client/session-organization";
+import { sessionEntry } from "./session-fixtures";
+
+// The live shapes of 2026-10-24: Jira labels ASMA-7675 ws:qnr-v2 and ASMA-8633/8639 ws:kontor; the ASMA-7675 plan declares no workstream.
+const generated = "2026-10-24T16:07+00:00";
+const history: JiraHistory = { schema: "consumption/data@2", generated, provenance: { path: "/captures/data.json", sha256: "c".repeat(64), capturedEpics: 171 },
+  selection: ["ASMA-7675", "ASMA-8633", "ASMA-8639", "ASMA-8701"],
+  epics: [
+    { key: "ASMA-7675", ws: "qnr-v2", status: "In Development", cat: "indeterminate", children: [{ key: "ASMA-8350", status: "In Development", cat: "indeterminate" }] },
+    { key: "ASMA-8633", ws: "kontor", status: "In Development", cat: "indeterminate", children: [{ key: "ASMA-8634", status: "In Review", cat: "indeterminate" }] },
+    { key: "ASMA-8639", ws: "kontor", status: "In Development", cat: "indeterminate", children: [] },
+    { key: "ASMA-8701", status: "Groomed", cat: "new", children: [] },
+  ] };
+const jiraSource: ReadSourceSummary = { id: "jira", title: "Historical Jira", kind: "jira", path: "/captures/projection.json", workstream: null, epic: null, projectId: null, revisionKind: "working copy" };
+const jiraRead: SourceRead = { source: jiraSource, status: "ready", revision: "d".repeat(64), readAt: "now", modifiedAt: null, content: null, graph: null, records: null, diagnostics: [], jiraHistory: history };
+const qnrPlan: ReadSourceSummary = { id: "qnr", title: "QNR v2 Nonprod Delivery (ASMA-7675)", kind: "plan", path: "/docs/qnr.md", workstream: null, epic: "ASMA-7675", projectId: null, revisionKind: "working copy" };
+const qnrRead = (workstream: string | null): SourceRead => ({ source: qnrPlan, status: "ready", revision: "e".repeat(64), readAt: "now", modifiedAt: null, content: null, graph: null, records: null, diagnostics: [], planMetadata: { workstream, epic: null, diagnostics: [] } });
+const registry: WorkstreamRegistry = { path: "/registry.json", revision: "f".repeat(64),
+  workstreams: { kontor: { name: "Kontor" }, "qnr-v2": { name: "QNR v2" }, access: { name: "Access & login" } },
+  desks: { "pr-review-desk": { name: "PR Review Desk" }, "adam-adhoc": { name: "Adam • Ad-hoc", match: "fallback", paseo_project: "DESK • ADAM" }, qsw: { name: "QSW Desk", match: "first", paseo_project: "DESK • QSW" } },
+  diagnostics: [] };
+const jira = jiraCapture([jiraRead]);
+const adam = { projectKey: "prj_adam", projectName: "DESK • ADAM", workspaceId: "wks_adam", workspaceName: "ADAM" };
+const entries = [
+  // ASMA-7675: committee seats with an epic label, an LSA with jira.epic, and one LSA nothing labels.
+  sessionEntry("seat-a", { projectKey: "prj_qnr", projectName: "ESW • ASMA-7675 • QNR-P1", workspaceId: "wks_qnr", labels: { epic: "ASMA-7675" } }),
+  sessionEntry("lsa-8350", { projectKey: "prj_qnr", projectName: "ESW • ASMA-7675 • QNR-P1", workspaceId: "wks_8350", labels: { role: "lsa", "jira.epic": "ASMA-7675" } }),
+  sessionEntry("lsa-qnr-bare", { title: "LSA • ASMA-7675 • QNR-P1", projectKey: "prj_qnr", projectName: "ESW • ASMA-7675 • QNR-P1", workspaceId: "wks_qnr" }),
+  // ASMA-8633: a task-only child, the LSA and TPM in DESK • ADAM (only the TPM labels a workstream).
+  sessionEntry("qa-8634", { projectKey: "prj_8634", projectName: "ESW • ASMA-8634", workspaceId: "wks_8634", labels: { role: "qa", task: "ASMA-8634" } }),
+  sessionEntry("lsa-8633", { ...adam, labels: { role: "LSA", epic: "ASMA-8633" } }),
+  sessionEntry("tpm-8633", { ...adam, labels: { role: "tpm", epic: "ASMA-8633", workstream: "kontor" } }),
+  // ASMA-8639: LSA and TPM in DESK • ADAM, neither labels a workstream.
+  sessionEntry("lsa-8639", { ...adam, labels: { role: "LSA", epic: "ASMA-8639" } }),
+  sessionEntry("tpm-8639", { ...adam, labels: { role: "TPM", epic: "ASMA-8639" } }),
+  // Precedence and the desks that keep their sessions.
+  sessionEntry("pr-desk", { projectKey: "prj_review", projectName: "DESK • PR REVIEW", workspaceId: "wks_review", labels: { epic: "ASMA-8633" } }),
+  sessionEntry("qsw-desk", { projectKey: "prj_qsw", projectName: "DESK • QSW", workspaceId: "wks_qsw", labels: { epic: "ASMA-8633" } }),
+  sessionEntry("labelled", { workspaceId: "wks_l", labels: { epic: "ASMA-7675", workstream: "tokenomics" } }),
+  sessionEntry("mapped", { workspaceId: "wks_m", labels: { epic: "ASMA-7675" } }),
+  sessionEntry("archived", { workspaceId: "wks_x", archivedAt: "2026-10-20T00:00:00.000Z", labels: { epic: "ASMA-8639" } }),
+  sessionEntry("adam-adhoc", { ...adam, labels: { role: "LSA" } }),
+  sessionEntry("unlabelled-epic", { workspaceId: "wks_u", labels: { epic: "ASMA-8701" } }),
+].map((entry) => ({ ...entry, jira }));
+const saved = { "session:mapped": { workstream: "custom" } };
+const reads = { jira: jiraRead, qnr: qnrRead(null) };
+const scope = (mappings: ReturnType<typeof planWorkstreamMappings>) => Object.fromEntries(entries.map((entry) => [entry.id, organizationScope(entry, mappings).workstream]));
+
+describe("epic workstreams from the Jira capture's ws: labels", () => {
+  it("projects ws on epics only, keeps reading captures without it, and rejects a malformed key", () => {
+    const raw = { schema: "consumption/data@2", generated, facts: ["dropped"], epics: [
+      { key: "ASMA-7675", ws: "qnr-v2", summary: "dropped", type: "Epic", status: "In Development", cat: "indeterminate", children: [{ key: "ASMA-8350", summary: "dropped", status: "Open", cat: "new", resolved: "" }] },
+      ...Array.from({ length: 70 }, (_, index) => ({ key: `ASMA-${9000 + index}`, ws: "kontor", status: "Open", cat: "new", children: [] }))] };
+    const keys = raw.epics.map((epic) => epic.key);
+    const projected = projectJiraHistory(raw, keys, { path: "/captures/data.json", sha256: "c".repeat(64) });
+    expect(projected.epics).toHaveLength(71);
+    expect(projected.epics[0]).toEqual({ key: "ASMA-7675", ws: "qnr-v2", status: "In Development", cat: "indeterminate", children: [{ key: "ASMA-8350", status: "Open", cat: "new" }] });
+    expect(JSON.stringify(projected)).not.toContain("dropped");
+    expect(jiraHistorySchema.parse({ ...history, epics: history.epics.map(({ ws: _ws, ...epic }) => epic) }).epics[0]).not.toHaveProperty("ws");
+    for (const ws of ["QNR v2", "ws:qnr-v2", ""]) expect(() => jiraHistorySchema.parse({ ...history, epics: [{ ...history.epics[0]!, ws }] })).toThrow();
+    expect(() => jiraHistorySchema.parse({ ...history, epics: [{ ...history.epics[0]!, children: [{ key: "ASMA-8350", ws: "kontor", status: "Open", cat: "new" }] }] })).toThrow();
+  });
+
+  it("indexes each epic's label across ready captures; disagreement is unknown, silence is absent", () => {
+    const other = { ...jiraRead, source: { ...jiraSource, id: "older" }, jiraHistory: { ...history, epics: [{ ...history.epics[0]!, ws: "reporting" }, { ...history.epics[2]!, ws: undefined }] } };
+    const index = capturedWorkstreams([jiraRead, other, { ...jiraRead, status: "unavailable", jiraHistory: { ...history, epics: [{ ...history.epics[1]!, ws: "access" }] } }]);
+    expect(Object.fromEntries(index)).toEqual({ "ASMA-7675": null, "ASMA-8633": "kontor", "ASMA-8639": "kontor" });
+  });
+
+  it("files QNR v2 and the newest Kontor epics under their workstreams after mappings and labels, and leaves unknowns unlinked", () => {
+    expect(scope(planWorkstreamMappings([qnrPlan], reads, entries, [], saved, {}, registry))).toEqual({
+      "seat-a": "qnr-v2", "lsa-8350": "qnr-v2", "lsa-qnr-bare": "Other work",
+      "qa-8634": "kontor", "lsa-8633": "kontor", "tpm-8633": "kontor", "lsa-8639": "kontor", "tpm-8639": "kontor",
+      "pr-desk": "pr-review", "qsw-desk": "qsw", labelled: "tokenomics", mapped: "custom", archived: "kontor", "adam-adhoc": "adam", "unlabelled-epic": "Other work",
+    });
+  });
+
+  it("keeps every native desk first until the registry calls it a fallback desk", () => {
+    const linked = scope(planWorkstreamMappings([qnrPlan], reads, entries, [], saved, {}));
+    expect([linked["lsa-8633"], linked["tpm-8633"], linked["lsa-8639"], linked["tpm-8639"], linked["pr-desk"]]).toEqual(["adam", "kontor", "adam", "adam", "pr-review"]);
+    const sameName = { ...registry, desks: { ...registry.desks, "adam-adhoc": { name: "Adam", match: "fallback" as const } } };
+    expect(scope(planWorkstreamMappings([qnrPlan], reads, entries, [], saved, {}, sameName))["lsa-8633"]).toBe("adam");
+  });
+
+  it("links nothing where a plan or another capture disagrees, and explicit plan links stay plan-only", () => {
+    const seat = [entries[0]!];
+    expect(planWorkstreamMappings([qnrPlan], { ...reads, qnr: qnrRead("qnr-v2") }, seat, [], {}, {})).toEqual({ "session:seat-a": { workstream: "qnr-v2" } });
+    expect(planWorkstreamMappings([qnrPlan], { ...reads, qnr: qnrRead("reporting") }, seat, [], {}, {})).toEqual({});
+    expect(planWorkstreamMappings([qnrPlan], { ...reads, qnr: qnrRead("reporting") }, seat, [], {}, { "seat-a": ["qnr"] })).toEqual({ "session:seat-a": { workstream: "reporting" } });
+    const disagreeing = { ...jiraRead, source: { ...jiraSource, id: "other" }, jiraHistory: { ...history, epics: [{ ...history.epics[0]!, ws: "reporting" }] } };
+    expect(planWorkstreamMappings([qnrPlan], { ...reads, other: disagreeing }, seat, [], {}, {})).toEqual({});
+    expect(planWorkstreamMappings([], {}, seat, [{ id: "wks_e", name: "Empty" }], { "workspace:wks_e": { epic: "ASMA-8639" } }, {})["workspace:wks_e"]).toEqual({ epic: "ASMA-8639" });
+    expect(planWorkstreamMappings([], { jira: jiraRead }, [], [{ id: "wks_e", name: "Empty" }], { "workspace:wks_e": { epic: "ASMA-8639" } }, {})["workspace:wks_e"]).toEqual({ epic: "ASMA-8639", workstream: "kontor" });
+  });
+
+  it("offers the registered workstreams with honest counts, the tree agrees, and desk sessions stay under their desk", () => {
+    const mappings = planWorkstreamMappings([qnrPlan], reads, entries, [], saved, {}, registry);
+    const options = planWorkstreamOptions([qnrPlan, jiraSource], reads, registry, entries, mappings);
+    const facts = Object.fromEntries(options.map((option) => [option.key, [option.sessions, option.registered, option.shownUnder]]));
+    expect(facts["qnr-v2"]).toEqual([2, true, {}]);
+    expect(facts.kontor).toEqual([6, true, { "DESK • ADAM": 4 }]);
+    expect(facts.access).toEqual([0, true, {}]);
+    // My work offers choices with sessions; the zero-session registered choice is what All work adds.
+    expect(options.filter((option) => option.sessions === 0).map((option) => option.key)).toEqual(["access"]);
+    const tree = buildOrganizationTree({ entries, displayMappings: mappings });
+    const top = Object.fromEntries(tree.map((group) => [group.label, visibleSessions([group]).map((entry) => entry.id).sort()]));
+    expect(top["qnr-v2"]).toEqual(["seat-a", "lsa-8350"].sort());
+    expect(top["Other work"]).toEqual(["lsa-qnr-bare", "unlabelled-epic"]);
+    expect(Object.values(top).flat().sort()).toEqual(entries.map((entry) => entry.id).sort());
+    // Filing follows the epic; the tree still shows each native desk's sessions under that desk.
+    expect(top["DESK • ADAM"]).toEqual(["adam-adhoc", "lsa-8633", "lsa-8639", "tpm-8633", "tpm-8639"]);
+    expect([top["DESK • PR REVIEW"], top["DESK • QSW"], top.kontor]).toEqual([["pr-desk"], ["qsw-desk"], ["archived", "qa-8634"]]);
+  });
+
+  it("groups a filtered workstream by epic across its desk and projects, and the desks keep their own sessions", () => {
+    const mappings = planWorkstreamMappings([qnrPlan], reads, entries, [], saved, {}, registry);
+    const tree = buildOrganizationTree({ entries, displayMappings: mappings, byWorkstream: true });
+    const only = (key: string) => filterOrganizationTree(tree, (entry) => organizationScope(entry, mappings).workstream === key);
+    const epics = (groups: readonly OrganizationGroup[]) => Object.fromEntries(groups.flatMap((group) => group.groups.filter((child) => child.kind === "epic")
+      .map((child) => [`${group.label} → ${child.label}`, visibleSessions([child]).map((entry) => entry.id).sort()])));
+    expect(only("kontor").map((group) => group.label)).toEqual(["kontor"]);
+    expect(epics(only("kontor"))).toEqual({ "kontor → ASMA-8633": ["lsa-8633", "qa-8634", "tpm-8633"], "kontor → ASMA-8639": ["archived", "lsa-8639", "tpm-8639"] });
+    expect(epics(only("qnr-v2"))).toEqual({ "qnr-v2 → ASMA-7675": ["lsa-8350", "seat-a"] });
+    const top = Object.fromEntries(tree.map((group) => [group.label, visibleSessions([group]).map((entry) => entry.id).sort()]));
+    expect([top["DESK • ADAM"], top["DESK • PR REVIEW"], top["DESK • QSW"]]).toEqual([["adam-adhoc"], ["pr-desk"], ["qsw-desk"]]);
+    expect(Object.values(top).flat().sort()).toEqual(entries.map((entry) => entry.id).sort());
+  });
+
+  it("says why a session stays unlinked, naming the capture and its repair", () => {
+    const sources = [qnrPlan, jiraSource];
+    expect(planFallbackNote(sources, reads, null, null)).toBe("No known ASMA epic, so no plan or Jira ws: label applies.");
+    expect(planFallbackNote(sources, reads, "ASMA-8701", null)).toBe(`No configured plan declares ASMA-8701. ASMA-8701 has no ws: label in the Jira capture of ${generated}.`);
+    expect(planFallbackNote(sources, reads, "ASMA-9999", null)).toBe(`No configured plan declares ASMA-9999. ASMA-9999 is not in the Jira capture of ${generated}.`);
+    expect(planFallbackNote(sources, { ...reads, qnr: qnrRead("reporting") }, "ASMA-7675", null))
+      .toBe(`Of 1 plan for ASMA-7675, 1 declares reporting, so none applies. Sources disagree: the Jira capture of ${generated} labels ASMA-7675 ws:qnr-v2, which a ready plan contradicts.`);
+    expect(planFallbackNote([qnrPlan], { qnr: qnrRead(null) }, null, null)).toBe("No known ASMA epic, so no plan applies.");
+  });
+
+  it("lets Jira supply the key past a plan the read does not associate, says so, and links nothing where an applicable plan disagrees", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kontor-epic-ws-"));
+    try {
+      const file = join(dir, "plan.md");
+      await writeFile(file, "---\nepic: ASMA-8633\nworkstream: access\n---\n\n# Desk layout\n");
+      const plan: ReadSourceSummary = { id: "desk", title: "Desk layout", kind: "plan", path: file, workstream: "kontor", epic: "ASMA-8633", projectId: null, revisionKind: "working copy" };
+      const conflicted = await readConfiguredSource(plan);
+      expect([conflicted.status, conflicted.planMetadata?.workstream, conflicted.diagnostics.includes(WORKSTREAM_CONFLICT)]).toEqual(["ready", null, true]);
+      const lsa = entries.filter((entry) => entry.id === "lsa-8633");
+      expect(planWorkstreamMappings([plan], { jira: jiraRead, desk: conflicted }, lsa, [], {}, {}, registry)).toEqual({ "session:lsa-8633": { workstream: "kontor" } });
+      expect(derivedWorkstreamNote([plan, jiraSource], { jira: jiraRead, desk: conflicted }, "ASMA-8633", "prj_adam", "kontor"))
+        .toBe(`Workstream from the Jira ws:kontor label of ASMA-8633 (capture of ${generated}). 1 plan for ASMA-8633 is not associated (catalog and frontmatter workstreams conflict), so Jira supplied the key.`);
+      // The same plan without the catalog key is an applicable ready plan declaring access: the sources disagree.
+      const applicable = await readConfiguredSource({ ...plan, workstream: null });
+      expect([applicable.status, applicable.planMetadata?.workstream]).toEqual(["ready", "access"]);
+      expect(planWorkstreamMappings([{ ...plan, workstream: null }], { jira: jiraRead, desk: applicable }, lsa, [], {}, {}, registry)).toEqual({});
+      expect(planFallbackNote([{ ...plan, workstream: null }, jiraSource], { jira: jiraRead, desk: applicable }, "ASMA-8633", "prj_adam"))
+        .toBe(`Of 1 plan for ASMA-8633, 1 declares access, so none applies. Sources disagree: the Jira capture of ${generated} labels ASMA-8633 ws:kontor, which a ready plan contradicts.`);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("names the plans and capture behind a derived key", () => {
+    const sources = [qnrPlan, jiraSource];
+    expect(derivedWorkstreamNote(sources, reads, "ASMA-7675", null, "qnr-v2"))
+      .toBe(`Workstream from the Jira ws:qnr-v2 label of ASMA-7675 (capture of ${generated}). 1 plan for ASMA-7675 is not associated (no workstream declared), so Jira supplied the key.`);
+    expect(derivedWorkstreamNote(sources, { ...reads, qnr: qnrRead("qnr-v2") }, "asma-7675", null, "qnr-v2"))
+      .toBe(`Workstream from 1 ready plan for ASMA-7675 declaring qnr-v2, confirmed by the Jira ws:qnr-v2 label of ASMA-7675 (capture of ${generated}).`);
+    expect(derivedWorkstreamNote(sources, { ...reads, qnr: { ...qnrRead(null), status: "partial" } }, "ASMA-7675", null, "qnr-v2")).toContain("(not ready), so Jira supplied the key.");
+    expect(derivedWorkstreamNote(sources, reads, "ASMA-8639", null, "kontor")).toBe(`Workstream from the Jira ws:kontor label of ASMA-8639 (capture of ${generated}).`);
+    expect(derivedWorkstreamNote(sources, reads, "ASMA-7675", null, "reporting", ["qnr"])).toBe("Workstream from its explicit plan links, which declare reporting.");
+    expect([derivedWorkstreamNote(sources, reads, "ASMA-8701", null, "kontor"), derivedWorkstreamNote(sources, reads, null, null, "kontor")]).toEqual([null, null]);
+  });
+});

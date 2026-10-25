@@ -6,6 +6,8 @@ import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
 /** Evidence is bound to the requested native ID and the displayed snapshot, never a provider handle. */
 export function bindAvailability(entry: DirectoryEntry, value?: SessionAvailability): SessionAvailability {
   if (!value || value.agentId !== entry.id) return { agentId: entry.id, state: "unknown", reason: "No valid exact-ID read result. Absence is not confirmed.", checkedAt: new Date().toISOString(), revision: entry.updatedAt };
+  // An older native observation cannot be promoted to this newer requested snapshot.
+  if (Date.parse(value.revision) < Date.parse(entry.updatedAt)) return value;
   return { ...value, revision: entry.updatedAt };
 }
 export function withSessionAvailability(entries: readonly DirectoryEntry[], evidence: Readonly<Record<string, SessionAvailability>>, now = Date.now()): readonly DirectoryEntry[] {
@@ -44,7 +46,9 @@ export function useSessionAvailability(hostId: string, entries: readonly Directo
     const values: Record<string, SessionAvailability> = {};
     const dispositions: Record<string, SessionAvailability> = {};
     for (const row of rows) {
-      const entry = entriesRef.current.find((entry) => entry.id === row.id);
+      // This callback belongs to the render that started the request. A newer render's
+      // entriesRef must never relabel its reply (including a revision-less absence).
+      const entry = entries.find((entry) => entry.id === row.id);
       if (entry && row.availability) {
         values[row.id] = bindAvailability(entry, row.availability);
         if (row.outcome === "archived" || row.outcome === "already_archived" || row.outcome === "absent" && row.availability.localRemoval) dispositions[row.id] = values[row.id]!;

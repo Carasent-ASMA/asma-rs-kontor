@@ -55,7 +55,7 @@ export function OverviewPage(props: Props) {
   const total = nativeSummary(props.entries);
   const loose = props.entries.filter((entry) => confirmedEpic(entry) === null).length;
   const jira = reads.filter((read) => read.source.kind === "jira");
-  const observed = [...new Set(jira.flatMap((read) => read.status === "ready" && read.jiraHistory ? [day(read.jiraHistory.generated)] : []))];
+  const observed = [...new Set(jira.flatMap((read) => read.status !== "ready" ? [] : read.jiraHistory ? [day(read.jiraHistory.generated)] : read.epicIdentity ? [day(read.epicIdentity.as_of)] : []))];
   const wide = width >= 760;
   const sessions = `${props.scoped ? "Sessions in this scope" : "Host sessions"}: ${count(total.total, "session")} · ${total.running} running · ${total.attention} native attention · ${total.needsInput} needs input · ${total.errors} errors.${!props.scoped && loose ? ` ${loose} with an unknown epic stay in Sessions.` : ""}`;
   const scope = `${props.scoped ? "Project" : "Global"} overview, available without kontord.`;

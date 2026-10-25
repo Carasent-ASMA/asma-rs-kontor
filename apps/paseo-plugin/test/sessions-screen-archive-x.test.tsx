@@ -38,7 +38,8 @@ const { harness, fake } = vi.hoisted(() => {
   };
 });
 vi.mock("react", async (importOriginal) => ({ ...(await importOriginal<typeof import("react")>()), useContext: () => null, memo: (component: unknown) => component,
-  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState }));
+  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState,
+  useSyncExternalStore: (_subscribe: unknown, read: () => unknown) => read() }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { addEventListener: () => ({ remove: () => undefined }), isReduceMotionEnabled: async () => false, isScreenReaderEnabled: async () => false },
   ActivityIndicator: "ActivityIndicator", Animated: { Value: class { setValue() {} stopAnimation() {} }, View: "Animated.View", timing: () => ({ start: (done?: () => void) => done?.(), stop: () => undefined }) },
@@ -124,7 +125,7 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
   let executing: Array<(value: LifecycleRow) => void>;
   let durable: Map<string, ReturnType<typeof review>>;
   beforeEach(() => {
-    clearSessionViews(); patchSessionView("host-a", { layout: "flat" });
+    clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" });
     unresolved = []; executing = []; durable = new Map(); fake.calls = []; fake.host = "host-a"; fake.refresh = vi.fn(() => new Promise(() => {})); configureArchiveNoticeStorage(null);
     fake.toast.show.mockReset(); fake.toast.error.mockReset();
     fake.state = { entries: [SA, SWE, OTHER].map((id) => sessionEntry(id, { status: "idle" })), status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false };
@@ -365,6 +366,21 @@ describe.each(["full", "slim", "compact"] as const)("Archive X on the %s layout"
     executing.shift()!(row(OTHER, { outcome: "blocked", message: "Fixture refusal." })); await settle();
     expect(fake.toast.error).toHaveBeenCalledExactlyOnceWith("Fixture refusal."); expect(listedIds()).toContain(OTHER);
     expect(archiveX(OTHER).props).toMatchObject({ pending: false, disabled: false });
+  });
+
+  it("keeps the newer native row and current-state feedback when an older archive reply settles", async () => {
+    mount(layout); await settle();
+    press(archiveX(SA)); await settle();
+    const state = fake.state as { entries: ReturnType<typeof sessionEntry>[] };
+    fake.state = { ...state, entries: state.entries.map(entry => entry.id === SA ? { ...entry, updatedAt: "2026-10-25T12:02:00Z", archivedAt: null } : entry) };
+    harness.flush();
+    executing.shift()!(archived(SA, "closed", "Archived.")); await settle();
+    expect(listedIds()).toContain(SA);
+    expect(archiveX(SA).props.session).toMatchObject({ id: SA, updatedAt: "2026-10-25T12:02:00Z", archivedAt: null });
+    expect(fake.toast.show).not.toHaveBeenCalledWith(`Archived Session ${SA}.`);
+    expect(fake.toast.show).toHaveBeenCalledExactlyOnceWith("The session changed while archiving. Showing its current native state.");
+    expect(fake.toast.error).not.toHaveBeenCalled();
+    expect(count("sessions.lifecycle-execute-item")).toBe(1); expect(fake.refresh).not.toHaveBeenCalled();
   });
 
   it.each([

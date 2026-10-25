@@ -38,22 +38,24 @@ async function setup(initial: Agent[] = [agent("a"), agent("b")]) {
     list: vi.fn(async () => ({ requestId: "fixture", entries: [...records.values()].map((value) => ({ agent: value, project: { projectKey: "fixture", projectName: "Fixture", checkout: { worktreeRoot: null, cwd: "/fixtures/checkout", isGit: false as const, currentBranch: null, remoteUrl: null, isPaseoOwnedWorktree: false as const, mainRepoRoot: null } } })), pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } })),
     ref: (id) => ({ refresh: () => refresh(id), send: async () => send(id), archive: () => archive(id), timeline: { refetch: async () => ({ entries: [{ type: "user_message", text: "Fictional task context" }], error: null }) } }),
   }, providers: { snapshot: vi.fn<LifecycleClient["providers"]["snapshot"]>(async () => ({ requestId: "fixture", generatedAt: "now", entries: [{ provider: "codex", enabled: true, status: "ready", models: [{ provider: "codex", id: "gpt-6.1-sol", label: "Sol", thinkingOptions: [{ id: "xhigh", label: "Extra high" }] }] }] })) } };
+  // Each fixture session had a durable clean read before its fixture state.
+  for (const id of records.keys()) await writeFile(join(root, `refusal-${createHash("sha256").update(id).digest("hex")}.json`), JSON.stringify({ agentId: id, state: "clean", seq: 1, refusal: null, open: [], clean: true, cleared: 0, recovered: null }));
   const service = createLifecycleService(client, root);
   return { service, root, client, records, refresh, send, archive, preview: (action: "resume" | "archive" = "resume", ids = ["a"], scope: "filtered" | "host" = "filtered") => service.preview({ action, agentIds: ids, scope, target }) };
 }
 describe("native recovery classification", () => {
   it("does not infer failure from age, idle or a retained error notice", () => {
-    for (const value of [agent("a", { status: "idle" }), agent("a", { status: "running" }), agent("a", { status: "closed" })]) expect(lifecycleRow(value, [value], "resume", target).eligible).toBe(false);
-    expect(lifecycleRow(agent("a"), [], "resume", target).eligible).toBe(true);
+    for (const value of [agent("a", { status: "idle" }), agent("a", { status: "running" }), agent("a", { status: "closed" })]) expect(lifecycleRow(value, [value], "resume").eligible).toBe(false);
+    expect(lifecycleRow(agent("a"), [], "resume").eligible).toBe(true);
   });
-  it("keeps quota/auth, waits, replaced, missing-history and mismatched route visible with reasons", () => {
-    const cases: Partial<Agent>[] = [{ lastError: "Usage limit reached" }, { lastError: "401 Unauthorized" }, { attentionReason: "permission" }, { labels: { "takeover.successor": "new" } }, { persistence: null }, { provider: "claude" }, { model: "other" }, { effectiveThinkingOptionId: "low" }];
-    for (const patch of cases) { const row = lifecycleRow(agent("a", patch), [], "resume", target); expect(row.eligible).toBe(false); expect(row.reason.length).toBeGreaterThan(15); }
+  it("keeps quota/auth, waits, replaced and missing-history visible with reasons", () => {
+    const cases: Partial<Agent>[] = [{ lastError: "Usage limit reached" }, { lastError: "401 Unauthorized" }, { attentionReason: "permission" }, { labels: { "takeover.successor": "new" } }, { persistence: null }];
+    for (const patch of cases) { const row = lifecycleRow(agent("a", patch), [], "resume"); expect(row.eligible).toBe(false); expect(row.reason.length).toBeGreaterThan(15); }
   });
   it("blocks every managed child while allowing explicit native stop/archive of active sessions", () => {
     const a = agent("a"), child = agent("child", { status: "running", workspaceId: "different-workspace", labels: { "paseo.parent-agent-id": "a" } });
-    expect(lifecycleRow(a, [a, child], "archive", target)).toMatchObject({ eligible: false, children: [{ id: "child" }] });
-    expect(lifecycleRow(agent("a", { status: "running" }), [], "archive", target).eligible).toBe(true);
+    expect(lifecycleRow(a, [a, child], "archive")).toMatchObject({ eligible: false, children: [{ id: "child" }] });
+    expect(lifecycleRow(agent("a", { status: "running" }), [], "archive").eligible).toBe(true);
   });
 });
 describe("durable lock metadata contention", () => {

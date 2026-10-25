@@ -1,19 +1,25 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
-import { useRpc, type PluginHostSummary } from "@getpaseo/plugin/client";
-import { readCreateOptions, type CreateOptions, type CreateOutcome } from "../shared/session-create";
-import type { OpenSessionResult } from "./session-actions";
+import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
+import { readCreateOptions, type CreateOptions, type CreateOutcome, type CreateScope } from "../shared/session-create";
+import { handOffOpen, withdrawHandOff, type HandOffTarget, type OpenSessionResult } from "./session-actions";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
+import { ControlHelpProvider } from "./control-help";
 import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { Action, COARSE_POINTER, IconButton, type Colors } from "./page-controls";
-import { clearRecent, readRecent, readSavedHistory, recentRows, RECENT_SHOWN, type RecentRecord } from "./recent-sessions";
+import { clearRecent, readSavedEntries, recentRows, RECENT_SHOWN, useRecent, type RecentRecord, type RecentState } from "./recent-sessions";
 import { isArchivedSession, type DirectoryEntry, type DirectoryState } from "./session-directory";
 import { sessionState } from "./session-organization";
 import { SessionStateMarker } from "./session-state-marker";
 import { ageInWords } from "./session-time";
+import { useSessionDirectory } from "./use-session-directory";
+import { StartSwitchStatuses } from "./start-switch-statuses";
+import type { StateShortcut } from "./session-state-shortcuts";
+import { ArchiveSessionButton } from "./session-lifecycle-view";
+import { useStartSwitchArchive } from "./start-switch-archive";
 
 /** The Kontor screen param that opens this sheet, from the Command Center item. */
 export const SWITCH_SHEET = "switch";
@@ -27,27 +33,36 @@ export type CreateOptionsState =
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+// Only the schema's keys travel: a caller may hand its whole draft for convenience.
+const clean = (next?: CreateScope): CreateScope => next ? {
+  ...(next.projectId !== undefined ? { projectId: next.projectId } : {}),
+  ...(next.workspaceId !== undefined ? { workspaceId: next.workspaceId } : {}),
+  ...(next.role !== undefined ? { role: next.role } : {}),
+  ...(next.start !== undefined ? { start: next.start } : {}),
+  ...(next.issueKey !== undefined ? { issueKey: next.issueKey } : {}),
+} : {};
+
 /** The host's create options, read when the sheet opens and again on `refresh`; never while the host is offline. */
-export function useCreateOptions(online: boolean): { state: CreateOptionsState; refresh: (workspaceId?: string) => void } {
+export function useCreateOptions(online: boolean, initial: CreateScope = {}): { state: CreateOptionsState; refresh: (scope?: CreateScope) => void } {
   const read = useRpc(readCreateOptions);
   const [state, setState] = useState<CreateOptionsState>({ status: online ? "loading" : "offline" });
   const [revision, setRevision] = useState(0);
-  const [workspaceId, setWorkspaceId] = useState<string | undefined>();
+  const [scope, setScope] = useState<CreateScope>(clean(initial));
   useEffect(() => {
     if (!online) { setState({ status: "offline" }); return; }
     let live = true;
     setState({ status: "loading" });
-    read(workspaceId ? { workspaceId } : {}).then((options) => { if (live) setState({ status: "ready", options }); }, (error: unknown) => { if (live) setState({ status: "error", message: errorText(error) }); });
+    read(Object.keys(scope).length ? scope : {}).then((options) => { if (live) setState({ status: "ready", options }); }, (error: unknown) => { if (live) setState({ status: "error", message: errorText(error) }); });
     return () => { live = false; };
-  }, [online, revision, workspaceId]);
-  return { state, refresh: (workspaceId) => { setWorkspaceId(workspaceId); setRevision((value) => value + 1); } };
+  }, [online, revision, scope]);
+  return { state, refresh: (next) => { setScope(clean(next ?? initial)); setRevision((value) => value + 1); } };
 }
 
-/** What the sheet says about New LSA when it cannot offer it; null when it can. */
+/** What the sheet says about New session when it cannot offer it; null when it can. */
 export function createAvailability(state: CreateOptionsState): string | null {
-  if (state.status === "offline") return "New LSA: host offline. Nothing can be created until it reconnects.";
+  if (state.status === "offline") return "New session: host offline. Nothing can be created until it reconnects.";
   if (state.status === "loading") return null;
-  if (state.status === "error") return `New LSA unavailable: Kontor could not read this host's options (${state.message}).`;
+  if (state.status === "error") return `New session unavailable: Kontor could not read this host's options (${state.message}).`;
   return state.options.enabled ? null : state.options.disabledReason;
 }
 
@@ -59,71 +74,80 @@ export function sessionPlace(entry: DirectoryEntry): string {
 export type SwitchRow = { readonly entry: DirectoryEntry; readonly detail: string };
 
 /**
- * An empty query lists up to 8 Recent rows. A query matches every token across the whole directory: Recent matches
- * first, then the others in directory order, at most 20; `total` counts every match.
+ * An empty query lists the first 8 Recent rows; `total` counts every Recent row, all shown in Sessions. A query matches
+ * every token across the whole directory: Recent matches first, then the others in directory order, at most 20; `total`
+ * counts every match.
  */
 export function switchRows(entries: readonly DirectoryEntry[], query: string, now: number, record: RecentRecord): { rows: SwitchRow[]; total: number } {
   const recent = recentRows(entries, record, now).map((row) => ({ entry: row.entry, detail: `${row.reason} ${ageInWords(row.at, now)} · ${sessionPlace(row.entry)}` }));
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return { rows: recent.slice(0, RECENT_SHOWN), total: Math.min(recent.length, RECENT_SHOWN) };
+  if (!tokens.length) return { rows: recent.slice(0, RECENT_SHOWN), total: recent.length };
   const matches = (entry: DirectoryEntry) => tokens.every((token) => entry.searchText.includes(token));
   const first = recent.filter((row) => matches(row.entry)), ids = new Set(first.map((row) => row.entry.id));
   const rest = entries.filter((entry) => !ids.has(entry.id) && !isArchivedSession(entry) && matches(entry)).map((entry) => ({ entry, detail: sessionPlace(entry) }));
   return { rows: [...first, ...rest].slice(0, MATCHES_SHOWN), total: first.length + rest.length };
 }
 
-function persistenceNote(persistence: ReturnType<typeof readRecent>["persistence"]): string | null {
+export function persistenceNote(persistence: RecentState["persistence"]): string | null {
   if (persistence === "session") return "Remembered until Paseo restarts on this device.";
   if (persistence === "failed") return "Recent could not be saved on this device; it lasts until Paseo restarts.";
   if (persistence === "unreadable") return "Recent could not be read on this device. Clear recent replaces it.";
   return null;
 }
 
-/**
- * One sheet for switching and starting: Recent and a search over every session, plus New LSA as a header action when
- * the host allows it. Rows open only through the screen's `onOpen`, the shared open path with its refusals.
- */
-export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onClose }: {
-  anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; compact: boolean; colors: Colors;
-  hostId: string; hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
+type StartSwitchProps = {
+  compact: boolean; colors: Colors; hostId: string; hostStatus: PluginHostSummary["status"]; directory: DirectoryState;
   /** Whether this Paseo app exposes native navigation to plugins. */
   canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult;
   onOpen: (entry: DirectoryEntry) => void; onShowAll: (query: string) => void; onClose: () => void;
-}) {
+  onShowState?: (shortcut: StateShortcut) => void;
+  /** Inside the host's own popover or bottom sheet, which owns the title, dismissal and scrolling; Open Kontor joins the actions. */
+  popover?: { readonly openKontor: () => void };
+  /** The workspace or project the dialog was opened in; its desk becomes the default. */
+  initialScope?: CreateScope;
+};
+
+/**
+ * One body for switching and starting, drawn by the Kontor screen's sheet and by the composer pill's popover: Recent
+ * and a search over every session, plus New session as a header action when the host allows it. Rows open only through
+ * `onOpen`, so each surface keeps its own single open path and its refusals.
+ */
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowAll, onShowState, onClose, popover, initialScope }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">("switch");
   const creation = useRef({ hostId, open: false });
   const scope = creation.current;
   const startNew = () => { creation.current = { hostId, open: true }; setMode("new"); };
   const leaveNew = () => { creation.current.open = false; setMode("switch"); };
   const [query, setQuery] = useState("");
-  const [recent, setRecent] = useState(() => readRecent(hostId));
-  const [showSaved, setShowSaved] = useState(false);
-  const saved = readSavedHistory();
-  const create = useCreateOptions(hostStatus === "online");
+  const recent = useRecent(hostId);
+  const saved = readSavedEntries(recent.record);
+  const create = useCreateOptions(hostStatus === "online", initialScope);
+  const archive = useStartSwitchArchive(hostId, directory, hostStatus === "online");
   const now = Date.now();
-  const { rows, total } = switchRows(directory.entries, query, now, recent.record);
+  const { rows, total } = switchRows(archive.directory.entries, query, now, recent.record);
   const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live });
   const unavailable = createAvailability(create.state);
   const tall = compact || COARSE_POINTER;
-  const dismiss = () => { creation.current.open = false; onClose(); setTimeout(() => focusControl(anchor.current), 0); };
+  const dismiss = () => { creation.current.open = false; onClose(); };
   const heading = (text: string) => <Text accessibilityRole="header" numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{text}</Text>;
-  const close = <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
+  const close = popover ? null : <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
   const header = mode === "new"
     ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 4 }}>
       <IconButton label="Back to recent sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />
-      {heading("New LSA")}{close}
+      {heading("New session")}{close}
     </View>
     : <View style={{ gap: 4, paddingBottom: 4 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        {heading("Start or switch")}
+        {popover ? <View style={{ flex: 1, flexDirection: "row" }}><Action small icon="Building2" label="Open Kontor" colors={colors} onPress={popover.openKontor} /></View> : heading("Start or switch")}
         {create.state.status === "ready" && create.state.options.pending
           ? <Action small label="Check creation" accessibilityLabel="Check pending session creation" colors={colors} onPress={startNew} />
-          : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New LSA" accessibilityLabel="New LSA session" colors={colors} onPress={startNew} /> : null}
+          : create.state.status === "ready" && create.state.options.enabled ? <Action small icon="Plus" label="New session" accessibilityLabel="New session" colors={colors} onPress={startNew} /> : null}
         {close}
       </View>
       <TextInput testID="kontor-switch-search" accessibilityLabel="Jump to any session" placeholder="Jump to any session…" autoFocus={!compact} value={query} onChangeText={setQuery}
         placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 12, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
+      {onShowState ? <StartSwitchStatuses directory={archive.directory} hostStatus={hostStatus} colors={colors} onSelect={onShowState} /> : null}
     </View>;
   const muted = { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 } as const;
   let empty: string | null = null;
@@ -131,45 +155,94 @@ export function StartSwitchSheet({ anchor, root, rootSize, compact, colors, host
   else if (!rows.length && recent.record.clearedAt !== null) empty = `Cleared on this device at ${new Date(recent.record.clearedAt).toLocaleTimeString()}. Sessions you open from Kontor after that appear here.`;
   else if (!rows.length) empty = "Sessions you open from Kontor appear here, most recent first.";
   const persistence = persistenceNote(recent.persistence);
-  return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={colors} label={mode === "new" ? "New LSA session" : "Start or switch session"} onClose={dismiss}
-    placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 400, maxHeight: 560 }} header={header}>
-    {mode === "new" ? <NewLsaForm hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
+  const items = <>
+    {freshness === "Live" ? null : <Text testID="kontor-switch-freshness" style={muted}>Last known · {freshness}</Text>}
+    {canOpen ? null : <Text style={muted}>This Paseo app does not let plugins open sessions; rows are listed only.</Text>}
+    {archive.notice ? <Text testID="kontor-switch-archive-result" accessibilityRole={archive.notice.error ? "alert" : undefined} role={archive.notice.error ? undefined : "status"} accessibilityLiveRegion="polite" style={{ ...muted, color: archive.notice.error ? colors.statusWarning : colors.foreground }}>{archive.notice.message}</Text> : null}
+    {archive.notice?.review ? <Action small label="Open Sessions to review archive" colors={colors} onPress={() => onShowAll("")} /> : null}
+    {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} action={<ArchiveSessionButton session={row.entry} compact colors={colors}
+      disabled={archive.disabled || archive.held(row.entry)} pending={archive.pendingId === row.entry.id} onPress={() => { void archive.onArchive(row.entry); }} />} />)}
+    {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
+    {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
+    {!query.trim() && (total > rows.length || saved.ids.length > 0) ? <Action small label={`Show all ${total} recent in Sessions`}
+      accessibilityLabel={`Show all ${total} recent sessions${saved.ids.length ? " and saved entries" : ""} in Sessions`} colors={colors} onPress={() => onShowAll("")} /> : null}
+    <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
+      <Action small label="Clear recent on this device" colors={colors} onPress={() => clearRecent(hostId)} />
+      <Text style={muted}>Opened from Kontor · this host and app profile only</Text>
+      <Text style={muted}>Native sidebar opens and other devices are not included.</Text>
+      {saved.ids.length ? <Text style={muted}>{`Saved entries from an earlier version (${saved.ids.length}), visit time and host unknown, are listed under Recent in Sessions.`}</Text> : null}
+      {saved.unreadable ? <Text style={muted}>Saved entries from an earlier version could not be read and are left untouched.</Text> : null}
+      {persistence ? <Text style={muted}>{persistence}</Text> : null}
+      {unavailable ? <Text testID="kontor-switch-create-status" style={muted}>{unavailable}</Text> : null}
+    </View>
+  </>;
+  const list = { testID: "kontor-switch-list", role: "menu", accessibilityLabel: query.trim() ? "Matching sessions" : "Recent sessions" } as const;
+  const body = mode === "new"
+    ? <NewLsaForm hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
       isActive={() => scope === creation.current && scope.open && scope.hostId === hostId}
       onOpenCreated={onOpenCreated} onCancel={leaveNew} />
-    : <ScrollView testID="kontor-switch-list" role="menu" accessibilityLabel={query.trim() ? "Matching sessions" : "Recent sessions"} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
-      {freshness === "Live" ? null : <Text testID="kontor-switch-freshness" style={muted}>Last known · {freshness}</Text>}
-      {canOpen ? null : <Text style={muted}>This Paseo app does not let plugins open sessions; rows are listed only.</Text>}
-      {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} />)}
-      {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
-      {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
-      <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
-        <Action small label="Clear recent on this device" colors={colors} onPress={() => setRecent(clearRecent(hostId))} />
-        <Text style={muted}>Opened from Kontor · this host and app profile only</Text>
-        <Text style={muted}>Native sidebar opens and other devices are not included.</Text>
-        {saved.ids.length ? <>
-          <Action small label={`${showSaved ? "Hide" : "Show"} saved history (${saved.ids.length})`} colors={colors} onPress={() => setShowSaved(!showSaved)} />
-          {showSaved ? <View testID="kontor-saved-history">
-            <Text style={muted}>Saved history · original host and opening times unknown. Session IDs only.</Text>
-            {saved.ids.map((id) => <Text key={id} selectable style={muted}>{id}</Text>)}
-          </View> : null}
-        </> : null}
-        {saved.unreadable ? <Text style={muted}>Earlier saved history could not be read and has been left untouched.</Text> : null}
-        {persistence ? <Text style={muted}>{persistence}</Text> : null}
-        {unavailable ? <Text testID="kontor-switch-create-status" style={muted}>{unavailable}</Text> : null}
-      </View>
-    </ScrollView>}
+    // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
+    : popover ? <View {...list}>{items}</View>
+    : <ScrollView {...list} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>{items}</ScrollView>;
+  return { label: mode === "new" ? "New session" : "Start or switch session", header, body, dismiss };
+}
+
+/** The Kontor screen's sheet around the shared body; closing it returns focus to its trigger. */
+export function StartSwitchSheet({ anchor, root, rootSize, onClose, ...props }: Omit<StartSwitchProps, "popover"> & { anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize }) {
+  const { label, header, body, dismiss } = useStartSwitch({ ...props, onClose: () => { onClose(); setTimeout(() => focusControl(anchor.current), 0); } });
+  return <AnchoredMenu testID="kontor-switch-sheet" dialog anchor={anchor} root={root} rootSize={rootSize} colors={props.colors} label={label} onClose={dismiss}
+    placement={props.compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 400, maxHeight: 560 }} header={header}>
+    {body}
   </AnchoredMenu>;
 }
 
-/** No X glyph here: in Sessions an X archives, and a look-alike must never sit on a row. */
-function SwitchRowItem({ row, colors, tall, onPress }: { row: SwitchRow; colors: Colors; tall: boolean; onPress: () => void }) {
-  return <Pressable testID={`kontor-switch-row-${row.entry.id}`} role="menuitem" accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
+/**
+ * The composer pill's popover: the same body inside the host's popover or bottom sheet. A plugin popover gets no
+ * session navigation, so each open is handed once to the Kontor screen, which opens it by exact ID (`openHandOff`).
+ * Whether this app lets plugins open sessions is the screen's to say, so rows stay openable here.
+ */
+export function StartSwitchPopover({ host, theme, layout, workspaceId, close, openScreen, screenId }: PluginButtonContentProps & { openScreen: (input: PluginOpenScreenInput) => void; screenId: string }) {
+  const hostStatus = useHosts().find((candidate) => candidate.serverId === host.id)?.status ?? "offline";
+  // Reads the shared directory without setting its Archived choice; Recent and search leave archived sessions out.
+  const directory = useSessionDirectory({ hostId: host.id, hostStatus });
+  const toast = useToast();
+  const stateOpened = useRef(false);
+  /** Null once Kontor received the request and the popover closed; otherwise why it could not open. */
+  const go = (key?: string): string | null => {
+    try { openScreen(key ? { screenId, params: { target: key } } : { screenId }); }
+    catch (error) { if (key) withdrawHandOff(key); return errorText(error) || "Paseo could not open Kontor."; }
+    close();
+    return null;
+  };
+  const handOff = (target: HandOffTarget) => {
+    if (target.kind === "state" && stateOpened.current) return null;
+    if (target.kind === "state") stateOpened.current = true;
+    const failure = go(handOffOpen(host.id, target));
+    if (failure && target.kind === "state") stateOpened.current = false;
+    return failure;
+  };
+  const report = (failure: string | null) => { if (failure) toast.error(failure); };
+  const { header, body } = useStartSwitch({ compact: layout.compact, colors: theme.colors, hostId: host.id, hostStatus, directory: directory.state, canOpen: true,
+    onOpen: (entry) => report(handOff({ kind: "session", agentId: entry.id })),
+    onShowAll: (query) => report(handOff({ kind: "search", query })),
+    onShowState: (shortcut) => report(handOff({ kind: "state", ...shortcut })),
+    onOpenCreated: (outcome) => {
+      const failure = handOff({ kind: "created", outcome });
+      return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };
+    },
+    onClose: close, initialScope: { workspaceId }, popover: { openKontor: () => report(go()) } });
+  return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}</View></ControlHelpProvider>;
+}
+
+/** Open and the shared archive X have independent hit areas; the action is never nested in Open. */
+export function SwitchRowItem({ row, colors, tall, onPress, role = "menuitem", action }: { row: SwitchRow; colors: Colors; tall: boolean; onPress: () => void; role?: "menuitem" | "button"; action?: ReactNode }) {
+  return <View style={{ flexDirection: "row", alignItems: "center" }}><Pressable testID={`kontor-switch-row-${row.entry.id}`} role={role} accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
     style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5,
-      backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
+      flex: 1, minWidth: 0, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
     <SessionStateMarker state={sessionState(row.entry)} colors={colors} />
     <View style={{ flex: 1, minWidth: 0 }}>
       <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 13 }}>{row.entry.title}</Text>
       <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 2 }}>{row.detail}</Text>
     </View>
-  </Pressable>;
+  </Pressable>{action}</View>;
 }

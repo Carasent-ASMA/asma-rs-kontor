@@ -115,7 +115,11 @@ describe("filtered results and the tree position", () => {
     expect(twice).toEqual(cleared);
   });
 
-  it("keeps layout independent from query, state, task and scope", () => {
+  it("keeps layout independent from query, state, task and scope, except that Recent is always one list", () => {
+    expect(readSessionView("host-a").status).toBe("recent");
+    expect(isResultMode(readSessionView("host-a"))).toBe(true);
+    expect(isResultMode({ ...readSessionView("host-a"), layout: "grouped" })).toBe(true);
+    patchSessionView("host-a", { status: "current" });
     const base = readSessionView("host-a");
     expect(isResultMode(base)).toBe(false);
     expect(isResultMode({ ...base, query: "  " })).toBe(false);
@@ -128,7 +132,8 @@ describe("filtered results and the tree position", () => {
   });
 
   it("remembers the tree position on entering results and restores it on leaving", () => {
-    patchSessionView("host-a", { scrollOffset: 640 });
+    patchSessionView("host-a", { status: "current", scrollOffset: 640 });
+    expect(sessionViewTransition(readSessionView("host-a"), { status: "recent" }, 600)).toEqual({ status: "recent", treeOffset: 600, peek: null, scrollOffset: 0 });
     const enter = sessionViewTransition(readSessionView("host-a"), { layout: "flat", query: "qa" }, 600);
     expect(enter).toEqual({ layout: "flat", query: "qa", treeOffset: 600, peek: null, scrollOffset: 0 });
     patchSessionView("host-a", { ...enter, scrollOffset: 90 });
@@ -170,7 +175,7 @@ describe("work scope, order and reset", () => {
     expect(sessionFilterCount({ ...all, status: "current", work: "all", assignment: "me" })).toBe(2);
   });
 
-  it("clears archive membership and resets to ordinary Current without changing viewing identity or presentation on Clear", () => {
+  it("clears archive membership and resets to ordinary Recent without changing viewing identity or presentation on Clear", () => {
     writeWorkingAs("host-a", "tracker.example", "account-a");
     const view = { ...readSessionView("host-a"), status: "all" as const, work: "all" as const, membership: "archived" as const,
       includeArchived: true, assignment: "person:account-b" as const, sort: "title" as const, grouping: "role" as const };
@@ -179,7 +184,7 @@ describe("work scope, order and reset", () => {
     expect(cleared).toMatchObject({ membership: "sessions", status: "all", work: "all", assignment: "any", sort: "title", grouping: "role" });
     expect(sessionFilterCount(cleared)).toBe(0);
     expect(sessionFilterCount({ ...cleared, includeArchived: true })).toBe(0);
-    expect({ ...view, ...resetSessionViewPatch(view) }).toMatchObject({ membership: "sessions", status: "current", work: "mine", assignment: "any", sort: undefined, grouping: undefined });
+    expect({ ...view, ...resetSessionViewPatch(view) }).toMatchObject({ membership: "sessions", status: "recent", work: "mine", assignment: "any", sort: undefined, grouping: undefined });
     expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
   });
 

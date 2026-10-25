@@ -69,9 +69,12 @@ export function sessionPresentation(view: Pick<SessionViewState, "layout" | "gro
   };
 }
 
-/** Layout alone chooses the flat list; filtering never changes presentation. */
+/**
+ * Layout chooses the flat list, except that Recent is always one list in the order sessions were opened; the saved
+ * layout stays as it is. No other filter changes presentation.
+ */
 export function isResultMode(view: Pick<SessionViewState, "query" | "status" | "task" | "layout" | "grouping">, preferences: Pick<OrganizationSettings, "layout" | "grouping"> = DEFAULT_ORGANIZATION_SETTINGS): boolean {
-  return sessionPresentation(view, preferences).layout === "flat";
+  return view.status === "recent" || sessionPresentation(view, preferences).layout === "flat";
 }
 
 /** Count narrowing choices only. Presentation and explicit route context are separate. */

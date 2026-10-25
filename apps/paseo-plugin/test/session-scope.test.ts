@@ -26,8 +26,8 @@ describe("exact resolved epic scope", () => {
 
   it("offers distinct canonical keys, including explicit Unknown, and round-trips selection", () => {
     const choices = epicScopeChoices([labelled, captured, conflict, titleOnly, sessionEntry("case", { labels: { epic: "asma-10" } })], {});
-    expect(choices).toEqual([{ key: "known:ASMA-10", label: "ASMA-10" }, { key: "unknown", label: "Epic unknown" }]);
-    expect(epicScopeChoices([], {})).toEqual([{ key: "unknown", label: "Epic unknown" }]);
+    expect(choices).toEqual([{ key: "known:ASMA-10", label: "ASMA-10" }, { key: "unknown", label: "No epic linked" }]);
+    expect(epicScopeChoices([], {})).toEqual([{ key: "unknown", label: "No epic linked" }]);
     for (const scope of [null, known, unknown]) expect(epicScopeChoice(epicScopeKey(scope))).toEqual(scope);
   });
 });

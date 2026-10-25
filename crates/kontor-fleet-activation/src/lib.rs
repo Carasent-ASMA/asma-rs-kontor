@@ -126,6 +126,9 @@ pub mod rule {
     pub const PP02: &str = "a planning pair's placement could not be frozen as one canonical receipt with two distinct actual vendors";
     pub const PP03: &str = "name exactly one of binding_key, allocation and planning_pair";
     pub const PP04: &str = "a planning pair takes each member's own eligibility; unavailable_accounts and excluded_vendors at the top level belong to a single binding";
+
+    pub const H01: &str = "route_health belongs to a single binding; a joint allocation and a planning pair do not take it";
+    pub const H02: &str = "route_health states max_age_seconds from 1 to 3600 and only the declared route health fields";
 }
 
 use rule::{

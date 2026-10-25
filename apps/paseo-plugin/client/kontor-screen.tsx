@@ -15,19 +15,21 @@ import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
 import { useResponsibility } from "./use-responsibility";
 import { useKontorStatus } from "./use-kontor-status";
-import { kontordLine, kontordSentence } from "./kontord-copy";
+import { kontordSentence } from "./kontord-copy";
+import { KontordBanner } from "./kontord-banner";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
-import type { DirectoryEntry } from "./session-directory";
+import { useSessionRetirementProjection } from "./use-session-lifecycle";
+import { emptyDirectoryState, type DirectoryEntry } from "./session-directory";
 import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, Copy, IconButton, type Colors } from "./page-controls";
+import { Action, IconButton, type Colors } from "./page-controls";
 import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
 import { OrganizationSettingsPage } from "./organization-settings-page";
-import { openCreatedSession, openSessionById } from "./session-actions";
+import { openCreatedSession, openHandOff, openSessionById } from "./session-actions";
 import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
 import { useWorkspaceDirectory } from "./use-workspace-directory";
@@ -35,6 +37,7 @@ import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
 import { StartSwitchSheet, SWITCH_SHEET } from "./start-switch-sheet";
+import { stateShortcutPatch, type StateShortcut } from "./session-state-shortcuts";
 import { configureRecentStorage } from "./recent-sessions";
 import { deviceProfileStorage } from "./viewer-profile";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
@@ -62,6 +65,10 @@ export function KontorScreen(props: PluginScreenProps) {
   // Remount all host-local hooks on a host switch; routes remain host-scoped.
   return <HostScreen key={props.host.id} {...props} />;
 }
+/** Stable empty inputs: retirement is a Sessions read, so other pages must not recompute or read it. */
+const NO_SESSION_ENTRIES: readonly DirectoryEntry[] = [];
+const NO_SESSION_DIRECTORY = emptyDirectoryState();
+
 function HostScreen(props: PluginScreenProps) {
   const { host, layout } = props;
   const hosts = useHosts();
@@ -80,7 +87,7 @@ function HostScreen(props: PluginScreenProps) {
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   // The Teams page is controlled by its view in the navigation store, which does not render by itself.
   const [, setTeamsViewRevision] = useState(0);
-  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
+  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived: route.tab === "Sessions" || includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
   const responsibility = useResponsibility(host.id, hostStatus);
   // kontord is optional: its line never changes the native host status, and Sessions never waits for it.
@@ -91,14 +98,20 @@ function HostScreen(props: PluginScreenProps) {
   const captureRevisions = Object.values(sourceState.reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" ? [`${read.source.id}@${read.revision}`] : []).sort().join(" ");
   const jira = useMemo(() => jiraCapture(Object.values(sourceState.reads)), [captureRevisions]);
   const linked = useMemo(() => new WeakMap<DirectoryEntry, DirectoryEntry>(), [jira]);
-  const directory = useMemo(() => ({ refresh: native.refresh, state: { ...native.state, entries: withJiraCapture(native.state.entries, jira, linked) } }),
-    [native.refresh, native.state, jira, linked]);
+  const directory = useMemo(() => ({ refresh: native.refresh, retry: native.retry, state: { ...native.state, entries: withJiraCapture(native.state.entries, jira, linked) } }),
+    [native.refresh, native.retry, native.state, jira, linked]);
   const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
   const planMappings = useMemo(() => planWorkstreamMappings(sourceState.sources, sourceState.reads, directory.state.entries,
-    workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName })), saved.displayMappings, saved.planAssociations),
-    [sourceState.sources, sourceState.reads, directory.state.entries, workspaces.entries, saved.displayMappings, saved.planAssociations]);
+    workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName })), saved.displayMappings, saved.planAssociations, sourceState.registry),
+    [sourceState.sources, sourceState.reads, directory.state.entries, workspaces.entries, saved.displayMappings, saved.planAssociations, sourceState.registry]);
+  // New session starts on the desk of the project or epic context the sheet was opened in.
+  const switchScope = useMemo(() => {
+    const epic = route.epicKey?.trim().toLocaleLowerCase();
+    const projectId = route.projectId ?? (epic ? workspaces.entries.find((workspace) => saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === epic)?.projectId : undefined);
+    return projectId ? { projectId } : {};
+  }, [route.projectId, route.epicKey, workspaces.entries, saved.displayMappings]);
   const presentation = sourceState.error && !sourceState.available
     ? { ...organization, state: { ...organization.state, status: "error" as const, error: "Plugin source service unavailable; organization preferences are not current." } }
     : organization;
@@ -109,6 +122,19 @@ function HostScreen(props: PluginScreenProps) {
     prepare?.(next);
     setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); setMenu(null);
   }, [host.id]);
+  // Show all from the sheet or the composer popover: unscoped Sessions with only this search, or, with none, all of Recent.
+  const showAll = (text: string) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
+    const scope = sessionScopeKey(host.id, next);
+    const current = readSessionView(scope);
+    patchSessionView(scope, sessionViewTransition(current, { ...clearSessionFilterPatch(current), status: text ? "all" : "recent", query: text, membership: "sessions", includeArchived: false, scrollOffset: 0 }));
+    // Sessions keeps a local view snapshot, so the same route must read the replacement too.
+    setSessionsRevision((revision) => revision + 1);
+  });
+  const showState = (shortcut: StateShortcut) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
+    const scope = sessionScopeKey(host.id, next);
+    patchSessionView(scope, stateShortcutPatch(readSessionView(scope), shortcut));
+    setSessionsRevision((revision) => revision + 1);
+  });
   useEffect(() => {
     if (props.params.tab === "Plan") visit({ tab: "Plan", projectId: null, epicKey: null, sourceId: props.params.sourceId ?? null, originAgentId: props.params.agentId ?? null });
   }, [props.params.tab, props.params.sourceId, props.params.agentId, visit]);
@@ -116,6 +142,12 @@ function HostScreen(props: PluginScreenProps) {
   useEffect(() => {
     if (props.params.sheet === SWITCH_SHEET) setMenu("switch");
   }, [props.params.sheet, props.params.at]);
+  // A composer popover hands its open to this screen by a one-shot key. A used, replaced or foreign key opens
+  // nothing and says nothing: this screen is already where to choose again.
+  useEffect(() => {
+    const result = openHandOff({ hostId: host.id, key: props.params.target, entries: directory.state.entries, navigation: props.navigation, onSearch: showAll, onState: showState });
+    if (result && !result.ok && result.reason !== "stale") toast.error(result.message);
+  }, [props.params.target]);
   useEffect(() => {
     if (routeViewKey(hostNavigation(host.id).route) !== routeViewKey(route)) return;
     const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null, projectEpics);
@@ -149,6 +181,17 @@ function HostScreen(props: PluginScreenProps) {
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
+  // Read-only retention is a Sessions projection over the shared archive-inclusive directory and the
+  // already-read source/receipt evidence. Other pages neither read nor project it.
+  const projecting = route.tab === "Sessions";
+  const retirement = useSessionRetirementProjection(host.id, {
+    entries: projecting ? directory.state.entries : NO_SESSION_ENTRIES,
+    directory: projecting ? directory.state : NO_SESSION_DIRECTORY,
+    sources: projecting ? sourcesInContext : undefined,
+    reads: projecting ? sourceState.reads : undefined,
+    associations: projecting ? saved.planAssociations : undefined,
+    enabled: projecting,
+  });
   // Pages demand exact reads for their own context: the selected plan and its linked associations on Plan,
   // Board and Graph; the context sources on the recorded and overview pages; none on Sessions.
   const demandedSourceIds = useMemo(() => demandedSourceIdsFor(route, sources, associationIds),
@@ -265,18 +308,12 @@ function HostScreen(props: PluginScreenProps) {
       {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
-  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state}
+  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state} initialScope={switchScope}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
     onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
-    onShowAll={(text) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
-      const scope = sessionScopeKey(host.id, next);
-      const current = readSessionView(scope);
-      patchSessionView(scope, sessionViewTransition(current, { ...clearSessionFilterPatch(current), query: text, membership: "sessions", includeArchived: false, scrollOffset: 0 }));
-      // Sessions keeps a local view snapshot, so the same route must read the replacement too.
-      setSessionsRevision((revision) => revision + 1);
-    })} /> : null;
+    onShowAll={showAll} onShowState={(shortcut) => { showState(shortcut); setMenu(null); }} /> : null;
   let page;
-  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
+  if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}
@@ -335,7 +372,7 @@ function HostScreen(props: PluginScreenProps) {
       </View>
     </View>}
     {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}
-    {route.tab === "Sessions" ? null : <View testID="kontor-kontord-line" style={{ paddingHorizontal: layout.compact ? 8 : 12, paddingVertical: 3 }}><Copy colors={colors} muted small>{kontordLine(kontorStatus)}</Copy></View>}
+    {route.tab === "Sessions" ? null : <KontordBanner status={kontorStatus} compact={layout.compact} colors={colors} />}
     <View style={{ flex: 1 }}>{page}</View>
     {layout.compact ? navigation : null}
     {menus}

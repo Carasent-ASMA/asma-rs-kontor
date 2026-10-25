@@ -3,16 +3,90 @@ import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
 import { recordVisit } from "./recent-sessions";
+import type { StateShortcut } from "./session-state-shortcuts";
 
 export type SessionNavigation = NonNullable<PluginScreenProps["navigation"]>;
 
 export type OpenSessionResult =
-  | { readonly ok: true }
+  /** `handoff`: the Kontor screen received the request; nothing has opened yet. */
+  | { readonly ok: true; readonly handoff?: true }
   | {
       readonly ok: false;
-      readonly reason: "missing" | "archived" | "navigation" | "failed";
+      readonly reason: "missing" | "archived" | "navigation" | "failed" | "stale";
       readonly message: string;
     };
+
+/** What a composer popover asks the Kontor screen to open; plugin popovers get no session navigation of their own. */
+export type HandOffTarget =
+  | { readonly kind: "session"; readonly agentId: string }
+  | { readonly kind: "created"; readonly outcome: CreateOutcome }
+  | ({ readonly kind: "state" } & StateShortcut)
+  | { readonly kind: "search"; readonly query: string };
+
+/**
+ * The one request in flight from a popover to the Kontor screen. It lives in memory only and the screen URL
+ * carries just its key, so Back, history, a remount and a reload find nothing to replay. Only its own key takes it.
+ */
+let handOff: { readonly hostId: string; readonly key: string; readonly target: HandOffTarget } | null = null;
+let handOffCount = 0;
+
+/** Replaces any earlier request and returns the key the screen must present. */
+export function handOffOpen(hostId: string, target: HandOffTarget): string {
+  const key = `${Date.now().toString(36)}-${++handOffCount}`;
+  handOff = { hostId, key, target };
+  return key;
+}
+
+/**
+ * Consumes the request its key names, before any host check or navigation; another host gets nothing from it.
+ * An older or unknown key gets nothing and leaves the current request alone, so a stale screen cannot cancel the latest click.
+ */
+export function takeHandOff(hostId: string, key: string): HandOffTarget | null {
+  const current = handOff;
+  if (current?.key !== key) return null;
+  handOff = null;
+  return current.hostId === hostId ? current.target : null;
+}
+
+/** Drops a request the screen never received, or every request when the plugin is disposed. */
+export function withdrawHandOff(key?: string): void {
+  if (key === undefined || handOff?.key === key) handOff = null;
+}
+
+/**
+ * The Kontor screen's half of a hand-off: consumes the request before navigating, then opens through the shared
+ * path below. Null when the screen was opened without a request; a used, replaced or foreign key opens nothing.
+ */
+export function openHandOff(input: {
+  readonly hostId: string;
+  readonly key: string | undefined;
+  readonly entries: readonly DirectoryEntry[];
+  readonly navigation: SessionNavigation | undefined;
+  readonly onSearch: (query: string) => void;
+  readonly onState?: (shortcut: StateShortcut) => void;
+}): OpenSessionResult | null {
+  if (!input.key) return null;
+  const target = takeHandOff(input.hostId, input.key);
+  if (!target) {
+    return { ok: false, reason: "stale", message: "This Kontor request was already handled or has expired. Nothing was opened; choose the session again." };
+  }
+  if (target.kind === "search") {
+    input.onSearch(target.query);
+    return { ok: true };
+  }
+  if (target.kind === "state") {
+    if (!input.onState) return { ok: false, reason: "navigation", message: "This Kontor screen cannot open a session-state filter. Open Sessions and choose the filter again." };
+    try { input.onState(target); }
+    catch (error) { return { ok: false, reason: "navigation", message: error instanceof Error ? error.message : String(error) }; }
+    return { ok: true };
+  }
+  if (target.kind === "session") {
+    return openSessionById({ entries: input.entries, id: target.agentId, serverId: input.hostId, navigation: input.navigation });
+  }
+  const result = openCreatedSession({ outcome: target.outcome, serverId: input.hostId, navigation: input.navigation });
+  // The creation itself succeeded; keep its exact identity in the refusal so it can still be found.
+  return result.ok ? result : { ...result, message: `Created “${target.outcome.title}” (session ID ${target.outcome.agentId}). ${result.message}` };
+}
 
 /**
  * Opens the existing native session by its host ID. A display title is never an

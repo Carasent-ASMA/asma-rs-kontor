@@ -12,13 +12,15 @@ const entries = [
   sessionEntry("earlier", { status: "idle", requiresAttention: true, attentionReason: "error" }),
 ];
 const state: DirectoryState = { entries, status: "ready", live: true, inventoryComplete: true, pages: 1, lastUpdatedAt: 0, includeArchived: false, error: null, staleReason: null };
-const input = { universe: entries, candidates: entries, favorites: ["idle"], refined: false, state, includeArchived: false, freshness: "Live", blocked: null };
+const providerBlocked = { text: "…", label: "0 provider blocked and 1 not checked of 1 error session" };
+const input = { universe: entries, candidates: entries, favorites: ["idle"], refined: false, state, includeArchived: false, freshness: "Live", blocked: null, providerBlocked };
 
 describe("same-state counts", () => {
   it("counts every canonical state once per ID, independent of the selected state or layout", () => {
     const counts = sessionStateCounts({ ...input, universe: [...entries, entries[0]!] });
     const expected = { current: 5, all: 7, running: 1, idle: 3, error: 1, needs_input: 1, attention: 2, favorites: 1, initializing: 1, closed: 1, earlier_error: 1 };
     for (const [status, value] of Object.entries(expected)) expect(counts[status as keyof typeof counts].text).toBe(String(value));
+    expect(counts.provider_blocked).toBe(providerBlocked);
   });
 
   it("keeps zero and same-set ratios when refinements are applied", () => {

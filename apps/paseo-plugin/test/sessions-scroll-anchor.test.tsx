@@ -1,6 +1,5 @@
-// ASMA-8644: a live update re-sorts rows, never the reader's place. A reader at the top stays at the top, one at
-// the end stays at the end, and in between the first session in view that the update did not move keeps its
-// distance from the viewport top. While the reader scrolls, or their own choice places the list, the screen holds
+// ASMA-8644: top stays top, bottom stays bottom; in between the exact first visible session keeps its
+// viewport-relative offset while it remains in the filter. Only a missing session permits a neighbor fallback. While the reader scrolls, or their own choice places the list, the screen holds
 // none. Platform anchoring (native maintainVisibleContentPosition, browser scroll anchoring) follows the first
 // visible row even when the update re-sorts it, back to the start of the list; the screen asks for neither and
 // holds the place itself, from row heights measured per row. sessions-scroll-anchor.browser.cjs shows both in a
@@ -41,11 +40,13 @@ const { harness, fake } = vi.hoisted(() => {
   };
 });
 vi.mock("react", async (importOriginal) => ({ ...(await importOriginal<typeof import("react")>()), useContext: () => null, memo: (component: unknown) => component,
-  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState }));
+  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState,
+  useSyncExternalStore: (_subscribe: unknown, read: () => unknown) => read() }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { addEventListener: () => ({ remove: () => undefined }), isReduceMotionEnabled: async () => false, isScreenReaderEnabled: async () => false, setAccessibilityFocus: () => undefined },
   ActivityIndicator: "ActivityIndicator", Animated: { Value: class { setValue() {} stopAnimation() {} }, View: "Animated.View", timing: () => ({ start: (done?: () => void) => done?.(), stop: () => undefined }) },
   BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, findNodeHandle: () => null,
+  useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1, scale: 1 }),
   PanResponder: { create: () => ({ panHandlers: {} }) }, Platform: { OS: "ios" }, Pressable: "Pressable", Text: "Text", View: "View",
 }));
 vi.mock("@getpaseo/plugin/client", () => ({
@@ -56,10 +57,11 @@ vi.mock("@getpaseo/plugin/client", () => ({
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", Icon: "Icon", ScrollView: "ScrollView", TextInput: "TextInput", useToast: () => fake.toast }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: fake.state, refresh: () => undefined }) }));
 
-import { createRowLayout, SessionsScreen, steadyKeys } from "../client/sessions-screen";
+import { createRowLayout, SessionsScreen } from "../client/sessions-screen";
 import type { DirectoryEntry, DirectoryState } from "../client/session-directory";
 import { clearSessionViews, patchSessionView, readSessionView } from "../client/session-view-store";
 import { sessionEntry } from "./session-fixtures";
+import { configureRecentStorage, recordVisit } from "../client/recent-sessions";
 
 type Element = { readonly type?: unknown; readonly props: Record<string, unknown> };
 const walk = (node: unknown): Element[] => {
@@ -131,11 +133,11 @@ function inView(offset: number) {
 }
 const offsetNow = () => readSessionView("host-a").scrollOffset;
 
-beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); clearSessionViews(); clock = 0; fake.state = ready(HISTORY); scrollTo.mockClear(); scrollToIndex.mockClear(); });
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); clearSessionViews(); clock = 0; fake.state = ready(HISTORY); configureRecentStorage(null); for (const entry of [...HISTORY].reverse()) recordVisit("host-a", entry.id); scrollTo.mockClear(); scrollToIndex.mockClear(); });
 afterEach(() => { harness.unmount(); vi.useRealTimers(); delete (globalThis as { document?: unknown }).document; });
 
 describe("Sessions list place across live updates", () => {
-  for (const [name, view] of [["All, flat", { status: "all", layout: "flat" }], ["Current, grouped", { status: "current", layout: "grouped" }]] as const) {
+  for (const [name, view] of [["All, flat", { status: "all", layout: "flat" }], ["Current, grouped", { status: "current", layout: "grouped" }], ["Recent, flat", { status: "recent", layout: "flat" }]] as const) {
     it(`${name}: re-sorting rows keeps the first row in view where it was, not the list on a moved row`, () => {
       patchSessionView("host-a", view);
       mount();
@@ -147,17 +149,18 @@ describe("Sessions list place across live updates", () => {
       const [first] = inView(4200);
       // s45 is in view below the first row and sorts above it; the platform anchor would follow s45 to the top.
       for (const id of ["s30", "s31", "s45", "s31"]) liveUpdate(id);
-      if (view.layout === "flat") expect(ids().slice(0, 3)).toEqual(["s31", "s45", "s30"]);
+      if (view.status === "all") expect(ids().slice(0, 3)).toEqual(["s31", "s45", "s30"]);
       expect(ids()).toHaveLength(shown);
       expect(inView(offsetNow())[0]).toEqual(first);
-      expect(offsetNow()).toBeGreaterThan(4200);
-      expect(scrollTo).toHaveBeenLastCalledWith({ offset: offsetNow(), animated: false });
+      expect(offsetNow()).toBeGreaterThanOrEqual(4200);
+      if (view.status === "recent") expect(scrollTo).not.toHaveBeenCalled();
+      else expect(scrollTo).toHaveBeenLastCalledWith({ offset: offsetNow(), animated: false });
       expect(list().props.maintainVisibleContentPosition).toBeUndefined();
       expect(scrollToIndex).not.toHaveBeenCalled();
     });
   }
 
-  it("does not follow the first row in view when the update re-sorts that row itself", () => {
+  it("preserves the exact first visible ID and visual offset when that session itself re-sorts", () => {
     patchSessionView("host-a", { status: "all", layout: "flat" });
     mount();
     scrolled(4200);
@@ -165,9 +168,8 @@ describe("Sessions list place across live updates", () => {
     const [moved, next] = inView(4200);
     liveUpdate(moved!.key.slice("result:".length));
     expect(ids()[0]).toBe(moved!.key.slice("result:".length));
-    // The row after it keeps its place; the moved row went to the top without the list.
-    expect(inView(offsetNow()).find((row) => row.key === next!.key)).toEqual(next);
-    expect(offsetNow()).toBe(4200);
+    // A present exact ID stays the anchor even when its native sort position changes.
+    expect(inView(offsetNow()).find((row) => row.key === moved!.key)).toEqual(moved);
   });
 
   it("passes the place to the next row in view when the first one leaves", () => {
@@ -217,7 +219,7 @@ describe("Sessions list place across live updates", () => {
     expect(offsetNow()).toBe(4290);
   });
 
-  it("tells the browser pulling the offset back to the end of a shorter list from the reader's scroll", () => {
+  it("keeps the reader's row through the browser pulling the offset back to the end of a shorter list", () => {
     patchSessionView("host-a", { status: "all", layout: "flat" });
     mount();
     const { data, CellRendererComponent: Cell } = list().props as { data: unknown[]; CellRendererComponent: (props: object) => Element };
@@ -225,11 +227,16 @@ describe("Sessions list place across live updates", () => {
     for (let index = 0; index < 60; index += 1) measure(index, 96);
     scrolled(4200);
     settle();
-    // The list got shorter than the offset and the browser pulled it to the new end; then a row above grows.
-    scrolled(4100, 4800);
-    measure(10, 200);
-    contentSize(4904);
-    expect(scrollTo).toHaveBeenLastCalledWith({ offset: 4204, animated: false });
+    const [first] = inView(4200);
+    // Ten rows above the reader grow while the host is offline, and the reader's row stays where it was.
+    for (let index = 30; index < 40; index += 1) measure(index, 164);
+    expect(offsetNow()).toBe(4880);
+    // Back online they shrink: the browser pulls the offset to the end of the shorter list before their
+    // measurements arrive. That is not the reader's scroll, and it does not move their row.
+    scrolled(4600, 5300);
+    for (let index = 30; index < 40; index += 1) measure(index, 96);
+    expect(offsetNow()).toBe(4200);
+    expect(inView(4200)[0]).toEqual(first);
     // A scroll the reader made a moment ago keeps the next change from moving them.
     scrollTo.mockClear();
     scrolled(3000, 4904);
@@ -294,6 +301,26 @@ describe("Sessions list place across live updates", () => {
     expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 
+  it("Back restores the exact result after jumping across unmeasured rows and measuring a different peek", () => {
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    scrolled(4200);
+    settle();
+    const first = inView(4200)[0]!;
+    const row = (list().props.data as { kind: string; entry: DirectoryEntry }[]).find(row => `result:${row.entry.id}` === first.key)!;
+    const rendered = (list().props.renderItem as (info: { item: unknown }) => Element)({ item: row });
+    (rendered.props.onShowInTree as (entry: DirectoryEntry) => void)(row.entry);
+    harness.flush();
+    const peekRow = (list().props.data as { kind: string; entry?: DirectoryEntry }[]).find(row => row.kind === "session")!;
+    const Cell = list().props.CellRendererComponent as (props: object) => Element;
+    (Cell({ cellKey: "peek", index: 0, item: peekRow, children: null }).props.onLayout as (event: unknown) => void)(layoutEvent(240, 390));
+    harness.flush();
+    const back = walk(harness.flush()).find(element => String(element.props.label ?? "").startsWith("Back to "))!;
+    (back.props.onPress as () => void)();
+    harness.flush();
+    expect(inView(offsetNow()).find(row => row.key === first.key)).toEqual(first);
+  });
+
   it("native keeps its own scroll view; only a browser opts out of scroll anchoring", () => {
     patchSessionView("host-a", { status: "all", layout: "flat" });
     mount();
@@ -342,11 +369,33 @@ describe("row layout by measured row", () => {
     expect(layout.layout(rows, 1, false)).toEqual({ index: 1, length: 50, offset: 50 });
   });
 
-  it("finds the rows a change moved", () => {
-    expect([...steadyKeys(["a", "b", "c", "d", "e"], ["d", "a", "b", "c", "e"])].sort()).toEqual(["a", "b", "c", "e"]);
-    // Arrivals and departures move no row; of two neighbours that swap, neither moved.
-    expect([...steadyKeys(["a", "b", "c"], ["x", "a", "c", "y"])].sort()).toEqual(["a", "c"]);
-    expect([...steadyKeys(["a", "b", "c"], ["b", "a", "c"])].sort()).toEqual(["a", "b", "c"]);
+  it("anchors the reported visible cell rather than an estimated index after an unmeasured jump", () => {
+    const layout = createRowLayout();
+    const rows = Array.from({ length: 60 }, (_, index) => result(`r${index}`));
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)?.({});
+    (cell.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 4200, width: 320, height: 96 } } });
+    layout.capture(rows, false, 4265, 300, 6000);
+    const next = [rows[43]!, ...rows.filter((_, index) => index !== 43)];
+    expect(layout.follow(rows, next, false, 4265, 300, 6000, true)).toBe(-4200);
+    const redrawn = layout.Cell({ cellKey: "r43", index: 0, item: rows[43]!, children: null } as never) as unknown as Element;
+    (redrawn.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 33, width: 320, height: 96 } } });
+    expect(layout.restate(next, false)).toBe(33);
+  });
+
+  it("holds a present exact ID through reorders and subsequent height measurements", () => {
+    const layout = createRowLayout();
+    const rows = "abcdefghij".split("").map(result);
+    for (const row of rows) measure(layout, row, 100);
+    layout.capture(rows, false, 250, 300, 1000);
+    const moved = [...rows.slice(0, 2), ...rows.slice(3, 8), rows[2]!, ...rows.slice(8)];
+    const offset = 250 + layout.follow(rows, moved, false, 250, 300, 1000, true);
+    expect(layout.layout(moved, 7, false).offset - offset).toBe(-50);
+    measure(layout, rows[0], 130);
+    const resized = offset + layout.restate(moved, false);
+    expect(layout.layout(moved, 7, false).offset - resized).toBe(-50);
+    const returned = resized + layout.follow(moved, rows, false, resized, 300, 1030, true);
+    expect(layout.layout(rows, 2, false).offset - returned).toBe(-50);
   });
 
   it("keeps the reader at the top, at the end, or at the first row in view the change did not move", () => {
@@ -355,8 +404,8 @@ describe("row layout by measured row", () => {
     const rows = "abcdefghij".split("").map(result);
     const [a, b, c] = rows as [ReturnType<typeof result>, ReturnType<typeof result>, ReturnType<typeof result>];
     const x = result("x");
-    // c re-sorts to the top: d keeps its place, and the offset with it.
-    expect(layout.follow(rows, [c, a, b, ...rows.slice(3)], false, 200, 300, 960)).toBe(0);
+    // c remains present at the top: preserve c itself at its old viewport-relative offset.
+    expect(layout.follow(rows, [c, a, b, ...rows.slice(3)], false, 200, 300, 960)).toBe(-192);
     // An arrival above: c moves down by its height, and the offset with it.
     expect(layout.follow(rows, [x, ...rows], false, 200, 300, 960)).toBe(96);
     // Every row in view left: the offset holds.
@@ -407,6 +456,43 @@ describe("row layout by measured row", () => {
     layout.capture(rows, false, 10, 300, 960);
     // A notice shrinks the viewport to 56, which shows only the first heading, and a row arrives above a.
     expect(layout.follow(rows, [top, result("x"), ...rows.slice(1)], false, 10, 56, 1056, true)).toBe(96);
+  });
+
+  it("holds the session the reader sees once a row leaving lets it into view", () => {
+    const layout = createRowLayout();
+    const rows = "abcdefghij".split("").map(result);
+    const left = [rows[0]!, ...rows.slice(2)];
+    // At 150, b (96 to 192) shows first. It leaves: c keeps its distance, which brings a into view at 54.
+    layout.capture(rows, false, 150, 300, 960);
+    expect(layout.follow(rows, left, false, 150, 300, 960, true)).toBe(-96);
+    // a is now the first session the reader sees: a row arriving under it moves c, not a.
+    expect(layout.follow(left, [rows[0]!, result("x"), ...rows.slice(2)], false, 54, 300, 864, true)).toBe(0);
+  });
+
+  it("keeps the reader's session, not a row the change moved or redrew into view above it, as that row is measured again", () => {
+    const heading = { kind: "group", group: { key: "group:g" } } as never;
+    const rows = [result("a"), result("b"), heading, ..."cdefghij".split("").map(result)];
+    // At 200 the heading (192 to 288) shows first, and c (288 to 384) under it. j re-sorts to just above c, or d,
+    // redrawn in a new state, swaps with c: either way c keeps its distance, which brings that row into view above it.
+    for (const [moved, next] of [[rows[10]!, [...rows.slice(0, 3), rows[10]!, ...rows.slice(3, 10)]], [result("d"), [...rows.slice(0, 3), result("d"), rows[3]!, ...rows.slice(5)]]] as const) {
+      const layout = createRowLayout();
+      for (const row of rows) measure(layout, row, 96);
+      layout.capture(rows, false, 200, 300, 1056);
+      expect(layout.follow(rows, next, false, 200, 300, 1056, true)).toBe(96);
+      // Its new state lays it out shorter: c, the reader's session, keeps its place.
+      measure(layout, moved, 60);
+      expect(layout.restate(next, false)).toBe(-36);
+    }
+  });
+
+  it("reads a place the screen restored against its rows, not a content height the list has yet to report", () => {
+    const layout = createRowLayout();
+    const rows = "abcdefghij".split("").map(result);
+    // Back restores 400 while the list still reports the peek's shorter content.
+    layout.capture(rows, false, 400, 300, 500);
+    expect(layout.atEnd()).toBe(false);
+    layout.capture(rows, false, 660, 300, 500);
+    expect(layout.atEnd()).toBe(true);
   });
 
   it("the screen lays its list out by measured row and header", () => {

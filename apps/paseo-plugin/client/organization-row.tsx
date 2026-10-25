@@ -11,7 +11,7 @@ export { KIND_ICONS } from "./desk-icon";
 /** Display glossary for repeated workspace-name prefixes; grouping by prefix establishes no authority. */
 export const WORKSPACE_KINDS: Readonly<Record<string, string>> = {
   RSW: "Review workspace", TSW: "Task workspace", ASW: "Advisory workspace", CSW: "Committee workspace",
-  ESW: "Epic workspace", ECP: "Legacy epic coordination", QSW: "Quick Session Workspace", DESK: "Durable desk",
+  ESW: "Epic workspace", ECP: "Legacy epic coordination", DESK: "Durable desk",
 };
 export const KIND_NAMES: Readonly<Record<OrganizationGroupKind, string>> = {
   workstream: "Workstream", epic: "Epic", "workspace-kind": "Workspace kind", workspace: "Workspace", project: "Native project", role: "Role", flat: "Sessions",
@@ -132,7 +132,8 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   const top = row.depth === 0;
   const height = 44;
   const roleView = group.kind === "role" && group.parentKey === ROLE_ROOT_KEY;
-  const name = roleView && group.shortCode === null ? label : `${KIND_NAMES[group.kind]} ${label}`;
+  // A row without a known epic is not an epic, so its label alone names it.
+  const name = (roleView && group.shortCode === null) || (group.kind === "epic" && group.epic === null) ? label : `${KIND_NAMES[group.kind]} ${label}`;
   const summary = `${stale ? "Last known: " : ""}${groupStateSummary(group.aggregate)}`;
   // Session visibility is already the badge's primary count. Workspaces and the prefilter total are different facts.
   const secondaryCount = group.unit === "workspaces" ? `${groupCount(group)} workspace${group.unitTotal === 1 ? "" : "s"}`

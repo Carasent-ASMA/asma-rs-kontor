@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearRecent, configureRecentStorage, readRecent, recentRows, recordVisit, RECENT_KEPT, recentStorageKey, readSavedHistory } from "../client/recent-sessions";
+
+/** Records each hook call's subscribe and snapshot functions, and returns the snapshot as React would on render. */
+const hook = vi.hoisted(() => ({ calls: [] as { subscribe: (listener: () => void) => () => void; read: () => unknown }[] }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
+  useSyncExternalStore: (subscribe: (listener: () => void) => () => void, read: () => unknown) => { hook.calls.push({ subscribe, read }); return read(); } }));
+
+import { clearRecent, configureRecentStorage, readRecent, recentRows, recordVisit, RECENT_KEPT, RECENT_SHOWN, recentStorageKey, readSavedEntries, readSavedHistory, subscribeRecent, useRecent } from "../client/recent-sessions";
 import type { ProfileStorage } from "../client/viewer-profile";
 import { sessionEntry } from "./session-fixtures";
 
@@ -17,7 +23,7 @@ describe("Recent visit store", () => {
   beforeEach(() => { configureRecentStorage(null); vi.spyOn(Date, "now").mockReturnValue(NOW); });
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps one visit per session, newest first, at most 20, and only opaque IDs and times", () => {
+  it("keeps one visit per session, newest first, at most 500, and only opaque IDs and times", () => {
     const { storage, values } = memory();
     configureRecentStorage(storage);
     for (let index = 0; index < RECENT_KEPT + 3; index += 1) recordVisit("host-a", `agent-${index}`, NOW + index);
@@ -31,23 +37,85 @@ describe("Recent visit store", () => {
     expect(readRecent("host-a").persistence).toBe("device");
   });
 
-  it("drops visits older than 14 days when it records", () => {
+  it("keeps more than 8 and more than 20 opens, all in open order", () => {
     configureRecentStorage(memory().storage);
-    recordVisit("host-a", "agent-old", NOW - 15 * DAY);
-    recordVisit("host-a", "agent-new", NOW);
-    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-new"]);
+    for (let index = 0; index < 25; index += 1) recordVisit("host-a", `agent-${index}`, NOW + index);
+    const visits = readRecent("host-a").record.visits;
+    expect(visits.map((visit) => visit.id)).toEqual(Array.from({ length: 25 }, (_, index) => `agent-${24 - index}`));
+    expect(recentRows(visits.map((visit) => sessionEntry(visit.id)), readRecent("host-a").record, NOW)).toHaveLength(25);
+    expect(RECENT_SHOWN).toBe(8);
   });
 
-  it("prunes expired visits from device storage on read and while the app stays open", () => {
-    const { storage, values } = memory({ [recentStorageKey("host-a")]: JSON.stringify({ clearedAt: null, visits: [
-      { id: "agent-new", at: NOW }, { id: "agent-old", at: NOW - 15 * DAY },
-    ] }) });
+  it("trims only past the 500th distinct session, and a repeat open at the boundary drops nothing", () => {
+    const { storage, values } = memory();
     configureRecentStorage(storage);
-    expect(readRecent("host-a").record.visits).toEqual([{ id: "agent-new", at: NOW }]);
-    expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toEqual([{ id: "agent-new", at: NOW }]);
-    vi.mocked(Date.now).mockReturnValue(NOW + 15 * DAY);
-    expect(readRecent("host-a").record.visits).toEqual([]);
-    expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toEqual([]);
+    for (let index = 0; index < RECENT_KEPT; index += 1) recordVisit("host-a", `agent-${index}`, NOW + index);
+    expect(readRecent("host-a").record.visits).toHaveLength(500);
+    recordVisit("host-a", "agent-0", NOW + 1000);
+    let ids = readRecent("host-a").record.visits.map((visit) => visit.id);
+    expect(ids).toHaveLength(500);
+    expect(ids[0]).toBe("agent-0");
+    expect(ids.at(-1)).toBe("agent-1");
+    recordVisit("host-a", "agent-new", NOW + 2000);
+    ids = readRecent("host-a").record.visits.map((visit) => visit.id);
+    expect(ids).toHaveLength(500);
+    expect(ids.slice(0, 2)).toEqual(["agent-new", "agent-0"]);
+    expect(ids).not.toContain("agent-1");
+    expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toHaveLength(500);
+  });
+
+  it("trims a stored record longer than 500 to its newest 500 on read", () => {
+    const stored = Array.from({ length: 502 }, (_, index) => ({ id: `agent-${index}`, at: NOW - index }));
+    const { storage, values } = memory({ [recentStorageKey("host-a")]: JSON.stringify({ clearedAt: null, visits: stored }) });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits).toEqual(stored.slice(0, 500));
+    expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toEqual(stored.slice(0, 500));
+  });
+
+  it("reads a repeated stored ID once, at its first place, so it never takes a kept place", () => {
+    const stored = [...Array.from({ length: RECENT_KEPT }, (_, index) => ({ id: "agent-a", at: NOW - index })), { id: "agent-b", at: NOW - 600 }];
+    const raw = JSON.stringify({ clearedAt: null, visits: stored });
+    const { storage, values } = memory({ [recentStorageKey("host-a")]: raw });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits).toEqual([{ id: "agent-a", at: NOW }, { id: "agent-b", at: NOW - 600 }]);
+    expect(values.get(recentStorageKey("host-a"))).toBe(raw);
+    recordVisit("host-a", "agent-c", NOW + 1);
+    expect(JSON.parse(values.get(recentStorageKey("host-a"))!).visits).toEqual([{ id: "agent-c", at: NOW + 1 }, { id: "agent-a", at: NOW }, { id: "agent-b", at: NOW - 600 }]);
+  });
+
+  it("keeps all 500 distinct sessions of a stored record of 501 with one repeat", () => {
+    const distinct = Array.from({ length: RECENT_KEPT }, (_, index) => ({ id: `agent-${index}`, at: NOW - index }));
+    const raw = JSON.stringify({ clearedAt: null, visits: [...distinct.slice(0, 10), { id: "agent-3", at: NOW - 3 }, ...distinct.slice(10)] });
+    const { storage, values } = memory({ [recentStorageKey("host-a")]: raw });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits).toEqual(distinct);
+    expect(values.get(recentStorageKey("host-a"))).toBe(raw);
+    recordVisit("host-a", "agent-new", NOW + 1);
+    const ids = JSON.parse(values.get(recentStorageKey("host-a"))!).visits.map((visit: { id: string }) => visit.id);
+    expect(ids).toEqual(["agent-new", ...distinct.slice(0, RECENT_KEPT - 1).map((visit) => visit.id)]);
+  });
+
+  it("moves a repeated open to the top without a duplicate: A, B, A lists A, B", () => {
+    configureRecentStorage(memory().storage);
+    recordVisit("host-a", "agent-a", NOW);
+    recordVisit("host-a", "agent-b", NOW + 1);
+    recordVisit("host-a", "agent-a", NOW + 2);
+    expect(readRecent("host-a").record.visits).toEqual([{ id: "agent-a", at: NOW + 2 }, { id: "agent-b", at: NOW + 1 }]);
+  });
+
+  it("never removes a visit for its age, on record, on read or after a reload", () => {
+    const old = { id: "agent-old", at: NOW - 400 * DAY };
+    const raw = JSON.stringify({ clearedAt: null, visits: [{ id: "agent-new", at: NOW }, old] });
+    const { storage, values } = memory({ [recentStorageKey("host-a")]: raw });
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits).toEqual([{ id: "agent-new", at: NOW }, old]);
+    expect(values.get(recentStorageKey("host-a"))).toBe(raw);
+    vi.mocked(Date.now).mockReturnValue(NOW + 400 * DAY);
+    expect(readRecent("host-a").record.visits).toHaveLength(2);
+    recordVisit("host-a", "agent-later", NOW + 400 * DAY);
+    configureRecentStorage(storage);
+    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-later", "agent-new", "agent-old"]);
+    expect(recentRows([sessionEntry("agent-old")], readRecent("host-a").record, NOW + 400 * DAY).map((row) => row.at)).toEqual([old.at]);
   });
 
   it("treats non-finite timestamps as unreadable and leaves the value untouched", () => {
@@ -131,8 +199,55 @@ describe("Recent visit store", () => {
     const { storage, values } = memory({ "kontor.recent@1": "{not json" });
     configureRecentStorage(storage);
     expect(readSavedHistory()).toEqual({ ids: [], unreadable: true });
+    expect(readSavedEntries(readRecent("host-a").record)).toEqual({ ids: [], unreadable: true });
+    recordVisit("host-a", "agent-a", NOW);
     clearRecent("host-a", NOW);
     expect(values.get("kontor.recent@1")).toBe("{not json");
+  });
+
+  it("never lets legacy entries into verified visits, their order, counts or times", () => {
+    const raw = JSON.stringify({ clearedAt: null, visits: [{ id: "legacy-late", at: NOW + 9000 }, { id: "shared", at: NOW + 8000 }, { id: "legacy-old", at: 1 }] });
+    const { storage, values } = memory({ "kontor.recent@1": raw });
+    configureRecentStorage(storage);
+    recordVisit("host-a", "agent-a", NOW - 20);
+    recordVisit("host-a", "shared", NOW - 10);
+    const record = readRecent("host-a").record;
+    expect(record.visits).toEqual([{ id: "shared", at: NOW - 10 }, { id: "agent-a", at: NOW - 20 }]);
+    const entries = ["legacy-late", "shared", "legacy-old", "agent-a"].map((id) => sessionEntry(id));
+    expect(recentRows(entries, record, NOW).map((row) => [row.entry.id, row.at])).toEqual([["shared", NOW - 10], ["agent-a", NOW - 20]]);
+    expect(readSavedEntries(record)).toEqual({ ids: ["legacy-late", "legacy-old"], unreadable: false });
+    expect(readRecent("host-b").record.visits).toEqual([]);
+    expect(readSavedEntries(readRecent("host-b").record).ids).toEqual(["legacy-late", "shared", "legacy-old"]);
+    expect(values.get("kontor.recent@1")).toBe(raw);
+  });
+
+  it("notifies subscribers on open, Clear and a new device store, never on a read", () => {
+    configureRecentStorage(memory().storage);
+    const listener = vi.fn();
+    const unsubscribe = subscribeRecent(listener);
+    readRecent("host-a");
+    expect(listener).not.toHaveBeenCalled();
+    recordVisit("host-a", "agent-a", NOW);
+    clearRecent("host-a", NOW);
+    configureRecentStorage(memory().storage);
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
+    recordVisit("host-a", "agent-b", NOW);
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives the hook this host's state, unchanged by reads and replaced after an open", () => {
+    configureRecentStorage(memory().storage);
+    hook.calls.length = 0;
+    const first = useRecent("host-a");
+    const { subscribe, read } = hook.calls[0]!;
+    expect(subscribe).toBe(subscribeRecent);
+    expect(read()).toBe(first);
+    recordVisit("host-b", "agent-b", NOW);
+    expect(read()).toBe(first);
+    recordVisit("host-a", "agent-a", NOW);
+    expect(read()).not.toBe(first);
+    expect((read() as ReturnType<typeof readRecent>).record.visits).toEqual([{ id: "agent-a", at: NOW }]);
   });
 
   it("shows an open after Clear even when its wall time is earlier or equal", () => {
@@ -169,10 +284,10 @@ describe("Recent rows", () => {
     expect(visits.visits).toHaveLength(3);
   });
 
-  it("hides expired opens, regardless of prompts", () => {
+  it("lists an open of any age, and prompts still never add a row", () => {
     const entries = [prompted("agent-before", NOW - 2000), prompted("agent-after", NOW - 500), prompted("agent-stale", NOW - 15 * DAY)];
     const rows = recentRows(entries, record([{ id: "agent-stale", at: NOW - 15 * DAY }]), NOW);
-    expect(rows).toEqual([]);
+    expect(rows.map((row) => [row.entry.id, row.at])).toEqual([["agent-stale", NOW - 15 * DAY]]);
   });
 
   it("keeps MRU order for tied times and ignores worker, creation and change timestamps", () => {

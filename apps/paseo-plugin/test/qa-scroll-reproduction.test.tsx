@@ -19,7 +19,7 @@ vi.mock('react', async (original) => ({ ...await original<typeof import('react')
     return [hooks.states.get(key), (value: unknown) => hooks.states.set(key, value)];
   },
 }));
-vi.mock('react-native', () => ({ ScrollView: 'ScrollView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
+vi.mock('react-native', () => ({ ActivityIndicator: 'ActivityIndicator', ScrollView: 'ScrollView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', Icon: 'Icon' }));
 import { ReadOnlyPage } from '../client/read-only-pages';
 import { DEFAULT_TEAMS_SOURCE_VIEW, DEFAULT_TEAMS_VIEW, TeamsSourcePage, type TeamsView } from '../client/teams-source-page';
@@ -27,7 +27,7 @@ import { goBack, navigate, readRouteView, writeRouteView } from '../client/navig
 type Props = Parameters<typeof ReadOnlyPage>[0];
 type Element = ReactElement<Record<string, unknown>>;
 const catalog = sourceCatalog(JSON.stringify([
-  ['authoring', 'authoring-fleet.yml', '8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec'],
+  ['authoring', 'authoring-fleet.yml', 'fa82d7a49d12a01a30f0a3b939d605aecf04d784fb80e53b88fcc99ff1f211f7'],
   ['operator', 'operator-fleet.yml', '5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487'],
   ['roster', 'core-team.yml', '329f5fb70d34cb51409f32588533c1b200bd5bb434341a35d9d66fa142fd6cfc'],
   ['templates', 'mvp-team-pack.json', '2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc'],

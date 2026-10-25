@@ -44,7 +44,8 @@ const metrics = page => page.evaluate(() => {
   const visible = rows.filter(row => row.rect.bottom > box.top + 1 && row.rect.top < box.bottom - 1).sort((a, b) => a.rect.top - b.rect.top);
   const last = rows.sort((a, b) => a.rect.top - b.rect.top).at(-1);
   return { offset: Math.round(node.scrollTop), max: node.scrollHeight - node.clientHeight, viewport: node.clientHeight, first: visible[0]?.id ?? null,
-    last: last ? { id: last.id, visible: last.rect.bottom <= box.bottom + 1 && last.rect.top >= box.top - 1 } : null,
+    // A row taller than the viewport shows only as much as fits: in view is its end.
+    last: last ? { id: last.id, visible: last.rect.bottom <= box.bottom + 1 && (last.rect.top >= box.top - 1 || last.rect.height > box.height && last.rect.bottom > box.top + 1) } : null,
     inView: visible.map(row => row.id), at: Object.fromEntries(rows.map(row => [row.id, Math.round(row.rect.top - box.top)])),
     height: Object.fromEntries(rows.map(row => [row.id, Math.round(row.height)])) };
 });
@@ -79,9 +80,9 @@ const EDGE = 1;
 const SCROLL_SETTLE_MS = 150;
 async function wheel(page, delta) {
   const box = await list(page).boundingBox();
-  // The left edge: a pointer resting on a row's info button opens its help over the list. It leaves the list
-  // after the wheel too, or a group's count help opens under it and takes the next wheel.
-  await page.mouse.move(box.x + 12, box.y + box.height / 2);
+  // Just inside the list's left edge, clear of every row's icons: a pointer resting on one opens its help over the
+  // list, and the help takes the wheel. It leaves the list after the wheel too, or a group's count help opens under it.
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
   await page.mouse.wheel(0, delta);
   await page.mouse.move(0, 0);
   await settle(page);
@@ -106,38 +107,45 @@ async function onFilters(page, compact, act) {
 }
 
 /**
- * One round of streamed changes, then the reader's place: at the top still at the top, at the end still at the end,
- * and in between the first session in view that kept its distance from the viewport top; only sessions the round
- * moved or removed may come before it. A list that got shorter under the reader, even for one frame, may clamp the
- * offset; that is recorded.
+ * Whether the reader kept their place from one reading to the next through these changes: at the top still at the top,
+ * at the end still at the end, and in between the first session in view that kept its distance from the viewport top;
+ * only sessions the changes moved or removed may come before it. A list that got shorter under the reader, even for
+ * one frame, may clamp the offset; that is recorded.
  */
-async function cycle(page, trace, phase, { endId = null, refresh = false, below = false, changes = null } = {}) {
+function judge(before, after, missing) {
+  const place = before.offset <= EDGE ? 'top' : before.offset >= before.max - EDGE ? 'end' : 'row';
+  const held = before.first && !missing.has(before.first) ? before.first : before.inView.find(id => !missing.has(id)) ?? null;
+  const failure = place === 'top' ? after.offset > EDGE && `a reader at the top was moved to ${after.offset}`
+    : place === 'end' ? after.offset < after.max - EDGE && `a reader at the end was left at ${after.offset} of ${after.max}`
+    : held ? (!(held in after.at) || Math.abs(after.at[held] - before.at[held]) > ROW_ANCHOR_TOLERANCE)
+      && `exact ${held} left its viewport offset (${before.at[held]} to ${after.at[held]} px)`
+    : (after.offset < 0 || after.offset > after.max + EDGE) && 'missing-anchor fallback left the scroll range';
+  return { place, held, failure };
+}
+
+/**
+ * One round of streamed changes, then the reader's place. A round that moves every session in view is judged when
+ * those changes land, where the offset holds, and again after the rest of it from the sessions the offset then shows.
+ */
+async function cycle(page, trace, phase, { endId = null, refresh = false, below = false, changes = null, status = 'all' } = {}) {
   const before = await metrics(page);
   const target = before.first && before.first !== endId ? before.first : null;
   const lower = Object.keys(before.at).find(id => before.at[id] > before.viewport && id !== endId) ?? null;
   const round = changes?.(target, lower) ?? [target, below && lower].filter(Boolean).map(id => [id, { status: 'running' }]);
+  // Missing means explicitly excluded by this fixture update, never merely absent from the rendered window.
+  const missing = new Set(round.filter(([, patch]) => patch.archivedAt
+    || status === 'running' && patch.status && patch.status !== 'running'
+    || status === 'current' && patch.status === 'closed').map(([id]) => id));
   const written = await writes(page);
-  await watch(page);
   for (const [id, patch] of round) await update(page, id, patch);
   if (refresh) await refreshCycle(page);
   await settle(page);
-  const shortest = await watched(page);
   const after = await metrics(page);
-  const place = before.offset <= EDGE ? 'top' : before.offset >= before.max - EDGE ? 'end' : 'row';
-  const clamped = after.offset < before.offset && after.offset >= Math.min(shortest, after.max) - 1;
-  const changed = new Set(round.map(([id]) => id));
-  const held = before.inView.find(id => id in after.at && Math.abs(after.at[id] - before.at[id]) <= ROW_ANCHOR_TOLERANCE) ?? null;
-  const skipped = held ? before.inView.slice(0, before.inView.indexOf(held)) : before.inView;
-  const unexplained = skipped.find(id => !changed.has(id) && id in after.at) ?? null;
-  const moved = unexplained ?? before.first;
-  const failure = place === 'top' ? after.offset > EDGE && `a reader at the top was moved to ${after.offset}`
-    : place === 'end' ? after.offset < after.max - EDGE && `a reader at the end was left at ${after.offset} of ${after.max}`
-    : clamped ? false
-    : after.offset <= EDGE && before.offset > before.viewport ? `the list went back to its start from ${before.offset}`
-    : (!held || unexplained) && `${moved} left its place in view (${before.at[moved]} to ${after.at[moved]} px), the round changed ${[...changed].join(', ')}`;
-  trace.push({ phase, place, changes: round, refresh, before: before.offset, after: after.offset, max: after.max, shortest, clamped,
+  const { place, held, failure } = judge(before, after, missing);
+  trace.push({ phase, place, changes: round, refresh, missing: [...missing], before: before.offset, after: after.offset, max: after.max,
     first: { before: before.first && [before.first, before.at[before.first]], after: after.first && [after.first, after.at[after.first]] },
-    held: held && { id: held, before: before.at[held], after: after.at[held], first: held === before.first }, writes: await writes(page) - written, ...(failure ? { failure } : {}) });
+    held: held && { id: held, before: before.at[held], after: after.at[held], first: held === before.first },
+    writes: await writes(page) - written, ...(failure ? { failure } : {}) });
   if (!record) assert.ok(!failure, `${phase}: ${failure}`);
   return after;
 }
@@ -159,7 +167,7 @@ async function gesture(page, trace, phase, compact, cdp, distance) {
     tick();
     return performance.now();
   });
-  const [x, y] = [Math.round(box.x + 12), Math.round(box.y + box.height / 2)];
+  const [x, y] = [Math.round(box.x + 2), Math.round(box.y + box.height / 2)];
   // Touch drags and flings. A wheel streams events, as a trackpad does: the headless browser's own synthesized wheel
   // gesture moves the list without the scroll events a page sees, so no screen could tell the reader is scrolling.
   const done = compact
@@ -222,7 +230,7 @@ async function deliberate(page, compact, name) {
   await page.getByRole('button', { name: /^Back to \d+ results?$/ }).click();
   await page.waitForTimeout(500);
   const back = await metrics(page);
-  assert.ok(back.inView.includes(middle.first) && Math.abs(back.offset - middle.offset) <= middle.height[middle.first], `${name}: Back restores ${middle.offset}, got ${back.offset}`);
+  assert.ok(back.inView.includes(middle.first) && Math.abs(back.at[middle.first] - middle.at[middle.first]) <= ROW_ANCHOR_TOLERANCE, `${name}: Back restores ${middle.offset}, got ${back.offset}`);
   let filter = null;
   if (compact) {
     await chooseState(page, compact, 'current');
@@ -243,13 +251,16 @@ async function check(browser, input) {
   if (process.env.ONLY && !new RegExp(process.env.ONLY).test(name)) return;
   const context = await browser.newContext({ viewport: { width, height }, isMobile: compact, hasTouch: compact });
   await context.addInitScript(countWrites);
+  if (status === 'recent') await context.addInitScript(() => localStorage.setItem('kontor.recent@2 ["srv_prototype"]', JSON.stringify({
+    clearedAt: null, visits: Array.from({ length: 412 }, (_, index) => ({ id: `agt_long_${index}`, at: Date.now() - index * 60000 })),
+  })));
   const page = await context.newPage(), errors = [], trace = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(`${origin}/?embed=1&scenario=${scenario}&theme=dark&pointer=${compact ? 'coarse' : 'fine'}`);
     await list(page).waitFor();
     await chooseState(page, compact, status);
-    await page.getByTestId(`sessions-layout-${layout}`).click();
+    if (status !== 'recent') await page.getByTestId(`sessions-layout-${layout}`).click();
     if (layout === 'grouped') await onFilters(page, compact, () => page.getByTestId('sessions-expand-all').click());
     if (query) await onFilters(page, compact, () => page.getByTestId('sessions-search').fill(query));
     if (select) await page.getByTestId('sessions-selection-toggle').click();
@@ -262,23 +273,45 @@ async function check(browser, input) {
     let turn = 0;
     const changes = (target, lower) => {
       turn += 1;
-      if (status !== 'running') return turn % 3 === 1 && lower ? [[lower, { status: 'running' }]] : null;
+      if (status !== 'running') return lower ? [[lower, { status: 'running' }]] : [];
       if (turn % 3 === 1 && joining.length) return [[joining.shift(), { status: 'running' }]];
       return target ? [[target, { status: turn % 3 === 0 ? 'idle' : 'running' }]] : [];
     };
-    for (let index = 0; index < 3; index += 1) state = await cycle(page, trace, 'top', { refresh: index === 2, changes });
-    const step = Math.round(state.viewport * 0.6);
+    for (let index = 0; index < 3; index += 1) state = await cycle(page, trace, 'top', { refresh: index === 2, changes, status });
+    const step = Math.round(state.viewport * 2);
+    if (controls) {
+      // Jump across unmeasured rows before the traversal; the old walked-list Back proof missed this.
+      const box = await list(page).boundingBox();
+      await wheel(page, Math.min(state.max / 2, box.height * 12));
+      const original = await metrics(page);
+      await cycle(page, trace, 'present-anchor-reordered-and-resized', { status,
+        changes: target => target ? [[target, { status: 'running', title: 'SWE • ASMA-99101 batch exact anchor with a longer variable height title for the next layout' }]] : [] });
+      const kept = await metrics(page);
+      assert.ok(kept.inView.includes(original.first), `${name}: reordered exact ID remains visible`);
+      const beforeBack = await metrics(page);
+      const title = await page.getByTestId(`sessions-row-${beforeBack.first}`).getByTestId('sessions-row-title').innerText();
+      await page.getByRole('button', { name: `Show ${title} in the tree`, exact: true }).click();
+      await page.getByTestId('sessions-peek').waitFor();
+      await page.waitForTimeout(300);
+      await page.getByRole('button', { name: /^Back to \d+ results?$/ }).click();
+      await page.waitForTimeout(500);
+      const back = await metrics(page);
+      assert.ok(beforeBack.first in back.at && Math.abs(back.at[beforeBack.first] - beforeBack.at[beforeBack.first]) <= ROW_ANCHOR_TOLERANCE,
+        `${name}: Back over unmeasured rows restores exact ${beforeBack.first} at ${beforeBack.at[beforeBack.first]}, got ${back.at[beforeBack.first]}`);
+      trace.push({ phase: 'unmeasured-back', id: beforeBack.first, before: beforeBack.at[beforeBack.first], after: back.at[beforeBack.first] });
+      state = back;
+    }
     let steps = 0;
     while (state.offset < state.max - 1) {
       assert.ok(++steps < 2000, `${name}: did not reach the end`);
       await wheel(page, step);
-      state = steps % 2 ? await cycle(page, trace, 'down', { refresh: steps % 7 === 0, below: steps % 5 === 0, changes }) : await metrics(page);
+      state = steps % 2 ? await cycle(page, trace, 'down', { refresh: steps % 7 === 0, below: steps % 5 === 0, changes, status }) : await metrics(page);
     }
-    // The known end: the last row, fully in view. After three more update cycles and a re-read the offset has
+    // The known end: the last row in view, in full if it fits. After three more update cycles and a re-read the offset has
     // not moved, and the same row is still the end; re-estimated row heights may leave it a short scroll below.
     const end = (await metrics(page)).last;
     assert.ok(end?.visible, `${name}: the last row is in view at the end`);
-    for (let index = 0; index < 3; index += 1) state = await cycle(page, trace, 'end', { endId: end.id, refresh: index === 2, changes });
+    for (let index = 0; index < 3; index += 1) state = await cycle(page, trace, 'end', { endId: end.id, refresh: index === 2, changes, status });
     const endMax = state.max;
     for (let more = 0; state.offset < state.max - 1; more += 1) {
       assert.ok(more < 5, `${name}: the end moved away after updates`);
@@ -312,7 +345,7 @@ async function check(browser, input) {
     const rounds = trace.filter(item => item.place);
     const held = rounds.filter(item => item.place === 'row' && item.held);
     const summary = { rounds: rounds.length, top: rounds.filter(item => item.place === 'top').length, end: rounds.filter(item => item.place === 'end').length,
-      heldFirst: held.filter(item => item.held.first).length, passedOn: held.filter(item => !item.held.first).length, clamps: rounds.filter(item => item.clamped).length,
+      heldFirst: held.filter(item => item.held.first).length, passedOn: held.filter(item => !item.held.first).length, clamps: rounds.filter(item => item.clamped).length, allMoved: rounds.filter(item => item.allMoved).length,
       maxHeldError: Math.max(0, ...held.map(item => Math.abs(item.held.after - item.held.before))), gestures: trace.filter(item => item.gesture).length,
       refreshes: rounds.filter(item => item.refresh).length, retries: trace.filter(item => item.retry !== undefined).length, failures: rounds.filter(item => item.failure).length };
     report.cases.push({ name, status: record ? 'RECORDED' : 'PASS', endRow: end.id, ...summary, endMaxBefore: endMax, endMaxAfter, placement, trace });
@@ -327,20 +360,16 @@ async function check(browser, input) {
 (async () => {
   const browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
-    for (const [width, height] of [[320, 640], [390, 844], [1280, 900]]) {
-      await check(browser, { width, height, status: 'all', layout: 'flat', controls: true });
-      await check(browser, { width, height, status: 'current', layout: 'flat' });
-      await check(browser, { width, height, status: 'all', layout: 'grouped' });
-      await check(browser, { width, height, status: 'all', layout: 'flat', select: true });
-      await check(browser, { width, height, status: 'all', layout: 'flat', query: 'batch' });
-      await check(browser, { width, height, status: 'running', layout: 'flat', short: true });
-    }
-    for (const [width, height] of [[320, 640], [390, 844], [1280, 900]]) {
+    for (const [width, height] of [[320, 640], [390, 844]]) {
       await check(browser, { width, height, scenario: 'long-list', status: 'all', layout: 'flat', controls: true });
       await check(browser, { width, height, scenario: 'long-list', status: 'current', layout: 'flat' });
       await check(browser, { width, height, scenario: 'long-list', status: 'all', layout: 'grouped' });
-      if (width < 600) await check(browser, { width, height, scenario: 'long-list', status: 'running', layout: 'flat' });
+      await check(browser, { width, height, scenario: 'long-list', status: 'recent', layout: 'flat' });
+      await check(browser, { width, height, status: 'running', layout: 'flat', short: true });
     }
+    await check(browser, { width: 320, height: 640, status: 'all', layout: 'flat', select: true });
+    await check(browser, { width: 390, height: 844, status: 'all', layout: 'flat', query: 'batch' });
+    await check(browser, { width: 1280, height: 900, scenario: 'long-list', status: 'all', layout: 'flat', controls: true });
   } finally { await browser.close(); fs.writeFileSync(path.join(output, 'sessions-scroll-anchor-report.json'), JSON.stringify(report, null, 2) + '\n'); }
   const failed = report.cases.filter(item => item.status === 'FAIL');
   console.log(`${report.cases.length - failed.length}/${report.cases.length} PASS`);

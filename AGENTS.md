@@ -90,17 +90,22 @@ qualified, released, deployed with readback, or enabled.
 
 ## Verification
 
-Run the gates in [`CONTRIBUTING.md`](CONTRIBUTING.md). The complete local gate
-is:
+Follow [Tests and evidence](CONTRIBUTING.md#tests-and-evidence) and the local
+verification policy's DEC-002, amended by Igor on 2026-10-25: test changed/added
+behavior and directly affected callers/contracts only. Do not automatically run
+full repository/workspace/crate/package/plugin suites. Record an explicit
+exact-head impact/test list, including consumers outside the changed package.
 
 ```sh
-python3 scripts/verify-tree.py --mode inplace
+python3 scripts/verify-tree.py --mode archive --impact /tmp/impact.json --receipt /tmp/verification.json
 ```
 
-For a faster inner loop, use the lanes described in
-[`CONTRIBUTING.md`](CONTRIBUTING.md). A lane is feedback, not merge evidence.
-Record the exact commands and results in the pull request or the owning
-delivery evidence.
+The impact plan retains scoped build/typecheck/format/dependency/security,
+independent QA/AUD, affected browser/UI and installed-readback obligations.
+Record exact inapplicability reasons; relevant blocked checks stay unresolved.
+Failed historical receipts remain FAIL and are never overwritten. Package/lane
+hints are not caller analysis or automatic suite authority; staged/inplace
+checks are development evidence only. See CONTRIBUTING for the plan format.
 
 ## Decisions and documentation
 

@@ -4,6 +4,7 @@ import {
   hasSessionAttention,
   isArchivedSession,
   type DirectoryEntry,
+  type DirectoryState,
   type SessionStatus,
 } from "./session-directory";
 
@@ -11,16 +12,19 @@ export const ALL_STATUS_FILTER = "all" as const;
 
 /** One exclusive state choice; runtime and attention choices may overlap on the same session. */
 export type StatusFilter =
+  | "recent"
   | "current"
   | typeof ALL_STATUS_FILTER
   | SessionStatus
   | "needs_input"
   | "attention"
   | "earlier_error"
+  | "provider_blocked"
   | "favorites";
 
-/** Frequent choices; runtime history and less common states sit under More states. */
+/** Frequent choices, Recent first; runtime history and less common states sit under More states. */
 export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
+  "recent",
   "current",
   ALL_STATUS_FILTER,
   "running",
@@ -30,7 +34,7 @@ export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
   "attention",
   "favorites",
 ];
-export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error"];
+export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error", "provider_blocked"];
 
 export type SessionMembership = "sessions" | "archived";
 
@@ -44,15 +48,17 @@ export type SessionFilters = {
   readonly advancedOpen: boolean;
 };
 
+/** A view read for the first time in an app session, and Reset, land on Recent, even when it is empty. */
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
-  status: "current",
+  status: "recent",
   includeArchived: false,
   membership: "sessions",
   advancedOpen: false,
 };
 
 const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  recent: "Recent",
   current: "Current",
   all: "All",
   running: "Running",
@@ -61,6 +67,7 @@ const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
   needs_input: "Needs input",
   attention: "Attention",
   earlier_error: "Earlier errors",
+  provider_blocked: "Provider blocked (observed)",
   favorites: "★ Favorites",
   initializing: "Starting",
   closed: "Closed",
@@ -94,14 +101,18 @@ export function matchesMembership(entry: DirectoryEntry, membership: SessionMemb
 
 /**
  * Error follows the current native lifecycle. Earlier errors remain separately
- * reachable without inflating current Error or Attention counts.
+ * reachable without inflating current Error or Attention counts. Recent is this
+ * host's opened session IDs, whatever their state.
  */
 export function matchesStatus(
   entry: DirectoryEntry,
   status: StatusFilter,
   favorites: readonly string[] = [],
+  recent: readonly string[] = [],
 ): boolean {
   switch (status) {
+    case "recent":
+      return recent.includes(entry.id);
     case "current":
       // Age and provider-history uncertainty never prove a session broken.
       return !isArchivedSession(entry) && freshAvailability(entry)?.state !== "missing" && (entry.needsInput || entry.status !== "closed" && entry.status !== "error");
@@ -117,9 +128,20 @@ export function matchesStatus(
       return entry.status === "error";
     case "earlier_error":
       return hasEarlierError(entry);
+    case "provider_blocked":
+      // Exact-ID reads only: providerBlockedView supplies this choice's rows and count, never this predicate.
+      return false;
     default:
       return entry.status === status;
   }
+}
+
+/**
+ * A read covers ordinary membership whenever it includes archived rows; an archive-inclusive
+ * read is a superset, not the other membership. Only an ordinary read fails to cover Archived.
+ */
+export function readCoversMembership(state: Pick<DirectoryState, "includeArchived">, includeArchived: boolean): boolean {
+  return state.includeArchived || !includeArchived;
 }
 
 export function matchesFilters(
@@ -189,4 +211,46 @@ export function sessionAvailabilityLabel(entry: DirectoryEntry): string | null {
   if (evidence?.archivedAt) return "Already archived";
   if (evidence?.state === "readable") return `${entry.attentionReason === "finished" ? "Unread result · " : ""}Native record found · provider history ${evidence.providerHistory === "not-reported" ? "not reported" : "unverified"}`;
   return "Availability unknown";
+}
+
+/** Native execution and pending interaction stay obligations even after archive membership. */
+export function hasNativeActiveTurn(entry: Pick<DirectoryEntry, "activeTurn" | "activeTurnStartedAt">): boolean {
+  return entry.activeTurn === true || entry.activeTurnStartedAt !== null && entry.activeTurnStartedAt !== undefined;
+}
+
+export type ArchivedConflict = { readonly entry: DirectoryEntry; readonly reasons: readonly string[] };
+
+/** An archived session with live execution or a pending interaction remains addressable and is never revived. */
+export function archivedConflictReasons(entry: DirectoryEntry): readonly string[] {
+  if (!isArchivedSession(entry)) return [];
+  const reasons: string[] = [];
+  if (entry.status === "running" || hasNativeActiveTurn(entry)) reasons.push("active native execution");
+  if (entry.pendingPermissionCount > 0 || entry.attentionReason === "permission") reasons.push("pending interaction");
+  return reasons;
+}
+
+export function isArchivedConflict(entry: DirectoryEntry): boolean {
+  return archivedConflictReasons(entry).length > 0;
+}
+
+/** Evaluate the full raw inventory before membership, search, status or scope filtering. */
+export function archivedConflicts(entries: readonly DirectoryEntry[]): readonly ArchivedConflict[] {
+  return entries.flatMap((entry) => {
+    const reasons = archivedConflictReasons(entry);
+    return reasons.length ? [{ entry, reasons }] : [];
+  });
+}
+
+export function archivedConflictIds(entries: readonly DirectoryEntry[]): ReadonlySet<string> {
+  return new Set(archivedConflicts(entries).map((conflict) => conflict.entry.id));
+}
+
+/**
+ * Ordinary filter matches plus every archived conflict, so a known obligation stays reachable when the normal
+ * list excludes archives, a status/search/scope filter hides it, or the result is otherwise empty.
+ */
+export function filterDirectoryEntriesWithArchivedConflicts(entries: readonly DirectoryEntry[], filters: SessionFilters, favorites: readonly string[] = []): DirectoryEntry[] {
+  const matching = filterDirectoryEntries(entries, filters, favorites), seen = new Set(matching.map((entry) => entry.id));
+  for (const conflict of archivedConflicts(entries)) if (!seen.has(conflict.entry.id)) { seen.add(conflict.entry.id); matching.push(conflict.entry); }
+  return matching;
 }

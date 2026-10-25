@@ -10,8 +10,8 @@ import type { TeamsSourceSnapshot } from '../shared/teams-source-snapshot';
 import type { SourceRead } from '../shared/read-sources';
 const model = vi.hoisted(() => ({ sources: [] as unknown[], snapshots: {} as Record<string, unknown>, errors: {} as Record<string, string>, reads: {} as Record<string, SourceRead>, available: true, sourceError: null as string | null, details: false }));
 vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useContext: () => null, useMemo: (factory: () => unknown) => factory(), useCallback: (value: unknown) => value, useEffect() {}, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [typeof initial === 'boolean' ? model.details : typeof initial === 'function' ? initial() : initial, () => {}] }));
-vi.mock('react-native', () => ({ ScrollView: 'ScrollView', SafeAreaView: 'SafeAreaView', KeyboardAvoidingView: 'KeyboardAvoidingView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
-vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-settings-host', status: 'online' }] }));
+vi.mock('react-native', () => ({ ActivityIndicator: 'ActivityIndicator', ScrollView: 'ScrollView', SafeAreaView: 'SafeAreaView', KeyboardAvoidingView: 'KeyboardAvoidingView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
+vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-settings-host', status: 'online' }], useRpc: () => async () => null }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', ScrollView: 'ScrollView', FlatList: 'FlatList', Icon: 'Icon', Modal: Object.assign(() => null, { Content: () => null }), useToast: () => ({ error() {} }) }));
 vi.mock('../client/use-responsibility', () => ({ useResponsibility: () => null }));
 vi.mock('../client/use-kontor-status', () => ({ useKontorStatus: () => null }));
@@ -25,7 +25,7 @@ import { KontorScreen } from '../client/kontor-screen';
 import { OrganizationSettingsPage } from '../client/organization-settings-page';
 import { navigate } from '../client/navigation-state';
 const catalog = sourceCatalog(JSON.stringify([
-  ['authoring', 'authoring-fleet.yml', '8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec'],
+  ['authoring', 'authoring-fleet.yml', 'fa82d7a49d12a01a30f0a3b939d605aecf04d784fb80e53b88fcc99ff1f211f7'],
   ['operator', 'operator-fleet.yml', '5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487'],
   ['roster', 'core-team.yml', '329f5fb70d34cb51409f32588533c1b200bd5bb434341a35d9d66fa142fd6cfc'],
   ['templates', 'mvp-team-pack.json', '2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc'],

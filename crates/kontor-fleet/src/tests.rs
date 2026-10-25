@@ -13,6 +13,7 @@ const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/fleet.yml");
 const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/orchestration/fleet.yml");
 
 const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
+const TICKETS_BASIC: &str = "team/01936f5a-0000-7000-8000-000000000105";
 const COMMITTEE: &str = "committee/01991c00-0000-7000-8000-000000000001/reviewer-a";
 const ADVISOR: &str = "advisor/01a02d00-0000-7000-8000-00000000ad01";
 
@@ -190,6 +191,32 @@ fn a_v1_document_reads_the_same_through_both_entry_points() {
         assert_eq!(fleet.resolve(key), policy.resolve(key), "{key}");
         assert!(policy.resolve(key).is_some(), "{key} is bound");
     }
+}
+
+#[test]
+fn the_tickets_basic_team_resolves_both_slots() {
+    let snapshot = FleetSnapshot::parse(EXAMPLE).expect("the fleet reader accepts the example");
+    let mut first_vendors = Vec::new();
+    for (slot, chain) in [
+        ("implement", "open-first-build"),
+        ("verify", "open-first-verify"),
+    ] {
+        let key = format!("{TICKETS_BASIC}/{slot}");
+        let resolution = snapshot.resolve(&key).expect("the seat is bound");
+        assert_eq!(resolution.provenance.binding_key, key);
+        assert_eq!(resolution.provenance.chain, chain);
+        assert!(!resolution.routes.is_empty(), "{key} resolves to a route");
+        let first = resolution.routes.first().expect("a resolved route");
+        first_vendors.push(first.vendor.clone());
+    }
+    assert_eq!(first_vendors.len(), 2);
+    assert_ne!(
+        first_vendors[0], first_vendors[1],
+        "the Tickets basic slots resolve their first routes to different vendors"
+    );
+    let verify = format!("{TICKETS_BASIC}/verify");
+    let implement = format!("{TICKETS_BASIC}/implement");
+    assert_eq!(snapshot.independent_of(&verify), Some(implement.as_str()));
 }
 
 #[test]
@@ -769,6 +796,179 @@ fn an_eligibility_that_admits_nothing_is_the_defined_block() {
         "every passed route says why"
     );
     assert_eq!(blocked.considered.len(), resolution.routes.len());
+}
+
+fn health_at() -> Timestamp {
+    "2026-10-25T09:00:00Z".parse().expect("timestamp")
+}
+
+/// One `default`-mode observation of an xhigh route, `seconds` before
+/// [`health_at`]; negative is after it.
+fn observed(account: &str, model: &str, state: RouteHealthState, seconds: i64) -> RouteObservation {
+    RouteObservation {
+        account: account.to_owned(),
+        model: model.to_owned(),
+        effort: Some(EffortLevel::Xhigh),
+        mode: Some("default".to_owned()),
+        state,
+        observed_at: health_at()
+            .checked_sub(SignedDuration::from_secs(seconds))
+            .expect("in range"),
+        revision: format!("{account}@{seconds}"),
+    }
+}
+
+fn health(observations: Vec<RouteObservation>) -> RouteHealth {
+    RouteHealth {
+        as_of: health_at(),
+        max_age_seconds: 60,
+        mode: Some("default".to_owned()),
+        observations,
+    }
+}
+
+fn health_verdicts(selection: &FleetSelection) -> Vec<Option<ExclusionReason>> {
+    selection
+        .considered
+        .iter()
+        .map(|considered| considered.excluded)
+        .collect()
+}
+
+#[test]
+fn stated_route_health_admits_only_one_fresh_positive_observation() {
+    use ExclusionReason::{
+        AccountUnavailableNow, RouteHealthStale, RouteHealthUnknown, RouteUnavailableNow,
+        RouteUnobserved,
+    };
+    use RouteHealthState::{Available, Unavailable, Unknown};
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let lsa = key(&roster, &seats[1]);
+    let snapshot = FleetSnapshot::parse_policy(&selection_policy(lsa.as_str())).expect("valid");
+    let resolution = snapshot.resolve_leadership(&lsa).expect("bound");
+    let open = Eligibility::default();
+
+    // An empty exclusion set and no observation are not availability.
+    let unobserved = resolution.select_observed(&open, Some(&health(Vec::new())));
+    assert!(unobserved.selected.is_none());
+    assert!(unobserved.selected_validity.is_none());
+    assert_eq!(health_verdicts(&unobserved), [Some(RouteUnobserved); 3]);
+
+    // Unknown and stale pass a route over; the first fresh positive one wins.
+    let walked = resolution.select_observed(
+        &open,
+        Some(&health(vec![
+            observed("claude-personal", "claude-opus-5", Unknown, 5),
+            observed("claude-work", "claude-opus-5", Available, 61),
+            observed("codex-work", "gpt-5.6-sol", Available, 60),
+        ])),
+    );
+    assert_eq!(
+        walked.selected.as_ref().map(route_of),
+        Some(("codex-work", "gpt-5.6-sol", 2, 1))
+    );
+    assert_eq!(
+        health_verdicts(&walked),
+        [Some(RouteHealthUnknown), Some(RouteHealthStale), None]
+    );
+
+    assert_eq!(
+        walked.selected_validity.as_ref().unwrap().valid_until,
+        health_at()
+    );
+    assert_eq!(
+        walked.selected_validity.as_ref().unwrap().observed_at,
+        health_at()
+            .checked_sub(SignedDuration::from_secs(60))
+            .unwrap()
+    );
+
+    // Unavailable, dated after the selection, and contradicting observations.
+    let refused = resolution.select_observed(
+        &open,
+        Some(&health(vec![
+            observed("claude-personal", "claude-opus-5", Unavailable, 1),
+            observed("claude-work", "claude-opus-5", Available, -1),
+            observed("codex-work", "gpt-5.6-sol", Available, 1),
+            observed("codex-work", "gpt-5.6-sol", Unavailable, 2),
+        ])),
+    );
+    assert!(refused.selected.is_none());
+    assert_eq!(
+        health_verdicts(&refused),
+        [
+            Some(RouteUnavailableNow),
+            Some(RouteHealthUnknown),
+            Some(RouteHealthUnknown)
+        ]
+    );
+
+    // An observation of another mode or effort is not this route's.
+    let mut other_mode = observed("claude-personal", "claude-opus-5", Available, 1);
+    other_mode.mode = Some("bypassPermissions".to_owned());
+    let mut other_effort = observed("claude-work", "claude-opus-5", Available, 1);
+    other_effort.effort = Some(EffortLevel::High);
+    let elsewhere =
+        resolution.select_observed(&open, Some(&health(vec![other_mode, other_effort])));
+    assert_eq!(health_verdicts(&elsewhere), [Some(RouteUnobserved); 3]);
+
+    // A stated exclusion still wins, and both inputs are echoed.
+    let eligibility = Eligibility {
+        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        excluded_vendors: BTreeSet::new(),
+    };
+    let stated = health(vec![
+        observed("claude-personal", "claude-opus-5", Available, 1),
+        observed("claude-work", "claude-opus-5", Available, 1),
+    ]);
+    let chosen = resolution.select_observed(&eligibility, Some(&stated));
+    assert_eq!(
+        chosen.selected.as_ref().map(route_of),
+        Some(("claude-work", "claude-opus-5", 1, 2))
+    );
+    assert_eq!(health_verdicts(&chosen)[0], Some(AccountUnavailableNow));
+    assert_eq!(chosen.eligibility, eligibility);
+    assert_eq!(chosen.route_health, Some(stated));
+    assert_eq!(
+        chosen.selected_validity.as_ref().unwrap().valid_until,
+        health_at()
+            .checked_add(SignedDuration::from_secs(59))
+            .unwrap()
+    );
+
+    // Without stated health nothing changes, and none is echoed.
+    assert_eq!(
+        resolution.select_observed(&open, None),
+        resolution.select(&open)
+    );
+    assert!(resolution.select(&open).route_health.is_none());
+    assert!(resolution.select(&open).selected_validity.is_none());
+}
+
+#[test]
+fn route_health_refuses_fields_it_does_not_declare() {
+    let accepted: RouteHealth = serde_yaml_ng::from_str(
+        r#"{"as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "observations": [
+            {"account": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh", "state": "available",
+             "observed_at": "2026-10-25T08:59:30Z", "revision": "r1"}]}"#,
+    )
+    .expect("a declared document");
+    assert_eq!(accepted.observations[0].effort, Some(EffortLevel::Xhigh));
+    assert!(accepted.mode.is_none());
+    for refused in [
+        r#"{"as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "observations": [], "policy": {}}"#,
+        r#"{"as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "observations": [
+            {"account": "a", "model": "m", "state": "available", "observed_at": "2026-10-25T09:00:00Z",
+             "revision": "r", "quota": 1}]}"#,
+        r#"{"as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "observations": [
+            {"account": "a", "model": "m", "state": "ready", "observed_at": "2026-10-25T09:00:00Z", "revision": "r"}]}"#,
+    ] {
+        assert!(
+            serde_yaml_ng::from_str::<RouteHealth>(refused).is_err(),
+            "{refused}"
+        );
+    }
 }
 
 #[test]

@@ -8,12 +8,14 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
-// One native project's sessions settle different epics, so it shows a recognised row and an Epic unknown row; the
+// One native project's sessions settle different epics, so it shows a recognised row and a No epic linked row; the
 // reported ESW projects, with neutral native IDs. Only native project IDs relate rows; titles and project names never do.
 const at = (id: string, project: string, labels: Record<string, string> = {}, name = `ESW • ${project}`) =>
   sessionEntry(id, { projectKey: `prj_${project}`, projectName: name, workspaceId: `wks_${id}`, workspaceName: `TSW • ${id}`, labels });
 const empty = (id: string, project: string, name = `ESW • ${project}`) => ({ id, name: `TSW • ${id}`, projectKey: `prj_${project}`, projectName: name });
 const shape = (tree: readonly OrganizationGroup[]) => tree.map((top) => [top.label, top.groups.filter((group) => group.kind === "epic").map((group) => [group.label, group.totalCount, group.detail] as const)] as const);
+/** What a row reads: its label, then its project as secondary context. */
+const reads = (group: OrganizationGroup) => group.context ? `${group.label} · ${group.context}` : group.label;
 const members = (tree: readonly OrganizationGroup[]) => {
   const all = (group: OrganizationGroup): string[] => [group.key, ...group.groups.flatMap(all), ...group.sessions.map((entry) => entry.id)];
   return tree.flatMap(all).sort();
@@ -24,28 +26,29 @@ function related(input: Omit<OrganizationInput, "grouping">, roots?: ReadonlyMap
   // Presentation only: every group key, session and count is the tree's own.
   expect(members(tree)).toEqual(members(built));
   expect(tree.flatMap((top) => top.groups.map((group) => [group.key, group.totalCount])).sort()).toEqual(built.flatMap((top) => top.groups.map((group) => [group.key, group.totalCount])).sort());
-  // No two sibling rows read alike.
-  for (const top of tree) expect(new Set(top.groups.map((group) => group.label)).size).toBe(top.groups.length);
+  // No two sibling rows read alike, and a project never pretends to be an epic: it leads the secondary line.
+  for (const top of tree) expect(new Set(top.groups.map(reads)).size).toBe(top.groups.length);
+  for (const top of tree) for (const group of top.groups) if (group.context) expect(group.detail?.startsWith(group.context)).toBe(true);
   return { built, tree };
 }
 
-describe("an Epic unknown row beside its project's recognised rows", () => {
+describe("a No epic linked row beside its project's recognised rows", () => {
   it("follows the same project's last recognised row in one workstream and says how they relate", () => {
     const { built, tree } = related({
       entries: [at("a1", "7869", { "jira.epic": "ASMA-7869" }), at("a2", "7869", { "jira.epic": "ASMA-8001", "jira.parent": "ASMA-7869" }), at("a3", "7869"),
         at("b1", "8113", { "jira.epic": "ASMA-8113" }), at("b2", "8113"), at("b3", "8113"), at("c1", "8490")],
       workspaces: [empty("wks_7869_done", "7869")],
     });
-    // As built, every Epic unknown row sorts after every recognised one.
-    expect(shape(built)[0]![1].map(([label]) => label)).toEqual(["ASMA-7869 · ESW • 7869", "ASMA-8001 · ESW • 7869", "ASMA-8113 · ESW • 8113", "Epic unknown · ESW • 7869", "Epic unknown · ESW • 8113", "Epic unknown · ESW • 8490"]);
+    // As built, every row without a known epic sorts after every recognised one.
+    expect(built[0]!.groups.filter((group) => group.kind === "epic").map(reads)).toEqual(["ASMA-7869 · ESW • 7869", "ASMA-8001 · ESW • 7869", "ASMA-8113 · ESW • 8113", "No epic linked · ESW • 7869", "No epic linked · ESW • 8113", "No epic linked · ESW • 8490"]);
     expect(shape(tree)).toEqual([["Other work", [
-      ["ASMA-7869 · ESW • 7869", 1, "1 more session of this project has no known epic"],
-      ["ASMA-8001 · ESW • 7869", 1, "1 more session of this project has no known epic"],
-      ["Epic unknown · ESW • 7869", 1, "1 session with no known epic · 1 workspace without sessions · same project as ASMA-7869, ASMA-8001"],
-      ["ASMA-8113 · ESW • 8113", 1, "2 more sessions of this project have no known epic"],
-      ["Epic unknown · ESW • 8113", 2, "2 sessions with no known epic · same project as ASMA-8113"],
+      ["ASMA-7869", 1, "ESW • 7869 · 1 more session of this project has no known epic"],
+      ["ASMA-8001", 1, "ESW • 7869 · 1 more session of this project has no known epic"],
+      ["No epic linked", 1, "ESW • 7869 · 1 session with no known epic · 1 workspace without sessions · same project as ASMA-7869, ASMA-8001"],
+      ["ASMA-8113", 1, "ESW • 8113 · 2 more sessions of this project have no known epic"],
+      ["No epic linked", 2, "ESW • 8113 · 2 sessions with no known epic · same project as ASMA-8113"],
       // No recognised row: it stays last and says only what it holds.
-      ["Epic unknown · ESW • 8490", 1, "1 session with no known epic"],
+      ["No epic linked", 1, "ESW • 8490 · 1 session with no known epic"],
     ]]]);
   });
 
@@ -59,7 +62,7 @@ describe("an Epic unknown row beside its project's recognised rows", () => {
     expect(shape(tree).map(([stream, rows]) => [stream, rows.map(([label]) => label)])).toEqual(shape(built).map(([stream, rows]) => [stream, rows.map(([label]) => label)]));
     expect(shape(tree)).toEqual([
       ["mobile-app", [["ASMA-8108", 2, "2 more sessions of this project have no known epic, in Other work"]]],
-      ["Other work", [["Epic unknown · ESW • 8108", 2, "2 sessions with no known epic · 1 workspace without sessions · same project as ASMA-8108 in mobile-app"], ["Epic unknown · ESW • 8501", 1, "1 session with no known epic"]]],
+      ["Other work", [["No epic linked", 2, "ESW • 8108 · 2 sessions with no known epic · 1 workspace without sessions · same project as ASMA-8108 in mobile-app"], ["No epic linked", 1, "ESW • 8501 · 1 session with no known epic"]]],
     ]);
   });
 
@@ -71,15 +74,15 @@ describe("an Epic unknown row beside its project's recognised rows", () => {
     });
     // Not "3 more … in beta": one of the three is beside it in alpha. A workstream holding none of them is not named.
     expect(shape(tree)).toEqual([
-      ["alpha", [["ASMA-1", 1, "3 more sessions of this project have no known epic: 1 in alpha, 2 in beta"], ["Epic unknown", 1, "1 session with no known epic · same project as ASMA-1"]]],
-      ["beta", [["Epic unknown", 2, "2 sessions with no known epic · same project as ASMA-1 in alpha"]]],
-      ...withEmpty ? [["Other work", [["Epic unknown", 0, "1 workspace without sessions · same project as ASMA-1 in alpha"]]] as const] : [],
+      ["alpha", [["ASMA-1", 1, "3 more sessions of this project have no known epic: 1 in alpha, 2 in beta"], ["No epic linked", 1, "1 session with no known epic · same project as ASMA-1"]]],
+      ["beta", [["No epic linked", 2, "2 sessions with no known epic · same project as ASMA-1 in alpha"]]],
+      ...withEmpty ? [["Other work", [["No epic linked", 0, "1 workspace without sessions · same project as ASMA-1 in alpha"]]] as const] : [],
     ]);
   });
 
-  it("words an empty-only Epic unknown row as the tree does for workspaces without sessions, so either order of composition reads the same", () => {
+  it("words an empty-only No epic linked row as the tree does for workspaces without sessions, so either order of composition reads the same", () => {
     const input = { entries: [at("r1", "8101", { "jira.epic": "ASMA-8101" }), at("r2", "8101", { "jira.epic": "ASMA-8101" })], workspaces: [empty("wks_done_a", "8101"), empty("wks_done_b", "8101")] };
-    const expected = [["Other work", [["ASMA-8101", 2, "2 more workspaces of this project without sessions"], ["Epic unknown", 0, "2 workspaces without sessions · same project as ASMA-8101"]]]];
+    const expected = [["Other work", [["ASMA-8101", 2, "2 more workspaces of this project without sessions"], ["No epic linked", 0, "2 workspaces without sessions · same project as ASMA-8101"]]]];
     expect(shape(related(input).tree)).toEqual(expected);
     // The tree may already give that group its own detail; it comes first and is not repeated.
     const withTreeDetail = buildOrganizationTree({ ...input, grouping: "hierarchy" }).map((top) => ({ ...top, groups: top.groups.map((group) => group.epic === null ? { ...group, detail: "2 workspaces without sessions" } : group) }));
@@ -89,7 +92,7 @@ describe("an Epic unknown row beside its project's recognised rows", () => {
   it("never relates rows by title or project name, only by native project", () => {
     // Two native projects with one name: the unlabelled one is not called the same project as the labelled one.
     const { tree } = related({ entries: [at("p1", "one", { "jira.epic": "ASMA-1" }, "shared"), at("p2", "two", {}, "shared")] });
-    expect(shape(tree)).toEqual([["Other work", [["ASMA-1 · shared", 1, null], ["Epic unknown · shared", 1, "1 session with no known epic"]]]]);
+    expect(shape(tree)).toEqual([["Other work", [["ASMA-1", 1, "shared"], ["No epic linked", 1, "shared · 1 session with no known epic"]]]]);
   });
 });
 
@@ -102,15 +105,15 @@ describe("sibling rows that different native projects label alike", () => {
   };
   const roots = new Map([...kontor.map((folder) => [`prj_${folder}`, `/Users/someone/carasent/asma-modules/.worktrees/${folder}/asma-rs-kontor`] as const),
     ["prj_qa-8541", "/Users/someone/carasent/asma-modules/.worktrees/asma-8541/qa"], ["prj_qa-8548", "/Users/someone/carasent/asma-modules/.worktrees/asma-8548/qa"]]);
-  const labels = (tree: readonly OrganizationGroup[]) => shape(tree).map(([stream, rows]) => [stream, rows.map(([label]) => label)]);
+  const labels = (tree: readonly OrganizationGroup[]) => tree.map((top) => [top.label, top.groups.filter((group) => group.kind === "epic").map(reads)]);
 
   it("names each by the one folder where their native roots differ, on every row of that project, never a path", () => {
     const { tree } = related(input, roots);
     // The unlabelled qa session's row is alone in Other work but carries its project's folder, so it relates to one row.
     expect(shape(tree)).toEqual([
-      ["kontor", [["ASMA-8539 · qa (asma-8541)", 1, "1 more session of this project has no known epic, in Other work"], ["ASMA-8539 · qa (asma-8548)", 1, null]]],
-      ["Other work", [...kontor.map((folder) => [`Epic unknown · asma-rs-kontor (${folder})`, 1, "1 session with no known epic"]),
-        ["Epic unknown · qa (asma-8541)", 1, "1 session with no known epic · same project as ASMA-8539 in kontor"]]],
+      ["kontor", [["ASMA-8539", 1, "qa (asma-8541) · 1 more session of this project has no known epic, in Other work"], ["ASMA-8539", 1, "qa (asma-8548)"]]],
+      ["Other work", [...kontor.map((folder) => ["No epic linked", 1, `asma-rs-kontor (${folder}) · 1 session with no known epic`]),
+        ["No epic linked", 1, "qa (asma-8541) · 1 session with no known epic · same project as ASMA-8539 in kontor"]]],
     ]);
     expect(labels(tree).flatMap(([, rows]) => rows).some((label) => /[\\/]|someone/.test(String(label)))).toBe(false);
   });
@@ -118,21 +121,21 @@ describe("sibling rows that different native projects label alike", () => {
   it("falls back to an ordinal when roots are missing or cannot tell them apart", () => {
     expect(labels(related(input).tree)).toEqual([
       ["kontor", ["ASMA-8539 · qa (1 of 2)", "ASMA-8539 · qa (2 of 2)"]],
-      ["Other work", [...kontor.map((_, index) => `Epic unknown · asma-rs-kontor (${index + 1} of 4)`), "Epic unknown · qa (1 of 2)"]],
+      ["Other work", [...kontor.map((_, index) => `No epic linked · asma-rs-kontor (${index + 1} of 4)`), "No epic linked · qa (1 of 2)"]],
     ]);
     const same = new Map([...roots].map(([id]) => [id, "/same/root"]));
     expect(labels(related(input, same).tree)[0]![1]).toEqual(["ASMA-8539 · qa (1 of 2)", "ASMA-8539 · qa (2 of 2)"]);
   });
 
   it("names projects that collide through one another together, so no two rows end up alike", () => {
-    // A and B share ASMA-1, B and D share ASMA-2, C and D share Epic unknown; no roots.
+    // A and B share ASMA-1, B and D share ASMA-2, C and D share No epic linked; no roots.
     const { tree } = related({ entries: [at("a1", "a", { "jira.epic": "ASMA-1" }, "shared"), at("b1", "b", { "jira.epic": "ASMA-1" }, "shared"), at("b2", "b", { "jira.epic": "ASMA-2" }, "shared"),
       at("d1", "d", { "jira.epic": "ASMA-2" }, "shared"), at("c1", "c", {}, "shared"), at("d2", "d", {}, "shared")] });
     expect(shape(tree)).toEqual([["Other work", [
-      ["ASMA-1 · shared (1 of 4)", 1, null], ["ASMA-1 · shared (2 of 4)", 1, null], ["ASMA-2 · shared (2 of 4)", 1, null],
-      ["ASMA-2 · shared (3 of 4)", 1, "1 more session of this project has no known epic"],
-      ["Epic unknown · shared (3 of 4)", 1, "1 session with no known epic · same project as ASMA-2"],
-      ["Epic unknown · shared (4 of 4)", 1, "1 session with no known epic"],
+      ["ASMA-1", 1, "shared (1 of 4)"], ["ASMA-1", 1, "shared (2 of 4)"], ["ASMA-2", 1, "shared (2 of 4)"],
+      ["ASMA-2", 1, "shared (3 of 4) · 1 more session of this project has no known epic"],
+      ["No epic linked", 1, "shared (3 of 4) · 1 session with no known epic · same project as ASMA-2"],
+      ["No epic linked", 1, "shared (4 of 4) · 1 session with no known epic"],
     ]]]);
   });
 
@@ -140,10 +143,10 @@ describe("sibling rows that different native projects label alike", () => {
     // a and b are both `repo`; their folders would make a read `repo (main)`, which project c is already called.
     const { tree } = related({ entries: [at("a", "a", {}, "repo"), at("b", "b", {}, "repo"), at("c", "c", {}, "repo (main)")] },
       new Map([["prj_a", "/srv/main/repo"], ["prj_b", "/srv/branch/repo"]]));
-    expect(labels(tree)).toEqual([["Other work", ["Epic unknown · repo (1 of 2)", "Epic unknown · repo (2 of 2)", "Epic unknown · repo (main)"]]]);
+    expect(labels(tree)).toEqual([["Other work", ["No epic linked · repo (1 of 2)", "No epic linked · repo (2 of 2)", "No epic linked · repo (main)"]]]);
     // If positions collide as well, the projects behind them are named together.
     const { tree: again } = related({ entries: [at("a", "a", {}, "repo"), at("b", "b", {}, "repo"), at("c", "c", {}, "repo (1 of 2)")] });
-    expect(labels(again)).toEqual([["Other work", ["Epic unknown · repo (1 of 3)", "Epic unknown · repo (2 of 3)", "Epic unknown · repo (1 of 2) (3 of 3)"]]]);
+    expect(labels(again)).toEqual([["Other work", ["No epic linked · repo (1 of 3)", "No epic linked · repo (2 of 3)", "No epic linked · repo (1 of 2) (3 of 3)"]]]);
   });
 
   const pair = (left: string, right: string) => labels(related({ entries: [at("l", "left", {}, "repo"), at("r", "right", {}, "repo")] }, new Map([["prj_left", left], ["prj_right", right]])).tree)[0]![1];
@@ -156,7 +159,7 @@ describe("sibling rows that different native projects label alike", () => {
     ["the root user's home", "/root/work/repo", "/srv/work/repo"],
     ["two homes", "/Users/someone", "/Users/operator"],
   ])("never names a project by a home folder or one above it, but by its position (%s)", (_, left, right) => {
-    expect(pair(left, right)).toEqual(["Epic unknown · repo (1 of 2)", "Epic unknown · repo (2 of 2)"]);
+    expect(pair(left, right)).toEqual(["No epic linked · repo (1 of 2)", "No epic linked · repo (2 of 2)"]);
   });
   it.each([
     ["macOS", "/Users/someone/asma-1/repo", "/Users/someone/asma-2/repo"],
@@ -164,7 +167,7 @@ describe("sibling rows that different native projects label alike", () => {
     ["Windows", "C:\\Users\\someone\\asma-1\\repo", "C:\\Users\\someone\\asma-2\\repo"],
     ["outside any home", "/srv/asma-1/repo", "/srv/asma-2/repo"],
   ])("names a project by the first folder below the home folder (%s)", (_, left, right) => {
-    expect(pair(left, right)).toEqual(["Epic unknown · repo (asma-1)", "Epic unknown · repo (asma-2)"]);
+    expect(pair(left, right)).toEqual(["No epic linked · repo (asma-1)", "No epic linked · repo (asma-2)"]);
   });
 });
 
@@ -194,5 +197,8 @@ describe("a group row's detail on a phone", () => {
     expect(group.detail).toBe("1 session with no known epic · same project as ASMA-8108");
     expect(detail.props.numberOfLines).toBe(compact ? 2 : 1);
     expect(String(nodes.find((node) => node.type === "Pressable")!.props.accessibilityLabel)).toContain(`, ${group.detail}, 1 session.`);
+    // Not an epic, so not announced as one, and not drawn with the epic flag.
+    expect(String(nodes.find((node) => node.type === "Pressable")!.props.accessibilityLabel)).toMatch(/^No epic linked, /);
+    expect(nodes.find((node) => node.type === "Icon")?.props.name).toBe("CircleDashed");
   });
 });

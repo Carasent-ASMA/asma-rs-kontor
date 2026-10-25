@@ -1,4 +1,5 @@
 import { sessionStateCounts, type SessionStateCount } from "./session-state-counts";
+import { providerBlockedView, type ProviderRefusalReads } from "./provider-blocked-filter";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { SessionLayoutControl } from "./session-layout-control";
 import { useHosts } from "@getpaseo/plugin/client";
@@ -48,6 +49,7 @@ import {
   matchesQuery,
   matchesMembership,
   matchesStatus,
+  readCoversMembership,
   MORE_STATUS_FILTERS,
   QUICK_STATUS_FILTERS,
   statusFilterLabel,
@@ -108,24 +110,27 @@ import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpande
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
+import { CompactRetirementNotice, SessionCompactContent, compactRetirementNotice, sessionRowDetails } from "./session-compact-content";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
+import { Action, COARSE_POINTER, Disclosure, IconButton } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { readTime } from "./page-data";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
-import { planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
+import { derivedWorkstreamNote, planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
 import { relateSplitProjects } from "./split-project-rows";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
 import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
 import { SessionDetailSection } from "./session-detail-section";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
-import { MobileQuickToolbar } from "./mobile-quick-toolbar";
+import { CompactSearch, MobileQuickToolbar } from "./mobile-quick-toolbar";
+import { useRecent } from "./recent-sessions";
+import { RecentFooter, recentEmptyMessage } from "./recent-visits";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
-import { useSessionLifecycle } from "./use-session-lifecycle";
-import { ArchiveSessionButton, SessionLifecycleDialog } from "./session-lifecycle-view";
+import { useSessionLifecycle, type SessionRetirementRead } from "./use-session-lifecycle";
+import { ArchiveSessionButton, SessionLifecycleDialog, SessionRetirementConflict, SessionRetirementDetails, SessionRetirementSummary, retirementDispositionLabel } from "./session-lifecycle-view";
 import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
 import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
 import { archiveAckKey, archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
@@ -147,32 +152,7 @@ const LIST_EDGE = 1;
 /** Scroll events this close together are one gesture; the list holds no place for the reader during it. */
 const SCROLL_SETTLE_MS = 150;
 
-/** For each value, the length of the longest increasing run that ends with it (patience sorting). */
-function runLengths(values: readonly number[]): number[] {
-  const ends: number[] = [];
-  return values.map((value) => {
-    let low = 0, high = ends.length;
-    while (low < high) { const middle = (low + high) >> 1; if (ends[middle]! < value) low = middle + 1; else high = middle; }
-    ends[low] = value;
-    return low + 1;
-  });
-}
-
-/**
- * Keys of the rows that kept their place in the order: each is in some longest run of rows that both lists
- * hold in the same relative order. A row in none moved, as a live update moves the session it re-sorts; of two
- * neighbours that swap, neither did.
- */
-export function steadyKeys(previous: readonly string[], next: readonly string[]): ReadonlySet<string> {
-  const position = new Map(next.map((key, index) => [key, index]));
-  const kept = previous.filter((key) => position.has(key));
-  const at = kept.map((key) => position.get(key)!);
-  const ending = runLengths(at), starting = runLengths(at.map((value) => -value).reverse()).reverse();
-  const longest = Math.max(0, ...ending);
-  return new Set(kept.filter((_key, index) => ending[index]! + starting[index]! - 1 === longest));
-}
-
-const isSession = (row: ListRow) => row.kind === "result" || row.kind === "session";
+const isSession = (row: ListRow): row is Extract<ListRow, { readonly entry: DirectoryEntry }> => row.kind === "result" || row.kind === "session";
 
 /** Where the reader is: at the top, at the end, or at a row whose top is this far down. */
 type ListPlace = { readonly at: "top" } | { readonly at: "end" } | { readonly at: "row"; readonly key: string; readonly top: number };
@@ -182,22 +162,31 @@ type ListPlace = { readonly at: "top" } | { readonly at: "end" } | { readonly at
  * itself the list keeps measured heights by index, so a live re-sort turns every unrendered row it shifts into
  * an estimate and moves the rows in view. A row not yet measured at the current width counts as the average of
  * those that are. Each place change says how far the offset moves to keep the reader where they were: at the
- * top, at the end, or at the same distance from the first row in view that the change did not move.
+ * top, at the end, or at the same distance from the exact first visible session while it remains in this view.
  */
-export function createRowLayout(resized?: () => void) {
-  const measured = new Map<string, { readonly height: number; readonly width: number }>();
+export function createRowLayout(resizedCallback: () => void = () => {}) {
+  const measured = new Map<string, { readonly height: number; readonly width: number; readonly y: number; readonly index: number }>();
+  const mounted = new Set<string>();
+  const cellRefs = new Map<string, (node: View | null) => void>();
+  const cellRef = (key: string) => {
+    let ref = cellRefs.get(key);
+    if (!ref) { ref = (node) => { if (node) mounted.add(key); else mounted.delete(key); }; cellRefs.set(key, ref); }
+    return ref;
+  };
   let width = 0, header = 0, version = 0;
   type Table = { readonly rows: readonly ListRow[]; readonly version: number; readonly keys: readonly string[]; readonly index: ReadonlyMap<string, number>;
     readonly lengths: readonly number[]; readonly offsets: readonly number[]; readonly length: number };
   let built: Table | null = null;
   let place: ListPlace = { at: "top" };
-  const measure = (key: string, layout: { readonly width: number; readonly height: number }) => {
+  const measure = (key: string, index: number, layout: { readonly width: number; readonly height: number; readonly y: number }) => {
     const entry = measured.get(key);
-    if (entry?.width === layout.width && Math.abs(entry.height - layout.height) < 0.5) return;
-    measured.set(key, { height: layout.height, width: layout.width });
+    const resized = entry?.width !== layout.width || Math.abs(entry.height - layout.height) >= 0.5;
+    if (!resized && entry?.y === layout.y && entry.index === index) return;
+    measured.set(key, { height: layout.height, width: layout.width, y: layout.y, index });
     width = layout.width;
-    version += 1;
-    resized?.();
+    if (resized) version += 1;
+    // Positions come from the public cell layout event; an estimate is not an observed viewport anchor.
+    resizedCallback();
   };
   const build = (rows: readonly ListRow[]): Table => {
     if (built?.rows === rows && built.version === version) return built;
@@ -217,67 +206,104 @@ export function createRowLayout(resized?: () => void) {
     while (low < high) { const middle = (low + high) >> 1; if (head(withHeader) + table.offsets[middle]! + table.lengths[middle]! <= offset + LIST_EDGE) low = middle + 1; else high = middle; }
     return low;
   };
+  /** The first session in view at this offset that this keeps, if one shows. */
+  const sessionAt = (rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, keeps = (_row: ListRow, _key: string) => true): ListPlace | null => {
+    const table = build(rows);
+    const visible = [...mounted].flatMap((key) => {
+      const index = table.index.get(key), entry = measured.get(key);
+      return index !== undefined && entry?.index === index && entry.width === width && entry.y + entry.height > offset + LIST_EDGE
+        && entry.y < offset + viewport && isSession(rows[index]!) && keeps(rows[index]!, key)
+        ? [{ at: "row" as const, key, top: entry.y }] : [];
+    }).sort((a, b) => a.top - b.top);
+    if (visible[0]) return visible[0];
+    for (let index = firstShown(table, withHeader, offset); index < rows.length && head(withHeader) + table.offsets[index]! < offset + viewport; index += 1) {
+      if (isSession(rows[index]!) && keeps(rows[index]!, table.keys[index]!)) return { at: "row", key: table.keys[index]!, top: head(withHeader) + table.offsets[index]! };
+    }
+    return null;
+  };
   const placeAt = (rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number): ListPlace => {
     const table = build(rows);
     const first = firstShown(table, withHeader, offset);
-    // The first session in view holds the place; a group heading only when no session shows.
-    let held = first;
-    while (held < rows.length && head(withHeader) + table.offsets[held]! < offset + viewport && !isSession(rows[held]!)) held += 1;
-    if (held >= rows.length || head(withHeader) + table.offsets[held]! >= offset + viewport) held = first;
-    // At both ends of a list too short to scroll, the top wins; an empty list has only its top.
+    // At both ends of a list too short to scroll, the top wins; an empty list has only its top. In between, the
+    // first session in view holds the place; a group heading only when no session shows. The rows say where the
+    // end is too: the list reports a new content height after the screen has already placed its offset in it.
     return offset <= LIST_EDGE || !table.keys.length ? { at: "top" }
-      : offset >= content - viewport - LIST_EDGE || first >= table.keys.length ? { at: "end" }
-      : { at: "row", key: table.keys[held]!, top: head(withHeader) + table.offsets[held]! };
+      : offset >= Math.max(content, head(withHeader) + table.length) - viewport - LIST_EDGE || first >= table.keys.length ? { at: "end" }
+      : sessionAt(rows, withHeader, offset, viewport) ?? { at: "row", key: table.keys[first]!, top: head(withHeader) + table.offsets[first]! };
   };
   return {
     /** Cells measure themselves: with getItemLayout the list measures none. */
-    Cell({ cellKey: _cellKey, index: _index, item, children, ...props }: CellRendererProps<ListRow>) {
-      return <View {...props} onLayout={(event) => { measure(listRowKey(item), event.nativeEvent.layout); props.onLayout?.(event); }}>{children}</View>;
+    Cell({ cellKey: _cellKey, index, item, children, ...props }: CellRendererProps<ListRow>) {
+      const key = listRowKey(item);
+      return <View {...props} ref={cellRef(key)} onLayout={(event) => { measure(key, index, event.nativeEvent.layout); props.onLayout?.(event); }}>{children}</View>;
     },
     onHeaderLayout(event: LayoutChangeEvent) {
       if (Math.abs(event.nativeEvent.layout.height - header) < 0.5) return;
       header = event.nativeEvent.layout.height;
-      resized?.();
+      resizedCallback();
     },
     layout(rows: readonly ListRow[], index: number, withHeader: boolean) {
       const { lengths, offsets } = build(rows);
       return { length: lengths[index]!, offset: head(withHeader) + offsets[index]!, index };
+    },
+    /** Back must restore an exact row, not a pixel estimate over rows never measured. */
+    bookmark(rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number) {
+      return { place: placeAt(rows, withHeader, offset, viewport, content), offset };
+    },
+    restore(saved: { readonly place: ListPlace; readonly offset: number }, rows: readonly ListRow[], withHeader: boolean, viewport: number) {
+      const table = build(rows), content = head(withHeader) + table.length;
+      const previous = saved.place;
+      let target = saved.offset;
+      if (previous.at === "top") target = 0;
+      else if (previous.at === "end") target = content - viewport;
+      else if (table.index.has(previous.key)) {
+        const top = head(withHeader) + table.offsets[table.index.get(previous.key)!]!;
+        target += top - previous.top;
+        place = { ...previous, top };
+      }
+      target = Math.max(0, Math.min(Math.max(0, content - viewport), target));
+      if (previous.at !== "row" || !table.index.has(previous.key)) place = placeAt(rows, withHeader, target, viewport, content);
+      return target;
     },
     /** Notes where the reader is. */
     capture(rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number) {
       place = placeAt(rows, withHeader, offset, viewport, content);
     },
     /**
-     * How far the offset moves to keep the reader's place as the previous rows become the next. A row the change
-     * moved or removed is not followed: the first session in view after it keeps the place. With none, the offset holds.
-     * A place read at this offset is the reader's own, kept while the change leaves its row where it was.
+     * Keep the exact first visible session through reorders and resizes. Only a missing session passes its place
+     * to a surviving visible session; with none, keep the bounded offset.
      */
     follow(previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, current = false): number {
-      const was = current ? place : placeAt(previous, withHeader, offset, viewport, content);
+      let was = current ? place : placeAt(previous, withHeader, offset, viewport, content);
       const before = build(previous), after = build(next);
+      // A prior removal can reveal an earlier session. The next update anchors the session now visible.
+      if (current && was.at === "row") {
+        const visible = sessionAt(previous, withHeader, offset, viewport);
+        if (visible?.at === "row" && visible.key !== was.key) was = visible;
+      }
       if (was.at !== "row") {
         place = was;
         return was.at === "top" ? 0 : after.length - before.length;
       }
-      const steady = steadyKeys(before.keys, after.keys);
-      if (current && before.index.has(was.key) && steady.has(was.key)) {
-        const at = after.index.get(was.key)!;
-        place = { at: "row", key: was.key, top: head(withHeader) + after.offsets[at]! };
-        return after.offsets[at]! - before.offsets[before.index.get(was.key)!]!;
+      // Reordering does not release an exact native ID. Only a row leaving this view permits fallback.
+      if (after.index.has(was.key)) {
+        const top = head(withHeader) + after.offsets[after.index.get(was.key)!]!;
+        place = { ...was, top };
+        return top - was.top;
       }
-      const kept: number[] = [];
+      const visible: number[] = [];
       for (let index = firstShown(before, withHeader, offset); index < before.keys.length && head(withHeader) + before.offsets[index]! < offset + viewport; index += 1) {
-        if (after.index.has(before.keys[index]!) && steady.has(before.keys[index]!)) kept.push(index);
+        if (after.index.has(before.keys[index]!)) visible.push(index);
       }
-      // The first session in view holds the place; a group heading only when no session in view kept its own.
-      const index = kept.find((index) => isSession(previous[index]!)) ?? kept[0];
+      const index = visible.find((index) => isSession(previous[index]!)) ?? visible[0];
       if (index === undefined) {
         place = placeAt(next, withHeader, offset, viewport, content);
         return 0;
       }
-      const at = after.index.get(before.keys[index]!)!;
-      place = { at: "row", key: before.keys[index]!, top: head(withHeader) + after.offsets[at]! };
-      return after.offsets[at]! - before.offsets[index]!;
+      const key = before.keys[index]!;
+      const top = head(withHeader) + after.offsets[after.index.get(key)!]!;
+      place = { at: "row", key, top };
+      return top - (head(withHeader) + before.offsets[index]!);
     },
     /**
      * How far the offset moves to keep the reader's place after a row or the header changed height. Not the end's:
@@ -287,7 +313,10 @@ export function createRowLayout(resized?: () => void) {
       if (place.at !== "row") return 0;
       const table = build(rows);
       if (!table.index.has(place.key)) return 0;
-      const now = head(withHeader) + table.offsets[table.index.get(place.key)!]!;
+      const index = table.index.get(place.key)!;
+      const reported = measured.get(place.key);
+      const now = mounted.has(place.key) && reported?.index === index && reported.width === width
+        ? reported.y : head(withHeader) + table.offsets[index]!;
       const by = now - place.top;
       place = { ...place, top: now };
       return by;
@@ -313,6 +342,7 @@ const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: stri
   { id: "Desks", label: "Durable desks" },
   { id: "PR Review", label: "PR Review desk" },
   { id: "Adam", label: "Adam desk" },
+  { id: "Tickets", label: "Tickets desk" },
   { id: "Other work", label: "Outside desks" },
 ];
 const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string }[] = [
@@ -360,6 +390,9 @@ export const OPTIONS_SPACE_SHARE = 0.7;
 export const OPTIONS_MIN_HEIGHT = 3 * FILTERS_TOUCH_TARGET;
 /** Wide screen padding above the toolbar and below the list. */
 const WIDE_SCREEN_PADDING = 16;
+/** No list-wide refusal source is admitted yet (ASMA-8648: host list field or bounded native-error reads), so every
+ *  native error shows as not checked. Replace with that source; never with status, attention, age or titles. */
+const NO_REFUSAL_READS: ProviderRefusalReads = new Map();
 /**
  * Below this compact screen height, Show in tree folds the slim toolbar and the filter summary into
  * its Back row: at 320pt they would otherwise fill the screen and hide the session it shows.
@@ -505,16 +538,16 @@ function updatedLabel(timestamp: number | null): string {
 }
 
 /**
- * The Filters header count of final matching sessions. Exact only from a ready, live and complete read of the
- * membership in view; otherwise qualified or unknown, so a read in progress never shows as an empty 0.
+ * The Filters header count of final matching sessions. Exact only from a ready, live and complete read that
+ * covers the membership in view; an archive-inclusive read covers ordinary membership, while an ordinary
+ * read does not cover Archived. A read in progress never shows as an empty 0.
  */
 export function matchingCount({ count, state, includeArchived, freshness, blocked }: {
   count: number; state: DirectoryState; includeArchived: boolean; freshness: string; blocked: string | null;
 }): { text: string; label: string } {
   if (blocked !== null) return { text: "Not evaluated", label: `Matching sessions not evaluated: ${blocked} is not evaluated` };
-  // The other membership's read, or none yet: its entries say nothing about this filter.
-  if (state.includeArchived !== includeArchived || state.lastUpdatedAt === null) {
-    return state.status === "error" && state.includeArchived === includeArchived
+  if (!readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null) {
+    return state.status === "error" && readCoversMembership(state, includeArchived)
       ? { text: "—", label: "Matching sessions unavailable: the session list could not be read" }
       : { text: "…", label: "Reading matching sessions" };
   }
@@ -536,6 +569,8 @@ type SessionRowProps = {
   readonly onLongPress?: (entry: DirectoryEntry) => void;
   readonly selectionMode?: boolean;
   readonly lifecycleFeedback?: ReactNode;
+  readonly retirementFeedback?: ReactNode;
+  readonly retirementLabel?: string;
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
@@ -566,6 +601,8 @@ export const SessionRow = memo(function SessionRow({
   onLongPress,
   selectionMode = false,
   lifecycleFeedback,
+  retirementFeedback,
+  retirementLabel,
   displayTitle,
   displayContext,
   compactContext,
@@ -600,6 +637,7 @@ export const SessionRow = memo(function SessionRow({
     history,
     accessibilityContext ?? detail,
     sessionUsageLabel(entry),
+    retirementLabel ?? null,
     highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
@@ -607,11 +645,6 @@ export const SessionRow = memo(function SessionRow({
   const meta = [displayContext, archived, history, sessionAvailabilityLabel(entry)].filter((part): part is string => !!part).join(" · ");
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
-  // Compact: the title and context lead, then model/report metadata can wrap.
-  // The state badge stays visible; the native ID remains in the accessible label.
-  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history, sessionAvailabilityLabel(entry)]
-    .filter((part): part is string => !!part)
-    .join(" · ");
 
   return (
     <Pressable
@@ -637,49 +670,10 @@ export const SessionRow = memo(function SessionRow({
         backgroundColor: pressed || hovered || highlighted ? colors.surface2 : undefined,
       })}
     >
-      {compact && compactContext !== undefined ? (
-        <>
-          {/* The title keeps the whole line; the context and the age take the line below, so neither squeezes it. */}
-          <View style={{ flex: 1, minWidth: 0 }}>
-          <Text testID="sessions-row-title" numberOfLines={3} style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
-            {displayTitle ?? entry.title}
-          </Text>
-          <View style={{ minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-            {compactMeta ? (
-              <Text testID="sessions-row-meta" numberOfLines={2} style={{ flex: 1, minWidth: 0, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>
-                {compactMeta}
-              </Text>
-            ) : null}
-            {age}
-          </View>
-          <SessionUsage entry={entry} colors={colors} />
-          {lifecycleFeedback}
-          </View>
-          <SessionStateMarker state={state} colors={colors} />
-        </>
-      ) : compact ? (
-          <View style={{ flex: 1, minWidth: 0 }}>
-          {/* As on results: the title has its line to itself and up to three lines, so a nested row still shows where titles that share a role and task differ; the state and the age lead the usage line. */}
-          <Text
-            testID="sessions-row-title"
-            numberOfLines={3}
-            style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}
-          >
-            {displayTitle ?? entry.title}
-            {compactMeta ? (
-              <Text testID="sessions-row-meta" style={{ color: colors.foregroundMuted, fontSize: 12 }}>
-                {`  ${compactMeta}`}
-              </Text>
-            ) : null}
-          </Text>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
-            <SessionStateMarker state={state} colors={colors} />
-            {age}
-            <SessionUsage entry={entry} colors={colors} />
-          </View>
-          {lifecycleFeedback}
-          </View>
-      ) : (
+      {compact ? <SessionCompactContent entry={entry} colors={colors} title={displayTitle} context={compactContext ?? displayContext ?? entry.workspaceName ?? entry.projectName ?? undefined} time={time}>
+        {lifecycleFeedback}
+        {retirementFeedback}
+      </SessionCompactContent> : (
         <>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -697,6 +691,7 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
             {lifecycleFeedback}
+            {retirementFeedback}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
           <View style={{ alignItems: "flex-end", gap: 2 }}>
@@ -776,7 +771,8 @@ const NO_SCROLL_ANCHOR: ViewStyle & { readonly overflowAnchor: "none" } = { over
  * A workstream may come from a native desk project when no display mapping or label names it. A session
  * nothing links also says why no plan links it and where an explicit link is made; no name is read.
  */
-export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null): { label: string; value: string }[] {
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null, sourceNote: string | null = null): { label: string; value: string }[] {
+  const source = sourceNote ? [{ label: "Workstream source", value: sourceNote }] : [];
   const role = sessionRole(entry);
   const provenance = sessionProvenance(entry, mappings);
   const lines = [
@@ -791,6 +787,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
       { label: "Workspace", value: provenance.workspace },
       { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
       { label: "Workstream association", value: declared.workstream ?? "Not declared" },
+      ...source,
       { label: "Epic association", value: epicDetail(sessionEpic(entry, mappings)) },
       { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." }];
   }
@@ -799,6 +796,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
   const unlinked = declared.workstream === null && nativeDesk(entry.projectName) === null;
   return [...lines,
     { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
+    ...source,
     { label: "Epic", value: epicDetail(sessionEpic(entry, mappings)) },
     ...(unlinked ? [{ label: "Linking", value: `${planNote ? `${planNote} ` : ""}Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.` }] : []),
     { label: "Workspace", value: provenance.workspace }];
@@ -856,6 +854,8 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
 type SessionResultRowProps = {
   readonly lifecycleAction?: ReactNode;
   readonly lifecycleFeedback?: ReactNode;
+  readonly retirementFeedback?: ReactNode;
+  readonly retirementLabel?: string;
   readonly onLongPress?: (entry: DirectoryEntry) => void;
   readonly selectionMode?: boolean;
   readonly entry: DirectoryEntry;
@@ -872,7 +872,7 @@ type SessionResultRowProps = {
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback, retirementFeedback, retirementLabel }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
   const state = sessionState(entry);
@@ -885,7 +885,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
-        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
+        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), retirementLabel, time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
         onPress={() => { stateHint.dismiss(); onPress(entry); }}
         onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
@@ -901,6 +901,10 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           backgroundColor: pressed || hovered ? colors.surface2 : undefined,
         })}
       >
+        {compact ? <SessionCompactContent entry={entry} colors={colors} context={provenance.parts.join(" › ")} time={time}>
+          {lifecycleFeedback}
+          {retirementFeedback}
+        </SessionCompactContent> : <>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="sessions-row-title" numberOfLines={compact ? 3 : 1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
             {entry.title}
@@ -917,15 +921,18 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
         </Text>
         {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
         {lifecycleFeedback}
+        {retirementFeedback}
         {compact ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
           <SessionStateMarker state={state} colors={colors} />
           {time ? rowAge(time, compact, colors) : null}
           <SessionUsage entry={entry} colors={colors} />
         </View> : null}
+        </>}
       </Pressable>
       {details}
-      <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
-        accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
+      {compact ? <IconButton ref={(node) => treeButtonRef(entry.id, node)} colors={colors} label={`Show ${entry.title} in the tree`} icon="ListTree" onPress={() => onShowInTree(entry)} />
+        : <Action ref={(node) => treeButtonRef(entry.id, node)} small colors={colors} label="Show in tree"
+          accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />}
       {lifecycleAction}
     </View>
   );
@@ -1635,10 +1642,12 @@ type SessionsScreenProps = PluginScreenProps & {
   workstreamNote?: string | null;
   /** The host's responsibility projection read; absent or not ready leaves My work unevaluated. */
   responsibility?: ResponsibilityRead | null;
+  /** Read-only retention projection over the full host inventory; absent means no retirement wiring. */
+  retirement?: SessionRetirementRead;
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null, retirement }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
@@ -1665,10 +1674,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const localDirectory = useSessionDirectory({
     hostId: host.id,
     hostStatus: hostSummary?.status ?? "offline",
-    includeArchived,
+    // The local fallback has no parent read: request the full inventory once and filter this view
+    // from it, so an ordinary count is never blocked by an archive-exclusive read.
+    includeArchived: true,
     enabled: directory === undefined,
   });
-  const { state: rawState, refresh } = directory ?? localDirectory;
+  const { state: rawState, refresh, retry = refresh } = directory ?? localDirectory;
   // Read when an action settles, not when it started: a live, complete directory already streams that row's change.
   const liveDirectory = useRef(false);
   liveDirectory.current = rawState.status === "ready" && rawState.live && rawState.inventoryComplete === true;
@@ -1766,7 +1777,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const resizedRef = useRef(() => {});
   /** The offset the reader's place was last read at; the screen's own placements move the offset away from it. */
   const placedAtRef = useRef(scrollOffsetRef.current);
+  /** How far the browser pulled a held row place back to the end of a list that got shorter; the next hold returns it. */
+  const clampedByRef = useRef(0);
   const [rowLayout] = useState(() => createRowLayout(() => resizedRef.current()));
+  const resultsPlaceRef = useRef<{ readonly saved: ReturnType<typeof rowLayout.bookmark>; readonly returning: boolean } | null>(null);
   const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
   /** Lowest offset since the compact toolbar opened; see compactToolbarScroll. */
   const compactAnchorRef = useRef(scrollOffsetRef.current);
@@ -2166,12 +2180,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       // is the reader's the browser pulling an offset past the end of a list that got shorter back to its end.
       const clamped = Math.abs(visibleOffset - maxOffset) < 1 && Math.max(scrollOffsetRef.current, eventOffsetRef.current) > maxOffset + 1;
       if (!clamped && Math.abs(visibleOffset - scrollOffsetRef.current) >= 1) userScrollAtRef.current = Date.now();
+      if (clamped) clampedByRef.current += Math.max(0, scrollOffsetRef.current - visibleOffset);
       eventOffsetRef.current = visibleOffset;
       viewportHeightRef.current = layoutMeasurement.height;
       contentHeightRef.current = contentSize.height;
-      // The screen's own landing keeps the place it held; any other offset is read again.
-      if (Math.abs(visibleOffset - scrollOffsetRef.current) >= 1 || placedAtRef.current !== scrollOffsetRef.current) {
+      // The screen's own landing keeps the place it held, and so does the browser pulling it back to the end of a
+      // list that got shorter: rows shrink before their measurements arrive, and these restate the place. Any other
+      // offset, or one the screen placed itself, is read again.
+      if ((!clamped && Math.abs(visibleOffset - scrollOffsetRef.current) >= 1) || placedAtRef.current !== scrollOffsetRef.current) {
         rowLayout.capture(rowsRef.current, withHeaderRef.current, visibleOffset, layoutMeasurement.height, contentSize.height);
+        clampedByRef.current = 0;
       }
       placedAtRef.current = visibleOffset;
       scrollOffsetRef.current = visibleOffset;
@@ -2248,7 +2266,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   );
 
   const mappings = planMappings ?? preferences.displayMappings;
+  // A key the display-only fallback derived, not a saved mapping or label, names its plans and capture in Details.
+  const derivedSource = (entry: DirectoryEntry) => {
+    const key = declaredScope(entry, preferences.displayMappings).workstream === null ? declaredScope(entry, mappings).workstream : null;
+    return key === null ? null : derivedWorkstreamNote(workstreamSources, workstreamReads, declaredScope(entry, mappings).epic, entry.projectKey, key, preferences.planAssociations[entry.id]);
+  };
   const favorites = preferences.favorites;
+  const recent = useRecent(host.id);
+  const recentIds = useMemo(() => recent.record.visits.map((visit) => visit.id), [recent.record]);
   const scoped = useMemo(
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
     [state.entries, projectId, epicKey, mappings],
@@ -2266,7 +2291,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const sortDirection: SortDirection = view.sortDirection ?? defaultSortDirection(sort);
   // An explicit sort orders sessions within each group and the flat results; it never moves a group.
   const leafOrder = useMemo(() => explicitLeafOrder(scoped, sort, sortDirection), [scoped, sort, sortDirection]);
-  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder]);
+  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder, byWorkstream: streams !== null }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder, streams]);
   const flatTree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping: "flat" }), [scoped, preferences, mappings]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
@@ -2309,13 +2334,22 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
     [scoped, eligible, linked, tokens, mappings]);
+  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
+  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
+  const blockedView = useMemo(() => providerBlockedView({ candidates, reads: NO_REFUSAL_READS, state, includeArchived, freshness: countFreshness,
+    blocked: assignmentBlocked ? assignmentPart : null, now: clock.now }), [candidates, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, clock.now]);
   const results = useMemo(() => {
-    const matching = candidates.filter((entry) => matchesStatus(entry, view.status, favorites));
+    const matching = view.status === "provider_blocked" ? [...blockedView.sessions] : candidates.filter((entry) => matchesStatus(entry, view.status, favorites, recentIds));
     const compare = sessionComparator(sort, sortDirection);
     if (compare) return matching.sort(compare);
+    // Recent's own order is the order sessions were opened, most recent first.
+    if (view.status === "recent") {
+      const byId = new Map(matching.map((entry) => [entry.id, entry]));
+      return recentIds.flatMap((id) => byId.get(id) ?? []);
+    }
     const ids = new Set(matching.map((entry) => entry.id));
     return visibleSessions(flatTree).filter((entry) => ids.has(entry.id));
-  }, [candidates, view.status, favorites, sort, sortDirection, flatTree]);
+  }, [candidates, blockedView, view.status, favorites, recentIds, sort, sortDirection, flatTree]);
   const matchingIds = useMemo(() => new Set(results.map((entry) => entry.id)), [results]);
   const sessionNarrowing = tokens.length > 0 || !!task || (view.status !== "all" && view.status !== "current")
     || streams !== null || view.epic != null || assignment !== "any";
@@ -2336,18 +2370,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
     return counts;
   }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
-  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
-  const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
   // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
   const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
-  const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, refined, state, includeArchived,
-    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null }),
-    [scoped, candidates, favorites, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart]);
+  const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, recent: recentIds, refined, state, includeArchived,
+    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count }),
+    [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
   const workstreamChoices = useMemo(() => work === "all" ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
     [work, workstreamOptions, streams]);
+  // My work counts, never lists, the choices it leaves out.
+  const hiddenChoices = useMemo(() => work === "all" ? [] : workstreamOptions.filter((option) => !workstreamChoices.includes(option)), [work, workstreamOptions, workstreamChoices]);
   // Responsibility facts over this context's inventory, before the other filters.
   const workTally = useMemo(() => {
     if (responsibilityById === null) return null;
@@ -2396,6 +2430,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
     placedAtRef.current = scrollOffsetRef.current;
   };
+  /** The part of a held row place the browser's pull to the end took: given back with the next hold. */
+  const owed = () => {
+    const by = rowLayout.atEnd() ? 0 : clampedByRef.current;
+    clampedByRef.current = 0;
+    return by;
+  };
   // A row, the header, the content or the viewport changed height under the reader: a reader at the end goes to the
   // end the list reports. While they scroll, the place follows them instead.
   resizedRef.current = () => {
@@ -2403,10 +2443,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (placedAtRef.current !== scrollOffsetRef.current) {
       rowLayout.capture(rowsRef.current, withHeaderRef.current, scrollOffsetRef.current, viewportHeightRef.current, contentHeightRef.current);
       placedAtRef.current = scrollOffsetRef.current;
+      clampedByRef.current = 0;
       return;
     }
     const by = rowLayout.atEnd() ? contentHeightRef.current - viewportHeightRef.current - scrollOffsetRef.current : rowLayout.restate(rowsRef.current, withHeaderRef.current);
-    if (!scrolling()) holdPlace(by);
+    if (!scrolling()) holdPlace(by + owed());
   };
   const previousRowSignatureRef = useRef(rowSignature);
   const previousRowsRef = useRef(rows);
@@ -2428,10 +2469,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     // in progress keeps its course.
     const offset = scrollOffsetRef.current;
     if (state.entries !== renderedRef.current.entries && view === renderedRef.current.view && !scrolling(renderedAt)) {
-      holdPlace(rowLayout.follow(previous, rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current, placedAtRef.current === offset));
+      const by = rowLayout.follow(previous, rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current, placedAtRef.current === offset);
+      holdPlace(by + owed());
     } else {
       rowLayout.capture(rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current);
       placedAtRef.current = offset;
+      clampedByRef.current = 0;
     }
   }, [compact, rowSignature]);
   useLayoutEffect(() => { renderedRef.current = { entries: state.entries, view }; });
@@ -2442,13 +2485,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const resultWorkspaces = new Set(shown.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
   const unplaced = shown.filter((entry) => !inWorkspace(entry)).length;
   // Inventory and placement are secondary facts in Filters; the matching count has one primary home per page.
-  const sessionCount = `Inventory: ${scoped.length} session${scoped.length === 1 ? "" : "s"} in this host context${state.includeArchived ? ", including archived" : ", excluding archived"}`;
+  const sessionCount = `Inventory: ${scoped.length} session${scoped.length === 1 ? "" : "s"} in this host context${includeArchived ? ", including archived" : ", excluding archived"}`;
   const inventoryRead = state.lastUpdatedAt === null
     ? "not read yet"
     : state.inventoryComplete
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
-  const countSummary = state.includeArchived !== includeArchived || state.lastUpdatedAt === null
+  const countSummary = !readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null
     ? "Inventory for this membership has not been read yet."
     : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
@@ -2527,7 +2570,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (row && row.kind !== "result") moveRow(row, distance);
   };
 
-  const sortPart = sort === "current" ? null : `${sortLabel(sort)}, ${sortDirectionLabel(sort, sortDirection).toLocaleLowerCase()}`;
+  // Under Recent an explicit sort says it replaces the order sessions were opened.
+  const sortPart = sort === "current" ? null : `${sortLabel(sort)}, ${sortDirectionLabel(sort, sortDirection).toLocaleLowerCase()}${view.status === "recent" ? ", not open order" : ""}`;
   const optionParts = [
     sessionLayout === "flat" ? "Flat" : null,
     sessionLayout === "grouped" && grouping !== "hierarchy" ? GROUPINGS.find((choice) => choice.id === grouping)?.label : null,
@@ -2615,12 +2659,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     setPeekToggles({});
     focusAfterModeRef.current = () => (peekBackRef.current as unknown as { focus?: () => void } | null)?.focus?.();
     const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
+    resultsPlaceRef.current = { saved: rowLayout.bookmark(rowsRef.current, withHeaderRef.current, scrollOffsetRef.current, viewportHeightRef.current, contentHeightRef.current), returning: false };
     updateView({ peek: { sessionId: entry.id, resultsOffset: Math.max(0, scrollOffsetRef.current - head) }, scrollOffset: 0 });
   }, [compact, compactToolbarHeight, updateView]);
   const handleBackToResults = useCallback(() => {
     const current = readSessionView(viewScope).peek;
     if (!current) return;
-    focusAfterModeRef.current = () => (treeButtonsRef.current.get(current.sessionId) as unknown as { focus?: () => void } | undefined)?.focus?.();
+    focusAfterModeRef.current = () => {
+      const node = treeButtonsRef.current.get(current.sessionId);
+      if (pageDocument()) (node as unknown as { focus?: (options: { preventScroll: boolean }) => void } | undefined)?.focus?.({ preventScroll: true });
+      else node?.focus?.();
+    };
+    if (resultsPlaceRef.current) resultsPlaceRef.current = { ...resultsPlaceRef.current, returning: true };
     updateView({ peek: null, scrollOffset: current.resultsOffset });
   }, [updateView, viewScope]);
 
@@ -2636,7 +2686,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     placementRef.current += 1;
     const stored = readSessionView(viewScope).scrollOffset;
     const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
-    const offset = listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
+    const saved = listMode === "results" && resultsPlaceRef.current?.returning ? resultsPlaceRef.current.saved : null;
+    if (resultsPlaceRef.current?.returning) resultsPlaceRef.current = null;
+    const offset = saved ? rowLayout.restore(saved, rowsRef.current, withHeaderRef.current, viewportHeightRef.current)
+      : listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
     const sessionId = peek?.sessionId ?? null;
     // Each pass finds the session's row again: a collapse or a live update can move or remove it first.
     const place = () => {
@@ -2650,6 +2703,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       return true;
     };
     scrollOffsetRef.current = offset;
+    if (saved) placedAtRef.current = offset;
     lastScrollOffsetRef.current = offset;
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     compactAnchorRef.current = Number.NaN;
@@ -2660,9 +2714,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     focusAfterModeRef.current = null;
     const timer = setTimeout(() => {
       if (!place()) {
-        scrollOffsetRef.current = offset;
-        placedAtRef.current = Number.NaN;
-        listRef.current?.scrollToOffset({ offset, animated: false });
+        const target = saved ? scrollOffsetRef.current : offset;
+        scrollOffsetRef.current = target;
+        placedAtRef.current = saved ? target : Number.NaN;
+        listRef.current?.scrollToOffset({ offset: target, animated: false });
       }
       focus?.();
     }, 0);
@@ -2730,7 +2785,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           }: ${updatedLabel(state.lastUpdatedAt)}.`}
           tone={state.status === "error" ? "danger" : "warning"}
           actionLabel="Retry"
-          onAction={refresh}
+          onAction={retry}
           colors={colors}
           {...noticeProps}
         />
@@ -2968,7 +3023,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <Text testID="sessions-sort-help" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{sort === "current" ? "Current order keeps state order, your saved arrangement and Role order." : "Sorted within each group and in results; groups keep their order. Missing times sort last. Choose Current order to arrange."}</Text>
           <WorkstreamSelector options={workstreamChoices} selected={streams} open={view.associationsOpen ?? false} registryLoaded={!!workstreamRegistry?.revision} about={aboutCounts}
             scopeCounts={assignmentCounts ?? undefined} scopeLabel={assignment === "me" ? "assigned to me" : assignment === "unknown" ? "unknown assignment" : `assigned to ${subjectLabel ?? "this person"}`}
-            colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(associationsOpen) => updateView({ associationsOpen, scopeOpen: null })} onChange={chooseStreams} />
+            colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(associationsOpen) => updateView({ associationsOpen, scopeOpen: null })} onChange={chooseStreams}
+            hidden={hiddenChoices} onShowAll={() => chooseWork("all")} />
           <SessionScopeSelector id="scope" label="Desk / workspace scope" selected={shortcut} open={view.scopeOpen === "desk"}
             options={scopeChoices.flatMap(({ id, label }) => id === null ? [] : [{ key: id, label, detail: deskScopes.find((choice) => choice.id === id)?.projectId }])}
             colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(open) => updateView({ scopeOpen: open ? "desk" : null, associationsOpen: false })}
@@ -3041,7 +3097,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     detailsWhereRef.current = detailsWhere;
     setDetailsId(id);
   };
-  const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
+  const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : availability.entries.find((entry) => entry.id === detailsId) ?? null;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
@@ -3076,7 +3132,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <SessionDetailSection title="Timing" colors={colors}>
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
-        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]), derivedSource(detailsEntry))} colors={colors} />
+        <SessionDetailSection title="Native status and availability" values={sessionRowDetails(detailsEntry)} colors={colors} />
+        {retirement?.projections.get(detailsEntry.id) ? <SessionRetirementDetails projection={retirement.projections.get(detailsEntry.id)!} colors={colors} /> : null}
         {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Assignment" colors={colors} values={[
           { label: assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}` : `Assigned to ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
           { label: "Source", value: `${projection!.realm} responsibility projection, observed ${projection!.generatedAt}` },
@@ -3093,9 +3151,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const mobileToolbar = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
     <View style={{ flex: 1, minWidth: 0 }}>
     <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
-    query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
-    searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
-    onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
+    status={view.status} counts={statusCounts} activeCount={slimActiveCount}
+    filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
+    onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
     <View style={{ width: 80, alignItems: "flex-end" }}>
@@ -3261,8 +3319,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     ? `No sessions shown: ${assignmentPart} is not evaluated.`
     : task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
+    : view.status === "recent"
+    ? recentEmptyMessage(recent.record)
     : onlyScope
     ? `No sessions in ${scopeParts.join(", ")} in this view.`
+    : view.status === "provider_blocked" && blockedView.empty
+    ? blockedView.empty
     : clearable
       ? "No sessions match the current search and filters."
       : state.status === "error"
@@ -3327,13 +3389,48 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     style={{ color: assignmentBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: 4 }}>{appliedParts.join(" • ")}</Text> : null;
   const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap", alignItems: compact ? "stretch" : "center", gap: 4 }}>
     {appliedSummary ? <View style={{ flexGrow: compact ? 0 : 1 }}>{appliedSummary}</View> : null}
-    <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10 }}>
+    <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10, rowGap: 4 }}>
+      {compact ? <CompactSearch key={viewScope} colors={colors} query={view.query} searchInputRef={searchInputRef} onQuery={(query) => updateFilter({ query })} /> : null}
       {!includeArchived || lifecycle.batch ? <ArchiveSelectionToggle selection={bulkSelection} disabled={!canStart || bulkOpen || includeArchived} colors={colors} toggleRef={bulkToggleRef} /> : null}
-      <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+      <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout}
+        disabled={view.status === "recent" ? "Recent lists sessions in the order you opened them, in one list. Layout applies to the other filters and stays saved." : undefined} />
       {compact ? noticesTrigger(allNotices, noticesHide) : null}
     </View>
   </View>;
-  const listHeader = shortScreen ? <>{layoutBar}{peek ? null : workLine}</> : peek ? null : workLine;
+  // Archived obligations stay reachable from every membership, search and scope state, including an
+  // empty Archived result. The index is derived only from the full host projection, never from the
+  // current filtered rows; it shows exact native identity and opens the same read-only details, and
+  // it never adds archived sessions to the ordinary count or tree.
+  const retirementConflicts = !retirement ? [] : [...retirement.projections.values()].filter((projection) => {
+    const entry = availability.entries.find((candidate) => candidate.id === projection.sessionId);
+    return !!entry && projection.native.archiveMembership === "archived" && projection.conflicts.some((conflict) => conflict.kind.startsWith("archived-with-"));
+  });
+  const retirementConflictIndex = retirementConflicts.length === 0 ? null : (
+    <View testID="sessions-retirement-conflicts" style={{ gap: 4, paddingHorizontal: 4, paddingVertical: 2 }}>
+      <Text accessibilityRole="header" style={{ color: colors.statusWarning, fontSize: 12, fontWeight: "600" }}>Archived conflicts</Text>
+      {retirementConflicts.map((projection) => (
+        <View key={projection.sessionId} testID={`sessions-retirement-conflict-${projection.sessionId}`} style={{ gap: 2 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text selectable style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 12 }}>{`${projection.sessionId} · native ${projection.native.status}`}</Text>
+            <SessionDetailsButton title={projection.sessionId} expanded={detailsId === projection.sessionId} compact={compact} colors={colors}
+              ref={(node) => detailsButtonRef(projection.sessionId, node)} onPress={() => openDetails(projection.sessionId)} />
+          </View>
+          <SessionRetirementConflict conflicts={projection.conflicts} colors={colors} />
+        </View>
+      ))}
+    </View>
+  );
+  // Unchecked error sessions are counted, not listed as blocked; Error is the one way to see them.
+  const providerNotice = view.status === "provider_blocked" && blockedView.notice ? <View testID="sessions-provider-notice" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
+    <Text style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{blockedView.notice}</Text>
+    <TextAction testID="sessions-provider-show-error" label="Show Error" accessibilityLabel="Show all error sessions" colors={colors} compact={compact} onPress={() => updateFilter({ status: "error" })} />
+  </View> : null;
+  const recentFooter = view.status === "recent" && !peek ? <RecentFooter recent={recent} known={availability.entries} candidates={candidates} shown={results.length}
+    colors={colors} tall={compact || COARSE_POINTER} onOpen={handleOpen} /> : null;
+  // Only a workspace list failure stays below the list; the routine read note is in Filters.
+  const workspaceFooter = state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null
+    : <Text testID="sessions-footer" style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}>{workspaceNote}.</Text>;
+  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
   withHeaderRef.current = listHeader !== null;
 
   return (
@@ -3414,6 +3511,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
           const id = item.kind === "result" || item.kind === "session" ? item.entry.id : null;
+          const projection = id === null ? null : retirement?.projections.get(id) ?? null;
+          const retirementFeedback = projection ? compact ? <CompactRetirementNotice projection={projection} colors={colors} /> : <SessionRetirementSummary projection={projection} colors={colors} /> : null;
+          const retirementLabel = projection ? compact ? compactRetirementNotice(projection) ?? undefined : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : undefined;
           const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && id ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
           // A row still listed keeps its unresolved archive's state after the batch that sent it is gone.
           const lifecycleFeedback = <ArchiveRowFeedback row={outcome ?? recovery.items.find((entry) => entry.ref.agentId === id)?.row ?? undefined} colors={colors} />;
@@ -3423,8 +3523,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
                 outcome={outcome} onCheck={() => { if (canStart) void lifecycle.reconcile(item.entry.id); }} onPress={() => selectForArchive(item.entry)} /> : <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
                 buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
                 // One X, one status line: no sheet and no focus move. Review archive on the recovery line opens what stays unresolved.
-                onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => { setArchivingId(null); notifyArchive(toast, result); }); }} /> : null;
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} />;
+                onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => {
+                  setArchivingId(null);
+                  const changed = entriesRef.current.some(entry => entry.id === item.entry.id && entry.updatedAt !== item.entry.updatedAt && entry.archivedAt === null);
+                  if (changed && result && typeof result !== "string" && (result.outcome === "archived" || result.outcome === "already_archived" || result.outcome === "absent")) toast.show("The session changed while archiving. Showing its current native state.");
+                  else notifyArchive(toast, result);
+                }); }} /> : null;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} retirementFeedback={retirementFeedback} retirementLabel={retirementLabel} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -3454,6 +3559,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onLongPress={selectForArchive}
             selectionMode={bulkSelection.selecting}
             lifecycleFeedback={lifecycleFeedback}
+            retirementFeedback={retirementFeedback}
+            retirementLabel={retirementLabel}
           /> : null}
           </OrganizationRowView>;
         }}
@@ -3463,7 +3570,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
             <Text style={{ color: colors.foreground, fontSize: 14, textAlign: "center" }}>{emptyMessage}</Text>
-            {assignmentBlocked || (onlyScope && assignment !== "any") ? (
+            {view.status === "recent" && !assignmentBlocked && !(task && candidates.length === 0) ? (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8 }}>
+                <TextAction testID="sessions-empty-current" label="Show Current" colors={colors} compact={compact} onPress={() => updateFilter({ status: "current" })} />
+                <TextAction testID="sessions-empty-all" label="Show All" colors={colors} compact={compact} onPress={() => updateFilter({ status: "all" })} />
+              </View>
+            ) : assignmentBlocked || (onlyScope && assignment !== "any") ? (
               <TextAction testID="sessions-empty-any-assignment" label="Any assignment" accessibilityLabel="Show any assignment" colors={colors} compact={compact} onPress={() => chooseAssignment("any")} />
             ) : onlyScope ? (
               <TextAction testID="sessions-empty-all-work" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />
@@ -3492,17 +3604,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             )}
           </View>
         }
-        ListFooterComponent={
-          // Only a workspace list failure stays below the list; the routine read note is in Filters.
-          state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null : (
-            <Text
-              testID="sessions-footer"
-              style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}
-            >
-              {workspaceNote}.
-            </Text>
-          )
-        }
+        ListFooterComponent={recentFooter || workspaceFooter ? <>{recentFooter}{workspaceFooter}</> : null}
       />
       {optionMenuLayer}
       {detailsLayer}

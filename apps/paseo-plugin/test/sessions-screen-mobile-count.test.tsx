@@ -35,7 +35,8 @@ const { harness, fake } = vi.hoisted(() => {
   };
 });
 vi.mock("react", async (importOriginal) => ({ ...(await importOriginal<typeof import("react")>()), useContext: () => null, memo: (component: unknown) => component,
-  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState }));
+  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState,
+  useSyncExternalStore: (_subscribe: unknown, read: () => unknown) => read() }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { addEventListener: () => ({ remove: () => undefined }), isReduceMotionEnabled: async () => false, isScreenReaderEnabled: async () => false, setAccessibilityFocus: () => undefined },
   ActivityIndicator: "ActivityIndicator", Animated: { Value: class { setValue() {} stopAnimation() {} }, View: "Animated.View", timing: () => ({ start: (done?: () => void) => done?.(), stop: () => undefined }) },
@@ -108,7 +109,7 @@ function expectCount(ids: readonly string[]) {
   back(); expect(listedIds().sort()).toEqual([...ids].sort()); open();
 }
 
-beforeEach(() => { clearSessionViews(); patchSessionView("host-a", { layout: "flat" }); fake.state = ready(); fake.hostStatus = "online"; fake.refresh = vi.fn(); });
+beforeEach(() => { clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" }); fake.state = ready(); fake.hostStatus = "online"; fake.refresh = vi.fn(); });
 afterEach(() => harness.unmount());
 
 describe("mobile Filters & view matching count", () => {
@@ -125,7 +126,10 @@ describe("mobile Filters & view matching count", () => {
     (all().find((element) => element.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
     expectCount(["alpha-idle", "beta-running", "alpha-closed", "delta-error", "gamma-input"]);
     press("sessions-reset-view");
-    // Reset returns to collapsed Grouped: the list draws group rows, the count still names the sessions.
+    // Reset lands on Recent, which is empty until a session is opened from Kontor; it never falls back to Current.
+    expect(header()).toEqual({ text: "0 matching sessions", label: "0 matching sessions" });
+    press("sessions-filter-current");
+    // Current after Reset is collapsed Grouped: the list draws group rows, the count still names the sessions.
     expect(header()).toEqual({ text: "3 matching sessions", label: "3 matching sessions" });
     back(); expect(listedIds()).toEqual([]);
     layout("flat"); open();
@@ -198,8 +202,10 @@ describe("matchingCount", () => {
   it("is exact only for a live, complete read of the membership in view", () => {
     const count = (patch: Partial<DirectoryState>, includeArchived = false, freshness = "Live") => matchingCount({ count: 1, state: ready(patch), includeArchived, freshness, blocked: null }).text;
     expect(count({})).toBe("1 matching session");
+    expect(count({ includeArchived: true })).toBe("1 matching session");
+    expect(count({ includeArchived: true }, true)).toBe("1 matching session");
     expect(count({}, true)).toBe("…");
-    expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("…");
+    expect(count({ includeArchived: true, status: "error", lastUpdatedAt: null })).toBe("—");
     expect(count({ inventoryComplete: undefined })).toBe("1 matching session · partial");
     expect(count({}, false, "Reconnecting")).toBe("1 matching session · reconnecting");
   });

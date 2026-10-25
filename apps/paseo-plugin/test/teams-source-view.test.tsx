@@ -11,7 +11,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   const index = hooks.cursor++; if (!(index in hooks.values)) hooks.values[index] = initial;
   return [hooks.values[index] as T, (value: T) => { hooks.values[index] = value; }];
 } }));
-vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput" }));
 import { DEFAULT_TEAMS_SOURCE_VIEW, DEFAULT_TEAMS_VIEW, TeamsSourcePage, type TeamsView } from "../client/teams-source-page";
 type Element = ReactElement<Record<string, unknown>>;
@@ -194,7 +194,7 @@ describe("Teams disclosures and targets (A11Y-01)", () => {
     const screen = mount({}, all);
     const disclosures = screen.nodes().filter((node) => typeof (node.props.accessibilityState as { expanded?: unknown } | undefined)?.expanded === "boolean");
     const open = (label: string) => disclosures.filter((node) => node.props.accessibilityLabel === label).map((node) => (node.props.accessibilityState as { expanded: boolean }).expanded);
-    for (const label of [configured(), `Configured bindings (${fleet.bindings.length})`, `Configured chains (${fleet.chains.length})`, "Unresolved template/leadership details (74)", `${fleet.bindings[0]!.reference} → ${fleet.bindings[0]!.chainName}`]) expect(new Set(open(label))).toEqual(new Set([true]));
+    for (const label of [configured(), `Configured bindings (${fleet.bindings.length})`, `Configured chains (${fleet.chains.length})`, "Unresolved template/leadership details (76)", `${fleet.bindings[0]!.reference} → ${fleet.bindings[0]!.chainName}`]) expect(new Set(open(label))).toEqual(new Set([true]));
     expect(open("Source details")).toEqual([true, true, true, true]);
     // Rows outside the saved openBindings report collapsed, not a missing state.
     const closed = disclosures.filter((node) => !(node.props.accessibilityState as { expanded: boolean }).expanded).map((node) => String(node.props.accessibilityLabel));

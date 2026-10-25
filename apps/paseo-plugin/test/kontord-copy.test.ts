@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { kontordLine, kontordSentence } from "../client/kontord-copy";
+import { kontordBanner, kontordSentence } from "../client/kontord-copy";
 import { useKontorStatus } from "../client/use-kontor-status";
 import type { KontorStatus } from "../shared/kontor-status";
 
@@ -18,18 +18,40 @@ describe("kontord copy", () => {
     expect(kontordSentence(status("unknown"))).toBe("kontord on this host: unknown.");
     expect(kontordSentence(status("unknown", "mcp-off"))).toBe("kontord on this host: not checked; the Kontor MCP is off.");
     expect(kontordSentence(status("ready", "floor-off"))).toBe("kontord on this host: answering.");
-    const checked = `Checked ${new Date(0).toLocaleTimeString()}.`;
-    expect(kontordLine(status("ready"))).toBe(`kontord on this host: answering. Kontor adds its observer MCP to eligible new agents. ${checked}`);
-    expect(kontordLine(status("unknown", "mcp-off"))).toBe(`kontord on this host: not checked; the Kontor MCP is off. Kontor does not add its observer MCP: the Kontor MCP is off. ${checked}`);
-    expect(kontordLine(status("unavailable", "floor-off"))).toBe(`kontord on this host: not answering. Kontor does not add its observer MCP: the floor is off. ${checked}`);
     for (const observation of ["ready", "unavailable", "refused", "unknown"] as const) {
-      for (const composition of ["composed", "mcp-off", "floor-off"] as const) expect(kontordLine(status(observation, composition))).not.toContain("not enabled");
+      for (const composition of ["composed", "mcp-off", "floor-off"] as const) expect(Object.values(kontordBanner(status(observation, composition))).join(" ")).not.toContain("not enabled");
     }
   });
 
   it("reads an offline, unread or failed status as unknown, with no composition or check time", () => {
     expect(kontordSentence(null)).toBe("kontord on this host: unknown.");
-    expect(kontordLine(null)).toBe("kontord on this host: unknown.");
+  });
+});
+
+describe("kontord banner copy", () => {
+  const checked = `Last checked ${new Date(0).toLocaleTimeString()}.`;
+  it("says connected only when ready, and Navigation-only mode only when ready with the floor off", () => {
+    expect(kontordBanner(status("ready", "floor-off"))).toEqual({ title: "Kontor connected · Navigation-only mode", checked,
+      details: "You can browse sessions and project information. Automatic agent setup and workspace checks are turned off." });
+    expect(kontordBanner(status("ready"))).toEqual({ title: "Kontor connected", checked,
+      details: "Automatic agent setup and workspace checks are on, and eligible new agents get Kontor's read-only tools." });
+    expect(kontordBanner(status("unavailable", "floor-off"))).toMatchObject({ title: "Kontor not answering", checked });
+    expect(kontordBanner(status("refused")).title).toBe("Kontor refused the status check");
+    expect(kontordBanner(status("unknown", "floor-off")).details).toBe("The last check could not confirm Kontor's status. You can browse sessions and project information. Automatic agent setup and workspace checks are turned off.");
+    for (const observation of ["ready", "unavailable", "refused", "unknown"] as const) {
+      for (const composition of ["composed", "mcp-off", "floor-off"] as const) {
+        const { title, details } = kontordBanner(status(observation, composition));
+        expect(title.includes("connected"), `${observation}/${composition}`).toBe(observation === "ready" && composition !== "mcp-off");
+        expect(`${title} ${details}`.includes("Navigation-only"), `${observation}/${composition}`).toBe(observation === "ready" && composition === "floor-off");
+      }
+    }
+  });
+
+  it("names mcp-off as not checked with the floor still on, and gives null no time or mode", () => {
+    expect(kontordBanner(status("unknown", "mcp-off"))).toEqual({ title: "Kontor not checked", checked: null,
+      details: "The Kontor MCP is off, so this host does not check Kontor and new agents do not get its tools. Automatic agent setup and workspace checks are still on." });
+    expect(kontordBanner(null)).toEqual({ title: "Kontor status unknown", checked: null,
+      details: "This host has not reported Kontor's status: it is offline, not checked yet, or the check failed." });
   });
 });
 

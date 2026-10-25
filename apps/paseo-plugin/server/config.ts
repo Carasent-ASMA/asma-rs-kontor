@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 export const DEFAULT_MCP_COMMAND = "kontor-mcp";
+export const DEFAULT_CLI_COMMAND = "kontor";
 export const DEFAULT_CREDENTIAL_TIER = "observer";
 export const DEFAULT_LABEL_READ_TIMEOUT_MS = 2_000;
 
@@ -10,6 +11,8 @@ export interface KontorPluginConfig {
   readonly stateRoot: string;
   /** The `kontor-mcp` command launched for a session. */
   readonly mcpCommand: string;
+  /** The `kontor` command a confirmed native takeover runs for its one local fleet selection read. */
+  readonly cliCommand: string;
   /** Whether `agent.create` adds the Kontor MCP server. */
   readonly mcpEnabled: boolean;
   /** Optional `--serve-profile` narrowing, passed through unchanged. */
@@ -65,6 +68,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): KontorPluginCo
   return {
     stateRoot,
     mcpCommand: env.KONTOR_PLUGIN_MCP_COMMAND?.trim() || DEFAULT_MCP_COMMAND,
+    cliCommand: env.KONTOR_PLUGIN_CLI_COMMAND?.trim() || DEFAULT_CLI_COMMAND,
     mcpEnabled: env.KONTOR_PLUGIN_MCP !== "off",
     serveProfile,
     placementRoots: parseRoots(env.KONTOR_PLUGIN_PLACEMENT_ROOTS, home),

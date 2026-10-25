@@ -43,8 +43,10 @@ const byLabel = (left: WorkstreamOption, right: WorkstreamOption) => left.label.
  * Inline association disclosure inside Filters & view, no focus trap. Counts are the inventory facts of
  * planWorkstreamOptions; a person scope adds its own separately labelled count, never replacing them.
  */
-export function WorkstreamSelector({ options, selected, open, registryLoaded, about, scopeCounts, scopeLabel, colors, compact, disabled = false, onOpen, onChange }: {
+export function WorkstreamSelector({ options, hidden = [], selected, open, registryLoaded, about, scopeCounts, scopeLabel, colors, compact, disabled = false, onOpen, onChange, onShowAll }: {
   options: readonly WorkstreamOption[];
+  /** Choices this work scope leaves out because no session here carries them; counted, never listed. */
+  hidden?: readonly WorkstreamOption[];
   selected: readonly string[] | null;
   open: boolean;
   registryLoaded: boolean;
@@ -57,6 +59,8 @@ export function WorkstreamSelector({ options, selected, open, registryLoaded, ab
   disabled?: boolean;
   onOpen(open: boolean): void;
   onChange(next: readonly string[] | null): void;
+  /** Switches to the work scope that lists the hidden choices. */
+  onShowAll?(): void;
 }) {
   const [search, setSearch] = useState("");
   const [details, setDetails] = useState<string | null>(null);
@@ -81,6 +85,7 @@ export function WorkstreamSelector({ options, selected, open, registryLoaded, ab
   const matches = (option: WorkstreamOption) => !needle || normalizeChoice(`${option.label} ${option.key}`).includes(needle);
   const chosen = selected === null ? [] : selected.map((key) => options.find((option) => option.key === key) ?? key);
   const others = [...options].filter((option) => (selected === null || !selected.includes(option.key)) && matches(option)).sort(byLabel);
+  const unlisted = hidden.filter(matches).length;
   const height = COARSE_POINTER ? 44 : compact ? 36 : 30;
   const textSize = compact ? 13 : 12;
   const row = (choice: WorkstreamOption | string) => {
@@ -145,6 +150,10 @@ export function WorkstreamSelector({ options, selected, open, registryLoaded, ab
         {others.map(row)}
         {!others.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{options.length ? "No other association matches." : "No workstream associations available in this context."}</Text> : null}
       </View>
+      {unlisted ? <View testID="sessions-associations-hidden" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{`${unlisted} ${needle ? "matching " : ""}workstream${unlisted === 1 ? " has" : "s have"} no sessions here.`}</Text>
+        {onShowAll ? action("sessions-associations-show-all", "Show in All work", onShowAll, false) : null}
+      </View> : null}
       <Disclosure small label="About these counts" colors={colors}>
         <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{about}</Text>
       </Disclosure>
