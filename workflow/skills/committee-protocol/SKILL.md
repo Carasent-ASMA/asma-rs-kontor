@@ -100,10 +100,11 @@ A planning pair is not a committee and never satisfies a formal gate.
 ## Used alone (free work)
 
 A `workflow: free` caller may run a committee without an epic or a TPM. The
-caller acts as the coordinator and, at the operator's explicit choice, either
-reuses the chosen workspace or creates a committee workspace inside the chosen
-existing project, with the existing identity and path readback. The protocol
-above is otherwise unchanged.
+caller acts as the coordinator and places the committee workspace by the
+placement rules of its runtime, for example the Paseo-direct
+[used alone](../epic-orchestration/references/paseo-direct-native-placement.md#used-alone-free-work)
+rule, with the existing identity and path readback. The protocol above is
+otherwise unchanged.
 
 ## What this skill is not
 
