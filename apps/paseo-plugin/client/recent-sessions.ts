@@ -77,7 +77,7 @@ function remember(hostId: string, next: RecentState): RecentState {
   return next;
 }
 
-/** Old opens and returns have no source or host. Preserve their bytes and expose IDs as saved history only. */
+/** Old opens and returns have no source or host. Preserve their bytes and expose IDs as saved entries only. */
 export function readSavedHistory(): { readonly ids: readonly string[]; readonly unreadable: boolean } {
   try {
     const value = store()?.read(LEGACY_KEY);
@@ -145,7 +145,7 @@ export function recordVisit(hostId: string, id: string, now = Date.now()): Recen
   return next;
 }
 
-/** Clears this host in this app profile. Legacy saved history stays untouched. */
+/** Clears this host in this app profile. Legacy saved entries stay untouched. */
 export function clearRecent(hostId: string, now = Date.now()): RecentState {
   const next = write(hostId, { clearedAt: now, visits: [] });
   notify();

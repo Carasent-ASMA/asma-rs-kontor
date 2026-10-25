@@ -35,7 +35,8 @@ const { harness, fake } = vi.hoisted(() => {
   };
 });
 vi.mock("react", async (importOriginal) => ({ ...(await importOriginal<typeof import("react")>()), useContext: () => null, memo: (component: unknown) => component,
-  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState }));
+  useCallback: harness.useCallback, useEffect: harness.useEffect, useLayoutEffect: harness.useEffect, useMemo: harness.useMemo, useRef: harness.useRef, useState: harness.useState,
+  useSyncExternalStore: (_subscribe: unknown, read: () => unknown) => read() }));
 vi.mock("react-native", () => ({
   AccessibilityInfo: { addEventListener: () => ({ remove: () => undefined }), isReduceMotionEnabled: async () => false, isScreenReaderEnabled: async () => false },
   ActivityIndicator: "ActivityIndicator", Animated: { Value: class { setValue() {} stopAnimation() {} }, View: "Animated.View", timing: () => ({ start: (done?: () => void) => done?.(), stop: () => undefined }) },
@@ -135,7 +136,7 @@ function placed(layout: Layout) {
 describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice tray on the %s layout", (layout) => {
   let unresolved: UnresolvedRef[];
   beforeEach(() => {
-    clearSessionViews(); patchSessionView("host-a", { layout: "flat" });
+    clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" });
     unresolved = [ref(SA)]; fake.calls = []; fake.refresh = vi.fn(() => new Promise(() => {}));
     fake.toast.show.mockReset(); fake.toast.error.mockReset();
     fake.state = { entries: [sessionEntry("fixture-row", { status: "idle" })], status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false };
@@ -233,7 +234,7 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
 
 describe("Notice tray with several notices", () => {
   beforeEach(() => {
-    clearSessionViews(); patchSessionView("host-a", { layout: "flat" });
+    clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" });
     fake.calls = []; fake.refresh = vi.fn(() => new Promise(() => {}));
     configureArchiveNoticeStorage(null);
     fake.rpc = { "sessions.lifecycle-review": async (input) => input.reviewId ? owner()(input) : latest([ref(SA)]), "sessions.lifecycle-dispositions": async () => ({}), "sessions.availability": async () => ({}) };
@@ -244,7 +245,7 @@ describe("Notice tray with several notices", () => {
 
   it("hides the source, navigation and archive notices with one Hide, and the button keeps the strongest tone", async () => {
     for (const status of ["stale", "error"] as const) {
-      harness.unmount(); clearSessionViews(); patchSessionView("host-a", { layout: "flat" }); fake.state = state(status);
+      harness.unmount(); clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" }); fake.state = state(status);
       mount("full", { navigation: false }); await settle();
       const ids = walk(tray()!.props.children).map((element) => element.props.testID).filter(Boolean);
       expect(ids).toEqual(expect.arrayContaining(["sessions-source-banner", "sessions-navigation-banner", "sessions-archive-recovery"]));
@@ -279,7 +280,7 @@ describe("Notice tray occurrences", () => {
   const hide = async () => { (tray()!.props.onHide as () => void)(); await settle(); expect(trays()).toHaveLength(0); };
   const remount = async () => { harness.unmount(); mount("full"); await settle(); };
   beforeEach(() => {
-    clearSessionViews(); patchSessionView("host-a", { layout: "flat" });
+    clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" });
     unresolved = [ref(SA)]; fake.calls = []; fake.refresh = vi.fn(() => new Promise(() => {})); fake.state = source("ready"); configureArchiveNoticeStorage(null);
     fake.rpc = { "sessions.lifecycle-review": async (input) => input.reviewId ? owner()(input) : latest([...unresolved]), "sessions.lifecycle-dispositions": async () => ({}), "sessions.availability": async () => ({}) };
   });
@@ -338,7 +339,7 @@ describe("Notice tray occurrences", () => {
     mount("full"); await settle(); await hide();
     expect(JSON.parse(values.get(hiddenArchivesKey("host-a"))!)).toEqual([archiveKey(SA)]); expect(readSessionView("host-a").noticesHidden).toEqual([]);
     // A restart: the view store is gone and the device store is read again.
-    harness.unmount(); clearSessionViews(); patchSessionView("host-a", { layout: "flat" }); configureArchiveNoticeStorage(device);
+    harness.unmount(); clearSessionViews({ status: "current" }); patchSessionView("host-a", { layout: "flat" }); configureArchiveNoticeStorage(device);
     mount("full"); await settle();
     expect(trays()).toHaveLength(0); expect(summaries(trigger())).toEqual([ONE]);
     press(trigger()); await settle(); press(action("Review archive")); await settle();

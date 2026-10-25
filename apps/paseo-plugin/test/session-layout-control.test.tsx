@@ -2,12 +2,12 @@ import { isValidElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginTheme } from "@getpaseo/plugin";
 
-const fixture = vi.hoisted(() => ({ effects: [] as Array<() => void | (() => void)>, native: false, dismiss: vi.fn() }));
+const fixture = vi.hoisted(() => ({ effects: [] as Array<() => void | (() => void)>, native: false, dismiss: vi.fn(), hold: vi.fn() }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useRef: (current: unknown) => ({ current }), useEffect: (effect: () => void | (() => void)) => fixture.effects.push(effect),
 }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return fixture.native ? "ios" : "web"; } }, Pressable: "Pressable", Text: "Text", View: "View" }));
-vi.mock("../client/control-help", () => ({ useActionHelp: (_text: string, ref: { current: unknown }) => ({ bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss }) }));
+vi.mock("../client/control-help", () => ({ useActionHelp: (_text: string, ref: { current: unknown }) => ({ bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss, hold: fixture.hold }) }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { SessionLayoutControl } from "../client/session-layout-control";
 
@@ -17,9 +17,9 @@ const walk = (node: ReactNode): Element[] => Array.isArray(node) ? node.flatMap(
 const colors = { foreground: "#fafafa", surface1: "#181b1a", surface2: "#272a29", accent: "#20744a", border: "#252b2a" } as PluginTheme["colors"];
 afterEach(() => { fixture.effects = []; fixture.native = false; vi.clearAllMocks(); });
 
-function mount(value: "grouped" | "flat" = "grouped") {
+function mount(value: "grouped" | "flat" = "grouped", disabled?: string) {
   const onChange = vi.fn();
-  const tree = SessionLayoutControl({ value, colors, onChange });
+  const tree = SessionLayoutControl({ value, colors, onChange, disabled });
   const segments = walk(tree).filter((node) => node.props.accessibilityRole === "radio");
   const targets = segments.map((node) => {
     const target = { focus: vi.fn() }; (node.props.ref as (target: unknown) => void)(target); return target;
@@ -55,6 +55,19 @@ describe("visible session layout segments", () => {
     (segments[value === "grouped" ? 1 : 0]!.props.onPress as () => void)();
     expect(onChange).toHaveBeenCalledExactlyOnceWith(value === "grouped" ? "flat" : "grouped");
     expect(fixture.dismiss).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps showing the saved choice while a view ignores layout, and says why instead of changing it", () => {
+    const why = "Recent lists sessions in the order you opened them.";
+    const { tree, segments, onChange, key } = mount("grouped", why);
+    expect(tree.props["aria-disabled"]).toBe(true);
+    expect(segments.map((node) => node.props.accessibilityState)).toEqual([{ checked: true, disabled: true }, { checked: false, disabled: true }]);
+    expect(segments.map((node) => node.props.accessibilityHint)).toEqual([why, why]);
+    (segments[1]!.props.onPress as () => void)();
+    expect(fixture.hold).toHaveBeenCalledOnce();
+    expect(key("ArrowRight").preventDefault).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect((segments[1]!.props.style as (state: object) => Record<string, unknown>)({}).opacity).toBe(0.5);
   });
 
   it.each(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"])("%s selects and focuses the other choice, including wrapping", (key) => {

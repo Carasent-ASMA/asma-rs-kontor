@@ -201,6 +201,7 @@ vi.mock("react", async (importOriginal) => {
     useMemo: harness.useMemo,
     useRef: harness.useRef,
     useState: harness.useState,
+    useSyncExternalStore: (_subscribe: unknown, read: () => unknown) => read(),
   };
 });
 
@@ -283,7 +284,7 @@ import {
 import { SessionsLegend } from "../client/sessions-legend";
 import { MobileFiltersPage } from "../client/mobile-filters";
 import { SessionLayoutControl } from "../client/session-layout-control";
-import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
+import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { indentOf, StateBadge } from "../client/organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
@@ -371,8 +372,8 @@ function chooseLayout(value: "grouped" | "flat") {
 }
 
 function sessionSearch(): ElementLike {
-  const toolbar = walk(harness.current()).find((node) => node.type === MobileQuickToolbar);
-  return toolbar ? { props: { value: toolbar.props.query, onChangeText: toolbar.props.onQuery } } : findByTestID(harness.current(), "sessions-search");
+  const search = walk(harness.current()).find((node) => node.type === CompactSearch);
+  return search ? { props: { value: search.props.query, onChangeText: search.props.onQuery } } : findByTestID(harness.current(), "sessions-search");
 }
 
 function scrollEvent(
@@ -490,8 +491,7 @@ describe("SessionsScreen toolbar events", () => {
   });
   it("opens recovery from the mobile quick toolbar and keeps the existing search after close", () => {
     renderScreen(undefined, true);
-    const quick = walk(harness.current()).find((element) => element.type === MobileQuickToolbar)!;
-    (quick.props.onQuery as (query: string) => void)("session-a");
+    (sessionSearch().props.onChangeText as (query: string) => void)("session-a");
     harness.flush();
     const recovery = walk(harness.current()).find((element) => element.props.accessibilityLabel === "Resume sessions")!;
     (recovery.props.onPress as () => void)();
@@ -507,7 +507,7 @@ describe("SessionsScreen toolbar events", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    clearSessionViews({ work: "all" });
+    clearSessionViews({ work: "all", status: "current" });
     harness.reset();
     directory.inputs = [];
     directory.getClient.mockReset();
@@ -2096,7 +2096,7 @@ describe("SessionsScreen mobile filter page", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     accessibility.screenReader = false;
-    clearSessionViews({ work: "all" });
+    clearSessionViews({ work: "all", status: "current" });
     harness.reset();
     directory.inputs = [];
     directory.state = {
@@ -2433,12 +2433,12 @@ describe("SessionsScreen mobile filter page", () => {
     expect(readSessionView("host-a").status).toBe("favorites");
     const chooser = walk(harness.current()).find((node) => node.type === MobileQuickChooser)!;
     (chooser.props.onClose as () => void)(); harness.flush();
-    (toolbar().props.onQuery as (query: string) => void)("run"); harness.flush();
+    (sessionSearch().props.onChangeText as (query: string) => void)("run"); harness.flush();
     expect(sessionRowIds()).toEqual([]);
     expect((toolbar().props.counts as Record<string, SessionStateCount>).all!.text).toBe("1/6");
     (toolbar().props.onStatus as (status: string) => void)("all"); harness.flush();
     expect(sessionRowIds()).toEqual(["run"]);
-    (toolbar().props.onQuery as (query: string) => void)(""); harness.flush();
+    (sessionSearch().props.onChangeText as (query: string) => void)(""); harness.flush();
     expect(sessionRowIds()).toHaveLength(6);
     expect(save).not.toHaveBeenCalled();
   });
@@ -2557,7 +2557,7 @@ function closeMobileFilters() {
 
 
 describe("plan-derived visible workstream choices on the current mobile/lifecycle screen", () => {
-  beforeEach(() => { vi.useFakeTimers(); clearSessionViews({ work: "all" }); harness.reset(); });
+  beforeEach(() => { vi.useFakeTimers(); clearSessionViews({ work: "all", status: "current" }); harness.reset(); });
   afterEach(() => { harness.unmount(); vi.useRealTimers(); });
   it.each([true, false])("renders zero-session registered choices from operator configuration (compact=%s)", async (compact) => {
     const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
@@ -2749,7 +2749,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
 });
 
 describe("My work, explicit order and Reset view on the Sessions screen", () => {
-  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse("2026-10-21T13:00:00Z")); clearSessionViews(); harness.reset(); });
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse("2026-10-21T13:00:00Z")); clearSessionViews({ status: "current" }); harness.reset(); });
   afterEach(() => { harness.unmount(); vi.useRealTimers(); });
 
   /** Synthetic realm and people only. */

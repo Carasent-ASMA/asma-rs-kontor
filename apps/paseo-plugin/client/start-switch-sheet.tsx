@@ -10,7 +10,7 @@ import { NewLsaForm } from "./new-lsa-form";
 import { focusControl } from "./mobile-filters";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { Action, COARSE_POINTER, IconButton, type Colors } from "./page-controls";
-import { clearRecent, readRecent, readSavedHistory, recentRows, RECENT_SHOWN, type RecentRecord } from "./recent-sessions";
+import { clearRecent, readSavedEntries, recentRows, RECENT_SHOWN, useRecent, type RecentRecord, type RecentState } from "./recent-sessions";
 import { isArchivedSession, type DirectoryEntry, type DirectoryState } from "./session-directory";
 import { sessionState } from "./session-organization";
 import { SessionStateMarker } from "./session-state-marker";
@@ -70,20 +70,21 @@ export function sessionPlace(entry: DirectoryEntry): string {
 export type SwitchRow = { readonly entry: DirectoryEntry; readonly detail: string };
 
 /**
- * An empty query lists up to 8 Recent rows. A query matches every token across the whole directory: Recent matches
- * first, then the others in directory order, at most 20; `total` counts every match.
+ * An empty query lists the first 8 Recent rows; `total` counts every Recent row, all shown in Sessions. A query matches
+ * every token across the whole directory: Recent matches first, then the others in directory order, at most 20; `total`
+ * counts every match.
  */
 export function switchRows(entries: readonly DirectoryEntry[], query: string, now: number, record: RecentRecord): { rows: SwitchRow[]; total: number } {
   const recent = recentRows(entries, record, now).map((row) => ({ entry: row.entry, detail: `${row.reason} ${ageInWords(row.at, now)} · ${sessionPlace(row.entry)}` }));
   const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return { rows: recent.slice(0, RECENT_SHOWN), total: Math.min(recent.length, RECENT_SHOWN) };
+  if (!tokens.length) return { rows: recent.slice(0, RECENT_SHOWN), total: recent.length };
   const matches = (entry: DirectoryEntry) => tokens.every((token) => entry.searchText.includes(token));
   const first = recent.filter((row) => matches(row.entry)), ids = new Set(first.map((row) => row.entry.id));
   const rest = entries.filter((entry) => !ids.has(entry.id) && !isArchivedSession(entry) && matches(entry)).map((entry) => ({ entry, detail: sessionPlace(entry) }));
   return { rows: [...first, ...rest].slice(0, MATCHES_SHOWN), total: first.length + rest.length };
 }
 
-function persistenceNote(persistence: ReturnType<typeof readRecent>["persistence"]): string | null {
+export function persistenceNote(persistence: RecentState["persistence"]): string | null {
   if (persistence === "session") return "Remembered until Paseo restarts on this device.";
   if (persistence === "failed") return "Recent could not be saved on this device; it lasts until Paseo restarts.";
   if (persistence === "unreadable") return "Recent could not be read on this device. Clear recent replaces it.";
@@ -114,9 +115,8 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const startNew = () => { creation.current = { hostId, open: true }; setMode("new"); };
   const leaveNew = () => { creation.current.open = false; setMode("switch"); };
   const [query, setQuery] = useState("");
-  const [recent, setRecent] = useState(() => readRecent(hostId));
-  const [showSaved, setShowSaved] = useState(false);
-  const saved = readSavedHistory();
+  const recent = useRecent(hostId);
+  const saved = readSavedEntries(recent.record);
   const create = useCreateOptions(hostStatus === "online", initialScope);
   const now = Date.now();
   const { rows, total } = switchRows(directory.entries, query, now, recent.record);
@@ -154,18 +154,14 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     {rows.map((row) => <SwitchRowItem key={row.entry.id} row={row} colors={colors} tall={tall} onPress={() => onOpen(row.entry)} />)}
     {empty ? <Text testID="kontor-switch-empty" style={{ ...muted, fontSize: 12, paddingVertical: 10 }}>{empty}</Text> : null}
     {query.trim() && total > rows.length ? <Action small label={`Show all ${total} in Sessions`} colors={colors} onPress={() => onShowAll(query.trim())} /> : null}
+    {!query.trim() && (total > rows.length || saved.ids.length > 0) ? <Action small label={`Show all ${total} recent in Sessions`}
+      accessibilityLabel={`Show all ${total} recent sessions${saved.ids.length ? " and saved entries" : ""} in Sessions`} colors={colors} onPress={() => onShowAll("")} /> : null}
     <View style={{ borderTopWidth: 1, borderColor: colors.border, marginTop: 6, paddingTop: 4, gap: 2 }}>
-      <Action small label="Clear recent on this device" colors={colors} onPress={() => setRecent(clearRecent(hostId))} />
+      <Action small label="Clear recent on this device" colors={colors} onPress={() => clearRecent(hostId)} />
       <Text style={muted}>Opened from Kontor · this host and app profile only</Text>
       <Text style={muted}>Native sidebar opens and other devices are not included.</Text>
-      {saved.ids.length ? <>
-        <Action small label={`${showSaved ? "Hide" : "Show"} saved history (${saved.ids.length})`} colors={colors} onPress={() => setShowSaved(!showSaved)} />
-        {showSaved ? <View testID="kontor-saved-history">
-          <Text style={muted}>Saved history · original host and opening times unknown. Session IDs only.</Text>
-          {saved.ids.map((id) => <Text key={id} selectable style={muted}>{id}</Text>)}
-        </View> : null}
-      </> : null}
-      {saved.unreadable ? <Text style={muted}>Earlier saved history could not be read and has been left untouched.</Text> : null}
+      {saved.ids.length ? <Text style={muted}>{`Saved entries from an earlier version (${saved.ids.length}), visit time and host unknown, are listed under Recent in Sessions.`}</Text> : null}
+      {saved.unreadable ? <Text style={muted}>Saved entries from an earlier version could not be read and are left untouched.</Text> : null}
       {persistence ? <Text style={muted}>{persistence}</Text> : null}
       {unavailable ? <Text testID="kontor-switch-create-status" style={muted}>{unavailable}</Text> : null}
     </View>
@@ -220,9 +216,9 @@ export function StartSwitchPopover({ host, theme, layout, workspaceId, close, op
   return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}</View></ControlHelpProvider>;
 }
 
-/** No X glyph here: in Sessions an X archives, and a look-alike must never sit on a row. */
-function SwitchRowItem({ row, colors, tall, onPress }: { row: SwitchRow; colors: Colors; tall: boolean; onPress: () => void }) {
-  return <Pressable testID={`kontor-switch-row-${row.entry.id}`} role="menuitem" accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
+/** No X glyph here: in Sessions an X archives, and a look-alike must never sit on a row. A menu row unless `role` says otherwise. */
+export function SwitchRowItem({ row, colors, tall, onPress, role = "menuitem" }: { row: SwitchRow; colors: Colors; tall: boolean; onPress: () => void; role?: "menuitem" | "button" }) {
+  return <Pressable testID={`kontor-switch-row-${row.entry.id}`} role={role} accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
     style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5,
       backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
     <SessionStateMarker state={sessionState(row.entry)} colors={colors} />

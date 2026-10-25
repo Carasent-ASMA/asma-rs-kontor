@@ -3,8 +3,8 @@ import { DEFAULT_SESSION_FILTERS, matchesStatus, QUICK_STATUS_FILTERS } from "..
 import { clearSessionFilterPatch, clearSessionViews, isResultMode, readSessionView, readWorkingAs, resetSessionView, resetSessionViewPatch, sessionFilterCount, sessionViewTransition, writeWorkingAs } from "../client/session-view-store";
 import { QUICK_FILTER_MEANINGS } from "../client/mobile-quick-filter-options";
 import { sessionEntry } from "./session-fixtures";
-describe("proposed Current default overlay", () => {
-  beforeEach(() => clearSessionViews({ work: "all" }));
+describe("Current overlay and the Recent default", () => {
+  beforeEach(() => clearSessionViews({ work: "all", status: "current" }));
   it("keeps Current and All in the native tree; Clear widens Current to All", () => {
     const view=readSessionView("current-overlay");
     for(const status of ["current","all"] as const){expect(isResultMode({...view,status})).toBe(false);expect(sessionFilterCount({...view,status})).toBe(status === "current" ? 1 : 0);}
@@ -38,23 +38,23 @@ describe("proposed Current default overlay", () => {
     expect(clearSessionFilterPatch(cleared)).toEqual({});
     expect(readWorkingAs("host-a", "tracker.example")).toBe("viewer");
   });
-  it("Reset from explicit All/All work restores Current/My work/default order and grouping without changing identity", () => {
+  it("Reset from explicit All/All work restores Recent/My work/default order and grouping without changing identity", () => {
     writeWorkingAs("host-a", "tracker.example", "viewer");
     const view = { ...readSessionView("host-a"), work: "all" as const, status: "all" as const, grouping: "flat" as const,
       sort: "created" as const, sortDirection: "desc" as const };
     const reset = { ...view, ...sessionViewTransition(view, resetSessionViewPatch(view)) };
-    expect(reset).toMatchObject({ status: "current", work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined });
+    expect(reset).toMatchObject({ status: "recent", work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined });
     expect(sessionFilterCount(reset)).toBe(2);
     expect(readWorkingAs("host-a", "tracker.example")).toBe("viewer");
   });
-  it("Reset clears compound narrowing while retaining the same Current/My work defaults", () => {
+  it("Reset clears compound narrowing while retaining the same Recent/My work defaults", () => {
     const view = { ...readSessionView("host-a"), work: "mine" as const, assignment: "person:account-b" as const, status: "error" as const, query: "find",
       shortcut: "desk", streams: [], task: { jira: "ASMA-7", kontorId: null, label: "ASMA-7" }, includeArchived: true };
-    expect({ ...view, ...resetSessionViewPatch(view) }).toMatchObject({ status: "current", work: "mine", assignment: "any", query: "", shortcut: null,
+    expect({ ...view, ...resetSessionViewPatch(view) }).toMatchObject({ status: "recent", work: "mine", assignment: "any", query: "", shortcut: null,
       streams: null, task: null, includeArchived: false, sort: undefined, grouping: undefined });
   });
-  it("defaults to current while preserving explicit All and Attention", () => {
-    expect(DEFAULT_SESSION_FILTERS.status).toBe("current");expect(QUICK_STATUS_FILTERS).toContain("all");expect(QUICK_STATUS_FILTERS).toContain("attention");
+  it("defaults to Recent while preserving explicit Current, All and Attention", () => {
+    expect(DEFAULT_SESSION_FILTERS.status).toBe("recent");expect(QUICK_STATUS_FILTERS).toContain("current");expect(QUICK_STATUS_FILTERS).toContain("all");expect(QUICK_STATUS_FILTERS).toContain("attention");
     const old=sessionEntry("old",{status:"idle",updatedAt:"2001-01-01",requiresAttention:true,attentionReason:"finished"});
     const unknown={...old,id:"unknown",availability:{agentId:"unknown",state:"unknown" as const,reason:"401/timeout",checkedAt:new Date().toISOString(),revision:old.updatedAt}};
     for(const row of [old,unknown,sessionEntry("permission",{status:"error",needsInput:true})])expect(matchesStatus(row,"current")).toBe(true);

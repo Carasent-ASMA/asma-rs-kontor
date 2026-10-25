@@ -31,7 +31,8 @@ const model = vi.hoisted(() => ({
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useState: <T,>(initial: T | (() => T)) => model.useState(initial),
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
-  useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps) }));
+  useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps),
+  useSyncExternalStore: <T,>(_subscribe: unknown, read: () => T) => read() }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast }));
@@ -99,13 +100,13 @@ beforeEach(() => {
 });
 
 describe("Start or switch rows", () => {
-  it("lists up to eight Recent rows in saved open order with their place and reason, and none archived", () => {
+  it("lists the first eight Recent rows in saved open order with their place and reason, none archived, and counts them all", () => {
     const entries: DirectoryEntry[] = Array.from({ length: 10 }, (_, index) => prompted(`agent-${index}`, NOW - (index + 1) * 60_000, { projectName: "DESK • ADAM", workspaceName: "ADAM" }));
     entries.forEach((entry, index) => recordVisit("host-a", entry.id, NOW - (index + 1) * 60_000));
     entries.push(sessionEntry("agent-archived", { archivedAt: "2026-10-22" }));
     recordVisit("host-a", "agent-archived", NOW); recordVisit("host-a", "agent-9", NOW - 1000);
     const { rows, total } = switchRows(entries, "", NOW, readRecent("host-a", NOW).record);
-    expect(total).toBe(8);
+    expect(total).toBe(10);
     expect(rows.map((row) => row.entry.id)).toEqual(["agent-9", "agent-8", "agent-7", "agent-6", "agent-5", "agent-4", "agent-3", "agent-2"]);
     expect(rows[0]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
     expect(rows[1]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
@@ -269,13 +270,14 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-row-legacy-id")).toBeUndefined();
     expect(text(s.tree)).toContain("Native sidebar opens and other devices are not included.");
     expect(text(s.tree)).not.toContain("Prompted");
-    (action(s.tree, "Show saved history (1)")!.props.onPress as () => void)(); s.render();
-    expect(byTestId(s.tree, "kontor-saved-history")).toBeDefined();
-    expect(text(s.tree)).toContain("original host and opening times unknown");
-    expect(text(s.tree)).toContain("legacy-id");
+    expect(text(s.tree)).toContain("Saved entries from an earlier version (1), visit time and host unknown, are listed under Recent in Sessions.");
+    const all = action(s.tree, "Show all 1 recent in Sessions")!;
+    expect(all.props.accessibilityLabel).toBe("Show all 1 recent sessions and saved entries in Sessions");
+    (all.props.onPress as () => void)();
+    expect(s.onShowAll).toHaveBeenCalledWith("");
     (action(s.tree, "Clear recent on this device")!.props.onPress as () => void)(); s.render();
     expect(values.get("kontor.recent@1")).toBe(raw);
-    expect(text(s.tree)).toContain("legacy-id");
+    expect(text(s.tree)).toContain("Saved entries from an earlier version (1)");
   });
 
   it.each([320, 390])("keeps the existing compact sheet and accessible 44px rows at %ipx", (width) => {
