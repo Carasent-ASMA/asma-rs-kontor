@@ -22,7 +22,19 @@ export function menuFrame(anchor: MenuRect, root: MenuSize, placement: MenuPlace
 
 type Measurable = { measureInWindow(callback: (x: number, y: number, width: number, height: number) => void): void };
 export type FocusTarget = { focus?: () => void; querySelectorAll?: (selector: string) => ArrayLike<FocusTarget>; contains?: (node: unknown) => boolean; getClientRects?: () => ArrayLike<unknown> };
-type KeyEvent = { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; preventDefault(): void; stopPropagation(): void };
+type KeyEvent = { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; defaultPrevented?: boolean; preventDefault(): void; stopPropagation(): void };
+type Editable = { tagName?: string; getAttribute?(name: string): string | null; isContentEditable?: boolean };
+const LIST_NAV = new Set(["ArrowDown", "ArrowUp", "Home", "End"]);
+
+/** True when focus is in a nested field that owns typing and combobox list keys inside a panel. */
+export function panelEditingTarget(panel: FocusTarget | null, active: unknown): boolean {
+  if (!panel?.contains?.(active)) return false;
+  const node = active as Editable;
+  if (node.isContentEditable) return true;
+  const tag = node.tagName?.toLowerCase();
+  if (tag === "input" || tag === "textarea") return true;
+  return node.getAttribute?.("role") === "combobox";
+}
 type KeyTarget = { activeElement?: unknown; body?: unknown; addEventListener(type: "keydown", listener: (event: KeyEvent) => void, capture: boolean): void; removeEventListener(type: "keydown", listener: (event: KeyEvent) => void, capture: boolean): void };
 const ITEMS = '[role="menuitem"]';
 /** What Tab can reach; React Native Web gives each pressable and focusable view a tabindex. */
@@ -102,16 +114,22 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
     openPanels++;
     if (dialog) dialogs.push(self);
     const onKey = (event: KeyEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close.current(); restoreFocus(); return; }
+      if (event.defaultPrevented) return;
+      const node = panel.current as unknown as FocusTarget | null;
+      const editing = panelEditingTarget(node, document?.activeElement);
+      if (event.key === "Escape") {
+        if (editing) return;
+        event.preventDefault(); event.stopPropagation(); close.current(); restoreFocus(); return;
+      }
       if (event.key === "Tab") {
         // Only dialogs join the stack, so a menu is never on top of it.
         if (dialogs[dialogs.length - 1] !== self || event.altKey || event.ctrlKey || event.metaKey) return;
-        const target = containedTab(panel.current as unknown as FocusTarget | null, root.current as unknown as FocusTarget | null, document?.activeElement, document?.body, !!event.shiftKey);
+        const target = containedTab(node, root.current as unknown as FocusTarget | null, document?.activeElement, document?.body, !!event.shiftKey);
         if (target) { event.preventDefault(); target.focus?.(); }
         return;
       }
-      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-      const node = panel.current as unknown as FocusTarget | null;
+      if (editing && (LIST_NAV.has(event.key) || event.key.length === 1 || event.key === "Backspace" || event.key === "Delete")) return;
+      if (!LIST_NAV.has(event.key)) return;
       const items = node?.querySelectorAll ? Array.from(node.querySelectorAll(ITEMS)) : [];
       if (!items.length) return;
       event.preventDefault();

@@ -1,5 +1,5 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateOptions, CreateOutcome } from "../shared/session-create";
 import type { DirectoryEntry, DirectoryState } from "../client/session-directory";
 
@@ -33,7 +33,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps),
   useSyncExternalStore: <T,>(_subscribe: unknown, read: () => T) => read() }));
-vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
+vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844 }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
@@ -52,7 +52,8 @@ type Element = ReactElement<Record<string, unknown>>;
 function elements(value: ReactNode): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(value)) return [];
-  const drawn = typeof value.type === "function" && ["Choices", "SwitchRowItem"].includes(value.type.name) ? (value.type as (props: object) => ReactNode)(value.props) : null;
+  const drawn = typeof value.type === "function" && ["Choices", "SwitchRowItem", "SearchPicker", "JiraIssuePicker", "SourceSessionPicker"].includes(value.type.name)
+    ? (value.type as (props: object) => ReactNode)(value.props) : null;
   return [value, ...elements(value.props.children as ReactNode), ...elements(value.props.header as ReactNode), ...elements(drawn)];
 }
 const text = (tree: Element[]) => tree.filter((node) => node.type === "Text" || node.type === Copy).map((node) => [node.props.children].flat(Infinity).join("")).join("\n");
@@ -901,14 +902,22 @@ describe("New session form", () => {
     const radio = (tree: Element[], label: string) => tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith(label));
     const choose = (f: ReturnType<typeof form>, label: string) => { (radio(f.tree, label)!.props.onPress as () => void)(); f.render(); };
     const edit = (f: ReturnType<typeof form>, id: string, value: string) => { (byTestId(f.tree, id)!.props.onChangeText as (value: string) => void)(value); f.render(); };
+    const flushPicker = async (current: ReturnType<typeof form>) => { await vi.advanceTimersByTimeAsync(250); for (let i = 0; i < 4; i++) await Promise.resolve(); current.render(); };
+    const jiraRow = (tree: Element[], key: string) => byTestId(tree, `kontor-jira-picker-row-${key}`);
+    const openJiraPicker = async (current: ReturnType<typeof form>) => { current.press("Choose Jira issue"); await flushPicker(current); };
+    const pickJira = (current: ReturnType<typeof form>, key: string) => { (jiraRow(current.tree, key)!.props.onPress as () => void)(); current.render(); };
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
 
-    it("switches TPM to From Jira ticket, previews the epic's desk and submits the key with the default topic", () => {
+    it("switches TPM to From Jira ticket, previews the epic's desk and submits the key with the default topic", async () => {
       model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+      model.rpc["sessions.create-options"] = vi.fn(async () => OPTIONS);
       const f = form();
       choose(f, "TPM");
       expect(radio(f.tree, "From Jira ticket")!.props["aria-checked"]).toBe(true);
       expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Choose a Jira issue.");
-      choose(f, "ASMA-100");
+      await openJiraPicker(f);
+      pickJira(f, "ASMA-100");
       expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
       expect(byTestId(f.tree, "kontor-new-session-jira-topic")?.props.value).toBe("Deliver the desk layout");
       expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Deliver the desk layout.");
@@ -916,13 +925,15 @@ describe("New session form", () => {
       expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ role: "TPM", start: "from-jira", issueKey: "ASMA-100", projectId: "prj-adam", topic: "Deliver the desk layout" }));
     });
 
-    it("routes a standalone ticket opened from ADAM to DESK • TICKETS and reads that desk's catalog first", () => {
+    it("routes a standalone ticket opened from ADAM to DESK • TICKETS and reads that desk's catalog first", async () => {
       model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+      model.rpc["sessions.create-options"] = vi.fn(async () => JIRA);
       const f = form({ status: "ready", options: JIRA });
       choose(f, "From Jira ticket");
+      await flushPicker(f);
       expect(f.tree.some((node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Desk")).toBe(false);
-      choose(f, "ASMA-103");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-tickets", role: "LSA", start: "from-jira" });
+      pickJira(f, "ASMA-103");
+      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-tickets", role: "LSA", start: "from-jira", issueKey: "ASMA-103" });
       expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • TICKETS, because ASMA-103 is a User Story without an active parent epic.");
       expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
       f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-tickets" } });
@@ -931,16 +942,21 @@ describe("New session form", () => {
       expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ start: "from-jira", issueKey: "ASMA-103", projectId: "prj-tickets" }));
     });
 
-    it("keeps the exact key when the title is edited or a later search no longer lists the issue", () => {
+    it("keeps the exact key when the title is edited or a later search no longer lists the issue", async () => {
       model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
+      model.rpc["sessions.create-options"] = vi.fn(async () => JIRA);
       const f = form({ status: "ready", options: JIRA });
-      choose(f, "TPM"); choose(f, "ASMA-100");
+      choose(f, "TPM");
+      await openJiraPicker(f);
+      pickJira(f, "ASMA-100");
       edit(f, "kontor-new-session-jira-topic", "Desk layout follow-up");
       expect(byTestId(f.tree, "kontor-new-session-jira-topic")?.props.accessibilityLabel).toBe("Title topic after TPM • ASMA-100");
       expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Desk layout follow-up.");
-      edit(f, "kontor-new-session-issue-search", "ticket desk");
-      f.press("Search");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "TPM", start: "from-jira", issueKey: "ticket desk" });
+      f.press("Change Jira issue");
+      edit(f, "kontor-jira-picker-search", "ticket desk");
+      await flushPicker(f);
+      expect(model.rpc["sessions.create-options"]).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: "prj-adam", role: "TPM", start: "from-jira", issueKey: "ticket desk" }));
+      f.press("Back");
       f.setOptions({ status: "ready", options: { ...JIRA, issues: [UNDER_ACTIVE] } });
       expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Desk layout follow-up.");
       edit(f, "kontor-new-session-jira-topic", "ASMA-100 • Forged");
@@ -950,41 +966,54 @@ describe("New session form", () => {
       expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ role: "TPM", issueKey: "ASMA-100", projectId: "prj-adam", topic: "Desk layout follow-up" }));
     });
 
-    it("shows a task under an active epic with its exact reason and a path to the owning epic, never as a choice", () => {
+    it("shows a task under an active epic with its exact reason and a path to the owning epic, never as a choice", async () => {
+      model.rpc["sessions.create-options"] = vi.fn(async () => JIRA);
       const f = form({ status: "ready", options: JIRA });
       choose(f, "From Jira ticket");
+      await flushPicker(f);
       expect(radio(f.tree, "ASMA-101")).toBeUndefined();
-      expect(text(elements(byTestId(f.tree, "kontor-new-session-blocked-ASMA-101")))).toBe("ASMA-101 · Wire the ticket desk: ASMA-101 is under the active epic ASMA-100 (In Progress), whose ESW delivers it. Start from ASMA-100 instead.");
+      expect(jiraRow(f.tree, "ASMA-101")?.props.accessibilityState).toMatchObject({ disabled: true });
+      expect(String(jiraRow(f.tree, "ASMA-101")?.props.accessibilityLabel)).toContain("ASMA-101 is under the active epic ASMA-100 (In Progress), whose ESW delivers it. Start from ASMA-100 instead.");
       f.press("Start from ASMA-100");
-      expect(radio(f.tree, "ASMA-100")!.props["aria-checked"]).toBe(true);
+      await flushPicker(f);
+      pickJira(f, "ASMA-100");
       expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
     });
 
-    it("looks an unlisted owning epic up by its key on the ADAM catalog", () => {
+    it("looks an unlisted owning epic up by its key on the ADAM catalog", async () => {
+      model.rpc["sessions.create-options"] = vi.fn(async (input) => ({ ...JIRA, catalogProjectId: input.projectId ?? JIRA.catalogProjectId, issues: input.issueKey === "ASMA-100" ? [ISSUE_EPIC] : input.projectId === "prj-tickets" ? [UNDER_ACTIVE] : JIRA.issues }));
       const f = form({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-tickets", issues: [UNDER_ACTIVE] } });
       choose(f, "From Jira ticket");
+      await flushPicker(f);
       f.press("Start from ASMA-100");
+      await flushPicker(f);
+      expect(byTestId(f.tree, "kontor-jira-picker-search")?.props.value).toBe("ASMA-100");
+      expect(model.rpc["sessions.create-options"]).toHaveBeenLastCalledWith(expect.objectContaining({ issueKey: "ASMA-100", start: "from-jira" }));
+      pickJira(f, "ASMA-100");
       expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira", issueKey: "ASMA-100" });
-      expect(byTestId(f.tree, "kontor-new-session-issue-search")?.props.value).toBe("ASMA-100");
-      f.setOptions({ status: "ready", options: { ...JIRA, issues: [ISSUE_EPIC] } });
-      expect(radio(f.tree, "ASMA-100")!.props["aria-checked"]).toBe(true);
+      f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-adam", issues: [ISSUE_EPIC] } });
       expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
     });
 
-    it("is offered from PR REVIEW too, because the issue chooses the desk", () => {
+    it("is offered from PR REVIEW too, because the issue chooses the desk", async () => {
+      model.rpc["sessions.create-options"] = vi.fn(async () => OPTIONS);
       const f = form();
       choose(f, "DESK • PR REVIEW");
       f.setOptions({ status: "ready", options: { ...OPTIONS, catalogProjectId: "prj-pr" } });
       expect(radio(f.tree, "From Jira ticket")!.props["aria-disabled"]).toBe(false);
-      choose(f, "From Jira ticket"); choose(f, "ASMA-100");
+      choose(f, "From Jira ticket");
+      await flushPicker(f);
+      pickJira(f, "ASMA-100");
       expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira" });
+      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira", issueKey: "ASMA-100" });
     });
 
-    it("names a ticket desk with no checkout instead of hiding the ticket", () => {
+    it("names a ticket desk with no checkout instead of hiding the ticket", async () => {
+      model.rpc["sessions.create-options"] = vi.fn(async () => ({ ...JIRA, desks: [OPTIONS.desks[0]!] }));
       const f = form({ status: "ready", options: { ...JIRA, desks: [OPTIONS.desks[0]!] } });
       choose(f, "From Jira ticket");
-      expect(text(elements(byTestId(f.tree, "kontor-new-session-blocked-ASMA-103")))).toContain("ASMA-103 starts on DESK • TICKETS, which has no checkout on this host.");
+      await flushPicker(f);
+      expect(String(jiraRow(f.tree, "ASMA-103")?.props.accessibilityLabel)).toContain("ASMA-103 starts on DESK • TICKETS, which has no checkout on this host.");
     });
   });
 

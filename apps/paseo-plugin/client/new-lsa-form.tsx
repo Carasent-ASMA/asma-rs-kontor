@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
-import { useRpc } from "@getpaseo/plugin/client";
+import { getPaseoClient, useRpc } from "@getpaseo/plugin/client";
 import { checkCreate, executeCreate, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
   type CreateOptions, type CreateOutcome, type CreateRole, type CreateScope, type CreateStart, type JiraIssue } from "../shared/session-create";
 import { Action, COARSE_POINTER, Copy, Disclosure, type Colors } from "./page-controls";
 import type { CreateOptionsState } from "./start-switch-sheet";
 import type { OpenSessionResult } from "./session-actions";
+import { JiraIssuePicker } from "./jira-issue-picker";
+import { SourceSessionPicker } from "./source-session-picker";
+import { readSource, sourceState, type SourceChoice } from "./source-picker";
+import { focusControl } from "./mobile-filters";
 
 export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; readonly start?: CreateStart; readonly projectId?: string;
   readonly issueKey?: string; readonly sourceAgentId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null;
@@ -105,6 +109,14 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", role: "LSA", start: AD_HOC, projectId: options.status === "ready" ? options.options.catalogProjectId ?? undefined : undefined }));
   const [phase, setPhase] = useState<Phase>({ kind: "draft" });
   const [advanced, setAdvanced] = useState(!compact);
+  const [picker, setPicker] = useState<"jira" | "source" | null>(null);
+  const [source, setSource] = useState<SourceChoice | null>(null);
+  const [sourceProblem, setSourceProblem] = useState<string | null>(null);
+  const pickerReturn = useRef<View>(null), restorePickerFocus = useRef(false);
+  const lastPicker = useRef<"jira" | "source" | null>(null);
+  if (picker) lastPicker.current = picker;
+  useEffect(() => { if (!picker && restorePickerFocus.current) { restorePickerFocus.current = false; focusControl(pickerReturn.current); } }, [picker]);
+  const closePicker = () => { restorePickerFocus.current = true; setPicker(null); };
   /** A read repeats the desk whose catalog is wanted and, for From Jira, the issue search. */
   const scopeOf = (next: CreateDraft, projectId = next.projectId): CreateScope => ({ projectId, role: next.role, start: next.start,
     ...(next.start === FROM_JIRA && next.issueQuery?.trim() ? { issueKey: next.issueQuery.trim() } : {}) });
@@ -196,15 +208,34 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh(scopeOf(draft))} /> : null}
     </>);
   }
-  const problem = options.status === "ready" ? choice.problem : options.status === "error"
+  const problem = (options.status === "ready" ? choice.problem : options.status === "error"
     ? `Choices could not be refreshed (${options.message}). Refresh choices before creating a session.`
-    : "Refreshing this desk's choices… Creation stays disabled until the host answers.";
+    : "Refreshing this desk's choices… Creation stays disabled until the host answers.")
+    ?? (source && source.hostId !== hostId ? "Choose a source session on this host, or Clear the source." : sourceProblem);
   // An unsettled earlier request (this device or another) is shown instead of the form until a Check settles it.
   if (ready.pending) return outcomeView(ready.pending, providerLabel);
 
-  const submit = () => {
+  const submit = async () => {
     if (!isCurrent() || currentOptions.current.status !== "ready" || submitted.current || problem || !choice.desk || !choice.provider || !choice.model) return;
     submitted.current = true;
+    if (source) {
+      setPhase({ kind: "busy", requestId: "", label: "Checking the source session…" });
+      try {
+        const fresh = await readSource(getPaseoClient(hostId), source.entry.id);
+        if (!isCurrent()) return;
+        const changed = fresh && fresh.entry.title !== source.entry.title;
+        if (!fresh || fresh.contextProblem || changed) {
+          if (fresh) setSource({ hostId, ...fresh });
+          setSourceProblem(!fresh ? "The source session was not found. Choose another source, or Clear it." : fresh.contextProblem
+            ?? "The source session's title changed. Use Change to review it before creating.");
+          submitted.current = false; setPhase({ kind: "draft" }); return;
+        }
+      } catch (error) {
+        if (isCurrent()) { setSourceProblem(`Source lookup failed: ${error instanceof Error ? error.message : String(error)}. Use Change to retry, or Clear it.`); submitted.current = false; setPhase({ kind: "draft" }); }
+        return;
+      }
+    }
+    if (!isCurrent() || currentOptions.current.status !== "ready") { submitted.current = false; if (isCurrent()) setPhase({ kind: "draft" }); return; }
     const requestId = newRequestId(), title = choice.title;
     setPhase({ kind: "busy", requestId, label: `Creating “${title}”…` });
     execute({ requestId, role: choice.role, start: choice.start, projectId: choice.desk.projectId, topic: choice.topic,
@@ -223,46 +254,30 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const fromJira = choice.start === FROM_JIRA;
   const input = { color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 } as const;
   const heading = { color: colors.foreground, fontSize: 12, fontWeight: "600" } as const;
-  // Every listed issue stays visible: a startable one as a choice, any other with the reason it cannot start here.
-  const routes = fromJira ? ready.issues.map((issue) => ({ issue, ...issueDesk(ready.desks, issue) })) : [];
   const pick = (issue: JiraIssue) => {
     const desk = issueDesk(ready.desks, issue).desk;
-    set({ issueKey: issue.key, picked: issue, jiraTopic: undefined, ...(desk ? { projectId: desk.projectId } : {}) });
-    if (desk && desk.projectId !== ready.catalogProjectId) refresh({ projectId: desk.projectId });
+    set({ issueKey: issue.key, picked: issue, jiraTopic: draft.issueKey === issue.key ? draft.jiraTopic : undefined, ...(desk ? { projectId: desk.projectId } : {}) });
+    if (desk) refresh({ projectId: desk.projectId, issueQuery: issue.key });
   };
-  // The owning epic is looked up by its key when this list does not hold it; its own type then decides its desk.
-  const startOnEpic = (key: string) => {
-    const listed = ready.issues.find((issue) => issue.key === key);
-    if (listed) { pick(listed); return; }
-    const adam = ready.desks.find((desk) => desk.kind === "adam");
-    set({ issueKey: key, picked: undefined, jiraTopic: undefined, issueQuery: key, ...(adam ? { projectId: adam.projectId } : {}) });
-    refresh({ issueQuery: key, projectId: adam?.projectId });
-  };
+  if (picker === "jira") return <JiraIssuePicker colors={colors} desks={ready.desks} scope={scopeOf(draft)} initialQuery={draft.issueQuery ?? ""} selected={choice.issue?.key ?? null}
+    onBack={closePicker} onSelect={(issue, issueQuery) => { pick(issue); setDraft((previous) => ({ ...previous, issueQuery })); closePicker(); }} />;
+  if (picker === "source") return <SourceSessionPicker hostId={hostId} colors={colors} selected={source?.hostId === hostId ? source.entry.id : null}
+    onBack={closePicker} onSelect={(next) => { setSource(next); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />;
   return wrap(<>
     <Choices label="Role" colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {
       const nextStart: CreateStart = role === "TPM" && choice.start === AD_HOC ? FROM_JIRA : choice.start;
       set({ role: role as CreateRole, start: nextStart }); refresh({ role: role as CreateRole, start: nextStart }); }}
       options={[{ id: "LSA", label: "LSA · Lead Software Architect" }, { id: "TPM", label: "TPM · Technical Program Manager" }]} />
-    <Choices label="Start" colors={colors} tall={tall} selected={choice.start} onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); }}
+    <Choices label="Start" colors={colors} tall={tall} selected={choice.start} onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); if (start === FROM_JIRA) setPicker("jira"); }}
       options={[
         { id: AD_HOC, label: "Ad hoc", disabled: choice.role === "TPM", note: choice.role === "TPM" ? "TPM is key-bound; choose From Jira ticket." : null },
         { id: FROM_JIRA, label: "From Jira ticket", note: "The issue chooses the desk." },
       ]} />
     {fromJira ? <View style={{ gap: 4 }}>
-      <Text style={heading}>Find a Jira issue</Text>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <TextInput testID="kontor-new-session-issue-search" accessibilityLabel="Find a Jira issue" placeholder="ASMA key or words; empty lists the newest" value={draft.issueQuery ?? ""}
-          onChangeText={(issueQuery) => set({ issueQuery })} onSubmitEditing={() => refresh({})} returnKeyType="search"
-          placeholderTextColor={colors.foregroundMuted} style={{ ...input, flex: 1, minWidth: 0 }} />
-        <Action small label="Search" accessibilityLabel="Search Jira issues" colors={colors} onPress={() => refresh({})} />
-      </View>
-      <Choices label="Jira issue" colors={colors} tall={tall} selected={choice.issue?.key ?? null} onSelect={(key) => pick(routes.find((route) => route.issue.key === key)!.issue)}
-        options={routes.filter((route) => route.desk).map(({ issue, desk }) => ({ id: issue.key, label: `${issue.key} · ${issue.summary}`, note: `${issue.type} · ${issue.status} · ${desk!.project}` }))}
-        empty={routes.length ? "No listed issue can start a lead; each says why below." : "No open ASMA issue matches."} />
-      {routes.filter((route) => route.problem).map(({ issue, problem: why }) => <View key={issue.key} testID={`kontor-new-session-blocked-${issue.key}`} style={{ gap: 2 }}>
-        <Text style={muted}>{issue.key} · {issue.summary}: {why}</Text>
-        {issue.parent?.open ? <Action small label={`Start from ${issue.parent.key}`} accessibilityLabel={`Start from the owning epic ${issue.parent.key}`} colors={colors} onPress={() => startOnEpic(issue.parent!.key)} /> : null}
-      </View>)}
+      <Text style={heading}>Jira issue</Text>
+      {choice.issue ? <Text selectable style={{ color: colors.foreground, fontSize: 13 }}>{choice.issue.key} · {choice.issue.summary}</Text> : null}
+      {choice.issue ? <Text style={muted}>{choice.issue.type} · {choice.issue.status}</Text> : null}
+      <Action ref={lastPicker.current === "jira" ? pickerReturn : undefined} label={choice.issue ? "Change Jira issue" : "Choose Jira issue"} colors={colors} onPress={() => setPicker("jira")} />
       {ready.jiraProblem ? <Text testID="kontor-new-lsa-jira" style={{ color: colors.statusWarning, fontSize: 12 }}>{ready.jiraProblem}</Text> : null}
       <Text testID="kontor-new-session-desk" style={muted}>{choice.issue && choice.desk ? `Desk: ${choice.desk.project}, because ${choice.issue.key} is ${choice.issue.epic ? "an epic" : `a ${choice.issue.type} without an active parent epic`}.`
         : "Desk: follows the issue. An epic starts on DESK • ADAM; another open issue without an active parent epic starts on DESK • TICKETS."}</Text>
@@ -287,11 +302,16 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       </View>
     </>}
     <View style={{ gap: 4 }}>
-      <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Source session (optional)</Text>
-      <TextInput testID="kontor-new-session-source" accessibilityLabel="Source session" placeholder="Session ID whose handoff summary the lead reads first"
-        value={draft.sourceAgentId ?? ""} onChangeText={(sourceAgentId) => set({ sourceAgentId })}
-        placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
-      <Text style={muted}>Its handoff summary is read to the new lead before its first task.</Text>
+      <Text style={heading}>Bring context from another session (optional)</Text>
+      <Text style={muted}>Copies its last assistant message from the last 100 timeline entries before the first task.</Text>
+      {source ? <>
+        <Text selectable testID="kontor-source-selected" style={{ color: colors.foreground, fontSize: 13 }}>{source.entry.title}</Text>
+        <Text selectable style={muted}>{sourceState(source.entry)} · {source.entry.id}</Text>
+      </> : null}
+      <View style={{ flexDirection: "row", gap: 6 }}>
+        <Action ref={lastPicker.current === "source" ? pickerReturn : undefined} label={source ? "Change source" : "Choose source session"} colors={colors} onPress={() => setPicker("source")} />
+        {source ? <Action label="Clear source" colors={colors} onPress={() => { setSource(null); setSourceProblem(null); set({ sourceAgentId: undefined }); }} /> : null}
+      </View>
     </View>
     <Text testID="kontor-new-lsa-title" style={muted}>{choice.title ? `Title: ${choice.title}. ` : ""}
       {fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The session stays ad hoc and writes a handoff summary when a key is confirmed."}

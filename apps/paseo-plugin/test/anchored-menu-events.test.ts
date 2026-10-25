@@ -243,4 +243,21 @@ describe("anchored menu keys on web", () => {
     expect(press({ key: "Tab" }).preventDefault).toHaveBeenCalledTimes(1);
     expect(close.focus).toHaveBeenCalledTimes(1);
   });
+
+  it("leaves Escape and list keys to a nested combobox inside a dialog", () => {
+    const combobox = node() as Node & { getAttribute(name: string): string | null };
+    combobox.getAttribute = (name) => (name === "role" ? "combobox" : null);
+    const item = node();
+    const panel: Node = { focus: vi.fn(), getClientRects: () => [{}], querySelectorAll: () => [item], contains: (target) => target === panel || target === item || target === combobox };
+    const onClose = vi.fn();
+    mount({ panel, dialog: true, onClose });
+    page.activeElement = combobox;
+    expect(press({ key: "ArrowDown" }).preventDefault).not.toHaveBeenCalled();
+    expect(item.focus).not.toHaveBeenCalled();
+    press({ key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    page.activeElement = item;
+    press({ key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
