@@ -405,8 +405,10 @@ export async function observeWorkCatalog(config: KontorPluginConfig, hostId: str
     }
     session.notify("notifications/initialized");
     const sources = daemonSourcesViewSchema.parse(await callTool(session, SOURCES_TOOL, {}));
-    const native = await observeNative(session, hostId);
+    // Read the plan catalog before the optional native inventory: a slow or
+    // missing native tool must not delay or hide the plan catalog answer.
     const entries = await observeEntries(session);
+    const native = await observeNative(session, hostId);
     return { sources, entries: entries.entries, entriesTruncated: entries.truncated, native };
   } finally {
     session.close();
