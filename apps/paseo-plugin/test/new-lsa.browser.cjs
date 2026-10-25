@@ -28,9 +28,12 @@ fs.writeFileSync(path.join(fixture, 'sdk-client.ts'), `import {createContext,use
 export const Host = createContext('fixture-a');
 export const useRpc = contract => { const host = useContext(Host); return input => window.fixture.rpc(contract.name,input,host); };
 export const getPaseoClient = () => { throw new Error('No live host in this fixture'); };
+// The shared Start or switch module also serves the composer popover, which reads these; the sheet never calls them.
+export const useHosts = () => [];
 `);
 fs.writeFileSync(path.join(fixture, 'sdk-native.tsx'), `import React from 'react';
 export {TextInput,ScrollView} from 'react-native';
+export const useToast = () => ({ error: message => { throw new Error('Unexpected toast: ' + message); }, show: () => {} });
 export const Icon = ({size=16,color}) => <span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;
 `);
 fs.writeFileSync(path.join(fixture, 'main.tsx'), `import React,{useRef,useState} from 'react';
