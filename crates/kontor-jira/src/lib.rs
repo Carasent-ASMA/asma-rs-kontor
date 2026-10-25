@@ -14,6 +14,7 @@ use kontor_core::ticket::StatusConflictKind;
 mod connector;
 mod credentials;
 pub mod jira;
+pub mod read_only;
 
 pub use credentials::{
     CredentialInstallError, JiraCredentialScope, install_credentials, install_credentials_with,
@@ -23,6 +24,13 @@ pub use credentials::{
 pub use connector::{
     JiraComment, JiraConfig, JiraConnector, JiraConnectors, JiraCreateFields, JiraIssueKind,
     JiraIssuePlan, JiraIssueReadback, JiraProjectConfig, description_hash,
+};
+pub use read_only::{
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_ISSUES, DEFAULT_MAX_PAGES,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_PAGE_SIZE, DEFAULT_REQUEST_TIMEOUT,
+    DEFAULT_RETRY_AFTER_MAX, DEFAULT_RETRY_BASE, DEFAULT_RETRY_MAX, JiraIssueAnswer, JiraPreflight,
+    JiraReadConfig, JiraReadError, JiraReadFailure, JiraReadIssue, JiraReadLimits, JiraReadOnly,
+    JiraReadStats, JiraRetryPolicy, JiraSearch, JiraSearchPage,
 };
 
 /// Why Jira could not answer.
