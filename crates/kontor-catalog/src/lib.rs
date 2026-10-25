@@ -29,6 +29,9 @@
 pub mod config;
 pub mod contract;
 pub mod discovery;
+pub mod jira;
+pub mod jira_contract;
+pub mod jira_store;
 pub mod store;
 
 use std::path::{Path, PathBuf};
@@ -39,13 +42,21 @@ use kontor_core::id::Timestamp;
 use tracing::{info, warn};
 
 pub use config::{
-    CatalogSettings, Environment, OperatorSource, ProcessEnvironment, RepositoryConfig, SourceKind,
-    SourceRevisionKind,
+    CatalogSettings, Environment, JiraSettings, OperatorSource, ProcessEnvironment,
+    RepositoryConfig, SourceKind, SourceRevisionKind,
 };
 pub use contract::{
     CATALOG_CONTRACT_VERSION, CatalogEntry, CatalogStatus, CollectionState, ConfigOrigin,
     ContentKind, EntriesView, EntryFilter, EntryKind, EntryState, ReadSource, RevisionKind,
 };
+pub use jira::{JiraCatalog, JiraCatalogError, JiraSweepReport, poll_jira_until_stopped};
+pub use jira_contract::{
+    EPIC_IDENTITY_SCHEMA, EpicIdentitySource, JiraAlias, JiraCollectionCoverage,
+    JiraCollectionState, JiraEvidenceDocument, JiraIssueObservation, JiraJoinDiagnostic,
+    JiraObservationState, JiraObservationVia, JiraProjectionError, JiraScope, JiraSweepMode,
+    JiraWorkstreamJoin, epic_identity_source, verified_workstream_join,
+};
+pub use kontor_jira::JiraReadFailure;
 pub use store::{ObservedEntry, ObservedOccurrence, StoreError};
 
 /// Everything the catalog can refuse.
@@ -187,6 +198,46 @@ impl Catalog {
     #[must_use]
     pub fn settings_path(state_root: &Path) -> PathBuf {
         state_root.join(config::CATALOG_CONFIG_FILE)
+    }
+
+    /// The state root this catalog owns.
+    #[must_use]
+    pub fn state_root(&self) -> &Path {
+        &self.state_root
+    }
+
+    /// The catalog's own database, for the collectors in this crate.
+    #[must_use]
+    pub(crate) fn store(&self) -> &store::Database {
+        &self.database
+    }
+
+    /// Take or renew the one collector lease for a collector that does not run
+    /// the local scan, such as the Jira observation.
+    ///
+    /// # Errors
+    /// [`CatalogError::OwnerConflict`] for a live competing owner, or a store
+    /// refusal.
+    pub(crate) fn acquire_owner_at(
+        &self,
+        now: &Timestamp,
+        lease_seconds: u64,
+    ) -> Result<(), CatalogError> {
+        self.database
+            .acquire_owner(&self.owner_id, lease_seconds, now)
+            .map(|_| ())
+            .map_err(|error| match error {
+                StoreError::OwnerConflict { owner } => CatalogError::OwnerConflict { owner },
+                other => CatalogError::Store(other),
+            })?;
+        {
+            let mut released = self
+                .released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *released = false;
+        }
+        Ok(())
     }
 
     /// This process's collector owner id.

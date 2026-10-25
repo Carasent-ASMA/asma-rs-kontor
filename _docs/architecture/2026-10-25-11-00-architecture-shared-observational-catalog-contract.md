@@ -175,6 +175,7 @@ diagnostic; they never become a second authority.
 
 ## Related
 
+- [Read-only Jira catalog evidence](2026-10-25-16-30-architecture-read-only-jira-catalog-evidence.md) — TASK-002's GET-only collector and `kontor/epic-identity@1` projection.
 - Plan: `asma-modules/_docs/ai-orchestration/plans/2026-10-25-02-28-plan-shared-observational-catalog.md`
 - Existing direct reader: `apps/paseo-plugin/server/read-sources.ts`, `plan-discovery.ts`
 - State-root inventory: [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md#where-configuration-lives)

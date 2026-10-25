@@ -39,9 +39,12 @@ use crate::contract::{
 };
 
 /// The schema generation this build implements.
-pub const CATALOG_SCHEMA_VERSION: i64 = 1;
+pub const CATALOG_SCHEMA_VERSION: i64 = 2;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_catalog.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_catalog.sql"),
+    include_str!("../migrations/0002_jira_evidence.sql"),
+];
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
 
@@ -848,7 +851,7 @@ impl Database {
         Ok((entries.generation, entries.as_of, entries.entries))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -863,11 +866,11 @@ fn rename_alias(value: &str, observed_at: &str) -> Alias {
     }
 }
 
-fn generation_to_sql(generation: u64) -> i64 {
+pub(crate) fn generation_to_sql(generation: u64) -> i64 {
     i64::try_from(generation).unwrap_or(i64::MAX)
 }
 
-fn bounded(text: &str) -> String {
+pub(crate) fn bounded(text: &str) -> String {
     text.chars().take(4096).collect()
 }
 
