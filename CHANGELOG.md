@@ -190,6 +190,16 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Sessions opens on Recent (ASMA-8539). Recent is the first state filter and
+  where a new app session and Reset view land, even when it is empty or was
+  just cleared; the empty list offers Current and All instead of falling back.
+  It lists every kept visit, up to the last 500 with no age limit, in open
+  order as one list, with the saved layout kept, and says how many are hidden
+  or not found on this host. Saved entries from the earlier format are listed
+  apart, with their visit time and host unknown, and opening one records a
+  real visit. On compact layouts Search moves first into the Select and layout
+  row. The Start or switch sheet still shows 8 and links to all of them.
+
 - Kontor's Paseo plugin now refreshes configured sources as metadata summaries
   (ASMA-8541, P2). One `sources.summaries` request per 30 seconds returns the
   catalog, registry, per-source status, revision, read time, frontmatter

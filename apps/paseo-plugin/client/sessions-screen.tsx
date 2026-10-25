@@ -122,7 +122,9 @@ import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
 import { SessionDetailSection } from "./session-detail-section";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
-import { MobileQuickToolbar } from "./mobile-quick-toolbar";
+import { CompactSearch, MobileQuickToolbar } from "./mobile-quick-toolbar";
+import { useRecent } from "./recent-sessions";
+import { RecentFooter, recentEmptyMessage } from "./recent-visits";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle, type SessionRetirementRead } from "./use-session-lifecycle";
 import { ArchiveSessionButton, SessionLifecycleDialog, SessionRetirementConflict, SessionRetirementDetails, SessionRetirementSummary, retirementDispositionLabel } from "./session-lifecycle-view";
@@ -2080,6 +2082,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     return key === null ? null : derivedWorkstreamNote(workstreamSources, workstreamReads, declaredScope(entry, mappings).epic, entry.projectKey, key, preferences.planAssociations[entry.id]);
   };
   const favorites = preferences.favorites;
+  const recent = useRecent(host.id);
+  const recentIds = useMemo(() => recent.record.visits.map((visit) => visit.id), [recent.record]);
   const scoped = useMemo(
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
     [state.entries, projectId, epicKey, mappings],
@@ -2145,12 +2149,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const blockedView = useMemo(() => providerBlockedView({ candidates, reads: NO_REFUSAL_READS, state, includeArchived, freshness: countFreshness,
     blocked: assignmentBlocked ? assignmentPart : null, now: clock.now }), [candidates, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, clock.now]);
   const results = useMemo(() => {
-    const matching = view.status === "provider_blocked" ? [...blockedView.sessions] : candidates.filter((entry) => matchesStatus(entry, view.status, favorites));
+    const matching = view.status === "provider_blocked" ? [...blockedView.sessions] : candidates.filter((entry) => matchesStatus(entry, view.status, favorites, recentIds));
     const compare = sessionComparator(sort, sortDirection);
     if (compare) return matching.sort(compare);
+    // Recent's own order is the order sessions were opened, most recent first.
+    if (view.status === "recent") {
+      const byId = new Map(matching.map((entry) => [entry.id, entry]));
+      return recentIds.flatMap((id) => byId.get(id) ?? []);
+    }
     const ids = new Set(matching.map((entry) => entry.id));
     return visibleSessions(flatTree).filter((entry) => ids.has(entry.id));
-  }, [candidates, blockedView, view.status, favorites, sort, sortDirection, flatTree]);
+  }, [candidates, blockedView, view.status, favorites, recentIds, sort, sortDirection, flatTree]);
   const matchingIds = useMemo(() => new Set(results.map((entry) => entry.id)), [results]);
   const sessionNarrowing = tokens.length > 0 || !!task || (view.status !== "all" && view.status !== "current")
     || streams !== null || view.epic != null || assignment !== "any";
@@ -2173,9 +2182,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
   // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
   const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
-  const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, refined, state, includeArchived,
+  const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, recent: recentIds, refined, state, includeArchived,
     freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count }),
-    [scoped, candidates, favorites, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
+    [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
@@ -2322,7 +2331,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (row && row.kind !== "result") moveRow(row, distance);
   };
 
-  const sortPart = sort === "current" ? null : `${sortLabel(sort)}, ${sortDirectionLabel(sort, sortDirection).toLocaleLowerCase()}`;
+  // Under Recent an explicit sort says it replaces the order sessions were opened.
+  const sortPart = sort === "current" ? null : `${sortLabel(sort)}, ${sortDirectionLabel(sort, sortDirection).toLocaleLowerCase()}${view.status === "recent" ? ", not open order" : ""}`;
   const optionParts = [
     sessionLayout === "flat" ? "Flat" : null,
     sessionLayout === "grouped" && grouping !== "hierarchy" ? GROUPINGS.find((choice) => choice.id === grouping)?.label : null,
@@ -2878,9 +2888,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const mobileToolbar = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
     <View style={{ flex: 1, minWidth: 0 }}>
     <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
-    query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
-    searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
-    onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
+    status={view.status} counts={statusCounts} activeCount={slimActiveCount}
+    filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
+    onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
     <View style={{ width: 80, alignItems: "flex-end" }}>
@@ -3046,6 +3056,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     ? `No sessions shown: ${assignmentPart} is not evaluated.`
     : task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
+    : view.status === "recent"
+    ? recentEmptyMessage(recent.record)
     : onlyScope
     ? `No sessions in ${scopeParts.join(", ")} in this view.`
     : view.status === "provider_blocked" && blockedView.empty
@@ -3114,9 +3126,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     style={{ color: assignmentBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: 4 }}>{appliedParts.join(" • ")}</Text> : null;
   const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap", alignItems: compact ? "stretch" : "center", gap: 4 }}>
     {appliedSummary ? <View style={{ flexGrow: compact ? 0 : 1 }}>{appliedSummary}</View> : null}
-    <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10 }}>
+    <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10, rowGap: 4 }}>
+      {compact ? <CompactSearch key={viewScope} colors={colors} query={view.query} searchInputRef={searchInputRef} onQuery={(query) => updateFilter({ query })} /> : null}
       {!includeArchived || lifecycle.batch ? <ArchiveSelectionToggle selection={bulkSelection} disabled={!canStart || bulkOpen || includeArchived} colors={colors} toggleRef={bulkToggleRef} /> : null}
-      <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout} />
+      <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout}
+        disabled={view.status === "recent" ? "Recent lists sessions in the order you opened them, in one list. Layout applies to the other filters and stays saved." : undefined} />
       {compact ? noticesTrigger(allNotices, noticesHide) : null}
     </View>
   </View>;
@@ -3148,6 +3162,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <Text style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{blockedView.notice}</Text>
     <TextAction testID="sessions-provider-show-error" label="Show Error" accessibilityLabel="Show all error sessions" colors={colors} compact={compact} onPress={() => updateFilter({ status: "error" })} />
   </View> : null;
+  const recentFooter = view.status === "recent" && !peek ? <RecentFooter recent={recent} known={availability.entries} candidates={candidates} shown={results.length}
+    colors={colors} tall={compact || COARSE_POINTER} onOpen={handleOpen} /> : null;
+  // Only a workspace list failure stays below the list; the routine read note is in Filters.
+  const workspaceFooter = state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null
+    : <Text testID="sessions-footer" style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}>{workspaceNote}.</Text>;
   const listHeader = <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : peek ? null : <>{workLine}{providerNotice}</>}</>;
 
   return (
@@ -3264,7 +3283,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
             <Text style={{ color: colors.foreground, fontSize: 14, textAlign: "center" }}>{emptyMessage}</Text>
-            {assignmentBlocked || (onlyScope && assignment !== "any") ? (
+            {view.status === "recent" && !assignmentBlocked && !(task && candidates.length === 0) ? (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8 }}>
+                <TextAction testID="sessions-empty-current" label="Show Current" colors={colors} compact={compact} onPress={() => updateFilter({ status: "current" })} />
+                <TextAction testID="sessions-empty-all" label="Show All" colors={colors} compact={compact} onPress={() => updateFilter({ status: "all" })} />
+              </View>
+            ) : assignmentBlocked || (onlyScope && assignment !== "any") ? (
               <TextAction testID="sessions-empty-any-assignment" label="Any assignment" accessibilityLabel="Show any assignment" colors={colors} compact={compact} onPress={() => chooseAssignment("any")} />
             ) : onlyScope ? (
               <TextAction testID="sessions-empty-all-work" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />
@@ -3293,17 +3317,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             )}
           </View>
         }
-        ListFooterComponent={
-          // Only a workspace list failure stays below the list; the routine read note is in Filters.
-          state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null : (
-            <Text
-              testID="sessions-footer"
-              style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}
-            >
-              {workspaceNote}.
-            </Text>
-          )
-        }
+        ListFooterComponent={recentFooter || workspaceFooter ? <>{recentFooter}{workspaceFooter}</> : null}
       />
       {optionMenuLayer}
       {detailsLayer}

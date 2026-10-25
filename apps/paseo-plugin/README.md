@@ -158,10 +158,11 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 
 - **One sheet.** **Start or switch** in the Kontor context row (an icon button
   on compact layouts) and the global Command Center item **Start or switch
-  Kontor session…** open one sheet. With no query it lists up to 8 Recent
-  sessions; typing matches every non-archived session by title, place and
-  labels, Recent first, at most 20 rows, and **Show all N in Sessions** hands
-  the query to Sessions unscoped. A row opens by native ID through the same
+  Kontor session…** open one sheet. With no query it lists the first 8 Recent
+  sessions, and **Show all N recent in Sessions** opens Sessions on Recent with
+  every kept visit and the saved entries; typing matches every non-archived
+  session by title, place and labels, Recent first, at most 20 rows, and
+  **Show all N in Sessions** hands the query to Sessions unscoped. A row opens by native ID through the same
   path as Sessions. Rows carry no archive control.
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
@@ -176,17 +177,29 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   This is local user storage, not a detected signed-in identity; **Working as**
   is an assignment filter and never determines ownership of visits. People
   sharing one app/browser profile share its history.
-  It keeps 20 visits for 14 days, pruned on reads and writes. Archived and
-  absent sessions are hidden while their unexpired visits are kept, including
-  during partial/offline reads. **Clear recent on this device** clears the
+  It keeps the last 500 distinct sessions opened, with no age limit; visits an
+  older build trimmed are not recoverable. Archived and absent sessions are
+  hidden while their visits are kept, including during partial/offline reads. **Clear recent on this device** clears the
   selected host only. Without a device store it lasts until Paseo restarts;
   an unreadable new record stays untouched until Clear; the sheet says which.
   Source and install evidence: [Unreleased release note](../../CHANGELOG.md#unreleased).
-- **Saved history.** The old `kontor.recent@1` value mixed opens and returns
+- **Recent in Sessions.** **Recent** is the first state filter and where a view
+  first read in an app session, and **Reset view**, land, even when Recent is
+  empty or was just cleared: the empty list says so and offers **Show Current**
+  and **Show All**, never falling back on its own. A state chosen in the app
+  session is kept. Recent lists every kept visit that search, scope and
+  filters leave, in open order, as one list; the saved Grouped/Flat choice stays
+  checked but disabled, and its help says why. An explicit sort reorders it and
+  the applied filters add "not open order". Below the list Recent states what
+  it keeps, how many are shown, hidden by search, scope or filters, or not found
+  in this host's current list, and where it is remembered.
+- **Saved entries.** The old `kontor.recent@1` value mixed opens and returns
   without recording their source or host. Its bytes are preserved, including
-  on Clear. **Show saved history** exposes its session IDs separately, with
-  unknown original host and opening times. Old timestamps are never imported
-  as opens or used to order Recently viewed. No earlier opening times can be
+  on Clear. Sessions lists its IDs under Recent, after the kept visits, as
+  **Saved entries · visit time and host unknown**, in stored order: an entry in
+  this host's list opens like any row and records a real visit; the others are
+  named as not found in this host's current list. Saved entries are never
+  counted, timed or ordered as visits. No earlier opening times can be
   recovered from this record.
 - **DEFERRED FUTURE WORK — native Paseo session views (Igor, 2026-10-23).**
   Openings through the native sidebar or other Paseo screens are outside the
@@ -853,8 +866,8 @@ never turns on a filter. While the projection is loading or unavailable it is
 kept, never shown as unset; **Forget on this device** removes it. A change of
 Working as ends an Assigned to me or Unknown assignment **Show in tree**.
 **Clear filters** returns to All work and Any assignment and keeps Working as,
-the sort, layout and grouping; **Reset view** returns to My work, Any assignment,
-Current order and the saved layout/grouping, keeping Working as. Layout is an
+the sort, layout and grouping; **Reset view** returns to Recent, My work, Any
+assignment, Current order and the saved layout/grouping, keeping Working as. Layout is an
 optional field in the existing version 1 host organization document. Legacy
 Flat grouping reads as Flat with Desks & workstreams remembered; reading it
 does not migrate the stored document. Settings retains its draft/revision
@@ -1476,10 +1489,12 @@ reload; a readable, unknown, timeout, authentication or wrong-ID reply cannot
 hide a present session. Availability evidence still expires after one minute;
 a settled action reconciles its exact stale list snapshot until it changes.
 The action outcome remains visible when its row disappears.
-The Current default is part of the combined Sessions view.
+The Current filter and the Recent default are part of the combined Sessions view.
 
 **Select** shares a wrapping row with the mutually exclusive **Grouped** and
-**Flat** layout choices. The row uses icons with accessible names and
+**Flat** layout choices. On compact layouts **Search** comes first in that row,
+so the quick filter row keeps its space for states; opened, the search field
+takes a line of its own with Clear or Close. The row uses icons with accessible names and
 long-press, hover and keyboard help;
 all three targets are at least 44 pt. The layout group uses a subtle fill and
 check mark, with no enclosing frame. **Select** enters bulk

@@ -121,11 +121,11 @@ function HostScreen(props: PluginScreenProps) {
     prepare?.(next);
     setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); setMenu(null);
   }, [host.id]);
-  // Show all from the sheet or the composer popover: unscoped Sessions with only this search.
+  // Show all from the sheet or the composer popover: unscoped Sessions with only this search, or, with none, all of Recent.
   const showAll = (text: string) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
     const scope = sessionScopeKey(host.id, next);
     const current = readSessionView(scope);
-    patchSessionView(scope, sessionViewTransition(current, { ...clearSessionFilterPatch(current), query: text, membership: "sessions", includeArchived: false, scrollOffset: 0 }));
+    patchSessionView(scope, sessionViewTransition(current, { ...clearSessionFilterPatch(current), status: text ? "all" : "recent", query: text, membership: "sessions", includeArchived: false, scrollOffset: 0 }));
     // Sessions keeps a local view snapshot, so the same route must read the replacement too.
     setSessionsRevision((revision) => revision + 1);
   });

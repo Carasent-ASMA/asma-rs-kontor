@@ -12,6 +12,7 @@ export const ALL_STATUS_FILTER = "all" as const;
 
 /** One exclusive state choice; runtime and attention choices may overlap on the same session. */
 export type StatusFilter =
+  | "recent"
   | "current"
   | typeof ALL_STATUS_FILTER
   | SessionStatus
@@ -21,8 +22,9 @@ export type StatusFilter =
   | "provider_blocked"
   | "favorites";
 
-/** Frequent choices; runtime history and less common states sit under More states. */
+/** Frequent choices, Recent first; runtime history and less common states sit under More states. */
 export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
+  "recent",
   "current",
   ALL_STATUS_FILTER,
   "running",
@@ -46,15 +48,17 @@ export type SessionFilters = {
   readonly advancedOpen: boolean;
 };
 
+/** A view read for the first time in an app session, and Reset, land on Recent, even when it is empty. */
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
-  status: "current",
+  status: "recent",
   includeArchived: false,
   membership: "sessions",
   advancedOpen: false,
 };
 
 const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  recent: "Recent",
   current: "Current",
   all: "All",
   running: "Running",
@@ -97,14 +101,18 @@ export function matchesMembership(entry: DirectoryEntry, membership: SessionMemb
 
 /**
  * Error follows the current native lifecycle. Earlier errors remain separately
- * reachable without inflating current Error or Attention counts.
+ * reachable without inflating current Error or Attention counts. Recent is this
+ * host's opened session IDs, whatever their state.
  */
 export function matchesStatus(
   entry: DirectoryEntry,
   status: StatusFilter,
   favorites: readonly string[] = [],
+  recent: readonly string[] = [],
 ): boolean {
   switch (status) {
+    case "recent":
+      return recent.includes(entry.id);
     case "current":
       // Age and provider-history uncertainty never prove a session broken.
       return !isArchivedSession(entry) && freshAvailability(entry)?.state !== "missing" && (entry.needsInput || entry.status !== "closed" && entry.status !== "error");
