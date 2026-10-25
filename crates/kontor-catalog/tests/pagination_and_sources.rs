@@ -133,6 +133,58 @@ async fn a_cursor_from_another_filter_is_refused() {
 }
 
 #[tokio::test]
+async fn source_coverage_is_bounded_and_keeps_its_summaries() {
+    // The settings document admits at most 16 roots; the source view must stay
+    // inside the plugin's 64-line public bound and keep its summary rows.
+    let repos: Vec<Repo> = (0..16).map(|_| Repo::new()).collect();
+    for (index, repo) in repos.iter().enumerate() {
+        repo.write(
+            &format!("_docs/plans/plan-{index:02}.md"),
+            &plan(
+                &format!("Plan {index:02}"),
+                Some(&format!("ASMA-{}", 1_000 + index)),
+                Some("kontor"),
+                "",
+            ),
+        );
+        repo.commit("plan");
+    }
+    let configured: Vec<_> = repos
+        .iter()
+        .map(|repo| (repo.root().to_path_buf(), false))
+        .collect();
+    let fixture = Fixture::open(&configured, None, 30);
+    sweep(&fixture.catalog).await;
+    let sources = fixture.catalog.sources().expect("the source status");
+    for source in &sources.sources {
+        assert!(
+            source.coverage.len() <= 64,
+            "a source stays inside the public coverage bound"
+        );
+    }
+    let plan_source = &sources.sources[0];
+    assert_eq!(plan_source.coverage.len(), 16 + 3);
+    assert!(
+        plan_source
+            .coverage
+            .iter()
+            .any(|line| line.subject == "collection")
+    );
+    assert!(
+        plan_source
+            .coverage
+            .iter()
+            .any(|line| line.subject == "registry")
+    );
+    assert!(
+        plan_source
+            .coverage
+            .iter()
+            .any(|line| line.subject == "snapshot")
+    );
+}
+
+#[tokio::test]
 async fn source_status_reports_each_source_and_its_completion_instant() {
     let (_repo, fixture) = repository_with_plans(2);
     sweep(&fixture.catalog).await;
