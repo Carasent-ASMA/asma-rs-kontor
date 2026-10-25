@@ -84,24 +84,29 @@ beforeEach(async () => {
 afterEach(() => { unmount(); vi.useRealTimers(); });
 
 describe("returning to Kontor reuses the host's live session directory", () => {
-  it("walks once on first entry with a one-row subscription bootstrap, then returns to live rows without a read", async () => {
+  it("reconciles once on first entry after a provisional page, then returns to live rows without a read", async () => {
     const host = fakeHost("host-a", sessions(450));
     kontor(); await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
     expect(kontor().state.entries).toHaveLength(450);
     expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 25 }]);
-    expect(host.walks.map((call) => call.page)).toEqual([{ limit: 200 }, { limit: 200, cursor: "200" }, { limit: 200, cursor: "400" }]);
+    expect(host.walks.map((call) => call.page)).toEqual([
+      { limit: 200 },
+      { limit: 200 },
+      { limit: 200, cursor: "200" },
+      { limit: 200, cursor: "400" },
+    ]);
 
     unmount();
     const first = kontor();
     expect(first.state).toMatchObject({ status: "ready", live: true, inventoryComplete: true });
     expect(first.state.entries).toHaveLength(450);
     await settle();
-    expect(host.calls).toHaveLength(4);
+    expect(host.calls).toHaveLength(5);
     expect(host.released).toBe(0);
   });
 
-  it("reuses the directory a host contribution already started instead of walking twice", async () => {
+  it("reuses the directory a host contribution already started without another reconnect", async () => {
     const host = fakeHost("host-a", sessions(450));
 
     startHostDirectory("host-a");
@@ -116,7 +121,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     });
     expect(kontor().state.entries).toHaveLength(450);
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(3);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("joins a pending subscription after provisional rows are ready", async () => {
@@ -153,12 +158,12 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     unbind();
   });
 
-  it("joins an in-flight sidebar reconnect instead of starting a third walk", async () => {
+  it("joins an in-flight sidebar reconnect without a second subscription", async () => {
     const host = fakeHost("host-a", sessions(3));
     kontor();
     await settle();
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     unmount();
 
     startHostDirectory("host-a", "offline");
@@ -168,7 +173,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
 
     expect(kontor().state).toMatchObject({ status: "ready", live: true });
     expect(host.subscribes).toHaveLength(2);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("renders the 25-row bootstrap as an incomplete read while the remaining pages load", async () => {
@@ -187,7 +192,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     });
     expect(provisional.state.entries).toHaveLength(25);
     expect(host.subscribes.map((call) => call.page)).toEqual([{ limit: 25 }]);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
 
     release();
     await settle();
@@ -204,7 +209,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     const first = kontor();
     expect(first.state.entries.map((entry) => entry.title).sort()).toEqual(["Renamed while away", "Session s-0"]);
     expect(first.state.live).toBe(true);
-    expect(host.calls).toHaveLength(2);
+    expect(host.calls).toHaveLength(3);
   });
 
   it("lets a first walk still in flight finish for the reopened screen instead of restarting it", async () => {
@@ -217,7 +222,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     release(); await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true });
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(3);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("keeps the last rows visibly stale and walks again on return when live updates had stopped", async () => {
@@ -230,7 +235,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     await settle();
     expect(kontor().state).toMatchObject({ status: "ready", live: true });
     expect(host.subscribes).toHaveLength(2);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("reconciles a host reconnect that happened while Kontor was closed", async () => {
@@ -243,7 +248,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(first.state).toMatchObject({ status: "ready", live: true });
     expect(first.state.entries.map((entry) => entry.id).sort()).toEqual(["s-1", "s-2"]);
     await settle();
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(3);
   });
 
   it("walks again on return after the host went offline", async () => {
@@ -263,17 +268,17 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(kontor("host-b").state.entries).toEqual([]);
     await settle();
     expect(kontor("host-b").state.entries.map((entry) => entry.id)).toEqual(["b-only"]);
-    expect(a.calls).toHaveLength(2);
-    expect(b.calls).toHaveLength(2);
+    expect(a.calls).toHaveLength(3);
+    expect(b.calls).toHaveLength(3);
   });
 
-  it("walks once with archived sessions when the returning scope includes them", async () => {
+  it("reconciles once with archived sessions when the returning scope includes them", async () => {
     const host = fakeHost("host-a", [agent("live"), agent("archived", "2026-10-21T00:00:00.000Z")]);
     kontor(); await settle(); unmount();
     kontor("host-a", "online", true); await settle();
     expect(kontor("host-a", "online", true).state.entries.map((entry) => entry.id).sort()).toEqual(["archived", "live"]);
     expect(host.subscribes.map((call) => call.filter)).toEqual([{ includeArchived: false }, { includeArchived: true }]);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 
   it("lets the composer popover read the shared directory without changing the screen's Archived rows", async () => {
@@ -289,7 +294,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(ids(popover!.state)).toEqual(["archived", "live"]);
     expect(popover!.state.includeArchived).toBe(true);
     expect(host.subscribes.map((call) => call.filter)).toEqual([{ includeArchived: true }]);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     // The popover may open before the screen ever did; it then starts the ordinary active-session directory.
     unmount(); await disposeRetainedDirectories();
     const cold = fakeHost("host-a", [agent("live"), agent("archived", "2026-10-21T00:00:00.000Z")]);
@@ -304,7 +309,7 @@ describe("returning to Kontor reuses the host's live session directory", () => {
     expect(host.released).toBe(1);
     expect(kontor().state.entries).toEqual([]);
     await settle();
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(4);
   });
 });
 

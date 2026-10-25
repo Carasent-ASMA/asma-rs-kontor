@@ -315,7 +315,7 @@ describe("Kontor composer controls share one host directory", () => {
     await settle();
 
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     expect(controls.activePills()).toHaveLength(25);
     expect(controls.pillFor("s-0")?.contribution).toMatchObject({
       id: RETURN_CONTROL_ID,
@@ -337,7 +337,7 @@ describe("Kontor composer controls share one host directory", () => {
 
     expect(controls.activePills()).toHaveLength(59);
     expect(controls.pillFor("s-0")).toBeUndefined();
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     expect(host.subscribes).toHaveLength(1);
 
     patchSessionView("host-a", {
@@ -456,7 +456,7 @@ describe("Kontor composer controls share one host directory", () => {
     await settle();
 
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(1);
+    expect(host.walks).toHaveLength(2);
     const startupWalks = host.walks.length;
     expect(controls.pillFor("fixture-a", "open-linked-plan")).toBeDefined();
     expect(controls.pillFor("fixture-b", "open-linked-plan")).toBeDefined();
@@ -732,7 +732,7 @@ describe("Kontor composer controls share one host directory", () => {
     await settle();
 
     expect(b.subscribes).toHaveLength(1);
-    expect(b.walks).toHaveLength(1);
+    expect(b.walks).toHaveLength(2);
     expect(controls.pillFor("b-only")).toBeUndefined();
     expect(controls.pillFor("a-only")).toBeDefined();
     expect(a.subscribes).toHaveLength(1);
@@ -753,7 +753,7 @@ describe("Kontor composer controls share one host directory", () => {
 
     expect(controls.activePills()).toHaveLength(283);
     expect(host.subscribes).toHaveLength(1);
-    expect(host.walks).toHaveLength(2);
+    expect(host.walks).toHaveLength(3);
 
     stop();
     expect(controls.activePills()).toHaveLength(0);

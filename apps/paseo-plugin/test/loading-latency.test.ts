@@ -72,12 +72,13 @@ type SubscriptionObserver = {
 };
 
 function scriptedDirectory(initialSubscriptionSucceeds: boolean) {
-  const rows = Array.from({ length: ROWS }, (_, index) => entry(`session-${index}`));
+  let rows = Array.from({ length: ROWS }, (_, index) => entry(`session-${index}`));
   const subscribeStarts: number[] = [];
   const pageStarts: number[] = [];
   let hangSubscriptions = !initialSubscriptionSucceeds;
   let holdNextSubscription = false;
   let holdNextPage = false;
+  let failNextPage = false;
   let releaseSubscription: (() => void) | null = null;
   let releasePage: (() => void) | null = null;
   let observer: SubscriptionObserver | null = null;
@@ -135,6 +136,10 @@ function scriptedDirectory(initialSubscriptionSucceeds: boolean) {
             releasePage = resolve;
           });
         }
+        if (failNextPage) {
+          failNextPage = false;
+          throw new Error("inventory failed");
+        }
         const index = options.page?.cursor
           ? Number.parseInt(options.page.cursor.replace("cursor-", ""), 10)
           : 0;
@@ -171,6 +176,12 @@ function scriptedDirectory(initialSubscriptionSucceeds: boolean) {
     releaseHeldPage() {
       releasePage?.();
       releasePage = null;
+    },
+    failNextPage() {
+      failNextPage = true;
+    },
+    setRows(next: AgentDirectoryPage[]) {
+      rows = next;
     },
   };
 }
@@ -322,6 +333,68 @@ describe("session directory loading latency", () => {
     expect(reconciled.pages).toBe(3);
     expect(fake.subscribeStarts).toHaveLength(1);
     expect(fake.pageStarts).toHaveLength(6);
+
+    await directory.dispose();
+  });
+
+  it("keeps newer provisional rows when a late bootstrap arrives and reconciliation fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const fake = scriptedDirectory(false);
+    fake.hangSubscriptions();
+    fake.setRows(
+      Array.from({ length: ROWS }, (_, index) => {
+        const row = entry(`session-${index}`);
+        if (index !== 0) return row;
+        return {
+          ...row,
+          agent: {
+            ...row.agent,
+            title: "Newer",
+            status: "running",
+            updatedAt: "2026-10-18T11:00:00.000Z",
+          },
+        } as AgentDirectoryPage;
+      }),
+    );
+    const { directory, latest } = loadingDirectory(fake);
+
+    fake.holdNextSubscription();
+    await directory.start();
+    expect(latest()!.entries.find((item) => item.id === "session-0")?.title).toBe("Newer");
+
+    fake.setRows(
+      Array.from({ length: ROWS }, (_, index) => {
+        const row = entry(`session-${index}`);
+        if (index !== 0) return row;
+        return {
+          ...row,
+          agent: {
+            ...row.agent,
+            title: "Older bootstrap",
+            status: "idle",
+            updatedAt: "2026-10-18T10:00:00.000Z",
+          },
+        } as AgentDirectoryPage;
+      }),
+    );
+    fake.holdNextPage();
+    fake.releaseHeldSubscription();
+    await vi.waitFor(() => expect(fake.pageStarts).toHaveLength(4));
+    expect(latest()!.entries.find((item) => item.id === "session-0")?.title).toBe("Newer");
+
+    fake.failNextPage();
+    fake.releaseHeldPage();
+    const failed = await waitForState(
+      () => latest(),
+      (state) =>
+        state.status === "stale" &&
+        state.entries.find((item) => item.id === "session-0")?.title === "Newer",
+    );
+    expect(failed.entries.find((item) => item.id === "session-0")?.status).toBe("running");
+    expect(failed.entries.find((item) => item.id === "session-0")?.updatedAt).toBe(
+      "2026-10-18T11:00:00.000Z",
+    );
 
     await directory.dispose();
   });

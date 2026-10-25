@@ -483,7 +483,6 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let generation = 0;
   let readEpoch = 0;
   let refreshing = false;
-  let startedRefreshGeneration: number | null = null;
   let refreshQueued = false;
   let refreshPromise: Promise<void> | null = null;
   let subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
@@ -836,7 +835,12 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     subscriptionActive = true;
     // The page is evidence, not a completed inventory: render it now, keep the
     // status "loading" and lastUpdatedAt null until the full walk finishes.
-    if (hydrationLimit > 1 && result.entries.length > 0) {
+    if (
+      hydrationLimit > 1 &&
+      result.entries.length > 0 &&
+      entries.size === 0 &&
+      lastUpdatedAt === null
+    ) {
       for (const entry of result.entries) {
         if (!includeArchived && (entry.agent.archivedAt ?? null) !== null) {
           continue;
@@ -939,12 +943,6 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
     }
     startSubscription(connectionGeneration);
-    await Promise.resolve();
-    await Promise.resolve();
-    if (startedRefreshGeneration === connectionGeneration) {
-      await refreshPromise?.catch(() => undefined);
-      return;
-    }
     await refreshNow("Reconciling the full session directory.", connectionGeneration);
   }
 
@@ -980,7 +978,6 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return refreshPromise ?? Promise.resolve();
     }
     refreshing = true;
-    startedRefreshGeneration = generation;
     // Provisional bootstrap rows are not stale: they never completed a walk.
     // A routine refresh of a live, complete, ready directory also stays calm;
     // every other completed state keeps today's stale marking.
