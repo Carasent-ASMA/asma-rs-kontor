@@ -371,37 +371,28 @@ is an explicit, reversible repository policy; re-enabling GitHub-hosted CI
 requires an explicit decision and documentation change. See the
 [local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md).
 
-The required local gates are:
+Igor amended the required local verification policy on **2026-10-25**:
+run tests for changed/added code and concretely affected callers/contracts,
+without automatic full repository/workspace/crate/package/plugin suites.
+Relevant scoped build/typecheck/format/dependency/security checks, independent
+QA/AUD, affected browser/UI proof and installed readback remain required.
+Shared plugin contracts can affect non-plugin consumers such as the prototype.
+Modified Rust executor/contract behavior still needs complete affected-behavior
+qualification; that does not require blanket workspace tests.
+
+Record an explicit exact-head impact/test list, then verify the committed
+export through the existing tool:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo audit
-cargo deny check
-pnpm install --frozen-lockfile
-pnpm --filter kontor-console verify:api
-pnpm -r typecheck
-pnpm -r test
-pnpm audit --prod
+python3 scripts/verify-tree.py --mode archive --impact /tmp/impact.json --receipt /tmp/verification.json
 ```
 
-`python3 scripts/verify-tree.py --mode archive` (or `--mode staged`) additionally
-proves that a committed or staged export passes those gates without hidden
-working-tree state, and that the committed `Cargo.lock` satisfies every manifest
-under `--locked`. It runs every gate above except `verify:api`.
-
-For the inner loop, set `KONTOR_CONFIG_FILE=.github/kontor-project.yml` and run
-`python3 scripts/test-lanes.py --lane fast`; it runs formatting plus clippy and
-tests for the quick packages a change affects, and the console checks it
-touches. It exits `3`, naming the lane still required, when the change reaches
-a slow package or a workspace build or tooling file. `--lane heavy` runs the
-slow packages' tests and the console typecheck and tests, and writes a compact
-JSON receipt under `target/test-lanes/`; it needs the same selection.
-`--lane full` runs `verify-tree.py --mode inplace` and needs no project
-selection.
-`scripts/test-timings.json` decides which packages are slow. Lanes shorten
-development; they do not replace the gate set before merge.
+See [Tests and evidence](CONTRIBUTING.md#tests-and-evidence) for the plan format,
+focused commands, package/dependent planning hints and separate review/runtime
+obligations. All legacy lane execution requires the same explicit plan. No
+selected checks run by default. Inapplicable checks need exact reasons; relevant
+blocked checks remain unresolved. Failed historical receipts stay FAIL and are
+never overwritten or replaced by an isolated diagnostic pass.
 
 ## License intent
 

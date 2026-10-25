@@ -1,161 +1,338 @@
 #!/usr/bin/env python3
-"""Verify the committed Kontor tree without relying on a .git directory.
+"""Run reviewed changed-code checks against an exact staged/committed export.
 
-Modes (KON-MVP-02 verification requirement):
-  --mode staged   export the current git STAGED tree via `git checkout-index`
-                  into a temp dir (no .git inside) and run every gate there.
-                  Use before any authorized commit exists.
-  --mode archive  export `git archive HEAD` into a temp dir, verify the
-                  committed Cargo.lock satisfies every manifest under
-                  `--locked`, and run every gate there. Use after an authorized
-                  commit.
-  --mode inplace  no git export at all: run gates against the current tree
-                  (the tree was already extracted from git archive / checkout).
-
-Every mode runs the full gate list: the public-tree refusal of home paths,
-run receipts and provider-account aliases (scripts/public_tree.py) and its
-tests, the scripts' own tests, the publication-check tests, cargo fmt --check,
-clippy -D warnings, workspace tests, cargo audit, cargo deny check, frozen
-pnpm install, typecheck, vitest run and the production dependency audit.
-
-Exit code 0 only when every gate passes.
+No default full suite. --impact supplies caller/contract coverage, focused
+commands, explicit inapplicability and external review/runtime obligations.
+Archive mode is merge evidence; staged/inplace are development evidence only.
+Igor decision 2026-10-25: see DEC-002 in the local verification policy.
 """
 
 from __future__ import annotations
 
 import argparse
-import shutil
+import hashlib
+import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+SPEC = importlib.util.spec_from_file_location(
+    "test_lanes", REPO_ROOT / "scripts/test-lanes.py"
+)
+assert SPEC is not None and SPEC.loader is not None
+lanes = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(lanes)
+LOCAL_CHECKS = {
+    "tests",
+    "build",
+    "typecheck",
+    "format",
+    "dependencies",
+    "security",
+}
+EXTERNAL_CHECKS = {"qa", "aud", "browser", "installed"}
 
 
 def run(cmd: list[str], cwd: Path) -> None:
-    """Run one gate; raise on failure."""
-    print(f"$ {subprocess.list2cmdline(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd)
-    if result.returncode != 0:
-        raise SystemExit(f"gate failed (exit {result.returncode}): {' '.join(cmd)}")
+    """Run an export operation, refusing a failed export."""
+    subprocess.run(cmd, cwd=cwd, check=True)
 
 
 def export_staged(dest: Path) -> None:
-    """Copy the staged tree to dest using git checkout-index (no .git)."""
+    """Copy the staged tree without .git or untracked files."""
     run(["git", "checkout-index", "--prefix", f"{dest}/", "-a"], REPO_ROOT)
-    print(f"staged tree exported to {dest}")
 
 
 def export_archive(dest: Path) -> None:
-    """Extract git archive HEAD to dest (no .git inside)."""
+    """Extract the exact committed tree without .git or worktree overlays."""
     archive = subprocess.run(
-        ["git", "archive", "HEAD"], cwd=REPO_ROOT, capture_output=True, check=True
+        ["git", "archive", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
     )
-    tar = subprocess.run(
+    subprocess.run(
         ["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True
     )
-    assert tar.returncode == 0
-    print(f"archive HEAD extracted to {dest}")
 
 
-def verify_lockfile_satisfies_manifests(tree: Path) -> None:
-    """Prove the committed Cargo.lock is complete for this tree.
+def git(*args: str) -> str:
+    """Read candidate identity and changed paths from this checkout."""
+    return subprocess.check_output(
+        ["git", *args], cwd=REPO_ROOT, text=True
+    ).strip()
 
-    The lock is *verified, not regenerated*. A fresh `cargo generate-lockfile`
-    resolves whatever the registry published last, so byte-comparing its output
-    with a committed lock fails on any upstream patch release and says nothing
-    about this tree. The invariant that matters is the one the build gates
-    already run under: the committed lock must satisfy every committed manifest
-    exactly, so a `--locked` build is reproducible. Available upstream updates
-    are reported as notes, never failures; refreshing the lock is a deliberate
-    change of its own, not a side effect of verifying a tree.
-    """
-    committed = tree / "Cargo.lock"
-    if not committed.exists():
-        raise SystemExit("Cargo.lock missing from the exported tree")
-    locked = subprocess.run(
-        ["cargo", "metadata", "--locked", "--format-version", "1"],
-        cwd=tree,
-        capture_output=True,
+
+def relative_path(value: str) -> str:
+    """Refuse paths outside the selected export."""
+    if not isinstance(value, str) or not value or Path(value).is_absolute():
+        raise ValueError("expected a nonempty repository-relative path")
+    if ".." in Path(value).parts:
+        raise ValueError("parent traversal is not allowed")
+    return value
+
+
+def validate_test_command(argv: list[str]) -> None:
+    """Refuse the previous broad recipes; owners still review test relevance."""
+    if "cargo" in argv[0] and "test" in argv:
+        if "--workspace" in argv or not ({"-p", "--package"} & set(argv)):
+            raise ValueError(
+                "Cargo tests need a package and focused target/filter"
+            )
+        if not ({"--test", "--exact"} & set(argv)):
+            raise ValueError("Cargo tests need a focused target/filter")
+    if Path(argv[0]).name in {"pnpm", "vitest", "npm"}:
+        if {"-r", "--recursive", "--all"} & set(argv):
+            raise ValueError("recursive test suites are not impact selection")
+        if not any("test" in x and ("/" in x or "." in x) for x in argv[1:]):
+            raise ValueError("JS tests need explicit focused files")
+    if "discover" in argv:
+        if (
+            "-p" not in argv
+            or argv[-1] == "-p"
+            or "*" in argv[argv.index("-p") + 1]
+        ):
+            raise ValueError(
+                "unittest discovery needs one focused file pattern"
+            )
+
+
+def read_plan(path: Path, mode: str) -> tuple[dict, list[str]]:
+    """Bind reviewed impact coverage to the actual head, tree and base diff."""
+    plan = json.loads(path.read_text())
+    head = git("rev-parse", "HEAD")
+    tree = (
+        git("write-tree")
+        if mode == "staged"
+        else git("rev-parse", "HEAD^{tree}")
     )
-    if locked.returncode != 0:
-        raise SystemExit(
-            "Cargo.lock does not satisfy the committed manifests under "
-            "--locked:\n" + locked.stderr.decode(errors="replace")
+    if plan["head"] != head or plan["tree"] != tree:
+        raise ValueError(
+            "impact plan does not match the exact candidate head/tree"
         )
-    print("Cargo.lock satisfies every manifest under --locked")
-    available = subprocess.run(
-        ["cargo", "update", "--dry-run"],
-        cwd=tree,
-        capture_output=True,
-    )
-    if available.returncode == 0:
-        updates = [
-            line.strip()
-            for line in (available.stdout + available.stderr)
-            .decode(errors="replace")
-            .splitlines()
-            if line.strip().startswith(("Updating ", "Adding ", "Removing "))
-            and "crates.io index" not in line
-        ]
-        for line in updates:
-            print(f"note: {line} (refresh the lock in its own change)")
-
-
-def run_gates(tree: Path) -> None:
-    """Run every gate inside the exported tree."""
-    run([sys.executable, "scripts/public_tree.py", "."], tree)
-    # -B: a .pyc embeds its absolute source path, which the check refuses.
-    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests"], tree)
-    run(
-        [
-            sys.executable,
-            "-B",
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            ".github/scripts/tests",
-        ],
-        tree,
-    )
-    run(["cargo", "fmt", "--all", "--", "--check"], tree)
-    run(
-        ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
-        tree,
-    )
-    run(["cargo", "test", "--workspace", "--locked"], tree)
-    run(["cargo", "audit"], tree)
-    run(["cargo", "deny", "check"], tree)
-
-    pnpm = shutil.which("pnpm")
-    if pnpm is None:
-        raise SystemExit(
-            "pnpm not found on PATH: the console gates (frozen install, "
-            "typecheck, vitest, production audit) are mandatory in every mode "
-            "and cannot be skipped"
+    base = git("rev-parse", plan["base"] + "^{commit}")
+    if base != plan["base"]:
+        raise ValueError("base must be an exact commit ID")
+    changed = git(
+        "diff", "--name-only", "--no-renames", base, tree
+    ).splitlines()
+    impacts = plan["impact"]
+    for row in impacts:
+        relative_path(row["path"])
+        if not row["reason"].strip() or not isinstance(row["tests"], list):
+            raise ValueError(
+                "each impact needs a reason and explicit test list"
+            )
+    if not set(changed) <= {row["path"] for row in impacts}:
+        raise ValueError("impact list omits changed/deleted paths")
+    if not plan["impact_analysis"].strip():
+        raise ValueError(
+            "explain caller/contract analysis, not just filenames"
         )
-    run([pnpm, "install", "--frozen-lockfile"], tree)
-    run([pnpm, "-r", "typecheck"], tree)
-    run([pnpm, "-r", "test"], tree)
-    run([pnpm, "audit", "--prod"], tree)
+    checks = plan["checks"]
+    for check in checks:
+        argv = check["argv"]
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(x, str) and x for x in argv)
+        ):
+            raise ValueError("commands must be nonempty argv arrays; no shell")
+        relative_path(check["cwd"])
+        if check["kind"] not in LOCAL_CHECKS or not check["reason"].strip():
+            raise ValueError(
+                "unknown check kind or missing applicability reason"
+            )
+        if check["kind"] == "tests":
+            if not check.get("tests"):
+                raise ValueError("test commands need explicit selected tests")
+            validate_test_command(argv)
+    omissions = plan["not_applicable"]
+    for kind in LOCAL_CHECKS - {check["kind"] for check in checks}:
+        if not omissions.get(kind, "").strip():
+            raise ValueError(
+                f"missing check or exact inapplicability reason: {kind}"
+            )
+    for kind in EXTERNAL_CHECKS:
+        if not plan["external"].get(kind, "").strip():
+            raise ValueError(
+                f"record the separate {kind} obligation/disposition"
+            )
+    if mode == "inplace" and git("diff", "HEAD", "--name-only"):
+        raise ValueError("inplace has tracked edits; use staged or archive")
+    for ref in plan.get("prior_receipts", []):
+        if (
+            hashlib.sha256(Path(ref["path"]).read_bytes()).hexdigest()
+            != ref["sha256"]
+        ):
+            raise ValueError("prior receipt hash mismatch")
+        if not ref["disposition"].strip():
+            raise ValueError(
+                "prior receipts need an unchanged result/disposition"
+            )
+    plan["plan_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    plan["changed_paths"] = changed
+    return plan, changed
+
+
+def export_fingerprint(tree: Path, expected_tree: str) -> dict[str, str]:
+    """Verify tracked blobs/modes and detect commands changing the export."""
+    entries = subprocess.check_output(
+        ["git", "ls-tree", "-rz", expected_tree], cwd=REPO_ROOT
+    )
+    result = {}
+    for entry in entries.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, expected = metadata.decode().split()
+        if kind != "blob":
+            raise ValueError("unsupported non-blob export entry")
+        path = tree / name.decode()
+        if mode == "120000":
+            raw = str(path.readlink()).encode()
+            actual_mode = "120000"
+        else:
+            if path.is_symlink():
+                raise ValueError(f"unexpected export symlink: {name.decode()}")
+            raw = path.read_bytes()
+            actual_mode = "100755" if path.stat().st_mode & 0o111 else "100644"
+        header = b"blob " + str(len(raw)).encode() + b"\0"
+        actual = hashlib.sha1(header + raw).hexdigest()
+        if actual != expected or actual_mode != mode:
+            raise ValueError(f"export blob/mode changed: {name.decode()}")
+        result[name.decode()] = actual
+    return result
+
+
+def run_gates(tree: Path, plan: dict, receipt: Path, mode: str) -> int:
+    """Run only explicit local checks, retaining failed and unrun outcomes."""
+    source_before = export_fingerprint(tree, plan["tree"])
+    commands = [
+        {
+            "kind": "public_tree",
+            "cwd": ".",
+            "reason": "public export boundary",
+            "argv": [sys.executable, "-B", "scripts/public_tree.py", "."],
+        }
+    ] + plan["checks"]
+    for check in commands:
+        cwd = (tree / check["cwd"]).resolve()
+        if not cwd.is_relative_to(tree.resolve()) or not cwd.is_dir():
+            raise ValueError("check cwd is outside/missing from export")
+    results = []
+    code = 0
+    for index, check in enumerate(commands):
+        cwd = (tree / check["cwd"]).resolve()
+        log = receipt.with_name(receipt.name + f".{index}.log")
+        print("$ " + subprocess.list2cmdline(check["argv"]), flush=True)
+        try:
+            status = lanes.run_streaming(check["argv"], log, True, cwd)
+        except FileExistsError:
+            raise  # Never append to an existing log, including a raced writer.
+        except OSError as exc:
+            # The runner already opened its fresh log before spawning.
+            with log.open("a") as output:
+                output.write(f"command could not start: {exc}\n")
+            status = 127
+        parsed = lanes.parse_log(log.read_text())
+        results.append(
+            {
+                **parsed,
+                **check,
+                "command": check["argv"],
+                "exit_code": status,
+                "log": str(log),
+                "log_sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+            }
+        )
+        if status:
+            code = 1
+            break
+    source_error = None
+    try:
+        export_fingerprint(tree, plan["tree"])
+    except (ValueError, OSError) as exc:
+        source_error = str(exc)
+        code = 1
+    for ref in plan.get("prior_receipts", []):
+        if (
+            hashlib.sha256(Path(ref["path"]).read_bytes()).hexdigest()
+            != ref["sha256"]
+        ):
+            code = 1
+            results.append(
+                {
+                    "command": ["prior-receipt-readback"],
+                    "exit_code": 1,
+                    "results": [],
+                    "failures": {"prior_receipt": "evidence changed"},
+                }
+            )
+    # Do not reinterpret old FAILs or grant QA/AUD/runtime acceptance here.
+    lanes.write_receipt(
+        "impact",
+        results,
+        code,
+        True,
+        str(receipt),
+        None,
+        {
+            "mode": mode,
+            "head": plan["head"],
+            "tree": plan["tree"],
+            "base": plan["base"],
+            "changed_paths": plan["changed_paths"],
+            "impact_plan_sha256": plan["plan_sha256"],
+            "impact": plan["impact"],
+            "impact_analysis": plan["impact_analysis"],
+            "not_applicable": plan["not_applicable"],
+            "external": plan["external"],
+            "prior_receipts": plan.get("prior_receipts", []),
+            "checks": results,
+            "not_run": commands[len(results) :],
+            "committed_export": mode == "archive",
+            "verified_export_blobs": len(source_before),
+            "source_error": source_error,
+            "scope": "Selected local checks only; external acceptance is separate",
+        },
+    )
+    return code
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--mode",
-        choices=["staged", "archive", "inplace"],
-        required=True,
-        help="which tree to verify (see module docstring)",
+        "--mode", choices=["staged", "archive", "inplace"], required=True
     )
+    parser.add_argument("--impact", type=Path, required=True)
+    parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-
-    if args.mode == "inplace":
-        run_gates(REPO_ROOT)
+    plan, changed = read_plan(args.impact, args.mode)
+    if args.dry_run:
+        print(json.dumps({"changed_paths": changed, "plan": plan}, indent=2))
         return 0
-
+    stamp = lanes.datetime.now(lanes.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    receipt = (
+        args.receipt
+        or REPO_ROOT / "target/test-lanes" / f"impact-{stamp}.json"
+    ).resolve()
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    if (
+        receipt.exists()
+        or receipt.is_symlink()
+        or list(receipt.parent.glob(receipt.name + ".*.log"))
+    ):
+        raise ValueError(
+            "receipt/log already exists; never overwrite prior evidence"
+        )
+    if args.mode == "inplace":
+        return run_gates(REPO_ROOT, plan, receipt, args.mode)
     with tempfile.TemporaryDirectory(prefix="kontor-verify-") as tmp:
         tree = Path(tmp) / "tree"
         tree.mkdir()
@@ -163,10 +340,17 @@ def main() -> int:
             export_staged(tree)
         else:
             export_archive(tree)
-        verify_lockfile_satisfies_manifests(tree)
-        run_gates(tree)
-    return 0
+        return run_gates(tree, plan, receipt, args.mode)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (
+        ValueError,
+        KeyError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as exc:
+        print(f"verify-tree: {exc}", file=sys.stderr)
+        sys.exit(2)
