@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, type TakeoverDeps } from "../server/session-lifecycle";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
-import type { ResolverRun, RouteHealth } from "../server/session-takeover";
+import { resolverInstant, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -43,6 +43,7 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const timelines = new Map<string, { item: Record<string, unknown> }[]>([[predecessor.id, [{ item: { type: "assistant_message", text: SUMMARY } }]]]);
   const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][] };
   let created = 0;
+  const issuedAt = resolverInstant(Date.now());
   const client = {
     workspaces: {
       list: async () => ({ requestId: "fixture", entries: [workspace], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } }),
@@ -81,12 +82,12 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     const evidence = JSON.parse(args.find((arg) => arg.startsWith("--route-health="))!.slice("--route-health=".length));
     const selected = { ...route, rung: { ...route.rung, provider: targetProvider } };
     return JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 200, body: { considered: [{ route: selected }], eligibility: { excluded_vendors: [], unavailable_accounts: [] }, excluded_by_policy: [],
-      provenance: { binding_key: key, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 }, route_health: evidence, selected } });
+      provenance: { binding_key: key, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 }, route_health: evidence, selected, selected_validity: { observed_at: evidence.observations[0]?.observed_at ?? issuedAt, valid_until: resolverInstant(Date.parse(evidence.observations[0]?.observed_at ?? issuedAt) + evidence.max_age_seconds * 1000) } } });
   };
   const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
   const observedAt = new Date().toISOString();
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, choices: async () => choices,
-    evidence: (mode) => ({ ...health(mode), observations: health(mode).observations.map((entry) => ({ ...entry, account: targetProvider })) }), run, settleMs: 0,
+    evidence: (mode) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
   };
   const service = createTakeoverService(client as never, root, deps);
@@ -273,14 +274,21 @@ describe("takeover apply", () => {
     expect(await h.fence()).toEqual([]);
   });
 
-  it("pins the owner binding, evidence identity, policy, summary and title rather than only the chosen route", async () => {
-    for (const field of ["binding", "evidence", "policy", "summary", "title"]) {
+  it("pins the owner binding, evidence identity, policy, deadline, summary and title rather than only the chosen route", async () => {
+    for (const field of ["binding", "evidence", "policy", "deadline", "summary", "title"]) {
       const h = await host(), review = await h.ready();
       if (field === "binding") {
         const prior = h.deps.continuity!;
         h.deps.continuity = async (...args) => ({ ...(await prior(...args))!, revision: "continuity-2" });
       }
-      if (field === "evidence") h.deps.evidence = (mode) => ({ ...health(mode), observations: health(mode).observations.map((entry) => ({ ...entry, revision: "r2" })) });
+      if (field === "evidence") {
+        const prior = h.deps.evidence;
+        h.deps.evidence = (mode) => { const evidence = prior(mode); return { ...evidence, observations: evidence.observations.map((entry) => ({ ...entry, revision: "r2" })) }; };
+      }
+      if (field === "deadline") {
+        const prior = h.deps.run!;
+        h.deps.run = async (...args) => { const receipt = JSON.parse(await prior(...args)); receipt.body.selected_validity.valid_until = resolverInstant(Date.parse(receipt.body.selected_validity.valid_until) + 1000); return JSON.stringify(receipt); };
+      }
       if (field === "policy") {
         const prior = h.deps.run!;
         h.deps.run = async (...args) => (await prior(...args)).replace("a".repeat(64), "b".repeat(64));
@@ -503,6 +511,106 @@ describe("PR506 review rework", () => {
     expect(result).toMatchObject({ state: "partial", phase: "verify", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.apply(review)).toEqual(result);
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+  });
+});
+
+describe("LSA-8641-CP2-01 sealed effect validity", () => {
+  it.each([
+    { stage: "preflight", wait: -1, counts: [0, 0, 0], state: "refused" },
+    { stage: "preflight", wait: 500, counts: [1, 1, 1], state: "succeeded" },
+    { stage: "preflight", wait: 1000, counts: [1, 1, 1], state: "succeeded" },
+    { stage: "preflight", wait: 1001, counts: [0, 0, 0], state: "refused" },
+    { stage: "preflight", wait: 2001, counts: [0, 0, 0], state: "refused" },
+    { stage: "archive workspace", wait: 2001, counts: [0, 0, 0], state: "refused" },
+    { stage: "retirement", wait: 2001, counts: [1, 0, 0], state: "partial" },
+    { stage: "native create workspace", wait: 2001, counts: [1, 0, 0], state: "partial" },
+    { stage: "release readback", wait: 2001, counts: [1, 1, 0], state: "partial" },
+  ])("checks the selected deadline after $wait ms in $stage", async ({ stage, wait, counts, state }) => {
+    const issued = Math.floor(Date.now() / 1000) * 1000;
+    let now = issued, nativeReads = 0, createWorkspaceReads = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const h = await host(), receipt = h.deps.continuity!;
+    h.deps.continuity = async (...args) => ({ ...(await receipt(...args))!, observedAt: new Date(issued).toISOString() });
+    h.deps.evidence = (mode) => ({ ...health(mode), as_of: resolverInstant(now), max_age_seconds: 1,
+      observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: resolverInstant(issued) })) });
+    const run = h.deps.run!;
+    h.deps.run = async (...args) => {
+      const evidence = JSON.parse(args[1].find((arg) => arg.startsWith("--route-health="))!.slice("--route-health=".length));
+      expect(Date.parse(evidence.as_of) - Date.parse(evidence.observations[0].observed_at)).toBeLessThanOrEqual(1000);
+      return run(...args);
+    };
+    const review = await h.ready();
+    expect(review.state).toBe("ready");
+    const preflight = h.deps.create.preflight, ref = h.client.agents.ref, workspace = h.client.workspaces.ref;
+    h.deps.create = { ...h.deps.create, preflight: async (...args) => {
+      const result = await preflight(...args);
+      if (stage === "preflight") now += wait;
+      return result;
+    } };
+    h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle,
+      refresh: async () => { const found = await handle.refresh(); if (id === "agent-1") nativeReads++; return found; },
+      archive: async () => { const result = await handle.archive(); if (stage === "retirement") now += wait; return result; },
+      timeline: { refetch: async () => { const page = await handle.timeline.refetch(); if (id === "successor-1" && stage === "release readback") now += wait; return page; } },
+    }; };
+    h.client.workspaces.ref = (id) => ({ ...workspace(id), refresh: async () => {
+      const found = await workspace(id).refresh();
+      if (stage === "archive workspace" && nativeReads === 3 && !h.effects.archive.length) now += wait;
+      if (h.effects.archive.length && ++createWorkspaceReads === 2 && stage === "native create workspace") now += wait;
+      return found;
+    } });
+    const result = await h.apply(review), resolves = h.effects.resolve.length;
+    expect(result).toMatchObject({ state });
+    if (state !== "succeeded") expect(result.message).toContain("health evidence expired");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual(counts);
+    if (stage === "retirement") expect(await h.deps.create.record(review.successor!.requestId)).toBeNull();
+    expect(await h.apply(review)).toEqual(result);
+    if (result.next === "none") expect(await h.service.check(review.reviewId)).toEqual(result);
+    expect(h.effects.resolve).toHaveLength(resolves);
+    expect(new Set(h.effects.create.map((input) => input.idempotencyKey)).size).toBeLessThanOrEqual(1);
+  });
+
+  it.each(["retirement", "native create workspace", "release readback"])("keeps the continuity bound at %s while route health remains fresh", async (stage) => {
+    const issued = Date.now();
+    let now = issued, workspaceReads = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const h = await host(), receipt = h.deps.continuity!;
+    h.deps.continuity = async (...args) => ({ ...(await receipt(...args))!, observedAt: new Date(issued).toISOString() });
+    const review = await h.ready(), ref = h.client.agents.ref, workspace = h.client.workspaces.ref;
+    h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle,
+      archive: async () => { const result = await handle.archive(); if (stage === "retirement") now += 61_001; return result; },
+      timeline: { refetch: async () => { const result = await handle.timeline.refetch(); if (id === "successor-1" && stage === "release readback") now += 61_001; return result; } },
+    }; };
+    h.client.workspaces.ref = (id) => ({ ...workspace(id), refresh: async () => {
+      const result = await workspace(id).refresh();
+      if (h.effects.archive.length && ++workspaceReads === 2 && stage === "native create workspace") now += 61_001;
+      return result;
+    } });
+    const result = await h.apply(review);
+    expect(result).toMatchObject({ state: "partial", message: expect.stringContaining("continuity receipt is stale") });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, stage === "release readback" ? 1 : 0, 0]);
+    expect(await h.apply(review)).toEqual(result);
+  });
+
+  it.each(["create", "release"])("reconciles a lost %s reply after route expiry without another effect", async (stage) => {
+    const issued = Math.floor(Date.now() / 1000) * 1000;
+    let now = issued;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const h = await host({ loseCreateReply: stage === "create" }), receipt = h.deps.continuity!;
+    h.deps.continuity = async (...args) => ({ ...(await receipt(...args))!, observedAt: new Date(issued).toISOString() });
+    h.deps.evidence = (mode) => ({ ...health(mode), as_of: resolverInstant(now), max_age_seconds: 1,
+      observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: resolverInstant(issued) })) });
+    if (stage === "release") {
+      const ref = h.client.agents.ref;
+      h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle, send: async (...args) => { await handle.send(...args); throw new Error("lost reply"); } }; };
+    }
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: stage, next: "check" });
+    now += 2001;
+    const result = await h.service.check(review.reviewId);
+    expect(result).toMatchObject({ state: stage === "create" ? "partial" : "succeeded", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
+    expect(await h.apply(review)).toEqual(result);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, stage === "create" ? 0 : 1]);
+    expect(h.effects.resolve).toHaveLength(2);
   });
 });
 

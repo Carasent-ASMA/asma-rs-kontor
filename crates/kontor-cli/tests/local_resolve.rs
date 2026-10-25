@@ -954,6 +954,10 @@ fn stated_route_health_is_the_only_availability_and_fails_closed() {
         ]
     );
     assert_eq!(envelope["body"]["route_health"], health);
+    assert_eq!(
+        envelope["body"]["selected_validity"],
+        serde_json::json!({ "observed_at": "2026-10-25T08:59:00Z", "valid_until": "2026-10-25T09:00:00Z" })
+    );
 
     // Stale, unavailable and later-dated observations admit nothing.
     let (exit, envelope) = with(&route_health(&serde_json::json!([

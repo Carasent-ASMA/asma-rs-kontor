@@ -852,6 +852,7 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     // An empty exclusion set and no observation are not availability.
     let unobserved = resolution.select_observed(&open, Some(&health(Vec::new())));
     assert!(unobserved.selected.is_none());
+    assert!(unobserved.selected_validity.is_none());
     assert_eq!(health_verdicts(&unobserved), [Some(RouteUnobserved); 3]);
 
     // Unknown and stale pass a route over; the first fresh positive one wins.
@@ -870,6 +871,17 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     assert_eq!(
         health_verdicts(&walked),
         [Some(RouteHealthUnknown), Some(RouteHealthStale), None]
+    );
+
+    assert_eq!(
+        walked.selected_validity.as_ref().unwrap().valid_until,
+        health_at()
+    );
+    assert_eq!(
+        walked.selected_validity.as_ref().unwrap().observed_at,
+        health_at()
+            .checked_sub(SignedDuration::from_secs(60))
+            .unwrap()
     );
 
     // Unavailable, dated after the selection, and contradicting observations.
@@ -918,6 +930,12 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     assert_eq!(health_verdicts(&chosen)[0], Some(AccountUnavailableNow));
     assert_eq!(chosen.eligibility, eligibility);
     assert_eq!(chosen.route_health, Some(stated));
+    assert_eq!(
+        chosen.selected_validity.as_ref().unwrap().valid_until,
+        health_at()
+            .checked_add(SignedDuration::from_secs(59))
+            .unwrap()
+    );
 
     // Without stated health nothing changes, and none is echoed.
     assert_eq!(
@@ -925,6 +943,7 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
         resolution.select(&open)
     );
     assert!(resolution.select(&open).route_health.is_none());
+    assert!(resolution.select(&open).selected_validity.is_none());
 }
 
 #[test]

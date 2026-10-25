@@ -80,10 +80,12 @@ export type RouteHealth = z.infer<typeof routeHealthSchema>;
 export const resolverInstant = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace(".000Z", "Z");
 
 const TOOL = "kontor_fleet_policy_resolve";
+const validitySchema = z.object({ observed_at: instant, valid_until: instant }).strict();
 const routeSchema = z.object({ rung: z.object({ provider: z.string(), model: z.string(), effort: z.string().optional() }), step: z.number(), sub_step: z.number(), vendor: z.string() });
 const selectionSchema = z.object({
   provenance: z.object({ policy_hash: z.string(), schema_version: z.number(), binding_key: z.string(), chain: z.string() }),
   route_health: z.unknown(), selected: routeSchema.nullable(), considered: z.array(z.object({ route: routeSchema, excluded: z.string().optional() })),
+  selected_validity: validitySchema.optional(),
 });
 const documentSchema = z.union([
   z.object({ tool: z.literal(TOOL), status: z.literal(200), body: selectionSchema }),
@@ -101,12 +103,13 @@ export type TakeoverRoute = {
   message: string;
   provenance: { policyHash: string; bindingKey: string; chain: string } | null;
   selected: RouteView | null;
+  validity: { observedAt: string; validUntil: string } | null;
   considered: (RouteView & { excluded: string | null })[];
   digest: string | null;
 };
 const view = (route: z.infer<typeof routeSchema>): RouteView =>
   ({ account: route.rung.provider, model: route.rung.model, effort: route.rung.effort ?? null, vendor: route.vendor, step: route.step, subStep: route.sub_step });
-const without = (state: "refused" | "unknown", message: string): TakeoverRoute => ({ state, message, provenance: null, selected: null, considered: [], digest: null });
+const without = (state: "refused" | "unknown", message: string): TakeoverRoute => ({ state, message, provenance: null, selected: null, validity: null, considered: [], digest: null });
 
 /** Runs the command and answers its one document, whatever exit code carries it; a signal, spawn or size failure rejects. */
 export type ResolverRun = (command: string, args: string[]) => Promise<string>;
@@ -145,11 +148,15 @@ export async function resolveTakeoverRoute(config: Pick<KontorPluginConfig, "cli
   // The receipt must be the answer to this request: its binding and the exact evidence sent.
   if (parsed.provenance.binding_key !== key || !isDeepStrictEqual(parsed.route_health, evidence.data)) return without("unknown", "The local fleet selection answered for another request. No route is chosen.");
   if (!blocked && !parsed.selected) return without("unknown", "The local fleet selection reported success without a route. No route is chosen.");
+  const validity = parsed.selected_validity;
+  if (!blocked && (!validity || !Number.isFinite(Date.parse(validity.observed_at)) || !Number.isFinite(Date.parse(validity.valid_until))
+    || Date.parse(validity.valid_until) < Date.parse(validity.observed_at))) return without("unknown", "The local fleet selection did not bind a valid evidence deadline. No route is chosen.");
   return {
     state: blocked ? "blocked" : "selected",
     message: blocked ? "No route in the configured chain has fresh positive evidence on this host. Nothing will be created." : "The configured chain's first route with fresh positive evidence on this host.",
     provenance: { policyHash: parsed.provenance.policy_hash, bindingKey: parsed.provenance.binding_key, chain: parsed.provenance.chain },
     selected: parsed.selected && view(parsed.selected),
+    validity: !blocked && validity ? { observedAt: validity.observed_at, validUntil: validity.valid_until } : null,
     considered: parsed.considered.map(({ route, excluded }) => ({ ...view(route), excluded: excluded ?? null })),
     digest: createHash("sha256").update(JSON.stringify(receipt)).digest("hex"),
   };

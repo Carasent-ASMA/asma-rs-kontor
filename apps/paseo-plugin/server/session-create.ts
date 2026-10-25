@@ -177,6 +177,8 @@ export type SeatCreateSpec = {
   cwd: string;
   /** A takeover's immutable placement; unlike a new lead, it may never adopt a moved workspace. */
   expectedPlacement?: { workspaceId: string; cwd: string };
+  /** A takeover's sealed evidence bounds. Ordinary New session requests have no such bound. */
+  effectValidity?: { route: { observedAt: string; validUntil: string }; continuity: { observedAt: string; validUntil: string } };
   /** Creates the missing lead workspace and reads it back; null when it already exists. */
   createWorkspace: (() => Promise<{ id: string; cwd: string }>) | null;
   /** Re-validates the target at create time; null when it still matches. */
@@ -189,6 +191,19 @@ export type SeatCreateOutcome = CreateOutcome;
 export type SeatCreatePlan = { spec: SeatCreateSpec } | { refused: string; requestId: string; title: string };
 export type SeatCreateBuilder = () => Promise<SeatCreatePlan>;
 export type SeatCreate = (requestId: string, build: SeatCreateBuilder) => Promise<SeatCreateOutcome>;
+
+/** Checks the selector's bound and the owner receipt's bound, without evaluating or selecting any route. */
+export function effectValidityProblem(spec: SeatCreateSpec): string | null {
+  if (!spec.effectValidity) return null;
+  const now = Date.now();
+  for (const [kind, bound] of Object.entries(spec.effectValidity)) {
+    const start = Date.parse(bound.observedAt), end = Date.parse(bound.validUntil);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || now < start || now > end)
+      return kind === "route" ? "The selected route's health evidence expired or is dated in the future. No further takeover effect was dispatched."
+        : "Its owner/wake continuity receipt is stale or dated in the future. No further takeover effect was dispatched.";
+  }
+  return null;
+}
 
 const EXPECTED_CHECKOUT_CHANGED = "The expected checkout or workspace changed. No successor will be dispatched.";
 function placementProblem(spec: SeatCreateSpec, workspace: PaseoWorkspace | null): string | null {
@@ -564,6 +579,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       // Intent persistence and earlier host reads may have outlived the workspace we validated.
       const placement = await expectedPlacementProblem(client, spec);
       if (placement) return settle(record, outcome(record, "refused", null, placement));
+      const expired = effectValidityProblem(spec);
+      if (expired) return settle(record, outcome(record, "refused", null, expired));
       const handle = await Promise.race([
         client.workspaces.ref(record.request.workspaceId).agents.create({ idempotencyKey: requestId, title: spec.title, labels: spec.labels,
           ...(spec.persona.supported ? { config: { provider: `${spec.provider}/${spec.model}`, ...(spec.modeId ? { modeId: spec.modeId } : {}), ...(spec.effort ? { thinkingOptionId: spec.effort } : {}), systemPrompt: spec.persona.text } }

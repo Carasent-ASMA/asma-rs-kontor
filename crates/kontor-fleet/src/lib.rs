@@ -410,6 +410,10 @@ impl RouteHealth {
     /// Why the observations do not admit `rung`, or `None` when they do.
     #[must_use]
     pub fn verdict(&self, rung: &ModelRung) -> Option<ExclusionReason> {
+        self.admit(rung).err()
+    }
+
+    fn admit(&self, rung: &ModelRung) -> Result<RouteValidity, ExclusionReason> {
         let matching: Vec<&RouteObservation> = self
             .observations
             .iter()
@@ -421,7 +425,7 @@ impl RouteHealth {
             })
             .collect();
         let [observation] = matching.as_slice() else {
-            return Some(if matching.is_empty() {
+            return Err(if matching.is_empty() {
                 ExclusionReason::RouteUnobserved
             } else {
                 ExclusionReason::RouteHealthUnknown
@@ -429,17 +433,32 @@ impl RouteHealth {
         };
         let age = self.as_of.duration_since(observation.observed_at);
         if age.is_negative() {
-            Some(ExclusionReason::RouteHealthUnknown)
+            Err(ExclusionReason::RouteHealthUnknown)
         } else if age > SignedDuration::from_secs(i64::from(self.max_age_seconds)) {
-            Some(ExclusionReason::RouteHealthStale)
+            Err(ExclusionReason::RouteHealthStale)
         } else {
             match observation.state {
-                RouteHealthState::Available => None,
-                RouteHealthState::Unavailable => Some(ExclusionReason::RouteUnavailableNow),
-                RouteHealthState::Unknown => Some(ExclusionReason::RouteHealthUnknown),
+                RouteHealthState::Available => Ok(RouteValidity {
+                    observed_at: observation.observed_at,
+                    valid_until: observation
+                        .observed_at
+                        .checked_add(SignedDuration::from_secs(i64::from(self.max_age_seconds)))
+                        .map_err(|_| ExclusionReason::RouteHealthUnknown)?,
+                }),
+                RouteHealthState::Unavailable => Err(ExclusionReason::RouteUnavailableNow),
+                RouteHealthState::Unknown => Err(ExclusionReason::RouteHealthUnknown),
             }
         }
     }
+}
+
+/// Inclusive validity of the exact positive observation admitted by the selector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RouteValidity {
+    /// The selected observation's instant, before which it is not evidence.
+    pub observed_at: Timestamp,
+    /// Last instant at which this observation admits the route, without another selection.
+    pub valid_until: Timestamp,
 }
 
 /// One route a selection considered, and why it was passed over if it was.
@@ -469,6 +488,9 @@ pub struct FleetSelection {
     pub route_health: Option<RouteHealth>,
     /// The chosen route, or `None` when nothing is eligible.
     pub selected: Option<FleetRoute>,
+    /// Bound to the selected positive observation; absent for blocked or negative-only selections.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_validity: Option<RouteValidity>,
     /// Every resolved route, in chain order, with its verdict.
     pub considered: Vec<ConsideredRoute>,
     /// What the policy removed before any selection.
@@ -498,26 +520,30 @@ impl FleetResolution {
         health: Option<&RouteHealth>,
     ) -> FleetSelection {
         let mut selected = None;
+        let mut selected_validity = None;
         let considered = self
             .routes
             .iter()
             .map(|route| {
-                let excluded = if eligibility
+                let admission = if eligibility
                     .unavailable_accounts
                     .contains(&route.rung.provider.0)
                 {
-                    Some(ExclusionReason::AccountUnavailableNow)
+                    Err(ExclusionReason::AccountUnavailableNow)
                 } else if eligibility.excluded_vendors.contains(&route.vendor) {
-                    Some(ExclusionReason::VendorExcluded)
+                    Err(ExclusionReason::VendorExcluded)
                 } else {
-                    health.and_then(|health| health.verdict(&route.rung))
+                    health.map(|health| health.admit(&route.rung)).transpose()
                 };
-                if excluded.is_none() && selected.is_none() {
+                if let Ok(validity) = &admission
+                    && selected.is_none()
+                {
                     selected = Some(route.clone());
+                    selected_validity = validity.clone();
                 }
                 ConsideredRoute {
                     route: route.clone(),
-                    excluded,
+                    excluded: admission.err(),
                 }
             })
             .collect();
@@ -526,6 +552,7 @@ impl FleetResolution {
             eligibility: eligibility.clone(),
             route_health: health.cloned(),
             selected,
+            selected_validity,
             considered,
             excluded_by_policy: self.excluded.clone(),
         }

@@ -25,6 +25,7 @@ function selection(excluded: [string | null, string | null], selected: boolean, 
     .map((entry, index) => ({ ...(excluded[index] ? { excluded: excluded[index] } : {}), route: entry }));
   return { considered, eligibility: { excluded_vendors: [], unavailable_accounts: [] }, excluded_by_policy: [],
     provenance: { binding_key: KEY, chain: "codex-first", policy_hash: "a".repeat(64), schema_version: 2 },
+    selected_validity: selected ? { observed_at: "2026-10-25T08:59:30Z", valid_until: "2026-10-25T09:00:30Z" } : undefined,
     route_health: health, selected: selected ? route("claude-a", "claude-opus-5", 2) : null, ...overrides };
 }
 const answered = (body: unknown) => ({ body, status: 200, tool: "kontor_fleet_policy_resolve" });
@@ -130,6 +131,7 @@ describe("the fixed local fleet selection read", () => {
       state: "selected", message: expect.any(String),
       provenance: { policyHash: "a".repeat(64), bindingKey: KEY, chain: "codex-first" },
       selected: { account: "claude-a", model: "claude-opus-5", effort: "xhigh", vendor: "anthropic", step: 2, subStep: 1 },
+      validity: { observedAt: "2026-10-25T08:59:30Z", validUntil: "2026-10-25T09:00:30Z" },
       considered: [
         { account: "codex-b", model: "gpt-5.6-sol", effort: "xhigh", vendor: "openai", step: 1, subStep: 1, excluded: "route_health_unknown" },
         { account: "claude-a", model: "claude-opus-5", effort: "xhigh", vendor: "anthropic", step: 2, subStep: 1, excluded: null },
@@ -156,6 +158,7 @@ describe("the fixed local fleet selection read", () => {
       [answered(selection([null, null], true, { route_health: { ...health, as_of: "2026-10-25T09:00:01Z" } })), "unknown"],
       [answered(selection([null, null], true, { route_health: undefined })), "unknown"],
       [answered(selection([null, null], false)), "unknown"],
+      ...[undefined, { observed_at: "2026-10-25T09:01:00Z", valid_until: "2026-10-25T09:00:30Z" }, { observed_at: "bad", valid_until: "bad" }].map((selected_validity): [unknown, string] => [answered(selection([null, null], true, { selected_validity })), "unknown"]),
       [refusal, "refused"],
     ];
     for (const [document, state] of cases) {

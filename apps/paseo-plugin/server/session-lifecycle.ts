@@ -8,7 +8,7 @@ import { readConfig, type KontorPluginConfig } from "./config";
 import { parent } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
-import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
+import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
 import { BINDING_KEY, GOVERNED_ELSEWHERE, resolveTakeoverRoute, resolverInstant, takeoverAdapter, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute } from "./session-takeover";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
@@ -682,7 +682,7 @@ export type TakeoverDeps = {
 /** Everything a confirmation pins; apply recomputes it and refuses any difference. */
 type Pinned = {
   predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
-  route: Pick<TakeoverRoute, "provenance" | "selected" | "considered">; evidence: string; continuity: TakeoverContinuity; spec: SeatCreateSpec;
+  route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: TakeoverContinuity; spec: SeatCreateSpec;
 };
 const TAKEOVER_LIMITS = [
   "Archive and creation are two host calls; no host primitive makes them one step.",
@@ -703,7 +703,6 @@ const sameDigest = (left: string, right: string) => left.length === right.length
 const releaseMessage = (reviewId: string) => `kontor-takeover-${reviewId}`;
 const settledTakeover = (result: TakeoverOutcome) => result.state === "refused" || result.state === "succeeded";
 const takeoverRevision = (agent: Agent) => hash(JSON.stringify([lifecycleRevision(agent), agent.title, agent.createdAt]));
-const CONTINUITY_STALE = "Its owner/wake continuity receipt is stale or dated in the future. Nothing is retired.";
 function freshContinuity(receipt: TakeoverContinuity): boolean {
   const age = Date.now() - Date.parse(receipt.observedAt);
   return age >= 0 && age <= 60_000;
@@ -804,7 +803,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const health = deps.evidence(mode);
     if (!health.observations.length) limits = [...limits, UNOBSERVED_LIMIT];
     route = await resolveTakeoverRoute(deps.config, direct, { agentId, bindingKey: association.bindingKey }, health, deps.run);
-    if (route.state !== "selected" || !route.selected || !route.provenance) return answer(route.state === "selected" ? "unknown" : route.state, route.message);
+    if (route.state !== "selected" || !route.selected || !route.provenance || !route.validity) return answer(route.state === "selected" ? "unknown" : route.state, route.message);
     const selected = route.selected, labels = first.labels ?? {};
     let persona: { text: string; supported: boolean; version: string } | null = null;
     if (labels.persona !== undefined) {
@@ -835,35 +834,37 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       labels: { ...carried, ...(parent(first) ? { "paseo.parent-agent-id": parent(first)! } : {}), ...(persona ? { persona: persona.version } : {}), [CREATE_REQUEST_LABEL]: requestId, [TAKEOVER_PREDECESSOR_LABEL]: agentId },
       workspaceId: workspace.id, anchorWorkspaceId: workspace.id, workspaceName: (workspace.title ?? workspace.name ?? "").trim(), cwd: first.cwd,
       expectedPlacement: { workspaceId: workspace.id, cwd: first.cwd },
+      effectValidity: { route: route.validity, continuity: { observedAt: continuity.observedAt, validUntil: new Date(Date.parse(continuity.observedAt) + 60_000).toISOString() } },
       createWorkspace: null, revalidate: null,
       // A plain session stays plain: no persona, no system prompt.
       persona: persona ? { text: persona.text, supported: persona.supported } : { text: "", supported: false },
       bootstrap: bootstrapPrompt(persona?.text ?? "", summary, persona?.supported ?? true),
     };
+    let expired: string | null;
     const checked = await deps.create.preflight(spec, agentId);
-    if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
+    if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
     if ("problem" in checked) return answer("refused", checked.problem);
     if (checked.cwd !== first.cwd) return answer("refused", CWD_DRIFT);
     try {
       const children = childrenOf(first, await inventory(client, "archive"));
-      if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
+      if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
       if (children.length) return answer("refused", "A child appeared during preflight. Nothing is retired.");
       if (direct.basis === "orchestrated") {
         const supervisor = await exact(direct.owner);
-        if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
+        if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
         if (!supervisor || supervisor.archivedAt != null || lifecycleRevision(supervisor) !== ownerRevision) return answer("unknown", "Its owner changed during preflight. Nothing is retired.");
       }
     } catch (error) { return answer("unknown", `The final continuity check failed: ${errorText(error)}.`); }
     // Reads above (a history read can load the provider runtime) may move the record; pin the state they leave.
     const last = await exact(agentId);
-    if (!freshContinuity(continuity)) return answer("unknown", CONTINUITY_STALE);
+    if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
     if (!last) return answer("unknown", "This session could not be read again after its checks.");
     const again = takeoverRefusal(last);
     if (again) return answer("refused", again);
     if (takeoverRevision(last) !== takeoverRevision(first)) return answer("unknown", "This session changed during its continuity checks. Review it again; nothing is retired.");
     return answer("ready", `Takes over on ${selected.account}/${selected.model}, the first route in chain ${route.provenance.chain} with fresh positive evidence.`, {
       predecessor: takeoverRevision(last), owner: direct, ownerRevision, created, bindingKey: association.bindingKey!,
-      route: { provenance: route.provenance, selected: route.selected, considered: route.considered }, evidence: hash(JSON.stringify({ ...health, as_of: null })), continuity, spec,
+      route: { provenance: route.provenance, selected: route.selected, considered: route.considered, validity: route.validity }, evidence: hash(JSON.stringify({ ...health, as_of: null })), continuity, spec,
     });
   }
 
@@ -973,7 +974,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       const placement = await expectedPlacementProblem(client, spec);
       if (placement) return finish(outcome(record, "refused", "preflight", placement, null, "review"));
       // No await between this freshness check and archive dispatch: preflight and intent persistence consume time.
-      if (!freshContinuity(pinned.continuity)) return finish(outcome(record, "refused", "preflight", CONTINUITY_STALE, null, "review"));
+      const expired = effectValidityProblem(spec);
+      if (expired) return finish(outcome(record, "refused", "preflight", expired, null, "review"));
     } catch (error) { return finish(outcome(record, "refused", "preflight", `Preflight failed: ${errorText(error)}. Nothing was done.`, null, "review")); }
     let phase: TakeoverOutcome["phase"] = "intent";
     try {
@@ -983,6 +985,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       phase = "create";
       if (!await write(outcome(record, "uncertain", "create", "Retired. The successor's creation request is recorded; if nothing follows, Check reads it.", named, "check")))
         return outcome(record, "uncertain", "create", "Retired, but this session's fence changed, so no successor was created. Check reads the outcome.", named, "check");
+      const expiredBeforeCreate = effectValidityProblem(spec);
+      if (expiredBeforeCreate) return finish(outcome(record, "partial", "create", expiredBeforeCreate, named, "none"));
       const created = await deps.create.createSeat(spec.requestId, async () => ({ spec }));
       const stopped = await afterCreate(record, spec, created);
       if (stopped) return finish(stopped);
@@ -990,6 +994,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       phase = "release";
       if (!await write(outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified; its task release is being sent.`, verified, "check")))
         return outcome(record, "partial", "verify", `Successor “${spec.title}” (${id}) is verified, but this session's fence changed, so its task was not released.`, verified, "none");
+      const expiredBeforeRelease = effectValidityProblem(spec);
+      if (expiredBeforeRelease) return finish(outcome(record, "partial", "verify", expiredBeforeRelease, verified, "none"));
       const sent = await client.agents.ref(id).send(TAKEOVER_PROMPT, { messageId: releaseMessage(record.review.reviewId) }).then(() => null, (error: unknown) => error ?? "rejected");
       if (sent) return finish(outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified, but its task release is not confirmed (${errorText(sent)}). Check reads it; nothing is resent.`, verified, "check"));
       return finish(await succeeded(record, spec, id));
