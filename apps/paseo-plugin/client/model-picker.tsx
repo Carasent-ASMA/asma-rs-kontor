@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { createChoiceProblem, featureDefault, inheritedModeProblem, keptFeatureValues, readCreateFeatures, type CreateFeature, type CreateProvider, type FeatureValues } from "../shared/session-create";
@@ -10,28 +10,10 @@ import { VendorMark, vendorName, vendorShortName } from "./vendor-mark";
 import { SheetFooter } from "./operation-sheet";
 import type { LeadModel } from "./new-lead-defaults";
 
-/** The model list's height bound, and the share of a short window it may take; it scrolls on its own above the chosen model's settings. */
-const LIST_MAX_HEIGHT = 264, LIST_WINDOW_SHARE = 0.3;
-/** The provider heading's line and the gaps the list draws: under a heading, between rows, between providers. */
-const HEADING = 17, ROW_GAP = 2, GROUP_GAP = 8;
-
-/**
- * The list's height: the lower edge of the last whole row within the bound, so no row is cut through, and whether
- * rows remain below it to scroll to; every row when all fit. A lead row (Auto) stands above the routes. Rows keep one
- * line per text, so their height is their minimum height.
- */
-export function modelListHeight(groups: readonly { readonly rows: readonly unknown[] }[], rowHeight: number, bound = LIST_MAX_HEIGHT, lead = 0): { height: number; scrolls: boolean } {
-  let y = lead, fit = lead;
-  for (const [index, group] of groups.entries()) {
-    y += (index || lead ? GROUP_GAP : 0) + HEADING;
-    for (let row = 0; row < group.rows.length; row++) {
-      y += ROW_GAP + rowHeight;
-      if (y > bound) return { height: fit, scrolls: true };
-      fit = y;
-    }
-  }
-  return { height: y, scrolls: false };
-}
+/** The gaps the list draws: between rows, between providers. */
+const ROW_GAP = 2, GROUP_GAP = 8;
+/** Whole model rows listed at first, and added by each press of more. */
+export const MODEL_BATCH = 6;
 
 /** One model with its settings, as Use hands it back. `featureValues` holds only the listed settings the operator set; `modeId` is null when permissions are inherited. */
 export type PickedModel = { readonly provider: string; readonly model: string; readonly effort: string | null; readonly modeId: string | null; readonly featureValues: FeatureValues };
@@ -66,12 +48,14 @@ export function featureLabels(features: readonly CreateFeature[], values: Featur
 /**
  * Model & settings: the chosen model and its effort levels first, then the vendors whose models this host's available
  * routes offer, the browsed vendor's models under those routes, and the permissions and settings the host lists for
- * the chosen model. Choosing another model keeps the effort and settings it also offers and says which it drops. Only a
+ * the chosen model. The list starts with a short batch of whole rows and more adds the next batch below them; a search
+ * matches every row, shown or not. The picker scrolls as one page: its own scroller only where the surface around it
+ * does not scroll already. Choosing another model keeps the effort and settings it also offers and says which it drops. Only a
  * caller that may change the new-lead default passes `defaults`; without it the choice is this operation's only. Make
  * default saves on Use; Reset clears the saved default at once and starts from the Codex default's own settings. A
  * caller that passes `permissions` shows them read-only and never emits a mode.
  */
-export function ModelPicker({ colors, compact, providers, projectId, value, codex, onUse, onCancel, defaults, permissions, subtitle = "For new leads", onAuto, action, note }: {
+export function ModelPicker({ colors, compact, providers, projectId, value, codex, onUse, onCancel, defaults, permissions, subtitle = "For new leads", onAuto, action, note, hostScrolls = false }: {
   colors: Colors; compact: boolean; providers: readonly CreateProvider[];
   /** The desk whose checkout scopes the settings read. */
   projectId: string | null;
@@ -91,6 +75,8 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   action?: (alias: string | null) => string;
   /** What the choice does and does not change, above the footer. */
   note?: string;
+  /** The surface around the picker scrolls already (the composer's popover or sheet), so the picker adds no scroller. */
+  hostScrolls?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [pick, setPick] = useState<PickedModel | null>(value);
@@ -100,10 +86,8 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   const [makeDefault, setMakeDefault] = useState(false);
   // The vendor whose models are listed; browsing changes neither the choice nor its settings.
   const [browsing, setBrowsing] = useState<Vendor | null>(null);
-  // The list's ceiling at this window height: it drops by what the settings below lack and never rises, so the layout
-  // settles; the list gives up whole rows only while the settings are cramped.
-  const [ceiling, setCeiling] = useState<{ window: number; list: number } | null>(null);
-  const settingsBox = useRef({ height: 0, content: 0 });
+  // How many rows the list shows, in list order; another vendor or search starts again from the first batch.
+  const [revealed, setRevealed] = useState(MODEL_BATCH);
   // Permissions stay one line until opened, so Make default and Reset stay in reach.
   const [open, setOpen] = useState<"permissions" | null>(null);
   // What the last change of model could not keep, said until the next change.
@@ -141,14 +125,9 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
         && tokens.every((token) => `${row.model.label} ${row.model.id} ${row.alias} ${routeLabel(entry.id, entry.label)} ${entry.label}`.toLocaleLowerCase().includes(token))) }))
     .filter((group) => group.rows.length);
   const rowHeight = tall ? 52 : 44;
-  const { height: windowHeight } = useWindowDimensions();
-  const settingsMin = tall ? 88 : 64, lead = onAuto ? rowHeight : 0;
-  const bound = Math.max(lead + HEADING + ROW_GAP + rowHeight, Math.min(LIST_MAX_HEIGHT, windowHeight * LIST_WINDOW_SHARE, ceiling?.window === windowHeight ? ceiling.list : Infinity));
-  const list = modelListHeight(groups, rowHeight, bound, lead), shownCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
-  const settle = (next: Partial<{ height: number; content: number }>) => {
-    const box = Object.assign(settingsBox.current, next), lack = Math.min(box.content, settingsMin) - box.height;
-    if (box.height && groups.length && lack > 0.5) setCeiling({ window: windowHeight, list: list.height - Math.ceil(lack) });
-  };
+  let budget = revealed;
+  const shown = groups.map((group) => { const rows = group.rows.slice(0, budget); budget -= rows.length; return { ...group, rows }; }).filter((group) => group.rows.length);
+  const hidden = Math.max(0, groups.reduce((sum, group) => sum + group.rows.length, 0) - revealed);
   // The settings this model lists keep their values; the rest are dropped, and said. Values wait for the list to be read.
   const listed = settings ? settings.problem ? [] : settings.features : null;
   const values = listed && pick ? keptFeatureValues(listed, pick.featureValues, [...seen.current.values()]) : null;
@@ -179,7 +158,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
     setChanged(null);
     setPick({ provider: codex.provider, model: codex.model, effort: codex.effort, modeId: permissions ? null : codexRoute.defaultMode ?? codexRoute.modes[0]?.id ?? null, featureValues: codex.featureValues ?? {} });
   };
-  return <View testID="kontor-model-picker" style={{ flexShrink: 1, minHeight: 0, gap: 8, padding: 6 }}>
+  const body = <>
     <View>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>Model & settings</Text>
       <Text style={muted}>{subtitle}</Text>
@@ -210,7 +189,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
           // The browsed tab is outlined, never in the accent the selected model wears; the selected model's vendor carries its check.
           const selected = vendor === shownVendor, holds = !!model && modelVendor(model.id) === vendor;
           return <Pressable key={vendor} testID={`kontor-model-vendor-${vendor}`} accessibilityRole="tab" aria-selected={selected} accessibilityState={{ selected }}
-            accessibilityLabel={`${vendorName(vendor)}, ${count} ${count === 1 ? "model" : "models"}${holds ? ", has the selected model" : ""}`} {...NO_PRESS_DELAY} onPress={() => setBrowsing(vendor)}
+            accessibilityLabel={`${vendorName(vendor)}, ${count} ${count === 1 ? "model" : "models"}${holds ? ", has the selected model" : ""}`} {...NO_PRESS_DELAY} onPress={() => { setBrowsing(vendor); setRevealed(MODEL_BATCH); }}
             style={({ pressed }: { pressed: boolean }) => ({ minWidth: 56, maxWidth: 76, minHeight: tall ? 48 : 44, alignItems: "center", justifyContent: "center", gap: 3, paddingHorizontal: 6, borderRadius: 8,
               borderWidth: selected ? 2 : 1, borderColor: selected ? colors.foreground : colors.border, ...pressFeedback(colors, pressed, selected) })}>
             <VendorMark vendor={vendor} colors={colors} size={20} />
@@ -222,11 +201,11 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
       </View>
     </ScrollView>
     {/* The search names the vendor being browsed, so the list below reads as browsing, not as the choice above. */}
-    <TextInput testID="kontor-model-search" accessibilityLabel={shownVendor ? `Search ${vendorName(shownVendor)} models` : "Search models"} placeholder={shownVendor ? `Search ${vendorName(shownVendor)} models…` : "Search models…"} value={query} onChangeText={setQuery} maxLength={200}
+    <TextInput testID="kontor-model-search" accessibilityLabel={shownVendor ? `Search ${vendorName(shownVendor)} models` : "Search models"} placeholder={shownVendor ? `Search ${vendorName(shownVendor)} models…` : "Search models…"} value={query} onChangeText={(next: string) => { setQuery(next); setRevealed(MODEL_BATCH); }} maxLength={200}
       placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />
-    {/* The catalog scrolls in its own bounded area, so a chosen model's settings stay in reach at any catalog size; the
-        list always ends on a row's edge: where the settings would be cramped, it gives up whole rows, down to one. */}
-    <ScrollView testID="kontor-model-list" nestedScrollEnabled keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 0, ...(groups.length ? { height: list.height } : {}) }}>
+    {/* The list has no scroller of its own: it shows whole rows, and more adds the next batch below them, so the
+        settings after it stay in reach on the picker's one scroll. */}
+    <View testID="kontor-model-list" style={{ gap: 4 }}>
       <View accessibilityRole="radiogroup" accessibilityLabel="Model" style={{ gap: GROUP_GAP }}>
         {onAuto ? <Pressable testID="kontor-model-auto" accessibilityRole="radio" aria-checked={!pick} accessibilityState={{ checked: !pick }} accessibilityLabel="Auto, use each seat's chain"
           {...NO_PRESS_DELAY} {...(Platform.OS === "web" ? spaceActivates(() => setPick(null)) : {})} onPress={() => setPick(null)} style={({ pressed }: { pressed: boolean }) => ({ minHeight: rowHeight, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, borderRadius: 6, ...pressFeedback(colors, pressed, !pick) })}>
@@ -237,7 +216,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
           </View>
           <Icon name={!pick ? "CircleCheck" : "Circle"} size={18} color={!pick ? readableInk(colors.accent, colors) : colors.foregroundMuted} />
         </Pressable> : null}
-        {groups.length ? groups.map((group) => <View key={group.provider.id} style={{ gap: ROW_GAP }}>
+        {shown.length ? shown.map((group) => <View key={group.provider.id} style={{ gap: ROW_GAP }}>
           <Text style={{ ...muted, fontWeight: "600" }}>{group.provider.label}</Text>
           {group.rows.map((row) => {
             const checked = group.provider.id === pick?.provider && row.model.id === pick.model;
@@ -255,11 +234,13 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
           })}
         </View>) : <Text style={muted}>{tokens.length && shownVendor ? `No ${vendorName(shownVendor)} model matches “${query.trim()}”.` : "No available provider lists a model."}</Text>}
       </View>
-    </ScrollView>
-    {list.scrolls ? <Text testID="kontor-model-more" style={muted}>{`${shownCount} models${tokens.length ? " match" : ""} · scroll the list for more`}</Text> : null}
-    <ScrollView testID="kontor-model-settings" keyboardShouldPersistTaps="handled"
-      onLayout={(event: { nativeEvent: { layout: { height: number } } }) => settle({ height: event.nativeEvent.layout.height })}
-      onContentSizeChange={(_width: number, content: number) => settle({ content })} style={{ flexGrow: 0, flexShrink: 1, borderTopWidth: 1, borderColor: colors.border }} contentContainerStyle={{ gap: 4, paddingTop: 6, paddingBottom: 8 }}>
+      {hidden ? <Pressable testID="kontor-model-more" accessibilityRole="button" accessibilityLabel={`Show ${Math.min(hidden, MODEL_BATCH)} more ${tokens.length ? "matching " : ""}models, ${hidden} not shown`}
+        {...NO_PRESS_DELAY} onPress={() => setRevealed(revealed + MODEL_BATCH)}
+        style={({ pressed }: { pressed: boolean }) => ({ alignSelf: "center", minWidth: 44, minHeight: 44, paddingHorizontal: 16, alignItems: "center", justifyContent: "center", borderRadius: 8, ...pressFeedback(colors, pressed, false) })}>
+        <Text style={{ color: colors.foreground, fontSize: 12 }}>more</Text>
+      </Pressable> : null}
+    </View>
+    <View testID="kontor-model-settings" style={{ gap: 4, paddingTop: 6, paddingBottom: 8, borderTopWidth: 1, borderColor: colors.border }}>
       {model && provider ? <View style={{ gap: 4 }}>
         {onAuto ? <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{`Settings for ${model.label}`}</Text> : null}
         {!settings ? <Text style={muted}>Reading this model's settings…</Text>
@@ -308,8 +289,12 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
         </Pressable>
         {resetUnavailable ? <Text testID="kontor-model-reset-reason" style={muted}>{resetUnavailable}</Text> : null}
       </View> : null}
-    </ScrollView>
+    </View>
     {note ? <Text testID="kontor-model-note" style={muted}>{note}</Text> : null}
+  </>;
+  // One vertical scroll for the whole picker: the surface's own where it scrolls, else the picker's, above its footer.
+  return <View testID="kontor-model-picker" style={{ flexShrink: 1, minHeight: 0, gap: 8, padding: 6 }}>
+    {hostScrolls ? body : <ScrollView testID="kontor-model-scroll" keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 8 }}>{body}</ScrollView>}
     {/* Board D2: an operation's picker ends in the shared confirmation footer. */}
     {onAuto ? <SheetFooter colors={colors} secondary={{ label: "Cancel", accessibilityLabel: "Cancel model choice", onPress: onCancel }}
       primary={{ testID: "kontor-model-use", label: useLabel, disabled: !!problem, hint: problem, onPress: use }} />

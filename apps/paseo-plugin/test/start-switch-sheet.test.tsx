@@ -552,7 +552,7 @@ describe("Start or switch sheet", () => {
     choose(s, "kontor-switch-new-lead");
     expect(s.tree[0]!.props.label).toBe("New lead");
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
-    expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true, hostId: "host-a" });
+    expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true, hostId: "host-a", hostScrolls: false });
     expect(form.props.onOpenCreated).toBeDefined();
     (form.props.onCancel as () => void)(); s.render();
     expect(byTestId(s.tree, "kontor-switch-list")).toBeDefined();
@@ -817,7 +817,8 @@ describe("Start or switch popover from the composer pill", () => {
     await settle(); p.render();
     press(byTestId(p.tree, "kontor-switch-new-lead")); p.render();
     const form = p.tree.find((node) => node.type === NewLsaForm)!;
-    expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" } });
+    // The host's popover or sheet scrolls, so Model & settings adds no scroller of its own.
+    expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" }, hostScrolls: true });
     expect(text(p.tree)).toContain("New lead");
     expect(action(p.tree, "Close")).toBeUndefined();
     const onOpenCreated = form.props.onOpenCreated as (outcome: CreateOutcome) => OpenSessionResult;

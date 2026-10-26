@@ -366,7 +366,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   </>;
   const list = { testID: "kontor-switch-list", role: "list", accessibilityLabel: `${quickFilterLabel(status)} sessions${query.trim() ? ` matching ${query.trim()}` : ""}` } as const;
   const body = mode === "new"
-    ? <NewLsaForm key={lead.key} initialSource={lead.source} hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
+    ? <NewLsaForm key={lead.key} initialSource={lead.source} hostId={hostId} colors={colors} compact={compact} hostScrolls={popover} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
       isActive={() => scope === creation.current && scope.open && scope.hostId === hostId}
       onOpenCreated={onOpenCreated} onCancel={leaveNew} sources={entries.filter((entry) => matchesMembership(entry, "sessions"))} opened={opened}
       header={<><IconButton label="Back to sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />{heading}</>} />
