@@ -6,6 +6,7 @@ import type { PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { attachSummary, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type Capability, type SummaryPin, type SummaryRevision } from "../shared/session-navigator";
 import { readConfig } from "./config";
+import { attachStateRoot, createSummaryAttachService } from "./session-summary-attach";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 
@@ -16,12 +17,9 @@ export const SUMMARY_MODEL_API_GAP =
 const PLUGIN_STATE_STORE_LIMIT =
   "Saved revisions persist under the Kontor plugin host-backed state root (plugin-state/kontor/session-summaries-v1); this plugin is the sole writer for summary revisions on this host.";
 
-export const SUMMARY_ATTACH_GAP = "Attach summary to another seat's draft is not installed on this host yet.";
-
 export const SUMMARY_LIMITS_WITH_GENERATION = [
   "Each revision is model-generated through the host SDK compact-summary route with task, decisions, current state and next step sections.",
   PLUGIN_STATE_STORE_LIMIT,
-  SUMMARY_ATTACH_GAP,
 ];
 
 const sectionsSchema = summaryRevisionSchema.shape.sections;
@@ -188,10 +186,18 @@ export function contributeSessionSummaries(server: PluginServerContext) {
     assertSupported(paseo);
     return sessionSummaryService(paseo, root).latest(input.agentIds);
   });
-  server.handle(attachSummary, (_input, { paseo }) => {
-    assertSupported(paseo);
-    throw new Error(SUMMARY_ATTACH_GAP);
-  });
+  server.handle(attachSummary, (input, { paseo }) => summaryAttachService(paseo, root, attachStateRoot()).attach(input));
+}
+
+const summaryAttachServices = new WeakMap<PaseoApi, ReturnType<typeof createSummaryAttachService>>();
+
+function summaryAttachService(paseo: PaseoApi, summaryRoot: string, attachRoot: string) {
+  let service = summaryAttachServices.get(paseo);
+  if (!service) {
+    service = createSummaryAttachService(paseo, summaryRoot, attachRoot);
+    summaryAttachServices.set(paseo, service);
+  }
+  return service;
 }
 
 const sessionSummaryServices = new WeakMap<PaseoApi, ReturnType<typeof createSessionSummaryService>>();

@@ -7,8 +7,9 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorkspace, PaseoWorkspaceCreateOptions, PaseoWorkspaceListOptions, PaseoWorkspaceListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { UNSUPPORTED } from "../shared/session-navigator";
+import { summaryPinSchema, UNSUPPORTED } from "../shared/session-navigator";
 import { readConfig } from "./config";
+import { readPinnedSummary, summaryStateRoot } from "./session-summaries";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
@@ -191,7 +192,7 @@ export type SeatCreateSpec = {
   bootstrap: string | null;
 };
 export type SeatCreateOutcome = CreateOutcome;
-export type SeatCreatePlan = { spec: SeatCreateSpec } | { refused: string; requestId: string; title: string };
+export type SeatCreatePlan = { spec: SeatCreateSpec; sourceSummary: z.infer<typeof summaryPinSchema> | null } | { refused: string; requestId: string; title: string };
 export type SeatCreateBuilder = () => Promise<SeatCreatePlan>;
 export type SeatCreate = (requestId: string, build: SeatCreateBuilder) => Promise<SeatCreateOutcome>;
 
@@ -411,7 +412,7 @@ function serial<T>(step: () => Promise<T>): Promise<T> {
  * Host-local durable intents: a request is written before its dispatch, and its outcome after. An unsettled
  * request blocks the next creation until a Check settles it; nothing is ever re-dispatched.
  */
-export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch) {
+export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch, summaryRoot = summaryStateRoot()) {
   const path = (requestId: string) => join(root, `${requestId}.json`);
   async function readRecord(requestId: string): Promise<CreateRecord | null> {
     try { return recordSchema.parse(JSON.parse(await readFile(path(requestId), "utf8"))); }
@@ -454,9 +455,19 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     catch (error) { return outcome(record, "unknown", agentId, `The host replied that it created this session, but reading it back failed: ${errorText(error)}. Check reads it again.`); }
     if (!found || found.agent.id !== agentId) return outcome(record, "unknown", agentId, "The host replied that it created this session, but an exact read returned no such session. Check reads it again.");
     const differences = readbackDifferences(found.agent, record.request);
+    let message = differences.length
+      ? "Created with differences: the host's readback does not match every requested field."
+      : "Created and verified: the host's readback matches the request.";
+    const pin = summaryPinSchema.safeParse(record.request.sourceSummary);
+    if (!differences.length && pin.success) {
+      try {
+        const revision = await readPinnedSummary(summaryRoot, pin.data);
+        message = `Created and verified: Saved summary r${revision.revision} of ${revision.sourceAgentId} is attached before the first task.`;
+      } catch { /* keep generic verified message */ }
+    }
     return differences.length
-      ? outcome(record, "differences", agentId, "Created with differences: the host's readback does not match every requested field.", differences)
-      : outcome(record, "verified", agentId, "Created and verified: the host's readback matches the request.");
+      ? outcome(record, "differences", agentId, message, differences)
+      : outcome(record, "verified", agentId, message);
   }
 
   async function options(scope: CreateScope = {}): Promise<CreateOptions> {
@@ -547,7 +558,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     let { workspaceId } = checked;
     const record: CreateRecord = { request: { requestId, title: spec.title, cwd, workspaceId: workspaceId ?? spec.anchorWorkspaceId,
       labels: spec.labels, provider: spec.provider, model: spec.model, effort: spec.effort, modeId: spec.modeId,
-      ...(spec.featureValues && Object.keys(spec.featureValues).length ? { featureValues: spec.featureValues } : {}), at: new Date().toISOString() }, outcome: null };
+      ...(spec.featureValues && Object.keys(spec.featureValues).length ? { featureValues: spec.featureValues } : {}),
+      ...(plan.sourceSummary ? { sourceSummary: plan.sourceSummary } : {}), at: new Date().toISOString() }, outcome: null };
     try { await writeRecord(record); } catch (error) {
       // Not dispatched; a partial intent is removed so it does not block, and stays blocking if it cannot be.
       await rm(path(requestId), { force: true }).catch(() => {});
@@ -615,8 +627,19 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     if (problem) return refusal(problem);
     const title = leadTitle(input.role, key, topic);
     let source: string | null = null;
-    if (input.sourceSummary) return refusal(UNSUPPORTED.summaries.reason, title);
-    if (input.sourceAgentId?.trim()) {
+    let pinned: z.infer<typeof summaryPinSchema> | null = null;
+    if (input.sourceSummary) {
+      const pin = summaryPinSchema.parse(input.sourceSummary);
+      pinned = pin;
+      try {
+        const revision = await readPinnedSummary(summaryRoot, pin);
+        const named = input.sourceAgentId?.trim() || null;
+        if (named && named !== revision.sourceAgentId) return refusal(`Saved summary r${pin.revision} belongs to ${revision.sourceAgentId}, not ${named}; nothing was created.`, title);
+        source = revision.text;
+      } catch {
+        return refusal(`No saved summary ${pin.summaryId} r${pin.revision} is stored on this host; nothing was created.`, title);
+      }
+    } else if (input.sourceAgentId?.trim()) {
       try { source = await sourceSummary(client, input.sourceAgentId.trim()); }
       catch (error) { return refusal(`The source session could not be read: ${errorText(error)}.`, title); }
       if (!source) return refusal(`The source session ${input.sourceAgentId.trim()} has no handoff summary to read.`, title);
@@ -626,7 +649,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const persona = personaPrompt(personaKind, { desk: desk.project, workspace: workspaceName, workspaceId: workspaceId ?? "id assigned at creation", topic, title, key });
     const labels: Record<string, string> = { role: input.role, [TITLE_AUTO_LABEL]: title, persona: personaVersion(personaKind, supported), [CREATE_REQUEST_LABEL]: input.requestId,
       ...(key && desk.kind === "adam" ? { epic: key } : key && desk.kind === "tickets" ? { ticket: key } : {}) };
-    return { spec: {
+    return { sourceSummary: pinned, spec: {
       requestId: input.requestId, title, labels, provider: input.provider, model: input.model, effort: input.effort, modeId: input.modeId, featureValues: input.featureValues,
       workspaceId, anchorWorkspaceId: desk.anchorWorkspaceId, workspaceName, cwd: desk.cwd,
       createWorkspace: workspaceId ? null : () => createLeadWorkspace(client, desk, workspaceName),

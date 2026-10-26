@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
+import type { SummaryRevision } from "../shared/session-navigator";
 import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -67,7 +69,7 @@ afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recu
 async function setup({ switchText = null as string | null, answerMs = 5_000, existing = [] as Agent[], offline = false, timelineText = "Handoff: the plan is approved." as string | null,
   workspaceProblem = null as string | null, failWorkspaceCreate = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "kontor-create-test-")); dirs.push(root);
-  const switchFile = join(root, "create.json"), stateRoot = join(root, "state");
+  const switchFile = join(root, "create.json"), stateRoot = join(root, "state"), summaryRoot = join(root, "summaries");
   if (switchText !== null) await writeFile(switchFile, switchText);
   const agents = new Map(existing.map((value) => [value.id, value]));
   const live = [...WORKSPACES];
@@ -121,9 +123,21 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
       { id: "profile-lsa", name: "lsa", provider: "claude", model: "opus", modeId: "default", thinkingOptionId: "max" },
       { id: "profile-tpm", name: "tpm", provider: "opencode", model: "big" }] }) })) },
   } as unknown as CreateClient;
-  const service = createSessionCreateService(client, stateRoot, switchFile, answerMs, jira);
-  return { service, client, create, workspacesCreate, list, snapshot, listFeatures, agents, intents, stateRoot, switchFile, timeline, jira, live,
+  const service = createSessionCreateService(client, stateRoot, switchFile, answerMs, jira, summaryRoot);
+  return { service, client, create, workspacesCreate, list, snapshot, listFeatures, agents, intents, stateRoot, summaryRoot, switchFile, timeline, jira, live,
     setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; }, setOffline: (value: boolean) => { offline = value; } };
+}
+
+async function writePinnedSummary(summaryRoot: string, revision: SummaryRevision) {
+  await mkdir(summaryRoot, { recursive: true });
+  const file = join(summaryRoot, `source-${createHash("sha256").update(revision.sourceAgentId).digest("hex")}.json`);
+  await writeFile(file, JSON.stringify({
+    summaryId: revision.summaryId,
+    sourceAgentId: revision.sourceAgentId,
+    sourceTitle: revision.sourceTitle,
+    latestRevision: revision.revision,
+    revisions: { [String(revision.revision)]: revision },
+  }));
 }
 const request = (patch: Partial<CreateRequest> = {}): CreateRequest => ({ requestId: randomUUID(), role: "LSA", start: "ad-hoc", projectId: "prj-adam", topic: " Route  review ", provider: "claude", model: "opus", effort: "max", modeId: "default", ...patch });
 
@@ -500,6 +514,41 @@ describe("new session create", () => {
     expect(s.timeline).toHaveBeenCalledWith({ limit: 100, direction: "tail" });
     expect(s.create.mock.calls[0]![0].prompt).toContain("Handoff: ASMA-100 is approved; begin with the core.");
     expect(s.create.mock.calls[0]![0].prompt).toContain("before your first task");
+  });
+
+  it("pins an exact saved summary revision into the bootstrap and refuses a missing pin", async () => {
+    const s = await setup();
+    const revision: SummaryRevision = { summaryId: "00000000-0000-4000-8000-0000000000aa", revision: 2, sourceAgentId: "agent-source", sourceTitle: "Route review",
+      cutoff: "2026-10-25T10:00:00Z", savedAt: "2026-10-25T10:05:00Z", sections: { task: "Saved task", decisions: "", currentState: "", nextStep: "" }, text: "Saved task\n\nfrom store" };
+    await writePinnedSummary(s.summaryRoot, revision);
+    const verified = await s.service.create(request({ sourceAgentId: null, sourceSummary: { summaryId: revision.summaryId, revision: 2 } }));
+    expect(verified).toMatchObject({ state: "verified", message: expect.stringContaining("Saved summary r2 of agent-source") });
+    expect(s.create.mock.calls[0]![0].prompt).toContain("Saved task");
+    expect(s.timeline).not.toHaveBeenCalled();
+    const refused = await s.service.create(request({ sourceSummary: { summaryId: revision.summaryId, revision: 9 } }));
+    expect(refused).toMatchObject({ state: "refused", message: expect.stringMatching(/no saved summary/i), agentId: null });
+    expect(s.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a saved pin that names another source session than the revision owner", async () => {
+    const s = await setup();
+    const revision: SummaryRevision = { summaryId: "00000000-0000-4000-8000-0000000000bb", revision: 1, sourceAgentId: "agent-a", sourceTitle: "A",
+      cutoff: "2026-10-25T10:00:00Z", savedAt: "2026-10-25T10:05:00Z", sections: { task: "A", decisions: "", currentState: "", nextStep: "" }, text: "A" };
+    await writePinnedSummary(s.summaryRoot, revision);
+    expect(await s.service.create(request({ sourceAgentId: "agent-b", sourceSummary: { summaryId: revision.summaryId, revision: 1 } })))
+      .toMatchObject({ state: "refused", message: expect.stringMatching(/belongs to agent-a, not agent-b/) });
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("answers a repeated create with the same sourceSummary pin without a second dispatch", async () => {
+    const s = await setup();
+    const revision: SummaryRevision = { summaryId: "00000000-0000-4000-8000-0000000000cc", revision: 1, sourceAgentId: "agent-src", sourceTitle: "Route",
+      cutoff: "2026-10-25T10:00:00Z", savedAt: "2026-10-25T10:05:00Z", sections: { task: "Pinned", decisions: "", currentState: "", nextStep: "" }, text: "Pinned" };
+    await writePinnedSummary(s.summaryRoot, revision);
+    const input = request({ sourceAgentId: null, sourceSummary: { summaryId: revision.summaryId, revision: 1 } });
+    const first = await s.service.create(input);
+    expect(await s.service.create(input)).toEqual(first);
+    expect(s.create).toHaveBeenCalledTimes(1);
   });
 
   it.each([null, ""])("refuses a source session with no handoff summary: %s", async (timelineText) => {

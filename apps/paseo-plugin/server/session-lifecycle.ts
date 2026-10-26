@@ -1030,7 +1030,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         return outcome(record, "uncertain", "create", "Retired, but this session's fence changed, so no successor was created. Check reads the outcome.", named, "check");
       const expiredBeforeCreate = effectValidityProblem(spec);
       if (expiredBeforeCreate) return finish(outcome(record, "partial", "create", expiredBeforeCreate, named, "none"));
-      const created = await deps.create.createSeat(spec.requestId, async () => ({ spec }));
+      const created = await deps.create.createSeat(spec.requestId, async () => ({ spec, sourceSummary: null }));
       const stopped = await afterCreate(record, spec, created);
       if (stopped) return finish(stopped);
       const id = created.agentId!, verified = { ...named, agentId: id };

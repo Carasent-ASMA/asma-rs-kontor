@@ -1,6 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readNavigatorCapabilities, UNSUPPORTED, type NavigatorCapabilities } from "../shared/session-navigator";
+import { draftAttachInstalledCapability } from "./session-summary-attach";
 import { summariesInstalledCapability } from "./session-summaries";
 import { TAKEOVER_LIMITS, type TakeoverClient } from "./session-lifecycle";
 
@@ -24,7 +25,7 @@ export function readInstalledNavigatorCapabilities(paseo: PaseoApi): NavigatorCa
   return {
     usageTotals: UNSUPPORTED.usageTotals,
     summaries: summariesInstalledCapability(paseo),
-    draftAttach: UNSUPPORTED.draftAttach,
+    draftAttach: draftAttachInstalledCapability(paseo),
     takeover: { supported: true, limits: takeoverLimits },
     takeoverBulk: UNSUPPORTED.takeoverBulk,
     takeoverRoute: UNSUPPORTED.takeoverRoute,
