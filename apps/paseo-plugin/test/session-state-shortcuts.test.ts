@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { providerBlockedView, type ProviderRefusalReads } from "../client/provider-blocked-filter";
 import type { DirectoryEntry, DirectoryState } from "../client/session-directory";
-import { startSwitchCounts, stateShortcutPatch, STATUS_SHORTCUTS, STATUS_SHORTCUT_SCOPE } from "../client/session-state-shortcuts";
-import { DEFAULT_SESSION_FILTERS, filterDirectoryEntries } from "../client/session-view";
+import { startSwitchCounts, switchViewPatch } from "../client/session-state-shortcuts";
+import { DEFAULT_SESSION_FILTERS, filterDirectoryEntries, QUICK_STATUS_FILTERS, type StatusFilter } from "../client/session-view";
 import type { SessionViewState } from "../client/session-view-store";
 import { sessionEntry } from "./session-fixtures";
 
@@ -24,10 +24,10 @@ afterEach(() => vi.restoreAllMocks());
 describe("Start/switch status counts and destination identity", () => {
   it("uses the same ordinary all-project set and canonical predicate as each destination, with overlapping categories", () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-18T10:00:30Z"));
-    const counts = startSwitchCounts(state, "Live", reads);
-    const expected = { running: ["running", "question"], needs_input: ["question", "blocked"], provider_blocked: ["blocked"], error: ["blocked", "error"] };
-    for (const { status } of STATUS_SHORTCUTS) {
-      const destination = { ...VIEW, ...stateShortcutPatch(VIEW, { status, scope: STATUS_SHORTCUT_SCOPE }) };
+    const counts = startSwitchCounts(state, "Live", { reads });
+    const expected: Partial<Record<StatusFilter, string[]>> = { running: ["running", "question"], needs_input: ["question", "blocked"], provider_blocked: ["blocked"], error: ["blocked", "error"] };
+    for (const status of Object.keys(expected) as StatusFilter[]) {
+      const destination = { ...VIEW, ...switchViewPatch(VIEW, { status, query: "", membership: "sessions" }) };
       const rows = status === "provider_blocked" ? providerBlockedView({ state, includeArchived: false, candidates: entries, reads, freshness: "Live", blocked: null }).sessions
         : filterDirectoryEntries(entries, destination);
       expect(rows.map(entry => entry.id)).toEqual(expected[status]);
@@ -58,7 +58,7 @@ describe("Start/switch status counts and destination identity", () => {
     { name: "reconnecting", patch: { live: false }, freshness: "Reconnecting" },
   ])("does not present verified zero or Live for $name", ({ patch, freshness }) => {
     const counts = startSwitchCounts({ ...state, entries: [], ...patch }, freshness);
-    for (const { status } of STATUS_SHORTCUTS) expect(counts[status].text).toBe("…");
+    for (const status of [...QUICK_STATUS_FILTERS, "provider_blocked"] as const) expect(counts[status].text).toBe("…");
   });
 
   it("moves from unknown through retained counts to verified zero only after a complete live read", () => {
@@ -68,14 +68,22 @@ describe("Start/switch status counts and destination identity", () => {
     expect(startSwitchCounts({ ...state, entries: [] }, "Live").provider_blocked.text).toBe("0");
   });
 
-  it("replaces incompatible Recent/search/archive/refinements, retaining presentation preferences", () => {
+  it("refines every count by the search and counts Last visited and Favorites from the given IDs", () => {
+    const counts = startSwitchCounts(state, "Live", { query: "question", recent: ["running", "question", "archived"], favorites: ["error"] });
+    expect(counts.running).toMatchObject({ text: "1/2" });
+    expect(counts.recent).toMatchObject({ text: "1/2" });
+    expect(counts.favorites).toMatchObject({ text: "0/1" });
+  });
+
+  it("hands over exactly the switcher's state, search and membership, clearing other refinements and keeping presentation", () => {
     const view: SessionViewState = { ...VIEW, status: "recent", query: "old search", membership: "archived", includeArchived: true,
       task: { jira: "ASMA-1", kontorId: null, label: "Task" }, epic: { kind: "known", key: "ASMA-2" }, streams: ["other"], shortcut: "other",
       assignment: "me", layout: "grouped", grouping: "role", sort: "title", sortDirection: "asc", peek: { sessionId: "old", resultsOffset: 8 } };
-    const patch = stateShortcutPatch(view, { status: "needs_input", scope: STATUS_SHORTCUT_SCOPE });
-    expect({ ...view, ...patch }).toMatchObject({ status: "needs_input", query: "", membership: "sessions", includeArchived: false, work: "mine",
+    const patch = switchViewPatch(view, { status: "needs_input", query: "fix", membership: "sessions" });
+    expect({ ...view, ...patch }).toMatchObject({ status: "needs_input", query: "fix", membership: "sessions", includeArchived: false, work: "mine",
       task: null, epic: null, streams: null, shortcut: null, assignment: "any", peek: null, layout: "grouped", grouping: "role", sort: "title", sortDirection: "asc" });
     for (const key of ["layout", "grouping", "sort"]) expect(patch).not.toHaveProperty(key);
     expect(view.query).toBe("old search");
+    expect(switchViewPatch(VIEW, { status: "all", query: "x", membership: "archived" })).toMatchObject({ status: "all", query: "x", membership: "archived", includeArchived: true });
   });
 });

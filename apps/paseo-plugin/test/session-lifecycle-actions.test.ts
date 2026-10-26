@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult } from "@getpaseo/client";
-import { createLifecycleService, lifecycleRow, type LifecycleClient } from "../server/session-lifecycle";
-import { DEFAULT_RECOVERY_TARGET as target, previewLifecycle, executeLifecycleItem, unresolvedArchive, type LifecycleReview } from "../shared/session-lifecycle";
+import { createLifecycleService, lifecycleRevision, lifecycleRow, type LifecycleClient } from "../server/session-lifecycle";
+import { DEFAULT_RECOVERY_TARGET as target, RESUME_REMOVED, previewLifecycle, executeLifecycleItem, unresolvedArchive, type LifecycleReview } from "../shared/session-lifecycle";
 import { hasSessionAttention, toDirectoryEntry } from "../client/session-directory";
 import { matchesStatus } from "../client/session-view";
 import { openSessionById } from "../client/session-actions";
@@ -38,24 +38,54 @@ async function setup(initial: Agent[] = [agent("a"), agent("b")]) {
     list: vi.fn(async () => ({ requestId: "fixture", entries: [...records.values()].map((value) => ({ agent: value, project: { projectKey: "fixture", projectName: "Fixture", checkout: { worktreeRoot: null, cwd: "/fixtures/checkout", isGit: false as const, currentBranch: null, remoteUrl: null, isPaseoOwnedWorktree: false as const, mainRepoRoot: null } } })), pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } })),
     ref: (id) => ({ refresh: () => refresh(id), send: async () => send(id), archive: () => archive(id), timeline: { refetch: async () => ({ entries: [{ type: "user_message", text: "Fictional task context" }], error: null }) } }),
   }, providers: { snapshot: vi.fn<LifecycleClient["providers"]["snapshot"]>(async () => ({ requestId: "fixture", generatedAt: "now", entries: [{ provider: "codex", enabled: true, status: "ready", models: [{ provider: "codex", id: "gpt-6.1-sol", label: "Sol", thinkingOptions: [{ id: "xhigh", label: "Extra high" }] }] }] })) } };
-  // Each fixture session had a durable clean read before its fixture state.
-  for (const id of records.keys()) await writeFile(join(root, `refusal-${createHash("sha256").update(id).digest("hex")}.json`), JSON.stringify({ agentId: id, state: "clean", seq: 1, refusal: null, open: [], clean: true, cleared: 0, recovered: null }));
   const service = createLifecycleService(client, root);
-  return { service, root, client, records, refresh, send, archive, preview: (action: "resume" | "archive" = "resume", ids = ["a"], scope: "filtered" | "host" = "filtered") => service.preview({ action, agentIds: ids, scope, target }) };
+  return { service, root, client, records, refresh, send, archive, preview: (action: "archive" = "archive", ids = ["a"], scope: "filtered" | "host" = "filtered") => service.preview({ action, agentIds: ids, scope, target }) };
 }
-describe("native recovery classification", () => {
-  it("does not infer failure from age, idle or a retained error notice", () => {
-    for (const value of [agent("a", { status: "idle" }), agent("a", { status: "running" }), agent("a", { status: "closed" })]) expect(lifecycleRow(value, [value], "resume").eligible).toBe(false);
-    expect(lifecycleRow(agent("a"), [], "resume").eligible).toBe(true);
-  });
-  it("keeps quota/auth, waits, replaced and missing-history visible with reasons", () => {
-    const cases: Partial<Agent>[] = [{ lastError: "Usage limit reached" }, { lastError: "401 Unauthorized" }, { attentionReason: "permission" }, { labels: { "takeover.successor": "new" } }, { persistence: null }];
-    for (const patch of cases) { const row = lifecycleRow(agent("a", patch), [], "resume"); expect(row.eligible).toBe(false); expect(row.reason.length).toBeGreaterThan(15); }
-  });
+/** A Resume review as the removed preview saved it before Resume was removed: the review file and the latest pointer. */
+async function oldResumeReceipt(s: Setup, id = "a") {
+  const value = s.records.get(id)!;
+  const review: LifecycleReview = { id: randomUUID(), createdAt: "2026-10-20T10:00:00.000Z", action: "resume", scope: "filtered", target, limitation: "Fixture limitation.",
+    rows: [{ ...lifecycleRow(value, []), fingerprint: lifecycleRevision(value), reason: "Current native error. Retry in the same session with existing context and permissions; dispatch is not completion." }] };
+  await writeFile(join(s.root, `${review.id}.json`), JSON.stringify(review));
+  await writeFile(join(s.root, "latest.json"), JSON.stringify({ id: review.id }));
+  return review;
+}
+/** Every file in the root by name and bytes. */
+const rootFiles = async (root: string) => Object.fromEntries(await Promise.all((await readdir(root)).map(async (name) => [name, await nativeFs.readFile(join(root, name), "utf8")])));
+describe("archive classification", () => {
   it("blocks every managed child while allowing explicit native stop/archive of active sessions", () => {
     const a = agent("a"), child = agent("child", { status: "running", workspaceId: "different-workspace", labels: { "paseo.parent-agent-id": "a" } });
-    expect(lifecycleRow(a, [a, child], "archive")).toMatchObject({ eligible: false, children: [{ id: "child" }] });
-    expect(lifecycleRow(agent("a", { status: "running" }), [], "archive").eligible).toBe(true);
+    expect(lifecycleRow(a, [a, child])).toMatchObject({ eligible: false, children: [{ id: "child" }] });
+    expect(lifecycleRow(agent("a", { status: "running" }), []).eligible).toBe(true);
+  });
+});
+describe("Resume was removed", () => {
+  it.each(["filtered", "host"] as const)("refuses a %s-scope Resume preview before any read or write", async (scope) => {
+    const s = await setup(), timeline = vi.fn(), original = s.client.agents.ref, before = await rootFiles(s.root);
+    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: timeline } });
+    await expect(s.service.preview({ action: "resume" as never, scope, agentIds: scope === "host" ? [] : ["a"], target })).rejects.toThrow(RESUME_REMOVED);
+    expect(s.client.agents.list).not.toHaveBeenCalled(); expect(s.refresh).not.toHaveBeenCalled(); expect(timeline).not.toHaveBeenCalled();
+    expect(s.client.providers.snapshot).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+    expect(await rootFiles(s.root)).toEqual(before);
+  });
+  it("the preview RPC accepts only Archive", () => {
+    const input = { scope: "filtered", agentIds: ["a"], target };
+    expect(previewLifecycle.input.safeParse({ ...input, action: "archive" }).success).toBe(true);
+    expect(previewLifecycle.input.safeParse({ ...input, action: "resume" }).success).toBe(false);
+  });
+  it("an earlier Resume receipt stays readable, and executing or reconciling it sends, reads and writes nothing", async () => {
+    const s = await setup(), receipt = await oldResumeReceipt(s), timeline = vi.fn(), original = s.client.agents.ref;
+    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: timeline } });
+    expect(await s.service.read(receipt.id)).toEqual(receipt);
+    expect(await s.service.read()).toEqual({ ...receipt, unresolved: [] });
+    const before = await rootFiles(s.root);
+    await expect(s.service.execute(receipt.id, "a")).rejects.toThrow(RESUME_REMOVED);
+    await expect(createLifecycleService(s.client, s.root).execute(receipt.id, "a")).rejects.toThrow(RESUME_REMOVED);
+    await expect(s.service.reconcile(receipt.id, "a")).rejects.toThrow(RESUME_REMOVED);
+    expect(await rootFiles(s.root)).toEqual(before);
+    expect(s.client.agents.list).not.toHaveBeenCalled(); expect(s.refresh).not.toHaveBeenCalled(); expect(timeline).not.toHaveBeenCalled();
+    expect(s.client.providers.snapshot).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+    expect(await s.service.read(receipt.id)).toEqual(receipt);
   });
 });
 describe("durable lock metadata contention", () => {
@@ -136,25 +166,25 @@ describe("durable lock metadata contention", () => {
       expect(await nativeFs.readFile(file, "utf8")).toBe("");
       expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
     } finally { release(); await winner; }
-    expect((await winner).outcome).toBe("submitted"); expect(s.send).toHaveBeenCalledTimes(1);
+    expect((await winner).outcome).toBe("archived"); expect(s.archive).toHaveBeenCalledTimes(1);
     const reloaded = createLifecycleService(s.client, s.root);
-    expect((await reloaded.execute(owner.id, "a")).outcome).toBe("submitted");
+    expect((await reloaded.execute(owner.id, "a")).outcome).toBe("archived");
     const fresh = await s.preview();
     expect((await reloaded.execute(fresh.id, "a")).outcome).toBe("blocked");
-    expect(s.send).toHaveBeenCalledTimes(1); expect(s.archive).not.toHaveBeenCalled();
+    expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
   });
 });
 describe("reviewed exact-ID effects and durable replay", () => {
-  it("targets only the exact reviewed ID, keeps identity/history/checkout and reports dispatch rather than completion", async () => {
-    const s = await setup(), before = s.records.get("a"); const review = await s.preview();
-    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "submitted" });
-    expect(s.send).toHaveBeenCalledExactlyOnceWith("a"); expect(s.archive).not.toHaveBeenCalled(); expect(s.records.get("a")).toBe(before);
+  it("targets only the exact reviewed ID", async () => {
+    const s = await setup(), review = await s.preview();
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "archived" });
+    expect(s.archive).toHaveBeenCalledExactlyOnceWith("a"); expect(s.records.get("b")?.archivedAt).toBeNull(); expect(s.send).not.toHaveBeenCalled();
     await expect(s.service.execute(review.id, "b")).rejects.toThrow("not in this review");
   });
-  it("revalidates status, archive, placement and children changing while review is open", async () => {
-    for (const patch of [{ status: "running" as const }, { archivedAt: "now" }, { cwd: "/other" }, { workspaceId: "other" }]) {
+  it("revalidates placement and children changing while review is open", async () => {
+    for (const patch of [{ cwd: "/other" }, { workspaceId: "other" }]) {
       const s = await setup(), review = await s.preview(); s.records.set("a", agent("a", patch));
-      expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.send).not.toHaveBeenCalled();
+      expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
     }
     const s = await setup(), review = await s.preview("archive"); s.records.set("child", agent("child", { labels: { "paseo.parent-agent-id": "a" } }));
     expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
@@ -162,50 +192,26 @@ describe("reviewed exact-ID effects and durable replay", () => {
   it("fences double clicks, competing reviews and reload using durable per-session intents", async () => {
     const s = await setup(), one = await s.preview(), two = await s.preview();
     await Promise.all([s.service.execute(one.id, "a"), s.service.execute(one.id, "a"), s.service.execute(two.id, "a")]);
-    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.archive).toHaveBeenCalledTimes(1);
     const reloaded = createLifecycleService(s.client, s.root);
     const settled = await Promise.all([reloaded.read(one.id), reloaded.read(two.id)]);
-    const winner = settled.find((review) => review?.rows[0]?.outcome === "submitted"); expect(winner).toBeDefined();
-    expect((await reloaded.execute(winner!.id, "a")).outcome).toBe("submitted"); expect(s.send).toHaveBeenCalledTimes(1);
-    const fresh = await s.preview(); expect((await reloaded.execute(fresh.id, "a")).outcome).toBe("blocked"); expect(s.send).toHaveBeenCalledTimes(1);
+    const winner = settled.find((review) => review?.rows[0]?.outcome === "archived"); expect(winner).toBeDefined();
+    expect((await reloaded.execute(winner!.id, "a")).outcome).toBe("archived"); expect(s.archive).toHaveBeenCalledTimes(1);
+    const fresh = await s.preview(); expect((await reloaded.execute(fresh.id, "a")).outcome).toBe("blocked"); expect(s.archive).toHaveBeenCalledTimes(1);
   });
   it("holds an uncertain dispatch instead of retrying it after transport failure/reload", async () => {
-    const s = await setup(); s.send.mockRejectedValueOnce(new Error("Lost acknowledgement")); const review = await s.preview();
+    const s = await setup(); s.archive.mockRejectedValueOnce(new Error("Lost acknowledgement")); const review = await s.preview();
     expect((await s.service.execute(review.id, "a")).outcome).toBe("uncertain");
     expect((await createLifecycleService(s.client, s.root).execute(review.id, "a")).outcome).toBe("uncertain");
-    const another = await s.preview(); expect((await s.service.execute(another.id, "a")).outcome).toBe("blocked"); expect(s.send).toHaveBeenCalledTimes(1);
+    const another = await s.preview(); expect((await s.service.execute(another.id, "a")).outcome).toBe("blocked"); expect(s.archive).toHaveBeenCalledTimes(1);
   });
   it("supports a mixed batch and retries only a fresh review of a known preflight block", async () => {
-    const s = await setup(), review = await s.preview("resume", ["a", "b"]);
-    s.records.set("a", agent("a", { status: "running" }));
+    const s = await setup(), review = await s.preview("archive", ["a", "b"]);
+    s.records.set("a", agent("a", { cwd: "/other" }));
     expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked");
-    expect((await s.service.execute(review.id, "b")).outcome).toBe("submitted");
-    s.records.set("a", agent("a")); const retry = await s.preview(); expect((await s.service.execute(retry.id, "a")).outcome).toBe("submitted");
-    const stored = await s.service.read(review.id); expect(stored?.rows.map((row) => row.outcome)).toEqual(["blocked", "submitted"]);
-  });
-  it("blocks missing history without sending or fabricating task context", async () => {
-    const s = await setup(), original = s.client.agents.ref;
-    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: async () => ({ entries: [], error: "Provider history not found" }) } });
-    const review = await s.preview(); expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "blocked", message: expect.stringContaining("history is unavailable") });
-    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
-  });
-  it("revalidates again after a slow provider/history preflight", async () => {
-    const s = await setup(), original = s.client.agents.ref;
-    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: async () => { s.records.set(id, agent(id, { archivedAt: "concurrently archived", status: "closed" })); return { entries: [{}], error: null }; } } });
-    const review = await s.preview(); expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.send).not.toHaveBeenCalled();
-  });
-  it.each<Array<[string, Partial<Agent>]>[number]>([
-    ["provider availability", { providerUnavailable: true }],
-    ["effective runtime model", { runtimeInfo: { provider: "codex", sessionId: "history-a", model: "other-model", thinkingOptionId: "xhigh", modeId: "full-access" } }],
-    ["persistence capability", { capabilities: { ...agent("a").capabilities, supportsSessionPersistence: false } }],
-    ["permission wait", { attentionReason: "permission" }],
-  ])("blocks a changed %s observed after history preflight even when updatedAt is unchanged", async (_label, patch) => {
-    const s = await setup(), original = s.client.agents.ref, before = s.records.get("a")!;
-    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: async () => { s.records.set(id, { ...s.records.get(id)!, ...patch }); return { entries: [{}], error: null }; } } });
-    const review = await s.preview(), result = await s.service.execute(review.id, "a");
-    expect(s.records.get("a")!.updatedAt).toBe(before.updatedAt);
-    expect(result).toMatchObject({ outcome: "blocked", message: expect.stringContaining("changed during preflight") });
-    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+    expect((await s.service.execute(review.id, "b")).outcome).toBe("archived");
+    s.records.set("a", agent("a")); const retry = await s.preview(); expect((await s.service.execute(retry.id, "a")).outcome).toBe("archived");
+    const stored = await s.service.read(review.id); expect(stored?.rows.map((row) => row.outcome)).toEqual(["blocked", "archived"]);
   });
   it("requires successful archive plus terminal readback; partial archive remains uncertain and history is never deleted", async () => {
     const s = await setup(), review = await s.preview("archive");
@@ -216,8 +222,7 @@ describe("reviewed exact-ID effects and durable replay", () => {
   });
   it("keeps scope explicit, missing IDs visible and archive bounded to selected IDs", async () => {
     const s = await setup(); expect((await s.preview()).rows.map((row) => row.id)).toEqual(["a"]);
-    expect((await s.preview("resume", [], "host")).rows).toHaveLength(2);
-    expect((await s.preview("resume", ["missing"])).rows[0]).toMatchObject({ id: "missing", eligible: false, nativeStatus: "missing" });
+    expect((await s.preview("archive", ["missing"])).rows[0]).toMatchObject({ id: "missing", nativeStatus: "missing", availability: { state: "missing" } });
     expect((await s.preview("archive", ["a", "b"])).rows.map((row) => row.id)).toEqual(["a", "b"]);
     for (const ids of [[], Array.from({ length: 51 }, (_, n) => `fixture-${n}`)]) await expect(s.preview("archive", ids)).rejects.toThrow("1–50");
     await expect(s.preview("archive", ["a"], "host")).rejects.toThrow("filtered scope");
@@ -379,15 +384,11 @@ describe("force-close archive and read-only settlement", () => {
     expect((await s.service.execute(review.id, "a")).outcome).toBe("archived"); expect(s.archive).toHaveBeenCalledExactlyOnceWith("a");
     expect(calls).toEqual([{ includeArchived: false, rows: 2 }, { includeArchived: false, rows: 2 }]);
   });
-  it("still blocks an active child linked only by its parentAgentId field; Resume still walks archived history", async () => {
+  it("still blocks an active child linked only by its parentAgentId field", async () => {
     const child = { ...agent("child", { status: "idle" }), parentAgentId: "a" } as Agent;
-    const s = await setup([agent("a"), child]), original = s.client.agents.list, filters: unknown[] = [];
-    s.client.agents.list = async (options) => { filters.push(options?.filter); return original(options); };
-    const review = await s.preview("archive");
+    const s = await setup([agent("a"), child]), review = await s.preview("archive");
     expect(review.rows[0]).toMatchObject({ eligible: false, children: [{ id: "child" }] });
     expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
-    await s.preview("resume", ["a"], "host");
-    expect(filters).toEqual([{ includeArchived: false }, { includeArchived: true }]);
   });
   it.each(["running", "initializing", "idle", "error", "closed"] as const)("archives exact %s even when activity updates during preflight", async (status) => {
     const s = await setup([agent("a", { status }), agent("b")]); const review = await s.preview("archive");
@@ -574,14 +575,14 @@ describe("Archive X membership, runtime and fences", () => {
     expect((await s.service.read(review.id))?.rows[0]?.outcome).toBe("pending");
     expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.archive).not.toHaveBeenCalled();
   });
-  it.each(["archived/unconfirmed", "legacy uncertain"])("16 SA (%s) stays recoverable after SWE success, a later Resume and a remount, then settles by an exact-ID read", async (kind) => {
+  it.each(["archived/unconfirmed", "legacy uncertain"])("16 SA (%s) stays recoverable after SWE success, a later review and a remount, then settles by an exact-ID read", async (kind) => {
     const s = await setup([agent("sa"), agent("swe"), agent("b")]), sa = await s.preview("archive", ["sa"]);
     if (kind === "legacy uncertain") await legacyFence(s, sa);
     else { archiveAs(s, { status: "idle" }, "Lost acknowledgement"); expect(await s.service.execute(sa.id, "sa")).toMatchObject({ outcome: "archived", runtime: "unconfirmed" }); }
     const held = await fenceBytes(s.root, "sa"), swe = await s.preview("archive", ["swe"]);
     expect(await s.service.execute(swe.id, "swe")).toMatchObject({ outcome: "archived", runtime: "closed" });
-    const calls = s.archive.mock.calls.length, resume = await s.preview("resume", ["b"]);
-    expect(JSON.parse(await nativeFs.readFile(join(s.root, "latest.json"), "utf8"))).toEqual({ id: resume.id });
+    const calls = s.archive.mock.calls.length, later = await s.preview("archive", ["b"]);
+    expect(JSON.parse(await nativeFs.readFile(join(s.root, "latest.json"), "utf8"))).toEqual({ id: later.id });
     const remounted = createLifecycleService(s.client, s.root);
     expect((await remounted.read())?.unresolved).toEqual([{ reviewId: sa.id, agentId: "sa" }]);
     // The owner's preview row is still pending; only its result file carries the outcome the lookup listed.
@@ -611,7 +612,7 @@ describe("17 unresolved lookup identity", () => {
     ["an owner review whose internal ID differs", async ({ s, review, lock }) => {
       const alias = randomUUID(); await writeFile(join(s.root, `${alias}.json`), await nativeFs.readFile(join(s.root, `${review.id}.json`), "utf8")); await rewrite(s, { ...lock, reviewId: alias });
     }],
-    ["an owner review for Resume", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await s.preview("resume")).id })],
+    ["an earlier Resume receipt as owner review", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await oldResumeReceipt(s)).id })],
     ["no owner row for that ID", async ({ s, lock }) => rewrite(s, { ...lock, reviewId: (await s.preview("archive", ["b"])).id })],
     ["a fingerprint mismatch", ({ s, lock }) => rewrite(s, { ...lock, fingerprint: "other-revision" })],
     ["a phase outside the set", ({ s, lock }) => rewrite(s, { ...lock, phase: "bogus" })],
@@ -723,7 +724,7 @@ describe("20 reconcile saves before it releases, and releases only the fence it 
     await expect(s.service.reconcile(review.id, "a")).rejects.toThrow("fixture write fault");
     expect(await fenceBytes(s.root, "a")).toBe(held);
     expect(await savedRow(s, review.id)).toMatchObject({ outcome: "archived", runtime: "unconfirmed" });
-    await s.preview("resume", ["b"]);
+    await s.preview("archive", ["b"]);
     const fresh = createLifecycleService(s.client, s.root);
     expect((await fresh.read())?.unresolved).toEqual([{ reviewId: review.id, agentId: "a" }]);
     expect(await fresh.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
@@ -745,9 +746,9 @@ describe("20 reconcile saves before it releases, and releases only the fence it 
     expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
     expect(await fenceBytes(s.root, "a")).toBe(preflight); expect(s.archive).toHaveBeenCalledTimes(1);
   });
-  it("AUD P1 a successor Resume fence placed during the exact-ID read survives, and the saved result is not overwritten", async () => {
-    const { s, review, held } = await unconfirmed(), resume = await s.preview("resume", ["b"]);
-    const successor = JSON.stringify({ reviewId: resume.id, agentId: "a", action: "resume", phase: "preflight", fingerprint: JSON.parse(held).fingerprint });
+  it("AUD P1 a successor fence placed during the exact-ID read survives, and the saved result is not overwritten", async () => {
+    const { s, review, held } = await unconfirmed();
+    const successor = JSON.stringify({ reviewId: randomUUID(), agentId: "a", action: "archive", phase: "preflight", fingerprint: JSON.parse(held).fingerprint, token: "fixture" });
     s.refresh.mockImplementationOnce(async (id) => {
       // A concurrent Check released the fence and a successor took the session while this read was in flight.
       await nativeFs.unlink(fencePath(s.root, "a")); await nativeFs.writeFile(fencePath(s.root, "a"), successor);
@@ -759,29 +760,33 @@ describe("20 reconcile saves before it releases, and releases only the fence it 
     expect(await savedRow(s, review.id)).toEqual(saved);
     expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
   });
-  it("AUD P1-01 service interleaving: a second Check settles and a Resume takes the session while the first Check reads", async () => {
-    const s = await setup(), resume = await s.preview("resume", ["a"]), review = await s.preview("archive");
+  it("AUD P1-01 service interleaving: a second Check settles and a successor Archive takes the session while the first Check reads", async () => {
+    const s = await setup(), next = await s.preview("archive"), review = await s.preview("archive");
     archiveAs(s, { status: "idle" }, "Lost acknowledgement"); await s.service.execute(review.id, "a");
     s.records.set("a", { ...s.records.get("a")!, status: "closed" });
-    let openFirst!: () => void, openResume!: () => void;
-    const firstRead = new Promise<void>((resolve) => { openFirst = resolve; }), resumeRead = new Promise<void>((resolve) => { openResume = resolve; });
+    let openFirst!: () => void, openSuccessor!: () => void, atReceipt!: () => void;
+    const firstRead = new Promise<void>((resolve) => { openFirst = resolve; }), successorCheck = new Promise<void>((resolve) => { openSuccessor = resolve; });
+    const reachedReceipt = new Promise<void>((resolve) => { atReceipt = resolve; });
     const found = (id: string) => ({ agent: s.records.get(id)!, project: null });
-    s.refresh.mockImplementationOnce(async (id) => { await firstRead; return found(id); })
-      .mockImplementationOnce(async (id) => found(id))
-      .mockImplementationOnce(async (id) => { await resumeRead; return found(id); });
-    const before = s.refresh.mock.calls.length;
-    const until = async (reads: number) => { for (let n = 0; n < 500 && s.refresh.mock.calls.length < before + reads; n++) await new Promise((resolve) => setTimeout(resolve, 1)); expect(s.refresh).toHaveBeenCalledTimes(before + reads); };
-    const first = s.service.reconcile(review.id, "a"); await until(1);
+    s.refresh.mockImplementationOnce(async (id) => { await firstRead; return found(id); });
+    const before = s.refresh.mock.calls.length, first = s.service.reconcile(review.id, "a");
+    for (let n = 0; n < 500 && s.refresh.mock.calls.length === before; n++) await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(s.refresh).toHaveBeenCalledTimes(before + 1);
     expect(await createLifecycleService(s.client, s.root).reconcile(review.id, "a")).toMatchObject({ outcome: "archived", runtime: "closed" });
     expect(await fenceBytes(s.root, "a")).toBeNull();
-    const resuming = createLifecycleService(s.client, s.root).execute(resume.id, "a"); await until(3);
-    const successor = await fenceBytes(s.root, "a");
-    expect(JSON.parse(successor!)).toMatchObject({ reviewId: resume.id, agentId: "a", action: "resume", phase: "preflight" });
+    // The successor holds its preflight fence while it checks this revision's dispatch receipt.
+    vi.mocked(readFile).mockImplementation(async (...args) => {
+      if (String(args[0]).includes(`${s.root}/done-`)) { atReceipt(); await successorCheck; }
+      return nativeFs.readFile(...args);
+    });
+    const successor = createLifecycleService(s.client, s.root).execute(next.id, "a"); await reachedReceipt;
+    const fence = await fenceBytes(s.root, "a");
+    expect(JSON.parse(fence!)).toMatchObject({ reviewId: next.id, agentId: "a", action: "archive", phase: "preflight" });
     openFirst();
     expect(await first).toMatchObject({ outcome: "archived", runtime: "closed" });
-    expect(await fenceBytes(s.root, "a")).toBe(successor);
-    openResume();
-    expect(await resuming).toMatchObject({ outcome: "blocked", message: "Already archived on this host. No archive request was sent." });
+    expect(await fenceBytes(s.root, "a")).toBe(fence);
+    openSuccessor();
+    expect(await successor).toMatchObject({ outcome: "blocked", message: expect.stringContaining("already has a dispatched action") });
     expect(await fenceBytes(s.root, "a")).toBeNull();
     expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
   });
@@ -791,10 +796,10 @@ describe("20 reconcile saves before it releases, and releases only the fence it 
     expect(await s.service.reconcile(review.id, "a")).toMatchObject({ outcome: "uncertain" });
     expect(await fenceBytes(s.root, "a")).toBe(held); expect(s.archive).not.toHaveBeenCalled();
   });
-  it("AUD P1 r2 a late archive ACK never overwrites a successor Resume fence taken after a Check released the intent", async () => {
-    const s = await setup(), resume = await s.preview("resume", ["a"]), review = await s.preview("archive"), original = s.records.get("a")!;
-    let ack!: () => void, readResume!: () => void;
-    const acked = new Promise<void>((resolve) => { ack = resolve; }), resumeRead = new Promise<void>((resolve) => { readResume = resolve; });
+  it("AUD P1 r2 a late archive ACK never overwrites a successor fence taken after a Check released the intent", async () => {
+    const s = await setup(), next = await s.preview("archive"), review = await s.preview("archive"), original = s.records.get("a")!;
+    let ack!: () => void, readSuccessor!: () => void;
+    const acked = new Promise<void>((resolve) => { ack = resolve; }), successorRead = new Promise<void>((resolve) => { readSuccessor = resolve; });
     s.archive.mockImplementationOnce(async (id) => { s.records.set(id, { ...s.records.get(id)!, status: "closed", archivedAt: "2026-10-22" }); await acked; return { archivedAt: "2026-10-22" }; });
     const archiving = s.service.execute(review.id, "a");
     for (let n = 0; n < 500 && !s.archive.mock.calls.length; n++) await new Promise((resolve) => setTimeout(resolve, 1));
@@ -803,18 +808,18 @@ describe("20 reconcile saves before it releases, and releases only the fence it 
     expect(await fenceBytes(s.root, "a")).toBeNull();
     s.records.set("a", original);
     const reads = s.refresh.mock.calls.length;
-    s.refresh.mockImplementationOnce(async (id) => { await resumeRead; return { agent: s.records.get(id)!, project: null }; });
-    const resuming = createLifecycleService(s.client, s.root).execute(resume.id, "a");
+    s.refresh.mockImplementationOnce(async (id) => { await successorRead; return { agent: s.records.get(id)!, project: null }; });
+    const following = createLifecycleService(s.client, s.root).execute(next.id, "a");
     for (let n = 0; n < 500 && s.refresh.mock.calls.length === reads; n++) await new Promise((resolve) => setTimeout(resolve, 1));
     const successor = (await fenceBytes(s.root, "a"))!;
-    expect(JSON.parse(successor)).toMatchObject({ reviewId: resume.id, agentId: "a", action: "resume", phase: "preflight", token: expect.any(String) });
+    expect(JSON.parse(successor)).toMatchObject({ reviewId: next.id, agentId: "a", action: "archive", phase: "preflight", token: expect.any(String) });
     ack();
     expect(await archiving).toMatchObject({ outcome: "uncertain", message: expect.stringContaining("so this result was not recorded") });
     expect(await fenceBytes(s.root, "a")).toBe(successor);
     expect(await savedRow(s, review.id)).toMatchObject({ outcome: "archived", runtime: "closed" });
     expect(s.archive).toHaveBeenCalledTimes(1); expect(s.send).not.toHaveBeenCalled();
-    s.records.set("a", { ...original, status: "closed", archivedAt: "2026-10-22" }); readResume();
-    expect(await resuming).toMatchObject({ outcome: "blocked" });
+    s.records.set("a", { ...original, status: "closed", archivedAt: "2026-10-22" }); readSuccessor();
+    expect(await following).toMatchObject({ outcome: "already_archived", message: "Already archived on this host. No archive request was sent." });
     expect(await fenceBytes(s.root, "a")).toBeNull(); expect(s.send).not.toHaveBeenCalled(); expect(s.archive).toHaveBeenCalledTimes(1);
   });
   it("an execute whose preflight fence changed never writes its intent or dispatches", async () => {

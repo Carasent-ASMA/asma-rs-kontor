@@ -47,6 +47,12 @@ const SNAPSHOT: Awaited<ReturnType<CreateClient["providers"]["snapshot"]>> = { r
   { provider: "codex", label: "Codex", enabled: false, status: "ready", models: [{ provider: "codex", id: "gpt", label: "GPT" }] },
 ] };
 
+/** The two settings the host lists for a model: Speed (`service_tier`) and Plan (`plan_mode`). */
+const FEATURES: Awaited<ReturnType<CreateClient["providers"]["listFeatures"]>> = { provider: "claude/opus", fetchedAt: "2026-10-25", requestId: "fixture", features: [
+  { type: "select", id: "service_tier", label: "Speed", value: "default", options: [{ id: "default", label: "Normal", isDefault: true }, { id: "priority", label: "Fast" }] },
+  { type: "toggle", id: "plan_mode", label: "Plan", value: false },
+] };
+
 const epic: JiraIssue = { id: "100", key: "ASMA-100", summary: "Deliver the desk layout", created: "2026-10-01T10:00:00.000+0000", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null };
 const underActive: JiraIssue = { id: "101", key: "ASMA-101", summary: "Replace New LSA with a role-aware New session", created: "2026-10-02T10:00:00.000+0000", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true,
   parent: { key: "ASMA-100", summary: "Deliver the desk layout", statusCategory: "In Progress", open: true } };
@@ -72,8 +78,10 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
     intents.push(JSON.parse(await readFile(join(stateRoot, `${input.idempotencyKey}.json`), "utf8")));
     const placed = live.find((entry) => entry.id === dispatchWorkspace)!;
     const [provider, model] = String(input.config.provider).split("/");
+    const chosen = input.config.featureValues ?? {};
+    const features = FEATURES.features!.map((feature) => (feature.id in chosen ? { ...feature, value: chosen[feature.id] } : feature) as typeof feature);
     const value = agent("agent-new", { title: input.title, labels: input.labels, provider, model, cwd: placed.workspaceDirectory!, workspaceId: placed.id,
-      currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, ...readbackPatch });
+      currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, features, ...readbackPatch });
     agents.set(value.id, value);
     return { id: value.id } as Awaited<ReturnType<NativeCreate>>;
   });
@@ -89,6 +97,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
   const list = vi.fn<CreateClient["agents"]["list"]>(async (options) => ({ requestId: "fixture", pageInfo: { hasMore: false, nextCursor: null, prevCursor: null },
     entries: [...agents.values()].filter((value) => Object.entries(options?.filter?.labels ?? {}).every(([key, label]) => value.labels?.[key] === label)).map((value) => ({ agent: value, project: PROJECT })) }));
   const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
+  const listFeatures = vi.fn<CreateClient["providers"]["listFeatures"]>(async () => FEATURES);
   const timeline = vi.fn(async () => ({ entries: timelineText === null ? [] : [{ item: { type: "assistant_message", text: timelineText } }] }));
   const jira = vi.fn<JiraSearch>(async ({ query, issueClass, openOnly }) => {
     if (offline) return { issues: [], hasMore: false, nextPageToken: null, failure: "Jira is unreachable" };
@@ -107,13 +116,13 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
       create: workspacesCreate,
     },
     agents: { list, ref: (id: string) => ({ refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: PROJECT } : null; }, timeline: { refetch: timeline } }) },
-    providers: { snapshot },
+    providers: { snapshot, listFeatures },
     config: { get: vi.fn(async () => ({ requestId: "fixture", config: MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false }, agentProfiles: [
       { id: "profile-lsa", name: "lsa", provider: "claude", model: "opus", modeId: "default", thinkingOptionId: "max" },
       { id: "profile-tpm", name: "tpm", provider: "opencode", model: "big" }] }) })) },
   } as unknown as CreateClient;
   const service = createSessionCreateService(client, stateRoot, switchFile, answerMs, jira);
-  return { service, client, create, workspacesCreate, list, snapshot, agents, intents, stateRoot, switchFile, timeline, jira, live,
+  return { service, client, create, workspacesCreate, list, snapshot, listFeatures, agents, intents, stateRoot, switchFile, timeline, jira, live,
     setReadback: (patch: Partial<Agent>) => { readbackPatch = patch; }, setOffline: (value: boolean) => { offline = value; } };
 }
 const request = (patch: Partial<CreateRequest> = {}): CreateRequest => ({ requestId: randomUUID(), role: "LSA", start: "ad-hoc", projectId: "prj-adam", topic: " Route  review ", provider: "claude", model: "opus", effort: "max", modeId: "default", ...patch });
@@ -283,7 +292,7 @@ describe("create options", () => {
     expect(options.desks.map((desk) => desk.project)).toEqual(["DESK • ADAM", "DESK • PR REVIEW", "DESK • TICKETS"]);
     const [claude, opencode, gemini, codex] = options.providers;
     expect(claude).toMatchObject({ available: true, persona: "supported", defaultModel: "opus", defaultMode: "default" });
-    expect(opencode).toMatchObject({ available: true, persona: "unverified", defaultModel: "big" });
+    expect(opencode).toMatchObject({ available: true, persona: "unverified", defaultModel: null });
     expect(gemini).toMatchObject({ available: false, persona: "unverified", note: "Provider error: not signed in." });
     expect(codex).toMatchObject({ available: false, persona: "supported", note: "Disabled on this host." });
     expect((await s.service.options({ role: "TPM" })).profile).toMatchObject({ name: "tpm", provider: "opencode", model: "big" });
@@ -347,6 +356,11 @@ describe("host provider eligibility", () => {
     const [provider] = createProviders(SNAPSHOT as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>);
     expect(provider!.models.map((model) => model.id)).toEqual(["opus"]);
     expect(provider!.defaultModel).toBe("opus");
+  });
+
+  it("names a default model only when the catalog flags one, never the first listed", () => {
+    const snapshot = { ...SNAPSHOT, entries: [{ ...SNAPSHOT.entries[1]!, models: [{ provider: "opencode", id: "big", label: "Big" }, { provider: "opencode", id: "small", label: "Small", isDefault: true }] }, SNAPSHOT.entries[1]!] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>;
+    expect(createProviders(snapshot).map((provider) => provider.defaultModel)).toEqual(["small", null]);
   });
 });
 
@@ -515,6 +529,53 @@ describe("new session create", () => {
     const s = await setup();
     s.setReadback({ cwd: "/fixtures/elsewhere" });
     expect(await s.service.create(request())).toMatchObject({ state: "differences", differences: ["Working directory differs from the chosen workspace."] });
+  });
+
+  it("carries chosen Speed and Plan through the intent and the create, and confirms them on readback", async () => {
+    const s = await setup();
+    const outcome = await s.service.create(request({ featureValues: { service_tier: "priority", plan_mode: true } }));
+    expect(outcome).toMatchObject({ state: "verified", agentId: "agent-new" });
+    expect(s.listFeatures).toHaveBeenCalledWith({ provider: "claude/opus", cwd: "/fixtures/wks-adam-anchor", modeId: "default", thinkingOptionId: "max" });
+    expect(s.create.mock.calls[0]![0].config.featureValues).toEqual({ service_tier: "priority", plan_mode: true });
+    expect(s.intents[0]).toMatchObject({ request: { featureValues: { service_tier: "priority", plan_mode: true } }, outcome: null });
+  });
+
+  it("sends no settings and reads none when the operator keeps each one's own value", async () => {
+    const s = await setup();
+    expect(await s.service.create(request())).toMatchObject({ state: "verified" });
+    expect(s.listFeatures).not.toHaveBeenCalled();
+    expect(s.create.mock.calls[0]![0].config).not.toHaveProperty("featureValues");
+  });
+
+  it.each([
+    [{ fast_mode: true }, "Setting fast_mode is not offered for this model. Nothing was created."],
+    [{ service_tier: "turbo" }, "Speed turbo is not offered for this model. Nothing was created."],
+    [{ plan_mode: "on" }, "Plan on is not offered for this model. Nothing was created."],
+  ])("refuses %j before any intent or dispatch", async (featureValues, message) => {
+    const s = await setup();
+    expect(await s.service.create(request({ featureValues }))).toMatchObject({ state: "refused", message });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(await readdir(s.stateRoot).catch(() => [])).toEqual([]);
+  });
+
+  it("refuses chosen settings when the host cannot list them", async () => {
+    const s = await setup();
+    s.listFeatures.mockResolvedValueOnce({ ...FEATURES, features: undefined, error: "provider offline" });
+    expect(await s.service.create(request({ featureValues: { service_tier: "priority" } }))).toMatchObject({ state: "refused", message: "Model settings could not be read: provider offline. Nothing was created." });
+    expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("reports a setting the host did not apply instead of claiming it", async () => {
+    const s = await setup();
+    s.setReadback({ features: FEATURES.features });
+    const outcome = await s.service.create(request({ featureValues: { service_tier: "priority", plan_mode: true } }));
+    expect(outcome).toMatchObject({ state: "differences", differences: ["Speed reads default.", "Plan reads false."] });
+  });
+
+  it("reports a setting the host does not read back as not reported", async () => {
+    const s = await setup();
+    s.setReadback({ features: undefined });
+    expect(await s.service.create(request({ featureValues: { service_tier: "priority" } }))).toMatchObject({ state: "differences", differences: ["service_tier reads not reported yet."] });
   });
 
   it("reads the created workspace back and dispatches nothing when its name differs", async () => {

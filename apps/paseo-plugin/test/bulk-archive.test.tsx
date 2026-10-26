@@ -4,25 +4,32 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Each test gets a fresh renderer: a dialog's refs and state must never carry over from another test.
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, Pressable: "Pressable", Text: "Text", View: "View" }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
+vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon", Modal: Object.assign(function Modal() { return null; }, { Content: "Modal.Content" }) }));
 vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
 vi.mock("../client/control-help", () => ({ useActionHelp: () => ({ bindings: {}, dismiss() {} }) }));
 
-import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, archiveIssue, useArchiveSelection } from "../client/bulk-archive";
+import { ArchiveRowFeedback, BulkArchiveDialog, BulkArchiveToolbar, archiveIssue, useArchiveSelection } from "../client/bulk-archive";
 import type { useSessionLifecycle } from "../client/use-session-lifecycle";
+import { SheetFooter } from "../client/operation-sheet";
 import { Action, Disclosure } from "../client/page-controls";
+import { SelectionBar, SelectionHeader } from "../client/session-selection";
 import type { LifecycleRow } from "../shared/session-lifecycle";
 
 type Element = { type?: unknown; props: Record<string, unknown> };
+/** Every element under `node`; a sheet footer draws its buttons in place, so their labels and testIDs are visible. */
 const walk = (node: unknown): Element[] => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(walk)
-  : [node as Element, ...walk((node as Element).props.children), ...walk((node as Element).props.header)];
+  : [node as Element, ...walk((node as Element).props.children), ...walk((node as Element).props.header),
+    ...((node as Element).type === SheetFooter ? walk(SheetFooter((node as Element).props as Parameters<typeof SheetFooter>[0])) : [])];
 const colors = { foreground: "#111", foregroundMuted: "#666", surface0: "#fff", border: "#ccc", statusWarning: "#c80" } as unknown as PluginTheme["colors"];
 type Lifecycle = ReturnType<typeof useSessionLifecycle>;
 // The real Paseo theme values used by session-state-marker.test.
 const dark = { surface0: "#181B1A", surface1: "#1E2120", surface2: "#272A29", border: "#252B2A", foreground: "#fafafa", foregroundMuted: "#A1A5A4", accent: "#20744A", accentForeground: "#ffffff", statusSuccess: "#6cb17b", statusWarning: "#c09664", statusDanger: "#d8847b" };
 const light = { surface0: "#ffffff", surface1: "#fafafa", surface2: "#f4f4f5", border: "#e4e4e7", foreground: "#1a1a1e", foregroundMuted: "#71717a", accent: "#20744A", accentForeground: "#ffffff", statusSuccess: "#3e704a", statusWarning: "#7b5d39", statusDanger: "#9d433b" };
-const luminance = (hex: string) => { const [r, g, b] = hex.match(/[a-f\d]{2}/gi)!.map((value) => parseInt(value, 16) / 255).map((c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
+const luminance = (hex: string) => {
+  const [r, g, b] = hex.match(/[a-f\d]{2}/gi)!.map((value) => parseInt(value, 16) / 255).map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+};
 const contrast = (a: string, b: string) => { const [low, high] = [luminance(a), luminance(b)].sort((x, y) => x - y); return (high! + 0.05) / (low! + 0.05); };
 const row = (id: string, patch: Partial<LifecycleRow> = {}): LifecycleRow => ({ id, title: `Session ${id}`, workspaceId: null, cwd: "/fixture", provider: "codex", model: null, effort: null, mode: null, nativeStatus: "idle", fingerprint: id,
   category: "candidate", eligible: true, reason: "Archive stops this session.", children: [], outcome: "pending", message: null, ...patch });
@@ -30,8 +37,8 @@ const child = (id: string, status = "idle") => ({ id, title: `Child ${id}`, stat
 /** Renders a component element one level, as the host would. */
 const draw = (element: Element) => (element.type as (props: Record<string, unknown>) => Element)(element.props);
 const texts = (tree: unknown) => walk(tree).filter((element) => element.type === "Text").map((element) => [element.props.children].flat().join(""));
-const box = (pressable: Element) => walk(pressable).find((element) => String(element.props.testID).endsWith("-box"))!;
-const styleOf = (element: Element) => element.props.style as Record<string, unknown>;
+const styleOf = (element: Element, state: object = { pressed: false }) => (element.props.style as (value: object) => Record<string, unknown>)(state);
+const byId = (tree: unknown, testID: string) => walk(tree).find((element) => element.props.testID === testID)!;
 const dialog = (lifecycle: Partial<Lifecycle>, extra: { onClose?: () => void; onFinished?: (summary: string) => void } = {}) => {
   const props = { lifecycle: { busy: false, running: false, batch: null, error: null, stop: vi.fn(), run: vi.fn(), prepare: vi.fn(), reconcile: vi.fn(), ...lifecycle } as unknown as Lifecycle,
     root: { current: null }, anchor: { current: null }, rootSize: { width: 390, height: 800 }, colors, compact: true, onClose: extra.onClose ?? vi.fn(), onFinished: extra.onFinished ?? vi.fn() };
@@ -44,49 +51,44 @@ const batch = (patch: Record<string, unknown> = {}) => ({ currentId: null, compl
 beforeEach(() => harness.fresh());
 
 describe("bulk archive selection accessibility", () => {
-  it("keeps Select a labelled button with a 44pt target and help, and only starts or cancels selection", () => {
-    for (const selecting of [false, true]) {
-      const selection = { selecting, start: vi.fn(), clear: vi.fn() } as unknown as ReturnType<typeof useArchiveSelection>;
-      const button = ArchiveSelectionToggle({ selection, disabled: false, colors });
-      expect(button.props).toMatchObject({ accessibilityRole: "button", "aria-pressed": selecting,
-        accessibilityLabel: selecting ? "Cancel archive selection" : "Select sessions for archive" });
-      expect(button.props.accessibilityHint).toContain(selecting ? "without archiving" : "review and confirm");
-      expect(walk(button).some(node => node.type === "Text")).toBe(false);
-      expect(button.props.style({ pressed: false })).toMatchObject({ minWidth: 44, minHeight: 44 });
-      expect(walk(button).some((node) => node.type === "Icon")).toBe(true);
-      button.props.onPress();
-      expect(selection.start).toHaveBeenCalledTimes(selecting ? 0 : 1);
-      expect(selection.clear).toHaveBeenCalledTimes(selecting ? 1 : 0);
+  // Rows are their own checkboxes while selecting (dense-session-row.test); board D1's header holds Select all.
+  const header = (patch: Partial<Parameters<typeof SelectionHeader>[0]> = {}) => SelectionHeader({ count: 1, total: 2, hidden: 0, colors: dark as unknown as PluginTheme["colors"], onDone: vi.fn(),
+    selectAll: { checked: false, unavailable: null, onPress: vi.fn() }, ...patch }) as Element;
+  it("draws D1's Select all as a labelled 44pt checkbox that is checked, clear or refused with its reason, and presses only when allowed", () => {
+    const press = vi.fn(), off = byId(header({ selectAll: { checked: false, unavailable: null, onPress: press } }), "selection-all");
+    expect(off.props).toMatchObject({ accessibilityRole: "checkbox", accessibilityLabel: "Select all 2 matching sessions", accessibilityState: { checked: false, disabled: false }, "aria-checked": false });
+    expect(styleOf(off)).toMatchObject({ width: 44, height: 44, borderColor: "transparent", backgroundColor: undefined, opacity: 1 });
+    expect(styleOf(off, { pressed: false, focused: true })).toMatchObject({ borderColor: dark.foreground });
+    (off.props.onPress as () => void)(); expect(press).toHaveBeenCalledTimes(1);
+    // Checked inverts to a foreground fill with a surface mark, at least 3:1 on every sheet surface in both themes.
+    const on = byId(header({ count: 2, selectAll: { checked: true, unavailable: null, onPress: press } }), "selection-all");
+    expect(on.props).toMatchObject({ accessibilityLabel: "Clear the 2 matching sessions", accessibilityState: { checked: true }, "aria-checked": true });
+    expect(styleOf(on)).toMatchObject({ borderColor: "transparent", backgroundColor: dark.foreground });
+    expect([on, off].map((element) => walk(element).find((node) => node.type === "Icon")!.props)).toMatchObject([{ name: "ListChecks", color: dark.surface0 }, { name: "ListChecks", color: dark.foreground }]);
+    for (const theme of [dark, light]) {
+      const drawn = byId(SelectionHeader({ count: 2, total: 2, hidden: 0, colors: theme as unknown as PluginTheme["colors"], onDone: vi.fn(), selectAll: { checked: true, unavailable: null, onPress: press } }), "selection-all");
+      const fill = styleOf(drawn).backgroundColor as string, mark = walk(drawn).find((node) => node.type === "Icon")!.props.color as string;
+      for (const surface of [theme.surface0, theme.surface1, theme.surface2]) expect(contrast(fill, surface)).toBeGreaterThanOrEqual(3);
+      expect(contrast(mark, fill)).toBeGreaterThanOrEqual(3);
     }
+    const reason = "The session list is not complete yet; select sessions one by one.";
+    const refused = header({ selectAll: { checked: false, unavailable: reason, onPress: press } }), box = byId(refused, "selection-all");
+    expect(box.props).toMatchObject({ accessibilityHint: reason, accessibilityState: { checked: false, disabled: true }, "aria-disabled": true });
+    expect(styleOf(box)).toMatchObject({ opacity: 0.4 });
+    (box.props.onPress as () => void)(); expect(press).toHaveBeenCalledTimes(1);
+    expect(texts(refused)).toContain(reason);
   });
-  it("draws a 22pt box inside a 44pt target with checked, unchecked, busy and disabled states and supports Space once", () => {
-    const press = vi.fn(), element = draw(ArchiveSelectionCheckbox({ session: { id: "fixture-a", title: "Duplicate title" }, checked: true, disabled: false, pending: true, colors, onPress: press }));
-    expect(element.props).toMatchObject({ accessibilityRole: "checkbox", accessibilityLabel: "Select Duplicate title (fixture-a) for archive", accessibilityState: { checked: true, disabled: false, busy: true }, "aria-checked": true });
-    expect((element.props.style as (state: object) => object)({ pressed: false })).toMatchObject({ minWidth: 44, minHeight: 44, opacity: 1 });
-    expect((element.props.style as (state: object) => object)({ pressed: false, focused: true })).toMatchObject({ borderWidth: 2, borderColor: colors.foreground });
-    expect(styleOf(box(element))).toMatchObject({ width: 22, height: 22, borderWidth: 2 });
-    expect(walk(element).find((node) => node.type === "Icon")!.props.name).toBe("Loader");
-    const event = { key: " ", repeat: false, preventDefault: vi.fn(), stopPropagation: vi.fn() };
-    (element.props.onKeyDown as (value: typeof event) => void)(event); (element.props.onKeyDown as (value: typeof event) => void)({ ...event, repeat: true });
-    expect(press).toHaveBeenCalledTimes(1); expect(event.preventDefault).toHaveBeenCalledTimes(2);
-    const disabled = draw(ArchiveSelectionCheckbox({ session: { id: "a", title: "A" }, checked: false, disabled: true, pending: false, colors, onPress: press }));
-    (disabled.props.onKeyDown as (value: typeof event) => void)(event); expect(press).toHaveBeenCalledTimes(1);
-    expect((disabled.props.style as (state: object) => object)({ pressed: false })).toMatchObject({ opacity: 0.4 });
-    expect(walk(disabled).some((node) => node.type === "Icon")).toBe(false);
+  it("counts only the shown selection over every match, names the hidden selection apart and ends with Done", () => {
+    const done = vi.fn(), tree = header({ count: 3, total: 2, hidden: 2, onDone: done });
+    expect(byId(tree, "selection-count").props).toMatchObject({ role: "status", accessibilityLiveRegion: "polite", children: "1 / 2 selected" });
+    expect(byId(tree, "selection-hidden").props.children).toBe("2 selected sessions not shown by the current filters; they stay selected.");
+    expect(byId(header({ count: 2, total: 5, hidden: 1 }), "selection-hidden").props.children).toBe("1 selected session not shown by the current filters; it stays selected.");
+    expect(walk(header()).some((element) => element.props.testID === "selection-hidden")).toBe(false);
+    const finish = byId(tree, "selection-done");
+    expect(finish.props.accessibilityLabel).toBe("Done selecting"); expect(styleOf(finish)).toMatchObject({ minHeight: 44 });
+    (finish.props.onPress as () => void)(); expect(done).toHaveBeenCalledTimes(1);
   });
-  it.each([["dark", dark], ["light", light]] as const)("separates checked from unchecked by fill and mark with at least 3:1 contrast in the %s theme", (_name, theme) => {
-    const make = (checked: boolean) => draw(ArchiveSelectionCheckbox({ session: { id: "a", title: "A" }, checked, disabled: false, pending: false, colors: theme as unknown as PluginTheme["colors"], onPress: vi.fn() }));
-    const on = make(true), off = make(false), onBox = styleOf(box(on)), offBox = styleOf(box(off));
-    expect(offBox.backgroundColor).toBeUndefined(); expect(walk(off).some((node) => node.type === "Icon")).toBe(false);
-    expect(onBox.backgroundColor).toBe(theme.foreground); expect(walk(on).find((node) => node.type === "Icon")!.props).toMatchObject({ name: "Check", color: theme.surface0 });
-    // Rows sit on surface0, a selected or hovered row on surface2, and the dialog on surface1.
-    for (const surface of [theme.surface0, theme.surface1, theme.surface2]) {
-      expect(contrast(offBox.borderColor as string, surface)).toBeGreaterThanOrEqual(3);
-      expect(contrast(onBox.backgroundColor as string, surface)).toBeGreaterThanOrEqual(3);
-    }
-    expect(contrast(theme.surface0, onBox.backgroundColor as string)).toBeGreaterThanOrEqual(3);
-  });
-  it("caps individual selection at 50, refuses Select all above 50, prunes changed scope, removes exact IDs and resets on host switch", () => {
+  it("caps individual selection at 50, freezes it across filter changes, unions Select all within one batch, removes exact IDs and resets on host switch", () => {
     const shown = Array.from({ length: 51 }, (_, n) => `fixture-${n}`);
     let scope = shown, host = "host-a";
     const draw = () => harness.current.render(() => useArchiveSelection(host, scope));
@@ -94,29 +96,42 @@ describe("bulk archive selection accessibility", () => {
     for (const id of shown) draw().toggle(id);
     expect(draw().selected).toHaveLength(50); draw().toggle(shown[0]!); expect(draw().selected).toHaveLength(49);
     draw().remove([shown[1]!, shown[2]!, "not-selected"]); expect(draw().selected).toHaveLength(47); expect(draw().selected).not.toContain(shown[1]);
-    scope = [shown[3]!]; draw(); expect(draw().selected).toEqual([shown[3]]);
-    host = "host-b"; draw(); expect(draw()).toMatchObject({ selected: [], selecting: false });
+    // A narrower view drops nothing: what it hides is counted, any selected session can still be removed, and only a shown one can be added.
+    scope = [shown[3]!, "fresh"]; draw(); expect(draw()).toMatchObject({ hidden: 46 }); expect(draw().selected).toHaveLength(47);
+    draw().toggle(shown[4]!); expect(draw().selected).not.toContain(shown[4]); expect(draw().hidden).toBe(45);
+    draw().toggle(shown[0]!); expect(draw().selected).not.toContain(shown[0]);
+    draw().selectAll(["fresh", shown[3]!]); expect(draw().selected).toHaveLength(47); expect(draw().selected).toContain("fresh");
+    draw().selectAll(["x1", "x2", "x3", "x4"]); expect(draw().selected).toHaveLength(47);
+    draw().selectAll(["x1", "x2", "x3"]); expect(draw().selected).toHaveLength(50);
+    host = "host-b"; draw(); expect(draw()).toMatchObject({ selected: [], selecting: false, hidden: 0 });
   });
-  it("offers a three-state Select all with a cap hint, an Archive N… review step and one polite batch announcement", () => {
-    const selection = (selected: string[]) => ({ selecting: true, selected, clear: vi.fn(), start: vi.fn(), selectShown: vi.fn(), remove: vi.fn() }) as unknown as ReturnType<typeof useArchiveSelection>;
-    const idle = { running: false, batch: null } as unknown as Lifecycle, onReview = vi.fn();
-    const bar = (chosen: ReturnType<typeof selection>, shownCount: number, lifecycle = idle) => BulkArchiveToolbar({ selection: chosen, shownCount, disabled: false, lifecycle, colors, onReview });
-    const all = (tree: unknown) => draw(walk(tree).find((element) => element.props.testID === "sessions-select-all")!);
-    const none = selection([]), some = selection(["a"]), every = selection(["a", "b"]);
-    expect(all(bar(none, 2)).props).toMatchObject({ accessibilityLabel: "Select all 2 shown sessions", "aria-checked": false, disabled: false });
-    expect(all(bar(some, 2)).props["aria-checked"]).toBe("mixed"); expect(walk(all(bar(some, 2))).find((node) => node.type === "Icon")!.props.name).toBe("Minus");
-    expect(all(bar(every, 2)).props).toMatchObject({ accessibilityLabel: "Clear selection", "aria-checked": true });
-    (all(bar(some, 2)).props.onPress as () => void)(); expect(some.selectShown).toHaveBeenCalledTimes(1);
-    (all(bar(every, 2)).props.onPress as () => void)(); expect(every.remove).toHaveBeenCalledExactlyOnceWith(["a", "b"]);
-    const capped = bar(some, 51);
-    expect(all(capped).props).toMatchObject({ disabled: true, accessibilityHint: expect.stringContaining("narrow the view") });
-    expect(texts(capped)).toEqual(expect.arrayContaining(["1 selected", "Max 50 per batch"]));
-    expect(texts(bar(some, 2))).not.toContain("Max 50 per batch");
-    const open = labelled(bar(some, 2), "Archive 1…")[0]!;
-    expect(open.props).toMatchObject({ accessibilityLabel: "Review archive of 1 selected session", disabled: false }); (open.props.onPress as () => void)(); expect(onReview).toHaveBeenCalledTimes(1);
-    expect(labelled(bar(none, 2), "Archive 0…")[0]!.props.disabled).toBe(true);
-    const running = bar(some, 51, { running: true, batch: batch({ completed: 2, total: 4, announcement: "Archiving 4 selected sessions." }), stop: vi.fn(),
-      review: review([row("a", { outcome: "archived", runtime: "closed" }), row("b", { outcome: "blocked" }), row("c"), row("d", { eligible: false })]) } as unknown as Lifecycle);
+  it("offers Take over N, its Auto picker and Archive N on D1's bar, each refused with one reason under the bar", () => {
+    const control = (unavailable: string | null = null) => ({ unavailable, onPress: vi.fn() });
+    const bar = (count: number, takeover = control(), auto = control(), archive = control()) => SelectionBar({ count, takeover, auto, archive, colors: dark as unknown as PluginTheme["colors"] }) as Element;
+    const buttons = (tree: Element) => walk(tree).filter((element) => typeof element.props.label === "string").map((element) => draw(element));
+    const archive = control(), takeover = control(), tree = bar(2, takeover, control(), archive);
+    expect(buttons(tree).map((button) => [button.props.testID, button.props.accessibilityLabel])).toEqual([["selection-takeover", "Take over 2 selected sessions on each seat's chain"],
+      ["selection-takeover-auto", "Choose a model for taking over 2 selected sessions"], ["selection-archive", "Review archive of 2 selected sessions"]]);
+    expect(walk(tree).filter((element) => typeof element.props.label === "string").map((element) => element.props.label)).toEqual(["Take over 2", "Auto", "Archive 2"]);
+    for (const button of buttons(tree)) { expect(button.props.accessibilityState).toEqual({ disabled: false }); expect(styleOf(button)).toMatchObject({ minHeight: 44 }); }
+    (buttons(tree)[2]!.props.onPress as () => void)(); (buttons(tree)[0]!.props.onPress as () => void)();
+    expect(archive.onPress).toHaveBeenCalledTimes(1); expect(takeover.onPress).toHaveBeenCalledTimes(1);
+    expect(texts(tree)).toEqual([]);
+    // Nothing selected refuses every action with one reason; a refused press does nothing.
+    const none = bar(0, takeover, control(), archive);
+    for (const button of buttons(none)) { expect(button.props).toMatchObject({ accessibilityHint: "Select sessions first.", accessibilityState: { disabled: true } }); (button.props.onPress as () => void)(); }
+    expect(archive.onPress).toHaveBeenCalledTimes(1); expect(takeover.onPress).toHaveBeenCalledTimes(1);
+    expect(texts(none)).toEqual(["Select sessions first."]);
+    const busy = "A takeover is running; wait for its results.", waits = "Archive waits for the host and any running archive.", route = "Choosing a model for one takeover is not supported on this fixture host.";
+    expect(texts(bar(1, control(busy), control(route), control(waits)))).toEqual([busy, waits]);
+    const free = bar(1, control(), control(route), control());
+    expect(texts(free)).toEqual([route]); expect(buttons(free).map((button) => button.props.accessibilityHint)).toEqual([undefined, route, undefined]);
+  });
+  it("leaves selecting to D1 and shows only a batch's progress, Stop and one polite announcement", () => {
+    const selection = { selecting: true, selected: ["a"], remove: vi.fn() } as unknown as ReturnType<typeof useArchiveSelection>;
+    expect(walk(BulkArchiveToolbar({ selection, lifecycle: { running: false, batch: null } as unknown as Lifecycle, colors })).map((element) => element.type)).toEqual(["ScrollView"]);
+    const running = BulkArchiveToolbar({ selection, colors, lifecycle: { running: true, batch: batch({ completed: 2, total: 4, announcement: "Archiving 4 selected sessions." }), stop: vi.fn(),
+      review: review([row("a", { outcome: "archived", runtime: "closed" }), row("b", { outcome: "blocked" }), row("c"), row("d", { eligible: false })]) } as unknown as Lifecycle });
     expect(texts(running)).toContain("Archiving 3 of 3");
     const live = walk(running).filter((element) => element.props.accessibilityLiveRegion);
     expect(live).toHaveLength(1); expect(live[0]!.props).toMatchObject({ role: "status", accessibilityLiveRegion: "polite", children: "Archiving 4 selected sessions." });
@@ -126,12 +141,12 @@ describe("bulk archive selection accessibility", () => {
     const chosen = { selecting: true, selected: ["blocked", "unconfirmed"], remove: vi.fn(), selectShown: vi.fn() } as unknown as ReturnType<typeof useArchiveSelection>;
     const lifecycle = { running: false, clear: vi.fn(), stop: vi.fn(), batch: batch({ announcement: "Archived 1 · 1 not confirmed · 2 blocked", summary: "x" }),
       review: review([row("done", { outcome: "archived", runtime: "closed" }), row("blocked", { outcome: "blocked" }), row("other-blocked", { outcome: "blocked" }), row("unconfirmed", { outcome: "uncertain" })]) } as unknown as Lifecycle;
-    const tree = BulkArchiveToolbar({ selection: chosen, shownCount: 3, disabled: false, lifecycle, colors, onReview: vi.fn() });
+    const tree = BulkArchiveToolbar({ selection: chosen, lifecycle, colors });
     const deselect = labelled(tree, "Deselect blocked")[0]!;
     expect(deselect.props.accessibilityLabel).toBe("Deselect 1 blocked session");
     (deselect.props.onPress as () => void)(); expect(chosen.remove).toHaveBeenCalledExactlyOnceWith(["blocked"]);
     (labelled(tree, "Dismiss")[0]!.props.onPress as () => void)(); expect(lifecycle.clear).toHaveBeenCalledTimes(1);
-    expect(labelled(BulkArchiveToolbar({ selection: chosen, shownCount: 3, disabled: false, lifecycle, colors, onReview: vi.fn(), announce: false }), "Dismiss")).toHaveLength(0);
+    expect(labelled(BulkArchiveToolbar({ selection: chosen, lifecycle, colors, announce: false }), "Dismiss")).toHaveLength(0);
   });
 });
 
@@ -173,7 +188,8 @@ describe("bulk archive confirmation", () => {
     const view = dialog({ review: review([row("a", { title: "A very long session title that wraps onto a second line on a 320 point phone screen" }), row("b"), parent]) as never });
     const tree = view.render(), copy = texts(tree);
     expect(tree.props).toMatchObject({ label: "Confirm bulk archive", dialog: true });
-    expect(copy).toContain("Archive 3 sessions?"); expect(copy).toContain("2 ready · 1 blocked");
+    expect(copy).toContain("Archive 3 sessions"); expect(copy).toContain("2 ready · 1 blocked");
+    expect(copy).toEqual(expect.arrayContaining(["Only the selected sessions are requested for archive.", "Archived sessions stay available in Kontor."]));
     expect(copy.filter((value) => value.includes("no undo") || value.includes("There is no undo"))).toEqual(["Archive stops active work and keeps history and files. There is no undo."]);
     expect(copy.some((value) => value.startsWith("Children archive before"))).toBe(false);
     expect(copy.filter((value) => /^(Blocked|Ready) · \d$/.test(value))).toEqual(["Blocked · 1", "Ready · 2"]);
@@ -182,7 +198,7 @@ describe("bulk archive confirmation", () => {
     // IDs and the full server reason wait in row details; nothing visible repeats the cascade paragraph.
     expect(copy.some((value) => value.includes("(parent)") || value.includes("Preserve or finish them"))).toBe(false);
     expect(walk(tree).filter((element) => element.props.role === "listitem")).toHaveLength(3);
-    const archive = labelled(tree, "Archive 2 sessions"); expect(archive).toHaveLength(1); expect(archive[0]!.props.disabled).toBe(false);
+    const archive = labelled(tree, "Archive 2"); expect(archive).toHaveLength(1); expect(archive[0]!.props).toMatchObject({ accessibilityLabel: "Archive 2 sessions", disabled: false });
     expect(labelled(tree, "Cancel")).toHaveLength(1);
   });
   it("keeps the preflight rule and the non-atomic cascade caveat verbatim in About archive, and leads the scope line with child order when a parent is ready", () => {
@@ -206,7 +222,7 @@ describe("bulk archive confirmation", () => {
       const view = dialog({ review: review([...rows]) as never }), copy = texts(harness.current.render(() => shown(BulkArchiveDialog(view.props))));
       expect(copy).toContain(line); expect(copy).toContain("▸ About archive");
       expect(copy.join("\n")).not.toContain("are not atomic");
-      expect(labelled(harness.current.render(() => BulkArchiveDialog(view.props)), `Archive ${rows.length} session${rows.length > 1 ? "s" : ""}`)[0]!.props.disabled).toBe(false);
+      expect(labelled(harness.current.render(() => BulkArchiveDialog(view.props)), `Archive ${rows.length}`)[0]!.props.disabled).toBe(false);
     }
   });
   it("shows a session's ID, full reason and exact children only in its details", () => {
@@ -231,13 +247,13 @@ describe("bulk archive confirmation", () => {
   it("runs once, keeps the toast for a batch that finishes after the dialog closed, and cancels without archiving", async () => {
     const run = vi.fn(async () => "Archived 1"), onFinished = vi.fn(), onClose = vi.fn(), stop = vi.fn();
     const open = dialog({ review: review([row("a")]) as never, run, stop }, { onFinished, onClose });
-    await (labelled(open.render(), "Archive 1 session")[0]!.props.onPress as () => Promise<void>)(); await Promise.resolve();
+    await (labelled(open.render(), "Archive 1")[0]!.props.onPress as () => Promise<void>)(); await Promise.resolve();
     expect(run).toHaveBeenCalledTimes(1); expect(onFinished).not.toHaveBeenCalled();
     harness.fresh();
     let finish = (_summary: string) => {};
     const later = dialog({ review: review([row("a")]) as never, run: vi.fn(() => new Promise<string>((resolve) => { finish = resolve; })), stop }, { onFinished, onClose });
     const tree = later.render();
-    (labelled(tree, "Archive 1 session")[0]!.props.onPress as () => void)();
+    (labelled(tree, "Archive 1")[0]!.props.onPress as () => void)();
     (labelled(tree, "Close")[0]!.props.onPress as () => void)(); expect(stop).toHaveBeenCalledTimes(1); expect(onClose).toHaveBeenCalledTimes(1);
     finish("Stopped before the next session. Archived 1"); await new Promise((resolve) => setTimeout(resolve, 0));
     expect(onFinished).toHaveBeenCalledExactlyOnceWith("Stopped before the next session. Archived 1");
@@ -252,7 +268,7 @@ describe("bulk archive confirmation", () => {
     let tree = view.render();
     expect(texts(tree)).toEqual(expect.arrayContaining(["Archiving…", "Session 2 of 3", "Queued · 2", "Archiving…"]));
     expect(walk(tree).filter((element) => element.props.accessibilityLiveRegion)).toHaveLength(1);
-    expect(labelled(tree, /^Archive \d+ sessions?$/)).toHaveLength(0); expect(labelled(tree, /^(Add|Check|Review)/)).toHaveLength(0);
+    expect(labelled(tree, /^Archive \d+$/)).toHaveLength(0); expect(labelled(tree, /^(Add|Check|Review)/)).toHaveLength(0);
     (labelled(tree, "Stop before next session")[0]!.props.onPress as () => void)(); tree = view.render();
     expect(stop).toHaveBeenCalledTimes(1); expect(texts(tree)).toContain("Stopping after session 2 of 3");
   });
@@ -261,7 +277,7 @@ describe("bulk archive confirmation", () => {
     const rows = [row("closed", { outcome: "archived", runtime: "closed" }), row("quiet", { outcome: "archived", runtime: "not-observed" }), row("lost", { outcome: "uncertain", message: "The request did not report a result. Read its durable receipt." }),
       row("fence", { outcome: "blocked", reconcileReviewId: "00000000-0000-4000-8000-000000000002", message: "An earlier archive owns this session. Check its native outcome." }),
       { ...parent, outcome: "blocked" as const, message: parent.reason }, row("skipped"), row("gone", { outcome: "absent" }), row("was", { outcome: "already_archived" })];
-    const tree = dialog({ review: review(rows) as never, batch: batch({ total: 8, summary: "x", announcement: "x" }) as never, prepare, reconcile, run }, { onClose }).render();
+    const view = dialog({ review: review(rows) as never, batch: batch({ total: 8, summary: "x", announcement: "x" }) as never, prepare, reconcile, run }, { onClose }), tree = view.render();
     const copy = texts(tree);
     expect(copy).toContain("Archive finished");
     const summary = walk(tree).filter((element) => element.props.testID === "bulk-archive-summary");
@@ -278,8 +294,11 @@ describe("bulk archive confirmation", () => {
     expect(reconcile.mock.calls).toEqual([["fence"], ["lost"]]); expect(run).not.toHaveBeenCalled();
     (labelled(tree, "Review 2 again")[0]!.props.onPress as () => void)();
     expect(prepare).toHaveBeenCalledExactlyOnceWith("archive", "filtered", ["parent", "skipped"], true);
-    expect(labelled(tree, /^Archive \d+ sessions?$/)).toHaveLength(0);
-    (labelled(tree, "Done")[0]!.props.onPress as () => void)(); expect(onClose).toHaveBeenCalledTimes(1);
+    expect(labelled(tree, /^Archive \d+$/)).toHaveLength(0);
+    // Review again replaces the rows; the sessions the first batch archived still leave the caller's selection on Close.
+    Object.assign(view.props.lifecycle, { review: review([{ ...parent }, row("skipped")]), batch: null });
+    const again = view.render();
+    (byId(again, "bulk-archive-cancel").props.onPress as () => void)(); expect(onClose).toHaveBeenCalledExactlyOnceWith(["closed", "quiet", "gone", "was"]);
   });
   it("keeps results on screen during a Refresh status, shows a fresh read only while previewing, and reports a failed read", () => {
     const rows = [row("lost", { outcome: "uncertain" })];
@@ -290,5 +309,31 @@ describe("bulk archive confirmation", () => {
     const failed = dialog({ review: null, error: "Archive requires 1–50 explicitly selected session IDs in filtered scope." }).render();
     expect(walk(failed).find((element) => element.props.accessibilityRole === "alert")!.props.children).toContain("1–50");
     expect(walk(failed).some((element) => element.type === Action && element.props.label === "Close")).toBe(true);
+  });
+  it("keeps D4's footer to one row: the dismissal LEFT, the wider primary RIGHT, in review, while running and after results", () => {
+    const footer = (tree: unknown) => walk(byId(tree, "operation-sheet-footer")).filter((element) => typeof element.props.label === "string");
+    const reviewing = footer(dialog({ review: review([row("a"), row("b")]) as never }).render());
+    expect(reviewing.map((button) => [button.props.testID, button.props.label])).toEqual([["bulk-archive-cancel", "Cancel"], ["bulk-archive-confirm", "Archive 2"]]);
+    expect(reviewing.map((button) => styleOf(draw(button)))).toMatchObject([{ flex: 1, minHeight: 44 }, { flex: 1.5, minHeight: 44 }]);
+    harness.fresh();
+    const running = footer(dialog({ review: review([row("a"), row("b")]) as never, running: true, batch: batch({ currentId: "a" }) as never }).render());
+    expect(running.map((button) => [button.props.testID, button.props.label])).toEqual([["bulk-archive-stop", "Stop before next session"]]);
+    harness.fresh();
+    const finished = footer(dialog({ review: review([row("a", { outcome: "archived", runtime: "closed" }), row("b", { outcome: "blocked" })]) as never, batch: batch({ summary: "x" }) as never }).render());
+    expect(finished.map((button) => [button.props.testID, button.props.label])).toEqual([["bulk-archive-close", "Close"], ["bulk-archive-again", "Review 1 again"]]);
+    harness.fresh();
+    expect(footer(dialog({ review: review([row("a", { outcome: "archived", runtime: "closed" })]) as never, batch: batch({ summary: "x" }) as never }).render())
+      .map((button) => button.props.testID)).toEqual(["bulk-archive-close"]);
+  });
+  it("opens in the host's modal where a surface has no anchor, with the same title, body and footer, and closes as Cancel does", () => {
+    const onClose = vi.fn(), stop = vi.fn(), view = dialog({ review: review([row("a")]) as never, stop }, { onClose });
+    const { root: _root, anchor: _anchor, rootSize: _size, ...props } = view.props;
+    const tree = harness.current.render(() => BulkArchiveDialog(props)) as Element;
+    expect(tree.props).toMatchObject({ title: "Archive 1 session", open: true });
+    expect(byId(tree, "bulk-archive-dialog").props.accessibilityLabel).toBe("Confirm bulk archive");
+    expect(texts(tree)).toContain("Only the selected sessions are requested for archive.");
+    expect(byId(tree, "bulk-archive-confirm").props).toMatchObject({ label: "Archive 1", accessibilityLabel: "Archive 1 session" });
+    (tree.props.onOpenChange as (open: boolean) => void)(false);
+    expect(stop).toHaveBeenCalledTimes(1); expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

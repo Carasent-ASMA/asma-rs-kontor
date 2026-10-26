@@ -87,12 +87,26 @@ async function wheel(page, delta) {
   await page.mouse.move(0, 0);
   await settle(page);
 }
+const QUICK_STATES = ['recent', 'activity', 'running', 'needs_input', 'error', 'all', 'idle', 'attention', 'favorites'];
 async function chooseState(page, compact, status) {
   const quick = page.getByTestId(compact ? `sessions-quick-${status}` : `sessions-filter-${status}`);
-  // A narrow quick toolbar keeps some states behind its chooser.
+  // A narrow state toolbar keeps some of the nine quick states behind More; Current and the other states are chosen
+  // on the Filters page.
   if (await quick.count()) await quick.click();
-  else { await page.getByTestId('sessions-mobile-quick-chooser-trigger').click(); await page.getByTestId(`sessions-choose-${status}`).click(); }
+  else if (compact && QUICK_STATES.includes(status)) { await page.getByTestId('sessions-mobile-quick-chooser-trigger').click(); await page.getByTestId(`sessions-choose-${status}`).click(); }
+  else await onFilters(page, compact, () => page.getByTestId(`sessions-filter-${status}`).click());
   await settle(page);
+}
+/**
+ * Show in tree, from the session's actions menu. Opening the menu can first scroll its button into view, so the place
+ * the peek leaves is read with the menu open.
+ */
+async function showInTree(page, id) {
+  await page.getByTestId(`session-actions-${id}`).click();
+  const place = await metrics(page);
+  await page.getByTestId('session-action-show-in-tree').click();
+  await page.getByTestId('sessions-peek').waitFor();
+  return place;
 }
 async function onFilters(page, compact, act) {
   if (compact) {
@@ -104,6 +118,20 @@ async function onFilters(page, compact, act) {
     await act();
   }
   await settle(page);
+}
+
+/**
+ * Scrolls until the first session in view starts `gap` points below the list's top edge, with the session above it ending
+ * at that edge, so the reader sees that session first. Returns its ID and the reading there.
+ */
+async function edgeAt(page, gap) {
+  let state = await metrics(page);
+  const id = Object.keys(state.at).filter(key => state.at[key] > 20).sort((a, b) => state.at[a] - state.at[b])[0];
+  for (let tries = 0; tries < 4 && Math.abs(state.at[id] - gap) > 0.5; tries += 1) {
+    await wheel(page, state.at[id] - gap);
+    state = await metrics(page);
+  }
+  return { id, state };
 }
 
 /**
@@ -215,22 +243,20 @@ async function gesture(page, trace, phase, compact, cdp, distance) {
 /**
  * Deliberate navigation keeps its own placement: a peek shows its session, Back from it returns to the
  * results offset, and a layout change opens Grouped at its remembered tree offset (0 here). Back returns
- * focus to the session's tree button, which scrolls that button into view: within the row, toward it. A quick filter change scrolls
- * nothing itself; where it leaves the list is recorded, not asserted.
+ * focus to the session's actions button, which scrolls that button into view: within the row, toward it. A state
+ * change from the Filters page scrolls nothing itself; where it leaves the list is recorded, not asserted.
  */
 async function deliberate(page, compact, name) {
   await wheel(page, 1400);
-  const middle = await metrics(page);
+  const id = (await metrics(page)).first;
+  const middle = await showInTree(page, id);
   assert.ok(middle.offset > 600, `${name}: control starts mid-list`);
-  const title = await page.getByTestId(`sessions-row-${middle.first}`).getByTestId('sessions-row-title').innerText();
-  await page.getByRole('button', { name: `Show ${title} in the tree`, exact: true }).click();
-  await page.getByTestId('sessions-peek').waitFor();
   await page.waitForTimeout(500);
-  assert.ok((await metrics(page)).inView.includes(middle.first), `${name}: the peek shows ${middle.first}`);
+  assert.ok((await metrics(page)).inView.includes(id), `${name}: the peek shows ${id}`);
   await page.getByRole('button', { name: /^Back to \d+ results?$/ }).click();
   await page.waitForTimeout(500);
   const back = await metrics(page);
-  assert.ok(back.inView.includes(middle.first) && Math.abs(back.at[middle.first] - middle.at[middle.first]) <= ROW_ANCHOR_TOLERANCE, `${name}: Back restores ${middle.offset}, got ${back.offset}`);
+  assert.ok(back.inView.includes(id) && Math.abs(back.at[id] - middle.at[id]) <= ROW_ANCHOR_TOLERANCE, `${name}: Back restores ${middle.offset}, got ${back.offset}`);
   let filter = null;
   if (compact) {
     await chooseState(page, compact, 'current');
@@ -263,7 +289,8 @@ async function check(browser, input) {
     if (status !== 'recent') await page.getByTestId(`sessions-layout-${layout}`).click();
     if (layout === 'grouped') await onFilters(page, compact, () => page.getByTestId('sessions-expand-all').click());
     if (query) await onFilters(page, compact, () => page.getByTestId('sessions-search').fill(query));
-    if (select) await page.getByTestId('sessions-selection-toggle').click();
+    // Select sessions is the actions menu beside the layout control.
+    if (select) { await page.getByTestId('session-actions-toolbar').click(); await page.getByTestId('session-action-select').click(); }
     await settle(page);
     let state = await metrics(page);
     if (!short) assert.ok(state.max > 3 * state.viewport, `${name}: the list must be several screens long (${state.max} over ${state.viewport})`);
@@ -288,18 +315,21 @@ async function check(browser, input) {
         changes: target => target ? [[target, { status: 'running', title: 'SWE • ASMA-99101 batch exact anchor with a longer variable height title for the next layout' }]] : [] });
       const kept = await metrics(page);
       assert.ok(kept.inView.includes(original.first), `${name}: reordered exact ID remains visible`);
-      const beforeBack = await metrics(page);
-      const title = await page.getByTestId(`sessions-row-${beforeBack.first}`).getByTestId('sessions-row-title').innerText();
-      await page.getByRole('button', { name: `Show ${title} in the tree`, exact: true }).click();
-      await page.getByTestId('sessions-peek').waitFor();
+      const id = (await metrics(page)).first;
+      const beforeBack = await showInTree(page, id);
       await page.waitForTimeout(300);
       await page.getByRole('button', { name: /^Back to \d+ results?$/ }).click();
       await page.waitForTimeout(500);
       const back = await metrics(page);
-      assert.ok(beforeBack.first in back.at && Math.abs(back.at[beforeBack.first] - beforeBack.at[beforeBack.first]) <= ROW_ANCHOR_TOLERANCE,
-        `${name}: Back over unmeasured rows restores exact ${beforeBack.first} at ${beforeBack.at[beforeBack.first]}, got ${back.at[beforeBack.first]}`);
-      trace.push({ phase: 'unmeasured-back', id: beforeBack.first, before: beforeBack.at[beforeBack.first], after: back.at[beforeBack.first] });
-      state = back;
+      assert.ok(id in back.at && Math.abs(back.at[id] - beforeBack.at[id]) <= ROW_ANCHOR_TOLERANCE,
+        `${name}: Back over unmeasured rows restores exact ${id} at ${beforeBack.at[id]}, got ${back.at[id]}`);
+      trace.push({ phase: 'unmeasured-back', id, before: beforeBack.at[id], after: back.at[id] });
+      // The session above ends at the top edge, so the reader sees the next one first; that one re-sorts away from here and
+      // the list must carry it, not the one above. Anything drawn under a row but outside it would hold the one above.
+      const edge = await edgeAt(page, 2);
+      assert.ok(edge.state.first === edge.id && edge.state.at[edge.id] === 2, `${name}: ${edge.id} starts 2 px below the top edge (${edge.state.at[edge.id]}, first ${edge.state.first})`);
+      state = await cycle(page, trace, 'edge-anchor-reordered', { status, changes: target => target ? [[target, { status: 'running', title: 'SWE • ASMA-99101 batch edge anchor re-sorted from below the session above' }]] : [] });
+      assert.ok(Math.abs(state.offset - edge.state.offset) > 40, `${name}: the edge re-sort moved ${edge.id} in the list (${edge.state.offset} to ${state.offset})`);
     }
     let steps = 0;
     while (state.offset < state.max - 1) {

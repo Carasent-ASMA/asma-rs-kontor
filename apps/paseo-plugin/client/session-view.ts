@@ -7,12 +7,14 @@ import {
   type DirectoryState,
   type SessionStatus,
 } from "./session-directory";
+import { lastActivity } from "./session-row-format";
 
 export const ALL_STATUS_FILTER = "all" as const;
 
 /** One exclusive state choice; runtime and attention choices may overlap on the same session. */
 export type StatusFilter =
   | "recent"
+  | "activity"
   | "current"
   | typeof ALL_STATUS_FILTER
   | SessionStatus
@@ -22,19 +24,15 @@ export type StatusFilter =
   | "provider_blocked"
   | "favorites";
 
-/** Frequent choices, Recent first; runtime history and less common states sit under More states. */
-export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
-  "recent",
+/** The nine state shortcuts, Last visited first; Current and the rarer states sit under More. */
+export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = ["recent", "activity", "running", "needs_input", "error", ALL_STATUS_FILTER, "idle", "attention", "favorites"];
+export const MORE_STATUS_FILTERS: readonly StatusFilter[] = [
   "current",
-  ALL_STATUS_FILTER,
-  "running",
-  "idle",
-  "error",
-  "needs_input",
-  "attention",
-  "favorites",
+  "initializing",
+  "closed",
+  "earlier_error",
+  "provider_blocked",
 ];
-export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error", "provider_blocked"];
 
 export type SessionMembership = "sessions" | "archived";
 
@@ -58,13 +56,14 @@ export const DEFAULT_SESSION_FILTERS: SessionFilters = {
 };
 
 const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
-  recent: "Recent",
+  recent: "Last visited",
+  activity: "Last activity",
   current: "Current",
   all: "All",
   running: "Running",
   idle: "Idle",
-  error: "Error",
-  needs_input: "Needs input",
+  error: "Errors",
+  needs_input: "Questions",
   attention: "Attention",
   earlier_error: "Earlier errors",
   provider_blocked: "Provider blocked (observed)",
@@ -113,6 +112,8 @@ export function matchesStatus(
   switch (status) {
     case "recent":
       return recent.includes(entry.id);
+    case "activity":
+      return lastActivity(entry) !== null;
     case "current":
       // Age and provider-history uncertainty never prove a session broken.
       return !isArchivedSession(entry) && freshAvailability(entry)?.state !== "missing" && (entry.needsInput || entry.status !== "closed" && entry.status !== "error");

@@ -10,13 +10,28 @@ fs.mkdirSync(output, { recursive: true });
 const report = { cases: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 let browser;
 const primary = page => page.getByTestId('sessions-applied-filters');
+// The toolbar's actions entry holds Select sessions where the Select toggle stood.
+const ACTIONS = 'session-actions-toolbar', ACTIONS_HELP = 'Actions for the sessions shown';
+// Sessions lands on Last visited, empty in this fixture and with the layout fixed; All lists every fixture session.
+async function chooseAll(page) {
+  if (await page.getByTestId('sessions-mobile-filters-trigger').isVisible()) {
+    await page.getByTestId('sessions-mobile-filters-trigger').click();
+    await page.getByTestId('sessions-filter-all').click();
+    assert.match(await page.getByTestId('sessions-mobile-filters-count').innerText(), /^15 matching sessions/);
+    await back(page);
+  } else {
+    if (!(await page.getByTestId('sessions-filter-all').isVisible())) await page.getByTestId('sessions-advanced-toggle').click();
+    await page.getByTestId('sessions-filter-all').click();
+  }
+  assert.equal(await page.getByTestId('sessions-layout').getAttribute('aria-disabled'), null, 'All leaves the layout free');
+}
 async function back(page) {
   await page.getByRole('button', { name: 'Back to sessions, keep filter choices', exact: true }).click();
   await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'sessions-mobile-filters-trigger');
 }
 async function noOverflow(page, width) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  for (const id of ['sessions-selection-toggle', 'sessions-layout-grouped', 'sessions-layout-flat']) {
+  for (const id of [ACTIONS, 'sessions-layout-grouped', 'sessions-layout-flat']) {
     const target = page.getByTestId(id);
     await target.scrollIntoViewIfNeeded();
     const box = await target.boundingBox();
@@ -27,7 +42,7 @@ async function noOverflow(page, width) {
   }
 }
 async function toolbarState(page) {
-  return Promise.all(['sessions-selection-toggle', 'sessions-layout-grouped', 'sessions-layout-flat', 'sessions-notices-button'].map(async id => {
+  return Promise.all([ACTIONS, 'sessions-layout-grouped', 'sessions-layout-flat', 'sessions-notices-button'].map(async id => {
     const node = page.getByTestId(id);
     return await node.count() ? [await node.getAttribute('aria-pressed'), await node.getAttribute('aria-checked'), await node.getAttribute('aria-expanded')] : null;
   }));
@@ -44,7 +59,7 @@ async function hold(page, context, id, title) {
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [await point(page, id)] });
   await page.getByRole('tooltip').waitFor({ timeout: 3000 });
   await page.waitForFunction(() => getComputedStyle(document.querySelector('[role="tooltip"]')).opacity === '1');
-  assert.ok((await page.getByRole('tooltip').innerText()).startsWith(`${title}.`), 'hold help has an action title and explanation');
+  assert.ok((await page.getByRole('tooltip').innerText()).startsWith(title), 'hold help has an action title and explanation');
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await page.waitForTimeout(100);
   assert.deepEqual(await toolbarState(page), before, `${id}: long hold never activates on release`);
@@ -54,21 +69,22 @@ async function hold(page, context, id, title) {
 async function touchHelp(page, context) {
   const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
   if (await hide.isVisible()) await hide.click();
-  await hold(page, context, 'sessions-selection-toggle', 'Select sessions');
+  await hold(page, context, ACTIONS, ACTIONS_HELP);
   await page.keyboard.press('Escape');
-  await page.getByTestId('sessions-selection-toggle').tap();
-  assert.equal(await page.getByTestId('sessions-selection-toggle').getAttribute('aria-pressed'), 'true', 'normal tap selects once');
-  await hold(page, context, 'sessions-selection-toggle', 'Cancel selection');
-  await page.keyboard.press('Escape');
-  await page.getByTestId('sessions-selection-toggle').tap();
-  assert.equal(await page.getByTestId('sessions-selection-toggle').getAttribute('aria-pressed'), 'false', 'normal tap cancels once');
-  await hold(page, context, 'sessions-layout-flat', 'Flat');
+  await page.getByTestId(ACTIONS).tap();
+  await page.getByRole('dialog', { name: 'Session actions', exact: true }).waitFor();
+  await page.getByTestId('session-action-select').tap();
+  await page.getByTestId('selection-header').waitFor();
+  assert.equal(await page.getByTestId(ACTIONS).count(), 0, 'normal tap opens the actions once; Select sessions puts the selection header in its place');
+  await page.getByTestId('selection-done').tap();
+  await page.getByTestId(ACTIONS).waitFor();
+  await hold(page, context, 'sessions-layout-flat', 'Flat.');
   await page.keyboard.press('Escape');
   await page.getByTestId('sessions-layout-flat').tap();
-  await hold(page, context, 'sessions-layout-grouped', 'Grouped');
+  await hold(page, context, 'sessions-layout-grouped', 'Grouped.');
   await page.keyboard.press('Escape');
   await page.getByTestId('sessions-layout-grouped').tap();
-  await hold(page, context, 'sessions-notices-button', 'Notices');
+  await hold(page, context, 'sessions-notices-button', 'Notices.');
   await page.keyboard.press('Escape');
   await page.getByTestId('sessions-notices-button').tap();
   await hide.waitFor();
@@ -105,23 +121,30 @@ async function check(width, height, theme, largeText = false, source = 'live') {
   try {
     await page.goto(`${origin}/?layout=compact&theme=${theme}&source=${source}&rows=12`);
     await page.getByTestId('sessions-layout-flat').waitFor();
+    await chooseAll(page);
     const initial = await primary(page).innerText();
     assert.equal(initial, 'My work');
-    assert.match(await page.getByTestId('sessions-quick-current').getAttribute('aria-label'), /15 sessions/);
-    if (source === 'stale') assert.match(await page.getByTestId('sessions-quick-current').getAttribute('aria-label'), /retained read/);
+    assert.match(await page.getByTestId('sessions-quick-all').getAttribute('aria-label'), /15 sessions/);
+    if (source === 'stale') assert.match(await page.getByTestId('sessions-quick-all').getAttribute('aria-label'), /retained read/);
     await page.getByTestId('sessions-layout-flat').click();
     assert.equal(await page.getByTestId('sessions-layout-flat').getAttribute('aria-checked'), 'true', 'layout checked state');
     assert.equal(await page.getByTestId('sessions-layout-grouped').getAttribute('aria-checked'), 'false', 'unchecked choice');
     assert.equal(await primary(page).innerText(), initial, 'layout preserves the matching count');
-    const usage = await page.getByTestId('session-usage').allTextContents();
-    assert.ok(usage.some(text => text.includes('≥300K ↓ · 1.2M ↑ · 234.6K cached')), 'NB-locale rows retain compact input/output/cache units');
+    // Rows carry whole-session totals; the latest provider report keeps its NB-locale counts in Details.
+    assert.ok((await page.getByTestId('session-row-tokens').count()) > 0, 'rows carry their totals line');
+    await page.getByTestId('session-actions-agt_fixture_01').click();
+    await page.getByTestId('session-action-details').click();
+    const usageReport = await page.getByTestId('session-usage-details').innerText();
+    assert.ok([/300\s000/, /1\s200\s000/, /234\s567/].every(count => count.test(usageReport)), 'NB-locale Details keep the input/output/cache-read report');
+    await page.getByRole('button', { name: /^Close details:/ }).click();
+    await page.getByTestId('sessions-details').waitFor({ state: 'detached' });
     await page.screenshot({ path: path.join(output, `${name}-flat-tokens.png`) });
     if (source === 'live') {
-      await page.getByTestId('sessions-selection-toggle').click();
-      assert.equal(await page.getByTestId('sessions-selection-toggle').getAttribute('aria-pressed'), 'true', 'selection entered');
-      assert.ok((await page.getByTestId('sessions-selection-toggle').getAttribute('aria-label')).includes('Cancel'));
-      await page.getByTestId('sessions-selection-toggle').click();
-      assert.equal(await page.getByTestId('sessions-selection-toggle').getAttribute('aria-pressed'), 'false', 'selection cancelled');
+      await page.getByTestId(ACTIONS).click();
+      await page.getByTestId('session-action-select').click();
+      await page.getByTestId('selection-header').waitFor();
+      await page.getByTestId('selection-done').click();
+      await page.getByTestId('selection-header').waitFor({ state: 'detached' });
     }
     await page.getByTestId('sessions-mobile-filters-trigger').click();
     assert.match(await page.getByTestId('sessions-mobile-filters-count').innerText(), /^15 matching sessions/);
@@ -136,6 +159,7 @@ async function check(width, height, theme, largeText = false, source = 'live') {
     await page.getByTestId('sessions-reset-view').click();
     await back(page);
     assert.equal(await page.getByTestId('sessions-layout-grouped').getAttribute('aria-checked'), 'true', 'layout checked state');
+    await chooseAll(page);
     assert.equal(await primary(page).innerText(), initial);
     await page.getByTestId('sessions-layout-grouped').focus();
     await page.keyboard.press('ArrowRight');
@@ -156,7 +180,7 @@ async function check(width, height, theme, largeText = false, source = 'live') {
     }
     await noOverflow(page, width);
     if (!largeText) {
-      const boxes = await Promise.all(['sessions-selection-toggle', 'sessions-layout-grouped', 'sessions-layout-flat'].map(id => page.getByTestId(id).boundingBox()));
+      const boxes = await Promise.all([ACTIONS, 'sessions-layout-grouped', 'sessions-layout-flat'].map(id => page.getByTestId(id).boundingBox()));
       assert.ok(boxes.every(box => Math.abs(box.y - boxes[0].y) <= 1), 'three controls share one compact row');
     }
     const badges = await page.getByTestId('organization-state-counts').allTextContents();
@@ -168,7 +192,7 @@ async function check(width, height, theme, largeText = false, source = 'live') {
     assert.deepEqual(errors, []);
     await page.screenshot({ path: path.join(output, `${name}.png`) });
     if (!largeText && source === 'live') {
-      await hold(page, context, 'sessions-layout-flat', 'Flat');
+      await hold(page, context, 'sessions-layout-flat', 'Flat.');
       await page.evaluate(() => window.leaveSessions());
       await page.getByRole('tooltip').waitFor({ state: 'detached' });
       assert.ok((await page.locator('body').innerText()).includes('Fixture next page'), 'control unmount removes held help');
@@ -188,17 +212,18 @@ async function desktop(theme) {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(`${origin}/?theme=${theme}&rows=12`);
-    await page.getByTestId('sessions-selection-toggle').waitFor();
+    await page.getByTestId(ACTIONS).waitFor();
+    await chooseAll(page);
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (await hide.isVisible()) await hide.click();
     const before = await toolbarState(page);
-    for (const [id, title] of [['sessions-selection-toggle', 'Select sessions'], ['sessions-layout-grouped', 'Grouped'], ['sessions-layout-flat', 'Flat'], ['sessions-notices-button', 'Notices']]) {
+    for (const [id, title] of [[ACTIONS, ACTIONS_HELP], ['sessions-layout-grouped', 'Grouped.'], ['sessions-layout-flat', 'Flat.'], ['sessions-notices-button', 'Notices.']]) {
       const target = page.getByTestId(id);
       await target.hover();
       const tip = page.getByRole('tooltip');
       await tip.waitFor({ timeout: 3000 });
       await page.waitForFunction(() => getComputedStyle(document.querySelector('[role="tooltip"]')).opacity === '1');
-      assert.ok((await tip.innerText()).startsWith(`${title}.`));
+      assert.ok((await tip.innerText()).startsWith(title));
       assert.equal(await target.getAttribute('aria-describedby'), await tip.getAttribute('id'));
       await tip.hover();
       await page.waitForTimeout(200);
@@ -208,7 +233,7 @@ async function desktop(theme) {
       await page.keyboard.press('Tab');
       await target.focus();
       await tip.waitFor({ timeout: 3000 });
-      assert.ok((await tip.innerText()).startsWith(`${title}.`), 'keyboard focus exposes titled help');
+      assert.ok((await tip.innerText()).startsWith(title), 'keyboard focus exposes titled help');
       await page.keyboard.press('Escape');
     }
     assert.deepEqual(await toolbarState(page), before, 'discovery never activates controls');

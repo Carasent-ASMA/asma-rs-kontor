@@ -33,23 +33,24 @@ async function check(width, theme) {
       window.compactRowReads = 0;
       runtime.fakePaseo.agents.list = (...args) => { window.compactRowReads++; return list(...args); };
     });
-    const result = page.getByTestId('sessions-result-agt_model_report_0');
-    const rowText = await row.innerText(), box = await row.boundingBox();
-    assert.ok(box && box.height >= (compact ? 44 : 40), 'row retains the touch target');
-    assert.ok(rowText.includes('Codex selected model') && rowText.includes('sol'), 'human title and truthful model stay visible');
-    if (compact) {
-      await expect(row.getByTestId('sessions-compact-content')).toHaveCount(1);
-      assert.ok(!/Availability unknown|Retirement:|Not archived|Native running|Native idle/.test(rowText), 'routine diagnostics stay behind Details');
-      assert.ok(box.height <= 132, `normal compact row remains bounded at ${width}: ${box.height}`);
-    } else await expect(row.getByTestId('sessions-compact-content')).toHaveCount(0);
+    const result = page.getByTestId('sessions-result-agt_model_report_0'), body = row.getByTestId('session-row-body');
+    const rowText = await row.innerText(), box = await row.boundingBox(), spoken = await body.getAttribute('aria-label');
+    assert.ok(box && box.height >= 44, 'row retains the touch target');
+    assert.ok(rowText.includes('Codex selected model') && rowText.split('\n').includes('S6.1 · XH'), 'human title and the model alias stay visible');
+    assert.ok(spoken.includes('OpenAI gpt-6.1-sol, effort XH'), 'the spoken row names the full model');
+    await expect(row.getByTestId('sessions-compact-content')).toHaveCount(0);
+    assert.ok(!/Availability unknown|Retirement:|Not archived|Native running|Native idle/.test(rowText), 'routine diagnostics stay behind Details');
+    assert.ok(box.height <= 132, `normal row remains bounded at ${width}: ${box.height}`);
+    // The dense row's state icon and menu trigger are 40px wide by design; height keeps the 44px target.
     for (const button of await result.getByRole('button').all()) {
       const target = await button.boundingBox();
-      if (compact && target) assert.ok(target.width >= 44 && target.height >= 44, 'adjacent row controls retain 44px targets');
+      if (target) assert.ok(target.width >= 40 && target.height >= 44, 'adjacent row controls keep 40x44px targets');
     }
     const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     assert.ok(documentWidth <= width + 1, `no page overflow: ${documentWidth}/${width}`);
     await page.screenshot({ path: path.join(output, `${name}-rows.png`), fullPage: true });
-    await result.getByTestId('sessions-row-details').click();
+    await page.getByTestId('session-actions-agt_model_report_0').click();
+    await page.getByTestId('session-action-details').click();
     await expect(page.getByTestId('sessions-details')).toBeVisible();
     const facts = await page.getByTestId('sessions-details-lines').innerText();
     assert.ok(facts.includes('Native status and availability') && facts.includes('Not archived'), 'native membership and availability remain in Details');
@@ -60,7 +61,7 @@ async function check(width, theme) {
     const extraReads = await page.evaluate(() => window.compactRowReads);
     assert.equal(extraReads, 0, 'row rendering and Details add no inventory requests');
     assert.ok(!events.some(event => /simulated\.lifecycle|settings\.save|keyboard\.save|paseo\.unsupported/.test(event)), 'no lifecycle/settings/unsupported effects');
-    await row.focus(); await page.keyboard.press('Enter');
+    await body.focus(); await page.keyboard.press('Enter');
     await expect.poll(() => events.filter(event => event.includes('navigation.openAgent agt_model_report_0')).length).toBe(1);
     assert.equal(errors.length, 0, errors.join('\n'));
     report.cases.push({ name, status: 'PASS', compact, rowHeight: box.height, rowText, extraInventoryReads: extraReads, events, errors });

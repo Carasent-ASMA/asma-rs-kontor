@@ -5,9 +5,9 @@ import { deriveSessionProjection, MISSING_OWNER_ADAPTER, READY_IS_DESCRIPTIVE, t
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Platform: { OS: "web" }, Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", ScrollView: "ScrollView" }));
 
-import { SessionRetirementConflict, SessionRetirementDetails, SessionRetirementSummary, retirementDispositionLabel } from "../client/session-lifecycle-view";
+import { SessionRetirementConflict, SessionRetirementDetails, retirementDispositionLabel } from "../client/session-lifecycle-view";
 
-const colors = { accent: "#05f", accentForeground: "#fff", border: "#ccc", foreground: "#111", foregroundMuted: "#666", surface0: "#fff", surface1: "#f4f4f4", surface2: "#eee", statusDanger: "#c00", statusSuccess: "#080", statusWarning: "#c80" } as unknown as Parameters<typeof SessionRetirementSummary>[0]["colors"];
+const colors = { accent: "#05f", accentForeground: "#fff", border: "#ccc", foreground: "#111", foregroundMuted: "#666", surface0: "#fff", surface1: "#f4f4f4", surface2: "#eee", statusDanger: "#c00", statusSuccess: "#080", statusWarning: "#c80" } as unknown as Parameters<typeof SessionRetirementDetails>[0]["colors"];
 const source = (id: string, kind: "native" | "label" | "archive" | "owner" = "label") => ({ id, kind, detail: `fixture ${id}`, observedAt: "2026-10-24T08:00:00.000Z", revision: "rev-fixture", fresh: "current" as const });
 const input = (patch: Partial<SessionProjectionInput> = {}): SessionProjectionInput => ({
   hostId: "host", coverage: { archiveInventory: "complete", observedAt: "2026-10-24T08:00:02.000Z", detail: "complete fixture inventory" },
@@ -36,15 +36,10 @@ describe("read-only retirement view", () => {
     expect(retirementDispositionLabel(disposition)).toBe(label);
   });
 
-  it("shows the disposition, exact reason, native status and archived conflict separately", () => {
-    const projection = conflicts(deriveSessionProjection(input()));
-    const drawn = SessionRetirementSummary({ projection, colors });
-    const all = textOf(drawn);
-    expect(all).toContain("Retirement: Retain");
-    expect(all).toContain("Native active execution is present.");
-    expect(all).toContain("Native running · Archived");
-    expect(all).toContain("Archived conflict");
-    expect(all).toContain("archived-with-active-execution");
+  it("names an archived conflict with its exact kind", () => {
+    const drawn = SessionRetirementConflict({ conflicts: conflicts(deriveSessionProjection(input())).conflicts, colors });
+    expect(textOf(drawn)).toContain("Archived conflict");
+    expect(textOf(drawn)).toContain("archived-with-active-execution");
     expect(elements(drawn).find((element) => element.props.testID === "session-retirement-conflicts")).toBeTruthy();
   });
 

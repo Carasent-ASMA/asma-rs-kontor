@@ -19,9 +19,16 @@ export type HostEvent = {
     | "simulated.update"
     | "simulated.review"
     | "simulated.lifecycle"
+    | "simulated.summary"
+    | "simulated.attach"
+    | "simulated.takeover"
+    | "simulated.switch"
     | "sources.summaries"
     | "sources.read"
-    | "paseo.unsupported";
+    | "paseo.unsupported"
+    | "captured.loaded"
+    | "captured.missing"
+    | "composer.pill";
   readonly detail: string;
 };
 

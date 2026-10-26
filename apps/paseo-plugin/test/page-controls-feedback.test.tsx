@@ -7,7 +7,6 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 vi.mock("../client/control-help", () => { const help = () => ({ bindings: {}, dismiss: () => {}, hold: () => {}, forget: () => {} }); return { useControlHelp: help, useActionHelp: help }; });
 
 import { Action, Disclosure, IconButton } from "../client/page-controls";
-import { ArchiveSessionButton } from "../client/session-lifecycle-view";
 
 type Element = { type?: unknown; props: Record<string, unknown> };
 const walk = (node: unknown): Element[] => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(walk) : [node as Element, ...walk((node as Element).props.children)];
@@ -72,15 +71,5 @@ describe("shared controls acknowledge a press", () => {
     (element.props.onPress as () => void)(); (element.props.onPress as () => void)();
     expect(onPress).toHaveBeenCalledTimes(2);
     expect(spinning(pressable(() => <Action label="Close" colors={colors} onPress={onPress} />))).toBe(false);
-  });
-
-  it("draws the pending row X as a full-strength spinner while every X is disabled", () => {
-    const x = (pending: boolean) => pressable(() => <ArchiveSessionButton session={{ id: "agt_a", title: "Session A" }} colors={colors} disabled={pending} pending={pending} onPress={() => {}} />);
-    const idle = x(false), pending = x(true);
-    expect(spinning(idle)).toBe(false);
-    expect(look(idle, true)).toMatchObject({ backgroundColor: "#eee", opacity: 0.7 });
-    expect(spinning(pending)).toBe(true);
-    expect(pending.props).toMatchObject({ "aria-busy": true, accessibilityState: { disabled: true, busy: true }, delayPressIn: 0 });
-    expect(look(pending, false).opacity).toBe(1);
   });
 });

@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { PaseoApi, PaseoAgentListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { UNSUPPORTED } from "../shared/session-navigator";
 import { readConfig, type KontorPluginConfig } from "./config";
 import { parent, seatBinding } from "./labels";
 import { within } from "./placement";
@@ -18,7 +19,7 @@ import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import {
-  TAKEOVER_LIMIT, RESUME_PROMPT, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, lifecycleCapabilities, unresolvedArchive,
+  TAKEOVER_LIMIT, RESUME_REMOVED, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
   TAKEOVER_PROMPT, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type TakeoverOutcome, type TakeoverReview, type TakeoverReviewInput, type UnresolvedRef,
@@ -46,7 +47,7 @@ const legacySuccess = (row: LifecycleRow) => row.outcome === "uncertain" && row.
 const UNRESOLVED_LIMIT = 100;
 // Compare-and-swap: every fence phase write, its paired result save and every release run only while the fence
 // still holds the exact bytes this call read or wrote (every field, including phase and the per-execute token), so a
-// fence written after that (a successor Resume or Archive) is never overwritten or removed. One step per path at a time.
+// fence written after that (a successor Archive or Take over) is never overwritten or removed. One step per path at a time.
 // ponytail: an in-process queue; one plugin worker owns the root. Cross-process ownership would need a lock directory.
 const fenceSteps = new Map<string, Promise<unknown>>();
 function queued<T>(path: string, step: () => Promise<T>): Promise<T> {
@@ -62,7 +63,7 @@ function whileOwned(path: string, expected: string, step: () => Promise<unknown>
   });
 }
 const release = (path: string, expected: string) => whileOwned(path, expected, () => unlink(path));
-// Refusal memory, write-ahead and per ID: every Resume-path exact read first publishes its attempt, then its outcome, as
+// Refusal memory, write-ahead and per ID: every fenced exact read first publishes its attempt, then its outcome, as
 // one snapshot with a per-ID sequence. Order is that sequence, never a clock: the record, its held fallback and a complete
 // temp are read back by it. This worker's memory is the newest state (one writer per root, as above); on first use it
 // adopts the disk.
@@ -149,37 +150,26 @@ function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
   // Block every managed child, even one the native cascade would detach today.
   return inventory.filter((child) => child.archivedAt == null && parent(child) === agent.id);
 }
-// Resume is a same-ID retry on the session's own route, so no review target takes part in eligibility. A refusal an
-// earlier exact read saw keeps Resume closed until positive recovery, whatever this read shows.
-export function lifecycleRow(agent: Agent, inventory: Agent[], action: LifecycleReview["action"], refusal: ProviderRefusal | null = null): LifecycleRow {
+/** One archive review row. Resume was removed from Kontor; its receipts stay readable but are never classified again. */
+export function lifecycleRow(agent: Agent, inventory: Agent[]): LifecycleRow {
   const children = childrenOf(agent, inventory).map((child) => ({ id: child.id, title: child.title ?? child.id, status: child.status, workspaceId: child.workspaceId ?? null }));
   const row: LifecycleRow = { id: agent.id, title: agent.title ?? agent.id, workspaceId: agent.workspaceId ?? null, cwd: agent.cwd,
     provider: agent.provider, model: agent.runtimeInfo?.model ?? agent.model ?? null,
     effort: agent.effectiveThinkingOptionId ?? agent.runtimeInfo?.thinkingOptionId ?? null,
     mode: agent.currentModeId ?? agent.runtimeInfo?.modeId ?? null, nativeStatus: agent.status,
-    fingerprint: action === "archive" ? archiveRevision(agent) : lifecycleRevision(agent), category: "excluded", eligible: false, reason: "", children, outcome: "pending", message: null };
-  const labels = agent.labels ?? {};
+    fingerprint: archiveRevision(agent), category: "excluded", eligible: false, reason: "", children, outcome: "pending", message: null };
   if (agent.archivedAt != null) row.reason = "Already archived. This action never revives an archived session.";
-  else if (action === "archive" && children.length) row.reason = "Archive blocked: native archive can cascade to these children. Preserve or finish them through the owning workflow first.";
-  else if (action === "archive") { row.category = "candidate"; row.eligible = true; row.reason = "Archive stops this session and its provider tools, closes its runtime, and keeps durable history and files. No undo is exposed by this SDK."; }
-  else if (labels["takeover.successor"] || labels["takeover.replaced-by"] || labels["recovery.successor"]) row.reason = "Already replaced. Follow the recorded successor; do not resume this predecessor.";
-  else if (labels["task.status"] === "completed" || labels["task.status"] === "stopped" || agent.status === "closed") row.reason = "Closed, completed or intentionally stopped. No automatic failure is inferred.";
-  else if (agent.pendingPermissions.length || agent.attentionReason === "permission") row.reason = "Waiting for permission/input. Resolve that wait in the native session.";
-  else if (agent.activeTurn || agent.status === "running" || agent.status === "initializing") { row.category = "unknown"; row.reason = "Execution may still be progressing or waiting on a dependency. No supported stalled-execution proof; age is not evidence."; }
-  else if (agent.status !== "error") { row.category = "unknown"; row.reason = "No current native failure. Idle, old timestamps and earlier error notices do not prove a stuck task."; }
-  else if (refusalKind(agent)) { row.category = "candidate"; row.reason = "Quota/auth/provider restriction: no validated changed account or condition. Open native Accounts/session to resolve it, then review again. Resume alone is not a takeover or a quota fix."; }
-  else if (refusal && refusal.recovery !== "confirmed") { row.category = "candidate"; row.reason = `Last provider refusal (${refusal.kind}) has no confirmed recovery: no later turn is shown to have completed. Resolve it in the native session or Accounts, then read it again.`; }
-  else if (!agent.capabilities.supportsSessionPersistence || !agent.persistence?.sessionId || !row.mode || !agent.cwd) { row.category = "candidate"; row.reason = "Missing native history/persistence, permission mode or checkout evidence. This screen cannot fabricate a recovery brief."; }
-  else { row.category = "candidate"; row.eligible = true; row.reason = `Current native error${agent.lastError ? `: ${agent.lastError}` : ""}. Retry in the same session with existing context and permissions; dispatch is not completion.`; }
+  else if (children.length) row.reason = "Archive blocked: native archive can cascade to these children. Preserve or finish them through the owning workflow first.";
+  else { row.category = "candidate"; row.eligible = true; row.reason = "Archive stops this session and its provider tools, closes its runtime, and keeps durable history and files. No undo is exposed by this SDK."; }
   return row;
 }
 
 // Archive needs only the active children (childrenOf skips archived ones), so its walk never reads archived history.
-async function inventory(client: { agents: Pick<LifecycleClient["agents"], "list"> }, action: LifecycleReview["action"]): Promise<Agent[]> {
+async function inventory(client: { agents: Pick<LifecycleClient["agents"], "list"> }): Promise<Agent[]> {
   const agents = new Map<string, Agent>(), cursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < 1_000; page++) {
-    const result = await client.agents.list({ filter: { includeArchived: action !== "archive" }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    const result = await client.agents.list({ filter: { includeArchived: false }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
     for (const { agent } of result.entries) agents.set(agent.id, agent);
     if (!result.pageInfo.hasMore) return [...agents.values()];
     const next = result.pageInfo.nextCursor;
@@ -260,41 +250,33 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (refs.length > UNRESOLVED_LIMIT) throw new Error(`More than ${UNRESOLVED_LIMIT} archives are not confirmed (${refs.length} found). The list cannot be shown exactly; no fence was changed.`);
     return refs;
   }
-  async function capabilities() {
-    const snapshot = await client.providers.snapshot();
-    return { providers: snapshot.entries.map((entry) => ({ id: entry.provider, status: entry.status,
-      models: (entry.models ?? []).filter((model) => model.isSelectable !== false).map((model) => ({ id: model.id, efforts: (model.thinkingOptions ?? []).map((option) => option.id) })) })), limitation: TAKEOVER_LIMIT };
-  }
-  async function preview(input: { action: LifecycleReview["action"]; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget }): Promise<LifecycleReview> {
-    if (input.action === "archive" && (input.scope !== "filtered" || input.agentIds.length < 1 || input.agentIds.length > ARCHIVE_BATCH_LIMIT)) throw new Error(`Archive requires 1–${ARCHIVE_BATCH_LIMIT} explicitly selected session IDs in filtered scope.`);
-    const all = await inventory(client, input.action), ids = new Set(input.agentIds);
-    const selectedIds = input.scope === "host" ? all.filter((agent) => agent.archivedAt == null).map((agent) => agent.id) : [...ids];
+  async function preview(input: { action: "archive"; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget }): Promise<LifecycleReview> {
+    // Resume was removed with its toolbar: a request naming it is refused before any read or write.
+    if (input.action !== "archive") throw new Error(RESUME_REMOVED);
+    if (input.scope !== "filtered" || input.agentIds.length < 1 || input.agentIds.length > ARCHIVE_BATCH_LIMIT) throw new Error(`Archive requires 1–${ARCHIVE_BATCH_LIMIT} explicitly selected session IDs in filtered scope.`);
+    const all = await inventory(client), ids = new Set(input.agentIds);
     const rows: LifecycleRow[] = [];
-    for (const id of selectedIds) {
-      const observed = await observe(id, input.action === "resume"), listed = all.find((agent) => agent.id === id);
+    for (const id of ids) {
+      const observed = await observe(id), listed = all.find((agent) => agent.id === id);
       const record = observed.agent ?? listed;
-      // Unreadable refusal evidence closes only this row's Resume, never the whole review.
-      let refusal: ProviderRefusal | null = null, refusalProblem: string | null = null;
-      if (input.action === "resume") try { refusal = await refusalFor(id, observed); } catch (error) { refusalProblem = errorText(error); }
       // No record: the exact read either confirmed absence ("missing") or failed ("unknown"); only absence reads as missing.
-      const row: LifecycleRow = record ? lifecycleRow(record, all, input.action, refusal) : {
+      const row: LifecycleRow = record ? lifecycleRow(record, all) : {
         id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null,
         nativeStatus: observed.availability.state, fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
       };
       row.availability = observed.availability;
-      if (input.action === "archive" && record?.archivedAt == null && row.children.length && row.children.every((child) => ids.has(child.id))) {
+      if (record?.archivedAt == null && row.children.length && row.children.every((child) => ids.has(child.id))) {
         row.category = "candidate"; row.eligible = true;
         row.reason = "All active managed children are selected. They must archive successfully before this parent; native preflight still blocks any remaining child.";
       }
-      if (!observed.agent) { row.eligible = input.action === "archive" && observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
-      if (input.action === "archive" && archivedMembership(observed.agent)) row.eligible = true;
-      if (refusalProblem && row.eligible) { row.eligible = false; row.reason = refusalProblem; }
+      if (!observed.agent) { row.eligible = observed.availability.state === "missing"; row.category = "unknown"; row.reason = observed.availability.reason; }
+      if (archivedMembership(observed.agent)) row.eligible = true;
       rows.push(row);
     }
-    const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: input.action === "archive" ? archiveOrder(rows) : rows, limitation: TAKEOVER_LIMIT };
+    const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows: archiveOrder(rows), limitation: TAKEOVER_LIMIT };
     await save(review); return review;
   }
-  /** An exact read. A Resume-path read is fenced: its attempt is durable before the read and its outcome is recorded
+  /** An exact read. A provider-refusal read is fenced: its attempt is durable before the read and its outcome is recorded
    *  after it. When the attempt cannot be published, the read is not made. */
   async function observe(id: string, fenced = false): Promise<RefusalRead> {
     if (!fenced) return { ...await readExact(id), attempt: 0, seen: null };
@@ -340,7 +322,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         const snapshot = snapshotOf(id, bytes);
         if (snapshot) found.push(snapshot); else unsure = true;
       }
-    } catch (error) { throw new Error(`Provider refusal evidence for this session cannot be read (${errorText(error)}). Resume stays closed; that evidence is left as it is.`); }
+    } catch (error) { throw new Error(`Provider refusal evidence for this session cannot be read (${errorText(error)}). That evidence is left as it is, and no refusal reads as cleared.`); }
     const top = found.reduce<Snapshot | null>((best, next) => !best || next.memory.seq > best.memory.seq ? next : best, null);
     const base = known ?? top?.memory ?? { seq: 0, refusal: null, open: [], clean: false, cleared: 0, recovered: null };
     for (const other of found) {
@@ -373,7 +355,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       return wrote ? null : error instanceof Error ? error : new Error(String(error));
     }
   }
-  /** Makes one Resume-path read's attempt durable before the read is made. */
+  /** Makes one fenced exact read's attempt durable before the read is made. */
   async function begin(id: string): Promise<number> {
     const path = refusalPath(id);
     return queued(path, async () => {
@@ -382,7 +364,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const next = { ...memory, seq, open: [...memory.open, { seq, revision: memory.seq, start: new Date().toISOString() }] };
       memories.set(path, { ...memory, seq });
       const problem = await publish(id, path, next, "attempt");
-      if (problem) throw new Error(`Refusal memory for this session cannot be written (${errorText(problem)}), so the exact read was not made. Resume stays closed.`);
+      if (problem) throw new Error(`Refusal memory for this session cannot be written (${errorText(problem)}), so the exact read was not made.`);
       memories.set(path, next);
       return seq;
     });
@@ -426,15 +408,13 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       memories.set(path, next); return true;
     });
   }
-  /** Whether this ID's refusal memory is clean now: a clean stored, no open refusal and no read after the last release still open. */
-  const cleanNow = (id: string) => { const memory = memories.get(refusalPath(id)); return !!memory && memory.clean && !memory.refusal && !pending(memory); };
-  const unrecorded = (read: RefusalRead) => read.seen && read.problem ? new Error(`The refusal this read saw could not be recorded (${errorText(read.problem)}). This worker keeps it, and the read's attempt on disk keeps Resume closed after a restart.`) : null;
+  const unrecorded = (read: RefusalRead) => read.seen && read.problem ? new Error(`The refusal this read saw could not be recorded (${errorText(read.problem)}). This worker keeps it, and the read's attempt on disk keeps its refusal unknown after a restart.`) : null;
   /** What a fenced exact read of this ID leaves: a refusal it saw (current), else the open refusal (history); with no
    *  clean stored, never "no refusal". Expiry, a failed read or a cleared lastError never release a refusal; only
    *  positive recovery after its observation does, when `recover` allows the bounded timeline read (G7). */
   async function refusalFor(id: string, observed: RefusalRead, recover = false): Promise<ProviderRefusal | null> {
     const { agent, seen, memory } = observed;
-    if (!memory) throw observed.fence ?? new Error("This exact read was not fenced. Resume stays closed.");
+    if (!memory) throw observed.fence ?? new Error("This exact read was not fenced, so its refusal is unknown.");
     const problem = unrecorded(observed);
     if (problem) throw problem;
     if (seen) return refusalState(seen, { seen: true, readable: true, error: agent?.status === "error", recovered: false });
@@ -483,9 +463,11 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     const review = await read(reviewId);
     const row = review?.rows.find((entry) => entry.id === agentId);
     if (!review || !row) throw new Error("Exact session ID is not in this review.");
-    if (row.outcome !== "pending") return review.action === "archive" && unresolvedArchive(row) ? reconcile(reviewId, agentId) : row;
+    // An earlier Resume receipt is history: it is never executed or replayed, and nothing is read or written for it.
+    if (review.action !== "archive") throw new Error(RESUME_REMOVED);
+    if (row.outcome !== "pending") return unresolvedArchive(row) ? reconcile(reviewId, agentId) : row;
     if (!row.eligible) { const blocked = { ...row, outcome: "blocked" as const, message: row.reason }; await saveRow(reviewId, blocked); return blocked; }
-    if (review.action === "archive" && row.children.some((child) => {
+    if (row.children.some((child) => {
       const result = review.rows.find((entry) => entry.id === child.id);
       return !result || !(result.outcome === "already_archived" || result.outcome === "archived" && result.runtime !== "unconfirmed");
     })) {
@@ -523,49 +505,31 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       try { await readFile(doneFile, "utf8"); throw new Error("This exact session revision already has a dispatched action. Reconcile its receipt before another action."); }
       catch (error) { if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error; }
       const agent = client.agents.ref(agentId);
-      const observed = await observe(agentId, review.action === "resume"); row.availability = observed.availability;
+      const observed = await observe(agentId); row.availability = observed.availability;
       if (!observed.agent) throw new Error(observed.availability.reason);
       const found = { agent: observed.agent };
       alreadyArchived = archivedMembership(found.agent);
       if (found.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. Check the existing native outcome; no duplicate request was sent.");
-      if ((review.action === "archive" ? archiveRevision(found.agent) : lifecycleRevision(found.agent)) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
-      const all = await inventory(client, review.action);
-      const current = lifecycleRow(found.agent, all, review.action, review.action === "resume" ? await refusalFor(agentId, observed) : null);
-      if (!current.eligible || (review.action === "archive" && current.children.length)) throw new Error(current.reason);
-      if (review.action === "resume") {
-        // The session's own provider, never the review target.
-        const snapshot = await client.providers.snapshot({ cwd: found.agent.cwd });
-        if (!snapshot.entries.some((entry) => entry.provider === found.agent.provider && entry.enabled && entry.status === "ready"))
-          throw new Error(`This session's provider ${found.agent.provider} is not ready on this host. Nothing was sent.`);
-        // This is user-authorized execution preflight, never an automatic availability probe:
-        // native timeline fetch can load the provider runtime. Context stays in that same session.
-        const history = await agent.timeline.refetch({ direction: "tail", limit: 1 });
-        if (history.error || !history.entries.length) throw new Error(`Native history is unavailable; no continuation prompt sent. ${history.error ?? "No retained conversation entries."}`);
-      }
-      // Final read after all potentially slow preflight calls (Resume only; nothing slow runs between Archive's
-      // child walk and this read). Never prompt an archived predecessor.
-      const latest = await observe(agentId, review.action === "resume"); row.availability = latest.availability;
+      if (archiveRevision(found.agent) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
+      const all = await inventory(client);
+      const current = lifecycleRow(found.agent, all);
+      if (!current.eligible || current.children.length) throw new Error(current.reason);
+      // Final read; nothing slow runs between the child walk and this read.
+      const latest = await observe(agentId); row.availability = latest.availability;
       if (!latest.agent) throw new Error(latest.availability.reason);
       const final = { agent: latest.agent };
       alreadyArchived = archivedMembership(final.agent);
       if (final.agent.archivedAt != null) throw new Error(alreadyArchived ? "Already archived on this host. No archive request was sent." : "Archive is recorded but runtime retirement is not confirmed. No duplicate request was sent.");
-      if ((review.action === "archive" ? archiveRevision(final.agent) : lifecycleRevision(final.agent)) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
-      const finalDecision = lifecycleRow(final.agent, all, review.action, review.action === "resume" ? await refusalFor(agentId, latest) : null);
+      if (archiveRevision(final.agent) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
+      const finalDecision = lifecycleRow(final.agent, all);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry.";
       const intent = JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint, token });
       if (!await whileOwned(lockPath, ours, async () => { await saveRow(reviewId, row); await writeFile(lockPath, intent, { mode: 0o600 }); }))
         throw new Error("Another action took this session's fence before dispatch. Nothing was sent; review again.");
       ours = intent;
-      // A refusal, or a read that has not recorded its outcome, after the final decision contradicts it. Checked in this
-      // worker's memory with no await before the send, so nothing records in between. Nothing has been sent, so this
-      // call's own intent is settled as blocked and its fence released below.
-      if (review.action === "resume" && !cleanNow(agentId)) throw new Error("A provider refusal, or a read without a recorded outcome, came after the final check. Nothing was sent; review again.");
       dispatchStarted = true;
-      if (review.action === "resume") {
-        await agent.send(RESUME_PROMPT, { messageId: `kontor-resume-${review.id}-${hash(agentId).slice(0, 12)}`, activeTurnBehavior: "steer" });
-        row.outcome = "submitted"; row.message = "Resume prompt accepted in the same session. Completion and resolution of the original failure are not verified.";
-      } else {
+      {
         // A rejected reply can follow a persisted archive, so read before classifying. A rejection is untyped here:
         // a lost acknowledgement looks the same as a close error, so neither is reported as a proven close failure.
         const reply = await agent.archive().then((receipt) => ({ receipt }), (error: unknown) => ({ error }));
@@ -581,9 +545,9 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
           : "Archived. The host did not report its runtime as closed. Durable history and files remain with the host.";
       }
     } catch (error) {
-      row.outcome = dispatchStarted ? "uncertain" : row.availability?.state === "missing" ? "absent" : review.action === "archive" && alreadyArchived ? "already_archived" : "blocked";
+      row.outcome = dispatchStarted ? "uncertain" : row.availability?.state === "missing" ? "absent" : alreadyArchived ? "already_archived" : "blocked";
       row.message = errorText(error);
-      if (review.action === "archive" && row.outcome === "absent") {
+      if (row.outcome === "absent") {
         await writeFile(removedPath(agentId), JSON.stringify({ agentId, reviewId, observedAt: row.availability!.checkedAt }), { mode: 0o600 });
         row.availability = { ...row.availability!, localRemoval: true };
         row.message = "No native record exists for this exact ID on this host. A local stale-row removal was recorded; no daemon archive was performed.";
@@ -613,6 +577,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   /** Settles a dispatched archive by an exact-ID read. Never resends; releases only its own fence (G3). */
   async function reconcile(reviewId: string, agentId: string): Promise<LifecycleRow> {
     const review = await read(reviewId), row = review?.rows.find((entry) => entry.id === agentId);
+    if (review?.action === "resume") throw new Error(RESUME_REMOVED);
     if (!review || !row || review.action !== "archive") throw new Error("Exact archive ID is not in this review.");
     const lockPath = join(root, `intent-${hash(agentId)}.json`);
     let fence: unknown, bytes = "";
@@ -652,11 +617,11 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
     if (await whileOwned(lockPath, bytes, async () => { await saveRow(reviewId, result); if (settled && row.outcome !== "pending") await unlink(lockPath); })) return result;
     return { ...result, message: `${result.message ?? ""} This session's fence changed during the read, so this result was not recorded.`.trim() };
   }
-  return { capabilities, preview, read, execute, reconcile, probe, dispositions, providerRefusal };
+  return { preview, read, execute, reconcile, probe, dispositions, providerRefusal };
 }
 
 // ASMA-8641 Take over, native/direct adapter. One operation per confirmed review: it shares this root and the per-ID
-// intent fence with Archive and Resume, retires the predecessor, and creates its one successor through the #500 core.
+// intent fence with Archive, retires the predecessor, and creates its one successor through the #500 core.
 type TakeoverClient = {
   agents: { list: LifecycleClient["agents"]["list"]; ref(id: string): Pick<ReturnType<PaseoApi["agents"]["ref"]>, "refresh" | "archive" | "send" | "timeline"> };
   workspaces: { ref(id: string): Pick<ReturnType<PaseoApi["workspaces"]["ref"]>, "refresh"> };
@@ -747,7 +712,7 @@ export async function readTakeoverContinuity(client: TakeoverClient, root: strin
     continuity = { agentId, requestId, revision: hash(JSON.stringify([lifecycleRevision(agent), "governed"])), observedAt, surface: "governed", wakes: "unknown", owner: null };
   } else if (adapter.adapter === "refused") return null;
   else {
-    const managedChildren = childrenOf(agent, await inventory(client, "archive"));
+    const managedChildren = childrenOf(agent, await inventory(client));
     const wakes: TakeoverContinuity["wakes"] = managedChildren.length ? "preserved" : await readDirectWakeState(client, agentId);
     let owner: TakeoverContinuity["owner"] = null;
     if (adapter.basis === "orchestrated") {
@@ -830,7 +795,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     try { workspace = await client.workspaces.ref(first.workspaceId!).refresh(); } catch (error) { return answer("unknown", `Its workspace could not be read: ${errorText(error)}.`); }
     if (!workspace || workspace.id !== first.workspaceId || workspace.archivingAt || !workspace.workspaceDirectory) return answer("refused", "Its exact workspace is no longer available on this host.");
     if (workspace.workspaceDirectory !== first.cwd) return answer("refused", CWD_DRIFT);
-    try { if (childrenOf(first, await inventory(client, "archive")).length) return answer("refused", "This session has active child sessions. Finish or move them through their owner first; takeover never archives children."); }
+    try { if (childrenOf(first, await inventory(client)).length) return answer("refused", "This session has active child sessions. Finish or move them through their owner first; takeover never archives children."); }
     catch (error) { return answer("unknown", errorText(error)); }
     let ownerRevision: string | null = null, created: string | null = null;
     if (direct.basis === "orchestrated") {
@@ -919,7 +884,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if ("problem" in checked) return answer("refused", checked.problem);
     if (checked.cwd !== first.cwd) return answer("refused", CWD_DRIFT);
     try {
-      const children = childrenOf(first, await inventory(client, "archive"));
+      const children = childrenOf(first, await inventory(client));
       if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
       if (children.length) return answer("refused", "A child appeared during preflight. Nothing is retired.");
       if (direct.basis === "orchestrated") {
@@ -943,6 +908,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   }
 
   async function review(input: TakeoverReviewInput): Promise<TakeoverReview> {
+    if (input.route) throw new Error(UNSUPPORTED.takeoverRoute.reason);
     const prior = input.reviewId ? await readRecord(input.reviewId) : null;
     if (input.reviewId && (!prior || prior.review.agentId !== input.agentId || prior.review.revision !== input.revision)) throw new Error("This is not the current review of this session on this host. Review it again.");
     if (prior && await readOperation(prior.review.reviewId)) throw new Error("This review was already confirmed. Check its outcome instead.");
@@ -1135,7 +1101,6 @@ export async function readOperatorFleetDiscovery(): Promise<{ choices: ProfileCh
 }
 export function contributeSessionLifecycle(server: PluginServerContext) {
   const root = join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-lifecycle-v1");
-  server.handle(lifecycleCapabilities, (_input, { paseo }) => createLifecycleService(paseo, root).capabilities());
   server.handle(previewLifecycle, (input, { paseo }) => createLifecycleService(paseo, root).preview(input));
   server.handle(readLifecycleReview, (input, { paseo }) => createLifecycleService(paseo, root).read(input.reviewId));
   server.handle(executeLifecycleItem, (input, { paseo }) => createLifecycleService(paseo, root).execute(input.reviewId, input.agentId));

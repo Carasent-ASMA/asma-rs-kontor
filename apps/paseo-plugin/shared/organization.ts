@@ -1,5 +1,6 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { featureValuesSchema } from "./session-create";
 
 export const ORGANIZATION_SETTINGS_ID = "organization";
 export const ORGANIZATION_SETTINGS_VERSION = 1;
@@ -34,9 +35,15 @@ export const organizationSettingsSchema = z.object({
   displayMappings: z.record(mappingKeySchema, displayMappingSchema).default({}),
   // Host-local native conversation -> configured source IDs. No filesystem paths.
   planAssociations: z.record(z.string().min(1), z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/))).default({}),
+  // The model New lead starts with on this host; absent or null follows Codex's own catalog default.
+  newLeadDefault: z.object({
+    provider: z.string().min(1).max(200), model: z.string().min(1).max(200), effort: z.string().min(1).max(200).nullable(),
+    featureValues: featureValuesSchema.optional(),
+  }).strict().nullable().optional(),
 }).strict();
 
 export type OrganizationSettings = z.infer<typeof organizationSettingsSchema>;
+export type NewLeadDefault = NonNullable<OrganizationSettings["newLeadDefault"]>;
 
 /** Resolve legacy Flat without rewriting the saved document or losing the grouped choice. */
 export function organizationPresentation(settings: Pick<OrganizationSettings, "grouping" | "layout">): {

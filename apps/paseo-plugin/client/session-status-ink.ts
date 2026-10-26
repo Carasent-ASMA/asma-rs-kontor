@@ -28,13 +28,19 @@ function luminance(color: string): number {
   }, 0);
 }
 
-/** Selection keeps its border/check; status icons share readable ink on all row/control surfaces. */
-export function sessionStatusInk(status: StatusFilter, colors: Colors): string {
-  const ink = statusColor(status, colors);
+/** `ink` where it keeps `min` on every row/control surface, otherwise the foreground: 3:1 for an icon or mark (WCAG 1.4.11), 4.5:1 for text (1.4.3). */
+export function readableInk(ink: string, colors: Colors, min = 3): string {
+  // A theme that names no ink has nothing to measure; the foreground is the readable choice.
+  if (!ink) return colors.foreground;
   const foreground = luminance(ink);
-  const readable = [colors.surface0, colors.surface1, colors.surface2].every(surface => {
+  const readable = [colors.surface0, colors.surface1, colors.surface2].filter(Boolean).every(surface => {
     const background = luminance(surface);
-    return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) >= 3;
+    return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) >= min;
   });
   return readable ? ink : colors.foreground;
+}
+
+/** Selection keeps its border/check; status icons share readable ink on all row/control surfaces. */
+export function sessionStatusInk(status: StatusFilter, colors: Colors): string {
+  return readableInk(statusColor(status, colors), colors);
 }

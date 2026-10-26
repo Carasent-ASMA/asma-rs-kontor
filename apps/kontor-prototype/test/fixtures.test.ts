@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { lifecycleReviewSchema, lifecycleRowSchema, DEFAULT_RECOVERY_TARGET, availabilitySchema } from "../../paseo-plugin/shared/session-lifecycle";
+import { lifecycleReviewSchema, lifecycleRowSchema, DEFAULT_RECOVERY_TARGET, availabilitySchema, RESUME_REMOVED } from "../../paseo-plugin/shared/session-lifecycle";
 import { listReadSources, readSource, readSourceSummaries, readPlanAssociations } from "../../paseo-plugin/shared/read-sources";
 import { readResponsibility } from "../../paseo-plugin/shared/responsibility";
 import { readKontorStatus } from "../../paseo-plugin/shared/kontor-status";
-import { readCreateOptions, executeCreate, checkCreate } from "../../paseo-plugin/shared/session-create";
+import { readCreateOptions, readCreateFeatures, executeCreate, checkCreate, type CreateFeature } from "../../paseo-plugin/shared/session-create";
+import type { FixtureAgent } from "../src/fixtures/sessions";
+import { fixtureCreate } from "../src/host/session-create";
 import { callPluginRpc } from "paseo-sdk/host";
 import { recoverySessions } from "../src/fixtures/recovery";
 import { fixtureLifecycle } from "../src/host/session-lifecycle";
@@ -51,6 +53,34 @@ describe("current plugin contracts", () => {
     expect(refused.agentId).toBeNull();
   });
 
+  it("serves the synthetic catalog's Codex default and listed settings, and checks creation against them", async () => {
+    const added = new Map<string, { features?: CreateFeature[] }>();
+    const invoke = fixtureCreate(true, { read: (id) => added.get(id) as FixtureAgent | undefined, add: (request, _title, _workspace, features) => {
+      const id = `agt_fixture_create_${request.requestId}`;
+      added.set(id, features ? { features } : {});
+      return id;
+    } });
+    const options = await callPluginRpc(readCreateOptions, invoke, {});
+    expect(options.providers.map((provider) => [provider.id, provider.defaultModel])).toEqual([["codex", "gpt-6-astra"], ["claude", "claude-opus-5-5"], ["opencode", null], ["cursor", null]]);
+    expect(options.providers[0]!.models.find((model) => model.id === "gpt-6-astra")?.defaultEffort).toBe("xhigh");
+    expect(options.notes).toContain("Synthetic model catalog; SIMULATED creation contacts no provider or account.");
+    const desk = { projectId: "prj_proof_adam" };
+    expect((await callPluginRpc(readCreateFeatures, invoke, { ...desk, provider: "codex", model: "gpt-6-astra" })).features.map((feature) => feature.id)).toEqual(["service_tier", "plan_mode"]);
+    expect(await callPluginRpc(readCreateFeatures, invoke, { ...desk, provider: "claude", model: "claude-opus-5-5" })).toEqual({ features: [], problem: null });
+    expect((await callPluginRpc(readCreateFeatures, invoke, { ...desk, provider: "codex", model: "gpt-0-unlisted" })).problem).toBe("SIMULATED: gpt-0-unlisted is not in this host's catalog.");
+    const base = { role: "LSA" as const, start: "ad-hoc" as const, ...desk, topic: "Fictional review", provider: "codex", model: "gpt-6-astra", effort: "xhigh", modeId: "fixture-mode" };
+    const verified = await callPluginRpc(executeCreate, invoke, { ...base, requestId: crypto.randomUUID(), featureValues: { service_tier: "priority", plan_mode: true } });
+    expect(verified).toMatchObject({ state: "verified", differences: [] });
+    expect(verified.message).toContain("Settings read back: Speed Fast, Plan on.");
+    expect(await callPluginRpc(executeCreate, invoke, { ...base, requestId: crypto.randomUUID(), featureValues: { service_tier: "warp" } }))
+      .toMatchObject({ state: "refused", agentId: null, message: "Speed warp is not offered for this model." });
+    expect(await callPluginRpc(executeCreate, invoke, { ...base, requestId: crypto.randomUUID(), provider: "opencode", model: "gpt-6-astra", effort: null, modeId: null }))
+      .toMatchObject({ state: "refused", message: "Model gpt-6-astra is not selectable for OpenCode." });
+    expect((await callPluginRpc(executeCreate, invoke, { ...base, requestId: crypto.randomUUID(), provider: "opencode", model: "zai-coding-plan/glm-5.3", effort: null, modeId: null })).state).toBe("verified");
+    expect(added.size).toBe(2);
+    await expect(invoke("sessions.summary-save", {})).rejects.toThrow("Unsupported fixture creation RPC sessions.summary-save");
+  });
+
   it("keeps unknown and protected children visible, archives a running fixture and retains its history", async () => {
     const rows = recoverySessions();
     const invoke = fixtureLifecycle(() => rows, (id, patch) => Object.assign(rows.find(row => row.agent.id === id)!.agent, patch));
@@ -72,7 +102,7 @@ describe("current plugin contracts", () => {
     expect(availabilitySchema.parse(dispositions[input.agentId]).archivedAt).toBeTruthy();
   });
 
-  it("retains an archived/unconfirmed owner across success, Resume and a fresh read without redispatch", async () => {
+  it("retains an archived/unconfirmed owner across a later archive and a fresh read without redispatch", async () => {
     const rows = recoverySessions();
     const update = vi.fn((id, patch) => Object.assign(rows.find(row => row.agent.id === id)!.agent, patch));
     const invoke = fixtureLifecycle(() => rows, update);
@@ -83,10 +113,8 @@ describe("current plugin contracts", () => {
     expect([failed.outcome, failed.runtime]).toEqual(["archived", "unconfirmed"]);
     const newer = lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-preview", request));
     expect(lifecycleRowSchema.parse(await invoke("sessions.lifecycle-execute-item", { ...input, reviewId: newer.id })).reconcileReviewId).toBe(review.id);
-    for (const [action, agentId] of [["archive", "agt_recovery_old"], ["resume", "agt_recovery_retry"]] as const) {
-      const later = lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-preview", { ...request, action, agentIds: [agentId] }));
-      await invoke("sessions.lifecycle-execute-item", { reviewId: later.id, agentId });
-    }
+    const later = lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-preview", { ...request, agentIds: ["agt_recovery_old"] }));
+    await invoke("sessions.lifecycle-execute-item", { reviewId: later.id, agentId: "agt_recovery_old" });
     expect(lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-review", {})).unresolved).toEqual([input]);
     expect(lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-review", { reviewId: review.id })).unresolved).toBeUndefined();
     const before = update.mock.calls.length;
@@ -96,6 +124,14 @@ describe("current plugin contracts", () => {
     expect(lifecycleRowSchema.parse(await invoke("sessions.lifecycle-reconcile-item", input)).runtime).toBe("closed");
     expect(lifecycleReviewSchema.parse(await invoke("sessions.lifecycle-review", {})).unresolved).toEqual([]);
     expect(update).toHaveBeenCalledTimes(before);
+  });
+
+  it("refuses Resume like the host: nothing is reviewed or changed", async () => {
+    const rows = recoverySessions(), update = vi.fn();
+    const invoke = fixtureLifecycle(() => rows, update);
+    await expect(invoke("sessions.lifecycle-preview", { action: "resume", scope: "filtered", agentIds: ["agt_recovery_retry"], target: DEFAULT_RECOVERY_TARGET })).rejects.toThrow(RESUME_REMOVED);
+    expect(await invoke("sessions.lifecycle-review", {})).toBeNull();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("requires selected children to finish before a parent and never changes an omitted child", async () => {

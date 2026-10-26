@@ -8,7 +8,7 @@ import type {
 } from "@getpaseo/client";
 import type { EpicIdentity } from "../shared/read-sources";
 import type { SessionAvailability } from "../shared/session-lifecycle";
-import type { SessionTelemetry } from "./session-usage";
+import { modelPresentation, rowModel, type SessionTelemetry, type SessionUsageEntry } from "./session-usage";
 
 export const SESSION_STATUSES = [
   "initializing",
@@ -80,6 +80,8 @@ export type DirectoryEntry = {
   readonly workspaceId: string | null;
   readonly provider: string;
   readonly model: string | null;
+  /** The permission mode the session runs with, as Paseo reports it; null when it reports none. */
+  readonly mode?: string | null;
   /** Latest native fields. No accumulated totals or inferred usage/model association. */
   readonly telemetry?: SessionTelemetry;
   readonly parentAgentId: string | null;
@@ -234,10 +236,13 @@ function searchTextOf(input: {
   readonly projectKey: string | null;
   readonly cwd: string;
   readonly labels: Readonly<Record<string, string>>;
+  readonly usage: SessionUsageEntry;
 }): string {
   const labelValues = SEARCH_LABEL_KEYS.map((key) => input.labels[key]).filter(
     (value): value is string => typeof value === "string" && value.trim().length > 0,
   );
+  // Every model ID the session reports and what its row shows for it: the alias, the route and the provider.
+  const presentation = modelPresentation(input.usage), shown = rowModel(input.usage);
   return [
     input.title,
     input.workspaceName,
@@ -245,6 +250,13 @@ function searchTextOf(input: {
     input.projectKey,
     input.cwd,
     ...labelValues,
+    presentation.configured,
+    presentation.selection,
+    presentation.model,
+    presentation.model === null ? null : shown.full,
+    presentation.model === null ? null : shown.alias,
+    shown.route,
+    input.usage.provider,
   ]
     .filter((part): part is string => part !== null)
     .join("\n")
@@ -263,6 +275,16 @@ export function toDirectoryEntry(
   const cwd = agent.cwd || previous?.cwd || "";
   const labels = agent.labels ?? {};
   const pendingPermissionCount = agent.pendingPermissions?.length ?? 0;
+  const usage = {
+    provider: agent.provider,
+    model: agent.model ?? null,
+    telemetry: {
+      runtimeInfo: agent.runtimeInfo,
+      lastUsage: agent.lastUsage,
+      thinkingOptionId: agent.thinkingOptionId,
+      effectiveThinkingOptionId: agent.effectiveThinkingOptionId,
+    },
+  };
   const attentionReason = agent.attentionReason ?? null;
   return {
     id: agent.id,
@@ -281,20 +303,14 @@ export function toDirectoryEntry(
     activeTurnStartedAt: agent.activeTurn?.startedAt ?? null,
     cwd,
     workspaceId: agent.workspaceId ?? null,
-    provider: agent.provider,
-    model: agent.model ?? null,
-    telemetry: {
-      runtimeInfo: agent.runtimeInfo,
-      lastUsage: agent.lastUsage,
-      thinkingOptionId: agent.thinkingOptionId,
-      effectiveThinkingOptionId: agent.effectiveThinkingOptionId,
-    },
+    ...usage,
+    mode: (agent as { currentModeId?: string | null }).currentModeId ?? agent.runtimeInfo?.modeId ?? null,
     parentAgentId: (agent as { parentAgentId?: string | null }).parentAgentId ?? null,
     labels,
     projectKey,
     projectName,
     workspaceName,
-    searchText: searchTextOf({ title, workspaceName, projectName, projectKey, cwd, labels }),
+    searchText: searchTextOf({ title, workspaceName, projectName, projectKey, cwd, labels, usage }),
   };
 }
 

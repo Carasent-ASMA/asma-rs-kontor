@@ -303,6 +303,8 @@ function mappedValue(
 export const EPIC_LABELS = ["epic", "jira.epic", "origin.epic", "asma.epic"] as const;
 /** Label keys whose exact value may name a task's Jira key. */
 export const TASK_JIRA_LABELS = ["jira.issue", "task", "asma.task"] as const;
+/** Label key whose exact value may name a task's Kontor ticket. */
+export const TASK_TICKET_LABEL = "kontor.ticket";
 
 /** Persona label prefixes Kontor writes on a session it creates as ad hoc work; the hash after `@` versions the text. */
 export const AD_HOC_PERSONAS = ["kontor-lsa-adhoc@", "kontor-lsa-adhoc+bootstrap@"] as const;

@@ -2,13 +2,14 @@ import { QUICK_STATUS_FILTERS, statusFilterLabel, type StatusFilter } from "./se
 
 /** Shapes carry the meaning even when status colours cannot be distinguished. */
 export const QUICK_FILTER_ICONS: Record<StatusFilter, string> = {
-  recent: "Clock", current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
+  recent: "Clock", activity: "Activity", current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
   needs_input: "MessageCircleQuestion", attention: "Bell", favorites: "Star",
   initializing: "Loader", closed: "Square", earlier_error: "History", provider_blocked: "Ban",
 };
 
 export const QUICK_FILTER_MEANINGS: Record<StatusFilter, string> = {
   recent: "Sessions you opened from Kontor on this host and device, most recent first, whatever their state. It keeps the last 500. Native sidebar opens and other devices are not included.",
+  activity: "Sessions with a recorded prompt or running turn, newest first. Renames, metadata updates and Mark as unread never count; Paseo records no time for a turn's end.",
   current: "Native-state visibility: running, starting, idle and input-waiting sessions. Provider history is not verified. All includes closed and error sessions; unknown availability stays visible.",
   all: "All sessions in the current search and scope.",
   running: "Sessions currently running.",
@@ -27,11 +28,15 @@ export function quickFilterLabel(status: StatusFilter): string {
   return statusFilterLabel(status).replace("★ ", "");
 }
 
-/** Two utility targets (More, Filters) keep their own space; never shrink touch targets. Search sits in the row below. */
-export function visibleQuickFilters(width: number, selected: StatusFilter, target = 44): readonly StatusFilter[] {
-  const slots = Math.max(1, Math.min(QUICK_STATUS_FILTERS.length, Math.floor((width + 4) / (target + 4)) - 2));
+/**
+ * The shortcuts a row of `width` shows as whole tiles, in order, after More and the trailing action keep their own two
+ * targets; a target never shrinks to fit, so a row without room for one whole tile shows none and More reaches them all.
+ * A chosen shortcut past them takes the last tile; a state from More or Filters never becomes a shortcut.
+ */
+export function visibleQuickFilters(width: number, selected: StatusFilter, target: number, gap = 4): StatusFilter[] {
+  const slots = Math.max(0, Math.min(QUICK_STATUS_FILTERS.length, Math.floor((width + gap) / (target + gap)) - 2));
   const visible = QUICK_STATUS_FILTERS.slice(0, slots);
-  if (!visible.includes(selected)) visible[visible.length - 1] = selected;
+  if (slots && QUICK_STATUS_FILTERS.includes(selected) && !visible.includes(selected)) visible[slots - 1] = selected;
   return visible;
 }
 

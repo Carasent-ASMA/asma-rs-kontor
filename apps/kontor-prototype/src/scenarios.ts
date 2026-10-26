@@ -1,6 +1,7 @@
 import type { OrganizationSettings } from "../../paseo-plugin/shared/organization";
 import type { KeyboardSettings } from "../../paseo-plugin/shared/keyboard";
 import type { SessionGrouping } from "../../paseo-plugin/client/session-view-store";
+import type { TakeoverSimMode } from "./host/session-takeover";
 
 /**
  * Review scenarios. Each opens the same plugin source on a deterministic
@@ -11,7 +12,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "long" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "recovery";
+  readonly inventory: "base" | "large" | "long" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "recovery" | "captured";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -23,12 +24,18 @@ export type Scenario = {
     readonly status?: "error" | "needs_input" | "running" | "attention" | "earlier_error";
     /** Grouping chosen in this Sessions view (kept in memory, not saved). */
     readonly grouping?: SessionGrouping;
+    /** A Kontor screen param the first screen opens with, such as the start-or-switch sheet. */
+    readonly sheet?: "switch";
   };
   /** Scripted native changes, applied in order and labelled simulated. */
   readonly script?: readonly { readonly afterMs: number; readonly agentId: string; readonly patch: Record<string, unknown>; readonly note: string }[];
   readonly hostOfflineAfterMs?: number;
   /** Board reads SIMULATED team, workflow and risk-tier declarations (`fixtures/teams.ts`); labelled in the banner. */
   readonly simulatedTeams?: boolean;
+  /** SIMULATED takeover outcomes for this scenario; a `takeoverSim` URL param overrides it. Absent: every takeover succeeds. */
+  readonly takeoverSim?: TakeoverSimMode;
+  /** SYNTHETIC whole-session token totals (`fixtures/integration.ts`) instead of unknown ones. */
+  readonly syntheticTotals?: boolean;
 };
 
 /** Role grouping saved, with only QA saved open; every other role header opens closed. */
@@ -42,6 +49,11 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "unified-switcher", title: "Unified: start or switch (captured)", summary: "Operator-local captured cohort, frozen at capture time, with every effect simulated. Last visited order and times are SIMULATED; project names, session token totals and provider session IDs were not read and stay unknown. Without a local capture the host is empty.", inventory: "captured", sources: false, start: { sheet: "switch" } },
+  { id: "unified-sessions", title: "Unified: Kontor Sessions (captured)", summary: "The same captured cohort in Kontor's Sessions. Last visited order is SIMULATED; unknowns stay unknown.", inventory: "captured", sources: false },
+  { id: "unified-takeover-outcomes", title: "Unified: take over outcomes (captured, simulated)", summary: "The captured cohort with the switcher open and SIMULATED take over outcomes: each seat reviewed for the first time takes the next of success, no model (review blocked), launch fails (partial; a fresh review finishes it), unknown effect (Check settles it) and preflight refused. Every effect changes page memory only; captured sessions are never renamed.", inventory: "captured", sources: false, start: { sheet: "switch" }, takeoverSim: "sequence" },
+  { id: "unified-synthetic-totals", title: "Unified: start or switch (SYNTHETIC totals)", summary: "Public synthetic inventory with SYNTHETIC whole-session token totals for three sessions, one with its output not reported. They are labelled as not read from any host; every other session keeps its totals unknown.", inventory: "integration", sources: true, start: { sheet: "switch" }, syntheticTotals: true },
+  { id: "unified-switcher-synthetic", title: "Unified: start or switch (synthetic)", summary: "Public synthetic inventory for edge cases: roles, models, missing reports and long titles, with the switcher open.", inventory: "integration", sources: true, start: { sheet: "switch" } },
   { id: "session-recovery", title: "Native availability and archive (simulated)", summary: "Fictional interrupted/quota/auth/unknown/waiting/children/concurrent/partial-failure cases. Manual review only; no real inventory effects. Bulk takeover remains open.", inventory: "recovery", sources: true, start: { status: "attention", grouping: "flat" } },
   { id: "compact-icons", title: "Compact controls: combined review", summary: "Fictional combined inventory: configured/reported/missing/custom models, absent/zero token reports, stale cases, roles and long titles. Hover or focus controls for help; touch opens exact Details. Source and status semantics remain unchanged.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" } },
   { id: "compact-icons-stale", title: "Compact controls: stale inventory", summary: "The combined fixture host goes offline at 3 seconds; model and counter report age remains unknown. Details preserves all source limits.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" }, hostOfflineAfterMs: 3000 },

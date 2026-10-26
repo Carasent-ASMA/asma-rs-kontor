@@ -21,7 +21,7 @@ import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import { useSessionRetirementProjection } from "./use-session-lifecycle";
 import { emptyDirectoryState, type DirectoryEntry } from "./session-directory";
-import { clearSessionFilterPatch, patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
+import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, IconButton, type Colors } from "./page-controls";
@@ -37,7 +37,8 @@ import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
 import { StartSwitchSheet, SWITCH_SHEET } from "./start-switch-sheet";
-import { stateShortcutPatch, type StateShortcut } from "./session-state-shortcuts";
+import type { LeadSource } from "./new-lead-source";
+import { switchViewPatch, type SwitchView } from "./session-state-shortcuts";
 import { configureRecentStorage } from "./recent-sessions";
 import { deviceProfileStorage } from "./viewer-profile";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
@@ -80,6 +81,9 @@ function HostScreen(props: PluginScreenProps) {
   const [route, setRoute] = useState(() => hostNavigation(host.id).route);
   const [sessionsRevision, setSessionsRevision] = useState(0);
   const [menu, setMenu] = useState<"more" | "context" | "switch" | null>(null);
+  // Attach summary's New lead opens the switcher's New lead with that source pinned; any other open starts clean.
+  const [leadSource, setLeadSource] = useState<LeadSource | null>(null);
+  useEffect(() => { if (menu !== "switch") setLeadSource(null); }, [menu]);
   const [pickerQuery, setPickerQuery] = useState("");
   const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
   const rootRef = useRef<View | null>(null), moreRef = useRef<View | null>(null), contextRef = useRef<View | null>(null), switchRef = useRef<View | null>(null);
@@ -122,17 +126,12 @@ function HostScreen(props: PluginScreenProps) {
     prepare?.(next);
     setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); setMenu(null);
   }, [host.id]);
-  // Show all from the sheet or the composer popover: unscoped Sessions with only this search, or, with none, all of Recent.
-  const showAll = (text: string) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
+  // Kontor from the sheet or the composer popover: unscoped Sessions showing exactly the switcher's state, search and membership.
+  const showView = (view: SwitchView) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
     const scope = sessionScopeKey(host.id, next);
     const current = readSessionView(scope);
-    patchSessionView(scope, sessionViewTransition(current, { ...clearSessionFilterPatch(current), status: text ? "all" : "recent", query: text, membership: "sessions", includeArchived: false, scrollOffset: 0 }));
+    patchSessionView(scope, sessionViewTransition(current, switchViewPatch(current, view)));
     // Sessions keeps a local view snapshot, so the same route must read the replacement too.
-    setSessionsRevision((revision) => revision + 1);
-  });
-  const showState = (shortcut: StateShortcut) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
-    const scope = sessionScopeKey(host.id, next);
-    patchSessionView(scope, stateShortcutPatch(readSessionView(scope), shortcut));
     setSessionsRevision((revision) => revision + 1);
   });
   useEffect(() => {
@@ -145,7 +144,7 @@ function HostScreen(props: PluginScreenProps) {
   // A composer popover hands its open to this screen by a one-shot key. A used, replaced or foreign key opens
   // nothing and says nothing: this screen is already where to choose again.
   useEffect(() => {
-    const result = openHandOff({ hostId: host.id, key: props.params.target, entries: directory.state.entries, navigation: props.navigation, onSearch: showAll, onState: showState });
+    const result = openHandOff({ hostId: host.id, key: props.params.target, entries: directory.state.entries, navigation: props.navigation, onView: showView });
     if (result && !result.ok && result.reason !== "stale") toast.error(result.message);
   }, [props.params.target]);
   useEffect(() => {
@@ -308,12 +307,13 @@ function HostScreen(props: PluginScreenProps) {
       {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
-  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state} initialScope={switchScope}
+  </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state} initialScope={switchScope} initialSource={leadSource}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
     onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
-    onShowAll={showAll} onShowState={(shortcut) => { showState(shortcut); setMenu(null); }} /> : null;
+    onShowView={(view) => { showView(view); setMenu(null); }} /> : null;
   let page;
   if (route.tab === "Sessions") page = <SessionsScreen key={`${sessionScopeKey(host.id, route)}:${sessionsRevision}`} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} retirement={retirement} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
+    onNewLead={(source) => { setLeadSource(source); setMenu("switch"); }}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}

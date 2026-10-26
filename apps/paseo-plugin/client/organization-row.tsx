@@ -83,7 +83,8 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   contextual?: boolean;
   /** Contextual destinations shown under an expanded group. */
   actions?: ReactNode;
-  onFavorite: () => void; onToggle: () => void; onMove: (distance: number) => void; onSelect: () => void;
+  /** Absent hides the star, for a surface whose row menu owns favorites. */
+  onFavorite?: () => void; onToggle: () => void; onMove: (distance: number) => void; onSelect: () => void;
 }) {
   const help = useControlHelp(row.kind === "group" ? `${stale ? "Last known. " : ""}${groupStateHelp(row.group.aggregate, contextual)}` : "");
   if (row.kind === "empty") {
@@ -119,10 +120,10 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
       <View style={{ flex: 1, minWidth: 0 }}>{children}</View>
       {details}
       {lifecycleAction}
-      <Pressable accessibilityRole="button" accessibilityLabel={`${favorite ? "Unfavorite" : "Favorite"} ${label}`} accessibilityState={{ selected: favorite, disabled }} aria-pressed={favorite} disabled={disabled} onPress={onFavorite}
+      {onFavorite ? <Pressable accessibilityRole="button" accessibilityLabel={`${favorite ? "Unfavorite" : "Favorite"} ${label}`} accessibilityState={{ selected: favorite, disabled }} aria-pressed={favorite} disabled={disabled} onPress={onFavorite}
         style={{ width: coarse ? 44 : 30, height: coarse ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
         <Text style={{ color: favorite ? colors.statusWarning : colors.foregroundMuted, fontSize: compact ? 18 : 16 }}>{favorite ? "★" : "☆"}</Text>
-      </Pressable>
+      </Pressable> : null}
     </View>;
   }
   const group = row.group;

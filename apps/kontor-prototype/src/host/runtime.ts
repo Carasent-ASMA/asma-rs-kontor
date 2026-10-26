@@ -7,7 +7,11 @@ import { lifecycleSessions } from "../fixtures/lifecycle";
 import { recoverySessions } from "../fixtures/recovery";
 import { fixtureLifecycle } from "./session-lifecycle";
 import { fixtureCreate } from "./session-create";
-import { integrationSessions } from "../fixtures/integration";
+import { fixtureNavigator } from "./session-navigator";
+import { fixtureTakeover, isTakeoverSimMode } from "./session-takeover";
+import { integrationSessions, SYNTHETIC_TOTALS } from "../fixtures/integration";
+import { capturedFixture } from "../fixtures/captured";
+import { recentStorageKey } from "../../../paseo-plugin/client/recent-sessions";
 import { SOURCE_READS } from "../fixtures/sources";
 import { responsibilityFixture } from "../fixtures/responsibility";
 import { SCENARIOS, type Scenario } from "../scenarios";
@@ -23,6 +27,10 @@ export const HOST_LABEL = "Prototype host";
 
 const params = new URLSearchParams(window.location.search);
 export const scenario: Scenario = SCENARIOS.find((value) => value.id === params.get("scenario")) ?? SCENARIOS[0]!;
+/** SIMULATED outcome switches: `takeoverSim` overrides the scenario's, `clipboard=denied` refuses copies, `create=pending` holds an unsettled creation. */
+const takeoverSim = isTakeoverSimMode(params.get("takeoverSim")) ? params.get("takeoverSim") as Scenario["takeoverSim"] : scenario.takeoverSim;
+const switches = [takeoverSim && takeoverSim !== "success" ? `takeoverSim=${takeoverSim}` : null, params.get("clipboard") === "denied" ? "clipboard=denied" : null, params.get("create") === "pending" ? "create=pending" : null].filter(Boolean);
+if (switches.length) logHostEvent("simulated.switch", `SIMULATED outcomes: ${switches.join(", ")}`);
 
 type HostStatus = "idle" | "connecting" | "online" | "offline" | "error";
 let hostStatus: HostStatus = "online";
@@ -40,7 +48,14 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-const inventory = { none: () => [], large: scrollSessions, long: longSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions, recovery: recoverySessions }[scenario.inventory];
+const captured = scenario.inventory === "captured" ? capturedFixture() : null;
+if (scenario.inventory === "captured") {
+  logHostEvent(captured ? "captured.loaded" : "captured.missing", captured ? `${captured.sessions.length} sessions captured ${captured.provenance.capturedAt}; Last visited order simulated` : "No local capture: set KONTOR_PROTOTYPE_FIXTURE; the host is empty");
+  // A reload resets the simulated Last visited order, like every other fixture.
+  try { globalThis.localStorage?.setItem(recentStorageKey(HOST_ID), JSON.stringify({ clearedAt: null, visits: captured?.visits ?? [] })); } catch { /* storage refused: Last visited starts empty */ }
+}
+const inventory = { none: () => [], large: scrollSessions, long: longSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions, recovery: recoverySessions,
+  captured: (): FixtureSession[] => captured?.sessions ?? [] }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };
@@ -50,14 +65,18 @@ export function fixtureSessions(): FixtureSession[] {
   return [...sessions.values()];
 }
 
+/** Stores a row and streams it like an agent_update. */
+function upsert(row: FixtureSession): void {
+  sessions.set(row.agent.id, row);
+  for (const observer of observers) observer.update?.({ type: "agent_update", payload: { kind: "upsert", agent: row.agent, project: row.project } });
+}
+
 /** Applies a simulated native change and streams it like an agent_update. */
 export function simulateUpdate(agentId: string, patch: Partial<FixtureSession["agent"]>, note: string): void {
   const current = sessions.get(agentId);
   if (!current) return;
-  const next: FixtureSession = { ...current, agent: { ...current.agent, ...patch, updatedAt: new Date().toISOString() } };
-  sessions.set(agentId, next);
   logHostEvent("simulated.update", `${agentId}: ${note}`);
-  for (const observer of observers) observer.update?.({ type: "agent_update", payload: { kind: "upsert", agent: next.agent, project: next.project } });
+  upsert({ ...current, agent: { ...current.agent, ...patch, updatedAt: new Date().toISOString() } });
 }
 
 function listAgents(options: { filter?: { includeArchived?: boolean }; page?: { limit?: number; cursor?: string }; subscribe?: object } = {}) {
@@ -94,7 +113,7 @@ function listWorkspaces(options: { page?: { limit?: number; cursor?: string } } 
   if (hostStatus !== "online") return Promise.reject(new Error("Prototype host is offline (simulated)."));
   const limit = options.page?.limit ?? 200;
   const start = Number(options.page?.cursor ?? 0);
-  const rows = scenario.inventory === "none" ? [] : scenario.inventory === "desks" ? DESK_WORKSPACES : scenario.inventory === "integration" ? [...WORKSPACES, ...DESK_WORKSPACES] : WORKSPACES;
+  const rows = scenario.inventory === "none" ? [] : scenario.inventory === "captured" ? captured?.workspaces ?? [] : scenario.inventory === "desks" ? DESK_WORKSPACES : scenario.inventory === "integration" ? [...WORKSPACES, ...DESK_WORKSPACES] : WORKSPACES;
   const hasMore = start + limit < rows.length;
   return Promise.resolve({ requestId: `req_${Date.now()}`, entries: rows.slice(start, start + limit), pageInfo: { hasMore, nextCursor: hasMore ? String(start + limit) : null } });
 }
@@ -120,7 +139,8 @@ export const fakePaseo = refusingProxy("paseo", {
     const base = [...new Map(WORKSPACES.map(workspace => [workspace.projectId, { projectId: workspace.projectId,
       projectKey: workspace.projectId, projectDisplayName: workspace.projectDisplayName, projectCustomName: workspace.projectCustomName,
       projectRootPath: `/fixture/${workspace.projectId}`, projectKind: "non_git", projectCustomIconRevision: null, projectIconRevision: "automatic:none:v1" }])).values()];
-    return { requestId: "fixture-projects", projects: scenario.inventory === "none" ? [] : scenario.inventory === "desks" ? DESK_PROJECTS : scenario.inventory === "integration" ? [...base, ...DESK_PROJECTS] : base };
+    // The capture read no project names; its projects stay unnamed rather than invented.
+    return { requestId: "fixture-projects", projects: scenario.inventory === "none" || scenario.inventory === "captured" ? [] : scenario.inventory === "desks" ? DESK_PROJECTS : scenario.inventory === "integration" ? [...base, ...DESK_PROJECTS] : base };
   } }),
   agents: refusingProxy("paseo.agents", { list: listAgents }),
   workspaces: refusingProxy("paseo.workspaces", { list: listWorkspaces }),
@@ -129,24 +149,28 @@ export const fakePaseo = refusingProxy("paseo", {
 // Configured sources (plugin RPC) --------------------------------------------
 
 const lifecycleRpc = fixtureLifecycle(fixtureSessions, simulateUpdate);
-const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario.inventory === "desks", (request, title, workspaceId) => {
+const navigator = fixtureNavigator(fixtureSessions, scenario.syntheticTotals ? SYNTHETIC_TOTALS : null);
+const takeover = fixtureTakeover({ get: fixtureSessions, update: simulateUpdate, navigator, mode: takeoverSim, add: (row) => { upsert(row); logHostEvent("simulated.update", `Created ${row.agent.id} in fixture memory only`); } });
+const NAVIGATOR_RPCS = new Set(["sessions.navigator-capabilities", "sessions.usage-totals", "sessions.summary-save", "sessions.summary-read", "sessions.summary-latest", "sessions.summary-attach"]);
+const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario.inventory === "desks" || scenario.inventory === "captured", { add: (request, title, workspaceId, features) => {
   const id = `agt_fixture_create_${request.requestId}`;
   const seed = baseSessions()[0]!;
   const workspaceName = request.start === "ad-hoc" ? "ADHOC" : request.role;
   const row: FixtureSession = { ...seed, agent: { ...seed.agent, id, title, status: "idle", requiresAttention: false, attentionReason: null,
     workspaceId, cwd: "/fixture/prj_proof_adam", provider: request.provider, model: request.model,
     effectiveThinkingOptionId: request.effort ?? undefined, currentModeId: request.modeId ?? undefined, archivedAt: null,
-    labels: { role: request.role, scope: request.issueKey ?? "ADHOC", "create.request": request.requestId }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    labels: { role: request.role, scope: request.issueKey ?? "ADHOC", "create.request": request.requestId }, ...(features ? { features } : {}), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
     project: { projectKey: "prj_proof_adam", projectName: "DESK • ADAM", workspaceName } };
-  sessions.set(id, row);
-  for (const observer of observers) observer.update?.({ type: "agent_update", payload: { kind: "upsert", agent: row.agent, project: row.project } });
+  upsert(row);
   logHostEvent("simulated.update", `Created ${id} in fixture memory only`);
   return id;
-});
+}, read: (id) => sessions.get(id)?.agent }, navigator, params.get("create") === "pending");
 export async function invokeRpc(method: string, input: unknown): Promise<unknown> {
   await new Promise((resolve) => setTimeout(resolve, 60));
   if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
-  if (method === "sessions.create-options" || method === "sessions.create" || method === "sessions.create-check") return createRpc(method, input);
+  if (method === "sessions.create-options" || method === "sessions.create" || method === "sessions.create-check" || method === "sessions.create-features") return createRpc(method, input);
+  if (NAVIGATOR_RPCS.has(method)) return navigator.invoke(method, input);
+  if (method.startsWith("sessions.takeover-")) return takeover.invoke(method, input);
   if (method.startsWith("sessions.")) return lifecycleRpc(method, input);
   const reads = scenario.sources ? SOURCE_READS : [];
   const catalog = { sources: reads.map((read) => read.source), diagnostics: [], registry: { path: "fixtures/workstreams.json", revision: "fixture-registry-1", workstreams: { kontor: { name: "Kontor" } }, desks: { review: { name: "Review desk" } }, diagnostics: [] } };
@@ -227,6 +251,9 @@ export async function saveKeyboard(values: unknown, revision: string): Promise<b
   return true;
 }
 
+
+/** Read-only view of the simulated drafts, creation pins and takeovers, for review evidence; never exported by the plugin. */
+Object.assign(window, { __kontorNavigatorFixture: { inspect: navigator.inspect, takeover: takeover.inspect, seat: (id: string) => structuredClone(sessions.get(id)?.agent ?? null) } });
 
 /** Disposable fault injection for the availability prototype; never exported by the plugin. */
 Object.assign(window, { __kontorP1Fixtures: {

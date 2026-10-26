@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SourceRead } from "../shared/read-sources";
 import type { Colors } from "../client/page-controls";
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}], useMemo: (factory: () => unknown) => factory(), useEffect: () => undefined }));
-vi.mock("react-native", () => ({ PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ Platform: { OS: "web" }, PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View", Image: "Image" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [] }));
 type Element = ReactElement<Record<string, unknown>>;
@@ -62,33 +62,37 @@ async function controls(pointer: "none" | "coarse" | "fine") {
     back: [back.width, back.height],
   };
 }
-/** A wide session row's own targets: the row, its details, favorite and Arrange handle, under the same pointer probe. */
+/** A wide tree session's own targets: the dense row's state icon and body, its actions menu and the Arrange handle, under the same pointer probe. */
 async function rowTargets(pointer: "none" | "coarse" | "fine") {
   vi.resetModules();
   if (pointer !== "none") vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)" && pointer === "coarse" }));
   const { OrganizationRowView } = await import("../client/organization-row");
-  const { SessionDetailsButton, SessionRow } = await import("../client/sessions-screen");
+  const { DenseSessionRow } = await import("../client/dense-session-row");
+  const { SessionActionsMenu } = await import("../client/session-actions-menu");
   const { sessionEntry } = await import("./session-fixtures");
   const entry = sessionEntry("qa", { title: "QA • review" });
   const onPress = () => {};
-  const style = (tree: ReactNode, label: string) => {
-    const found = elements(tree).find((node) => node.type === "Pressable" && String(node.props.accessibilityLabel).startsWith(label))!.props.style;
-    return (typeof found === "function" ? found({ pressed: false }) : found) as { minHeight?: number; width?: number; height?: number };
+  const style = (tree: ReactNode, match: (node: Element) => boolean) => {
+    const found = elements(tree).find((node) => node.type === "Pressable" && match(node))!.props.style;
+    return (typeof found === "function" ? found({ pressed: false }) : found) as { minHeight?: number; width?: number };
   };
   const row = OrganizationRowView({ row: { kind: "session", key: "session:qa", parentKey: "root", depth: 1, entry } as never, colors, compact: false, disabled: false, arranging: true, selected: false, favorite: false,
-    details: <SessionDetailsButton title={entry.title} expanded={false} compact={false} colors={colors} onPress={onPress} />, onFavorite: onPress, onToggle: onPress, onMove: onPress, onSelect: onPress,
-    children: (SessionRow as unknown as { type: (props: object) => ReactNode }).type({ entry, colors, compact: false, onPress }) });
-  const details = style(row, "Details: QA • review"), favorite = style(row, "Favorite QA • review"), arrange = style(row, "Reorder QA • review");
-  return { row: style(row, "QA • review.").minHeight, details: [details.width, details.height], favorite: [favorite.width, favorite.height], arrange: [arrange.width, arrange.minHeight] };
+    onToggle: onPress, onMove: onPress, onSelect: onPress,
+    children: <DenseSessionRow entry={entry} colors={colors} clock={{ now: Date.parse("2026-10-22T12:00:00Z"), zone: "UTC" }} opened={null} onPress={onPress}
+      mode={{ kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={[]} /> }} /> });
+  const testID = (id: string) => (node: Element) => node.props.testID === id;
+  const menu = style(row, testID("session-actions-qa")), arrange = style(row, (node) => String(node.props.accessibilityLabel) === "Reorder QA • review");
+  return { state: style(row, testID("session-row-state")).minHeight, body: style(row, testID("session-row-body")).minHeight, menu: [menu.width, menu.minHeight], arrange: [arrange.width, arrange.minHeight] };
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 describe("wide session row touch targets", () => {
   // Real bounds beside each other, so a tap on one never lands on its neighbour; not a hit slop.
-  it.each([["none", "a native app"], ["coarse", "a tablet or touch-screen browser"]] as const)("gives the row, its details, favorite and Arrange handle 44pt at any width (%s: %s)", async (pointer, _where) => {
-    expect(await rowTargets(pointer)).toEqual({ row: 44, details: [44, 44], favorite: [44, 44], arrange: [44, 44] });
+  it.each([["none", "a native app"], ["coarse", "a tablet or touch-screen browser"]] as const)("gives the row's state and body, its actions menu and Arrange handle 44pt at any width (%s: %s)", async (pointer, _where) => {
+    expect(await rowTargets(pointer)).toEqual({ state: 44, body: 44, menu: [44, 44], arrange: [44, 44] });
   });
-  it("keeps the dense row for a mouse or trackpad", async () => {
-    expect(await rowTargets("fine")).toEqual({ row: 40, details: [30, 30], favorite: [30, 30], arrange: [28, 32] });
+  // The dense row has no mouse variant: only its content is dense. The tree's Arrange handle stays dense for a mouse.
+  it("keeps the row's 44pt targets for a mouse or trackpad, with only the Arrange handle dense", async () => {
+    expect(await rowTargets("fine")).toEqual({ state: 44, body: 44, menu: [44, 44], arrange: [28, 32] });
   });
 });
 describe("disclosure touch targets", () => {

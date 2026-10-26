@@ -21,6 +21,9 @@ async function check(browser, theme, source, next, title, mode = 'focus') {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(`${origin}/?rows=12&theme=${theme}`);
+    // Sessions lands on Last visited, empty here and with the layout fixed; All lists the fixture's sessions.
+    if (!(await page.getByTestId('sessions-filter-all').isVisible())) await page.getByTestId('sessions-advanced-toggle').click();
+    await page.getByTestId('sessions-filter-all').click();
     await page.getByTestId('sessions-layout-flat').click();
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (source === 'sessions-notices-button' && await hide.isVisible()) await hide.click();
@@ -72,10 +75,11 @@ async function check(browser, theme, source, next, title, mode = 'focus') {
   const browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
     for (const theme of ['light', 'dark']) {
-      await check(browser, theme, 'session-usage', 'sessions-selection-toggle', 'Select sessions.');
+      // A row's help now comes from its state icon, and the toolbar's actions entry stands where the Select toggle did.
+      await check(browser, theme, 'session-row-state', 'session-actions-toolbar', 'Actions for the sessions shown');
       await check(browser, theme, 'sessions-notices-button', 'sessions-layout-flat', 'Flat.');
-      await check(browser, theme, 'session-usage', 'sessions-layout-grouped', 'Grouped.');
-      await check(browser, theme, 'session-usage', 'sessions-selection-toggle', 'Select sessions.', 'hover');
+      await check(browser, theme, 'session-row-state', 'sessions-layout-grouped', 'Grouped.');
+      await check(browser, theme, 'session-row-state', 'session-actions-toolbar', 'Actions for the sessions shown', 'hover');
     }
   } finally { await browser.close(); fs.writeFileSync(path.join(output, 'ownership-report.json'), JSON.stringify(report, null, 2) + '\n'); }
   console.log(report.cases.filter(item => item.status === 'FAIL'));

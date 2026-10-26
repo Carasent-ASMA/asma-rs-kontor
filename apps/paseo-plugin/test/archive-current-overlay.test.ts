@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_SESSION_FILTERS, matchesStatus, QUICK_STATUS_FILTERS } from "../client/session-view";
+import { DEFAULT_SESSION_FILTERS, matchesStatus, MORE_STATUS_FILTERS, QUICK_STATUS_FILTERS } from "../client/session-view";
 import { clearSessionFilterPatch, clearSessionViews, isResultMode, readSessionView, readWorkingAs, resetSessionView, resetSessionViewPatch, sessionFilterCount, sessionViewTransition, writeWorkingAs } from "../client/session-view-store";
 import { QUICK_FILTER_MEANINGS } from "../client/mobile-quick-filter-options";
 import { sessionEntry } from "./session-fixtures";
@@ -54,7 +54,7 @@ describe("Current overlay and the Recent default", () => {
       streams: null, task: null, includeArchived: false, sort: undefined, grouping: undefined });
   });
   it("defaults to Recent while preserving explicit Current, All and Attention", () => {
-    expect(DEFAULT_SESSION_FILTERS.status).toBe("recent");expect(QUICK_STATUS_FILTERS).toContain("current");expect(QUICK_STATUS_FILTERS).toContain("all");expect(QUICK_STATUS_FILTERS).toContain("attention");
+    expect(DEFAULT_SESSION_FILTERS.status).toBe("recent");expect(MORE_STATUS_FILTERS).toContain("current");expect(QUICK_STATUS_FILTERS).toEqual(expect.arrayContaining(["all","attention"]));
     const old=sessionEntry("old",{status:"idle",updatedAt:"2001-01-01",requiresAttention:true,attentionReason:"finished"});
     const unknown={...old,id:"unknown",availability:{agentId:"unknown",state:"unknown" as const,reason:"401/timeout",checkedAt:new Date().toISOString(),revision:old.updatedAt}};
     for(const row of [old,unknown,sessionEntry("permission",{status:"error",needsInput:true})])expect(matchesStatus(row,"current")).toBe(true);

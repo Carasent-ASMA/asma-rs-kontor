@@ -5,6 +5,7 @@ import { COARSE_POINTER, type Colors } from "./page-controls";
 import { focusControl } from "./mobile-filters";
 import { normalizeChoice } from "./workstream-selector";
 import type { ScopeChoice } from "./session-scope";
+import { readableInk } from "./session-status-ink";
 import { onEscape } from "./web";
 
 /** Searchable single choice; the selected key survives an unavailable inventory. */
@@ -52,7 +53,7 @@ export function SessionScopeSelector({ id, label, options, selected, open, color
       {choices.map(row)}
       {!choices.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No other {label.toLowerCase()} matches.</Text> : null}
       <Pressable testID={`sessions-${id}-close`} accessibilityRole="button" accessibilityLabel={`Close ${label.toLowerCase()} choices`} onPress={() => close.current()}
-        style={{ minHeight: height, justifyContent: "center" }}><Text style={{ color: colors.accent, fontSize: 12 }}>Done</Text></Pressable>
+        style={{ minHeight: height, justifyContent: "center" }}><Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 12 }}>Done</Text></Pressable>
     </View> : null}
   </View>;
 }

@@ -62,6 +62,8 @@ import { responsibilitySchema } from "../shared/responsibility";
 import { QUICK_STATUS_FILTERS, MORE_STATUS_FILTERS } from "../client/session-view";
 import type { SessionStateCount } from "../client/session-state-counts";
 import { clearSessionViews, patchSessionView } from "../client/session-view-store";
+import { DenseSessionRow } from "../client/dense-session-row";
+import type { SessionAction } from "../client/session-actions-menu";
 
 type Element = { readonly type?: unknown; readonly props: Record<string, unknown> };
 const walk = (node: unknown): Element[] => {
@@ -185,7 +187,8 @@ describe("mobile Filters & view matching count", () => {
     };
     mount(); await settle();
     const list = byTestID("sessions-list")[0]!, item = (list.props.data as ListRow[]).find((candidate) => candidate.entry?.id === "beta-running")!;
-    (((list.props.renderItem as (info: { item: unknown }) => Element)({ item }).props.lifecycleAction as Element).props.onPress as () => void)(); await settle();
+    const dense = walk((list.props.renderItem as (info: { item: unknown }) => Element)({ item })).find((element) => element.type === DenseSessionRow)!;
+    ((dense.props.mode as { actions: Element }).actions.props.actions as SessionAction[]).find((action) => action.key === "archive")!.perform(); await settle();
     open();
     expectCount(["alpha-idle", "gamma-input"]);
     expect(fake.refresh).not.toHaveBeenCalled();

@@ -1,4 +1,3 @@
-import { SessionCompactContent } from "../client/session-compact-content";
 import { SessionScopeSelector } from "../client/session-scope-selector";
 import { SessionScopeChip } from "../client/session-scope-chip";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -26,7 +25,9 @@ type HookQueueItem = {
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
 const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
 const { harness, directory } = vi.hoisted(() => {
-  const slots: HookSlot[] = [];
+  let slots: HookSlot[] = [];
+  /** Each drawn child's own hook slots, kept across draws as React keeps a mounted instance's state. */
+  const stores = new Map<string, HookSlot[]>();
   let cursor = 0;
   let dirty = false;
   let component: (() => unknown) | null = null;
@@ -133,6 +134,13 @@ const { harness, directory } = vi.hoisted(() => {
     }
   }
 
+  function release(): void {
+    for (const slot of slots) {
+      slot.cleanup?.();
+      slot.cleanup = undefined;
+    }
+  }
+
   function renderTree(): unknown {
     if (!component) {
       throw new Error("No component registered");
@@ -163,12 +171,27 @@ const { harness, directory } = vi.hoisted(() => {
       current() {
         return tree;
       },
+      /** Draws a child component on its own hook slots, then returns to the screen's. Its effects are not run. */
+      draw<T>(key: string, draw: () => T): T {
+        const outer = { slots, cursor, layoutQueue, effectQueue };
+        slots = stores.get(key) ?? [];
+        stores.set(key, slots);
+        cursor = 0; layoutQueue = []; effectQueue = [];
+        try {
+          return draw();
+        } finally {
+          ({ slots, cursor, layoutQueue, effectQueue } = outer);
+        }
+      },
       unmount() {
-        for (const slot of slots) slot.cleanup?.();
+        release();
         component = null;
       },
+      // A remount unmounts first, so nothing the old screen subscribed (such as the shared row clock) outlives it.
       reset() {
-        slots.length = 0;
+        release();
+        slots = [];
+        stores.clear();
         cursor = 0;
         dirty = false;
         component = null;
@@ -257,7 +280,6 @@ vi.mock("../client/use-session-directory", () => ({
 }));
 
 import { emptyDirectoryState } from "../client/session-directory";
-import { SessionLifecycleDialog } from "../client/session-lifecycle-view";
 import {
   ActiveFilterSummary,
   COMPACT_COLLAPSE_DISTANCE,
@@ -271,9 +293,8 @@ import {
   OPTIONS_MIN_HEIGHT,
   OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
-  SessionDetailsButton,
+  roleRowContext,
   sessionDetailLines,
-  SessionRow,
   resultCues,
   SessionsScreen,
   SessionTimeLines,
@@ -283,6 +304,9 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { SessionsLegend } from "../client/sessions-legend";
+import { DenseSessionRow } from "../client/dense-session-row";
+import { ACTION_ORDER, SessionActionsMenu, type SessionAction } from "../client/session-actions-menu";
+import { exactTime } from "../client/session-time";
 import { MobileFiltersPage } from "../client/mobile-filters";
 import { SessionLayoutControl } from "../client/session-layout-control";
 import { CompactSearch, MobileQuickToolbar } from "../client/mobile-quick-toolbar";
@@ -353,11 +377,55 @@ function walk(node: unknown): ElementLike[] {
     return node.flatMap(walk);
   }
   const element = node as ElementLike;
-  if (element.type === SessionCompactContent) return walk(SessionCompactContent(element.props as Parameters<typeof SessionCompactContent>[0]));
+  if (element.type === DenseSessionRow) return [element, ...walk(drawDense(element))];
   const children = element.props.children;
   // A FlatList draws its header element inside its own scroll content.
   const header = element.props.ListHeaderComponent;
   return [element, ...walk(children), ...walk(header)];
+}
+
+/** A session row drawn in place, on its own hook slots per session, so its parts and menu are visible. */
+function drawDense(element: ElementLike): ElementLike {
+  const props = element.props as Parameters<typeof DenseSessionRow>[0];
+  return harness.draw(`dense:${props.entry.id}`, () => DenseSessionRow(props)) as unknown as ElementLike;
+}
+
+/** What the list's own renderer draws for one item; a session row's insides are drawn by walk. */
+function drawItem(item: unknown): ElementLike {
+  return (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item });
+}
+
+/** A listed session's row, tree session or flat result, by native ID. */
+function drawSession(id: string): ElementLike {
+  return drawItem(listRows().find((row) => (row.kind === "session" || row.kind === "result") && row.entry.id === id));
+}
+
+/** The dense row element inside a drawn list row. */
+function denseOf(row: unknown): ElementLike & { readonly props: Parameters<typeof DenseSessionRow>[0] } {
+  return walk(row).find((element) => element.type === DenseSessionRow) as ElementLike & { readonly props: Parameters<typeof DenseSessionRow>[0] };
+}
+
+/** The row's trailing actions menu. */
+function menuOf(row: unknown): ElementLike {
+  return walk(row).find((element) => element.type === SessionActionsMenu)!;
+}
+
+/** One action from a row's menu, as the menu would run it. */
+function rowAction(row: unknown, key: string): SessionAction {
+  return (menuOf(row).props.actions as SessionAction[]).find((action) => action.key === key)!;
+}
+
+/** Runs one of a row's menu actions and lets the screen redraw. */
+function perform(row: unknown, key: string) {
+  void rowAction(row, key).perform();
+  harness.flush();
+}
+
+/** The row's own "Actions for <title>" button, drawn from its menu, where focus returns after Details and Back. */
+function actionsButton(row: unknown): ElementLike {
+  const menu = menuOf(row);
+  const id = (menu.props.entry as { id: string }).id;
+  return findByTestID(harness.draw(`menu:${id}`, () => SessionActionsMenu(menu.props as Parameters<typeof SessionActionsMenu>[0])), `session-actions-${id}`);
 }
 
 function findByTestID(node: unknown, testID: string): ElementLike {
@@ -480,31 +548,12 @@ function fullToolbarShown(): boolean {
 }
 
 describe("SessionsScreen toolbar events", () => {
-  it.each([true, false])("keeps exactly one enabled recovery entry on compact=%s", (compact) => {
+  it.each([true, false])("keeps no standalone Resume in any toolbar on compact=%s", (compact) => {
     renderScreen(undefined, compact);
     const tree = walk(harness.current());
-    const recovery = tree.filter((element) => element.props.accessibilityLabel === "Resume sessions");
-    const slim = tree.find((element) => element.type === SlimToolbar);
-    const inSlim = slim?.props.action as ElementLike | undefined;
-    expect(recovery.length + (inSlim ? 1 : 0)).toBe(1);
-    expect((inSlim ?? recovery[0]!)?.props.disabled).toBe(false);
+    expect(tree.some((element) => element.props.accessibilityLabel === "Resume sessions")).toBe(false);
+    expect(tree.find((element) => element.type === SlimToolbar)?.props.action).toBeUndefined();
     expect(tree.some((element) => element.type === MobileQuickToolbar)).toBe(compact);
-    expect(inSlim).toBeUndefined();
-  });
-  it("opens recovery from the mobile quick toolbar and keeps the existing search after close", () => {
-    renderScreen(undefined, true);
-    (sessionSearch().props.onChangeText as (query: string) => void)("session-a");
-    harness.flush();
-    const recovery = walk(harness.current()).find((element) => element.props.accessibilityLabel === "Resume sessions")!;
-    (recovery.props.onPress as () => void)();
-    harness.flush();
-    const dialog = walk(harness.current()).find((element) => element.type === SessionLifecycleDialog)!;
-    expect(dialog.props.scopeIds).toEqual(["session-a"]);
-    expect(walk(harness.current()).some((element) => element.type === MobileQuickToolbar)).toBe(true);
-    (dialog.props.onClose as () => void)();
-    harness.flush();
-    expect(walk(harness.current()).some((element) => element.type === SessionLifecycleDialog)).toBe(false);
-    expect(readSessionView("host-a").query).toBe("session-a");
   });
   beforeEach(() => {
     vi.useFakeTimers();
@@ -585,12 +634,12 @@ describe("SessionsScreen toolbar events", () => {
     if (compact) closeMobileFilters();
     expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
     expect(resultCues(history[0]!)).toContain("Earlier error · now closed");
-    const row = SessionRow({ entry: history[0]!, colors, compact, onPress: () => {}, displayContext: "Archived workspace" });
-    expect(textOf(row)).toContain("Earlier error · now closed");
-    const pressable = walk(row).find((element) => element.props.testID === "sessions-row-history-0")!;
-    expect(pressable.props.accessibilityLabel).toContain("Native status closed");
-    expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
-    expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
+    // The row as the list draws it: history is spoken as routine, never attention, and takes no exception note.
+    const row = drawSession("history-0");
+    expect(testIDs(row)).not.toContain("session-row-note");
+    const body = findByTestID(row, "session-row-body");
+    expect(body.props.accessibilityLabel).toContain("Native status closed. Earlier error · now closed. Availability unknown");
+    expect(body.props.accessibilityLabel).not.toContain("Needs attention");
     expect(walk(row).find((element) => element.type === SessionStateMarker)!.props.state).toBe("closed");
     // Archived history is disjoint from closed-but-unarchived records, without changing the state choice.
     if (compact) openMobileFilters();
@@ -644,16 +693,19 @@ describe("SessionsScreen toolbar events", () => {
       harness.flush();
       const row = renderSessionLeaf();
       expect(walk(row).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual([state]);
-      expect(walk(row).filter(element => element.type === "Pressable")).toHaveLength(1);
-      expect(row.props.accessibilityLabel).toContain(`Native status ${entry.status}`);
-      expect(row.props.accessibilityLabel).toContain("Session live");
-      expect(row.props["aria-describedby"]).toBeUndefined();
+      // Every state keeps the same controls: the state icon, the row body and one actions menu.
+      expect(walk(row).filter(element => element.type === "Pressable").map(element => element.props.testID)).toEqual(["session-row-state", "session-row-body"]);
+      expect(walk(row).filter(element => element.type === SessionActionsMenu)).toHaveLength(1);
+      const body = findByTestID(row, "session-row-body");
+      expect(String(body.props.accessibilityLabel).startsWith("Session live. ")).toBe(true);
+      expect(body.props.accessibilityLabel).toContain(`Native status ${entry.status}`);
+      expect(body.props["aria-describedby"]).toBeUndefined();
       expect(walk(row).some(element => element.type === StateBadge)).toBe(false);
     }
     // Labeled filters teach the same shapes, keeping their labels and exact counts.
     if (compact) openMobileFilters();
     expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: { text: "1" } });
-    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: { text: "0" } });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Errors", count: { text: "0" } });
     if (compact) closeMobileFilters();
   });
 
@@ -943,22 +995,23 @@ describe("SessionsScreen toolbar events", () => {
     const { scrollToOffset } = renderScreen(undefined, compact, compact ? "ios" : "web", { projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES, projectId: "prj_desk" });
     vi.advanceTimersByTime(0);
     expect(sessionRowIds()).toEqual(["desk-epic-b"]);
-    const result = listRows()[0]!;
-    const draw = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-    const row = draw({ item: result });
-    expect(row.props.provenance).toMatchObject({ parts: ["DESK • ADAM", "ADAM"], nativeDesk: { id: "prj_desk", workspaceId: "w_adam" } });
-    expect((row.props.lifecycleAction as ElementLike).props.session).toMatchObject({ id: "desk-epic-b", workspaceId: "w_adam" });
-    ((row.props.details as ElementLike).props.onPress as () => void)(); harness.flush();
+    const row = drawSession("desk-epic-b");
+    // The row names the native desk and its workspace, and its Archive acts on that native session.
+    expect(findByTestID(row, "session-row-body").props.accessibilityLabel).toContain("Desk DESK • ADAM, workspace ADAM");
+    expect(denseOf(row).props.entry).toMatchObject({ id: "desk-epic-b", projectKey: "prj_desk", workspaceId: "w_adam" });
+    expect(rowAction(row, "archive").unavailable).toBeNull();
+    perform(row, "details");
     const details = findByTestID(harness.current(), "sessions-details");
     expect(JSON.stringify(details.props.children)).toContain("w_adam");
     expect(JSON.stringify(details.props.children)).toContain("Workstream association");
-    (row.props.onShowInTree as (entry: unknown) => void)((result as Extract<ListRow, { kind: "result" }>).entry); harness.flush();
+    perform(row, "show-in-tree");
     expect(groupRows().filter((row) => row.group.kind === "project").map((row) => row.group.key)).toEqual(["project:prj_desk"]);
     expect(groupRows().some((row) => row.group.kind === "epic")).toBe(false);
     expect(groupRows().find((row) => row.group.key === "project:prj_desk/workspace:id%3Aw_adam")?.expanded).toBe(true);
     expect(sessionRowIds()).toContain("desk-epic-b");
-    const nativeRow = listRows().find((item) => item.kind === "session" && item.entry.id === "desk-epic-b")!;
-    expect((draw({ item: nativeRow }).props.lifecycleAction as ElementLike).props.session).toMatchObject({ id: "desk-epic-b", workspaceId: "w_adam" });
+    const nativeRow = drawSession("desk-epic-b");
+    expect(denseOf(nativeRow).props.entry).toMatchObject({ id: "desk-epic-b", projectKey: "prj_desk", workspaceId: "w_adam" });
+    expect(rowAction(nativeRow, "archive").unavailable).toBeNull();
     const back = walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!;
     (back.props.onPress as () => void)(); harness.flush(); vi.advanceTimersByTime(0);
     expect(sessionRowIds()).toEqual(["desk-epic-b"]);
@@ -1076,10 +1129,12 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:No epic linked"]);
     chooseLayout("flat");
     setStateFilter("idle");
-    const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
+    const spoken = (row: unknown) => String(findByTestID(row, "session-row-body").props.accessibilityLabel);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
-    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "No epic linked", "Workspace"]]);
-    (renderItem({ item: results[0] }).props.onShowInTree as (entry: unknown) => void)(results[0]!.entry); harness.flush();
+    expect(results.map((row) => row.entry.id)).toEqual(["desk", "loose-2"]);
+    expect(spoken(drawItem(results[0]))).toContain("Desk Adam desk, workspace Workspace");
+    expect(spoken(drawItem(results[1]))).toContain("Workstream Kontor, epic No epic linked, workspace Workspace");
+    perform(drawItem(results[0]), "show-in-tree");
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}:${row.expanded}`).slice(0, 2)).toEqual(["workstream:Adam:true", "workspace:Workspace:true"]);
     expect(sessionRowIds()).toContain("desk");
     // Role grouping names the missing epic in each session's context too.
@@ -1087,7 +1142,8 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["SWE:false", "No role:false"]);
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
-    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · No epic linked · Workspace", "Kontor · No epic linked · Workspace"]);
+    expect(roleSessions.map((row) => spoken(drawItem(row)))).toEqual([expect.stringContaining("Role SWE from the title. Workstream Kontor, epic No epic linked, workspace Workspace"),
+      expect.stringContaining("Role SWE from the title. Workstream Kontor, epic No epic linked, workspace Workspace")]);
   });
 
   it.each([
@@ -1121,7 +1177,7 @@ describe("SessionsScreen toolbar events", () => {
     chooseLayout("flat");
     expect(sessionRowIds()).toEqual(["quiet"]);
     const result = listRows()[0] as Extract<ListRow, { kind: "result" }>;
-    (renderItem(result).props.onShowInTree as (entry: typeof result.entry) => void)(result.entry); harness.flush();
+    perform(renderItem(result), "show-in-tree");
     expect(sessionRowIds().sort()).toEqual(["busy", "quiet"]);
     expect(groupRows().every((row) => row.group.aggregate.total === 2)).toBe(true);
     for (const row of groupRows()) {
@@ -1160,8 +1216,8 @@ describe("SessionsScreen toolbar events", () => {
     // The current render's row renderer, since rows read the peek from its closure.
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
-    expect((renderItem({ item: result }).props.provenance as { parts: string[] }).parts).toEqual(["Other work", "ASMA-1", "Workspace"]);
-    (renderItem({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry); harness.flush();
+    expect(findByTestID(renderItem({ item: result }), "session-row-body").props.accessibilityLabel).toContain("Workstream Other work, epic ASMA-1, workspace Workspace");
+    perform(renderItem({ item: result }), "show-in-tree");
     expect(textOf(findByTestID(harness.current(), "sessions-peek"))).toContain("Branches opened here are not saved.");
     expect(walk(findByTestID(harness.current(), "sessions-peek")).some((element) => element.props.accessibilityLabel === "Showing “Session quiet” in the tree. Branches opened here are not saved.")).toBe(true);
     // Pinned above the list, not in its scrolling header, so the way back stays in view.
@@ -1195,8 +1251,7 @@ describe("SessionsScreen toolbar events", () => {
     const peekText = () => walk(findByTestID(harness.current(), "sessions-peek")).find((element) => "numberOfLines" in element.props)!;
     const showInTree = () => {
       const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
-      const row = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result });
-      (row.props.onShowInTree as (entry: unknown) => void)(result.entry); harness.flush();
+      perform(drawItem(result), "show-in-tree");
     };
     const back = () => walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!;
     rootHeight(SHORT_PEEK_HEIGHT - 100);
@@ -1235,8 +1290,7 @@ describe("SessionsScreen toolbar events", () => {
     (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset: vi.fn(), scrollToIndex };
     setStateFilter("idle");
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
-    ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
-    harness.flush();
+    perform(drawItem(result), "show-in-tree");
     const place = { index: listRows().findIndex((row) => row.kind === "session" && row.entry.id === "quiet"), viewPosition: 0.3, animated: false };
     vi.advanceTimersByTime(0);
     expect(scrollToIndex.mock.calls).toEqual([[place]]);
@@ -1262,8 +1316,7 @@ describe("SessionsScreen toolbar events", () => {
     setStateFilter("idle");
     const showInTree = () => {
       const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
-      ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
-      harness.flush();
+      perform(drawItem(result), "show-in-tree");
     };
     showInTree();
     vi.runOnlyPendingTimers();
@@ -1444,8 +1497,9 @@ describe("SessionsScreen toolbar events", () => {
     } as unknown as PluginScreenProps));
     expandAll();
     save.mockClear();
-    const row = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id) });
-    const details = (id: string) => row(id).props.details as ElementLike;
+    const row = (id: string) => drawSession(id);
+    // The row menu holds Details; its trigger is where focus returns.
+    const menu = (id: string) => menuOf(row(id));
     const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
     const content = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
     // Timing keeps its clock-driven component inside the named section.
@@ -1454,8 +1508,8 @@ describe("SessionsScreen toolbar events", () => {
     const lines = () => (content().find(line => line.type === SessionDetailSection && line.props.title === "Role and placement")!.props.values as { label: string; value: string }[])
       .map(({ label, value }) => `${label}: ${value}`);
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
-    const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
-    return { openAgent, save, row, details, dialog, times, usage, lines, close, open };
+    const open = (id: string) => perform(row(id), "details");
+    return { openAgent, save, row, menu, dialog, times, usage, lines, close, open };
   }
 
   const placeEntries = () => [
@@ -1467,19 +1521,18 @@ describe("SessionsScreen toolbar events", () => {
     sessionEntry("nowhere", { title: "loose", workspaceId: null, workspaceName: null, cwd: "" }),
   ];
 
-  it("reveals each Role row's full place from its own details button, with absent values named, and saves nothing", () => {
+  it("reveals each Role row's full place from its own Details action, with absent values named, and saves nothing", () => {
     const screen = renderDetails(placeEntries());
-    // The row keeps its short context; the details hold what it leaves out.
-    expect((screen.row("long").props.children as ElementLike).props.compactContext).toBe("ASMA-8541 · TSW • ASMA-8541 roles provenance correction workspace with a long name");
+    // The row keeps its short origin; the details hold what it leaves out.
+    expect(textOf(findByTestID(screen.row("long"), "session-row-origin"))).toBe("QA · TSW • ASMA-8541 roles provenance correction workspace with a long name");
     expect(screen.dialog()).toBeUndefined();
-    expect(screen.details("long").props).toMatchObject({ title: "QA • Reconcile the delivery evidence for the second review round", expanded: false });
+    expect(screen.menu("long").props.entry).toMatchObject({ title: "QA • Reconcile the delivery evidence for the second review round" });
+    expect(rowAction(screen.row("long"), "details").label).toBe("Details");
     screen.open("long");
     expect(screen.dialog()!.props).toMatchObject({ dialog: true, label: "Details: QA • Reconcile the delivery evidence for the second review round", placement: { align: "stretch", width: 0, cover: true } });
     expect(textOf(findByTestID(screen.dialog()!.props.header, "sessions-details-title"))).toBe("QA • Reconcile the delivery evidence for the second review round");
     expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541, from the epic label",
       "Workspace: TSW • ASMA-8541 roles provenance correction workspace with a long name"]);
-    expect(screen.details("long").props.expanded).toBe(true);
-    expect(screen.details("conflict").props.expanded).toBe(false);
     const expected: Record<string, string[]> = {
       conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: Unknown, no epic or task label", "Workspace: Workspace"],
       desk: ["Role: SWE, from the title", "Other role declarations: None", "Desk: Adam desk", "Workspace: Workspace"],
@@ -1496,10 +1549,13 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.save).not.toHaveBeenCalled();
   });
 
-  it("moves focus to Close on open and back to the details button on Close, while the row itself still opens the session", () => {
+  it("moves focus to Close on open and back to the row's actions on Close, while the row itself still opens the session", () => {
     const screen = renderDetails(placeEntries());
     const button = { focus: vi.fn() };
-    (screen.details("long").props.ref as (node: unknown) => void)(button);
+    // The "Actions for <title>" button the row draws.
+    const actions = actionsButton(screen.row("long"));
+    expect(actions.props.accessibilityLabel).toBe("Actions for QA • Reconcile the delivery evidence for the second review round");
+    (actions.props.ref as (node: unknown) => void)(button);
     screen.open("long");
     const closeFocus = vi.fn();
     (screen.close().props.ref as RefLike).current = { focus: closeFocus };
@@ -1509,9 +1565,8 @@ describe("SessionsScreen toolbar events", () => {
     screen.open("long");
     expect(closeFocus).toHaveBeenCalledTimes(1);
     (screen.dialog()!.props.onClose as () => void)(); harness.flush();
-    // The row's own button opens the session and never the details.
-    const sessionRow = screen.row("long").props.children as ElementLike;
-    (sessionRow.props.onPress as (entry: unknown) => void)(sessionRow.props.entry);
+    // The row's own body opens the session and never the details.
+    (findByTestID(screen.row("long"), "session-row-body").props.onPress as () => void)();
     harness.flush();
     expect(screen.openAgent).toHaveBeenCalledTimes(1);
     expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "long" });
@@ -1525,19 +1580,18 @@ describe("SessionsScreen toolbar events", () => {
     try {
       const screen = renderDetails(placeEntries());
       const button = { focus: vi.fn(() => { helpVisible = true; }) };
-      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      (screen.menu("long").props.ref as (node: unknown) => void)(button);
       screen.open("long");
       (screen.close().props.onPress as () => void)(); harness.flush();
       expect(button.focus).toHaveBeenCalledOnce();
       expect(helpVisible).toBe(false);
-      const next = screen.row("conflict").props.children as ElementLike;
-      (next.props.onPress as (entry: unknown) => void)(next.props.entry);
+      (findByTestID(screen.row("conflict"), "session-row-body").props.onPress as () => void)();
       expect(screen.openAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentId: "conflict" }));
 
       screen.open("long");
       const scroller = { focus: vi.fn(() => { helpVisible = true; }) };
       (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { getScrollableNode: () => scroller };
-      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      (screen.menu("long").props.ref as (node: unknown) => void)(null);
       vi.stubGlobal("document", { activeElement: null, body: {} });
       directory.state = { ...(directory.state as object), entries: placeEntries().filter(entry => entry.id !== "long") };
       harness.flush();
@@ -1559,15 +1613,15 @@ describe("SessionsScreen toolbar events", () => {
     expandAll();
     const sessions = listRows().filter((row) => row.kind === "session");
     expect(sessions).toHaveLength(5);
-    const buttons = sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details as ElementLike);
-    expect(buttons.map((button) => [button.type, button.props.title, button.props.expanded])).toEqual(sessions.map((row) => [SessionDetailsButton, row.kind === "session" ? row.entry.title : null, false]));
+    const rows = sessions.map((row) => drawItem(row));
+    expect(rows.map((row) => [(menuOf(row).props.entry as { title: string }).title, rowAction(row, "details").label, rowAction(row, "details").unavailable ?? null]))
+      .toEqual(sessions.map((row) => [row.kind === "session" ? row.entry.title : null, "Details", null]));
     // Workstreams details open the same way, with the same lines.
-    (buttons[0]!.props.onPress as () => void)(); harness.flush();
+    perform(rows[0], "details");
     expect(screen.dialog()!.props.label).toBe(`Details: ${(sessions[0] as { entry: { title: string } }).entry.title}`);
-    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-    const result = renderItem({ item: { kind: "result", entry: placeEntries()[0]! } });
-    expect((result.props.details as ElementLike).props.title).toBe(placeEntries()[0]!.title);
-    ((result.props.details as ElementLike).props.onPress as () => void)(); harness.flush();
+    const result = drawItem({ kind: "result", entry: placeEntries()[0]! });
+    expect((menuOf(result).props.entry as { title: string }).title).toBe(placeEntries()[0]!.title);
+    perform(result, "details");
     expect(screen.dialog()).toBeDefined();
   });
 
@@ -1626,83 +1680,72 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { query, grouping: "hierarchy", status: "all" });
     harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" },
       navigation: { openAgent, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as unknown as PluginScreenProps));
-    const result = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { readonly type: (props: unknown) => ElementLike })({ item: listRows().find((row) => row.kind === "result" && row.entry.id === id) });
-    return { openAgent, result, drawn: (id: string) => { const element = result(id); return element.type(element.props); } };
+    const result = (id: string) => drawItem(listRows().find((row) => row.kind === "result" && row.entry.id === id));
+    return { openAgent, result };
   }
+  /** What the row says the session's metadata was last updated, exactly, in the row clock's zone. */
+  const updatedExactly = (row: unknown, at: string) => `Metadata updated: ${exactTime(Date.parse(at), denseOf(row).props.clock.zone)}`;
 
-  it.each([[true, "3h ago"], [false, "Updated 3 hours ago"]] as const)("gives each result its Updated time and its details beside the row, and keeps open and Show in tree (compact %s)", (compact, shown) => {
+  it.each([true, false])("gives each result its Updated time, its details and Show in tree in the row menu, and keeps open (compact %s)", (compact) => {
     patchSessionView("host-a", { layout: "flat" });
     const screen = renderResults(compact);
     expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
-    const drawn = screen.drawn("found");
-    expect(textOf(findByTestID(drawn, "sessions-row-age"))).toBe(shown);
-    expect(textOf(findByTestID(screen.drawn("found-too"), "sessions-row-age"))).toBe(compact ? "just now" : "Updated just now");
-    // Compact gives the title its line to itself, and the state and the age lead the usage line; desktop keeps both by the title.
-    const lineOf = (testID: string) => walk(drawn).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes(testID)).at(-1)!;
-    const kinds = (line: ElementLike) => [line.props.children].flat(2).filter(Boolean).map((child) => {
-      const element = child as ElementLike & { type: unknown };
-      return element.type === SessionUsage ? "usage" : element.type === SessionStateMarker ? "state" : String(element.props.testID ?? "other");
-    });
-    if (compact) {
-      expect(textOf(findByTestID(drawn, "sessions-row-model"))).toBe("—");
-      expect(walk(findByTestID(drawn, "sessions-row-title")).some(node => node.props.testID === "sessions-row-meta")).toBe(false);
-      expect(walk(drawn).filter(node => node.type === SessionStateMarker)).toHaveLength(1);
-    } else expect(kinds(lineOf("sessions-row-title"))).toEqual(["sessions-row-title", "sessions-row-age", "other", "state"]);
-    const row = findByTestID(drawn, "sessions-row-found");
-    expect(String(row.props.accessibilityLabel).endsWith(". Updated 3 hours ago")).toBe(true);
-    // The details button sits between the row and Show in tree, and opens the details only.
-    const parts = drawn.props.children as ElementLike[];
-    const details = parts[1]!;
-    expect((details as ElementLike & { type: unknown }).type).toBe(SessionDetailsButton);
-    expect(details.props).toMatchObject({ title: "SWE • found", expanded: false });
-    expect(String(compact ? parts[2]!.props.label : parts[2]!.props.accessibilityLabel)).toBe("Show SWE • found in the tree");
-    (details.props.onPress as () => void)(); harness.flush();
+    const row = screen.result("found");
+    expect(row.props.testID).toBe("sessions-result-found");
+    // The origin ends with the Updated age, the same at every width; the role leaves the title for the origin.
+    expect(textOf(findByTestID(row, "session-row-origin"))).toBe("SWE · Workspace · upd 3h");
+    expect(textOf(findByTestID(screen.result("found-too"), "session-row-origin"))).toBe("QA · Workspace · upd now");
+    // Title, origin, then the model with the session totals, unknown here; one state marker leads.
+    expect(textOf(walk(findByTestID(row, "session-row-body")).find((element) => element.type === "Text"))).toBe("found");
+    expect(textOf(findByTestID(row, "session-row-tokens"))).toBe("↓ —   ↑ —");
+    expect(walk(row).filter(node => node.type === SessionStateMarker)).toHaveLength(1);
+    const body = findByTestID(row, "session-row-body");
+    expect(body.props.accessibilityLabel).toContain(updatedExactly(row, "2026-10-18T10:00:00.000Z"));
+    // The menu holds the shared operations first, then Details and Show in tree; it draws every key in board C1's order. Details opens the details only.
+    const keys = (menuOf(row).props.actions as SessionAction[]).map((action) => action.key);
+    expect(keys).toEqual(["takeover", "summarize", "attach", "favorite", "copy-id", "details", "show-in-tree", "select", "archive"]);
+    expect([...keys].sort((a, b) => ACTION_ORDER.indexOf(a) - ACTION_ORDER.indexOf(b))).toEqual(ACTION_ORDER);
+    expect(actionsButton(row).props.accessibilityLabel).toBe("Actions for SWE • found");
+    perform(row, "details");
     const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
     expect(dialog.props.label).toBe("Details: SWE • found");
     expect(screen.openAgent).not.toHaveBeenCalled();
-    expect((screen.result("found").props.details as ElementLike).props.expanded).toBe(true);
-    (row.props.onPress as () => void)(); harness.flush();
+    (findByTestID(screen.result("found"), "session-row-body").props.onPress as () => void)(); harness.flush();
     expect(screen.openAgent).toHaveBeenCalledTimes(1);
     expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "found" });
     // Show in tree leaves the results, and the details opened there close.
-    (screen.result("found").props.onShowInTree as (entry: unknown) => void)(screen.result("found").props.entry); harness.flush();
+    perform(screen.result("found"), "show-in-tree");
     expect(walk(harness.current()).find((element) => element.props.testID === "sessions-details")).toBeUndefined();
   });
 
-  it.each([true, false])("lets compact results that share a role and task wrap their titles to where they differ, and keeps desktop titles on one line (compact %s)", (compact) => {
+  it.each([true, false])("shows results that share a role and task by the topic where their titles differ, on one line at every width (compact %s)", (compact) => {
     patchSessionView("host-a", { layout: "flat" });
     // Synthetic sessions whose titles differ only after the shared role and task.
     const titles = { first: "SWE • ASMA-1 • first subject", second: "SWE • ASMA-1 • second subject" };
     const screen = renderResults(compact, "subject", Object.entries(titles).map(([id, title]) => sessionEntry(id, { title })));
     expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
     for (const [id, title] of Object.entries(titles)) {
-      const drawn = screen.drawn(id);
-      const shown = findByTestID(drawn, "sessions-row-title");
-      // The whole title is drawn; compact gives it a line of its own and three lines to reach the subject.
-      expect(textOf(shown)).toBe(title);
-      expect(shown.props.numberOfLines).toBe(compact ? 3 : 1);
-      if (compact) expect(textOf(shown)).not.toContain("Other work");
-      else {
-        const line = walk(drawn).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes("sessions-row-title")).at(-1)!;
-        expect([line.props.children].flat(2).filter(Boolean)).toHaveLength(4);
-      }
-      // The row and Show in tree keep the full title in their names.
-      expect(String(findByTestID(drawn, `sessions-row-${id}`).props.accessibilityLabel).startsWith(`${title}. `)).toBe(true);
-      expect(String((drawn.props.children as ElementLike[])[2]!.props[compact ? "label" : "accessibilityLabel"])).toBe(`Show ${title} in the tree`);
+      const row = screen.result(id);
+      const body = findByTestID(row, "session-row-body");
+      // The topic is the title; the shared role and task move to the origin.
+      const shown = walk(body).find((element) => element.type === "Text")!;
+      expect([textOf(shown), shown.props.numberOfLines]).toEqual([title.split(" • ")[2], 1]);
+      expect(textOf(findByTestID(row, "session-row-origin")).startsWith("SWE · ASMA-1 · ")).toBe(true);
+      // The row and its actions keep the full title in their names.
+      expect(String(body.props.accessibilityLabel).startsWith(`${title}. `)).toBe(true);
+      expect(actionsButton(row).props.accessibilityLabel).toBe(`Actions for ${title}`);
     }
   });
 
-  it("gives rows the Updated time itself, not an age, while the list is not live", () => {
+  it("keeps each row's exact Updated time in its spoken label whether or not the list is live, on results and tree rows", () => {
     patchSessionView("host-a", { layout: "flat" });
     const screen = renderResults(true);
-    expect(screen.result("found").props.live).toBe(true);
+    const spoken = (row: unknown) => findByTestID(row, "session-row-body").props.accessibilityLabel;
+    expect(spoken(screen.result("found"))).toContain(updatedExactly(screen.result("found"), "2026-10-18T10:00:00.000Z"));
     directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
     harness.flush();
-    expect(screen.result("found").props.live).toBe(false);
-    const time = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(Date.parse("2026-10-18T10:00:00.000Z"));
-    expect(textOf(findByTestID(screen.drawn("found"), "sessions-row-age"))).toBe(time);
-    expect(String(findByTestID(screen.drawn("found"), "sessions-row-found").props.accessibilityLabel).endsWith(`. Updated today at ${time}`)).toBe(true);
-    // A tree row is told the same, and its details button sits beside it.
+    expect(spoken(screen.result("found"))).toContain(updatedExactly(screen.result("found"), "2026-10-18T10:00:00.000Z"));
+    // A tree row says the same, and its Details is in its menu.
     harness.unmount();
     harness.reset();
     patchSessionView("host-a", { layout: "grouped" });
@@ -1710,10 +1753,9 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
     harness.flush();
     expandAll();
-    const session = listRows().find((row) => row.kind === "session" && row.entry.id === "found")!;
-    const drawnRow = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: session });
-    expect((drawnRow.props.children as ElementLike).props.live).toBe(false);
-    expect((drawnRow.props.details as ElementLike).props.title).toBe("SWE • found");
+    const row = drawSession("found");
+    expect(spoken(row)).toContain(updatedExactly(row, "2026-10-18T10:00:00.000Z"));
+    expect([(menuOf(row).props.entry as { title: string }).title, rowAction(row, "details").label]).toEqual(["SWE • found", "Details"]);
   });
 
   it("makes the lines a named stop with a visible focus on web only, and returns focus to the list once the row has left", () => {
@@ -1742,12 +1784,12 @@ describe("SessionsScreen toolbar events", () => {
       const scroller = { focus: vi.fn() };
       (list().props.ref as RefLike).current = { getScrollableNode: () => scroller };
       const button = { focus: vi.fn() };
-      (screen.details("long").props.ref as (node: unknown) => void)(button);
-      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      (screen.menu("long").props.ref as (node: unknown) => void)(button);
+      (screen.menu("long").props.ref as (node: unknown) => void)(null);
       (screen.dialog()!.props.onClose as () => void)(); harness.flush();
       expect(screen.dialog()).toBeUndefined();
       expect([scroller.focus.mock.calls.length, button.focus.mock.calls.length]).toEqual([1, 0]);
-      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      (screen.menu("long").props.ref as (node: unknown) => void)(button);
       screen.open("long");
       (screen.close().props.onPress as () => void)(); harness.flush();
       expect([scroller.focus.mock.calls.length, button.focus.mock.calls.length]).toEqual([1, 1]);
@@ -1844,67 +1886,68 @@ describe("SessionsScreen toolbar events", () => {
   });
 
   it("shows a Role row's conflict cue and place, giving the compact title its whole line above the place and age", () => {
-    const { renderItem, drawn } = renderRoles([
+    vi.setSystemTime(Date.parse("2026-10-18T13:00:00.000Z"));
+    const entries = [
       sessionEntry("conflict", { title: "QA • check results", labels: { "kontor.role": "AUD", workstream: "Kontor", epic: "ASMA-1" } }),
       sessionEntry("plain", { title: "aud • sign off", labels: { desk: "PR Review" } }),
       sessionEntry("loose", { title: "Notes", workspaceId: null, workspaceName: null, cwd: "/tmp/notes" }),
-    ]);
+    ];
+    const { drawn } = renderRoles(entries);
     expect(groupRows().map((row) => row.group.label)).toEqual(["AUD", "No role"]);
     const headerOf = (label: string) => walk(drawn(groupRows().find((row) => row.group.label === label)));
     expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 session\. Idle: 1 of 1 session\./);
     expect(["AUD", "No role"].map((label) => (headerOf(label).find((element) => element.props.children === label)!.props.style as { fontFamily?: string }).fontFamily)).toEqual(["monospace", undefined]);
     expandAll();
-    const props = (id: string) => walk(renderItem(listRows().find((row) => row.kind === "session" && row.entry.id === id))).find((element) => "displayContext" in element.props)!.props;
-    const shown = (id: string) => { const { displayTitle, displayContext, compactContext, accessibilityContext } = props(id); return { displayTitle, displayContext, compactContext, accessibilityContext }; };
-    expect(shown("conflict")).toEqual({
-      displayTitle: undefined,
-      displayContext: "title says QA · Kontor · ASMA-1 · Workspace",
-      compactContext: "title says QA · ASMA-1 · Workspace",
-      accessibilityContext: "Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace",
+    // What a Role row is told: the cue of a source naming another role, a title without a matching prefix, and the place.
+    const [conflict, plain, loose] = entries.map((entry) => roleRowContext(entry, {}));
+    expect(conflict).toEqual({
+      title: undefined,
+      context: "title says QA · Kontor · ASMA-1 · Workspace",
+      compact: "title says QA · ASMA-1 · Workspace",
+      spoken: "Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace",
     });
-    expect(shown("plain")).toEqual({
-      displayTitle: "sign off",
-      displayContext: "PR Review desk · Workspace",
-      compactContext: "PR Review desk · Workspace",
-      accessibilityContext: "Role AUD from the title. Desk PR Review desk, workspace Workspace",
+    expect(plain).toEqual({
+      title: "sign off",
+      context: "PR Review desk · Workspace",
+      compact: "PR Review desk · Workspace",
+      spoken: "Role AUD from the title. Desk PR Review desk, workspace Workspace",
     });
-    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · No epic linked · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
-    const row = walk(renderItem(listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === "conflict"))).find((element) => "displayContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
-    // The harness's memo returns the component itself.
-    const drawnRow = row.type(row.props);
-    expect([findByTestID(drawnRow, "sessions-row-title").props.children, findByTestID(drawnRow, "sessions-row-meta").props.children]).toEqual(["QA • check results", "title says QA · ASMA-1 · Workspace"]);
-    // No line holds the title beside anything else; the place and the age share the line below, the place in up to two lines.
-    const lineOf = (testID: string) => walk(drawnRow).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes(testID)).at(-1);
-    expect(lineOf("sessions-row-title")).toBeUndefined();
-    expect(testIDs(lineOf("sessions-row-meta")!.props.children)).toEqual(["sessions-row-meta", "sessions-row-age"]);
-    expect(findByTestID(drawnRow, "sessions-row-meta").props).toMatchObject({ numberOfLines: 2, style: { flex: 1, minWidth: 0 } });
-    expect(String(drawnRow.props.accessibilityLabel)).toContain("Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace");
+    expect(loose).toMatchObject({ title: undefined, context: "Other work · No epic linked · No workspace · /tmp/notes", compact: "Other work · No workspace · /tmp/notes" });
+    const row = drawSession("conflict");
+    const body = findByTestID(row, "session-row-body");
+    // The whole title on its own line; the place and the age on the origin line below; the cue in the note.
+    const title = walk(body).find((element) => element.type === "Text")!;
+    expect(textOf(title)).toBe("QA • check results");
+    // Only the age this device last opened it, if it did, shares the title's line.
+    const titleLine = walk(body).find((element) => [element.props.children].flat().includes(title))!;
+    const beside = [titleLine.props.children].flat().filter((child) => child && child !== title) as ElementLike[];
+    expect(beside.every((child) => child.props.testID === "session-row-opened")).toBe(true);
+    expect(textOf(findByTestID(row, "session-row-origin"))).toBe("AUD · Workspace · upd 3h");
+    expect(textOf(findByTestID(row, "session-row-note"))).toBe("title says QA");
+    expect(String(body.props.accessibilityLabel)).toContain("Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace");
   });
 
-  it("gives same-prefix Role subjects three compact title lines while preserving scoped IDs and full accessible titles", () => {
+  it("gives same-prefix Role subjects their own title line while preserving scoped IDs and full accessible titles", () => {
     const subjects = ["Collect scope fixtures", "Review layout choices", "Check keyboard focus", "Verify native IDs", "Inspect group sorting", "Exercise empty scopes", "Confirm mobile wrapping"];
     const entries = subjects.map((subject, n) => sessionEntry(`role-subject-${n}`, {
       title: `SWE • ASMA-1234 • ${subject}`, labels: { epic: "ASMA-1234" },
     }));
     patchSessionView("host-a", { layout: "grouped", epic: { kind: "known", key: "ASMA-1234" } });
-    const { renderItem } = renderRoles([...entries,
+    renderRoles([...entries,
       sessionEntry("outside-epic", { title: entries[0]!.title, labels: { epic: "ASMA-12340" } }),
     ]);
     expandAll();
     expect(sessionRowIds().sort()).toEqual(entries.map(entry => entry.id).sort());
-    for (const entry of entries) {
-      const wrapper = renderItem(listRows().find(row => row.kind === "session" && row.entry.id === entry.id));
-      const row = walk(wrapper).find(element => "compactContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
-      expect(row.props.compactContext).toBeTypeOf("string");
-      expect(row.props.displayTitle).toBe(entry.title.replace(/^SWE • /, ""));
-      const drawn = row.type(row.props);
-      expect(findByTestID(drawn, "sessions-row-title").props).toMatchObject({
-        children: row.props.displayTitle, numberOfLines: 3, style: { fontSize: 14, lineHeight: 20 },
-      });
-      expect(drawn.props.testID).toBe(`sessions-row-${entry.id}`);
-      expect(drawn.props.accessibilityLabel).toContain(entry.title);
-      expect(drawn.props.accessibilityLabel).toContain(`Native ID ${entry.id}`);
-    }
+    entries.forEach((entry, n) => {
+      const row = drawSession(entry.id);
+      const body = findByTestID(row, "session-row-body");
+      // The subject is the title; the shared role and task move to the origin.
+      expect(walk(body).find((element) => element.type === "Text")!.props).toMatchObject({ children: subjects[n], numberOfLines: 1 });
+      expect(textOf(findByTestID(row, "session-row-origin")).startsWith("SWE · ASMA-1234 · ")).toBe(true);
+      expect(denseOf(row).props.testID).toBe(`sessions-row-${entry.id}`);
+      expect(String(body.props.accessibilityLabel).startsWith(`${entry.title}. `)).toBe(true);
+      expect(body.props.accessibilityLabel).toContain(`Native ID ${entry.id}`);
+    });
     // This is a component contract; actual 320/390 text fitting needs rendered evidence.
   });
 
@@ -1928,8 +1971,7 @@ describe("SessionsScreen toolbar events", () => {
     setStateFilter("idle");
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
     expect(result.entry.id).toBe("n");
-    ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
-    harness.flush();
+    perform(drawItem(result), "show-in-tree");
     expect([groupRows().map((row) => `${row.group.label}:${row.expanded}`), sessionRowIds()]).toEqual([["QA:true"], ["n", "e", "r1", "r2", "r3"]]);
     (walk(findByTestID(harness.current(), "sessions-peek")).find((element) => String(element.props.label).startsWith("Back to "))!.props.onPress as () => void)();
     harness.flush();
@@ -2052,7 +2094,7 @@ function textOf(node: unknown): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textOf).join("");
   const element = node as ElementLike;
-  if (element.type === SessionCompactContent) return textOf(SessionCompactContent(element.props as Parameters<typeof SessionCompactContent>[0]));
+  if (element.type === DenseSessionRow) return textOf(drawDense(element));
   return textOf(element.props.children);
 }
 
@@ -2093,13 +2135,11 @@ function renderCompact(options: ScreenOptions = {}) {
   );
 }
 
-/** Exercise the protected native leaf renderer; Flat result presentation has separate cases. */
-function renderSessionLeaf(): ElementLike & { readonly type: unknown } {
+/** Exercise the protected native leaf renderer and draw its dense row; Flat result presentation has separate cases. */
+function renderSessionLeaf(): ElementLike {
   const found = listRows().find((candidate) => candidate.kind === "session" || candidate.kind === "result")!;
   const row = found.kind === "result" ? { kind: "session", entry: found.entry, parentKey: "flat", depth: 0 } : found;
-  const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
-  const leaf = renderItem({ item: row }).props.children as ElementLike & { readonly type: (props: unknown) => ElementLike };
-  return leaf.type(leaf.props) as ElementLike & { readonly type: unknown };
+  return drawDense(denseOf(drawItem(row)));
 }
 
 describe("SessionsScreen mobile filter page", () => {
@@ -2152,9 +2192,9 @@ describe("SessionsScreen mobile filter page", () => {
     const group = groupRows()[0]!;
     const opened = (expanded: boolean) => walk(drawn({ ...group, expanded })).find((element) => element.props.accessibilityRole === "button")!.props["aria-expanded"];
     expect([opened(true), opened(false)]).toEqual([true, false]);
-    // A session row as the list draws it under an opened group.
-    const star = (id: string) => walk(drawn({ kind: "session", entry: sessionEntry(id, {}), depth: 1, parentKey: group.group.key })).find((element) => /^(Un)?favorite /i.test(String(element.props.accessibilityLabel)))!.props["aria-pressed"];
-    expect([star("session-a"), star("session-b")]).toEqual([true, false]);
+    // A session row as the list draws it under an opened group: its menu says whether it is a favorite.
+    const favorite = (id: string) => rowAction(drawItem({ kind: "session", entry: sessionEntry(id, {}), depth: 1, parentKey: group.group.key }), "favorite").label;
+    expect([favorite("session-a"), favorite("session-b")]).toEqual(["Remove from favorites", "Add to favorites"]);
   });
   it("Current filters actual tree rows while All restores closed/error rows without discarding old idle records", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("old", {status:"idle",updatedAt:"2001-01-01"}), sessionEntry("error",{status:"error"}),sessionEntry("closed",{status:"closed"})] };
@@ -2170,6 +2210,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(sessionRowIds().sort()).toEqual(["closed","error","old"]);
   });
   it("keeps a compact title/context readable with model, Updated time and archived state, without routine prose", () => {
+    vi.setSystemTime(Date.parse("2026-10-18T13:00:00.000Z"));
     patchSessionView("host-a", { layout: "flat" });
     directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
@@ -2178,25 +2219,30 @@ describe("SessionsScreen mobile filter page", () => {
     patchSessionView("host-a", { grouping: "flat", membership: "archived", status: "all" });
     renderCompact();
     const leaf = renderSessionLeaf();
-    expect((leaf.props.style as (state: { pressed: boolean }) => { minHeight: number })({ pressed: false }).minHeight).toBe(44);
-    const title = findByTestID(leaf, "sessions-row-title");
-    expect(title.props.numberOfLines).toBe(3);
-    expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(false);
-    expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("Other work › No epic linked › RSW • review");
-    expect(textOf(findByTestID(leaf, "sessions-row-model"))).toBe("sol");
-    expect(textOf(findByTestID(leaf, "sessions-row-archived"))).toBe("Archived");
+    const body = findByTestID(leaf, "session-row-body");
+    expect((body.props.style as (state: { pressed: boolean }) => { minHeight: number })({ pressed: false }).minHeight).toBe(44);
+    // The whole title on one line, the place and Updated age on the origin line, the model, and archive state in the note.
+    const title = walk(body).find((element) => element.type === "Text")!;
+    expect([textOf(title), title.props.numberOfLines]).toEqual(["A deliberately long session title that would otherwise wrap onto a second line on a phone", 1]);
+    expect(textOf(findByTestID(leaf, "session-row-origin"))).toBe("RSW • review · upd 3h");
+    expect(body.props.accessibilityLabel).toContain("Workstream Other work, epic No epic linked, workspace RSW • review");
+    expect(textOf(findByTestID(leaf, "session-row-model")).startsWith("S6.1")).toBe(true);
+    expect(body.props.accessibilityLabel).toContain("gpt-6.1-sol");
+    // Archive membership is an exception to note; the native runtime behind the derived state is spoken.
+    expect(textOf(findByTestID(leaf, "session-row-note"))).toBe("Archived");
+    expect(body.props.accessibilityLabel).toContain("Native status running. Now running.");
     expect(textOf(leaf)).not.toMatch(/Availability unknown|Retirement|Native running|Not archived/);
-    const age = findByTestID(leaf, "sessions-row-age");
+    // The row counts only session totals; a last usage report is not one, so the totals read unknown.
     expect(walk(leaf).some((element) => element.type === SessionUsage)).toBe(false);
-    expect(leaf.props.accessibilityLabel).toContain("Last usage report, not a session total. Input tokens: 100.");
-    expect(leaf.props.accessibilityLabel).toContain("Output tokens: 20.");
-    expect(age.props.style).toMatchObject({ flexShrink: 0 });
+    expect(textOf(findByTestID(leaf, "session-row-tokens"))).toBe("↓ —   ↑ —");
+    expect(body.props.accessibilityLabel).toContain("Session token totals unknown");
+    expect(body.props.accessibilityLabel).not.toContain("Input tokens: 100");
     expect(walk(leaf).some((element) => (element as { type?: unknown }).type === SessionStateMarker && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");
-    expect(leaf.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
+    expect(body.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
   });
-  it.each([320, 390])("lets a depth-4 compact tree row wrap its title to where titles that share a role and task differ at %ipx", (viewport) => {
+  it.each([320, 390])("lets a depth-4 compact tree row show where titles that share a role and task differ at %ipx", (viewport) => {
     // Synthetic titles that differ only after the shared role and task.
     const titles = ["SWE • ASMA-1234 • first subject", "SWE • ASMA-1234 • second subject"];
     const entries = titles.map((title, n) => sessionEntry(`nested-${n}`, { title }));
@@ -2204,9 +2250,9 @@ describe("SessionsScreen mobile filter page", () => {
     patchSessionView("host-a", { grouping: "hierarchy" });
     renderCompact();
     const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { type: (props: unknown) => ElementLike };
-    // The title's room: page padding 12 + 12, the depth-4 indent, Details, Archive and Favorite at 44 each, and the row's padding 8 + 4.
-    const room = viewport - 24 - indentOf(4, true) - 3 * 44 - 12;
-    // What the title's lines show at 7.41 px a character, the measured 78d mean at 14 px; a model, not a render. Lines break at spaces only.
+    // The title's room: page padding 12 + 12, the depth-4 indent, the state icon and the actions menu at 40 each, and the body's padding 4 and border 1 + 1.
+    const room = viewport - 24 - indentOf(4, true) - 2 * 40 - 4 - 2;
+    // What the title's lines show at 7.41 px a character, the measured 78d mean at 14 px, above the row's 13 px; a model, not a render. Lines break at spaces only.
     const perLine = Math.floor(room / 7.41);
     const visible = (text: string, count: number) => {
       const words = text.split(" "), lines: string[] = [];
@@ -2220,9 +2266,9 @@ describe("SessionsScreen mobile filter page", () => {
     const shown = entries.map((entry) => {
       const row = renderItem({ item: { kind: "session", entry, depth: 4, parentKey: "project:prj_1/workspace:wks_1" } });
       expect(row.type(row.props).props.style).toMatchObject({ paddingLeft: indentOf(4, true) });
-      const leaf = row.props.children as ElementLike & { type: (props: unknown) => ElementLike };
-      const title = findByTestID(leaf.type(leaf.props), "sessions-row-title");
-      expect(title.props.numberOfLines).toBe(3);
+      // The shared role and task move to the origin, so the title's one line starts at the topic.
+      const title = walk(findByTestID(row, "session-row-body")).find((element) => element.type === "Text")!;
+      expect(title.props.numberOfLines).toBe(1);
       return visible(textOf(title), title.props.numberOfLines as number);
     });
     expect(shown[0]).not.toBe(shown[1]);
@@ -2245,7 +2291,7 @@ describe("SessionsScreen mobile filter page", () => {
     for (const absent of [HIDE_FILTERS_TEST_ID, "sessions-filter-summary-row", "sessions-notices", "sessions-list-header"]) {
       expect(ids).not.toContain(absent);
     }
-    expect(ids).toEqual(expect.arrayContaining(["sessions-search", "sessions-heading", "sessions-shortcut-0", "sessions-filter-idle"]));
+    expect(ids).toEqual(expect.arrayContaining(["sessions-search", "sessions-heading", "sessions-shortcut-0", "sessions-filter-activity"]));
     // A wide list reads its viewport for the reader's place; its layout changes nothing else.
     const before = testIDs(screen());
     (findByTestID(harness.current(), "sessions-list").props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 900, height: 500 } } });
@@ -2258,10 +2304,10 @@ describe("SessionsScreen mobile filter page", () => {
     expect((root.props.children as unknown[]).some((child) => (child as ElementLike | null)?.props?.testID === "sessions-full-toolbar-slot")).toBe(true);
     // The list header holds only the work line, never the toolbar.
     expect(testIDs(findByTestID(root, "sessions-list").props.ListHeaderComponent)).not.toContain("sessions-full-toolbar");
-    // Wide session rows keep their status in a compact trailing marker.
+    // Wide session rows are the same dense row, its state marker leading.
     const leaf = renderSessionLeaf();
-    expect(testIDs(leaf)).not.toContain("sessions-row-meta");
-    expect(walk(leaf).some((element) => element.type === SessionStateMarker)).toBe(true);
+    expect(testIDs(leaf)).toEqual(expect.arrayContaining(["sessions-row-session-a", "session-row-state", "session-row-body", "session-row-origin", "session-row-model", "session-row-tokens"]));
+    expect(walk(findByTestID(leaf, "session-row-state")).some((element) => element.type === SessionStateMarker)).toBe(true);
     expect(walk(leaf).some((element) => (element.props.style as { width?: number } | undefined)?.width === 95)).toBe(false);
 
     compact = true; harness.flush();
@@ -2519,7 +2565,8 @@ describe("SessionsScreen mobile filter page", () => {
 
   it("returns keyboard focus to Filters and restores an unchanged list offset", () => {
     patchSessionView("host-a", { grouping: "flat", scrollOffset: 370 });
-    renderCompact(); vi.runAllTimers();
+    // Pending timers only: the shared row clock reschedules itself every minute while the screen is mounted.
+    renderCompact(); vi.runOnlyPendingTimers();
     const ref = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.filtersTriggerRef as RefLike;
     const calls: string[] = [];
     const focus = vi.fn(() => calls.push("focus")); ref.current = { focus };
@@ -2529,7 +2576,7 @@ describe("SessionsScreen mobile filter page", () => {
     openMobileFilters(); closeMobileFilters();
     const scrollToOffset = vi.fn();
     (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset };
-    vi.runAllTimers();
+    vi.runOnlyPendingTimers();
     expect(focus).toHaveBeenCalledOnce();
     expect(calls).toEqual(["focus", "dismiss"]);
     expect(scrollToOffset).toHaveBeenCalledWith({ offset: 370, animated: false });
@@ -2690,9 +2737,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
   const epicRows = () => listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.context ? `${row.group.label} · ${row.group.context}` : row.group.label, row.group.totalCount] as const] : []).sort();
   /** A session's Epic and Linking lines from its own Details; Close and focus return stay with the R5 Details tests above. */
   function placement(id: string) {
-    const row = listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id);
-    (((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details as ElementLike).props.onPress as () => void)();
-    harness.flush();
+    perform(drawSession(id), "details");
     const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
     const content = (findByTestID(dialog.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
     const values = content.find((line) => line.type === SessionDetailSection && line.props.title === "Role and placement")!.props.values as { label: string; value: string }[];
@@ -2813,7 +2858,8 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
   }
 
   it("defaults to Current within My work and restores the error session through All visibility", () => {
-    patchSessionView("host-a", { grouping: "flat" });
+    // All sits under More states in the open filter options.
+    patchSessionView("host-a", { grouping: "flat", advancedOpen: true });
     renderLocal(ready());
     expect(readSessionView("host-a").status).toBe("current");
     expect(sessionRowIds().sort()).toEqual(localIds.filter((id) => id !== "error-missing"));
@@ -3096,9 +3142,9 @@ describe("independent Layout, Group by and exact scope", () => {
       if (compact) closeMobileFilters();
       expect(sessionRowIds()).toEqual(["selected"]);
       expect(listRows().map((row) => row.kind)).toEqual(["result"]);
-      const drawn = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: unknown) => ElementLike)({ item: listRows()[0] });
-      expect(drawn.props.entry).toMatchObject(selected);
-      expect(drawn.props.provenance).toMatchObject({ parts: ["DESK • ADAM", "ADAM"], nativeDesk: { id: "prj_desk", workspaceId: "w_adam" }, association: "Association alpha · ASMA-10" });
+      const drawn = drawItem(listRows()[0]);
+      expect(denseOf(drawn).props.entry).toMatchObject(selected);
+      expect(findByTestID(drawn, "session-row-body").props.accessibilityLabel).toContain("Desk DESK • ADAM, workspace ADAM. Association alpha · ASMA-10");
       chooseLayout("grouped");
       if (compact) openMobileFilters();
       expect(readSessionView("host-a")).toMatchObject({ query: original.query, status: original.status, shortcut: original.shortcut, streams: original.streams, epic: original.epic, task: original.task, assignment: original.assignment, sort: original.sort, sortDirection: original.sortDirection });

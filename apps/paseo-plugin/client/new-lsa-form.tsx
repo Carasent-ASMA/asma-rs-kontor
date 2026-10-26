@@ -1,16 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { getPaseoClient, useRpc } from "@getpaseo/plugin/client";
-import { checkCreate, executeCreate, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
-  type CreateOptions, type CreateOutcome, type CreateRole, type CreateScope, type CreateStart, type JiraIssue } from "../shared/session-create";
-import { Action, COARSE_POINTER, Copy, Disclosure, type Colors } from "./page-controls";
+import { checkCreate, executeCreate, featureValuesProblem, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
+  type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue } from "../shared/session-create";
+import type { NewLeadDefault } from "../shared/organization";
+import type { SummaryRevision } from "../shared/session-navigator";
+import { Action, COARSE_POINTER, Copy, IconButton, type Colors } from "./page-controls";
+import { readableInk } from "./session-status-ink";
 import type { CreateOptionsState } from "./start-switch-sheet";
 import type { OpenSessionResult } from "./session-actions";
+import type { DirectoryEntry } from "./session-directory";
 import { JiraIssuePicker } from "./jira-issue-picker";
 import { SourceSessionPicker } from "./source-session-picker";
 import { readSource, sourceState, type SourceChoice } from "./source-picker";
 import { focusControl } from "./mobile-filters";
+import { useOrganizationSettings } from "./use-organization-settings";
+import { Choices, Disclosure, featureLabels, ModelPicker, useCreateFeatures, type PickedModel } from "./model-picker";
+import { DenseSessionRow } from "./dense-session-row";
+import { useClock } from "./session-time";
+import { CODEX, codexDefault, leadDefault, type LeadModel } from "./new-lead-defaults";
+import { LeadSourcePicker, type LeadSource } from "./new-lead-source";
+import { modelAlias, modelVendor, routeLabel } from "./session-usage";
+import { VendorMark } from "./vendor-mark";
 
 export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; readonly start?: CreateStart; readonly projectId?: string;
   readonly issueKey?: string; readonly sourceAgentId?: string; readonly provider?: string; readonly model?: string; readonly effort?: string | null; readonly modeId?: string | null;
@@ -19,31 +31,44 @@ export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; 
   /** The chosen issue as listed, so a later search that does not list it keeps the binding. */
   readonly picked?: JiraIssue;
   /** The From Jira title topic as edited; absent means the issue summary. */
-  readonly jiraTopic?: string };
+  readonly jiraTopic?: string;
+  /** Speed, Plan and other listed settings chosen in Model & settings; absent takes the saved default's, else none. */
+  readonly featureValues?: FeatureValues };
 
 const AD_HOC = "ad-hoc" as const, FROM_JIRA = "from-jira" as const;
+/** The selected role's full name, under the role switch (board B1). */
+const ROLE_NAMES: Record<CreateRole, string> = { LSA: "Lead Software Architect", TPM: "Technical Program Manager" };
+
+/** Why no Codex default can stand in for a model the operator has not chosen. */
+function codexUnknown(providers: readonly CreateProvider[]): string {
+  const codex = providers.find((entry) => entry.id === CODEX);
+  const why = !codex ? "this host lists no Codex provider" : !codex.available ? `${codex.label}: ${(codex.note ?? "not available").replace(/\.$/, "")}` : "Codex flags no default model here";
+  return `Codex default unknown: ${why}. Choose a model for this lead.`;
+}
 
 /**
- * Defaults fill only unspecified choices. An explicit or saved choice that disappears stays invalid until
- * the operator chooses again; a catalog refresh never silently substitutes another model or permission mode.
- * From Jira takes its desk from the issue, never from the desk the dialog opened in.
+ * Defaults fill only unspecified choices: an unchosen model is the saved new-lead default while this host offers it,
+ * else Codex's own catalog default at its default effort; a role profile or the first listed model never stands in.
+ * An explicit choice that disappears stays invalid until the operator chooses again; a catalog refresh never silently
+ * substitutes another model or permission mode. From Jira takes its desk from the issue, never from the desk the dialog opened in.
  */
-export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
+export function resolveDraft(options: CreateOptions, draft: CreateDraft, saved: NewLeadDefault | null = null) {
   const role = draft.role ?? "LSA", start = draft.start ?? AD_HOC;
   const issue = start === FROM_JIRA && draft.issueKey
     ? options.issues.find((entry) => entry.key === draft.issueKey) ?? (draft.picked?.key === draft.issueKey ? draft.picked : null) : null;
   const route = issue ? issueDesk(options.desks, issue) : null;
   const desk = start === FROM_JIRA ? route?.desk ?? null : (draft.projectId ? options.desks.find((entry) => entry.projectId === draft.projectId)
     : options.desks.find((entry) => entry.projectId === options.catalogProjectId) ?? options.desks[0]) ?? null;
-  const profile = options.profile;
-  const providerId = draft.provider ?? profile?.provider ?? options.providers.find((entry) => entry.available)?.id;
+  const lead = leadDefault(options.providers, saved), codex = codexDefault(options.providers);
+  const auto: LeadModel | null = draft.provider === undefined && draft.model === undefined ? lead.choice : null;
+  const providerId = draft.provider ?? auto?.provider;
   const provider = options.providers.find((entry) => entry.id === providerId) ?? null;
-  const preset = profile && profile.provider === provider?.id ? profile : null;
-  const modelId = draft.model ?? preset?.model ?? provider?.defaultModel ?? provider?.models[0]?.id;
+  const modelId = draft.model ?? auto?.model ?? provider?.defaultModel ?? undefined;
   const model = provider?.available ? provider.models.find((entry) => entry.id === modelId) ?? null : null;
-  const effortId = draft.effort !== undefined ? draft.effort : (preset?.model === model?.id ? preset?.effort : null) ?? model?.defaultEffort ?? model?.efforts[0]?.id;
+  const effortId = draft.effort !== undefined ? draft.effort : (auto?.model === model?.id ? auto?.effort : null) ?? model?.defaultEffort ?? model?.efforts[0]?.id;
   const effort = model?.efforts.find((entry) => entry.id === effortId) ?? null;
-  const modeId = draft.modeId !== undefined ? draft.modeId : preset?.modeId ?? provider?.defaultMode ?? provider?.modes[0]?.id;
+  const modeId = draft.modeId !== undefined ? draft.modeId : provider?.defaultMode ?? provider?.modes[0]?.id;
+  const featureValues = draft.featureValues ?? (lead.saved ? auto?.featureValues : undefined) ?? {};
   const mode = provider?.available ? provider.modes.find((entry) => entry.id === modeId) ?? null : null;
   const staleEffort = !effort && (!!effortId || !!model?.efforts.length);
   const staleMode = !mode && (!!modeId || !!provider?.modes.length);
@@ -53,23 +78,25 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft) {
   const workspaceName = leadWorkspaceName(role, start);
   const sourceAgentId = draft.sourceAgentId?.trim() || null;
   let problem: string | null = null;
-  if (!options.enabled) problem = options.disabledReason ?? "New session is off on this host.";
+  if (!options.enabled) problem = options.disabledReason ?? "New lead is off on this host.";
   else if (options.pending) problem = `An earlier creation, “${options.pending.title}”, is not settled. Check it first.`;
   else if (start === FROM_JIRA && options.jiraProblem) problem = options.jiraProblem;
   else if (start === FROM_JIRA && !issue) problem = "Choose a Jira issue.";
   else if (route?.problem) problem = route.problem;
   else if (!desk) problem = options.desks.length ? "The selected desk is no longer available. Choose a listed desk or Refresh desks." : "No desk on this host has lead workspaces.";
-  else if (options.catalogProjectId !== desk.projectId) problem = "Refresh this desk's provider catalog before creating a session.";
+  else if (options.catalogProjectId !== desk.projectId) problem = "Refresh this desk's provider catalog before creating a lead.";
   else if (role === "TPM" && start === AD_HOC) problem = "Ad hoc creates an LSA only. Choose LSA, or start from a Jira ticket.";
   else if (topicProblem(topic)) problem = topicProblem(topic);
-  // A host profile may name a provider this host has switched off: say which and why, and never substitute another.
-  else if (!provider?.available) problem = !providerId ? "No active provider is available for this desk."
-    : `${provider ? `${provider.label}: ${provider.note}` : `Provider ${providerId} is no longer active.`}${draft.provider === undefined && profile?.provider === providerId ? ` The host's ${profile.name} profile chooses it.` : ""} Choose an active provider.`;
-  else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : "No selectable model.";
+  // A chosen provider this host has switched off is named with why, and never substituted.
+  else if (!provider?.available) problem = !providerId ? options.providers.some((entry) => entry.available) ? codexUnknown(options.providers) : "No active provider is available for this desk."
+    : `${provider ? `${provider.label}: ${provider.note}` : `Provider ${providerId} is no longer active.`} Choose an active provider.`;
+  else if (!model) problem = modelId ? `Model ${modelId} is no longer active for ${provider.label}. Choose an active model.` : `${provider.label} flags no default model. Choose a model for this lead.`;
   else if (staleEffort) problem = `Effort ${effortId ?? "none"} is no longer offered for ${model.label}. Choose an available effort.`;
   else if (staleMode) problem = `Mode ${modeId ?? "none"} is no longer offered by ${provider.label}. Choose an available mode.`;
-  return { desk, role, start, issue, issueSummaryTopic, provider, model, effort, mode, topic, title, workspaceName,
-    workspaceMissing: !!desk && !desk.lead[workspaceName], sourceAgentId, problem, fromProfile: preset !== null, staleEffort, staleMode };
+  return { desk, role, start, issue, issueSummaryTopic, provider, model, effort, mode, featureValues, topic, title, workspaceName,
+    workspaceMissing: !!desk && !desk.lead[workspaceName], sourceAgentId, problem, staleEffort, staleMode,
+    /** Codex's own default, and the default an unchosen model takes; `note` names a saved default this host no longer offers. */
+    codex, lead, defaultNote: auto || !providerId ? lead.note : null };
 }
 
 /** A version-4 UUID for the request's idempotency; not a secret. */
@@ -99,28 +126,57 @@ type Phase =
   /** The plugin server's reply was lost: the request may or may not have been dispatched. */
   | { readonly kind: "lost"; readonly requestId: string; readonly title: string; readonly message: string };
 
-export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel }: {
+/** A chosen source; `summary` is the saved revision pinned for the lead, absent when the session's last message travels instead. */
+type LeadSourceChoice = SourceChoice & { readonly summary?: SummaryRevision | null };
+type Picker = "jira" | "source" | "model";
+
+/** "GPT-6 Astra · XHigh", or null when this host does not list the model. */
+function leadName(providers: readonly CreateProvider[], choice: LeadModel | null): string | null {
+  const model = providers.find((entry) => entry.id === choice?.provider)?.models.find((entry) => entry.id === choice?.model);
+  const effort = model?.efforts.find((entry) => entry.id === choice?.effort);
+  return model ? `${model.label}${effort ? ` · ${effort.label}` : ""}` : null;
+}
+
+export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel, sources, opened, header, initialSource = null }: {
   hostId: string; colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: (scope?: CreateScope) => void; canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult; onCancel: () => void;
   /** A sheet close invalidates pending continuations immediately, before React's unmount cleanup. */
   isActive?: () => boolean;
+  /** The sessions Choose source lists, with their saved summaries; absent keeps the host-wide source search. */
+  sources?: readonly DirectoryEntry[];
+  /** When this device last opened each session from Kontor, for the source rows. */
+  opened?: ReadonlyMap<string, number>;
+  /** The surface's own heading: the model chip then stands at its right, pinned above the form. Pickers bring their own. */
+  header?: React.ReactNode;
+  /** A source chosen before the form opened, such as Attach summary's New lead, with its saved revision pinned. */
+  initialSource?: LeadSource | null;
 }) {
   const execute = useRpc(executeCreate), check = useRpc(checkCreate);
-  const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", role: "LSA", start: AD_HOC, projectId: options.status === "ready" ? options.options.catalogProjectId ?? undefined : undefined }));
+  const settings = useOrganizationSettings();
+  const [draft, setDraft] = useState<CreateDraft>(() => ({ topic: "", role: "LSA", start: AD_HOC, projectId: options.status === "ready" ? options.options.catalogProjectId ?? undefined : undefined,
+    ...(initialSource ? { sourceAgentId: initialSource.entry.id } : {}) }));
   const [phase, setPhase] = useState<Phase>({ kind: "draft" });
-  const [advanced, setAdvanced] = useState(!compact);
-  const [picker, setPicker] = useState<"jira" | "source" | null>(null);
-  const [source, setSource] = useState<SourceChoice | null>(null);
+  const [picker, setPicker] = useState<Picker | null>(null);
+  const [source, setSource] = useState<LeadSourceChoice | null>(initialSource ? { hostId, entry: initialSource.entry, contextProblem: null, summary: initialSource.summary } : null);
   const [sourceProblem, setSourceProblem] = useState<string | null>(null);
+  const [defaultProblem, setDefaultProblem] = useState<string | null>(null);
+  // The desk list and the technical Details open on demand, so the form keeps one line each (board B1).
+  const [open, setOpen] = useState<"desk" | "details" | null>(null);
+  const clock = useClock();
   const pickerReturn = useRef<View>(null), restorePickerFocus = useRef(false);
-  const lastPicker = useRef<"jira" | "source" | null>(null);
+  const lastPicker = useRef<Picker | null>(null);
   if (picker) lastPicker.current = picker;
   useEffect(() => { if (!picker && restorePickerFocus.current) { restorePickerFocus.current = false; focusControl(pickerReturn.current); } }, [picker]);
   const closePicker = () => { restorePickerFocus.current = true; setPicker(null); };
+  // Choosing a desk closes its list, which held focus; focus returns to the desk toggle once the list is gone.
+  const deskToggle = useRef<View>(null), restoreDeskFocus = useRef(false), deskChoosable = useRef(false);
+  useEffect(() => { if (open === null && restoreDeskFocus.current) { restoreDeskFocus.current = false; focusControl(deskToggle.current); } }, [open]);
   /** A read repeats the desk whose catalog is wanted and, for From Jira, the issue search. */
   const scopeOf = (next: CreateDraft, projectId = next.projectId): CreateScope => ({ projectId, role: next.role, start: next.start,
     ...(next.start === FROM_JIRA && next.issueQuery?.trim() ? { issueKey: next.issueQuery.trim() } : {}) });
   const submitted = useRef(false);
+  /** The hint shown when the form last settled; a read in flight keeps it on screen. */
+  const settledHint = useRef<string | null>(null);
   // Keep controls mounted during a scoped refresh so keyboard focus/selection survives. This snapshot is
   // presentation only: submit still requires current ready options and the server's fresh validation.
   const presentation = useRef<{ hostId: string; options: CreateOptions } | null>(null);
@@ -135,9 +191,14 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const tall = compact || COARSE_POINTER;
   const muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 } as const;
   // The footer stays outside the scroll so Create is never below the fold of a short panel.
-  const wrap = (children: React.ReactNode, footer?: React.ReactNode) => <>
-    <ScrollView testID="kontor-new-lsa" keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 10, padding: 6 }}>{children}</ScrollView>
-    {footer ? <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, paddingHorizontal: 6, paddingTop: 6, borderTopWidth: 1, borderColor: colors.border }}>{footer}</View> : null}
+  // The scroll's bottom inset lets its last line rise fully above the footer.
+  const wrap = (children: React.ReactNode, footer?: React.ReactNode, chip: React.ReactNode = null, note: string | null = null) => <>
+    {header === undefined ? null : <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 4 }}>{header}{chip}</View>}
+    <ScrollView testID="kontor-new-lsa" keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ gap: 8, padding: 6, paddingBottom: 24 }}>{header === undefined ? chip : null}{children}</ScrollView>
+    {footer ? <View style={{ gap: 2, paddingHorizontal: 6, paddingTop: 6, borderTopWidth: 1, borderColor: colors.border }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>{footer}</View>
+      {note ? <Text testID="kontor-new-lsa-footer-note" style={{ color: colors.foregroundMuted, fontSize: 11, textAlign: "center" }}>{note}</Text> : null}
+    </View> : null}
   </>;
 
   const openCreated = (outcome: CreateOutcome) => {
@@ -189,7 +250,9 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     </View>);
   };
   const ready = presentation.current?.options;
-  const choice = ready ? resolveDraft(ready, draft) : null;
+  const saved = settings.state.status === "ready" ? settings.state.values.newLeadDefault ?? null : null;
+  const choice = ready ? resolveDraft(ready, draft, saved) : null;
+  const features = useCreateFeatures(choice?.desk?.projectId ?? null, choice?.model ? choice.provider?.id ?? null : null, choice?.model?.id ?? null);
   const providerLabel = choice?.provider?.label ?? "This provider";
   if (phase.kind === "busy") return wrap(<View accessibilityLiveRegion="polite" aria-live="polite"><Copy colors={colors}>{phase.label} Nothing is reported until the host answers.</Copy></View>);
   if (phase.kind === "result") return outcomeView(phase.outcome, providerLabel);
@@ -208,17 +271,28 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       {options.status === "error" ? <Action small label="Try again" colors={colors} onPress={() => onRefresh(scopeOf(draft))} /> : null}
     </>);
   }
-  const problem = (options.status === "ready" ? choice.problem : options.status === "error"
-    ? `Choices could not be refreshed (${options.message}). Refresh choices before creating a session.`
+  const unchosen = draft.provider === undefined && draft.model === undefined;
+  const settingsReading = unchosen && settings.state.status === "loading" ? "Reading the new-lead default…"
+    : Object.keys(choice.featureValues).length && !features ? "Reading this model's settings…" : null;
+  const settingsProblem = settingsReading ?? (!Object.keys(choice.featureValues).length || !features ? null
+    : features.problem ? `Model settings could not be read: ${features.problem}` : featureValuesProblem(features.features, choice.featureValues));
+  const problem = (options.status === "ready" ? choice.problem ?? settingsProblem : options.status === "error"
+    ? `Choices could not be refreshed (${options.message}). Refresh choices before creating a lead.`
     : "Refreshing this desk's choices… Creation stays disabled until the host answers.")
     ?? (source && source.hostId !== hostId ? "Choose a source session on this host, or Clear the source." : sourceProblem);
+  // A read in flight blocks Create and names itself to assistive technology, but the visible hint keeps what the last
+  // settled read said, so switching a role or desk never flashes a passing status or an unconfirmed problem.
+  const reading = options.status === "loading" || !!settingsReading;
+  if (!reading) settledHint.current = problem;
+  const hint = reading ? settledHint.current : problem;
   // An unsettled earlier request (this device or another) is shown instead of the form until a Check settles it.
   if (ready.pending) return outcomeView(ready.pending, providerLabel);
 
   const submit = async () => {
     if (!isCurrent() || currentOptions.current.status !== "ready" || submitted.current || problem || !choice.desk || !choice.provider || !choice.model) return;
     submitted.current = true;
-    if (source) {
+    // A pinned summary revision never changes, so only a session whose last message travels is read again.
+    if (source && !source.summary) {
       setPhase({ kind: "busy", requestId: "", label: "Checking the source session…" });
       try {
         const fresh = await readSource(getPaseoClient(hostId), source.entry.id);
@@ -227,11 +301,11 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
         if (!fresh || fresh.contextProblem || changed) {
           if (fresh) setSource({ hostId, ...fresh });
           setSourceProblem(!fresh ? "The source session was not found. Choose another source, or Clear it." : fresh.contextProblem
-            ?? "The source session's title changed. Use Change to review it before creating.");
+            ?? "The source session's title changed. Choose the source again to review it before creating.");
           submitted.current = false; setPhase({ kind: "draft" }); return;
         }
       } catch (error) {
-        if (isCurrent()) { setSourceProblem(`Source lookup failed: ${error instanceof Error ? error.message : String(error)}. Use Change to retry, or Clear it.`); submitted.current = false; setPhase({ kind: "draft" }); }
+        if (isCurrent()) { setSourceProblem(`Source lookup failed: ${error instanceof Error ? error.message : String(error)}. Choose the source again to retry, or clear it.`); submitted.current = false; setPhase({ kind: "draft" }); }
         return;
       }
     }
@@ -240,17 +314,32 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     setPhase({ kind: "busy", requestId, label: `Creating “${title}”…` });
     execute({ requestId, role: choice.role, start: choice.start, projectId: choice.desk.projectId, topic: choice.topic,
       ...(choice.start === FROM_JIRA ? { issueKey: choice.issue?.key ?? null } : {}),
-      sourceAgentId: choice.sourceAgentId, provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null })
+      ...(source?.summary ? { sourceAgentId: null, sourceSummary: { summaryId: source.summary.summaryId, revision: source.summary.revision } } : { sourceAgentId: choice.sourceAgentId }),
+      provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null,
+      ...(Object.keys(choice.featureValues).length ? { featureValues: choice.featureValues } : {}) })
       .then((outcome) => finish(outcome, requestId, title),
         (error: unknown) => { if (isCurrent()) setPhase({ kind: "lost", requestId, title, message: `The Kontor server did not answer (${error instanceof Error ? error.message : String(error)}).` }); });
   };
   const set = (patch: Partial<CreateDraft>) => setDraft({ ...draft, ...patch });
-  const refresh = (patch: Partial<CreateDraft>) => onRefresh(scopeOf({ ...draft, role: choice.role, start: choice.start, ...patch },
-    patch.projectId ?? choice.desk?.projectId ?? ready.catalogProjectId ?? undefined));
-  const summary = choice.desk ? [choice.provider && !choice.provider.available ? `${choice.provider.label}, ${choice.provider.status}` : choice.provider?.label, choice.model?.label, choice.effort?.label, choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null].filter(Boolean).join(" · ")
-    : choice.start === FROM_JIRA ? "Choose an issue first" : "Choose a desk first";
-  const providerEmpty = !choice.desk ? (choice.start === FROM_JIRA ? "Choose an issue to read its desk's providers." : ready.desks.length ? "Choose an available desk to read its providers." : "Provider choices require a desk working directory.")
-    : ready.catalogProjectId !== choice.desk.projectId ? "Refresh choices to read this desk's providers." : "No active provider is available for this desk.";
+  // A desk that is no longer listed is never read again; without a listed desk the read lists the desks that remain.
+  const listedDesk = (projectId: string | null | undefined) => ready.desks.some((entry) => entry.projectId === projectId) ? projectId ?? undefined : undefined;
+  const refresh = (patch: Partial<CreateDraft>) => {
+    const next = { ...draft, role: choice.role, start: choice.start, ...patch };
+    onRefresh(scopeOf({ ...next, projectId: undefined }, patch.projectId ?? choice.desk?.projectId ?? listedDesk(ready.catalogProjectId) ?? listedDesk(next.projectId)));
+  };
+  const same = (lead: LeadModel | null) => !!lead && !!choice.model && lead.provider === choice.provider?.id && lead.model === choice.model.id && lead.effort === (choice.effort?.id ?? null);
+  const tag = same(choice.codex) ? "Codex default" : choice.lead.saved && same(choice.lead.choice) ? "New-lead default" : !choice.codex ? "Codex default unknown" : null;
+  // Only listed settings are named; an unreadable list names none rather than guessing.
+  const shown = featureLabels(features && !features.problem ? features.features : [], choice.featureValues);
+  const chipDetail = [choice.effort?.label, ...shown.selects].filter(Boolean).join(" · ");
+  const settingsLine = [choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null, ...shown.toggles,
+    choice.provider ? routeLabel(choice.provider.id, choice.provider.label) : null].filter(Boolean).join(" | ");
+  const defaultName = choice.lead.saved ? leadName(ready.providers, choice.lead.choice) ?? "Codex default unknown"
+    : choice.codex ? `Codex default (${leadName(ready.providers, choice.codex)})` : "Codex default unknown";
+  const saveDefault = (newLeadDefault: NewLeadDefault | null, failed: string) => {
+    setDefaultProblem(null);
+    settings.save({ newLeadDefault }).then((ok) => { if (!ok && isCurrent()) setDefaultProblem(failed); });
+  };
   const fromJira = choice.start === FROM_JIRA;
   const input = { color: colors.foreground, fontSize: 13, minHeight: tall ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6 } as const;
   const heading = { color: colors.foreground, fontSize: 12, fontWeight: "600" } as const;
@@ -261,28 +350,79 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   };
   if (picker === "jira") return <JiraIssuePicker colors={colors} desks={ready.desks} scope={scopeOf(draft)} initialQuery={draft.issueQuery ?? ""} selected={choice.issue?.key ?? null}
     onBack={closePicker} onSelect={(issue, issueQuery) => { pick(issue); setDraft((previous) => ({ ...previous, issueQuery })); closePicker(); }} />;
-  if (picker === "source") return <SourceSessionPicker hostId={hostId} colors={colors} selected={source?.hostId === hostId ? source.entry.id : null}
-    onBack={closePicker} onSelect={(next) => { setSource(next); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />;
+  if (picker === "source") return sources ? <LeadSourcePicker colors={colors} compact={compact} sources={sources} opened={opened} selected={source?.hostId === hostId ? source.entry.id : null} onCancel={closePicker}
+    onUse={(next) => { setSource({ hostId, entry: next.entry, contextProblem: null, summary: next.summary }); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />
+    : <SourceSessionPicker hostId={hostId} colors={colors} selected={source?.hostId === hostId ? source.entry.id : null}
+      onBack={closePicker} onSelect={(next) => { setSource(next); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />;
+  if (picker === "model") return <ModelPicker colors={colors} compact={compact} providers={ready.providers} projectId={choice.desk?.projectId ?? null} codex={choice.codex}
+    value={choice.provider && choice.model ? { provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null, featureValues: choice.featureValues } : null}
+    onCancel={closePicker} onUse={(next: PickedModel) => { set({ provider: next.provider, model: next.model, effort: next.effort, modeId: next.modeId, featureValues: next.featureValues }); closePicker(); }}
+    defaults={settings.state.status === "ready" ? { name: defaultName,
+      make: (next) => saveDefault({ provider: next.provider, model: next.model, effort: next.effort, ...(Object.keys(next.featureValues).length ? { featureValues: next.featureValues } : {}) },
+        "The new-lead default was not saved. This lead still uses the chosen model."),
+      reset: () => saveDefault(null, "The new-lead default was not reset.") } : undefined} />;
+  const chip = <View style={{ alignSelf: header === undefined ? "flex-end" : "auto", alignItems: "flex-end", gap: 2, flexShrink: 1, maxWidth: "62%" }}>
+    <Pressable ref={lastPicker.current === "model" ? pickerReturn : undefined} testID="kontor-new-lead-model" accessibilityRole="button" onPress={() => setPicker("model")}
+      accessibilityLabel={`Model: ${choice.model ? `${choice.model.label}, ${choice.model.id}` : "none chosen"}${chipDetail ? `, ${chipDetail}` : ""}${tag ? `, ${tag}` : ""}. Change model`}
+      style={{ maxWidth: "100%", minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }}>
+      <VendorMark vendor={modelVendor(choice.model?.id ?? null)} colors={colors} size={18} />
+      <View style={{ flexShrink: 1 }}>
+        <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{choice.model ? modelAlias(choice.model.id) : "Choose model"} ▾</Text>
+        {chipDetail ? <Text numberOfLines={1} style={muted}>{chipDetail}</Text> : null}
+      </View>
+    </Pressable>
+    {tag ? <Text testID="kontor-new-lead-model-tag" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{tag}</Text> : null}
+  </View>;
+  const toggle = (key: "desk" | "details") => setOpen(open === key ? null : key);
+  // A source from the listed sessions is drawn on the shared row; a host-wide search result keeps its title and state.
+  const listed = source ? sources?.find((entry) => entry.id === source.entry.id) ?? null : null;
+  const clearSource = () => { setSource(null); setSourceProblem(null); set({ sourceAgentId: undefined }); };
+  const line = { flexDirection: "row", alignItems: "center", gap: 8, minHeight: tall ? 44 : 32 } as const;
+  const value = { flexShrink: 1, color: colors.foreground, fontSize: 12 } as const;
+  const deskName = choice.desk?.project ?? null;
+  const deskRule = choice.issue && choice.desk ? `Desk: ${choice.desk.project}, because ${choice.issue.key} is ${choice.issue.epic ? "an epic" : `a ${choice.issue.type} without an active parent epic`}.`
+    : "Desk: follows the issue. An epic starts on DESK • ADAM; another open issue without an active parent epic starts on DESK • TICKETS.";
+  // One desk is a fact, several a compact choice; From Jira takes the issue's desk (board B1). A chosen desk that vanished
+  // makes even one remaining desk a choice, so "Choose a listed desk" can be done; once a choice it stays one in this
+  // form, so focus returns to it after that desk is chosen.
+  if (ready.desks.length > 1 || !choice.desk && ready.desks.length) deskChoosable.current = true;
+  const desk = fromJira ? <View style={line}>
+      <Text style={{ ...heading, flex: 1 }}>Desk</Text>
+      <Text testID="kontor-new-session-desk" accessibilityLabel={deskRule} numberOfLines={1} style={value}>{choice.issue && deskName ? deskName : "Follows the issue"}</Text>
+    </View>
+    : deskChoosable.current && ready.desks.length ? <Disclosure ref={deskToggle} testID="kontor-new-lead-desk" label="Desk" value={deskName ?? "Choose a desk"} open={open === "desk"} onToggle={() => toggle("desk")} colors={colors} tall={tall}>
+      <Choices bare label="Desk" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId }); refresh({ projectId }); restoreDeskFocus.current = true; setOpen(null); }}
+        options={ready.desks.map((entry) => ({ id: entry.projectId, label: entry.project }))} />
+    </Disclosure>
+    : <View testID="kontor-new-lead-desk" style={line}>
+      <Text style={{ ...heading, flex: 1 }}>Desk</Text>
+      <Text numberOfLines={1} style={value}>{deskName ?? "No desk on this host has lead workspaces."}</Text>
+    </View>;
+  const binding = `${fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The lead stays ad hoc and writes a handoff summary when a key is confirmed."}${choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}`;
   return wrap(<>
-    <Choices label="Role" colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {
+    {settingsLine ? <Text testID="kontor-new-lead-settings" style={muted}>{settingsLine}</Text> : null}
+    <Choices label="Role" layout="segmented" caption={ROLE_NAMES[choice.role]} colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {
       const nextStart: CreateStart = role === "TPM" && choice.start === AD_HOC ? FROM_JIRA : choice.start;
       set({ role: role as CreateRole, start: nextStart }); refresh({ role: role as CreateRole, start: nextStart }); }}
-      options={[{ id: "LSA", label: "LSA · Lead Software Architect" }, { id: "TPM", label: "TPM · Technical Program Manager" }]} />
-    <Choices label="Start" colors={colors} tall={tall} selected={choice.start} onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); if (start === FROM_JIRA) setPicker("jira"); }}
+      options={[{ id: "LSA", label: "LSA", note: ROLE_NAMES.LSA }, { id: "TPM", label: "TPM", note: ROLE_NAMES.TPM }]} />
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+      <View style={{ flex: 1, minWidth: 0 }}>{desk}</View>
+      <IconButton label={choice.desk || fromJira ? "Refresh choices" : "Refresh desks"} icon="RefreshCw" colors={colors} onPress={() => refresh({})} />
+    </View>
+    <Choices label="Start" layout="segmented" caption="TPM is key-bound: it starts from a Jira ticket." captionShown={choice.role === "TPM"} colors={colors} tall={tall} selected={choice.start}
+      onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); if (start === FROM_JIRA) setPicker("jira"); }}
       options={[
-        { id: AD_HOC, label: "Ad hoc", disabled: choice.role === "TPM", note: choice.role === "TPM" ? "TPM is key-bound; choose From Jira ticket." : null },
-        { id: FROM_JIRA, label: "From Jira ticket", note: "The issue chooses the desk." },
+        { id: AD_HOC, label: "Ad hoc", disabled: choice.role === "TPM", note: choice.role === "TPM" ? "TPM is key-bound; choose From Jira." : null },
+        { id: FROM_JIRA, label: "From Jira", note: "The issue chooses the desk." },
       ]} />
     {fromJira ? <View style={{ gap: 4 }}>
       <Text style={heading}>Jira issue</Text>
-      {choice.issue ? <Text selectable style={{ color: colors.foreground, fontSize: 13 }}>{choice.issue.key} · {choice.issue.summary}</Text> : null}
+      {choice.issue ? <Text selectable numberOfLines={2} style={{ color: colors.foreground, fontSize: 13 }}>{choice.issue.key} · {choice.issue.summary}</Text> : null}
       {choice.issue ? <Text style={muted}>{choice.issue.type} · {choice.issue.status}</Text> : null}
       <Action ref={lastPicker.current === "jira" ? pickerReturn : undefined} label={choice.issue ? "Change Jira issue" : "Choose Jira issue"} colors={colors} onPress={() => setPicker("jira")} />
       {ready.jiraProblem ? <Text testID="kontor-new-lsa-jira" style={{ color: colors.statusWarning, fontSize: 12 }}>{ready.jiraProblem}</Text> : null}
-      <Text testID="kontor-new-session-desk" style={muted}>{choice.issue && choice.desk ? `Desk: ${choice.desk.project}, because ${choice.issue.key} is ${choice.issue.epic ? "an epic" : `a ${choice.issue.type} without an active parent epic`}.`
-        : "Desk: follows the issue. An epic starts on DESK • ADAM; another open issue without an active parent epic starts on DESK • TICKETS."}</Text>
       {choice.issue ? <View style={{ gap: 4 }}>
-        <Text style={heading}>Title</Text>
+        <Text style={heading}>Topic</Text>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Text style={{ color: colors.foreground, fontSize: 13 }}>{leadTitle(choice.role, choice.issue.key, "").trimEnd()}</Text>
           <TextInput testID="kontor-new-session-jira-topic" accessibilityLabel={`Title topic after ${choice.role} • ${choice.issue.key}`} maxLength={TOPIC_MAX}
@@ -291,103 +431,66 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
         </View>
         <Text style={muted}>Starts as the issue summary. Editing it keeps {choice.issue.key}.</Text>
       </View> : null}
-    </View> : <>
-      <Choices label="Desk" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId }); refresh({ projectId }); }}
-        options={ready.desks.map((desk) => ({ id: desk.projectId, label: desk.project }))} empty="No desk on this host has lead workspaces." />
-      <View style={{ gap: 4 }}>
-        <Text style={heading}>Topic</Text>
-        <TextInput testID="kontor-new-lsa-topic" accessibilityLabel="Topic" placeholder="What this session is about" autoFocus={!compact} maxLength={TOPIC_MAX} value={draft.topic}
-          onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
-          placeholderTextColor={colors.foregroundMuted} style={input} />
-      </View>
-    </>}
+    </View> : <View style={{ gap: 4 }}>
+      <Text style={heading}>Topic</Text>
+      <TextInput testID="kontor-new-lsa-topic" accessibilityLabel="Topic" placeholder="What this lead is about" autoFocus={!compact} maxLength={TOPIC_MAX} value={draft.topic}
+        onChangeText={(topic) => set({ topic })} onSubmitEditing={() => { if (!problem) submit(); }} returnKeyType="go"
+        placeholderTextColor={colors.foregroundMuted} style={input} />
+    </View>}
     <View style={{ gap: 4 }}>
-      <Text style={heading}>Bring context from another session (optional)</Text>
-      <Text style={muted}>Copies its last assistant message from the last 100 timeline entries before the first task.</Text>
-      {source ? <>
-        <Text selectable testID="kontor-source-selected" style={{ color: colors.foreground, fontSize: 13 }}>{source.entry.title}</Text>
-        <Text selectable style={muted}>{sourceState(source.entry)} · {source.entry.id}</Text>
-      </> : null}
-      <View style={{ flexDirection: "row", gap: 6 }}>
-        <Action ref={lastPicker.current === "source" ? pickerReturn : undefined} label={source ? "Change source" : "Choose source session"} colors={colors} onPress={() => setPicker("source")} />
-        {source ? <Action label="Clear source" colors={colors} onPress={() => { setSource(null); setSourceProblem(null); set({ sourceAgentId: undefined }); }} /> : null}
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+        <Text style={{ ...heading, flex: 1 }}>Source session</Text>
+        <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Optional</Text>
       </View>
+      {listed ? <DenseSessionRow testID="kontor-source-selected" entry={listed} colors={colors} clock={clock} opened={opened?.get(listed.id) ?? null}
+        mode={{ kind: "open", actions: <IconButton label="Clear source" icon="X" colors={colors} onPress={clearSource} /> }} onPress={() => setPicker("source")} />
+        : source ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text selectable testID="kontor-source-selected" numberOfLines={1} style={{ color: colors.foreground, fontSize: 13 }}>{source.entry.title}</Text>
+            <Text selectable numberOfLines={1} style={muted}>{sourceState(source.entry)} · {source.entry.id}</Text>
+          </View>
+          <Action ref={lastPicker.current === "source" ? pickerReturn : undefined} small label="Change source" colors={colors} onPress={() => setPicker("source")} />
+          <IconButton label="Clear source" icon="X" colors={colors} onPress={clearSource} />
+        </View>
+        : <Action ref={lastPicker.current === "source" ? pickerReturn : undefined} label="Choose source session" colors={colors} onPress={() => setPicker("source")} />}
+      {source?.summary ? <View testID="kontor-source-summary" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name="FileText" size={14} color={readableInk(colors.accent, colors)} />
+        <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 12 }}>Saved summary r{source.summary.revision}</Text>
+      </View> : source ? <Text style={muted}>No saved summary: the lead copies this session's last assistant message before its first task.</Text> : null}
     </View>
-    <Text testID="kontor-new-lsa-title" style={muted}>{choice.title ? `Title: ${choice.title}. ` : ""}
-      {fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The session stays ad hoc and writes a handoff summary when a key is confirmed."}
-      {choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}</Text>
-    <Disclosure small label={`Provider, model and mode: ${summary || "none available"}`} accessibilityLabel={`Provider, model and mode. ${summary || "None available"}`} colors={colors} open={advanced} onToggle={setAdvanced}>
-      <View style={{ gap: 10, paddingTop: 4 }}>
-        <Text style={muted}>{choice.fromProfile ? `Defaults from the host's ${ready.profile!.name} profile.` : "Defaults: the provider's own."}</Text>
-        <Choices label="Provider" colors={colors} tall={tall} selected={choice.provider?.id ?? null} onSelect={(provider) => set({ provider, model: undefined, effort: undefined, modeId: undefined })}
-          options={ready.providers.filter((provider) => provider.available).map((provider) => ({ id: provider.id, label: provider.label }))} empty={providerEmpty} />
-        {choice.provider?.available ? <Choices label="Model" colors={colors} tall={tall} selected={choice.model?.id ?? null} onSelect={(model) => set({ model, effort: undefined })}
-          options={choice.provider.models.map((model) => ({ id: model.id, label: model.label }))} empty="No selectable model." /> : null}
-        {choice.model?.efforts.length ? <Choices label="Effort" colors={colors} tall={tall} selected={choice.effort?.id ?? null} onSelect={(effort) => set({ effort })}
-          options={choice.model.efforts} /> : choice.model ? <Text style={muted}>No effort setting for this model.</Text> : null}
-        {choice.provider?.available && choice.provider.modes.length ? <Choices label="Mode" colors={colors} tall={tall} selected={choice.mode?.id ?? null} onSelect={(modeId) => set({ modeId })}
-          options={choice.provider.modes.map((mode) => ({ id: mode.id, label: mode.dangerous ? `${mode.label} ⚠` : mode.label }))} /> : null}
-        {choice.model && choice.staleEffort ? <Action small label="Use current effort default" colors={colors} onPress={() => set({ effort: choice.model!.efforts.find((effort) => effort.id === choice.model!.defaultEffort)?.id ?? choice.model!.efforts[0]?.id ?? null })} /> : null}
-        {choice.provider?.available && choice.staleMode ? <Action small label="Use current mode default" colors={colors} onPress={() => set({ modeId: choice.provider!.modes.find((mode) => mode.id === choice.provider!.defaultMode)?.id ?? choice.provider!.modes[0]?.id ?? null })} /> : null}
+    <View style={{ gap: 4 }}>
+      <Text style={heading}>Lead title preview</Text>
+      <Text selectable testID="kontor-new-lsa-title" style={{ color: choice.title ? colors.foreground : colors.foregroundMuted, fontSize: 13, paddingHorizontal: 9, paddingVertical: 8, borderRadius: 6, backgroundColor: colors.surface2 }}>
+        {choice.title || (fromJira ? "Choose a Jira issue to see the title." : "Type a topic to see the title.")}</Text>
+    </View>
+    {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
+    {/* How the lead is bound and how its persona arrives stay one tap away; the behavior is the same either way. */}
+    <Disclosure testID="kontor-new-lead-details" label="Details" value="How this lead starts" open={open === "details"} onToggle={() => toggle("details")} colors={colors} tall={tall}>
+      <View testID="kontor-new-lead-details-body" style={{ gap: 4 }}>
+        <Text style={muted}>{binding}</Text>
+        {fromJira ? <Text style={muted}>{deskRule}</Text> : null}
+        {/* A provider that cannot start promises no persona delivery; the problem line names it and why. */}
+        {choice.provider?.available ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
+        {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}
       </View>
     </Disclosure>
+    {/* Notes that arrive with a later read sit below the fields, so they never push them. */}
+    {choice.defaultNote ? <Text testID="kontor-new-lead-default-note" style={muted}>{choice.defaultNote}</Text> : null}
+    {settings.state.status === "error" || settings.state.status === "invalid" ? <Text style={muted}>The saved new-lead default could not be read ({settings.state.error}). An unchosen model follows the Codex default.</Text> : null}
+    {defaultProblem ? <Text testID="kontor-new-lead-default-problem" style={muted}>{defaultProblem}</Text> : null}
     {ready.providers.some((provider) => provider.status === "loading") ? <Text style={muted}>Some providers are still loading.</Text> : null}
     {ready.providers.some((provider) => provider.status === "unknown") ? <Text style={muted}>Some provider availability is unknown.</Text> : null}
     {ready.providers.some((provider) => provider.status === "error") ? <Text style={muted}>Some providers could not be read.</Text> : null}
     {ready.providers.some((provider) => provider.status === "unavailable") ? <Text style={muted}>Some providers are unavailable.</Text> : null}
-    <Action small label={choice.desk || fromJira ? "Refresh choices" : "Refresh desks"} colors={colors} onPress={() => refresh({})} />
-    {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
-    {/* A provider that cannot start promises no persona delivery; the problem line names it and why. */}
-    {choice.provider?.available ? <Text style={muted}>{personaLine(choice.provider.persona, providerLabel)}</Text> : null}
-    {ready.notes.map((note) => <Text key={note} style={muted}>{note}</Text>)}
-    {problem ? <Text testID="kontor-new-lsa-problem" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 12 }}>{problem}</Text> : null}
+    {/* The hint keeps one line even when empty, so a one-line hint arriving or clearing never moves the footer. */}
+    <View style={{ minHeight: 17 }}>
+      {hint ? <Text testID="kontor-new-lsa-problem" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{hint}</Text> : null}
+    </View>
   </>, <>
       <Action small label="Cancel" colors={colors} onPress={onCancel} />
-      <Pressable testID="kontor-new-lsa-create" accessibilityRole="button" accessibilityLabel={`Create ${choice.title || "session"}`} accessibilityHint={problem ?? undefined} accessibilityState={{ disabled: !!problem }} aria-disabled={!!problem}
+      <Pressable testID="kontor-new-lsa-create" accessibilityRole="button" accessibilityLabel={`Create ${choice.title || "lead"}`} accessibilityHint={problem ?? undefined} accessibilityState={{ disabled: !!problem }} aria-disabled={!!problem}
         disabled={!!problem} onPress={submit} style={{ minHeight: tall ? 44 : 30, paddingHorizontal: 12, borderRadius: 6, justifyContent: "center", backgroundColor: problem ? colors.surface2 : colors.accent, opacity: problem ? 0.6 : 1 }}>
-        <Text style={{ color: problem ? colors.foregroundMuted : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Create session</Text>
+        <Text style={{ color: problem ? colors.foregroundMuted : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>Create lead</Text>
       </Pressable>
-  </>);
-}
-
-/** A labelled single choice as wrapping radio chips; an unavailable option stays visible with its reason. */
-function Choices({ label, options, selected, onSelect, colors, tall, empty }: {
-  label: string; options: readonly { id: string; label: string; disabled?: boolean; note?: string | null }[]; selected: string | null;
-  onSelect: (id: string) => void; colors: Colors; tall: boolean; empty?: string;
-}) {
-  const enabled = options.filter((option) => !option.disabled);
-  const tabStop = enabled.find((option) => option.id === selected)?.id ?? enabled[0]?.id;
-  return <View accessibilityRole="radiogroup" accessibilityLabel={label} style={{ gap: 4 }}>
-    <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{label}</Text>
-    {options.length ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-      {options.map((option) => {
-        const checked = option.id === selected, disabled = !!option.disabled;
-        return <Pressable key={option.id} accessibilityRole="radio" accessibilityLabel={option.note ? `${option.label}, ${option.note}` : option.label} accessibilityState={{ checked, disabled }} aria-checked={checked} aria-disabled={disabled}
-          {...(Platform.OS === "web" ? { tabIndex: !disabled && option.id === tabStop ? 0 : -1, onKeyDown: (event: {
-            key: string; repeat?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean;
-            currentTarget: { parentElement: { querySelectorAll(selector: string): ArrayLike<{ focus(): void }> } | null };
-            preventDefault(): void; stopPropagation(): void;
-          }) => {
-            if (disabled || event.altKey || event.ctrlKey || event.metaKey) return;
-            if (event.key === " " || event.key === "Spacebar") {
-              event.preventDefault(); event.stopPropagation();
-              if (!event.repeat) onSelect(option.id);
-              return;
-            }
-            if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-            event.preventDefault(); event.stopPropagation();
-            const index = enabled.findIndex((choice) => choice.id === option.id);
-            const step = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
-            const next = enabled[event.key === "Home" ? 0 : event.key === "End" ? enabled.length - 1 : (index + step + enabled.length) % enabled.length];
-            if (!next) return;
-            onSelect(next.id);
-            event.currentTarget.parentElement?.querySelectorAll('[role="radio"]')[options.findIndex((choice) => choice.id === next.id)]?.focus();
-          } } : {})}
-          disabled={disabled} onPress={() => onSelect(option.id)} style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 30, maxWidth: "100%", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, justifyContent: "center",
-            borderColor: checked || focused ? colors.accent : colors.border, backgroundColor: checked ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
-          <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: checked ? "600" : "400" }}>{option.label}</Text>
-        </Pressable>;
-      })}
-    </View> : <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{empty}</Text>}
-  </View>;
+  </>, chip, source?.summary ? "Source summary is attached before the first task." : null);
 }

@@ -16,7 +16,7 @@ export type UnknownReason = "not-read" | "read-failed" | "read-not-current" | "n
 export type ProviderBlock =
   /** A fresh readable read of this ID and revision saw a classified refusal on its native error (PR482 `current`). */
   | { readonly state: "blocked" }
-  /** A fresh readable read stored no refusal. Not provider health, and never Resume eligibility. */
+  /** A fresh readable read stored no refusal. Not provider health, and never Take over eligibility. */
   | { readonly state: "none" }
   | { readonly state: "unknown"; readonly reason: UnknownReason };
 
@@ -53,7 +53,7 @@ const errorSessions = (count: number) => `${count} error session${count === 1 ? 
 /**
  * One exclusive state choice over the screen's candidates (search, scope, task and assignment applied, state not). It
  * lists observed blocks only and counts unknown error sessions, never listing them as blocked or dropping them as free
- * of refusals. It only narrows the list: Resume and Take over eligibility stay the server's fenced exact read.
+ * of refusals. It only narrows the list: Take over eligibility stays the server's fenced exact read.
  */
 export function providerBlockedView(input: CountRead & { candidates: readonly DirectoryEntry[]; reads: ProviderRefusalReads; now?: number }): ProviderBlockedView {
   const { candidates, reads, now = Date.now() } = input;
