@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
-import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
+import { SCOPE_LABEL_RULE, SUMMARY_DELIVERY_NOT_VERIFIED, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
 import type { SummaryRevision } from "../shared/session-navigator";
 import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
 
@@ -85,6 +85,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
     const value = agent("agent-new", { title: input.title, labels: input.labels, provider, model, cwd: placed.workspaceDirectory!, workspaceId: placed.id,
       currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, features, ...readbackPatch });
     agents.set(value.id, value);
+    if (input.prompt) bootstrapByAgent.set(value.id, input.prompt);
     return { id: value.id } as Awaited<ReturnType<NativeCreate>>;
   });
   const workspacesCreate = vi.fn<NativeWorkspaceCreate>(async (input) => {
@@ -100,6 +101,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
     entries: [...agents.values()].filter((value) => Object.entries(options?.filter?.labels ?? {}).every(([key, label]) => value.labels?.[key] === label)).map((value) => ({ agent: value, project: PROJECT })) }));
   const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
   const listFeatures = vi.fn<CreateClient["providers"]["listFeatures"]>(async () => FEATURES);
+  const bootstrapByAgent = new Map<string, string>();
   const timeline = vi.fn(async () => ({ entries: timelineText === null ? [] : [{ item: { type: "assistant_message", text: timelineText } }] }));
   const jira = vi.fn<JiraSearch>(async ({ query, issueClass, openOnly }) => {
     if (offline) return { issues: [], hasMore: false, nextPageToken: null, failure: "Jira is unreachable" };
@@ -117,7 +119,12 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
       ref: (id: string) => ({ refresh: async () => live.find((entry) => entry.id === id) ?? null, agents: { create: (input: Parameters<NativeCreate>[0]) => { dispatchWorkspace = id; return create(input); } } }),
       create: workspacesCreate,
     },
-    agents: { list, ref: (id: string) => ({ refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: PROJECT } : null; }, timeline: { refetch: timeline } }) },
+    agents: { list, ref: (id: string) => ({ refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: PROJECT } : null; },
+      timeline: { refetch: async (opts?: unknown) => {
+        const bootstrap = bootstrapByAgent.get(id);
+        if (bootstrap) return { entries: [{ item: { type: "user_message", text: bootstrap } }] };
+        return timeline(opts);
+      } } }) },
     providers: { snapshot, listFeatures },
     config: { get: vi.fn(async () => ({ requestId: "fixture", config: MutableDaemonConfigSchema.parse({ mcp: { injectIntoAgents: false }, agentProfiles: [
       { id: "profile-lsa", name: "lsa", provider: "claude", model: "opus", modeId: "default", thinkingOptionId: "max" },
@@ -524,7 +531,7 @@ describe("new session create", () => {
     const verified = await s.service.create(request({ sourceAgentId: null, sourceSummary: { summaryId: revision.summaryId, revision: 2 } }));
     expect(verified).toMatchObject({
       state: "verified",
-      message: "Created and verified: the request pinned saved summary r2 of agent-source for the first task; the host readback does not expose the bootstrap content.",
+      message: "Created and verified: saved summary r2 of agent-source is in the delivered bootstrap before the first task.",
     });
     expect(s.create.mock.calls[0]![0].prompt).toContain("Saved task");
     expect(s.timeline).not.toHaveBeenCalled();
@@ -541,6 +548,29 @@ describe("new session create", () => {
     expect(await s.service.create(request({ sourceAgentId: "agent-b", sourceSummary: { summaryId: revision.summaryId, revision: 1 } })))
       .toMatchObject({ state: "refused", message: expect.stringMatching(/belongs to agent-a, not agent-b/) });
     expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps Check unknown when the session exists but the bootstrap never reached the timeline", async () => {
+    const s = await setup({ timelineText: null });
+    const revision: SummaryRevision = { summaryId: "00000000-0000-4000-8000-0000000000dd", revision: 1, sourceAgentId: "agent-src", sourceTitle: "Route",
+      cutoff: "2026-10-25T10:00:00Z", savedAt: "2026-10-25T10:05:00Z", sections: { task: "Pinned", decisions: "", currentState: "", nextStep: "" }, text: "Pinned body" };
+    await writePinnedSummary(s.summaryRoot, revision);
+    const requestId = randomUUID();
+    s.create.mockImplementationOnce(async (input) => {
+      const placed = s.live.find((entry) => entry.id === "wks-adam-lsa")!;
+      const [provider, model] = String(input.config.provider).split("/");
+      const value = agent("agent-new", { title: input.title, labels: input.labels, provider, model, cwd: placed.workspaceDirectory!, workspaceId: placed.id });
+      s.agents.set(value.id, value);
+      throw new Error("bootstrap delivery failed");
+    });
+    const unknown = await s.service.create(request({ requestId, sourceAgentId: null, sourceSummary: { summaryId: revision.summaryId, revision: 1 } }));
+    expect(unknown).toMatchObject({ state: "unknown", agentId: null });
+    const checked = await s.service.check(requestId);
+    expect(checked.agentId).toBe("agent-new");
+    expect(checked.state).not.toBe("verified");
+    expect(checked.message).toContain(SUMMARY_DELIVERY_NOT_VERIFIED);
+    expect(checked.message).not.toMatch(/is in the delivered bootstrap/i);
+    expect(s.create).toHaveBeenCalledTimes(1);
   });
 
   it("answers a repeated create with the same sourceSummary pin without a second dispatch", async () => {

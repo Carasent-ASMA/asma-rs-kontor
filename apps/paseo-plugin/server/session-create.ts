@@ -375,6 +375,17 @@ export async function sourceSummary(client: { agents: { ref(id: string): Pick<Ag
   return null;
 }
 
+/** Exact host-timeline proof that the bootstrap prompt was delivered; false when the timeline cannot show it. */
+export async function bootstrapDeliveredOnTimeline(client: { agents: { ref(id: string): Pick<AgentHandle, "timeline"> } }, agentId: string, bootstrap: string): Promise<boolean> {
+  try {
+    const page = await client.agents.ref(agentId).timeline.refetch({ limit: 20, direction: "tail" });
+    if (page && "error" in page && page.error) return false;
+    return !!page?.entries.some((entry) => entry.item.type === "user_message" && entry.item.text === bootstrap);
+  } catch { return false; }
+}
+
+export const SUMMARY_DELIVERY_NOT_VERIFIED = "Summary delivery is not verified on the host timeline.";
+
 class WorkspaceCreateError extends Error {
   constructor(message: string, readonly mayExist: boolean) { super(message); }
 }
@@ -455,16 +466,33 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     catch (error) { return outcome(record, "unknown", agentId, `The host replied that it created this session, but reading it back failed: ${errorText(error)}. Check reads it again.`); }
     if (!found || found.agent.id !== agentId) return outcome(record, "unknown", agentId, "The host replied that it created this session, but an exact read returned no such session. Check reads it again.");
     const differences = readbackDifferences(found.agent, record.request);
-    let message = differences.length
-      ? "Created with differences: the host's readback does not match every requested field."
-      : "Created and verified: the host's readback matches the request.";
     const pin = summaryPinSchema.safeParse(record.request.sourceSummary);
-    if (!differences.length && pin.success) {
+    if (pin.success) {
+      const bootstrap = typeof record.request.bootstrapPrompt === "string" ? record.request.bootstrapPrompt : null;
+      const delivered = bootstrap ? await bootstrapDeliveredOnTimeline(client, agentId, bootstrap) : false;
+      if (!delivered) {
+        const lead = differences.length
+          ? "Created with differences: the host's readback does not match every requested field."
+          : "Created: the host session matches the request configuration.";
+        const state = differences.length ? "differences" as const : "unknown" as const;
+        return outcome(record, state, agentId, `${lead} ${SUMMARY_DELIVERY_NOT_VERIFIED} Do not treat the saved summary as attached; Check again after the host shows the bootstrap.`, differences);
+      }
       try {
         const revision = await readPinnedSummary(summaryRoot, pin.data);
-        message = `Created and verified: the request pinned saved summary r${revision.revision} of ${revision.sourceAgentId} for the first task; the host readback does not expose the bootstrap content.`;
-      } catch { /* keep generic verified message */ }
+        if (!bootstrap!.includes(revision.text)) {
+          return outcome(record, "unknown", agentId, `Created: the host timeline shows a bootstrap message, but not the exact saved summary r${revision.revision} text. ${SUMMARY_DELIVERY_NOT_VERIFIED} Check again.`, differences);
+        }
+        if (differences.length) {
+          return outcome(record, "differences", agentId, "Created with differences: the host's readback does not match every requested field.", differences);
+        }
+        return outcome(record, "verified", agentId, `Created and verified: saved summary r${revision.revision} of ${revision.sourceAgentId} is in the delivered bootstrap before the first task.`);
+      } catch {
+        return outcome(record, "unknown", agentId, `Created: the bootstrap was delivered but saved summary r${pin.data.revision} is no longer stored on this host. ${SUMMARY_DELIVERY_NOT_VERIFIED} Check again.`, differences);
+      }
     }
+    const message = differences.length
+      ? "Created with differences: the host's readback does not match every requested field."
+      : "Created and verified: the host's readback matches the request.";
     return differences.length
       ? outcome(record, "differences", agentId, message, differences)
       : outcome(record, "verified", agentId, message);
@@ -559,7 +587,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const record: CreateRecord = { request: { requestId, title: spec.title, cwd, workspaceId: workspaceId ?? spec.anchorWorkspaceId,
       labels: spec.labels, provider: spec.provider, model: spec.model, effort: spec.effort, modeId: spec.modeId,
       ...(spec.featureValues && Object.keys(spec.featureValues).length ? { featureValues: spec.featureValues } : {}),
-      ...(plan.sourceSummary ? { sourceSummary: plan.sourceSummary } : {}), at: new Date().toISOString() }, outcome: null };
+      ...(plan.sourceSummary ? { sourceSummary: plan.sourceSummary } : {}),
+      ...(spec.bootstrap ? { bootstrapPrompt: spec.bootstrap } : {}), at: new Date().toISOString() }, outcome: null };
     try { await writeRecord(record); } catch (error) {
       // Not dispatched; a partial intent is removed so it does not block, and stays blocking if it cannot be.
       await rm(path(requestId), { force: true }).catch(() => {});
