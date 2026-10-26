@@ -117,6 +117,53 @@ describe("direct takeover continuity", () => {
     expect(h.effects.create).toHaveLength(0);
   };
 
+  describe("AUD schedule wake read shape", () => {
+    const requestId = "33333333-3333-4333-8333-333333333333";
+
+    it("qualified empty array entries yields wakes clear on the production reader", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [] }) });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("clear");
+    });
+
+    it("non-empty array entries yields wakes preserved on the production reader", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [{ id: "hb-1" }] }) });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("preserved");
+    });
+
+    it.each([
+      ["object entries", { entries: {} }],
+      ["string entries", { entries: "" }],
+      ["missing entries", {}],
+    ] as const)("malformed schedules.forAgent (%s) yields unknown and blocks retirement", async (_label, page) => {
+      const h = productionContinuity(await host(), { forAgent: async () => page as { entries: unknown[] } });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      noRetirementEffects(h);
+    });
+
+    it("null schedules.forAgent page yields unknown and blocks retirement", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => null as unknown as { entries: unknown[] } });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      noRetirementEffects(h);
+    });
+
+    it("schedules.forAgent throw yields unknown and blocks retirement", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => { throw new Error("unreadable"); } });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      noRetirementEffects(h);
+    });
+  });
+
   describe("AUD-8641-S3-02 unsupported global wake reader", () => {
     it("production reader records wakes unknown when schedules.forAgent is absent", async () => {
       const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", status: "error", lastError: "429 quota" }) });

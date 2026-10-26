@@ -726,6 +726,7 @@ async function readDirectWakeState(client: TakeoverClient, agentId: string): Pro
   if (!client.schedules?.forAgent) return "unknown";
   try {
     const page = await client.schedules.forAgent(agentId);
+    if (!Array.isArray(page?.entries)) return "unknown";
     return page.entries.length ? "preserved" : "clear";
   } catch {
     return "unknown";
