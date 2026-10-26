@@ -154,12 +154,16 @@ diff --git a/packages/client/src/index.ts b/packages/client/src/index.ts
        list: listAgents,
        ref: (agent) => createAgentHandle(agent),
        create: (options) => createAgent(options),
-@@ -945,6 +953,12 @@
+@@ -945,6 +953,16 @@
        send: async (text, options) => {
          await daemonClient.sendAgentMessage(id, text, options);
        },
 +      markSeen: async (input) => {
-+        const result = await daemonClient.acknowledgeAgentAttention({ agentId: id, ...input });
++        const result = await daemonClient.acknowledgeAgentAttention({
++          agentId: id,
++          expectedUpdatedAt: input.expectedUpdatedAt,
++          expectedAttentionTimestamp: input.expectedAttentionTimestamp,
++        });
 +        if (result.outcome === "missing") current = null;
 +        else if (result.agent) current = result.agent;
 +        return result;
@@ -170,7 +174,7 @@ diff --git a/packages/client/src/index.ts b/packages/client/src/index.ts
 diff --git a/packages/client/src/index.test.ts b/packages/client/src/index.test.ts
 --- a/packages/client/src/index.test.ts
 +++ b/packages/client/src/index.test.ts
-@@ -55,6 +55,21 @@
+@@ -55,6 +55,57 @@
  afterEach(() => {
    vi.unstubAllGlobals();
    FakeWebSocket.instances.length = 0;
@@ -186,6 +190,42 @@ diff --git a/packages/client/src/index.test.ts b/packages/client/src/index.test.
 +        expectedAttentionTimestamp: null,
 +      }),
 +    ).rejects.toThrow("does not support metadata-only read acknowledgement");
++  } finally {
++    await client.close();
++  }
++});
++
++test("markSeen binds the exact handle ID despite extra runtime input fields", async () => {
++  const { client, ws } = await connectClient({ agentAttentionAcknowledgement: true });
++  const intendedId = "00000000-0000-4000-8000-000000000001";
++  const input = {
++    agentId: "00000000-0000-4000-8000-000000000002",
++    expectedUpdatedAt: "2026-01-01T00:00:00.000Z",
++    expectedAttentionTimestamp: null,
++  };
++  try {
++    const pending = client.agents.ref(intendedId).markSeen(input);
++    const request = parseSentSessionMessage(ws.sent.at(-1));
++    ws.message(
++      sessionMessage({
++        type: "agent.acknowledge_attention.response",
++        payload: {
++          requestId: request.requestId,
++          agentId: request.agentId,
++          outcome: "missing",
++          agent: null,
++          error: null,
++        },
++      }),
++    );
++    const result = await pending;
++    expect(request).toMatchObject({
++      type: "agent.acknowledge_attention.request",
++      agentId: intendedId,
++      expectedUpdatedAt: input.expectedUpdatedAt,
++      expectedAttentionTimestamp: null,
++    });
++    expect(result.agentId).toBe(intendedId);
 +  } finally {
 +    await client.close();
 +  }
@@ -281,7 +321,15 @@ diff --git a/packages/server/src/server/agent/agent-storage.ts b/packages/server
 diff --git a/packages/server/src/server/agent/agent-manager.ts b/packages/server/src/server/agent/agent-manager.ts
 --- a/packages/server/src/server/agent/agent-manager.ts
 +++ b/packages/server/src/server/agent/agent-manager.ts
-@@ -2227,6 +2227,36 @@
+@@ -228,6 +228,7 @@
+ 
+ export type AgentManagerEvent =
+   | { type: "agent_state"; agent: ManagedAgent }
++  | { type: "stored_agent_state"; record: StoredAgentRecord }
+   | { type: "provider_subagent"; event: ProviderSubagentStoreEvent }
+   | { type: "timeline_replacement"; agentId: string; epoch: string }
+   | {
+@@ -2227,6 +2228,36 @@
        await this.persistSnapshot(agent);
        this.emitState(agent, { persist: false });
      }
@@ -298,7 +346,7 @@ diff --git a/packages/server/src/server/agent/agent-manager.ts b/packages/server
 +      if (outcome !== "seen") return outcome;
 +      if (!liveAgent) {
 +        const record = await this.requireRegistry().get(input.agentId);
-+        if (record) this.dispatchStoredAgentState(record);
++        if (record) this.dispatch({ type: "stored_agent_state", record });
 +        return outcome;
 +      }
 +      const sameRevision = liveAgent.updatedAt.toISOString() === input.expectedUpdatedAt;
@@ -318,6 +366,28 @@ diff --git a/packages/server/src/server/agent/agent-manager.ts b/packages/server
    }
  
    async markAgentUnread(agentId: string): Promise<void> {
+@@ -5187,6 +5218,13 @@
+       }
+       if (
+         subscriber.agentId &&
++        event.type === "stored_agent_state" &&
++        subscriber.agentId !== event.record.id
++      ) {
++        continue;
++      }
++      if (
++        subscriber.agentId &&
+         event.type === "provider_subagent" &&
+         subscriber.agentId !==
+           (event.event.type === "upsert"
+@@ -5209,6 +5247,7 @@
+ 
+   private eventBelongsToInternalAgent(event: AgentManagerEvent): boolean {
+     if (event.type === "agent_state") return event.agent.internal === true;
++    if (event.type === "stored_agent_state") return event.record.internal === true;
+     if (event.type === "agent_stream") return this.agents.get(event.agentId)?.internal === true;
+     if (event.type !== "provider_subagent") return false;
+     const parentAgentId =
 diff --git a/packages/server/src/server/agent/agent-storage.test.ts b/packages/server/src/server/agent/agent-storage.test.ts
 --- a/packages/server/src/server/agent/agent-storage.test.ts
 +++ b/packages/server/src/server/agent/agent-storage.test.ts
@@ -693,7 +763,19 @@ new file mode 100644
 diff --git a/packages/server/src/server/session.ts b/packages/server/src/server/session.ts
 --- a/packages/server/src/server/session.ts
 +++ b/packages/server/src/server/session.ts
-@@ -2792,6 +2792,8 @@
+@@ -1933,6 +1933,11 @@
+           return;
+         }
+ 
++        if (event.type === "stored_agent_state") {
++          void this.agentUpdates.forwardStoredAgent(event.record);
++          return;
++        }
++
+         if (event.type === "agent_state") {
+           this.sessionLogger.trace(
+             {
+@@ -2792,6 +2797,8 @@
  
    private dispatchAgentConfigMessage(msg: SessionInboundMessage): Promise<void> | undefined {
      switch (msg.type) {
@@ -702,7 +784,7 @@ diff --git a/packages/server/src/server/session.ts b/packages/server/src/server/
        case "set_agent_mode_request":
          return this.agentConfigSession.handleSetAgentModeRequest(msg);
        case "set_agent_model_request":
-@@ -4897,6 +4899,39 @@
+@@ -4897,6 +4904,39 @@
    /**
     * Handle clearing agent attention flag
     */
@@ -742,7 +824,7 @@ diff --git a/packages/server/src/server/session.ts b/packages/server/src/server/
    private async handleClearAgentAttention(
      agentId: string | string[],
      requestId?: string,
-@@ -5452,21 +5487,25 @@
+@@ -5452,21 +5492,25 @@
      pageInfo: FetchAgentsResponsePageInfo;
      searchTruncated?: boolean;
    }> {
@@ -877,3 +959,266 @@ diff --git a/public-docs/sdk/reference.md b/public-docs/sdk/reference.md
  
  ### Timeline handle
  
+diff --git a/packages/server/src/server/agent/agent-attention-metadata.test.ts b/packages/server/src/server/agent/agent-attention-metadata.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/server/src/server/agent/agent-attention-metadata.test.ts
+@@ -0,0 +1,215 @@
++import { afterEach, expect, test } from "vitest";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import pino from "pino";
++import { AgentManager, type AgentManagerEvent } from "./agent-manager.js";
++import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
++import { buildStoredAgentPayload } from "./agent-projections.js";
++import { createAgentUpdatesService } from "../session/agent-updates/agent-updates-service.js";
++import type { SessionOutboundMessage } from "../messages.js";
++
++const roots: string[] = [];
++afterEach(async () => {
++  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
++});
++
++async function createStoredError(overrides: Partial<StoredAgentRecord> = {}) {
++  const root = await mkdtemp(join(tmpdir(), "paseo-attention-metadata-"));
++  roots.push(root);
++  const logger = pino({ level: "silent" });
++  const storage = new AgentStorage(root, logger);
++  const record: StoredAgentRecord = {
++    id: "00000000-0000-4000-8000-000000000001",
++    workspaceId: "workspace-fixture",
++    provider: "unavailable-provider",
++    cwd: "/fixtures/read-acknowledgement",
++    createdAt: "2026-01-01T00:00:00.000Z",
++    updatedAt: "2026-01-01T00:00:01.000Z",
++    lastStatus: "error",
++    lastError: "Retained provider error",
++    archivedAt: "2026-01-01T00:00:02.000Z",
++    requiresAttention: true,
++    attentionReason: "error",
++    attentionTimestamp: "2026-01-01T00:00:01.000Z",
++    labels: {},
++    ...overrides,
++  };
++  await storage.upsert(record);
++  const manager = new AgentManager({ registry: storage, logger, clients: {} });
++  return { root, logger, storage, record, manager };
++}
++
++test("stored error acknowledgement preserves status through the actual directory subscription", async () => {
++  const { root, logger, record, manager } = await createStoredError();
++  const messages: SessionOutboundMessage[] = [];
++  const events: AgentManagerEvent[] = [];
++  const forwards: Promise<unknown>[] = [];
++  const updates = createAgentUpdatesService({
++    emit: (message) => messages.push(message),
++    enrichAgentPayload: async (payload) => payload,
++    buildStoredAgentPayload: (stored) => buildStoredAgentPayload(stored, []),
++    isProviderVisibleToClient: () => true,
++    buildProjectPlacementForWorkspaceId: async () => ({
++      projectKey: "fixture-project",
++      projectName: "Fixture",
++      checkout: {
++        cwd: record.cwd,
++        isGit: false,
++        worktreeRoot: null,
++        currentBranch: null,
++        remoteUrl: null,
++        isPaseoOwnedWorktree: false,
++        mainRepoRoot: null,
++      },
++    }),
++    emitWorkspaceUpdateForWorkspaceId: async () => {},
++    sequenceAgentUpdate: (payload) => payload,
++    logger,
++  });
++  updates.beginSubscription({
++    subscriptionId: "errors",
++    filter: { includeArchived: true, includeUnavailablePersisted: true, statuses: ["error"] },
++  });
++  updates.flushBootstrapped("errors");
++  updates.beginSubscription({
++    subscriptionId: "closed",
++    filter: { includeArchived: true, includeUnavailablePersisted: true, statuses: ["closed"] },
++  });
++  updates.flushBootstrapped("closed");
++  updates.beginSubscription({
++    subscriptionId: "all",
++    filter: { includeArchived: true, includeUnavailablePersisted: true },
++  });
++  updates.flushBootstrapped("all");
++  updates.beginSubscription({
++    subscriptionId: "active",
++    filter: { includeUnavailablePersisted: true },
++  });
++  updates.flushBootstrapped("active");
++  const unsubscribe = manager.subscribe((event) => {
++    events.push(event);
++    if (event.type === "agent_state") forwards.push(updates.forwardLiveAgent(event.agent));
++    if (event.type === "stored_agent_state")
++      forwards.push(updates.forwardStoredAgent(event.record));
++  });
++  try {
++    expect(
++      await manager.acknowledgeAgentAttention({
++        agentId: record.id,
++        expectedUpdatedAt: record.updatedAt,
++        expectedAttentionTimestamp: record.attentionTimestamp ?? null,
++      }),
++    ).toBe("seen");
++    await Promise.all(forwards);
++    const durable = await new AgentStorage(root, logger).get(record.id);
++    expect(durable).toEqual({
++      ...record,
++      requiresAttention: false,
++      attentionReason: null,
++      attentionTimestamp: null,
++    });
++    expect(events).toHaveLength(1);
++    const event = events[0];
++    if (event.type !== "stored_agent_state") throw new Error("Expected native stored agent state");
++    expect(event.record.lastStatus).toBe("error");
++    expect(messages).toEqual([
++      {
++        type: "agent_update",
++        payload: expect.objectContaining({
++          kind: "upsert",
++          agent: expect.objectContaining({
++            id: record.id,
++            status: "error",
++            lastError: record.lastError,
++            archivedAt: record.archivedAt,
++            providerUnavailable: true,
++            requiresAttention: false,
++          }),
++        }),
++      },
++      { type: "agent_update", payload: { kind: "remove", agentId: record.id } },
++      {
++        type: "agent_update",
++        payload: expect.objectContaining({
++          kind: "upsert",
++          agent: expect.objectContaining({
++            id: record.id,
++            status: "error",
++            lastError: record.lastError,
++            archivedAt: record.archivedAt,
++            providerUnavailable: true,
++            requiresAttention: false,
++          }),
++        }),
++      },
++      { type: "agent_update", payload: { kind: "remove", agentId: record.id } },
++    ]);
++    expect(manager.getAgent(record.id)).toBeNull();
++  } finally {
++    unsubscribe();
++    updates.dispose();
++  }
++});
++
++test.each(["initializing", "running", "idle", "error", "closed"] as const)(
++  "stored acknowledgement preserves %s metadata and only reaches its exact native subscribers",
++  async (lastStatus) => {
++    const { record, storage, manager } = await createStoredError({ lastStatus, archivedAt: null });
++    const exact: AgentManagerEvent[] = [];
++    const other: AgentManagerEvent[] = [];
++    const unsubscribeExact = manager.subscribe((event) => exact.push(event), {
++      agentId: record.id,
++      replayState: false,
++    });
++    const unsubscribeOther = manager.subscribe((event) => other.push(event), {
++      agentId: "00000000-0000-4000-8000-000000000002",
++      replayState: false,
++    });
++    try {
++      const request = {
++        agentId: record.id,
++        expectedUpdatedAt: record.updatedAt,
++        expectedAttentionTimestamp: record.attentionTimestamp ?? null,
++      };
++      expect(await manager.acknowledgeAgentAttention(request)).toBe("seen");
++      expect(await manager.acknowledgeAgentAttention(request)).toBe("already_seen");
++      const seen = {
++        ...record,
++        requiresAttention: false,
++        attentionReason: null,
++        attentionTimestamp: null,
++      };
++      expect(await storage.get(record.id)).toEqual(seen);
++      expect(exact).toEqual([{ type: "stored_agent_state", record: seen }]);
++      expect(other).toEqual([]);
++      expect(manager.getRegisteredProviderIds()).toEqual([]);
++      expect(manager.getAgent(record.id)).toBeNull();
++    } finally {
++      unsubscribeExact();
++      unsubscribeOther();
++    }
++  },
++);
++
++test("stored permission needs and internal records remain unread without an acknowledgement event", async () => {
++  const { record, storage, manager } = await createStoredError({ attentionReason: "permission" });
++  const events: AgentManagerEvent[] = [];
++  const unsubscribe = manager.subscribe((event) => events.push(event), { includeInternal: true });
++  try {
++    const request = {
++      agentId: record.id,
++      expectedUpdatedAt: record.updatedAt,
++      expectedAttentionTimestamp: record.attentionTimestamp ?? null,
++    };
++    expect(await manager.acknowledgeAgentAttention(request)).toBe("needs_input");
++    expect(await storage.get(record.id)).toEqual(record);
++    await storage.upsert({ ...record, attentionReason: "error", internal: true });
++    expect(await manager.acknowledgeAgentAttention(request)).toBe("missing");
++    expect((await storage.get(record.id))?.requiresAttention).toBe(true);
++    expect(events).toEqual([]);
++    expect(manager.getAgent(record.id)).toBeNull();
++  } finally {
++    unsubscribe();
++  }
++});
+diff --git a/packages/server/src/server/agent/agent-prompt.ts b/packages/server/src/server/agent/agent-prompt.ts
+--- a/packages/server/src/server/agent/agent-prompt.ts
++++ b/packages/server/src/server/agent/agent-prompt.ts
+@@ -643,7 +643,7 @@
+         return;
+       }
+ 
+-      if (event.type === "timeline_replacement") {
++      if (event.type === "timeline_replacement" || event.type === "stored_agent_state") {
+         return;
+       }
+ 
+diff --git a/packages/server/src/server/session/agent-updates/agent-updates-service.ts b/packages/server/src/server/session/agent-updates/agent-updates-service.ts
+--- a/packages/server/src/server/session/agent-updates/agent-updates-service.ts
++++ b/packages/server/src/server/session/agent-updates/agent-updates-service.ts
+@@ -41,6 +41,7 @@
+   hasSubscription(): boolean;
+   includesLiveAgent(agent: ManagedAgent, subscriptionIds?: ReadonlySet<string>): Promise<boolean>;
+   forwardLiveAgent(agent: ManagedAgent): Promise<void>;
++  forwardStoredAgent(record: StoredAgentRecord): Promise<void>;
+   emitStoredRecord(record: StoredAgentRecord): Promise<AgentSnapshotPayload>;
+   removeAgent(agentId: string): Promise<void>;
+   dispose(): void;
+@@ -337,6 +338,11 @@
+     return enqueueAgentUpdate(payload.id, () => emitLiveAgentUpdate(payload));
+   }
+ 
++  function forwardStoredAgent(record: StoredAgentRecord): Promise<void> {
++    const payload = deps.buildStoredAgentPayload(record);
++    return enqueueAgentUpdate(record.id, () => emitLiveAgentUpdate(payload));
++  }
++
+   function removeAgent(agentId: string): Promise<void> {
+     return enqueueAgentUpdate(agentId, () => {
+       for (const sub of subscriptions.values()) {
+@@ -356,6 +362,7 @@
+     hasSubscription,
+     includesLiveAgent,
+     forwardLiveAgent,
++    forwardStoredAgent,
+     emitStoredRecord,
+     removeAgent,
+     dispose,
