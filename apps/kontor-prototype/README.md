@@ -106,6 +106,7 @@ All reference scenario IDs remain available. Each uses fictional data only.
 | `provenance` | Search: provenance |
 | `empty-results` | Empty results |
 | `clear-restore` | Clear restores the tree |
+| `long-list` | Long list: 436 sessions for scroll, live updates and reconnects |
 | `board-tasks` | Board: task sessions |
 | `team-declared` | Board: declared teams (simulated) |
 | `team-unordered` | Board: team without order (simulated) |

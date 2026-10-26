@@ -148,6 +148,21 @@ export function scrollSessions(): FixtureSession[] {
   return [...baseSessions(), ...extra];
 }
 
+const LONG_WORDS = ["sessions", "navigator", "scroll", "anchor", "archive", "recovery", "projection", "composer", "reconnect", "receipt", "evidence", "review", "filters", "workspace"];
+/** A long day of work: 412 more sessions whose titles run from one word to three lines, under nine epics. */
+export function longSessions(): FixtureSession[] {
+  const extra: FixtureSession[] = [];
+  for (let index = 0; index < 412; index += 1) {
+    const epic = `ASMA-${99120 + (index % 9)}`;
+    const role = ["swe", "qa", "aud", "tpm", "lsa"][index % 5]!;
+    const words = Array.from({ length: (index * 7) % 15 }, (_, word) => LONG_WORDS[(index + word * 5) % LONG_WORDS.length]).join(" ");
+    extra.push(session({ id: `agt_long_${index}`, title: `${role.toUpperCase()} • ${epic} ${words || "check"} ${index + 1}`, ws: index % 4 ? null : WORKSPACES[index % 7]!.id,
+      status: index % 13 === 0 ? "running" : index % 29 === 0 ? "closed" : "idle", attention: index % 31 === 0 ? "finished" : undefined, minutes: 20 + index * 3,
+      labels: { workstream: ["Kontor", "Platform", "Mobile"][index % 3]!, epic, role } }));
+  }
+  return [...baseSessions(), ...extra];
+}
+
 /**
  * The Roles review inventory: the default one plus role variants. Case and spacing
  * variants share a header, a numbered slot keeps its own, and two sessions whose

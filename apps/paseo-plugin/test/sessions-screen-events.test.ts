@@ -2246,7 +2246,12 @@ describe("SessionsScreen mobile filter page", () => {
       expect(ids).not.toContain(absent);
     }
     expect(ids).toEqual(expect.arrayContaining(["sessions-search", "sessions-heading", "sessions-shortcut-0", "sessions-filter-idle"]));
-    expect(findByTestID(harness.current(), "sessions-list").props.onLayout).toBeUndefined();
+    // A wide list reads its viewport for the reader's place; its layout changes nothing else.
+    const before = testIDs(screen());
+    (findByTestID(harness.current(), "sessions-list").props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 900, height: 500 } } });
+    harness.flush();
+    expect(testIDs(screen())).toEqual(before);
+    expect(fullToolbarShown()).toBe(true);
     expect(findByTestID(harness.current(), "sessions-list").props.keyboardShouldPersistTaps).toBeUndefined();
     // The full toolbar stays above the list, outside its scroll content.
     const root = harness.current() as ElementLike;

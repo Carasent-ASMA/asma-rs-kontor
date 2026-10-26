@@ -1,7 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../../../paseo-plugin/shared/organization";
 import { DEFAULT_KEYBOARD_SETTINGS, keyboardSettingsSchema, type KeyboardSettings } from "../../../paseo-plugin/shared/keyboard";
-import { baseSessions, deskSessions, DESK_PROJECTS, DESK_WORKSPACES, roleSessions, scrollSessions, timeSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
+import { baseSessions, deskSessions, DESK_PROJECTS, DESK_WORKSPACES, longSessions, roleSessions, scrollSessions, timeSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
 import { modelUsageSessions } from "../fixtures/model-usage";
 import { lifecycleSessions } from "../fixtures/lifecycle";
 import { recoverySessions } from "../fixtures/recovery";
@@ -40,7 +40,7 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions, recovery: recoverySessions }[scenario.inventory];
+const inventory = { none: () => [], large: scrollSessions, long: longSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions, recovery: recoverySessions }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };

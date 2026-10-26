@@ -33,10 +33,12 @@ import {
   Settings,
   Text,
   View,
+  type CellRendererProps,
   type FlatList as NativeFlatList,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ViewStyle,
 } from "react-native";
 import { openRecoveredSession, openSessionById } from "./session-actions";
 import { type DirectoryEntry, type DirectoryState } from "./session-directory";
@@ -141,6 +143,263 @@ type ThemeColors = PluginTheme["colors"];
 type ListRow = OrganizationRow | { readonly kind: "result"; readonly entry: DirectoryEntry };
 function listRowKey(row: ListRow): string {
   return row.kind === "result" ? `result:${row.entry.id}` : rowKey(row);
+}
+
+/** A row's height before any row has been measured at the list's width. */
+const ESTIMATED_ROW_HEIGHT = 96;
+/** A reader this close to an end of the list is at that end. */
+const LIST_EDGE = 1;
+/** Scroll events this close together are one gesture; the list holds no place for the reader during it. */
+const SCROLL_SETTLE_MS = 150;
+
+const isSession = (row: ListRow): row is Extract<ListRow, { readonly entry: DirectoryEntry }> => row.kind === "result" || row.kind === "session";
+
+/** Where the reader is: at the top, at the end, or at a row whose top is this far down. */
+type ListPlace = { readonly at: "top" } | { readonly at: "end" } | { readonly at: "row"; readonly key: string; readonly top: number };
+
+/**
+ * The list's row layout from heights measured per row, not per index, and the reader's place in it. Left to
+ * itself the list keeps measured heights by index, so a live re-sort turns every unrendered row it shifts into
+ * an estimate and moves the rows in view. A row not yet measured at the current width counts as the average of
+ * those that are. Each place change says how far the offset moves to keep the reader where they were: at the
+ * top, at the end, or at the same distance from the exact first visible session while it remains in this view.
+ */
+export function createRowLayout(resizedCallback: (by?: number, fromOffset?: number) => void = () => {}) {
+  const measured = new Map<string, { readonly height: number; readonly width: number }>();
+  const mounted = new Map<string, View>();
+  const cellRefs = new Map<string, (node: View | null) => void>();
+  let readCapture: (() => void) | null = null;
+  let applyCapture: (() => void) | null = null;
+  let captureVersion = 0, capturePending = false;
+  let renderedRows: readonly ListRow[] | null = null;
+  let following: { readonly rows: readonly ListRow[]; readonly withHeader: boolean } | null = null;
+  const cellRef = (key: string) => {
+    let ref = cellRefs.get(key);
+    if (!ref) { ref = (node) => { if (node) { mounted.set(key, node); readCapture?.(); } else mounted.delete(key); }; cellRefs.set(key, ref); }
+    return ref;
+  };
+  let width = 0, header = 0, version = 0;
+  type Table = { readonly rows: readonly ListRow[]; readonly version: number; readonly keys: readonly string[]; readonly index: ReadonlyMap<string, number>;
+    readonly lengths: readonly number[]; readonly offsets: readonly number[]; readonly length: number };
+  let built: Table | null = null;
+  let place: ListPlace = { at: "top" };
+  const measure = (key: string, layout: { readonly width: number; readonly height: number; readonly y: number }) => {
+    const entry = measured.get(key);
+    const resized = entry?.width !== layout.width || Math.abs(entry.height - layout.height) >= 0.5;
+    if (!resized) return;
+    measured.set(key, { height: layout.height, width: layout.width });
+    width = layout.width;
+    if (resized) version += 1;
+    resizedCallback();
+  };
+  const build = (rows: readonly ListRow[]): Table => {
+    if (built?.rows === rows && built.version === version) return built;
+    let total = 0, count = 0;
+    for (const entry of measured.values()) if (entry.width === width) { total += entry.height; count += 1; }
+    const estimate = count ? total / count : ESTIMATED_ROW_HEIGHT;
+    const keys = rows.map(listRowKey);
+    const lengths = keys.map((key) => { const entry = measured.get(key); return entry?.width === width ? entry.height : estimate; });
+    const offsets: number[] = [];
+    const length = lengths.reduce((offset, size) => { offsets.push(offset); return offset + size; }, 0);
+    return (built = { rows, version, keys, index: new Map(keys.map((key, index) => [key, index])), lengths, offsets, length });
+  };
+  const head = (withHeader: boolean) => withHeader ? header : 0;
+  /** The first row in view at this content offset: more of it shows than an edge. */
+  const firstShown = (table: Table, withHeader: boolean, offset: number) => {
+    let low = 0, high = table.keys.length;
+    while (low < high) { const middle = (low + high) >> 1; if (head(withHeader) + table.offsets[middle]! + table.lengths[middle]! <= offset + LIST_EDGE) low = middle + 1; else high = middle; }
+    return low;
+  };
+  /** The first session in view at this offset that this keeps, if one shows. */
+  const sessionAt = (rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, keeps = (_row: ListRow, _key: string) => true): ListPlace | null => {
+    const table = build(rows);
+    for (let index = firstShown(table, withHeader, offset); index < rows.length && head(withHeader) + table.offsets[index]! < offset + viewport; index += 1) {
+      if (isSession(rows[index]!) && keeps(rows[index]!, table.keys[index]!)) return { at: "row", key: table.keys[index]!, top: head(withHeader) + table.offsets[index]! };
+    }
+    return null;
+  };
+  const placeAt = (rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number): ListPlace => {
+    const table = build(rows);
+    const first = firstShown(table, withHeader, offset);
+    // At both ends of a list too short to scroll, the top wins; an empty list has only its top. In between, the
+    // first session in view holds the place; a group heading only when no session shows. The rows say where the
+    // end is too: the list reports a new content height after the screen has already placed its offset in it.
+    return offset <= LIST_EDGE || !table.keys.length ? { at: "top" }
+      : offset >= Math.max(content, head(withHeader) + table.length) - viewport - LIST_EDGE || first >= table.keys.length ? { at: "end" }
+      : sessionAt(rows, withHeader, offset, viewport) ?? { at: "row", key: table.keys[first]!, top: head(withHeader) + table.offsets[first]! };
+  };
+  const followPlace = (previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, was: ListPlace,
+    geometry?: { readonly table: Table; readonly header: number }): number => {
+    const before = geometry?.table ?? build(previous), after = build(next);
+    const beforeHead = geometry?.header ?? head(withHeader);
+    if (was.at !== "row") {
+      place = was;
+      return was.at === "top" ? 0 : after.length - before.length;
+    }
+    // Reordering does not release an exact native ID. Only a row leaving this view permits fallback.
+    if (after.index.has(was.key)) {
+      const index = after.index.get(was.key)!;
+      const top = before.index.get(was.key) === index
+        ? was.top + head(withHeader) - beforeHead + after.offsets[index]! - before.offsets[index]!
+        : head(withHeader) + after.offsets[index]!;
+      place = { ...was, top };
+      return top - was.top;
+    }
+    const visible: number[] = [];
+    for (let index = firstShown(before, withHeader, offset + head(withHeader) - beforeHead); index < before.keys.length && beforeHead + before.offsets[index]! < offset + viewport; index += 1) {
+      if (after.index.has(before.keys[index]!)) visible.push(index);
+    }
+    const index = visible.find((index) => isSession(previous[index]!)) ?? visible[0];
+    if (index === undefined) {
+      place = placeAt(next, withHeader, offset, viewport, content);
+      return 0;
+    }
+    const key = before.keys[index]!;
+    const top = head(withHeader) + after.offsets[after.index.get(key)!]!;
+    const by = top - (beforeHead + before.offsets[index]!);
+    // Only a missing anchor permits a new first visible session, including one its removal reveals.
+    place = sessionAt(next, withHeader, offset + by, viewport) ?? { at: "row", key, top };
+    return by;
+  };
+  const layout = {
+    // Stop reissuing an old capture against post-update cells before the parent's layout effect runs.
+    renderRows(rows: readonly ListRow[]) { renderedRows = rows; },
+    /** Cells measure themselves: with getItemLayout the list measures none. */
+    Cell({ cellKey: _cellKey, index: _index, item, children, ...props }: CellRendererProps<ListRow>) {
+      const key = listRowKey(item);
+      return <View {...props} ref={cellRef(key)} collapsable={false} onLayout={(event) => { measure(key, event.nativeEvent.layout); props.onLayout?.(event); }}>{children}</View>;
+    },
+    onHeaderLayout(event: LayoutChangeEvent) {
+      if (Math.abs(event.nativeEvent.layout.height - header) < 0.5) return;
+      header = event.nativeEvent.layout.height;
+      resizedCallback();
+    },
+    layout(rows: readonly ListRow[], index: number, withHeader: boolean) {
+      const { lengths, offsets } = build(rows);
+      return { length: lengths[index]!, offset: head(withHeader) + offsets[index]!, index };
+    },
+    /** Back must restore an exact row, not a pixel estimate over rows never measured. */
+    bookmark(rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number) {
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+      return { place, offset };
+    },
+    restore(saved: { readonly place: ListPlace; readonly offset: number }, rows: readonly ListRow[], withHeader: boolean, viewport: number) {
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+      const table = build(rows), content = head(withHeader) + table.length;
+      const previous = saved.place;
+      let target = saved.offset;
+      if (previous.at === "top") target = 0;
+      else if (previous.at === "end") target = content - viewport;
+      else if (table.index.has(previous.key)) {
+        const top = head(withHeader) + table.offsets[table.index.get(previous.key)!]!;
+        target += top - previous.top;
+        place = { ...previous, top };
+      }
+      target = Math.max(0, Math.min(Math.max(0, content - viewport), target));
+      if (previous.at !== "row" || !table.index.has(previous.key)) place = placeAt(rows, withHeader, target, viewport, content);
+      return target;
+    },
+    /** Notes where the reader is. */
+    capture(rows: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number) {
+      place = placeAt(rows, withHeader, offset, viewport, content);
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+      if (place.at !== "row") return;
+      const table = build(rows);
+      // A virtualized window can mount after the scroll event. Read its current public View geometry,
+      // including late cells; onLayout size events do not report every spacer/reorder movement.
+      const read = () => {
+        if (following || (renderedRows !== null && renderedRows !== rows)) return;
+        const version = ++captureVersion;
+        const geometry = { table: build(rows), header: head(withHeader) };
+        const cells = [...mounted].filter(([key, node]) => table.index.has(key) && typeof node.measure === "function");
+        let first: { readonly key: string; readonly top: number } | null = null;
+        let remaining = cells.length;
+        capturePending = remaining > 0;
+        applyCapture = remaining ? () => {
+          if (!first) return;
+          // Layout can change without a row update. Apply its delta from the request's baseline too.
+          const by = followPlace(rows, following?.rows ?? rows, following?.withHeader ?? withHeader, offset, viewport, content, { at: "row", ...first }, geometry);
+          if (following || Math.abs(by) >= 0.5) resizedCallback(by, offset);
+        } : null;
+        for (const [key, node] of cells) node.measure((_x, y, _width, height) => {
+          if (readCapture !== read || captureVersion !== version) return;
+          const row = rows[table.index.get(key)!]!;
+          if (isSession(row) && y + height > offset + LIST_EDGE && y < offset + viewport && (!first || y < first.top)) {
+            first = { key, top: y };
+            // Detached offscreen cells may never reply. Visible evidence need not wait for them;
+            // an earlier visible reply can still refine this same request until reader intent replaces it.
+            capturePending = false;
+            place = { at: "row", ...first };
+            applyCapture?.();
+          }
+          if (--remaining === 0) {
+            capturePending = false;
+            applyCapture = null;
+            if (following) readCapture = null;
+            following = null;
+          }
+        });
+      };
+      readCapture = read;
+      read();
+    },
+    /**
+     * Keep the exact first visible session through reorders and resizes. Only a missing session passes its place
+     * to a surviving visible session; with none, keep the bounded offset.
+     */
+    follow(previous: readonly ListRow[], next: readonly ListRow[], withHeader: boolean, offset: number, viewport: number, content: number, current = false): number {
+      if (current && applyCapture !== null) {
+        following = { rows: next, withHeader };
+        applyCapture();
+        return 0; // Retain this request's geometry, including any earlier visible reply still queued.
+      }
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+      return followPlace(previous, next, withHeader, offset, viewport, content, current ? place : placeAt(previous, withHeader, offset, viewport, content));
+    },
+    /**
+     * How far the offset moves to keep the reader's place after a row or the header changed height. Not the end's:
+     * a row the list already shows can be measured after the reader reached the end, so the end is the list's own.
+     */
+    restate(rows: readonly ListRow[], withHeader: boolean): number {
+      if (capturePending) return 0;
+      if (place.at !== "row") return 0;
+      const table = build(rows);
+      if (!table.index.has(place.key)) return 0;
+      const index = table.index.get(place.key)!;
+      const node = mounted.get(place.key);
+      if (typeof node?.measure === "function") {
+        const held = place;
+        node.measure((_x, y) => {
+          if (place !== held || !Number.isFinite(y)) return;
+          const by = y - held.top;
+          if (Math.abs(by) < 0.5) return;
+          place = { ...held, top: y };
+          resizedCallback(by);
+        });
+        return 0;
+      }
+      const now = head(withHeader) + table.offsets[index]!;
+      const by = now - place.top;
+      place = { ...place, top: now };
+      return by;
+    },
+    atEnd() {
+      return place.at === "end";
+    },
+  };
+  return layout;
 }
 
 // Working as is remembered in this device's store where the runtime offers one, before the first read; otherwise for this app session.
@@ -574,6 +833,12 @@ export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeo
 
 /** The page's document on web; native has none, and keeps its own focus rules. */
 const pageDocument = () => (globalThis as { document?: { activeElement?: unknown; body?: unknown } }).document;
+
+/**
+ * Web only: the browser's scroll anchoring keeps the first visible row in place, so a live update that
+ * re-sorts that row to the top carries the list back to the start. Native gets no anchoring prop either.
+ */
+const NO_SCROLL_ANCHOR: ViewStyle & { readonly overflowAnchor: "none" } = { overflowAnchor: "none" };
 
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
@@ -1575,6 +1840,24 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const scrollOffsetRef = useRef(readSessionView(viewScope).scrollOffset);
   const lastScrollOffsetRef = useRef(scrollOffsetRef.current);
   const maxScrollOffsetRef = useRef(0);
+  const viewportHeightRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  // A finger on the list, its momentum or a scroll a moment ago: the reader is scrolling and owns the offset.
+  const draggingRef = useRef(false);
+  const userScrollAtRef = useRef(0);
+  /** The offset the last scroll event reported. */
+  const eventOffsetRef = useRef(scrollOffsetRef.current);
+  const scrolling = (at = Date.now()) => draggingRef.current || at - userScrollAtRef.current < SCROLL_SETTLE_MS;
+  const withHeaderRef = useRef(false);
+  const resizedRef = useRef<(by?: number, fromOffset?: number) => void>(() => {});
+  /** The offset the reader's place was last read at; the screen's own placements move the offset away from it. */
+  const placedAtRef = useRef(scrollOffsetRef.current);
+  // Native/web scroll events can arrive after several own placements; the older ones are not reader input.
+  const ownScrollsRef = useRef<readonly { readonly offset: number; readonly at: number }[]>([]);
+  /** How far the browser pulled a held row place back to the end of a list that got shorter; the next hold returns it. */
+  const clampedByRef = useRef(0);
+  const [rowLayout] = useState(() => createRowLayout((by, fromOffset) => resizedRef.current(by, fromOffset)));
+  const resultsPlaceRef = useRef<{ readonly saved: ReturnType<typeof rowLayout.bookmark>; readonly returning: boolean } | null>(null);
   const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
   /** Lowest offset since the compact toolbar opened; see compactToolbarScroll. */
   const compactAnchorRef = useRef(scrollOffsetRef.current);
@@ -1653,9 +1936,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       return;
     }
     previousOrderRef.current = order;
-    // A live reorder can adjust the list offset. Do not read that as a
-    // deliberate scroll and toggle the toolbar. Ordinary status updates that
-    // keep the order do not suppress scrolling.
+    // A live reorder that shortens the list can clamp its offset. Do not read
+    // that as a deliberate scroll and toggle the toolbar. Ordinary status
+    // updates that keep the order do not suppress scrolling.
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     programmaticUntilRef.current = Math.max(
       programmaticUntilRef.current,
@@ -1938,8 +2221,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [pinFilterInteraction, updateView, viewScope]);
 
   const handleScrollBeginDrag = useCallback(() => {
+    ownScrollsRef.current = [];
+    draggingRef.current = true;
     filterPinnedUntilRef.current = 0;
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
+  }, []);
+  // A finger on the list or its momentum: the browser reports neither drag nor momentum, but it does report touches.
+  const handleReaderBegin = useCallback(() => { ownScrollsRef.current = []; draggingRef.current = true; }, []);
+  const handleScrollSettle = useCallback(() => {
+    draggingRef.current = false;
+    userScrollAtRef.current = Date.now();
   }, []);
 
   const handleListLayout = useCallback((event: LayoutChangeEvent) => {
@@ -1963,6 +2254,28 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       const visibleOffset = outOfRange
         ? Math.min(maxOffset, Math.max(0, offset))
         : offset;
+      // An offset the screen did not ask for is the reader's scroll; a held place lands on the one it asked for. Nor
+      // is the reader's the browser pulling an offset past the end of a list that got shorter back to its end.
+      const clamped = Math.abs(visibleOffset - maxOffset) < 1 && Math.max(scrollOffsetRef.current, eventOffsetRef.current) > maxOffset + 1;
+      const now = Date.now();
+      ownScrollsRef.current = ownScrollsRef.current.filter((event) => now - event.at < SCROLL_SETTLE_MS * 2);
+      const own = !draggingRef.current && ownScrollsRef.current.some((event) => Math.abs(event.offset - visibleOffset) < 1);
+      if (!own && !clamped && Math.abs(visibleOffset - scrollOffsetRef.current) >= 1) {
+        userScrollAtRef.current = now;
+        ownScrollsRef.current = [];
+      }
+      if (clamped) clampedByRef.current += Math.max(0, scrollOffsetRef.current - visibleOffset);
+      eventOffsetRef.current = visibleOffset;
+      viewportHeightRef.current = layoutMeasurement.height;
+      contentHeightRef.current = contentSize.height;
+      // The screen's own landing keeps the place it held, and so does the browser pulling it back to the end of a
+      // list that got shorter: rows shrink before their measurements arrive, and these restate the place. Any other
+      // offset, or one the screen placed itself, is read again.
+      if ((!own && !clamped && Math.abs(visibleOffset - scrollOffsetRef.current) >= 1) || placedAtRef.current !== scrollOffsetRef.current) {
+        rowLayout.capture(rowsRef.current, withHeaderRef.current, visibleOffset, layoutMeasurement.height, contentSize.height);
+        clampedByRef.current = 0;
+      }
+      placedAtRef.current = visibleOffset;
       scrollOffsetRef.current = visibleOffset;
       writeScrollOffset(viewScope, visibleOffset);
       if (listModeRef.current === "tree" && Date.now() >= anchorFrozenUntilRef.current) {
@@ -2033,7 +2346,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         setToolbarVisibility(next);
       }
     },
-    [arranging, compact, compactToolbarHeight, layout.platform, viewScope, setToolbarVisibility],
+    [arranging, compact, compactToolbarHeight, layout.platform, viewScope, setToolbarVisibility, rowLayout],
   );
 
   const mappings = planMappings ?? preferences.displayMappings;
@@ -2185,21 +2498,85 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     [resultMode, peek, arrangeEnabled, flatTree, results, contextTree, filtered, treeExpanded]);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  rowLayout.renderRows(rows);
   const provenance = useMemo(() => new Map(results.map((entry) => [entry.id, sessionProvenance(entry, mappings)])), [results, mappings]);
   const rowSignature = useMemo(() => rows.map(listRowKey).join("\n"), [rows]);
+  /** When this render began: a long one holds back the scroll events of a reader still scrolling. */
+  const renderedAt = Date.now();
+  /** Scrolls by this much to keep the reader's place; the scroll it causes is not the reader's. */
+  const holdPlace = (by: number) => {
+    if (Math.abs(by) >= 0.5) {
+      const target = Math.max(0, scrollOffsetRef.current + by);
+      scrollOffsetRef.current = target;
+      lastScrollOffsetRef.current = target;
+      if (compact) compactAnchorRef.current = target;
+      writeScrollOffset(viewScope, target);
+      ownScrollsRef.current = [...ownScrollsRef.current.filter((event) => Date.now() - event.at < SCROLL_SETTLE_MS * 2), { offset: target, at: Date.now() }].slice(-16);
+      listRef.current?.scrollToOffset({ offset: target, animated: false });
+    }
+    placedAtRef.current = scrollOffsetRef.current;
+  };
+  /** The part of a held row place the browser's pull to the end took: given back with the next hold. */
+  const owed = () => {
+    const by = rowLayout.atEnd() ? 0 : clampedByRef.current;
+    clampedByRef.current = 0;
+    return by;
+  };
+  // A row, the header, the content or the viewport changed height under the reader: a reader at the end goes to the
+  // end the list reports. While they scroll, the place follows them instead.
+  resizedRef.current = (measuredBy, fromOffset) => {
+    if (scrolling()) {
+      rowLayout.capture(rowsRef.current, withHeaderRef.current, scrollOffsetRef.current, viewportHeightRef.current, contentHeightRef.current);
+      return;
+    }
+    if (measuredBy !== undefined) {
+      if (fromOffset === undefined) holdPlace(measuredBy + owed());
+      else {
+        clampedByRef.current = 0;
+        holdPlace(fromOffset + measuredBy - scrollOffsetRef.current);
+      }
+      return;
+    }
+    // Since the place was read, the screen placed the list itself (a mode, scope, Back or toolbar): read it there.
+    if (placedAtRef.current !== scrollOffsetRef.current) {
+      rowLayout.capture(rowsRef.current, withHeaderRef.current, scrollOffsetRef.current, viewportHeightRef.current, contentHeightRef.current);
+      placedAtRef.current = scrollOffsetRef.current;
+      clampedByRef.current = 0;
+      return;
+    }
+    const by = rowLayout.atEnd() ? contentHeightRef.current - viewportHeightRef.current - scrollOffsetRef.current : rowLayout.restate(rowsRef.current, withHeaderRef.current);
+    if (!scrolling()) holdPlace(by + owed());
+  };
   const previousRowSignatureRef = useRef(rowSignature);
+  const previousRowsRef = useRef(rows);
+  const renderedRef = useRef({ entries: state.entries, view });
   useLayoutEffect(() => {
     if (previousRowSignatureRef.current === rowSignature) {
       return;
     }
     previousRowSignatureRef.current = rowSignature;
-    // Rows inserted above the viewport move the native offset
-    // (maintainVisibleContentPosition). That is not a gesture: the next
-    // compact sample re-anchors instead of closing the toolbar.
+    const previous = previousRowsRef.current;
+    previousRowsRef.current = rows;
+    // New rows move the content under the offset, and a shorter list clamps
+    // it. That is not a gesture: the next compact sample re-anchors instead
+    // of closing the toolbar.
     if (compact) {
       compactAnchorRef.current = Number.NaN;
     }
+    // A streamed change keeps the reader's place. Their own choices place the list themselves, and a scroll
+    // in progress keeps its course.
+    const offset = scrollOffsetRef.current;
+    if (state.entries !== renderedRef.current.entries && view === renderedRef.current.view && !scrolling(renderedAt)) {
+      const by = rowLayout.follow(previous, rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current, placedAtRef.current === offset);
+      holdPlace(by + owed());
+      if (!rowLayout.atEnd()) resizedRef.current();
+    } else {
+      rowLayout.capture(rows, withHeaderRef.current, offset, viewportHeightRef.current, contentHeightRef.current);
+      placedAtRef.current = offset;
+      clampedByRef.current = 0;
+    }
   }, [compact, rowSignature]);
+  useLayoutEffect(() => { renderedRef.current = { entries: state.entries, view }; });
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
   const bulkScopeIds = useMemo(() => shown.filter((entry) => entry.archivedAt === null).map((entry) => entry.id), [shown]);
   const bulkSelection = useArchiveSelection(host.id, bulkScopeIds);
@@ -2337,6 +2714,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     programmaticUntilRef.current = Date.now() + 300;
     const timer = setTimeout(() => {
+      // A scroll event since may have moved the known offset; the place is read again where this lands.
+      scrollOffsetRef.current = offset;
+      placedAtRef.current = Number.NaN;
       listRef.current?.scrollToOffset({ offset, animated: false });
     }, 0);
     return () => clearTimeout(timer);
@@ -2378,12 +2758,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     setPeekToggles({});
     focusAfterModeRef.current = () => (peekBackRef.current as unknown as { focus?: () => void } | null)?.focus?.();
     const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
+    resultsPlaceRef.current = { saved: rowLayout.bookmark(rowsRef.current, withHeaderRef.current, scrollOffsetRef.current, viewportHeightRef.current, contentHeightRef.current), returning: false };
     updateView({ peek: { sessionId: entry.id, resultsOffset: Math.max(0, scrollOffsetRef.current - head) }, scrollOffset: 0 });
   }, [compact, compactToolbarHeight, updateView]);
   const handleBackToResults = useCallback(() => {
     const current = readSessionView(viewScope).peek;
     if (!current) return;
-    focusAfterModeRef.current = () => (treeButtonsRef.current.get(current.sessionId) as unknown as { focus?: () => void } | undefined)?.focus?.();
+    focusAfterModeRef.current = () => {
+      const node = treeButtonsRef.current.get(current.sessionId);
+      if (pageDocument()) (node as unknown as { focus?: (options: { preventScroll: boolean }) => void } | undefined)?.focus?.({ preventScroll: true });
+      else node?.focus?.();
+    };
+    if (resultsPlaceRef.current) resultsPlaceRef.current = { ...resultsPlaceRef.current, returning: true };
     updateView({ peek: null, scrollOffset: current.resultsOffset });
   }, [updateView, viewScope]);
 
@@ -2399,15 +2785,24 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     placementRef.current += 1;
     const stored = readSessionView(viewScope).scrollOffset;
     const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
-    const offset = listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
+    const saved = listMode === "results" && resultsPlaceRef.current?.returning ? resultsPlaceRef.current.saved : null;
+    if (resultsPlaceRef.current?.returning) resultsPlaceRef.current = null;
+    const offset = saved ? rowLayout.restore(saved, rowsRef.current, withHeaderRef.current, viewportHeightRef.current)
+      : listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
     const sessionId = peek?.sessionId ?? null;
     // Each pass finds the session's row again: a collapse or a live update can move or remove it first.
     const place = () => {
       const index = sessionId === null ? -1 : rowsRef.current.findIndex((row) => row.kind === "session" && row.entry.id === sessionId);
-      if (index >= 0) listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false });
-      return index >= 0;
+      if (index < 0) return false;
+      // Where the row lands, so a row measured meanwhile holds this place rather than the one left.
+      const row = rowLayout.layout(rowsRef.current, index, withHeaderRef.current);
+      scrollOffsetRef.current = Math.max(0, row.offset - 0.3 * (viewportHeightRef.current - row.length));
+      placedAtRef.current = Number.NaN;
+      listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false });
+      return true;
     };
     scrollOffsetRef.current = offset;
+    if (saved) placedAtRef.current = offset;
     lastScrollOffsetRef.current = offset;
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     compactAnchorRef.current = Number.NaN;
@@ -2417,7 +2812,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const focus = focusAfterModeRef.current;
     focusAfterModeRef.current = null;
     const timer = setTimeout(() => {
-      if (!place()) listRef.current?.scrollToOffset({ offset, animated: false });
+      if (!place()) {
+        const target = saved ? scrollOffsetRef.current : offset;
+        scrollOffsetRef.current = target;
+        placedAtRef.current = saved ? target : Number.NaN;
+        listRef.current?.scrollToOffset({ offset: target, animated: false });
+      }
       focus?.();
     }, 0);
     // The first pass places the session by estimated row heights, which leave out a list header
@@ -3129,7 +3529,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Only a workspace list failure stays below the list; the routine read note is in Filters.
   const workspaceFooter = state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null
     : <Text testID="sessions-footer" style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}>{workspaceNote}.</Text>;
-  const listHeader = <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : peek ? null : <>{workLine}{providerNotice}</>}</>;
+  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
+  withHeaderRef.current = listHeader !== null;
 
   return (
     <View
@@ -3163,6 +3564,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         tabIndex={pageDocument() ? -1 : undefined}
         data={rows}
         keyExtractor={listRowKey}
+        getItemLayout={(data, index) => rowLayout.layout(data as readonly ListRow[], index, listHeader !== null)}
+        CellRendererComponent={rowLayout.Cell}
         extraData={extraData}
         onScrollToIndexFailed={({ index, averageItemLength }) => {
           // Rows past the rendered window have no measured offset yet: land near it, then on it. The retry
@@ -3178,15 +3581,31 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         }}
         initialNumToRender={24}
         windowSize={11}
-        onLayout={compact ? handleListLayout : undefined}
+        onLayout={(event) => {
+          viewportHeightRef.current = event.nativeEvent.layout.height;
+          resizedRef.current();
+          if (compact) handleListLayout(event);
+        }}
         onScroll={handleListScroll}
         onScrollBeginDrag={handleScrollBeginDrag}
+        onScrollEndDrag={handleScrollSettle}
+        onMomentumScrollBegin={handleReaderBegin}
+        onMomentumScrollEnd={handleScrollSettle}
+        onTouchStart={handleReaderBegin}
+        onTouchEnd={handleScrollSettle}
+        onTouchCancel={handleScrollSettle}
+        onContentSizeChange={(_width, height) => {
+          contentHeightRef.current = height;
+          resizedRef.current();
+        }}
         // Session taps remain usable while the compact search keyboard is open.
         keyboardShouldPersistTaps={compact ? "handled" : undefined}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        // No platform anchoring: it follows the first visible row, so a live re-sort of that row jumps the list.
+        // The screen keeps the reader's place itself; see createRowLayout.
+        style={pageDocument() ? NO_SCROLL_ANCHOR : undefined}
         scrollEventThrottle={16}
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
-        ListHeaderComponent={listHeader}
+        ListHeaderComponent={listHeader === null ? null : <View onLayout={rowLayout.onHeaderLayout}>{listHeader}</View>}
         renderItem={({ item }) => {
           const details = item.kind === "result" || item.kind === "session"
             ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
