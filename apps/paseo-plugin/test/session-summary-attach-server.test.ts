@@ -8,7 +8,8 @@ import { UNSUPPORTED } from "../shared/session-navigator";
 import {
   DRAFT_PLACEMENT_API_GAP,
   DRAFT_READ_API_GAP,
-  MALFORMED_HOST_DRAFT_READ,
+  MALFORMED_HOST_DRAFT_READ_POST,
+  MALFORMED_HOST_DRAFT_READ_PRE,
   createSummaryAttachService,
   draftAttachInstalledCapability,
   parseHostSummaryDraftRead,
@@ -167,11 +168,37 @@ describe("summary attach with qualified SDK", () => {
       .toMatchObject({ state: "refused", message: expect.stringMatching(/no saved summary/i) });
   });
 
-  it("refuses a running or initializing destination", async () => {
-    const { service, revision, placed } = await harness({ status: "running", title: "Busy seat" });
+  it.each([
+    ["running", { status: "running" as const, title: "Busy seat" }, /running/i],
+    ["initializing", { status: "initializing" as const, title: "Boot seat" }, /initializing/i],
+    ["active turn", { activeTurn: { turnId: "turn-1", startedAt: "2026-10-25T10:00:00Z" }, title: "Turn seat" }, /active turn/i],
+  ] as const)("refuses a %s destination before placement with no host place", async (_label, patch, pattern) => {
+    const { service, revision, placed, attachRoot } = await harness(patch);
     const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
-    expect(await service.attach(pin)).toMatchObject({ state: "refused", message: expect.stringMatching(/running/i) });
+    expect(await service.attach(pin)).toMatchObject({ state: "refused", message: expect.stringMatching(pattern) });
     expect(placed).toHaveLength(0);
+    expect((await readDestinationAttachState(attachRoot, DEST.id)).intents).toEqual({});
+  });
+
+  it("refuses an archived destination on the first in-lock read with no intent or place", async () => {
+    const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
+    const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);
+    const archived = agent(DEST.id, { archivedAt: "2026-10-20T09:00:00Z", title: "Archived billing" });
+    const revision = await seedSummary(summaryRoot, SOURCE, "Pre-place archived");
+    const placed: unknown[] = [];
+    const paseo = {
+      agents: {
+        ref: () => ({ refresh: async () => ({ agent: archived, project: null }) }),
+        generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
+        placeSummaryDraft: async (...args: unknown[]) => { placed.push(args); },
+        readSummaryDraft: async () => null,
+      },
+    };
+    const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
+    const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
+    expect(await service.attach(pin)).toMatchObject({ state: "refused", message: expect.stringMatching(/archived/) });
+    expect(placed).toHaveLength(0);
+    expect((await readDestinationAttachState(attachRoot, DEST.id)).intents).toEqual({});
   });
 
   it("returns the same drafted outcome on duplicate attach without a second host place", async () => {
@@ -274,10 +301,73 @@ describe("summary attach with qualified SDK", () => {
       const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
       const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
       const outcome = await service.attach(pin);
-      expect(outcome).toMatchObject({ state: "unknown", message: expect.stringContaining(MALFORMED_HOST_DRAFT_READ) });
+      expect(outcome).toMatchObject({ state: "unknown", message: expect.stringContaining(MALFORMED_HOST_DRAFT_READ_PRE) });
       expect(placed).toHaveLength(0);
     },
   );
+
+  it.each([undefined, "", false])(
+    "returns unknown after one place when post-place readSummaryDraft returns %j, retains intent, and does not place again",
+    async (badRead) => {
+      const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
+      const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);
+      const revision = await seedSummary(summaryRoot, SOURCE, "Post-place malformed body");
+      let readCalls = 0;
+      let placeCalls = 0;
+      const paseo = {
+        agents: {
+          ref: () => ({ refresh: async () => ({ agent: DEST, project: null }) }),
+          generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
+          placeSummaryDraft: async () => { placeCalls++; },
+          readSummaryDraft: async () => { readCalls++; return readCalls <= 2 ? null : (badRead as never); },
+        },
+      };
+      const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
+      const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
+      const first = await service.attach(pin);
+      expect(first).toMatchObject({ state: "unknown", message: expect.stringContaining(MALFORMED_HOST_DRAFT_READ_POST) });
+      expect(first.message).not.toMatch(/Nothing was placed/i);
+      expect(placeCalls).toBe(1);
+      const state = await readDestinationAttachState(attachRoot, DEST.id);
+      expect(state.intents[`${pin.summaryId}:${pin.revision}:${DEST.id}`]).toBeDefined();
+      expect(await service.attach(pin)).toMatchObject({ state: "unknown", message: expect.stringMatching(/attach intent is recorded/i) });
+      expect(placeCalls).toBe(1);
+    },
+  );
+
+  it("refuses without placement when a different draft appears on the pre-place occupancy re-read", async () => {
+    const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
+    const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);
+    const revision = await seedSummary(summaryRoot, SOURCE, "Occupancy race body");
+    let readCalls = 0;
+    let placeCalls = 0;
+    let refreshCalls = 0;
+    const other = { summaryId: "00000000-0000-4000-8000-000000000099", revision: 2 };
+    const paseo = {
+      agents: {
+        ref: () => ({
+          refresh: async () => {
+            refreshCalls++;
+            return { agent: DEST, project: null };
+          },
+        }),
+        generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
+        placeSummaryDraft: async () => { placeCalls++; },
+        readSummaryDraft: async () => {
+          readCalls++;
+          return readCalls === 1 ? null : other;
+        },
+      },
+    };
+    const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
+    const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
+    const outcome = await service.attach(pin);
+    expect(outcome).toMatchObject({ state: "refused", message: expect.stringMatching(/never replaces a draft/) });
+    expect(placeCalls).toBe(0);
+    expect(readCalls).toBeGreaterThanOrEqual(2);
+    expect(refreshCalls).toBeGreaterThanOrEqual(2);
+    expect((await readDestinationAttachState(attachRoot, DEST.id)).intents).toEqual({});
+  });
 
   it("does not overwrite an existing different draft when readSummaryDraft returns undefined", async () => {
     const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
