@@ -3,7 +3,7 @@ import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
 import { recordVisit } from "./recent-sessions";
-import type { StateShortcut } from "./session-state-shortcuts";
+import type { SwitchView } from "./session-state-shortcuts";
 
 export type SessionNavigation = NonNullable<PluginScreenProps["navigation"]>;
 
@@ -20,8 +20,7 @@ export type OpenSessionResult =
 export type HandOffTarget =
   | { readonly kind: "session"; readonly agentId: string }
   | { readonly kind: "created"; readonly outcome: CreateOutcome }
-  | ({ readonly kind: "state" } & StateShortcut)
-  | { readonly kind: "search"; readonly query: string };
+  | ({ readonly kind: "view" } & SwitchView);
 
 /**
  * The one request in flight from a popover to the Kontor screen. It lives in memory only and the screen URL
@@ -62,21 +61,16 @@ export function openHandOff(input: {
   readonly key: string | undefined;
   readonly entries: readonly DirectoryEntry[];
   readonly navigation: SessionNavigation | undefined;
-  readonly onSearch: (query: string) => void;
-  readonly onState?: (shortcut: StateShortcut) => void;
+  readonly onView?: (view: SwitchView) => void;
 }): OpenSessionResult | null {
   if (!input.key) return null;
   const target = takeHandOff(input.hostId, input.key);
   if (!target) {
     return { ok: false, reason: "stale", message: "This Kontor request was already handled or has expired. Nothing was opened; choose the session again." };
   }
-  if (target.kind === "search") {
-    input.onSearch(target.query);
-    return { ok: true };
-  }
-  if (target.kind === "state") {
-    if (!input.onState) return { ok: false, reason: "navigation", message: "This Kontor screen cannot open a session-state filter. Open Sessions and choose the filter again." };
-    try { input.onState(target); }
+  if (target.kind === "view") {
+    if (!input.onView) return { ok: false, reason: "navigation", message: "This Kontor screen cannot show the switcher's sessions. Open Sessions and choose the state and search again." };
+    try { input.onView({ status: target.status, query: target.query, membership: target.membership }); }
     catch (error) { return { ok: false, reason: "navigation", message: error instanceof Error ? error.message : String(error) }; }
     return { ok: true };
   }

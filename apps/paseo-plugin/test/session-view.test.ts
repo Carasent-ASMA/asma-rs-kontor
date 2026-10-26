@@ -174,7 +174,10 @@ describe("session search and filters", () => {
   it("labels native state and attention without interpreting completion", () => {
     expect(statusFilterLabel("all")).toBe("All");
     expect(statusFilterLabel("initializing")).toBe("Starting");
-    expect(statusFilterLabel("needs_input")).toBe("Needs input");
+    expect(statusFilterLabel("needs_input")).toBe("Questions");
+    expect(statusFilterLabel("recent")).toBe("Last visited");
+    expect(statusFilterLabel("activity")).toBe("Last activity");
+    expect(statusFilterLabel("error")).toBe("Errors");
     expect(statusFilterLabel("favorites")).toBe("★ Favorites");
     expect(attentionLabel(entries[0]!)).toBe("Needs input");
     expect(attentionLabel(entries[1]!)).toBeNull();

@@ -12,7 +12,6 @@ import {
 } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import {
-  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -90,7 +89,7 @@ import { SESSION_SHORTCUTS, SessionScopeChip } from "./session-scope-chip";
 export { SESSION_SHORTCUTS } from "./session-scope-chip";
 import { epicScopeChoice, epicScopeChoices, epicScopeKey, epicScopeLabel, matchesEpicScope } from "./session-scope";
 import type { ResponsibilityRead } from "../shared/responsibility";
-import { inWorkspace, labelledRole, matchesResultSearch, sessionAncestors, sessionProvenance, taskSessions, TASK_JIRA_LABELS, TASK_TICKET_LABEL, type SessionProvenance } from "./session-results";
+import { inWorkspace, matchesResultSearch, sessionAncestors, sessionProvenance, taskSessions, TASK_JIRA_LABELS, TASK_TICKET_LABEL, type SessionProvenance } from "./session-results";
 import {
   accumulateScrollDelta,
   EMPTY_SCROLL_ACCUMULATOR,
@@ -109,34 +108,41 @@ import type { useOrganizationSettings } from "./use-organization-settings";
 import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, epicDetail, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionEpic, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
-import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
-import { CompactRetirementNotice, SessionCompactContent, compactRetirementNotice, sessionRowDetails } from "./session-compact-content";
+import { SessionStatusIcon } from "./session-state-marker";
+import { CompactRetirementNotice, compactRetirementNotice, sessionRowDetails } from "./session-compact-content";
+import { cancelDelayedOpen, DenseSessionRow, type DenseRowMode } from "./dense-session-row";
+import { sessionWork, totalsDetail } from "./session-row-format";
+import { copySessionId, SessionActionsMenu, type SessionAction } from "./session-actions-menu";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, COARSE_POINTER, Disclosure, IconButton } from "./page-controls";
+import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { readTime } from "./page-data";
-import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
-import { sessionUsageLabel } from "./session-usage";
+import { sessionTimeLines, useClock, type TimeFreshness } from "./session-time";
 import { derivedWorkstreamNote, planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
 import { relateSplitProjects } from "./split-project-rows";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
 import { useControlHelp } from "./control-help";
-import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
+import { SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
 import { SessionDetailSection } from "./session-detail-section";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
-import { CompactSearch, MobileQuickToolbar } from "./mobile-quick-toolbar";
+import { CompactSearch, MobileQuickToolbar, StateRatio } from "./mobile-quick-toolbar";
 import { useRecent } from "./recent-sessions";
 import { RecentFooter, recentEmptyMessage } from "./recent-visits";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
 import { useSessionLifecycle, type SessionRetirementRead } from "./use-session-lifecycle";
-import { ArchiveSessionButton, SessionLifecycleDialog, SessionRetirementConflict, SessionRetirementDetails, SessionRetirementSummary, retirementDispositionLabel } from "./session-lifecycle-view";
-import { ArchiveRowFeedback, ArchiveSelectionCheckbox, ArchiveSelectionToggle, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
-import { ARCHIVE_BATCH_LIMIT } from "../shared/session-lifecycle";
+import { SessionRetirementConflict, SessionRetirementDetails, retirementDispositionLabel } from "./session-lifecycle-view";
+import { ArchiveRowFeedback, archiveFeedbackShown, BulkArchiveDialog, BulkArchiveToolbar, useArchiveSelection } from "./bulk-archive";
+import type { LeadSource } from "./new-lead-source";
+import { useSessionOperations } from "./session-operations";
+import { SelectionBar, SelectionHeader } from "./session-selection";
+import { useUsageTotals } from "./use-navigator";
+import { ARCHIVE_BATCH_LIMIT, freshAvailability, unresolvedArchive } from "../shared/session-lifecycle";
 import { archiveAckKey, archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
 import { ArchiveRecoverySheet } from "./archive-recovery";
 import { hideNotices, NoticeAction, NoticesButton, noticesHidden, NoticeTray, presentHidden, showNotices, type Notice } from "./notice-tray";
 import { useSessionAvailability } from "./use-session-availability";
+import { readableInk } from "./session-status-ink";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -465,6 +471,8 @@ export const OPTIONS_SPACE_SHARE = 0.7;
 export const OPTIONS_MIN_HEIGHT = 3 * FILTERS_TOUCH_TARGET;
 /** Wide screen padding above the toolbar and below the list. */
 const WIDE_SCREEN_PADDING = 16;
+/** What the toolbar's actions entry acts on: the sessions shown, never one row. */
+const TOOLBAR_SUBJECT = { id: "toolbar", title: "the sessions shown" };
 /** No list-wide refusal source is admitted yet (ASMA-8648: host list field or bounded native-error reads), so every
  *  native error shows as not checked. Replace with that source; never with status, attention, age or titles. */
 const NO_REFUSAL_READS: ProviderRefusalReads = new Map();
@@ -636,174 +644,15 @@ export function matchingCount({ count, state, includeArchived, freshness, blocke
   return { text: `${sessions} · ${freshness.toLocaleLowerCase()}`, label: `${sessions} matched the read at ${updatedLabel(state.lastUpdatedAt)}; ${freshness}` };
 }
 
-type SessionRowProps = {
-  readonly entry: DirectoryEntry;
-  readonly colors: ThemeColors;
-  readonly compact: boolean;
-  readonly onPress: (entry: DirectoryEntry) => void;
-  readonly onLongPress?: (entry: DirectoryEntry) => void;
-  readonly selectionMode?: boolean;
-  readonly lifecycleFeedback?: ReactNode;
-  readonly retirementFeedback?: ReactNode;
-  readonly retirementLabel?: string;
-  readonly displayTitle?: string;
-  /** Placement context, shown only where the tree does not already say it (Role and Flat). */
-  readonly displayContext?: string;
-  /** A shorter context that compact shows with the age on the line under the title, so it stays in view without squeezing the title (Role). */
-  readonly compactContext?: string;
-  /** Spoken in place of displayContext. */
-  readonly accessibilityContext?: string;
-  /** The result a user asked to see in the tree. */
-  readonly highlighted?: boolean;
-  /** The list is reading live: only then does the row give its Updated time as an age. */
-  readonly live?: boolean;
-};
-
-/** A row's Updated time, kept whole while the title beside it truncates. */
-function rowAge(time: RowTime, compact: boolean, colors: ThemeColors) {
-  return (
-    <Text testID="sessions-row-age" numberOfLines={1} style={{ flexShrink: 0, color: colors.foregroundMuted, fontSize: compact ? 12 : 11 }}>
-      {compact ? time.compact : time.wide}
-    </Text>
-  );
-}
-
-export const SessionRow = memo(function SessionRow({
-  entry,
-  colors,
-  compact,
-  onPress,
-  onLongPress,
-  selectionMode = false,
-  lifecycleFeedback,
-  retirementFeedback,
-  retirementLabel,
-  displayTitle,
-  displayContext,
-  compactContext,
-  accessibilityContext,
-  highlighted = false,
-  live = false,
-}: SessionRowProps) {
-  const state = sessionState(entry);
-  const stateHint = useControlHelp(STATE_LABELS[state]);
-  const time = useUpdatedTime(entry.updatedAt, live);
-  const age = time ? rowAge(time, compact, colors) : null;
-  const attention = attentionLabel(entry);
-  const archived = archivedLabel(entry);
-  const history = earlierErrorLabel(entry);
-  const context = entry.workspaceName ?? entry.projectName ?? entry.cwd;
-  const project =
-    entry.projectName && entry.projectName !== entry.workspaceName
-      ? entry.projectName
-      : null;
-  const detail = displayContext ?? (project ? `${context} · ${project}` : context);
-  const accessibilityLabel = [
-    entry.title,
-    `Native ID ${entry.id}`,
-    `Native status ${entry.status}`,
-    entry.needsInput
-      ? "Needs input"
-      : attention
-        ? `Needs attention: ${attention}`
-        : null,
-    time?.spoken ?? null,
-    archived,
-    history,
-    accessibilityContext ?? detail,
-    sessionUsageLabel(entry),
-    retirementLabel ?? null,
-    highlighted ? "Shown from search results" : null,
-  ]
-    .filter((part): part is string => part !== null && part.length > 0)
-    .join(". ");
-  const meta = [displayContext, archived, history, sessionAvailabilityLabel(entry)].filter((part): part is string => !!part).join(" · ");
-  const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
-  const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
-
-  return (
-    <Pressable
-      ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
-      onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
-      testID={`sessions-row-${entry.id}`}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
-      onPress={() => { stateHint.dismiss(); onPress(entry); }}
-      onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
-      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
-        minHeight: compact || COARSE_POINTER ? 44 : 40,
-        paddingLeft: 8,
-        paddingRight: 4,
-        paddingVertical: compact ? 4 : 5,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: compact ? 8 : 10,
-        borderRadius: 5,
-        borderLeftWidth: highlighted ? 3 : 0,
-        borderLeftColor: colors.accent,
-        backgroundColor: pressed || hovered || highlighted ? colors.surface2 : undefined,
-      })}
-    >
-      {compact ? <SessionCompactContent entry={entry} colors={colors} title={displayTitle} context={compactContext ?? displayContext ?? entry.workspaceName ?? entry.projectName ?? undefined} time={time}>
-        {lifecycleFeedback}
-        {retirementFeedback}
-      </SessionCompactContent> : (
-        <>
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Text
-                numberOfLines={1}
-                style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 18 }}
-              >
-                {displayTitle ?? entry.title}
-              </Text>
-              {age}
-            </View>
-            {meta ? (
-              <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 1 }}>
-                {meta}
-              </Text>
-            ) : null}
-            {lifecycleFeedback}
-            {retirementFeedback}
-          </View>
-          <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
-          <View style={{ alignItems: "flex-end", gap: 2 }}>
-            <SessionStateMarker state={state} colors={colors} />
-            {runtime ? (
-              <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>
-                {runtimeLabel}
-              </Text>
-            ) : null}
-          </View>
-        </>
-      )}
-    </Pressable>
-  );
-});
-
-function capitalized(value: string): string {
-  return value.charAt(0).toLocaleUpperCase() + value.slice(1);
-}
-
 /**
- * Cues a result shows after its place: role, task and PR labels, and the native
- * runtime where the state badge reports something else, such as an error
- * reported earlier on a session that is idle now. The title is never parsed.
+ * The native runtime where the state badge reports something else, such as an error reported earlier on a session
+ * that is idle now. A row speaks it; Details keeps it.
  */
 export function resultCues(entry: DirectoryEntry): string[] {
   const state = sessionState(entry);
-  const task = [...TASK_JIRA_LABELS, TASK_TICKET_LABEL].map((key) => entry.labels[key]?.trim()).find((value) => !!value);
-  const pr = entry.labels.pr?.trim().replace(/^#/, "");
   const derived = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
-  return [
-    earlierErrorLabel(entry) ?? (derived ? `Now ${entry.status}` : null),
-    archivedLabel(entry),
-    labelledRole(entry),
-    task ?? null,
-    pr ? `PR ${pr}` : null,
-  ].filter((part): part is string => !!part);
+  const cue = earlierErrorLabel(entry) ?? (derived ? `Now ${entry.status}` : null);
+  return cue ? [cue] : [];
 }
 
 function spokenProvenance(provenance: SessionProvenance): string {
@@ -811,7 +660,25 @@ function spokenProvenance(provenance: SessionProvenance): string {
   return provenance.association ? `${place}. ${provenance.association}` : place;
 }
 
+/**
+ * What a Sessions row adds to the shared dense row, which already shows the title, state, origin with its task and
+ * PR, model and times. The note line is kept for exceptions to act on: role declarations that disagree, archive
+ * membership, and a native record found absent or already archived. Routine facts, such as the native runtime behind
+ * a derived state or unverified provider history, are spoken with the exact native ID and the whole place, and
+ * Details keeps every value.
+ */
+export function sessionRowExtras(entry: DirectoryEntry, place: string): { note: string | null; spoken: string } {
+  const evidence = entry.requiresAttention ? freshAvailability(entry) : null;
+  const availability = sessionAvailabilityLabel(entry), exception = evidence?.state === "missing" || !!evidence?.archivedAt;
+  const note = [...roleConflicts(entry), archivedLabel(entry), exception ? availability : null].filter((part): part is string => !!part);
+  const attention = entry.needsInput ? null : attentionLabel(entry);
+  return { note: note.length ? note.join(" · ") : null,
+    spoken: [`Native ID ${entry.id}`, `Native status ${entry.status}`, attention ? `Needs attention: ${attention}` : null, ...resultCues(entry), exception ? null : availability, place].filter(Boolean).join(". ") };
+}
+
 const ROLE_SOURCE_NAMES: Readonly<Record<RoleSource, string>> = { "kontor.role": "kontor.role label", role: "role label", title: "title" };
+/** Each role declaration that disagrees with the role the session is shown under, as "role label says TPM". */
+const roleConflicts = (entry: DirectoryEntry) => sessionRole(entry).conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`);
 
 /**
  * A Role view row: a source that names another role comes first as a cue, then where the session
@@ -819,7 +686,7 @@ const ROLE_SOURCE_NAMES: Readonly<Record<RoleSource, string>> = { "kontor.role":
  */
 export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]) {
   const role = sessionRole(entry);
-  const cues = role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`);
+  const cues = roleConflicts(entry);
   const provenance = sessionProvenance(entry, mappings);
   const scope = organizationScope(entry, mappings);
   const place = provenance.desk ? provenance.parts[0]! : scope.epic === UNASSIGNED_EPIC ? scope.workstream : scope.epic;
@@ -852,7 +719,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
   const provenance = sessionProvenance(entry, mappings);
   const lines = [
     { label: "Role", value: role.code === null ? "No role: no kontor.role or role label, and no role prefix in the title" : `${role.code}, from the ${ROLE_SOURCE_NAMES[role.source!]}` },
-    { label: "Other role declarations", value: role.conflicts.length ? role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`).join("; ") : "None" },
+    { label: "Other role declarations", value: roleConflicts(entry).join("; ") || "None" },
   ];
   if (provenance.nativeDesk) {
     const declared = declaredScope(entry, mappings);
@@ -907,111 +774,6 @@ export function SessionTimeLines({ entry, freshness, colors }: { readonly entry:
     </View>
   );
 }
-
-export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: SessionProvenance): string {
-  const role = labelledRole(entry);
-  const task = [...TASK_JIRA_LABELS, TASK_TICKET_LABEL].map((key) => entry.labels[key]?.trim()).find((value) => !!value);
-  const derived = resultCues(entry).find((cue) => cue.startsWith("Earlier error") || cue.startsWith("Now "));
-  return [
-    entry.title,
-    STATE_LABELS[sessionState(entry)],
-    derived ? `Native status ${entry.status}${derived.startsWith("Earlier") ? ", error reported earlier" : ""}` : null,
-    spokenProvenance(provenance),
-    role ? `Role label ${role}` : null,
-    task ? `Task label ${task}` : null,
-    entry.labels.pr?.trim() ? `PR label ${entry.labels.pr.trim()}` : null,
-    archivedLabel(entry),
-    `Native ID ${entry.id}`,
-    sessionUsageLabel(entry),
-  ].filter((part): part is string => !!part).join(". ");
-}
-
-type SessionResultRowProps = {
-  readonly lifecycleAction?: ReactNode;
-  readonly lifecycleFeedback?: ReactNode;
-  readonly retirementFeedback?: ReactNode;
-  readonly retirementLabel?: string;
-  readonly onLongPress?: (entry: DirectoryEntry) => void;
-  readonly selectionMode?: boolean;
-  readonly entry: DirectoryEntry;
-  readonly provenance: SessionProvenance;
-  readonly colors: ThemeColors;
-  readonly compact: boolean;
-  readonly onPress: (entry: DirectoryEntry) => void;
-  readonly onShowInTree: (entry: DirectoryEntry) => void;
-  readonly treeButtonRef: (id: string, node: View | null) => void;
-  /** The list is reading live: only then does the row give its Updated time as an age. */
-  readonly live: boolean;
-  /** The session's details button, beside the row's own button. */
-  readonly details?: ReactNode;
-};
-
-/** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onLongPress, selectionMode = false, onShowInTree, treeButtonRef, live, details, lifecycleAction, lifecycleFeedback, retirementFeedback, retirementLabel }: SessionResultRowProps) {
-  const cues = resultCues(entry);
-  const coarse = compact || COARSE_POINTER;
-  const state = sessionState(entry);
-  const stateHint = useControlHelp(STATE_LABELS[state]);
-  const time = useUpdatedTime(entry.updatedAt, live);
-  return (
-    <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-      <Pressable
-        ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
-        onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
-        testID={`sessions-row-${entry.id}`}
-        accessibilityRole="button"
-        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), retirementLabel, time?.spoken].filter(Boolean).join(". ")}
-        accessibilityHint={selectionMode ? "Toggles archive selection" : "Opens the existing Paseo session; long press to select for archive"}
-        onPress={() => { stateHint.dismiss(); onPress(entry); }}
-        onLongPress={onLongPress ? () => { stateHint.dismiss(); onLongPress(entry); } : undefined}
-        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
-          flex: 1,
-          minWidth: 0,
-          minHeight: coarse ? 52 : 40,
-          paddingHorizontal: 8,
-          paddingVertical: coarse ? 6 : 4,
-          justifyContent: "center",
-          gap: 2,
-          borderRadius: 5,
-          backgroundColor: pressed || hovered ? colors.surface2 : undefined,
-        })}
-      >
-        {compact ? <SessionCompactContent entry={entry} colors={colors} context={provenance.parts.join(" › ")} time={time}>
-          {lifecycleFeedback}
-          {retirementFeedback}
-        </SessionCompactContent> : <>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text testID="sessions-row-title" numberOfLines={compact ? 3 : 1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
-            {entry.title}
-          </Text>
-          {/* Compact gives the title this line to itself and up to three lines, so titles that share a role and task still show where they differ; the state and the age lead the usage line below. */}
-          {time && !compact ? rowAge(time, compact, colors) : null}
-          {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
-          {compact ? null : <SessionStateMarker state={state} colors={colors} />}
-        </View>
-        <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
-          {provenance.parts.join(" › ")}
-          {provenance.association ? ` · ${provenance.association}` : ""}
-          {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
-        </Text>
-        {sessionAvailabilityLabel(entry) ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{sessionAvailabilityLabel(entry)}</Text> : null}
-        {lifecycleFeedback}
-        {retirementFeedback}
-        {compact ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
-          <SessionStateMarker state={state} colors={colors} />
-          {time ? rowAge(time, compact, colors) : null}
-          <SessionUsage entry={entry} colors={colors} />
-        </View> : null}
-        </>}
-      </Pressable>
-      {details}
-      {compact ? <IconButton ref={(node) => treeButtonRef(entry.id, node)} colors={colors} label={`Show ${entry.title} in the tree`} icon="ListTree" onPress={() => onShowInTree(entry)} />
-        : <Action ref={(node) => treeButtonRef(entry.id, node)} small colors={colors} label="Show in tree"
-          accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />}
-      {lifecycleAction}
-    </View>
-  );
-});
 
 export function FiltersButton({
   activeCount,
@@ -1150,7 +912,7 @@ export function ClearFiltersButton({
     >
       <Text
         style={{
-          color: colors.accent,
+          color: readableInk(colors.accent, colors, 4.5),
           fontSize: compact ? 13 : 12,
           fontWeight: "600",
         }}
@@ -1257,7 +1019,7 @@ export function SlimToolbar({
   onHide,
 }: {
   readonly action?: ReactNode;
-  /** The status button a hidden notice tray leaves beside Resume. */
+  /** The status button a hidden notice tray leaves in the toolbar. */
   readonly notice?: ReactNode;
   readonly hostLabel: string;
   readonly activeCount: number;
@@ -1480,11 +1242,11 @@ export function FilterChip({
       <Text style={{ flexShrink: checkbox ? 1 : undefined, color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
         {label}
       </Text>
-      {count !== undefined ? (
+      {count === undefined ? null : typeof count !== "number" && count.denominator !== undefined ? <StateRatio count={count} colors={colors} /> : (
         <Text style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, fontVariant: ["tabular-nums"] }}>
           {typeof count === "number" ? count : count.text}
         </Text>
-      ) : null}
+      )}
     </Pressable>
   );
 }
@@ -1637,7 +1399,7 @@ function TextAction({ testID, label, accessibilityLabel, colors, compact, onPres
 }) {
   return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} onPress={onPress}
     style={{ minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 28, minWidth: FILTERS_TOUCH_TARGET, maxWidth: "100%", flexShrink: 1, justifyContent: "center", paddingHorizontal: 6 }}>
-    <Text style={{ color: colors.accent, fontSize: compact ? 13 : 12, fontWeight: "600" }}>{label}</Text>
+    <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: compact ? 13 : 12, fontWeight: "600" }}>{label}</Text>
   </Pressable>;
 }
 
@@ -1686,7 +1448,7 @@ function Banner({
           onPress={onAction}
           style={{ alignSelf: "flex-start", paddingVertical: 4 }}
         >
-          <Text style={{ color: colors.accent, fontSize: 12, fontWeight: "600" }}>
+          <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 12, fontWeight: "600" }}>
             {actionLabel}
           </Text>
         </Pressable>
@@ -1697,6 +1459,8 @@ function Banner({
 
 type SessionsScreenProps = PluginScreenProps & {
   directory?: ReturnType<typeof useSessionDirectory>;
+  /** Opens New lead with a source and its saved revision pinned; absent where this screen has no New lead. */
+  onNewLead?: (source: LeadSource) => void;
   organization?: ReturnType<typeof useOrganizationSettings>;
   projectId?: string | null;
   onIncludeArchived?: (include: boolean) => void;
@@ -1722,7 +1486,7 @@ type SessionsScreenProps = PluginScreenProps & {
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null, retirement }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null, retirement, onNewLead }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
@@ -1760,13 +1524,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   liveDirectory.current = rawState.status === "ready" && rawState.live && rawState.inventoryComplete === true;
   const availability = useSessionAvailability(host.id, rawState.entries, hostOnline && rawState.status === "ready" && view.status === "attention");
   const state = useMemo(() => ({ ...rawState, entries: availability.entries.filter((entry) => matchesMembership(entry, view.membership)) }), [rawState, availability.entries, view.membership]);
-  const lifecycleHelp = useControlHelp("");
   const lifecycleChanged = (rows: Parameters<Parameters<typeof useSessionLifecycle>[1]>[0]) => {
-    // A fresh absence/archive can remove the row before the review measures its trigger.
-    // Keep the cover dialog anchored to a mounted control and return focus there.
-    if (rows.some((row) => row.availability?.state === "missing" || row.availability?.archivedAt)) {
-      lifecycleAnchor.current = recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current;
-    }
     // The settled rows' own dispositions hide or update them at once; only a directory without a complete live
     // stream needs the full walk, which would otherwise rebuild every row for one session's change.
     availability.reconcile(rows); if (!liveDirectory.current) refresh();
@@ -1775,7 +1533,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Archives whose fence is still held stay checkable after their rows leave, a later review and a reload.
   const recovery = useArchiveRecovery(host.id, lifecycle, lifecycleChanged);
   const [archivingId, setArchivingId] = useState<string | null>(null);
-  const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   // The notice's Review archive in whichever tray shows it; closing the sheet returns focus there.
@@ -1783,15 +1540,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const bulkToggleRef = useRef<View | null>(null);
   const bulkReviewRef = useRef<View | null>(null);
   const bulkReturnFocusRef = useRef(false);
-  const lifecycleAnchor = useRef<View | null>(null);
-  const recoveryButton = useRef<View | null>(null);
-  const slimRecoveryButton = useRef<View | null>(null);
-  // The status button a hidden notice tray leaves beside Resume, and each tray's Hide, so focus moves between them.
+  // The status button a hidden notice tray leaves, and each tray's Hide, so focus moves between them.
   const noticesButton = useRef<View | null>(null);
   const noticesHide = useRef<View | null>(null);
   const slimNoticesHide = useRef<View | null>(null);
-  const archiveButtons = useRef(new Map<string, View>());
-  useEffect(() => { setLifecycleOpen(false); setBulkOpen(false); setRecoveryOpen(false); }, [host.id]);
+  useEffect(() => { setBulkOpen(false); setRecoveryOpen(false); }, [host.id]);
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
   const shortcut = view.shortcut ?? null;
   const { layout: sessionLayout, grouping } = sessionPresentation(view, preferences);
@@ -2084,7 +1837,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     return () => animation.stop();
   }, [toolbarCollapsed, toolbarOpacity]);
 
+  // Every filter, search, sort and layout intent passes here first, so a row's waiting state-icon open is dropped before
+  // the list changes under it, whether or not that row stays listed.
   const pinFilterInteraction = useCallback(() => {
+    cancelDelayedOpen();
     filterPinnedUntilRef.current = Date.now() + 1_500;
   }, []);
 
@@ -2357,6 +2113,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const favorites = preferences.favorites;
   const recent = useRecent(host.id);
+  const rowClock = useClock();
+  const opened = useMemo(() => new Map(recent.record.visits.map((visit) => [visit.id, visit.at])), [recent.record]);
   const recentIds = useMemo(() => recent.record.visits.map((visit) => visit.id), [recent.record]);
   const scoped = useMemo(
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
@@ -2580,6 +2338,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
   const bulkScopeIds = useMemo(() => shown.filter((entry) => entry.archivedAt === null).map((entry) => entry.id), [shown]);
   const bulkSelection = useArchiveSelection(host.id, bulkScopeIds);
+  const ops = useSessionOperations({ hostId: host.id, online: hostOnline, colors, compact, entries: availability.entries, opened,
+    newLead: onNewLead ? (source, revision) => onNewLead({ entry: source, summary: revision }) : "New lead is not offered on this screen; start it from the session switcher.",
+    onTakeoverStart: () => bulkSelection.clear() });
+  const rowTotals = useUsageTotals(ops.totals, shown.map((entry) => entry.id));
+  const selectedSeats = bulkSelection.selected.flatMap((id) => availability.entries.filter((entry) => entry.id === id));
+  const allSelected = bulkScopeIds.length > 0 && bulkScopeIds.every((id) => bulkSelection.selected.includes(id));
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
   const resultWorkspaces = new Set(shown.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
   const unplaced = shown.filter((entry) => !inWorkspace(entry)).length;
@@ -2841,7 +2605,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const noticeProps = compact ? {} : focusProps;
   const settingsUnavailable = organization !== undefined && organization.state.status !== "ready";
   const settingsAlert = saveMessage ?? organization?.state.saveError ?? null;
-  // One lifecycle action at a time: every Resume, the X and Refresh status wait while another runs.
+  // One lifecycle action at a time: the X, bulk Archive and Refresh status wait while another runs.
   const lifecycleIdle = !lifecycle.busy && !lifecycle.running && !recovery.checking;
   const canStart = hostOnline && lifecycleIdle && state.status === "ready";
   useLayoutEffect(() => {
@@ -2968,8 +2732,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     >
       {compact ? null : noticeTray(fullNotices, noticesHide, "sessions-top-notices", focusProps.disabled)}
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-        {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
-          onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
         {!toolbar.showSlimRow ? noticesTrigger(fullNotices, noticesHide) : null}
         {view.status === "attention" ? <>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{availability.checking ? "Checking exact session IDs…" : "Attention includes unread results. Native record checks do not verify provider history."}</Text>
@@ -3027,7 +2789,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onPress={() => updateFilter({ query: "" })}
             style={{ minHeight: compact || COARSE_POINTER ? 44 : 32, justifyContent: "center", paddingHorizontal: 6 }}
           >
-            <Text style={{ color: colors.accent, fontSize: 12, fontWeight: "600" }}>
+            <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 12, fontWeight: "600" }}>
               Clear
             </Text>
           </Pressable>
@@ -3196,7 +2958,65 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     detailsWhereRef.current = detailsWhere;
     setDetailsId(id);
   };
+  // One archive from the row menu: no sheet and no focus move; the toast and the row's own line report it, and Review
+  // archive on the recovery line opens what stays unresolved.
+  const archiveOne = (entry: DirectoryEntry) => {
+    if (!canStart) return;
+    lifecycle.clear();
+    setArchivingId(entry.id);
+    void lifecycle.prepare("archive", "filtered", [entry.id]).then((result) => {
+      setArchivingId(null);
+      const changed = entriesRef.current.some((current) => current.id === entry.id && current.updatedAt !== entry.updatedAt && current.archivedAt === null);
+      if (changed && result && typeof result !== "string" && (result.outcome === "archived" || result.outcome === "already_archived" || result.outcome === "absent")) toast.show("The session changed while archiving. Showing its current native state.");
+      else notifyArchive(toast, result);
+    });
+  };
+  // Flat results and tree sessions share the dense row. Its menu holds favorites, the exact ID, Details, Show in tree
+  // (results only), Select sessions and Archive; while selecting, the row is its own checkbox.
+  const sessionListRow = (entry: DirectoryEntry, result: boolean) => {
+    const id = entry.id, active = entry.archivedAt === null, selected = bulkSelection.selected.includes(id), starred = favorites.includes(id);
+    const role = !result && grouping === "role" ? roleRowContext(entry, mappings) : null;
+    const projection = retirement?.projections.get(id) ?? null;
+    const retirementLabel = projection ? compact ? compactRetirementNotice(projection) : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : null;
+    const outcome = lifecycle.batch && lifecycle.review?.action === "archive" ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
+    const highlighted = !result && peek?.sessionId === id;
+    const extras = sessionRowExtras(entry, role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
+    const note = [extras.note, archivingId === id ? "Archiving…" : null].filter(Boolean).join(" · ") || null;
+    const blocked = !active ? "Archived sessions are not selected for archive." : !canStart ? "Selection waits for the host and any running archive." : bulkOpen ? "The archive review is open."
+      : !bulkScopeIds.includes(id) ? "Not among the shown sessions." : !selected && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT ? `At most ${ARCHIVE_BATCH_LIMIT} sessions per archive.` : null;
+    const actions: SessionAction[] = [
+      ...ops.actions(entry),
+      { key: "favorite", label: starred ? "Remove from favorites" : "Add to favorites", icon: "Star", unavailable: editsDisabled ? "Favorites are not writable right now." : null,
+        perform: () => savePreference({ favorites: starred ? favorites.filter((value) => value !== id) : [...favorites, id] }) },
+      { key: "copy-id", label: "Copy exact session ID", icon: "Copy", perform: () => copySessionId(entry, toast) },
+      { key: "details", label: "Details", icon: "Info", opens: true, perform: () => openDetails(id) },
+      ...(result ? [{ key: "show-in-tree", label: "Show in tree", icon: "ListTree", perform: () => handleShowInTree(entry) }] : []),
+      { key: "select", label: "Select sessions", icon: "SquareCheck", unavailable: blocked, perform: () => selectForArchive(entry) },
+      { key: "archive", label: "Archive", icon: "Archive", unavailable: !active ? "Already archived." : !canStart ? "Archive waits for the host and any running archive." : null, perform: () => archiveOne(entry) },
+    ];
+    const mode: DenseRowMode = bulkSelection.selecting ? { kind: "select", selected, unavailable: blocked, pending: lifecycle.running && lifecycle.batch?.currentId === id }
+      // Focus returns to the menu after Details closes and after Back from Show in tree.
+      : { kind: "open", actions: <SessionActionsMenu ref={(node) => { detailsButtonRef(id, node); treeButtonRef(id, node); }} entry={entry} colors={colors} actions={actions} /> };
+    const feedback = outcome ?? recovery.items.find((item) => item.ref.agentId === id)?.row ?? undefined;
+    const refreshable = !!outcome && (unresolvedArchive(outcome) || !!outcome.reconcileReviewId);
+    // The 2 points between sessions sit above each row, and the lines under it render only when they say something:
+    // an empty strip under a row would hold that session as the first in view while the reader sees the next one.
+    return <View testID={result ? `sessions-result-${id}` : undefined} style={{ paddingTop: 2, gap: 2 }}>
+      <DenseSessionRow testID={`sessions-row-${id}`} entry={entry} colors={colors} clock={rowClock} opened={opened.get(id) ?? null} highlighted={highlighted} totals={rowTotals.get(id) ?? null}
+        note={note} spokenDetail={[extras.spoken, retirementLabel, highlighted ? "Shown from search results" : null].filter(Boolean).join(". ")}
+        mode={mode} onPress={() => openOrSelect(entry)} onSelectStart={active ? () => selectForArchive(entry) : undefined} />
+      {archiveFeedbackShown(feedback) || refreshable || (projection && compactRetirementNotice(projection)) ? <View style={{ paddingLeft: 40, gap: 2 }}>
+        {/* A row still listed keeps its unresolved archive's state after the batch that sent it is gone. */}
+        <ArchiveRowFeedback row={feedback} colors={colors} />
+        {refreshable ? <Action small colors={colors} label="Refresh status" accessibilityLabel={`Refresh archive status: ${entry.title} (${id})`}
+          disabled={!canStart} onPress={() => { if (canStart) void lifecycle.reconcile(id); }} /> : null}
+        {/* Only a conflict or needed review adds a line, at every width; the full retirement read is in Details. */}
+        {projection ? <CompactRetirementNotice projection={projection} colors={colors} /> : null}
+      </View> : null}
+    </View>;
+  };
   const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : availability.entries.find((entry) => entry.id === detailsId) ?? null;
+  const detailsWork = detailsEntry ? sessionWork(detailsEntry) : { task: null, pr: null };
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
@@ -3228,11 +3048,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
         style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
         <SessionUsageLines entry={detailsEntry} colors={colors} stale={showBanner} />
+        <SessionDetailSection title="Session totals" values={[totalsDetail(rowTotals.get(detailsEntry.id))]} colors={colors} />
         <SessionDetailSection title="Timing" colors={colors}>
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
         <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]), derivedSource(detailsEntry))} colors={colors} />
         <SessionDetailSection title="Native status and availability" values={sessionRowDetails(detailsEntry)} colors={colors} />
+        {detailsWork.task || detailsWork.pr ? <SessionDetailSection title="Task and pull request" colors={colors} values={[
+          ...(detailsWork.task ? [{ label: "Task", value: detailsWork.task }] : []), ...(detailsWork.pr ? [{ label: "Pull request", value: detailsWork.pr }] : [])]} /> : null}
         {retirement?.projections.get(detailsEntry.id) ? <SessionRetirementDetails projection={retirement.projections.get(detailsEntry.id)!} colors={colors} /> : null}
         {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Assignment" colors={colors} values={[
           { label: assignment === "me" ? `Assigned to me, working as ${subjectLabel}` : assignment === "unknown" ? `Unknown assignment for ${subjectLabel}` : `Assigned to ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
@@ -3249,17 +3072,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const mobileToolbar = <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
     <View style={{ flex: 1, minWidth: 0 }}>
-    <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
+    {/* The toolbar sizes its whole tiles from the room this column gets beside Attention's Check IDs. */}
+    <MobileQuickToolbar key={viewScope} colors={colors}
     status={view.status} counts={statusCounts} activeCount={slimActiveCount}
     filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
     onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
-    onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
+    onChooser={() => { cancelDelayedOpen(); searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />
     </View>
-    <View style={{ width: 80, alignItems: "flex-end" }}>
-      <Action ref={slimRecoveryButton} colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
-        onPress={() => { if (!canStart) return; quickHelpDismissRef.current?.(); setQuickChooserScope(null); lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />
-      {view.status === "attention" ? <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} /> : null}
-    </View>
+    {view.status === "attention" ? <View style={{ width: 80, alignItems: "flex-end" }}>
+      <Action small colors={colors} label="Check IDs" accessibilityLabel="Check availability" disabled={!hostOnline || availability.checking} onPress={() => { availability.refresh(); refresh(); }} />
+    </View> : null}
   </View>;
   const quickChooserLayer = compact && !mobileFiltersOpen && quickChooserScope === viewScope ? <MobileQuickChooser
     root={rootRef} rootSize={rootSize} anchor={quickChooserRef} colors={colors} status={view.status} counts={statusCounts}
@@ -3293,8 +3115,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     >
       <SlimToolbar
-        action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Resume" accessibilityLabel="Resume sessions" disabled={!canStart}
-          onPress={() => { if (!canStart) return; lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
         notice={noticesTrigger(slimNotices, slimNoticesHide)}
         hostLabel={host.label}
         activeCount={slimActiveCount}
@@ -3367,7 +3187,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     return () => clearTimeout(timer);
   }, [compact]);
 
-  // Filters has no Resume, so a hidden tray leaves its button where the tray was.
+  // A hidden tray leaves its button where the tray was.
   const filtersNoticesTrigger = noticesTrigger(allNotices, noticesHide);
   if (mobileFiltersOpen) return (
     <View ref={rootRef} onLayout={handleRootLayout} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
@@ -3471,7 +3291,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         accessibilityState={{ disabled: activeCount === 0 }} aria-disabled={activeCount === 0} disabled={activeCount === 0}
         accessibilityHint="Clears all search and filter choices; keeps this context and view preferences" onPress={handleClearFilters}
         style={{ minHeight: FILTERS_TOUCH_TARGET, paddingHorizontal: 6, justifyContent: "center", opacity: activeCount === 0 ? 0.45 : 1 }}>
-        <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>Clear filters</Text>
+        <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 13, fontWeight: "600" }}>Clear filters</Text>
       </Pressable> : null}
     </View>
   );
@@ -3490,7 +3310,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     {appliedSummary ? <View style={{ flexGrow: compact ? 0 : 1 }}>{appliedSummary}</View> : null}
     <View testID="sessions-view-controls" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10, rowGap: 4 }}>
       {compact ? <CompactSearch key={viewScope} colors={colors} query={view.query} searchInputRef={searchInputRef} onQuery={(query) => updateFilter({ query })} /> : null}
-      {!includeArchived || lifecycle.batch ? <ArchiveSelectionToggle selection={bulkSelection} disabled={!canStart || bulkOpen || includeArchived} colors={colors} toggleRef={bulkToggleRef} /> : null}
+      {/* Where Resume stood: the row menu's actions entry for the sessions shown; selecting then shows board D1's header and bar. */}
+      {(!includeArchived || lifecycle.batch) && !bulkSelection.selecting ? <SessionActionsMenu ref={bulkToggleRef} entry={TOOLBAR_SUBJECT} colors={colors} actions={[{ key: "select", label: "Select sessions", icon: "SquareCheck",
+        unavailable: !canStart ? "Selection waits for the host and any running archive." : bulkOpen ? "The archive review is open." : includeArchived ? "Archived sessions are not selected for archive." : null,
+        perform: bulkSelection.start }]} /> : null}
       <SessionLayoutControl value={sessionLayout} colors={colors} onChange={chooseLayout}
         disabled={view.status === "recent" ? "Recent lists sessions in the order you opened them, in one list. Layout applies to the other filters and stays saved." : undefined} />
       {compact ? noticesTrigger(allNotices, noticesHide) : null}
@@ -3553,11 +3376,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {compact ? null : fullToolbarSlot}
       {peekBar}
       {shortScreen ? null : layoutBar}
-      {bulkSelection.selecting || lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} shownCount={bulkScopeIds.length} disabled={!canStart || bulkOpen || includeArchived}
-        lifecycle={lifecycle} colors={colors} reviewRef={bulkReviewRef} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} onReview={() => {
-          if (!canStart || !bulkSelection.selected.length) return;
-          lifecycle.clear(); setBulkOpen(true); void lifecycle.prepare("archive", "filtered", [...bulkSelection.selected], true);
-        }} /> : null}
+      {bulkSelection.selecting ? <SelectionHeader count={bulkSelection.selected.length} total={bulkScopeIds.length} hidden={bulkSelection.hidden} colors={colors} onDone={bulkSelection.clear}
+        selectAll={{ checked: allSelected, onPress: () => allSelected ? bulkSelection.remove(bulkScopeIds) : bulkSelection.selectAll(bulkScopeIds),
+          unavailable: allSelected ? null : !canStart || bulkOpen ? "Selection waits for the host and any running archive." : !bulkScopeIds.length ? "No session matches."
+            : !(rawState.status === "ready" && rawState.inventoryComplete === true) ? "The session list is not complete yet; select sessions one by one."
+            : new Set([...bulkSelection.selected, ...bulkScopeIds]).size > ARCHIVE_BATCH_LIMIT ? `More than ${ARCHIVE_BATCH_LIMIT} sessions: narrow the view, or select one by one.` : null }} /> : null}
+      {lifecycle.batch ? <BulkArchiveToolbar selection={bulkSelection} lifecycle={lifecycle} colors={colors} maxHeight={shortScreen ? 2 * FILTERS_TOUCH_TARGET : undefined} announce={!bulkOpen} /> : null}
       <FlatList
         ref={listRef}
         testID="sessions-list"
@@ -3607,60 +3431,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader === null ? null : <View onLayout={rowLayout.onHeaderLayout}>{listHeader}</View>}
         renderItem={({ item }) => {
-          const details = item.kind === "result" || item.kind === "session"
-            ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} /> : undefined;
-          const id = item.kind === "result" || item.kind === "session" ? item.entry.id : null;
-          const projection = id === null ? null : retirement?.projections.get(id) ?? null;
-          const retirementFeedback = projection ? compact ? <CompactRetirementNotice projection={projection} colors={colors} /> : <SessionRetirementSummary projection={projection} colors={colors} /> : null;
-          const retirementLabel = projection ? compact ? compactRetirementNotice(projection) ?? undefined : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : undefined;
-          const outcome = lifecycle.batch && lifecycle.review?.action === "archive" && id ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
-          // A row still listed keeps its unresolved archive's state after the batch that sent it is gone.
-          const lifecycleFeedback = <ArchiveRowFeedback row={outcome ?? recovery.items.find((entry) => entry.ref.agentId === id)?.row ?? undefined} colors={colors} />;
-          const lifecycleAction = (item.kind === "result" || item.kind === "session") && item.entry.archivedAt === null ? bulkSelection.selecting ? <ArchiveSelectionCheckbox session={item.entry} colors={colors}
-                checked={bulkSelection.selected.includes(item.entry.id)} pending={lifecycle.running && lifecycle.batch?.currentId === item.entry.id}
-                disabled={!canStart || bulkOpen || !bulkScopeIds.includes(item.entry.id) || (!bulkSelection.selected.includes(item.entry.id) && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT)}
-                outcome={outcome} onCheck={() => { if (canStart) void lifecycle.reconcile(item.entry.id); }} onPress={() => selectForArchive(item.entry)} /> : <ArchiveSessionButton session={item.entry} compact={compact} colors={colors} disabled={!canStart} pending={archivingId === item.entry.id}
-                buttonRef={(node) => { if (node) archiveButtons.current.set(item.entry.id, node); else archiveButtons.current.delete(item.entry.id); }}
-                // One X, one status line: no sheet and no focus move. Review archive on the recovery line opens what stays unresolved.
-                onPress={() => { if (!canStart) return; lifecycle.clear(); setArchivingId(item.entry.id); void lifecycle.prepare("archive", "filtered", [item.entry.id]).then((result) => {
-                  setArchivingId(null);
-                  const changed = entriesRef.current.some(entry => entry.id === item.entry.id && entry.updatedAt !== item.entry.updatedAt && entry.archivedAt === null);
-                  if (changed && result && typeof result !== "string" && (result.outcome === "archived" || result.outcome === "already_archived" || result.outcome === "absent")) toast.show("The session changed while archiving. Showing its current native state.");
-                  else notifyArchive(toast, result);
-                }); }} /> : null;
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={openOrSelect} onLongPress={selectForArchive} selectionMode={bulkSelection.selecting} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} lifecycleAction={lifecycleAction} lifecycleFeedback={lifecycleFeedback} retirementFeedback={retirementFeedback} retirementLabel={retirementLabel} />;
+          const row = item.kind === "result" || item.kind === "session" ? sessionListRow(item.entry, item.kind === "result") : null;
+          if (item.kind === "result") return row;
           const key = listRowKey(item);
-          if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
+          if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
           const plans = epic ? planSources?.[epic.toLocaleUpperCase()] ?? [] : [];
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
-          const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
+          // The row menu owns favorites, Details and Archive, so the tree adds only its indent, guides and arrange handle.
           return <OrganizationRowView row={item} colors={colors} compact={compact} contextual={peek !== null} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            details={details}
-            lifecycleAction={lifecycleAction}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
-            onMove={(distance) => moveRow(item, distance)} onFavorite={() => { if (item.kind === "session") savePreference({ favorites: favorites.includes(item.entry.id) ? favorites.filter((id) => id !== item.entry.id) : [...favorites, item.entry.id] }); }}>
-          {item.kind === "session" ? <SessionRow
-            entry={item.entry}
-            displayContext={role ? role.context
-              : sessionLayout === "flat" ? [provenance.get(item.entry.id)?.parts.join(" › "), provenance.get(item.entry.id)?.association].filter(Boolean).join(" · ") : undefined}
-            compactContext={role?.compact}
-            accessibilityContext={role?.spoken}
-            displayTitle={role ? role.title : item.parentKey.includes("/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
-            colors={colors}
-            compact={compact}
-            highlighted={peek?.sessionId === item.entry.id}
-            live={timesLive}
-            onPress={openOrSelect}
-            onLongPress={selectForArchive}
-            selectionMode={bulkSelection.selecting}
-            lifecycleFeedback={lifecycleFeedback}
-            retirementFeedback={retirementFeedback}
-            retirementLabel={retirementLabel}
-          /> : null}
+            onMove={(distance) => moveRow(item, distance)}>
+            {row}
           </OrganizationRowView>;
         }}
         ListEmptyComponent={
@@ -3685,7 +3470,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
                 onPress={handleClearFilters}
                 style={{ minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 32, justifyContent: "center", paddingHorizontal: 8 }}
               >
-                <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>
+                <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 13, fontWeight: "600" }}>
                   Clear filters
                 </Text>
               </Pressable>
@@ -3696,7 +3481,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
                 onPress={refresh}
                 style={{ paddingVertical: 6 }}
               >
-                <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>
+                <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 13, fontWeight: "600" }}>
                   Retry
                 </Text>
               </Pressable>
@@ -3705,16 +3490,26 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         }
         ListFooterComponent={recentFooter || workspaceFooter ? <>{recentFooter}{workspaceFooter}</> : null}
       />
+      {/* Board D1's sticky bar: the frozen selection's two actions; otherwise an unfinished takeover's way back to its results. */}
+      {bulkSelection.selecting ? null : ops.notice}
+      {bulkSelection.selecting ? <SelectionBar count={bulkSelection.selected.length} colors={colors} archiveRef={bulkReviewRef} disclosure={ops.takeover(selectedSeats).disclosure}
+        takeover={{ unavailable: ops.takeover(selectedSeats).unavailable, onPress: ops.takeover(selectedSeats).start }}
+        auto={{ unavailable: ops.takeover(selectedSeats).auto, onPress: ops.takeover(selectedSeats).choose }}
+        archive={{ unavailable: !canStart ? "Archive waits for the host and any running archive." : bulkOpen ? "The archive review is open." : includeArchived ? "Leave Archived to archive sessions." : null,
+          onPress: () => { if (!canStart || bulkOpen || !bulkSelection.selected.length) return; lifecycle.clear(); setBulkOpen(true); void lifecycle.prepare("archive", "filtered", [...bulkSelection.selected], true); } }} /> : null}
+      {ops.layer}
       {optionMenuLayer}
       {detailsLayer}
       {quickChooserLayer}
       {bulkOpen ? <BulkArchiveDialog lifecycle={lifecycle} root={rootRef} anchor={bulkReviewRef} rootSize={rootSize} colors={colors} compact={compact}
-        onClose={() => { bulkReturnFocusRef.current = true; setBulkOpen(false); }}
+        onClose={(archived) => {
+          // Archived sessions leave the frozen selection; a blocked one stays for the batch's follow-ups.
+          bulkSelection.remove(archived);
+          bulkReturnFocusRef.current = true; setBulkOpen(false);
+        }}
         onFinished={(summary) => toast.show(summary)} /> : null}
       {recoveryOpen ? <ArchiveRecoverySheet recovery={{ ...recovery, items: recovery.attention }} root={rootRef} rootSize={rootSize} colors={colors} compact={compact}
         canRefresh={hostOnline && lifecycleIdle} hostOnline={hostOnline} onOpen={openRecovered} onHide={hideRecovered} onClose={closeRecovery} /> : null}
-      {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
-        onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); lifecycleHelp.dismiss(); }} /> : null}
     </View>
   );
 }

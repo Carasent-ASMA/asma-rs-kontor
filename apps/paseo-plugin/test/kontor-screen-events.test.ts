@@ -61,7 +61,7 @@ vi.mock("../client/keyboard-shortcuts", async (original) => ({
 import { KontorScreen } from "../client/kontor-screen";
 import { DESTINATIONS, hostNavigation, navigate, NO_SCOPE, readRouteView, sessionScopeKey, type KontorRoute } from "../client/navigation-state";
 import { patchSessionView, readSessionView } from "../client/session-view-store";
-import { STATUS_SHORTCUTS, STATUS_SHORTCUT_SCOPE } from "../client/session-state-shortcuts";
+import type { SwitchView } from "../client/session-state-shortcuts";
 import { filterDirectoryEntries } from "../client/session-view";
 import type { BoardSessions } from "../client/board-sessions";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
@@ -77,7 +77,7 @@ import { ReadOnlyPage } from "../client/read-only-pages";
 import { TeamsSourcePage } from "../client/teams-source-page";
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { KeyboardSettingsCard } from "../client/keyboard-settings-card";
-import { StartSwitchSheet, switchRows } from "../client/start-switch-sheet";
+import { StartSwitchSheet, switchList } from "../client/start-switch-sheet";
 import { handOffOpen, takeHandOff, withdrawHandOff } from "../client/session-actions";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
@@ -831,6 +831,10 @@ it("finds a graphless plan by its explicit workstream and shows exact Plan conte
 });
 
 describe("Start or switch entry", () => {
+  /** The open sheet's Kontor action: Sessions with the switcher's view. */
+  const showView = (screen: ReturnType<typeof mount>, view: SwitchView) => {
+    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowView as (view: SwitchView) => void)(view); screen.render();
+  };
   const created: CreateOutcome = { requestId: "00000000-0000-4000-8000-000000000001", state: "verified", title: "LSA • ADHOC • Fixture", agentId: "new-exact-id", workspaceId: "wks-adam",
     message: "Created and verified.", differences: [], persona: "supported", checkedAt: "2026-10-23" };
 
@@ -876,7 +880,7 @@ describe("Start or switch entry", () => {
     expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
   });
 
-  it.each([true, false])("replaces seeded destination predicates with the sheet's exact non-archived matches (compact=%s)", (compact) => {
+  it.each([true, false])("replaces seeded destination predicates with the sheet's exact state and non-archived matches (compact=%s)", (compact) => {
     model.entries = Array.from({ length: 23 }, (_, index) => sessionEntry(`match-${index}`, { title: `Route review ${index}`, status: index % 2 ? "closed" : "error" }));
     model.entries.push(sessionEntry("archived-match", { title: "Route review archived", archivedAt: "2026-10-22" }), sessionEntry("other", { title: "Unrelated" }));
     const screen = mount(compact, { tab: "Board", projectId: "prj-unrelated", epicKey: "ASMA-1", sourceId: "unrelated-plan", sourceRevision: "old", originAgentId: "unrelated-origin" });
@@ -884,17 +888,17 @@ describe("Start or switch entry", () => {
     patchSessionView(scope, { query: "old query", status: "favorites", task: { jira: "ASMA-2", kontorId: null, label: "Unrelated task" },
       shortcut: "desk-unrelated", streams: ["unrelated-workstream"], epic: { kind: "known", key: "ASMA-2" }, work: "mine", assignment: "me", membership: "archived", includeArchived: true,
       layout: "flat", grouping: "role", sort: "title", sortDirection: "desc", advancedOpen: true, toolbarOpen: true, legendOpen: true, scrollOffset: 123, peek: { sessionId: "other", resultsOffset: 10 } });
-    const promised = switchRows(model.entries, "route review", Date.now(), { clearedAt: null, visits: [] });
-    expect(promised.total).toBe(23);
+    const promised = switchList(model.entries, "error", "route review", Date.now(), { clearedAt: null, visits: [] }, []);
+    expect(promised.total).toBe(12);
     screen.click(compact ? "Start or switch session" : "Start or switch");
-    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
+    showView(screen, { status: "error", query: "route review", membership: "sessions" });
     const route = hostNavigation(screen.props.host.id).route;
     expect(route).toMatchObject({ tab: "Sessions", ...NO_SCOPE });
     const view = readSessionView(sessionScopeKey(screen.props.host.id, route));
-    expect(view).toMatchObject({ query: "route review", task: null, status: "all", shortcut: null, streams: null, epic: null, work: "all", assignment: "any", membership: "sessions", includeArchived: false, scrollOffset: 0, peek: null });
+    expect(view).toMatchObject({ query: "route review", task: null, status: "error", shortcut: null, streams: null, epic: null, work: "mine", assignment: "any", membership: "sessions", includeArchived: false, scrollOffset: 0, peek: null });
     expect(view).toMatchObject({ layout: "flat", grouping: "role", sort: "title", sortDirection: "desc", advancedOpen: true, toolbarOpen: true, legendOpen: true });
     const matches = filterDirectoryEntries(model.entries, view);
-    expect(matches.map((entry) => entry.id)).toEqual(Array.from({ length: promised.total }, (_, index) => `match-${index}`));
+    expect(matches.map((entry) => entry.id)).toEqual(promised.rows.map((entry) => entry.id));
     expect(matches.every((entry) => entry.archivedAt === null)).toBe(true);
     expect(screen.elements().some((node) => node.type === StartSwitchSheet)).toBe(false);
   });
@@ -904,7 +908,7 @@ describe("Start or switch entry", () => {
     const scope = sessionScopeKey(screen.props.host.id, { ...hostNavigation(screen.props.host.id).route, ...NO_SCOPE, tab: "Sessions" });
     patchSessionView(scope, { query: "", status: "all", work: "all", assignment: "any", membership: "sessions", includeArchived: true });
     screen.click(compact ? "Start or switch session" : "Start or switch");
-    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
+    showView(screen, { status: "all", query: "route review", membership: "sessions" });
     expect(readSessionView(scope)).toMatchObject({ query: "route review", status: "all", membership: "sessions", includeArchived: false });
   });
 
@@ -912,7 +916,7 @@ describe("Start or switch entry", () => {
     const screen = mount(compact, { tab: "Sessions", ...NO_SCOPE });
     const previous = screen.elements().find((node) => node.type === SessionsScreen)!;
     screen.click(compact ? "Start or switch session" : "Start or switch");
-    (screen.elements().find((node) => node.type === StartSwitchSheet)!.props.onShowAll as (query: string) => void)("route review"); screen.render();
+    showView(screen, { status: "running", query: "route review", membership: "sessions" });
     const next = screen.elements().find((node) => node.type === SessionsScreen)!;
     expect(next.key).not.toBe(previous.key);
     expect(next.props.viewScope).toBe(previous.props.viewScope);
@@ -939,15 +943,19 @@ describe("composer popover hand-off", () => {
   let host = "";
   beforeEach(() => { withdrawHandOff(); host = `pop-${++sequence}`; });
 
-  it.each(STATUS_SHORTCUTS)("opens $status once in this host's ordinary all-project Sessions, clearing stale refinements only", ({ status }) => {
+  it.each<SwitchView>([
+    { status: "running", query: "", membership: "sessions" },
+    { status: "activity", query: "route review", membership: "sessions" },
+    { status: "all", query: "route", membership: "archived" },
+  ])("opens $status in $membership once in this host's all-project Sessions, clearing stale refinements only", ({ status, query, membership }) => {
     navigate(host, { tab: "Sessions", ...NO_SCOPE });
     const scope = sessionScopeKey(host, hostNavigation(host).route);
     patchSessionView(scope, { status: "recent", query: "old search", membership: "archived", includeArchived: true, streams: ["old"], assignment: "me",
       layout: "flat", grouping: "role", sort: "title", sortDirection: "asc" });
-    const key = handOffOpen(host, { kind: "state", status, scope: STATUS_SHORTCUT_SCOPE });
+    const key = handOffOpen(host, { kind: "view", status, query, membership });
     const screen = arrive(host, key, { tab: "Board", projectId: "other-project", epicKey: "ASMA-1" });
     expect(hostNavigation(host).route).toMatchObject({ tab: "Sessions", ...NO_SCOPE });
-    expect(readSessionView(scope)).toMatchObject({ status, query: "", membership: "sessions", includeArchived: false, streams: null, assignment: "any", work: "mine",
+    expect(readSessionView(scope)).toMatchObject({ status, query, membership, includeArchived: membership === "archived", streams: null, assignment: "any", work: "mine",
       layout: "flat", grouping: "role", sort: "title", sortDirection: "asc" });
     expect(screen.elements().find(node => node.type === SessionsScreen)?.props.viewScope).toBe(scope);
     expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
@@ -1017,16 +1025,6 @@ describe("composer popover hand-off", () => {
     failing.commit();
     expect(model.toastError).toHaveBeenCalledExactlyOnceWith("Created “LSA • ADHOC • Popover” (session ID popover-exact-id). navigation failed");
     expect(readRecent(`${host}-fail`).record.visits).toEqual([]);
-  });
-
-  it("applies a long search to unscoped Sessions as the sheet's Show all does, opening nothing", () => {
-    const screen = arrive(host, handOffOpen(host, { kind: "search", query: "route review" }), { tab: "Board", projectId: "prj-unrelated", epicKey: "ASMA-1" });
-    const route = hostNavigation(host).route;
-    expect(route).toMatchObject({ tab: "Sessions", ...NO_SCOPE });
-    expect(readSessionView(sessionScopeKey(host, route))).toMatchObject({ query: "route review", membership: "sessions", includeArchived: false, scrollOffset: 0 });
-    expect(screen.elements().find((node) => node.type === SessionsScreen)?.props.viewScope).toBe(sessionScopeKey(host, route));
-    expect(screen.props.navigation!.openAgent).not.toHaveBeenCalled();
-    expect(readRecent(host).record.visits).toEqual([]);
   });
 
   it("leaves the screen's saved Sessions view and its Archived choice as they were when it opens a session", () => {

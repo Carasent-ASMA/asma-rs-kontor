@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { summaryPinSchema } from "./session-navigator";
 
 /** A lead role and the way its session starts; together they select the persona and the lead workspace. */
 export const CREATE_ROLES = ["LSA", "TPM"] as const;
@@ -99,6 +100,47 @@ export const createProviderSchema = z.object({
 }).strict();
 export type CreateProvider = z.infer<typeof createProviderSchema>;
 
+/** One provider as the host's snapshot lists it: only the fields New lead reads. */
+export type ProviderSnapshotEntry = {
+  provider: string; label?: string | null; enabled?: boolean | null; status?: string | null; error?: string | null; defaultModeId?: string | null;
+  models?: readonly { id: string; label: string; isDefault?: boolean | null; isSelectable?: boolean | null; defaultThinkingOptionId?: string | null;
+    thinkingOptions?: readonly { id: string; label: string; isDefault?: boolean | null }[] | null }[] | null;
+  modes?: readonly { id: string; label: string; colorTier?: string | null }[] | null;
+};
+
+/** The host's providers as choices. Only a model the catalog flags is a provider's default; none flagged is null, never the first listed. */
+export function createProviders(snapshot: { entries: readonly ProviderSnapshotEntry[] }): CreateProvider[] {
+  return snapshot.entries.map((entry) => {
+    const selectable = (entry.models ?? []).filter((model) => model.isSelectable !== false);
+    const models = selectable.map((model) => ({ id: model.id, label: model.label, efforts: (model.thinkingOptions ?? []).map((option) => ({ id: option.id, label: option.label })),
+      defaultEffort: model.defaultThinkingOptionId ?? model.thinkingOptions?.find((option) => option.isDefault)?.id ?? null }));
+    const status: CreateProvider["status"] = entry.enabled === false ? "disabled" : entry.enabled !== true ? "unknown"
+      : ["ready", "loading", "error", "unavailable"].includes(entry.status ?? "") ? entry.status as CreateProvider["status"] : "unknown";
+    let note: string | null = null;
+    if (status === "disabled") note = "Disabled on this host.";
+    else if (status === "unknown") note = "Provider availability is unknown.";
+    else if (status !== "ready") note = `Provider ${status}${entry.error ? `: ${entry.error}` : ""}.`;
+    else if (!models.length) note = "No selectable model on this host.";
+    return { id: entry.provider, label: entry.label ?? entry.provider, available: note === null, status, note,
+      persona: PERSONA_PROVIDERS.includes(entry.provider) ? "supported" as const : "unverified" as const, models,
+      defaultModel: selectable.find((model) => model.isDefault)?.id ?? null,
+      modes: (entry.modes ?? []).map((mode) => ({ id: mode.id, label: mode.label, dangerous: mode.colorTier === "dangerous" })),
+      defaultMode: entry.defaultModeId ?? null };
+  });
+}
+
+/** What a request asks for that a choice from these providers cannot give, or null. */
+export function createChoiceProblem(providers: readonly CreateProvider[], request: { provider: string; model: string; effort: string | null; modeId: string | null }): string | null {
+  const provider = providers.find((entry) => entry.id === request.provider);
+  if (!provider) return `Provider ${request.provider} is not on this host.`;
+  if (!provider.available) return `${provider.label}: ${provider.note}`;
+  const model = provider.models.find((entry) => entry.id === request.model);
+  if (!model) return `Model ${request.model} is not selectable for ${provider.label}.`;
+  if (model.efforts.length ? !model.efforts.some((effort) => effort.id === request.effort) : request.effort !== null) return `Effort ${request.effort ?? "none"} is not offered for ${model.label}.`;
+  if (provider.modes.length ? !provider.modes.some((mode) => mode.id === request.modeId) : request.modeId !== null) return `Mode ${request.modeId ?? "none"} is not offered by ${provider.label}.`;
+  return null;
+}
+
 /** One ASMA issue as `asma jira search` returns it; the parent is present only for a child issue. */
 export const jiraIssueSchema = z.object({
   id: z.string(), key: z.string(), summary: z.string(), created: z.string(), type: z.string(), epic: z.boolean(),
@@ -181,6 +223,63 @@ export const createScopeSchema = z.object({
 }).strict();
 export type CreateScope = z.infer<typeof createScopeSchema>;
 
+/** A provider setting for one model, as the host lists it: a toggle (Plan) or a select (Speed). Other kinds are not offered. */
+export const createFeatureSchema = z.union([
+  z.object({ type: z.literal("toggle"), id, label: z.string(), value: z.boolean() }).strict(),
+  z.object({ type: z.literal("select"), id, label: z.string(), value: z.string().nullable(), options: z.array(z.object({ id, label: z.string(), isDefault: z.boolean() }).strict()) }).strict(),
+]);
+export type CreateFeature = z.infer<typeof createFeatureSchema>;
+/** Only listed features with an offered value; the server checks them again and the readback confirms each one. */
+export const featureValuesSchema = z.record(id, z.union([z.string().min(1).max(200), z.boolean()]));
+export type FeatureValues = z.infer<typeof featureValuesSchema>;
+export const createFeaturesSchema = z.object({ features: z.array(createFeatureSchema), problem: z.string().nullable() }).strict();
+
+/** The value a feature takes when the request names none: its own current value. */
+export function featureDefault(feature: CreateFeature): string | boolean | null {
+  return feature.type === "toggle" ? feature.value : feature.value ?? feature.options.find((option) => option.isDefault)?.id ?? null;
+}
+
+/** Why these values cannot be sent for these listed features, or null. */
+export function featureValuesProblem(features: readonly CreateFeature[], values: FeatureValues): string | null {
+  for (const [key, value] of Object.entries(values)) {
+    const feature = features.find((entry) => entry.id === key);
+    if (!feature) return `Setting ${key} is not offered for this model.`;
+    if (feature.type === "toggle" ? typeof value !== "boolean" : typeof value !== "string" || !feature.options.some((option) => option.id === value)) return `${feature.label} ${String(value)} is not offered for this model.`;
+  }
+  return null;
+}
+
+/** "Speed Fast" or "Plan on", named as `known` lists the setting; its id and value when it does not. */
+export function settingLabel(known: readonly CreateFeature[], key: string, value: string | boolean): string {
+  const feature = known.find((entry) => entry.id === key);
+  const shown = typeof value === "boolean" ? value ? "on" : "off" : feature?.type === "select" ? feature.options.find((option) => option.id === value)?.label ?? value : value;
+  return `${feature?.label ?? key} ${shown}`;
+}
+
+/** The values these listed features offer, and the labels of those they do not, which a change of model drops. */
+export function keptFeatureValues(features: readonly CreateFeature[], values: FeatureValues, known: readonly CreateFeature[] = features): { kept: FeatureValues; dropped: string[] } {
+  const kept: FeatureValues = {}, dropped: string[] = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (!featureValuesProblem(features, { [key]: value })) kept[key] = value;
+    else dropped.push(settingLabel(known, key, value));
+  }
+  return { kept, dropped };
+}
+
+/**
+ * Why a successor on `destination` cannot keep a seat's permission mode, or null. Modes are provider-specific: a mode
+ * id another provider also lists is not shown to grant the same rights, so only the seat's own provider, listing that
+ * exact mode, keeps it. No mapping between providers is qualified. A mode the seat never reported is missing evidence,
+ * not a match: nothing can be kept that was never read.
+ */
+export function inheritedModeProblem(providers: readonly CreateProvider[], source: string, mode: string | null, destination: string): string | null {
+  const target = providers.find((entry) => entry.id === destination), label = target?.label ?? destination;
+  if (destination !== source) return `${label} cannot keep this seat's permissions (${mode ?? "not reported"} on ${source}): no permission mapping between providers is qualified.`;
+  if (mode === null) return `${label} cannot keep this seat's permissions: its permission mode was not reported, so the new session's permissions cannot be confirmed.`;
+  if (!target?.modes.some((entry) => entry.id === mode)) return `${label} does not list this seat's permission mode ${mode}, so it cannot be kept.`;
+  return null;
+}
+
 export const createRequestSchema = z.object({
   requestId: z.string().uuid(),
   role: z.enum(CREATE_ROLES),
@@ -191,13 +290,18 @@ export const createRequestSchema = z.object({
   issueKey: z.string().max(200).nullable().optional(),
   /** A source session whose handoff summary the new lead reads before its first task. */
   sourceAgentId: z.string().max(200).nullable().optional(),
+  /** The saved summary revision the new lead reads before its first task; pinned, so a later source update never changes it. */
+  sourceSummary: summaryPinSchema.nullable().optional(),
   provider: id,
   model: id,
   effort: id.nullable(),
   modeId: id.nullable(),
+  /** Speed, Plan and other listed settings the operator chose; absent keeps each one's own value. */
+  featureValues: featureValuesSchema.optional(),
 }).strict();
 export type CreateRequest = z.infer<typeof createRequestSchema>;
 
 export const readCreateOptions = defineRpc({ name: "sessions.create-options", input: createScopeSchema, output: createOptionsSchema });
 export const executeCreate = defineRpc({ name: "sessions.create", input: createRequestSchema, output: createOutcomeSchema });
+export const readCreateFeatures = defineRpc({ name: "sessions.create-features", input: z.object({ projectId: id, provider: id, model: id }).strict(), output: createFeaturesSchema });
 export const checkCreate = defineRpc({ name: "sessions.create-check", input: z.object({ requestId: z.string().uuid() }).strict(), output: createOutcomeSchema });

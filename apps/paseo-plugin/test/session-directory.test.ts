@@ -19,7 +19,7 @@ import {
 } from "../client/session-directory";
 import { attentionLabel, earlierErrorLabel, matchesQuery, matchesStatus } from "../client/session-view";
 import { sessionState } from "../client/session-organization";
-import { usagePresentation } from "../client/session-usage";
+import { rowModel, usagePresentation } from "../client/session-usage";
 
 type Observer = {
   snapshot: (snapshot: PaseoAgentListResult & { subscriptionId: string }) => void;
@@ -609,6 +609,25 @@ describe("SessionDirectory", () => {
     expect(directoryEntry.searchText).not.toContain("internal-only");
     expect(matchesQuery(directoryEntry, "ASMA-8539")).toBe(true);
     expect(matchesQuery(directoryEntry, "kontor")).toBe(true);
+  });
+
+  it("searches every model ID a session reports and what its row shows: alias, route and provider", () => {
+    const seed = entry("routed", { title: "Planner session" });
+    const routed = toDirectoryEntry({ ...seed, agent: { ...seed.agent, provider: "opencode", model: "deepseek/deepseek-pro",
+      runtimeInfo: { provider: "opencode", sessionId: null, model: "deepseek/deepseek-flash" } } });
+    expect(rowModel(routed)).toMatchObject({ alias: "DSF", route: "via OpenCode" });
+    for (const query of ["deepseek/deepseek-flash", "deepseek/deepseek-pro", "DSF", "via OpenCode", "opencode"]) expect(matchesQuery(routed, query), query).toBe(true);
+
+    const codex = toDirectoryEntry({ ...seed, agent: { ...seed.agent, provider: "codex", model: "gpt-6-astra" } });
+    expect(rowModel(codex).alias).toBe("A6");
+    for (const query of ["gpt-6-astra", "A6", "a6", "via Codex"]) expect(matchesQuery(codex, query), query).toBe(true);
+    expect(matchesQuery(codex, "DSF")).toBe(false);
+  });
+
+  it("leaves an unknown model out of search instead of matching its placeholder alias", () => {
+    const unknown = toDirectoryEntry(entry("unknown-model", { title: "Planner session" }));
+    expect(rowModel(unknown).alias).toBe("?");
+    expect(unknown.searchText).not.toContain("?");
   });
 
   it("derives native needs-input priority from pending permissions and permission attention", () => {

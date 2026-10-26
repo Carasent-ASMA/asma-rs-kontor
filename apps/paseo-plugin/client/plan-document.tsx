@@ -1,5 +1,6 @@
 import { ScrollView, Text, View } from "react-native";
 import { Disclosure, type Colors } from "./page-controls";
+import { readableInk } from "./session-status-ink";
 export type PlanBlock = { line: number; kind: "heading" | "paragraph" | "list" | "table" | "code"; text: string; level?: number; rows?: string[][]; frontMatter?: boolean };
 const heading = /^(#{1,6})\s+(.+)$/;
 const list = /^\s*(?:[-*+]|\d+[.)])\s+/;
@@ -63,7 +64,7 @@ export function headingAnchor(text: string): string { return text.toLocaleLowerC
 // Hermes evaluates plugin bundles with function-scoped let/const, so a press handler made in the match loop would
 // open the paragraph's last link. Each target reaches its handler only as this call's argument.
 function linkText(key: number, label: string, target: string, colors: Colors, onLink: (target: string) => void) {
-  return <Text key={key} accessibilityRole="link" accessibilityLabel={`${label}: ${target}`} onPress={() => onLink(target)} style={{ color: colors.accent, textDecorationLine: "underline" }}>{label}</Text>;
+  return <Text key={key} accessibilityRole="link" accessibilityLabel={`${label}: ${target}`} onPress={() => onLink(target)} style={{ color: readableInk(colors.accent, colors, 4.5), textDecorationLine: "underline" }}>{label}</Text>;
 }
 function Inline({ text, colors, onLink }: { text: string; colors: Colors; onLink: (target: string) => void }) {
   const pattern = /\[([^\]\n]+)\]\(([^\s()]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;

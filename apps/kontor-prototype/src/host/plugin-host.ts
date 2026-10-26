@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { PluginButton } from "paseo-sdk/client";
 import { callPluginRpc } from "paseo-sdk/host";
 import contribute from "../../../paseo-plugin/index.client";
 import { logHostEvent } from "./event-log";
@@ -12,8 +13,7 @@ import { fakePaseo, invokeRpc } from "./runtime";
  */
 type Screen = { id: string; title: unknown; Component: ComponentType<any> };
 type SidebarItem = { id: string; title: string; Component: ComponentType<any> };
-type Button = { title: string; icon: unknown; label?: string; visible?: boolean; disabled?: boolean; behavior: { kind: string; onPress?: () => void | Promise<void> } };
-export type Pill = { id: string; workspaceId: string; agentId: string; button: Button };
+export type Pill = { id: string; workspaceId: string; agentId: string; button: PluginButton };
 export type HostRoute =
   | { kind: "screen"; screenId: string; params: Record<string, string> }
   | { kind: "agent"; agentId: string }
@@ -67,7 +67,7 @@ const client = {
     pills.set(key, { ...contribution });
     changed();
     return {
-      update(patch: Partial<Button>) { const current = pills.get(key); if (current) { pills.set(key, { ...current, button: { ...current.button, ...patch } }); changed(); } },
+      update(patch: Partial<PluginButton>) { const current = pills.get(key); if (current) { pills.set(key, { ...current, button: { ...current.button, ...patch } }); changed(); } },
       remove() { if (pills.delete(key)) changed(); },
     };
   },

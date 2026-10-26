@@ -4,7 +4,7 @@ import { archivedByRead, handOffOpen, openCreatedSession, openHandOff, openRecov
 import type { CreateOutcome } from "../shared/session-create";
 import type { LifecycleRow } from "../shared/session-lifecycle";
 import { sessionEntry } from "./session-fixtures";
-import { STATUS_SHORTCUTS, STATUS_SHORTCUT_SCOPE } from "../client/session-state-shortcuts";
+import type { SwitchView } from "../client/session-state-shortcuts";
 
 function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn> } {
   return {
@@ -13,35 +13,40 @@ function navigation(): SessionNavigation & { openAgent: ReturnType<typeof vi.fn>
   } as unknown as SessionNavigation & { openAgent: ReturnType<typeof vi.fn> };
 }
 
-describe("session-state hand-off", () => {
-  it("refuses a screen without the status handler without opening another destination", () => {
-    const nav = navigation(), onSearch = vi.fn();
-    const key = handOffOpen("host-a", { kind: "state", status: "running", scope: STATUS_SHORTCUT_SCOPE });
-    const input = { hostId: "host-a", key, entries: [], navigation: nav, onSearch };
-    expect(openHandOff(input)).toMatchObject({ ok: false, reason: "navigation", message: expect.stringContaining("cannot open a session-state filter") });
+describe("switcher view hand-off", () => {
+  const running: SwitchView = { status: "running", query: "", membership: "sessions" };
+
+  it("refuses a screen without the view handler without opening another destination", () => {
+    const nav = navigation();
+    const key = handOffOpen("host-a", { kind: "view", ...running });
+    const input = { hostId: "host-a", key, entries: [], navigation: nav };
+    expect(openHandOff(input)).toMatchObject({ ok: false, reason: "navigation", message: expect.stringMatching(/^This Kontor screen cannot show the switcher's sessions/) });
     expect(openHandOff(input)).toMatchObject({ ok: false, reason: "stale" });
-    expect(nav.openAgent).not.toHaveBeenCalled(); expect(onSearch).not.toHaveBeenCalled();
+    expect(nav.openAgent).not.toHaveBeenCalled();
   });
 
-  it.each(STATUS_SHORTCUTS)("consumes $status and its exact scope once without opening an agent", ({ status }) => {
-    const onState = vi.fn(), onSearch = vi.fn(), nav = navigation();
-    const target = { kind: "state" as const, status, scope: STATUS_SHORTCUT_SCOPE };
-    const key = handOffOpen("host-a", target);
-    const input = { hostId: "host-a", key, entries: [], navigation: nav, onSearch, onState };
+  it.each<SwitchView>([
+    running,
+    { status: "activity", query: "route review", membership: "sessions" },
+    { status: "all", query: "route", membership: "archived" },
+  ])("consumes $status in $membership with its search once without opening an agent", (view) => {
+    const onView = vi.fn(), nav = navigation();
+    const key = handOffOpen("host-a", { kind: "view", ...view });
+    const input = { hostId: "host-a", key, entries: [], navigation: nav, onView };
     expect(openHandOff(input)).toEqual({ ok: true });
-    expect(onState).toHaveBeenCalledExactlyOnceWith(target);
+    expect(onView).toHaveBeenCalledExactlyOnceWith(view);
     expect(openHandOff(input)).toMatchObject({ ok: false, reason: "stale" });
-    expect(nav.openAgent).not.toHaveBeenCalled(); expect(onSearch).not.toHaveBeenCalled();
+    expect(nav.openAgent).not.toHaveBeenCalled();
   });
 
   it("refuses a foreign host and makes a callback failure visible, then permits a fresh request", () => {
-    const onState = vi.fn<() => void>(() => { throw new Error("Route unavailable"); });
-    const target = { kind: "state" as const, status: "running" as const, scope: STATUS_SHORTCUT_SCOPE };
-    const input = { hostId: "host-a", entries: [], navigation: navigation(), onSearch: vi.fn(), onState };
+    const onView = vi.fn<(view: SwitchView) => void>(() => { throw new Error("Route unavailable"); });
+    const target = { kind: "view" as const, ...running };
+    const input = { hostId: "host-a", entries: [], navigation: navigation(), onView };
     expect(openHandOff({ ...input, key: handOffOpen("foreign-host", target) })).toMatchObject({ ok: false, reason: "stale" });
-    expect(onState).not.toHaveBeenCalled();
+    expect(onView).not.toHaveBeenCalled();
     expect(openHandOff({ ...input, key: handOffOpen("host-a", target) })).toMatchObject({ ok: false, reason: "navigation", message: "Route unavailable" });
-    onState.mockImplementation(() => {});
+    onView.mockImplementation(() => {});
     expect(openHandOff({ ...input, key: handOffOpen("host-a", target) })).toEqual({ ok: true });
   });
 });
@@ -245,8 +250,8 @@ describe("composer hand-off to the Kontor screen", () => {
   const created: CreateOutcome = { requestId: "req-1", state: "verified", title: "LSA • ADHOC • Route review", agentId: "agent-new", workspaceId: "wks", message: "Created.", differences: [], persona: "supported", checkedAt: "2026-10-24" };
   const entries = [sessionEntry("agent-a"), sessionEntry("agent-b", { title: "agent-a" })];
   /** `null` is an app that gives plugins no session navigation. */
-  const screen = (hostId: string, key: string | undefined, nav: SessionNavigation | null = navigation(), onSearch = vi.fn()) =>
-    openHandOff({ hostId, key, entries, navigation: nav ?? undefined, onSearch });
+  const screen = (hostId: string, key: string | undefined, nav: SessionNavigation | null = navigation(), onView = vi.fn()) =>
+    openHandOff({ hostId, key, entries, navigation: nav ?? undefined, onView });
   beforeEach(() => { configureRecentStorage(null); withdrawHandOff(); });
 
   it("opens the exact host and session ID once; Back, a remount or a StrictMode rerun replays nothing", () => {
@@ -330,10 +335,10 @@ describe("composer hand-off to the Kontor screen", () => {
     expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-new"]);
   });
 
-  it("hands a search to Sessions without opening or recording anything", () => {
-    const nav = navigation(), onSearch = vi.fn();
-    expect(screen("host-a", handOffOpen("host-a", { kind: "search", query: "route" }), nav, onSearch)).toEqual({ ok: true });
-    expect(onSearch).toHaveBeenCalledExactlyOnceWith("route");
+  it("hands the switcher's view to Sessions without opening or recording anything", () => {
+    const nav = navigation(), onView = vi.fn();
+    expect(screen("host-a", handOffOpen("host-a", { kind: "view", status: "error", query: "route", membership: "sessions" }), nav, onView)).toEqual({ ok: true });
+    expect(onView).toHaveBeenCalledExactlyOnceWith({ status: "error", query: "route", membership: "sessions" });
     expect(nav.openAgent).not.toHaveBeenCalled();
     expect(readRecent("host-a").record.visits).toEqual([]);
   });

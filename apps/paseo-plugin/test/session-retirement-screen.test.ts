@@ -58,6 +58,8 @@ import { deriveSessionProjection, MISSING_OWNER_ADAPTER, type SessionProjection,
 import type { SessionRetirementRead } from "../client/use-session-lifecycle";
 import { SessionRetirementConflict, SessionRetirementDetails } from "../client/session-lifecycle-view";
 import { sessionEntry } from "./session-fixtures";
+import { DenseSessionRow } from "../client/dense-session-row";
+import { SessionActionsMenu, type SessionAction } from "../client/session-actions-menu";
 
 type Element = { readonly type?: unknown; readonly props: Record<string, unknown> };
 const walk = (node: unknown): Element[] => {
@@ -124,8 +126,17 @@ const row = (id: string) => {
   const item = data.find((candidate) => candidate.entry?.id === id)!;
   return (list().props.renderItem as (info: { item: unknown }) => Element)({ item });
 };
-const rowFeedback = (id: string): Element => row(id).props.retirementFeedback as Element;
-const openRowDetails = (id: string) => { const details = row(id).props.details as Element; (details.props.onPress as () => void)(); harness.flush(); };
+/** The row's own View: a result is it, a tree session's OrganizationRowView wraps it. Its children are the dense row and the feedback under it. */
+const rowView = (id: string): Element => { const drawn = row(id); return drawn.props.testID === `sessions-result-${id}` ? drawn : drawn.props.children as Element; };
+const dense = (id: string) => (rowView(id).props.children as Element[])[0]!;
+const rowFeedback = (id: string) => (rowView(id).props.children as Element[])[1]!;
+/** Draws the dense row on hook slots after the screen's, as React draws the child, and returns its body's spoken label. */
+const spoken = (id: string) => String(walk((DenseSessionRow as (props: Record<string, unknown>) => unknown)(dense(id).props)).find((element) => element.props.testID === "session-row-body")!.props.accessibilityLabel);
+const openRowDetails = (id: string) => {
+  const menu = (dense(id).props.mode as { actions: Element }).actions;
+  expect(menu.type).toBe(SessionActionsMenu);
+  (menu.props.actions as SessionAction[]).find((action) => action.key === "details")!.perform(); harness.flush();
+};
 const press = (testID: string) => { const found = byTestID(testID)[0]!; (found.props.onPress as () => void)(); harness.flush(); };
 
 beforeEach(() => { clearSessionViews(); patchSessionView("host-a", { query: "", status: "all", membership: "sessions", includeArchived: false, layout: "flat", grouping: "flat", advancedOpen: true, toolbarOpen: true }); fake.state = ready(); fake.inputs = []; fake.hostStatus = "online"; });
@@ -134,7 +145,8 @@ afterEach(() => harness.unmount());
 describe("Sessions retirement integration", () => {
   it("keeps compact routine retirement behind Details and preserves inventory membership", () => {
     mount(retirement([ordinaryProjection, retiredProjection]), { layout: { compact: true, platform: "ios" } });
-    expect(pureText(rowFeedback("ordinary"))).toBe("");
+    expect(pureText(rowFeedback("ordinary")).trim()).toBe("");
+    expect(spoken("ordinary")).toContain("Native ID ordinary"); expect(spoken("ordinary")).not.toMatch(/Retirement|Needs review|conflict/);
     openRowDetails("ordinary");
     const details = all().find((element) => element.type === SessionRetirementDetails)!;
     expect(pureText(details)).toContain("Retirement evidence");
@@ -143,11 +155,11 @@ describe("Sessions retirement integration", () => {
     expect(fake.inputs.at(-1)?.includeArchived).toBe(true);
     expect(byTestID("sessions-retirement-conflict-retired")).toHaveLength(1);
   });
-  it("draws the disposition on the row and the read-only evidence in details", () => {
+  it("keeps a routine disposition off the wide row too, speaks it, and draws the read-only evidence in details", () => {
     mount();
-    const feedback = rowFeedback("ordinary");
-    expect(pureText(feedback)).toContain("Retirement: Unknown");
-    expect(pureText(feedback)).toContain("Native idle · Not archived");
+    // The density guard: only a conflict or needed review adds a visible line, at every width.
+    expect(pureText(rowFeedback("ordinary")).trim()).toBe("");
+    expect(spoken("ordinary")).toContain("Retirement Unknown");
     openRowDetails("ordinary");
     const panel = byTestID("sessions-details")[0]!;
     expect(panel).toBeTruthy();

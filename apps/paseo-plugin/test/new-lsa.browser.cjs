@@ -30,9 +30,14 @@ export const useRpc = contract => { const host = useContext(Host); return input 
 export const getPaseoClient = () => { throw new Error('No live host in this fixture'); };
 // The shared Start or switch module also serves the composer popover, which reads these; the sheet never calls them.
 export const useHosts = () => [];
+// No saved new-lead default is read here, so every lead in this fixture names its model explicitly.
+export const useSettings = () => ({ status: 'loading' });
 `);
 fs.writeFileSync(path.join(fixture, 'sdk-native.tsx'), `import React from 'react';
-export {TextInput,ScrollView} from 'react-native';
+import {View} from 'react-native';
+export {TextInput,ScrollView,FlatList} from 'react-native';
+export const copyText = async () => {};
+export const Modal = Object.assign(({open,title,children}) => open ? <View role="dialog" aria-label={title}>{children}</View> : null, { Content: ({children}) => <View>{children}</View> });
 export const useToast = () => ({ error: message => { throw new Error('Unexpected toast: ' + message); }, show: () => {} });
 export const Icon = ({size=16,color}) => <span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;
 `);
@@ -57,6 +62,7 @@ window.fixture={calls:[],opens:[],timings:[],failOpen:scenario==='open-failed', 
  rpc:async(name,input,host)=>{const started=performance.now();window.fixture.calls.push({name,input,host});
   if(name==='sessions.create-options'){if(scenario==='two-desks'&&input.projectId)await new Promise(resolve=>{window.fixture.finishCatalog=resolve;});await new Promise(resolve=>setTimeout(resolve,10));window.fixture.timings.push({phase:'catalog',ms:performance.now()-started});return catalog(input);}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,180));window.fixture.timings.push({phase:'create-fixture',ms:performance.now()-started});return {requestId:input.requestId,state:scenario==='unknown'?'unknown':'verified',title:'LSA • ADHOC • '+input.topic,agentId:scenario==='unknown'?null:'fixture-created-exact',workspaceId:'wks-adhoc',message:scenario==='unknown'?'Creation may still complete.':'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
+  if(name==='sessions.create-features')return {features:[],problem:null};
   if(name==='sessions.create-check')return {requestId:input.requestId,state:'unknown',title:'LSA • ADHOC • Route review',agentId:null,workspaceId:'wks-adhoc',message:'Creation may still complete.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};
   throw new Error('Unexpected RPC in isolated fixture: '+name);
  }};
@@ -77,9 +83,17 @@ async function pageFor(width, scenario = 'ready', theme = 'light') {
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
   await page.goto(server.resolvedUrls.local[0] + '?scenario=' + scenario + '&theme=' + theme);
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
+  await page.getByRole('button', { name: 'New lead', exact: true }).click();
   return { page, context };
 }
+// This host lists no Codex provider and no saved default is read, so a lead's model is always chosen explicitly.
+async function chooseModel(page, label = 'Active model') {
+  await page.getByTestId('kontor-new-lead-model').click();
+  await page.getByRole('radio', { name: new RegExp(`^${label}, `) }).click();
+  await page.getByTestId('kontor-model-use').click();
+  await page.getByTestId('kontor-model-picker').waitFor({ state: 'detached' });
+}
+const focused = page => page.evaluate(() => document.activeElement?.dataset?.testid ?? document.activeElement?.tagName ?? null);
 async function createdWaitingForOpen(page) {
   await page.getByTestId('kontor-new-lsa-verified').waitFor();
   await page.getByText('Session ID: fixture-created-exact', { exact: true }).waitFor();
@@ -111,14 +125,17 @@ async function run(name, test) {
     for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) await run(`${width}-${theme}-active-explicit-exact-open`, async () => {
       const { page, context } = await pageFor(width, 'ready', theme);
       try {
-        if (width < 700) await page.getByRole('button', { name: /^Provider, model and mode\./ }).click();
-        await page.getByRole('radio', { name: 'Active provider', exact: true }).waitFor();
+        await page.getByTestId('kontor-new-lead-model').click();
+        await page.getByRole('radio', { name: /^Active model, first, / }).waitFor();
         assert.equal(await page.getByRole('radio', { name: /Disabled provider|Error provider/ }).count(), 0);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         const radios = await page.getByRole('radio').all();
         for (const radio of radios) { const box = await radio.boundingBox(); assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1); if (width < 700) assert.ok(box.height >= 44); }
-        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
         await page.screenshot({ path: path.join(output, `${width}-${theme}-choices.png`) });
+        await page.getByRole('radio', { name: /^Active model, first, / }).click();
+        await page.getByTestId('kontor-model-use').click();
+        assert.match(await page.getByTestId('kontor-new-lead-model').getAttribute('aria-label'), /^Model: Active model, first[,.]/);
+        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
         await page.getByTestId('kontor-new-lsa-create').click();
         const open = await createdWaitingForOpen(page);
         await page.screenshot({ path: path.join(output, `${width}-${theme}-created-waiting-open.png`) });
@@ -127,7 +144,8 @@ async function run(name, test) {
         const state = await page.evaluate(() => ({ opens: window.fixture.opens, calls: window.fixture.calls, recent: window.fixture.recent('fixture-a'), timings: window.fixture.timings }));
         assert.deepEqual(state.opens, [{ agentId: 'fixture-created-exact', serverId: 'fixture-a' }]);
         assert.deepEqual(state.recent.visits.map(visit => visit.id), ['fixture-created-exact']);
-        assert.equal(state.calls.filter(call => call.name === 'sessions.create').length, 1);
+        const creates = state.calls.filter(call => call.name === 'sessions.create');
+        assert.equal(creates.length, 1); assert.deepEqual([creates[0].input.provider, creates[0].input.model], ['active', 'first']);
         assert.equal(state.calls.filter(call => call.name === 'sessions.create-options').length, 1);
         report.cases.push({ name: `${width}-${theme}-timings`, status: 'PASS', timings: state.timings });
       } finally { await context.close(); }
@@ -139,20 +157,22 @@ async function run(name, test) {
     for (const width of [320, 390, 1440]) await run(`${width}-two-desk-keyboard-refresh`, async () => {
       const { page, context } = await pageFor(width, 'two-desks');
       try {
+        await chooseModel(page);
         const topic = page.getByRole('textbox', { name: 'Topic', exact: true });
         await topic.fill('Route review');
         await topic.evaluate(input => { input.setSelectionRange(2, 7); window.fixture.topicElement = input; });
+        // Several desks are a compact choice behind the Desk line; a choice closes it.
+        const desk = page.getByTestId('kontor-new-lead-desk');
+        await desk.click();
         const adam = page.getByRole('radio', { name: 'DESK • ADAM', exact: true });
         const ops = page.getByRole('radio', { name: 'DESK • OPS', exact: true });
-        await ops.evaluate(radio => { window.fixture.deskElement = radio; });
+        assert.deepEqual([await adam.getAttribute('aria-checked'), await adam.getAttribute('tabindex'), await ops.getAttribute('tabindex')], ['true', '0', '-1']);
         await adam.focus(); await adam.press('ArrowRight');
         await page.waitForFunction(() => typeof window.fixture.finishCatalog === 'function');
+        // Asserted last, so the refresh below is still proven when focus is lost.
+        const focusAfterChoice = await focused(page);
         const assertSelection = async () => {
-          assert.equal(await ops.getAttribute('aria-checked'), 'true');
-          assert.equal(await adam.getAttribute('aria-checked'), 'false');
-          assert.equal(await ops.getAttribute('tabindex'), '0');
-          assert.equal(await adam.getAttribute('tabindex'), '-1');
-          assert.equal(await ops.evaluate(radio => radio === document.activeElement && radio === window.fixture.deskElement), true);
+          assert.equal(await desk.getAttribute('aria-label'), 'Desk: DESK • OPS');
           assert.deepEqual(await topic.evaluate(input => [input === window.fixture.topicElement, input.value, input.selectionStart, input.selectionEnd]), [true, 'Route review', 2, 7]);
         };
         await assertSelection();
@@ -172,26 +192,36 @@ async function run(name, test) {
         await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
         const creates = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
         assert.equal(creates.length, 1); assert.equal(creates[0].input.projectId, 'project-ops');
+        assert.equal(focusAfterChoice, 'kontor-new-lead-desk', 'a keyboard desk choice returns focus to the Desk line, not the page');
       } finally { await context.close(); }
     });
     await run('invalidated-selection', async () => {
       const { page, context } = await pageFor(390);
-      try { await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review'); await page.getByRole('button', { name: /^Provider, model and mode\./ }).click(); await page.getByRole('radio', { name: 'Second model', exact: true }).click(); await page.evaluate(() => window.fixture.invalidateModel()); await page.getByRole('button', { name: 'Refresh choices', exact: true }).click(); await page.getByText(/Model second is no longer active/).waitFor(); assert.equal(await page.getByRole('radio', { name: 'Active model', exact: true }).getAttribute('aria-checked'), 'false'); assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true); } finally { await context.close(); }
+      try {
+        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
+        await chooseModel(page, 'Second model');
+        await page.evaluate(() => window.fixture.invalidateModel());
+        await page.getByRole('button', { name: 'Refresh choices', exact: true }).click();
+        await page.getByText(/Model second is no longer active/).waitFor();
+        // No other model stands in for the one that left.
+        assert.match(await page.getByTestId('kontor-new-lead-model').getAttribute('aria-label'), /^Model: none chosen/);
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
+      } finally { await context.close(); }
     });
     for (const width of [320, 390, 1440]) await run(`${width}-vanished-desk-recovery`, async () => {
       const { page, context } = await pageFor(width, 'vanished-desk');
       try {
         await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
-        if (width < 700) await page.getByRole('button', { name: /^Provider, model and mode\./ }).click();
+        await chooseModel(page);
         await page.evaluate(() => window.fixture.vanishDesk());
         await page.getByRole('button', { name: 'Refresh choices', exact: true }).click();
         const problem = page.getByTestId('kontor-new-lsa-problem');
         await expect(problem).toHaveText('The selected desk is no longer available. Choose a listed desk or Refresh desks.');
-        await page.getByRole('button', { name: 'Provider, model and mode. Choose a desk first', exact: true }).waitFor();
-        await page.getByText('Choose an available desk to read its providers.', { exact: true }).waitFor();
-        assert.equal(await page.getByText('No desk on this host has lead workspaces.', { exact: true }).count(), 0);
+        assert.equal(await page.getByText('No desk on this host has lead workspaces.', { exact: true }).count(), 0, 'a listed desk is never called missing');
         assert.equal(await page.getByText(/No active provider.*host/).count(), 0);
+        // The remaining desk is offered as a choice, never chosen for the operator.
         const remaining = page.getByRole('radio', { name: 'DESK • PR REVIEW', exact: true });
+        if (!await remaining.count()) await page.getByTestId('kontor-new-lead-desk').click();
         assert.equal(await remaining.getAttribute('aria-checked'), 'false');
         await expect(page.getByTestId('kontor-new-lsa-create')).toBeDisabled();
         await page.getByRole('button', { name: 'Refresh desks', exact: true }).click();
@@ -199,9 +229,10 @@ async function run(name, test) {
         await expect(problem).toHaveText('The selected desk is no longer available. Choose a listed desk or Refresh desks.');
         assert.equal(await remaining.getAttribute('aria-checked'), 'false');
         await page.screenshot({ path: path.join(output, `${width}-vanished-desk.png`) });
+        if (!await remaining.count()) await page.getByTestId('kontor-new-lead-desk').click();
         await remaining.click();
         await expect(page.getByTestId('kontor-new-lsa-create')).toBeEnabled();
-        assert.equal(await remaining.getAttribute('aria-checked'), 'true');
+        assert.equal(await page.getByTestId('kontor-new-lead-desk').getAttribute('aria-label'), 'Desk: DESK • PR REVIEW');
         assert.equal(await page.getByRole('textbox', { name: 'Topic', exact: true }).inputValue(), 'Route review');
         const state = await page.evaluate(() => ({ calls: window.fixture.calls, opens: window.fixture.opens, visits: window.fixture.recent('fixture-a').visits }));
         assert.deepEqual(state.calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { projectId: 'project-adam', role: 'LSA', start: 'ad-hoc' }, { role: 'LSA', start: 'ad-hoc' }, { projectId: 'project-pr', role: 'LSA', start: 'ad-hoc' }]);
@@ -213,23 +244,29 @@ async function run(name, test) {
       const { page, context } = await pageFor(390, 'nullable-refresh');
       try {
         await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
-        await page.getByRole('button', { name: /^Provider, model and mode\./ }).click();
-        await page.getByRole('button', { name: 'Use current effort default', exact: true }).click();
-        await page.getByRole('button', { name: 'Use current mode default', exact: true }).click();
+        await chooseModel(page);
         assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), false);
         await page.evaluate(() => window.fixture.restoreSettings());
         await page.getByRole('button', { name: 'Refresh choices', exact: true }).click();
-        const effort = page.getByRole('radio', { name: 'High effort', exact: true });
-        const mode = page.getByRole('radio', { name: 'Default mode', exact: true });
-        await effort.waitFor(); await mode.waitFor();
+        // An effort and a mode the host now requires are never filled in for the operator.
+        await page.getByText(/Effort none is no longer offered for Active model\. Choose an available effort\./).waitFor();
+        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
+        await page.getByTestId('kontor-new-lead-model').click();
+        const use = page.getByTestId('kontor-model-use');
+        await expect(use).toBeDisabled();
+        // The levels stand open under the chosen model, named for assistive technology only.
+        assert.equal(await page.getByRole('button', { name: /^Effort:/ }).count(), 0);
+        const effort = page.getByRole('radiogroup', { name: 'Effort', exact: true }).getByRole('radio', { name: 'High effort', exact: true });
         assert.equal(await effort.getAttribute('aria-checked'), 'false');
-        assert.equal(await mode.getAttribute('aria-checked'), 'false');
-        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
-        await page.getByText(/Choose an available effort/).waitFor();
         await effort.click();
-        assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), true);
-        await page.getByText(/Choose an available mode/).waitFor();
+        await expect(use).toBeDisabled();
+        await page.getByText(/Mode none is not offered by Active provider/).waitFor();
+        await page.getByRole('button', { name: 'Permissions: Choose', exact: true }).click();
+        const mode = page.getByRole('radio', { name: 'Default mode', exact: true });
+        assert.equal(await mode.getAttribute('aria-checked'), 'false');
         await mode.click();
+        await expect(use).toBeEnabled();
+        await use.click();
         assert.equal(await page.getByTestId('kontor-new-lsa-create').isDisabled(), false);
         assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create').length), 0);
         assert.deepEqual(await page.evaluate(() => window.fixture.opens), []);
@@ -239,6 +276,7 @@ async function run(name, test) {
     await run('open-failed-retry-only', async () => {
       const { page, context } = await pageFor(390, 'open-failed');
       try {
+        await chooseModel(page);
         await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
         await page.getByTestId('kontor-new-lsa-create').click();
         await (await createdWaitingForOpen(page)).click();
@@ -253,7 +291,17 @@ async function run(name, test) {
     });
     for (const cancel of ['close', 'host-switch']) await run(`late-${cancel}`, async () => {
       const { page, context } = await pageFor(390);
-      try { await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review'); await page.getByTestId('kontor-new-lsa-create').click(); if (cancel === 'close') await page.getByRole('button', { name: 'Close start or switch', exact: true }).click(); else await page.evaluate(() => window.fixture.switchHost()); await page.waitForTimeout(300); assert.deepEqual(await page.evaluate(() => window.fixture.opens), []); assert.deepEqual(await page.evaluate(() => window.fixture.recent('fixture-a').visits), []); } finally { await context.close(); }
+      try {
+        await chooseModel(page);
+        await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Route review');
+        await page.getByTestId('kontor-new-lsa-create').click();
+        // New lead has no Close of its own; Escape closes the whole sheet.
+        if (cancel === 'close') { await page.keyboard.press('Escape'); await page.getByTestId('kontor-switch-sheet').waitFor({ state: 'detached' }); }
+        else await page.evaluate(() => window.fixture.switchHost());
+        await page.waitForTimeout(300);
+        assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create').length), 1);
+        assert.deepEqual(await page.evaluate(() => window.fixture.opens), []); assert.deepEqual(await page.evaluate(() => window.fixture.recent('fixture-a').visits), []);
+      } finally { await context.close(); }
     });
   } finally { await browser.close(); await server.close(); }
   fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

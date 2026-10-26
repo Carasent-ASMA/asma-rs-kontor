@@ -20,6 +20,18 @@ describe("session lifecycle under the iOS (Hermes) scoping of plugin bundles", (
     draw(); draw();
     return { draw, calls, changed, switchHost: (id: string) => { hostId = id; } };
   }
+  it("keeps a Resume receipt read back from before Resume was removed as history: it never runs", async () => {
+    const review = { id: "fixture-resume", action: "resume", scope: "filtered", rows: [row("a", "pending")] } as LifecycleReview, sent: string[] = [];
+    const { react, render } = deferredReact();
+    const { useSessionLifecycle } = loadHermesScoped<{ useSessionLifecycle: typeof Hook }>("../client/use-session-lifecycle.ts", { react,
+      "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => async () => { sent.push(contract.name); return review; } }, "../shared/session-lifecycle": lifecycle });
+    const draw = () => render(() => useSessionLifecycle("host", () => {}));
+    draw(); await draw().restore(); await settle();
+    expect(draw().review?.id).toBe("fixture-resume");
+    expect(await draw().run()).toBeNull(); await settle();
+    expect(draw().error).toBe(lifecycle.RESUME_REMOVED);
+    expect(sent).toEqual(["sessions.lifecycle-review"]);
+  });
   it("requires explicit confirmation even for one session selected in bulk mode", async () => {
     const f = fixture(["a"], async (id) => row(id, "archived"));
     await f.draw().prepare("archive", "filtered", ["a"], true);
@@ -60,7 +72,7 @@ describe("session lifecycle under the iOS (Hermes) scoping of plugin bundles", (
     expect(await f.draw().run()).toBe("Archived 0 · 1 not confirmed");
     await f.draw().reconcile("a"); expect(f.draw().batch?.summary).toBe("Archived 1");
   });
-  it.each([["archive", "archived"], ["resume", "submitted"]] as const)("shows each %s result on its own row when React renders between items", async (action, outcome) => {
+  it.each([["archive", "archived"]] as const)("shows each %s result on its own row when React renders between items", async (action, outcome) => {
     const ids = ["fixture-a", "fixture-b", "fixture-c"], executing: Array<() => void> = [];
     const review = { id: "fixture-review", action, scope: "filtered", rows: ids.map((id) => row(id, "pending")) } as LifecycleReview;
     const rpc: Record<string, (input: { agentId?: string }) => Promise<unknown>> = {

@@ -57,5 +57,7 @@ export function useStartSwitchArchive(hostId: string, directory: DirectoryState,
     held: (entry: DirectoryEntry) => held.hostId === hostId && held.revisions[entry.id] === entry.updatedAt,
     notice: notice?.hostId === hostId ? notice : null,
     onArchive,
+    /** The same controller for a reviewed batch of selected sessions. */
+    lifecycle,
   };
 }

@@ -53,7 +53,7 @@ describe("P1 host/cache/action hook races", () => {
     const state = render(() => useSessionLifecycle("host", changed)); await state.prepare("archive", "filtered", [entry.id]);
     expect(changed).toHaveBeenCalledExactlyOnceWith(rows); expect(hooks.rpc).toHaveBeenCalledTimes(1);
   });
-  it("one Archive activation preflights then executes the exact eligible ID once; Resume only reviews", async () => {
+  it("one Archive activation preflights then executes the exact eligible ID once", async () => {
     const rows = [{ id: entry.id, eligible: true, outcome: "pending", availability: evidence("readable") }];
     const result = { ...rows[0], outcome: "archived" };
     hooks.rpc.mockResolvedValueOnce({ id: "fixture-review", action: "archive", rows }).mockResolvedValueOnce(result);
@@ -62,8 +62,6 @@ describe("P1 host/cache/action hook races", () => {
     await Promise.all([first, state.prepare("archive", "filtered", [entry.id])]);
     expect(hooks.rpc).toHaveBeenCalledTimes(2); expect(hooks.rpc.mock.calls[1]).toEqual([{ reviewId: "fixture-review", agentId: entry.id }]);
     expect(changed).toHaveBeenLastCalledWith([result]);
-    hooks.rpc.mockReset().mockResolvedValue({ id: "resume-review", action: "resume", rows });
-    await state.prepare("resume", "filtered", [entry.id]); expect(hooks.rpc).toHaveBeenCalledTimes(1);
   });
   it("settled archive does not reappear when availability expires over a stale directory", async () => {
     const draw = () => render(() => useSessionAvailability("host", [entry], false));

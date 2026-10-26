@@ -13,7 +13,7 @@ export function recoverySessions(): FixtureSession[] {
     { id: "waiting", title: "Waiting for permission", status: "idle" },
     { id: "parent", title: "Supervisor with protected child", status: "error", error: "Interrupted" },
     { id: "child", title: "Running child · preserve work", status: "running", parent: "parent" },
-    { id: "send_failure", title: "Resume acknowledgement lost", status: "error", error: "Interrupted" },
+    { id: "send_failure", title: "Archive acknowledgement lost", status: "error", error: "Interrupted" },
     { id: "archive_failure", title: "Archive close failure", status: "idle" },
     { id: "concurrent", title: "Another recovery owns this session", status: "error", error: "Interrupted" },
     { id: "stopped", title: "Intentionally stopped", status: "closed" },

@@ -256,7 +256,7 @@ describe("Archive details", () => {
       const fake = host(), changed = vi.fn(), held = deferred<unknown>(), name = step === "run" ? "sessions.lifecycle-execute-item" : "sessions.lifecycle-reconcile-item";
       const real = fake.handlers[name]!; fake.handlers[name] = (input) => held.promise.then(() => real(input));
       const draw = mount(fake.rpc, () => "host-a", changed); draw(); await settle();
-      await draw().lifecycle.prepare("resume", "filtered", ["fixture-other"]); await settle(); changed.mockReset();
+      await draw().lifecycle.prepare("archive", "filtered", ["fixture-other"], true); await settle(); changed.mockReset();
       const pending = step === "run" ? draw().lifecycle.run() : draw().lifecycle.reconcile("fixture-other"); await settle();
       draw.unmount(); held.resolve(undefined); await pending; await settle();
       expect(changed).not.toHaveBeenCalled(); expect(fake.count(name)).toBe(1);
@@ -301,24 +301,24 @@ describe("AUD P2-B01-R6 a request the earlier host view of a mounted hook starte
       fake.handlers["sessions.lifecycle-execute-item"] = (input) => input.agentId === "fixture-b" ? b.promise : execute(input);
       let current = "host-a";
       const draw = mount(fake.rpc, () => current, changed); draw(); await settle();
-      if (step === "run" || step === "reconcile") { await draw().lifecycle.prepare("resume", "filtered", ["fixture-other"]); await settle(); }
+      if (step === "run" || step === "reconcile") { await draw().lifecycle.prepare("archive", "filtered", ["fixture-other"], true); await settle(); }
       changed.mockReset();
       const late: Promise<unknown> = step === "run" ? draw().lifecycle.run() : step === "reconcile" ? draw().lifecycle.reconcile("fixture-other")
         : step === "x" ? draw().lifecycle.prepare("archive", "filtered", ["fixture-swe"]) : draw().lifecycle.restore(sa);
       await settle();
       for (const next of path) { current = next; draw(); await settle(); }
       expect(draw().lifecycle).toMatchObject({ busy: false, running: false, error: null, review: null });
-      // B's own Resume batch holds B's lock while A's request settles.
-      await draw().lifecycle.prepare("resume", "filtered", ["fixture-b"]); await settle();
+      // B's own Archive batch holds B's lock while A's request settles.
+      await draw().lifecycle.prepare("archive", "filtered", ["fixture-b"], true); await settle();
       void draw().lifecycle.run(); await settle();
       a.resolve(undefined); expect(await late ?? null).toBeNull(); await settle();
       expect(draw().lifecycle).toMatchObject({ running: true, error: null, review: { rows: [{ id: "fixture-b" }] } });
       expect(await draw().lifecycle.prepare("archive", "filtered", ["fixture-probe"])).toBeNull();
       expect(sent).toBe(1); expect(fake.count("sessions.lifecycle-preview")).toBe(step === "x" ? 2 : step === "restore" ? 1 : 2);
-      if (fails) b.reject(new Error("Fixture host B failure.")); else b.resolve(row("fixture-b", { outcome: "submitted", message: "Fixture." }));
+      if (fails) b.reject(new Error("Fixture host B failure.")); else b.resolve(row("fixture-b", { outcome: "archived", message: "Fixture." }));
       await settle();
       expect(draw().lifecycle).toMatchObject({ busy: false, running: false, error: fails ? "Fixture host B failure." : null });
-      expect(changed.mock.calls.map(([rows]) => rows.map((entry: LifecycleRow) => `${entry.id}:${entry.outcome}`))).toEqual([["fixture-b:pending"], ...(fails ? [] : [["fixture-b:submitted"]])]);
+      expect(changed.mock.calls.map(([rows]) => rows.map((entry: LifecycleRow) => `${entry.id}:${entry.outcome}`))).toEqual([["fixture-b:pending"], [`fixture-b:${fails ? "uncertain" : "archived"}`]]);
       draw.unmount();
     }
   });

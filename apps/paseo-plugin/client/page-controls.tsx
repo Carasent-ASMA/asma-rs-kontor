@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useActionHelp, useControlHelp } from "./control-help";
 import { Icon } from "@getpaseo/plugin/client/react-native";
+import { readableInk } from "./session-status-ink";
 export type Colors = PluginTheme["colors"];
 /** Wide tabs follow the prototype's compact left-grouped strip; stacked tabs are the compact bottom bar. A touch pointer gets 44pt in every style. */
 export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected: selectedProp, disabled = false, expanded, trailing, small = false, iconOnly = false, help, ref }: {
@@ -43,7 +44,8 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
       : compactButton ? { minHeight: COARSE_POINTER ? 44 : 30, minWidth: COARSE_POINTER ? 44 : 30, paddingHorizontal: 9, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 6, borderWidth: 1, borderColor: colors.border }
       : { minHeight: stacked ? 48 : 44, minWidth: 44, flex: stacked ? 1 : undefined, paddingHorizontal: stacked ? 2 : 10, justifyContent: "center", borderRadius: stacked ? 6 : 8, flexDirection: stacked ? "column" : "row", alignItems: "center", gap: stacked ? 3 : 5 }) })}>
     {pending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : icon && (!strip || hideLabel) ? <Icon name={icon} size={stacked ? 19 : 16} color={selected ? colors.accent : colors.foregroundMuted} /> : null}
-    {hideLabel ? null : <Text numberOfLines={1} ellipsizeMode="tail" style={{ flexShrink: 1, color: strip ? (selected ? colors.foreground : colors.foregroundMuted) : selected ? colors.accent : colors.foreground, fontSize: stacked ? 10 : strip || compactButton ? 12 : 13, fontWeight: strip && selected ? "600" : compactButton ? "600" : "400" }}>{label}</Text>}
+    {/* A selected label keeps the accent only where it reads at 4.5:1; elsewhere the green icon and surface carry the selection. */}
+    {hideLabel ? null : <Text numberOfLines={1} ellipsizeMode="tail" style={{ flexShrink: 1, color: strip ? (selected ? colors.foreground : colors.foregroundMuted) : selected ? readableInk(colors.accent, colors, 4.5) : colors.foreground, fontSize: stacked ? 10 : strip || compactButton ? 12 : 13, fontWeight: strip && selected ? "600" : compactButton ? "600" : "400" }}>{label}</Text>}
     {trailing ? <Text importantForAccessibility="no" accessibilityElementsHidden style={{ color: colors.foregroundMuted, fontSize: 11 }}>{trailing}</Text> : null}
   </Pressable>;
 }
@@ -52,6 +54,12 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
  * pressed frame past a 100 ms acknowledgement. RN's types omit this web-only prop. Long press stays 500 ms.
  */
 export const NO_PRESS_DELAY = { delayPressIn: 0, delayLongPress: 500 } as {};
+/** React Native Web activates only a button on Space; spread on web, a checkbox, radio or switch toggles on it once too. */
+export const spaceActivates = (onPress: () => void, blocked = false) => ({ onKeyDown: (event: { key: string; repeat?: boolean; preventDefault(): void; stopPropagation(): void }) => {
+  if (event.key !== " " && event.key !== "Spacebar") return;
+  event.preventDefault(); event.stopPropagation();
+  if (!event.repeat && !blocked) onPress();
+} });
 /** Touch-down feedback painted on the next frame, also on a selected control. */
 export function pressFeedback(colors: Colors, pressed: boolean, selected = false, disabled = false) {
   return { backgroundColor: pressed || selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : pressed ? 0.7 : 1 };

@@ -54,6 +54,93 @@ export function modelPresentation(entry: SessionUsageEntry) {
   };
 }
 
+export type Vendor = "openai" | "anthropic" | "zai" | "deepseek" | "xai" | "google" | "cursor" | "moonshot" | "alibaba"
+  | "nvidia" | "cohere" | "liquid" | "xiaomi" | "minimax" | "meituan" | "inclusionai" | "thinkingmachines" | "unknown";
+
+/** Family words that name a vendor rather than a variant: [vendor, short mark used when a model has no version]. */
+const FAMILY: Record<string, readonly [Vendor, string]> = {
+  gpt: ["openai", "G"], codex: ["openai", "CX"], claude: ["anthropic", "C"], glm: ["zai", "G"], deepseek: ["deepseek", "DS"], grok: ["xai", "G"],
+  gemini: ["google", "G"], composer: ["cursor", "C"], kimi: ["moonshot", "K"], qwen: ["alibaba", "Q"],
+};
+/** Families matched only as a whole word, since their names occur inside other words ("ling" in "inkling"). */
+const WORDS: Record<string, readonly [Vendor, string]> = {
+  gemma: ["google", "G"], nemotron: ["nvidia", "N"], longcat: ["meituan", "LC"], mimo: ["xiaomi", "MM"], minimax: ["minimax", "MX"],
+  inkling: ["thinkingmachines", "I"], ling: ["inclusionai", "L"], lfm: ["liquid", "L"],
+};
+/** The model author an `openrouter/<author>/…` route names; `openrouter/openrouter/…` is the router choosing, so no author. */
+const AUTHORS: Record<string, Vendor> = {
+  openai: "openai", anthropic: "anthropic", "z-ai": "zai", deepseek: "deepseek", "x-ai": "xai", google: "google", moonshotai: "moonshot", qwen: "alibaba",
+  nvidia: "nvidia", cohere: "cohere", liquid: "liquid", xiaomi: "xiaomi", minimax: "minimax", meituan: "meituan", inclusionai: "inclusionai", thinkingmachines: "thinkingmachines",
+};
+const family = (part: string) => FAMILY[part] ?? WORDS[part];
+
+/** A route's pricing tag (":free", "-free") and an instruction-tuned suffix are not the model; a lone word stays. */
+const IGNORED = new Set(["free", "it"]);
+const words = (model: string) => {
+  const all = model.toLocaleLowerCase().split("/").pop()!.replace(/:free$/, "").split(/[-_\s]+/).filter(Boolean);
+  const kept = all.filter((part) => !IGNORED.has(part));
+  return kept.length ? kept : all;
+};
+
+/** The vendor that made the model, from its own ID: a route (OpenCode, an account alias) never decides it; OpenRouter's author segment does. */
+export function modelVendor(model: string | null): Vendor {
+  if (!model) return "unknown";
+  const id = model.toLocaleLowerCase(), segments = id.split("/");
+  if (segments[0] === "openrouter" && segments.length > 2) return AUTHORS[segments[1]!] ?? (segments[1] === "openrouter" ? "unknown" : modelVendor(segments.slice(2).join("/")));
+  if (/(^|\/)o\d/.test(id)) return "openai";
+  for (const part of words(id)) if (WORDS[part]) return WORDS[part]![0];
+  for (const [name, [vendor]] of Object.entries(FAMILY)) if (id.includes(name)) return vendor;
+  if (id.includes("z-ai") || id.includes("zhipu")) return "zai";
+  if (id.includes("gemma")) return "google";
+  return "unknown";
+}
+
+/**
+ * At most four characters: the variant's initial and its version ("gpt-6-astra" → "A6", "claude-opus-5-5" → "O5.5"),
+ * the family's mark and the variant's initial for a model with no version ("deepseek-flash" → "DSF"). A 1M-context
+ * variant drops the version's dot for an M ("claude-opus-4-8[1m]" → "O48M"); a model whose only variant is its size
+ * adds that size ("gemma-4-31b-it" → "G431"). Distinct models of one vendor differ; one model on several routes keeps
+ * one alias, and its route tells them apart. The full ID stays in the picker, Details and search.
+ */
+export function modelAlias(model: string | null): string {
+  if (!model) return "?";
+  const wide = /\[1m\]$/i.test(model);
+  const parts = words(model.replace(/\[1m\]$/i, ""));
+  const size = (part: string) => /^a?\d+(\.\d+)?b$/.test(part);
+  // Dates and build numbers are not versions.
+  const version = parts.filter((part) => /^\d{1,3}(\.\d{1,3})*$/.test(part)).join(".");
+  const named = parts.filter((part) => !/^\d/.test(part) && !size(part) && !family(part));
+  const known = parts.find((part) => family(part));
+  const initial = (named[0] ?? known ?? parts[0] ?? "?")[0]!.toLocaleUpperCase();
+  const sized = !named.length ? parts.find((part) => /^\d+(\.\d+)?b$/.test(part))?.slice(0, -1).replace(".", "") ?? "" : "";
+  const alias = version ? wide ? `${initial}${version.replace(/\./g, "")}M` : `${initial}${version}${sized}`
+    : known ? `${family(known)![1]}${named.map((part) => part[0]!.toLocaleUpperCase()).join("")}` : (named[0] ?? "?").toLocaleUpperCase();
+  return alias.slice(0, 4).replace(/\.$/, "");
+}
+
+const EFFORTS: Record<string, string> = { minimal: "MIN", low: "L", medium: "M", high: "H", xhigh: "XH", max: "MAX" };
+
+/** "XH" for xhigh; an effort the table does not know keeps its first three letters. */
+export function effortShort(effort: string | null | undefined): string | null {
+  if (!effort) return null;
+  return EFFORTS[effort.toLocaleLowerCase()] ?? effort.slice(0, 3).toLocaleUpperCase();
+}
+
+const ROUTES: Record<string, string> = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode", cursor: "Cursor", "glm-acp-agent": "GLM Agent", copilot: "Copilot" };
+
+/** The route a model runs through, as a subtitle: "via OpenCode". */
+export function routeLabel(provider: string, label?: string | null): string {
+  return `via ${label?.trim() || ROUTES[provider] || provider}`;
+}
+
+/** The row's model line: the vendor of the model it reports, its alias, effort and the full ID for help. */
+export function rowModel(entry: SessionUsageEntry) {
+  const presentation = modelPresentation(entry);
+  const model = presentation.route?.model ?? presentation.model;
+  const effort = effortShort(entry.telemetry?.effectiveThinkingOptionId ?? entry.telemetry?.thinkingOptionId ?? entry.telemetry?.runtimeInfo?.thinkingOptionId ?? null);
+  return { vendor: modelVendor(model), alias: modelAlias(model), effort, full: model ?? "Model unknown", route: routeLabel(entry.telemetry?.runtimeInfo?.provider ?? entry.provider), source: presentation.source };
+}
+
 export function validTokenCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }

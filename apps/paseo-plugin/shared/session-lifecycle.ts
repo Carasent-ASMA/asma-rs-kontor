@@ -1,8 +1,10 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { featureValuesSchema } from "./session-create";
 
-export const TAKEOVER_LIMIT = "Bulk takeover is not available yet. You can retry eligible sessions in place. Sessions that need a different provider or a new owner stay listed with a reason; no replacement is created.";
-export const RESUME_PROMPT = "The operator requests a retry of this interrupted task in this same session. Read the existing conversation and current workspace before continuing the existing authorized work. Preserve the task scope, checkout, children, supervisor, open findings and permission boundaries. If context, authority or a dependency is missing, report the limitation and wait. Do not create a replacement session.";
+export const TAKEOVER_LIMIT = "Archive acts only on the sessions selected here. Nothing is retried or replaced; Take over is its own reviewed action.";
+/** Resume was removed with its toolbar. Its receipts stay readable as history; none is executed or replayed. */
+export const RESUME_REMOVED = "Resume is no longer offered. This receipt is kept as history; nothing was sent.";
 const id = z.string().min(1).max(200);
 export const recoveryTargetSchema = z.object({ provider: id, model: id, effort: id }).strict();
 export type RecoveryTarget = z.infer<typeof recoveryTargetSchema>;
@@ -64,12 +66,8 @@ export const lifecycleReviewSchema = z.object({
   unresolved: z.array(unresolvedRefSchema).max(100).optional(),
 });
 export type LifecycleReview = z.infer<typeof lifecycleReviewSchema>;
-export const lifecycleCapabilities = defineRpc({ name: "sessions.lifecycle-capabilities", input: z.object({}).strict(), output: z.object({
-  providers: z.array(z.object({ id: z.string(), status: z.string(), models: z.array(z.object({ id: z.string(), efforts: z.array(z.string()) })) })),
-  limitation: z.string(),
-}) });
 export const previewLifecycle = defineRpc({ name: "sessions.lifecycle-preview", input: z.object({
-  action: z.enum(["resume", "archive"]), scope: z.enum(["filtered", "host"]), agentIds: z.array(id).max(10_000), target: recoveryTargetSchema,
+  action: z.literal("archive"), scope: z.enum(["filtered", "host"]), agentIds: z.array(id).max(10_000), target: recoveryTargetSchema,
 }).strict(), output: lifecycleReviewSchema });
 export const executeLifecycleItem = defineRpc({ name: "sessions.lifecycle-execute-item", input: z.object({ reviewId: z.string().uuid(), agentId: id }).strict(), output: lifecycleRowSchema });
 export const reconcileLifecycleItem = defineRpc({ name: "sessions.lifecycle-reconcile-item", input: z.object({ reviewId: z.string().uuid(), agentId: id }).strict(), output: lifecycleRowSchema });
@@ -88,6 +86,8 @@ export const takeoverReviewInputSchema = z.object({
   revision: z.number().int().positive().optional(),
   /** One of the review's offered profiles, for a session with no recorded chain; null keeps the earlier choice. */
   bindingKey: z.string().max(400).nullable(),
+  /** A model chosen for this takeover only, instead of the chain's first available route; null or absent keeps Auto. */
+  route: z.object({ provider: id, model: id, effort: id.nullable(), featureValues: featureValuesSchema.optional() }).strict().nullable().optional(),
 }).strict().refine((input) => (input.reviewId === undefined) === (input.revision === undefined), "A revision names its review.");
 export type TakeoverReviewInput = z.infer<typeof takeoverReviewInputSchema>;
 const routeViewSchema = z.object({ account: z.string(), model: z.string(), effort: z.string().nullable(), vendor: z.string(), step: z.number(), subStep: z.number() }).strict();

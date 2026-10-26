@@ -18,6 +18,6 @@ export function SessionStatusIcon({ status, colors, size = 16 }: { status: Statu
   </View>;
 }
 
-export function SessionStateMarker({ state, colors }: { state: OrganizationState; colors: Colors }) {
-  return <SessionStatusIcon status={state === "failed" ? "error" : state} colors={colors} />;
+export function SessionStateMarker({ state, colors, size }: { state: OrganizationState; colors: Colors; size?: number }) {
+  return <SessionStatusIcon status={state === "failed" ? "error" : state} colors={colors} size={size} />;
 }

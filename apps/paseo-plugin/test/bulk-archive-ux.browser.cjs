@@ -40,17 +40,19 @@ async function layout(page, scope, min) {
   }, [scope, min]);
   assert.deepEqual(problems, [], `${scope} layout`);
 }
-// WCAG 1.4.11: the drawn box against what is behind it, measured on the rendered page.
+// WCAG 1.4.11: the row's drawn choice mark (board D1: a circle, a checked circle when selected) against what is behind it.
 const contrast = (page, id) => page.evaluate(id => {
   const rgb = value => (value.match(/[\d.]+/g) || []).map(Number);
   const lum = ([r, g, b]) => [r, g, b].map(v => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
   const behind = node => { for (let n = node; n; n = n.parentElement) { const c = rgb(getComputedStyle(n).backgroundColor); if (c.length === 3 || c[3] > 0) return c.slice(0, 3); } return [255, 255, 255]; };
-  const box = document.querySelector(`[data-testid="${id}"]`), style = getComputedStyle(box), back = behind(box.parentElement);
-  const fill = rgb(style.backgroundColor), filled = fill.length === 3 || fill[3] > 0;
-  return { size: [box.offsetWidth, box.offsetHeight], state: filled ? 'filled' : 'outlined', ratio: Math.round(ratio(filled ? fill.slice(0, 3) : rgb(style.borderTopColor), back) * 100) / 100 };
+  const mark = document.querySelector(`[data-testid="sessions-row-${id}"] [data-testid="session-row-choice"] svg`);
+  const box = mark.getBoundingClientRect();
+  return { size: [Math.round(box.width), Math.round(box.height)], state: /circle-check/.test(mark.getAttribute('class')) ? 'checked' : 'clear', ratio: Math.round(ratio(rgb(getComputedStyle(mark).stroke), behind(mark.parentElement)) * 100) / 100 };
 }, id);
+const row = (page, id) => page.getByTestId(`sessions-row-${id}`).getByTestId('session-row-body');
 const calls = page => page.evaluate(() => window.rpcCalls);
+const footerOrder = async (page, left, right) => { const [a, b] = [await page.getByTestId(left).boundingBox(), await page.getByTestId(right).boundingBox()]; return a.x + a.width <= b.x && Math.abs(a.y - b.y) < 2; };
 
 async function check(width, height, theme, largeText, earlyClose = false) {
   const touch = width < 600, name = `${width}x${height}-${theme}${largeText ? '-text200' : ''}${earlyClose ? '-early-close' : ''}`;
@@ -63,36 +65,47 @@ async function check(width, height, theme, largeText, earlyClose = false) {
   const summary = () => page.getByTestId('bulk-archive-summary');
   try {
     await page.goto(`${origin}/?${touch ? 'layout=compact&' : ''}theme=${theme}&rows=4`);
-    await page.getByTestId('sessions-selection-toggle').waitFor();
+    await page.getByTestId('sessions-list').waitFor();
     const hide = page.getByRole('button', { name: 'Hide notices', exact: true });
     if (await hide.isVisible()) await hide.click();
+    // Sessions lands on Last visited; this fixture has no visits, so the flat All list holds the archive candidates.
+    await page.getByTestId('sessions-empty-all').click();
     await page.getByTestId('sessions-layout-flat').click();
-    await page.getByTestId('sessions-selection-toggle').click();
-    const all = page.getByTestId('sessions-select-all');
+    // Board D1: selection starts from the row menu's Select sessions, with that session selected.
+    await page.getByTestId('session-actions-agt_lead').click();
+    const menu = page.getByRole('dialog', { name: 'Session actions', exact: true });
+    await menu.getByTestId('session-action-select').click();
+    await menu.waitFor({ state: 'detached' });
+    const count = page.getByTestId('selection-count'), all = page.getByTestId('selection-all');
+    assert.equal(await count.innerText(), '1 / 11 selected');
     assert.equal(await all.getAttribute('aria-checked'), 'false');
-    const clear = await contrast(page, 'sessions-select-agt_a-box');
+    const clear = await contrast(page, 'agt_a');
     await shot('1-selecting');
 
-    for (const id of ['agt_lead', 'agt_b', 'agt_fence', 'agt_lost']) await page.getByTestId(`sessions-select-${id}`).click();
+    for (const id of ['agt_b', 'agt_fence', 'agt_lost']) await row(page, id).click();
     // Keyboard: Space toggles once and the focus outline is drawn.
-    await page.getByTestId('sessions-select-agt_a').focus();
+    await row(page, 'agt_a').focus();
     await page.keyboard.press('Space');
-    assert.equal(await page.getByTestId('sessions-select-agt_a').getAttribute('aria-checked'), 'true', 'Space selects once');
-    assert.notEqual(await page.getByTestId('sessions-select-agt_a').evaluate(node => getComputedStyle(node).borderTopColor), 'rgba(0, 0, 0, 0)', 'focus outline');
-    assert.equal(await all.getAttribute('aria-checked'), 'mixed', 'select-all shows some selected');
-    assert.ok((await page.getByTestId('sessions-bulk-archive').innerText()).includes('5 selected'));
-    const on = await contrast(page, 'sessions-select-agt_a-box');
-    for (const box of [clear, on]) { assert.deepEqual(box.size, [22, 22]); assert.ok(box.ratio >= 3, `checkbox ${box.state} ${box.ratio}:1`); }
-    assert.deepEqual([clear.state, on.state], ['outlined', 'filled'], 'selected and clear differ by fill and mark');
-    const target = await page.getByTestId('sessions-select-agt_a').boundingBox();
-    assert.ok(target.width >= 44 && target.height >= 44, 'checkbox 44pt target');
-    await layout(page, 'sessions-bulk-archive', min);
+    assert.equal(await row(page, 'agt_a').getAttribute('aria-checked'), 'true', 'Space selects once');
+    assert.notEqual(await row(page, 'agt_a').evaluate(node => getComputedStyle(node).borderTopColor), 'rgba(0, 0, 0, 0)', 'focus outline');
+    assert.equal(await count.innerText(), '5 / 11 selected');
+    assert.equal(await all.getAttribute('aria-checked'), 'false', 'select-all is checked only when every match is');
+    assert.equal(await all.getAttribute('aria-label'), 'Select all 11 matching sessions');
+    assert.deepEqual(await Promise.all(['selection-takeover', 'selection-takeover-auto', 'selection-archive'].map(id => page.getByTestId(id).innerText())), ['Take over 5', 'Auto', 'Archive 5']);
+    const on = await contrast(page, 'agt_a');
+    for (const mark of [clear, on]) { assert.deepEqual(mark.size, [18, 18]); assert.ok(mark.ratio >= 3, `choice mark ${mark.state} ${mark.ratio}:1`); }
+    assert.deepEqual([clear.state, on.state], ['clear', 'checked'], 'selected and clear differ by mark');
+    const target = await row(page, 'agt_a').boundingBox();
+    assert.ok(target.height >= 44, 'row choice 44pt target');
+    await layout(page, 'selection-header', min);
+    await layout(page, 'selection-bar', min);
     await shot('2-selected-focus');
 
     await page.getByRole('button', { name: 'Review archive of 5 selected sessions', exact: true }).click();
     await dialog().waitFor();
     await summary().filter({ hasText: '4 ready · 1 blocked' }).waitFor();
-    assert.ok(await page.getByRole('heading', { name: 'Archive 5 sessions?', exact: true }).isVisible());
+    assert.ok(await page.getByRole('heading', { name: 'Archive 5 sessions', exact: true }).isVisible());
+    assert.ok(await footerOrder(page, 'bulk-archive-cancel', 'bulk-archive-confirm'), 'D4: Cancel LEFT, Archive N RIGHT');
     const text = await dialog().innerText();
     assert.equal(text.split('There is no undo.').length, 2, 'one consequence line');
     assert.ok(text.includes('A new child session created just before a selected session archives may be archived with it, even if unselected.'), 'child scope before About opens');
@@ -127,6 +140,7 @@ async function check(width, height, theme, largeText, earlyClose = false) {
     // Progress counts the five confirmed sessions, not the blocked parent's preflight request.
     await summary().filter({ hasText: 'Session 1 of 5' }).waitFor();
     assert.ok(await page.getByRole('heading', { name: 'Archiving…', exact: true }).isVisible());
+    assert.equal(await page.getByTestId('bulk-archive-stop').innerText(), 'Stop before next session');
     if (largeText) await scale(page);
     await layout(page, 'bulk-archive-dialog', min);
     await shot('6-running');
@@ -147,6 +161,8 @@ async function check(width, height, theme, largeText, earlyClose = false) {
       for (const heading of ['Blocked · 2', 'Not confirmed · 1', 'Archived · 3']) assert.ok(result.includes(heading), heading);
       assert.ok(result.includes('Archived · runtime stop not confirmed'));
       assert.ok(await page.getByRole('button', { name: 'Review 1 blocked or unattempted session again', exact: true }).isVisible());
+      assert.equal(await page.getByTestId('bulk-archive-again').innerText(), 'Review 1 again');
+      assert.ok(await footerOrder(page, 'bulk-archive-close', 'bulk-archive-again'), 'D4 done: Close LEFT, Review N again RIGHT');
       if (largeText) await scale(page);
       await layout(page, 'bulk-archive-dialog', min);
       await shot('7-finished');
@@ -162,7 +178,7 @@ async function check(width, height, theme, largeText, earlyClose = false) {
       assert.deepEqual(toasts, [], 'no toast while the dialog showed the result');
       await page.getByTestId('sessions-bulk-status').filter({ hasText: 'Archived 4 · 2 blocked' }).waitFor();
       await page.getByRole('button', { name: 'Deselect 2 blocked sessions', exact: true }).click();
-      for (const id of ['agt_lead', 'agt_fence']) assert.equal(await page.getByTestId(`sessions-select-${id}`).getAttribute('aria-checked'), 'false', `${id} deselected`);
+      for (const id of ['agt_lead', 'agt_fence']) assert.equal(await row(page, id).getAttribute('aria-checked'), 'false', `${id} deselected`);
       await layout(page, 'sessions-bulk-archive', min);
       await shot('9-toolbar-results');
       await page.getByRole('button', { name: 'Dismiss archive results', exact: true }).click();

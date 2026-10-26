@@ -11,3 +11,11 @@ export function integrationSessions(): FixtureSession[] {
   } : value);
   return [...times, ...usage, ...deskSessions(), ...lifecycleSessions(), ...baseSessions()];
 }
+
+const SYNTHETIC_SOURCE = "SYNTHETIC totals for review; not read from any host";
+/** SYNTHETIC whole-session token totals for three integration sessions, one with its output side not reported. */
+export const SYNTHETIC_TOTALS = {
+  agt_model_report_0: { input: 124_800, output: 9_600, source: SYNTHETIC_SOURCE },
+  agt_swe_99103: { input: 1_200_000, output: 84_600, source: SYNTHETIC_SOURCE },
+  agt_qa_99103: { input: 31_200, output: null, source: SYNTHETIC_SOURCE },
+} as const;

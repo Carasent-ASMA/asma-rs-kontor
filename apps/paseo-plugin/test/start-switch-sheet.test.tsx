@@ -1,11 +1,14 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CreateOptions, CreateOutcome, CreateScope } from "../shared/session-create";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CreateOptions, CreateOutcome } from "../shared/session-create";
 import type { DirectoryEntry, DirectoryState } from "../client/session-directory";
 
+type HookStore = { slots: unknown[]; deps: (readonly unknown[] | undefined)[]; cleanups: (void | (() => void))[] };
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, effect: 0, deps: [] as (readonly unknown[] | undefined)[],
   cleanups: [] as (void | (() => void))[],
+  /** Each drawn child's own hook slots, kept across renders as React keeps a mounted instance's state. */
+  stores: {} as Record<string, HookStore>,
   rpc: {} as Record<string, ReturnType<typeof vi.fn>>,
   focusControl: vi.fn(),
   platform: "web",
@@ -13,10 +16,12 @@ const model = vi.hoisted(() => ({
   toast: { error: vi.fn(), show: vi.fn() },
   directory: null as unknown as DirectoryState,
   directoryArgs: [] as object[],
+  settings: null as unknown as { status: string; values?: object; revision?: string; save: ReturnType<typeof vi.fn> },
+  copyText: vi.fn(async (_text: string) => {}),
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
-    const index = this.cursor++;
-    if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
-    return [this.slots[index] as T, (next) => { this.slots[index] = typeof next === "function" ? (next as (previous: T) => T)(this.slots[index] as T) : next; }];
+    const slots = this.slots, index = this.cursor++;
+    if (!(index in slots)) slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
+    return [slots[index] as T, (next) => { slots[index] = typeof next === "function" ? (next as (previous: T) => T)(slots[index] as T) : next; }];
   },
   /** Runs an effect when its dependencies change, as React would after a render. */
   useEffect(effect: () => void | (() => void), deps?: readonly unknown[]) {
@@ -27,79 +32,115 @@ const model = vi.hoisted(() => ({
     this.cleanups[index] = effect();
   },
   unmount() { this.cleanups.forEach((cleanup) => cleanup?.()); this.cleanups = []; },
+  /** Draws a child on its own hook store, then returns to the caller's. */
+  scoped<T>(key: string, draw: () => T): T {
+    const outer = { slots: this.slots, cursor: this.cursor, deps: this.deps, effect: this.effect, cleanups: this.cleanups };
+    const store = this.stores[key] ??= { slots: [], deps: [], cleanups: [] };
+    Object.assign(this, { slots: store.slots, cursor: 0, deps: store.deps, effect: 0, cleanups: store.cleanups });
+    try { return draw(); } finally { Object.assign(this, outer); }
+  },
 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useState: <T,>(initial: T | (() => T)) => model.useState(initial),
   useRef: <T,>(initial: T) => model.useState(() => ({ current: initial }))[0],
   useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => model.useEffect(effect, deps),
   useCallback: <T,>(callback: T) => callback,
+  useMemo: <T,>(factory: () => T) => factory(),
+  useContext: () => undefined,
   useSyncExternalStore: <T,>(_subscribe: unknown, read: () => T) => read() }));
-vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
-vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast }));
+vi.mock("react-native", () => ({ Platform: { get OS() { return model.platform; } }, useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }), ScrollView: "ScrollView", View: "View", Text: "Text",
+  Pressable: "Pressable", Image: "Image", PanResponder: { create: () => ({ panHandlers: {} }) }, BackHandler: { addEventListener: () => ({ remove() {} }) } }));
+vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc[contract.name], useHosts: () => model.hosts, useSettings: () => model.settings, getPaseoClient: () => ({}) }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon", useToast: () => model.toast,
+  Modal: Object.assign(function Modal() { return null; }, { Content: function ModalContent() { return null; } }), copyText: (text: string) => model.copyText(text) }));
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
 
-import { createAvailability, StartSwitchPopover, StartSwitchSheet, switchRows, type CreateOptionsState } from "../client/start-switch-sheet";
-import { NewLsaForm, newRequestId, personaLine, resolveDraft } from "../client/new-lsa-form";
-import { openCreatedSession, openHandOff, takeHandOff, withdrawHandOff, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
+import { createAvailability, StartSwitchPopover, StartSwitchSheet, switchList, switchRows } from "../client/start-switch-sheet";
+import { NewLsaForm } from "../client/new-lsa-form";
+import { DenseSessionRow } from "../client/dense-session-row";
+import { OrganizationRowView } from "../client/organization-row";
+import { openHandOff, takeHandOff, withdrawHandOff, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
 import { AnchoredMenu } from "../client/anchored-menu";
-import { configureRecentStorage, recordVisit, readRecent } from "../client/recent-sessions";
-import { Action, Copy } from "../client/page-controls";
+import { configureRecentStorage, recentRows, recordVisit, readRecent } from "../client/recent-sessions";
+import { startSwitchCounts, type SwitchView } from "../client/session-state-shortcuts";
+import { matchesMembership, matchesQuery, matchesStatus } from "../client/session-view";
+import { Action } from "../client/page-controls";
 import { sessionEntry } from "./session-fixtures";
-import { ArchiveSessionButton } from "../client/session-lifecycle-view";
 import { DEFAULT_RECOVERY_TARGET, type LifecycleRow } from "../shared/session-lifecycle";
+import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
+import { UNSUPPORTED } from "../shared/session-navigator";
 
 type Element = ReactElement<Record<string, unknown>>;
-/** The element tree; the hook-free `Choices` and `SwitchRowItem` are drawn so their semantics are visible. */
+/** Function components drawn in place, each on its own hook store, so their controls and labels are visible. */
+const DRAWN = ["SwitchStrip", "StateToolbar", "MorePanel", "DeviceNote", "DenseSessionRow", "SessionActionsMenu", "ActionRow", "OrganizationRowView", "SwitchDetails", "SessionDetailSection"];
+const drawn = new WeakMap<object, ReactNode>();
 function elements(value: ReactNode): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(value)) return [];
-  const drawn = typeof value.type === "function" && ["Choices", "SwitchRowItem", "SearchPicker", "JiraIssuePicker", "SourceSessionPicker", "StartSwitchStatuses"].includes(value.type.name)
-    ? (value.type as (props: object) => ReactNode)(value.props) : null;
-  return [value, ...elements(value.props.children as ReactNode), ...elements(value.props.header as ReactNode), ...elements(drawn)];
+  const type = value.type as string | ((props: object) => ReactNode);
+  if (typeof type === "function" && DRAWN.includes(type.name)) {
+    if (!drawn.has(value)) drawn.set(value, model.scoped(`${type.name}:${value.key ?? (value.props.entry as DirectoryEntry | undefined)?.id ?? ""}`, () => type(value.props)));
+    return [value, ...elements(drawn.get(value))];
+  }
+  return [value, ...elements(value.props.children as ReactNode), ...elements(value.props.header as ReactNode)];
 }
-const text = (tree: Element[]) => tree.filter((node) => node.type === "Text" || node.type === Copy).map((node) => [node.props.children].flat(Infinity).join("")).join("\n");
+const text = (tree: Element[]) => tree.filter((node) => node.type === "Text").map((node) => [node.props.children].flat(Infinity).join("")).join("\n");
 const byTestId = (tree: Element[], id: string) => tree.find((node) => node.props.testID === id);
 const action = (tree: Element[], label: string) => tree.find((node) => node.type === Action && node.props.label === label);
+const press = (node: Element | undefined) => (node!.props.onPress as () => void)();
+/** The state toolbar's drawn row, which measures itself. */
+const stateRow = (tree: Element[]) => tree.find((node) => node.props.testID === "kontor-switch-states" && node.props.onLayout)!;
+/** Lays the state toolbar out at `width`, as its container measures it, and draws again. */
+const measure = (view: { tree: Element[]; render(): unknown }, width: number) => { (stateRow(view.tree).props.onLayout as (event: object) => void)({ nativeEvent: { layout: { width } } }); view.render(); };
+/** The drawn subtree under a testID, such as one session row. */
+const within = (tree: Element[], id: string) => elements(byTestId(tree, id));
+const rowIds = (tree: Element[]) => tree.filter((node) => node.type === DenseSessionRow).map((node) => (node.props.entry as DirectoryEntry).id);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const NOW = Date.parse("2026-10-22T12:00:00.000Z");
 const COLORS = { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } as never;
-const ISSUE_EPIC = { id: "100", key: "ASMA-100", summary: "Deliver the desk layout", created: "2026-10-01T10:00:00.000+0000", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
-const ISSUE_STORY = { id: "103", key: "ASMA-103", summary: "Replace New LSA with a role-aware New session", created: "2026-10-04T10:00:00.000+0000", type: "User Story", epic: false, status: "In Development", statusCategory: "In Progress", open: true, parent: null } as const;
 const OPTIONS: CreateOptions = {
-  enabled: true, disabledReason: null, pending: null, notes: [], catalogProjectId: "prj-adam", issues: [ISSUE_EPIC], jiraProblem: null,
-  desks: [
-    { projectId: "prj-adam", project: "DESK • ADAM", desk: "ADAM", kind: "adam", cwd: "/fixtures/adam", lead: { ADHOC: "wks-adhoc", LSA: "wks-lsa", TPM: "wks-tpm" } },
-    { projectId: "prj-tickets", project: "DESK • TICKETS", desk: "TICKETS", kind: "tickets", cwd: "/fixtures/tickets", lead: { ADHOC: "wks-t-adhoc", LSA: "wks-t-lsa", TPM: "wks-t-tpm" } },
-    { projectId: "prj-pr", project: "DESK • PR REVIEW", desk: "PR REVIEW", kind: "pr-review", cwd: "/fixtures/pr", lead: { ADHOC: null, LSA: "wks-pr-lsa", TPM: "wks-pr-tpm" } },
-  ],
-  providers: [
-    { id: "claude", label: "Claude", status: "ready", available: true, note: null, persona: "supported", defaultModel: "opus", defaultMode: "default",
-      models: [{ id: "opus", label: "Opus", efforts: [{ id: "high", label: "High" }, { id: "max", label: "Max" }], defaultEffort: "high" }, { id: "sonnet", label: "Sonnet", efforts: [], defaultEffort: null }],
-      modes: [{ id: "default", label: "Default", dangerous: false }, { id: "bypassPermissions", label: "Bypass", dangerous: true }] },
-    { id: "gemini", label: "Gemini", status: "error", available: false, note: "Provider error: not signed in.", persona: "unverified", defaultModel: null, defaultMode: null, models: [], modes: [] },
-    { id: "opencode", label: "OpenCode", status: "ready", available: true, note: null, persona: "unverified", defaultModel: "big", defaultMode: null, models: [{ id: "big", label: "Big", efforts: [], defaultEffort: null }], modes: [] },
-  ],
-  profile: { name: "lsa", provider: "claude", model: "opus", modeId: "default", effort: "max" },
+  enabled: true, disabledReason: null, pending: null, notes: [], catalogProjectId: "prj-adam", issues: [], jiraProblem: null,
+  desks: [{ projectId: "prj-adam", project: "DESK • ADAM", desk: "ADAM", kind: "adam", cwd: "/fixtures/adam", lead: { ADHOC: "wks-adhoc", LSA: "wks-lsa", TPM: "wks-tpm" } }],
+  providers: [{ id: "codex", label: "Codex", status: "ready", available: true, note: null, persona: "supported", defaultModel: "gpt-6-astra", defaultMode: "auto",
+    models: [{ id: "gpt-6-astra", label: "GPT-6 Astra", efforts: [], defaultEffort: null }], modes: [{ id: "auto", label: "Default permissions", dangerous: false }] }],
+  profile: { name: "lsa", provider: "codex", model: "gpt-6-astra", modeId: "auto", effort: null },
 };
 const outcome = (state: CreateOutcome["state"], patch: Partial<CreateOutcome> = {}): CreateOutcome => ({ requestId: "00000000-0000-4000-8000-000000000001", state, title: "LSA • ADHOC • Route review",
   agentId: state === "verified" || state === "differences" ? "agent-new" : null, workspaceId: "wks-adhoc", message: `Fixture ${state}.`, differences: [], persona: "supported", checkedAt: "2026-10-22", ...patch });
-const reply = (state: CreateOutcome["state"], patch: Partial<CreateOutcome> = {}) => async (input: { requestId: string }) => outcome(state, { ...patch, requestId: input.requestId });
 const prompted = (id: string, at: number, overrides: Parameters<typeof sessionEntry>[1] = {}) => ({ ...sessionEntry(id, overrides), lastUserMessageAt: new Date(at).toISOString() });
 const directory = (entries: DirectoryEntry[], live = true): DirectoryState => ({ entries, status: "ready", live, lastUpdatedAt: NOW, error: null, staleReason: null, pages: 1, includeArchived: false });
+const complete = (entries: DirectoryEntry[]): DirectoryState => ({ ...directory(entries), inventoryComplete: true });
+/** 23 running sessions, two of them Billing; one idle and one archived. */
+const RUNNING = [
+  ...Array.from({ length: 21 }, (_, index) => sessionEntry(`run-${index}`, { status: "running", title: `Route review ${index}` })),
+  sessionEntry("billing-1", { status: "running", title: "Billing fix" }), sessionEntry("billing-2", { status: "running", title: "Billing audit" }),
+  sessionEntry("idle", { title: "Route review idle" }), sessionEntry("archived", { status: "running", title: "Billing archived", archivedAt: "2026-10-22" }),
+];
+
+/** 25 "Route review N" sessions, Billing and an archived Route review; only agent-3, agent-17, agent-24, Billing and the archive were visited, agent-3 last. */
+function visitedRoutes(): DirectoryEntry[] {
+  const entries = Array.from({ length: 25 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
+  entries.push(sessionEntry("agent-other", { title: "Billing" }), sessionEntry("agent-archived", { title: "Route review old", archivedAt: "2026-10-22" }));
+  ["agent-24", "agent-17", "agent-archived", "agent-other", "agent-3"].forEach((id, index) => recordVisit("host-a", id, NOW - (5 - index) * 60_000));
+  return entries;
+}
 
 beforeEach(() => {
   model.unmount();
-  model.slots = []; model.cursor = 0; model.effect = 0; model.deps = [];
+  model.slots = []; model.cursor = 0; model.effect = 0; model.deps = []; model.stores = {};
   model.focusControl.mockClear();
   model.platform = "web";
   model.hosts = [{ serverId: "host-a", label: "Host A", status: "online" }];
   model.toast = { error: vi.fn(), show: vi.fn() };
   model.directoryArgs = [];
+  model.settings = { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "rev-1", save: vi.fn(async () => true) };
+  model.copyText = vi.fn(async () => {});
   withdrawHandOff();
-  model.rpc = { "sessions.create-options": vi.fn(async () => OPTIONS), "sessions.create": vi.fn(), "sessions.create-check": vi.fn() };
+  // The navigator's own owners are absent here, as on a host without them: every capability names why.
+  model.rpc = { "sessions.create-options": vi.fn(async () => OPTIONS), "sessions.create": vi.fn(), "sessions.create-check": vi.fn(),
+    "sessions.navigator-capabilities": vi.fn(async () => UNSUPPORTED), "sessions.usage-totals": vi.fn(async () => ({})) };
   configureRecentStorage(null);
 });
 
@@ -114,24 +155,21 @@ describe("Start or switch rows", () => {
     expect(rows.map((row) => row.entry.id)).toEqual(["agent-9", "agent-8", "agent-7", "agent-6", "agent-5", "agent-4", "agent-3", "agent-2"]);
     expect(rows[0]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
     expect(rows[1]!.detail).toMatch(/^Opened .+ · DESK • ADAM \/ ADAM$/);
+    expect(switchRows(entries, "", NOW, readRecent("host-a", NOW).record, true).rows.map((row) => row.entry.id))
+      .toEqual(["agent-9", "agent-8", "agent-7", "agent-6", "agent-5", "agent-4", "agent-3", "agent-2", "agent-1", "agent-0"]);
   });
 
-  it("matches every token across the directory, Recent first, at most 20 shown with the full count", () => {
-    const entries = Array.from({ length: 25 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
-    entries.push(sessionEntry("agent-other", { title: "Billing" }), sessionEntry("agent-archived", { title: "Route review old", archivedAt: "2026-10-22" }));
-    recordVisit("host-a", "agent-24", NOW);
-    const { rows, total } = switchRows(entries, "  review   ROUTE ", NOW, readRecent("host-a", NOW).record);
-    expect(total).toBe(25);
-    expect(rows).toHaveLength(20);
-    expect(rows[0]!.entry.id).toBe("agent-24");
-    expect(rows.map((row) => row.entry.id)).not.toContain("agent-archived");
+  it("narrows Last visited by every token in visit order, never adding unvisited or archived sessions", () => {
+    const { rows, total } = switchRows(visitedRoutes(), "  review   ROUTE ", NOW, readRecent("host-a", NOW).record);
+    expect(rows.map((row) => row.entry.id)).toEqual(["agent-3", "agent-17", "agent-24"]);
+    expect(total).toBe(3);
   });
 
-  it("says why New session is not offered", () => {
-    expect(createAvailability({ status: "offline" })).toContain("host offline");
+  it("says why New lead is not offered", () => {
+    expect(createAvailability({ status: "offline" })).toBe("New lead: host offline. Nothing can be created until it reconnects.");
     expect(createAvailability({ status: "loading" })).toBeNull();
-    expect(createAvailability({ status: "error", message: "timeout" })).toBe("New session unavailable: Kontor could not read this host's options (timeout).");
-    expect(createAvailability({ status: "ready", options: { ...OPTIONS, enabled: false, disabledReason: "New session is off on this host." } })).toBe("New session is off on this host.");
+    expect(createAvailability({ status: "error", message: "timeout" })).toBe("New lead unavailable: Kontor could not read this host's options (timeout).");
+    expect(createAvailability({ status: "ready", options: { ...OPTIONS, enabled: false, disabledReason: "New lead is off on this host." } })).toBe("New lead is off on this host.");
     expect(createAvailability({ status: "ready", options: OPTIONS })).toBeNull();
   });
 });
@@ -139,28 +177,68 @@ describe("Start or switch rows", () => {
 describe("Start or switch sheet", () => {
   function sheet(props: Partial<Parameters<typeof StartSwitchSheet>[0]> = {}) {
     recordVisit("host-a", "agent-a", Date.now() - 60_000);
-    const onOpen = vi.fn(), onOpenCreated = vi.fn(() => ({ ok: true } as const)), onShowAll = vi.fn(), onClose = vi.fn();
+    const onOpen = vi.fn(), onOpenCreated = vi.fn(() => ({ ok: true } as const)), onShowView = vi.fn(), onClose = vi.fn();
     const all = { anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online" as const,
-      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen, onOpenCreated, onShowAll, onClose, ...props };
+      directory: directory([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]), canOpen: true, onOpen, onOpenCreated, onShowView, onClose, ...props };
     let tree: Element[] = [];
     const render = () => { model.cursor = 0; model.effect = 0; tree = elements(StartSwitchSheet(all)); return tree; };
     render();
-    return { render, props: all, onOpen, onShowAll, onClose, get tree() { return tree; } };
+    return { render, props: all, onOpen, onShowView, onClose, get tree() { return tree; } };
   }
+  const choose = (s: ReturnType<typeof sheet>, testID: string) => { press(byTestId(s.tree, testID)); s.render(); };
+  const search = (s: ReturnType<typeof sheet>, value: string) => { (byTestId(s.tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)(value); s.render(); };
 
-  it("is a labelled dialog with independent Open and shared 44px archive controls", () => {
+  it("is a labelled dialog with New lead, search and rows that open by exact ID beside their own actions", async () => {
     const s = sheet();
-    const root = s.tree[0]!;
-    expect(root.props).toMatchObject({ testID: "kontor-switch-sheet", dialog: true, label: "Start or switch session", placement: { align: "end", width: 400, maxHeight: 560 } });
-    expect(byTestId(s.tree, "kontor-switch-list")?.props).toMatchObject({ role: "menu", accessibilityLabel: "Recent sessions" });
-    const row = byTestId(s.tree, "kontor-switch-row-agent-a")!;
-    expect(row.props).toMatchObject({ role: "menuitem", accessibilityLabel: expect.stringMatching(/^LSA • ASMA-1 • Route, Opened .+ · /) });
-    (row.props.onPress as () => void)();
-    expect(s.onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-a" }));
-    const archive = s.tree.find((node) => node.type === ArchiveSessionButton)!;
-    expect(archive.props).toMatchObject({ session: expect.objectContaining({ id: "agent-a" }), compact: true, disabled: false });
-    expect(elements(row.props.children as ReactNode).some((node) => node.type === ArchiveSessionButton)).toBe(false);
-    expect(byTestId(s.tree, "kontor-switch-search")?.props).toMatchObject({ accessibilityLabel: "Jump to any session", autoFocus: true });
+    await settle(); s.render();
+    expect(s.tree[0]!.props).toMatchObject({ testID: "kontor-switch-sheet", dialog: true, label: "Start or switch session", placement: { align: "end", width: 420, maxHeight: 640 } });
+    expect(text(s.tree)).toContain("Start or switch session\nThis host");
+    expect(byTestId(s.tree, "kontor-switch-new-lead")?.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "New lead" });
+    expect(action(s.tree, "Close")?.props.accessibilityLabel).toBe("Close start or switch");
+    expect(byTestId(s.tree, "kontor-switch-search")?.props).toMatchObject({ accessibilityLabel: "Find a session", placeholder: "Find a session…", autoFocus: true });
+    expect(byTestId(s.tree, "kontor-switch-list")?.props).toMatchObject({ role: "list", accessibilityLabel: "Last visited sessions" });
+    const row = within(s.tree, "session-row-agent-a");
+    expect(byTestId(row, "session-row-body")?.props).toMatchObject({ role: "button", accessibilityLabel: expect.stringMatching(/^LSA • ASMA-1 • Route\./) });
+    expect(byTestId(row, "session-actions-agent-a")?.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Actions for LSA • ASMA-1 • Route", "aria-haspopup": "menu" });
+    press(byTestId(row, "session-row-body"));
+    expect(s.onOpen).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "agent-a" }));
+  });
+
+  it("orders a row's menu as the board does, keeps unsupported operations listed with their reason, and runs none until one is chosen", async () => {
+    const s = sheet();
+    await settle(); s.render();
+    expect(byTestId(s.tree, "session-action-archive")).toBeUndefined();
+    choose(s, "session-actions-agent-a");
+    const items = within(s.tree, "session-row-agent-a").filter((node) => node.props.role === "menuitem");
+    expect(items.map((node) => node.props.testID)).toEqual(["session-action-takeover", "session-action-takeover-option", "session-action-favorite", "session-action-summarize",
+      "session-action-attach", "session-action-copy-id", "session-action-details", "session-action-select", "session-action-archive"]);
+    expect(items.filter((node) => !node.props["aria-disabled"]).map((node) => node.props.accessibilityLabel)).toEqual(["Add to favorites",
+      "Copy exact session ID", "Details", "Select sessions", "Archive"]);
+    // This host's server qualifies no takeover and has no summary store: each stays listed, refused with its reason.
+    expect(items.filter((node) => node.props["aria-disabled"]).map((node) => node.props.accessibilityLabel)).toEqual([`Take over. ${UNSUPPORTED.takeover.reason}`,
+      `Choose a model for taking over LSA • ASMA-1 • Route. ${UNSUPPORTED.takeover.reason}`,
+      `Summarize & copy. ${UNSUPPORTED.summaries.reason}`, `Attach summary to another seat…. ${UNSUPPORTED.summaries.reason}`]);
+    press(byTestId(s.tree, "session-action-copy-id")); await settle(); s.render();
+    expect(model.copyText).toHaveBeenCalledExactlyOnceWith("agent-a");
+    expect(model.toast.show).toHaveBeenCalledExactlyOnceWith("Copied session ID agent-a");
+    expect(byTestId(s.tree, "session-action-archive")).toBeUndefined();
+    choose(s, "session-actions-agent-a");
+    press(byTestId(s.tree, "session-action-favorite")); await settle();
+    expect(model.settings.save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ favorites: ["agent-a"] }), "rev-1");
+    expect(s.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("opens a row's Details from its menu with the full title, exact ID, exact times and unknown totals, and Close leaves the list", async () => {
+    const s = sheet();
+    await settle(); s.render();
+    choose(s, "session-actions-agent-a");
+    press(byTestId(s.tree, "session-action-details")); s.render();
+    const details = within(s.tree, "kontor-switch-details");
+    const shown = details.filter((node) => node.type === "Text").map((node) => [node.props.children].flat(Infinity).join(""));
+    expect(shown).toEqual(expect.arrayContaining(["LSA • ASMA-1 • Route", "agent-a", "Opened from Kontor on this device", "Unknown: no supported read reports this session's totals."]));
+    (byTestId(s.tree, "kontor-switch-details")!.props.footer as { props: { secondary: { onPress(): void } } }).props.secondary.onPress(); s.render();
+    expect(byTestId(s.tree, "kontor-switch-details")).toBeUndefined();
+    expect(s.onOpen).not.toHaveBeenCalled();
   });
 
   it("asks for the desk of the project context it was opened in", async () => {
@@ -177,83 +255,275 @@ describe("Start or switch sheet", () => {
     model.rpc["sessions.lifecycle-preview"] = preview; model.rpc["sessions.lifecycle-execute-item"] = execute;
     return { preview, execute };
   }
-  const archiveAction = (s: ReturnType<typeof sheet>) => s.tree.find((node) => node.type === ArchiveSessionButton)!;
-  it("archive X reads nothing on mount and performs one exact-ID existing preview/execute despite repeated taps, leaving Open alone", async () => {
+  /** Opens agent-a's menu and returns its Archive item as drawn. */
+  const archiveItem = (s: ReturnType<typeof sheet>) => { choose(s, "session-actions-agent-a"); return byTestId(s.tree, "session-action-archive")!; };
+  it("Archive reads nothing on mount and performs one exact-ID existing preview/execute despite repeated taps, leaving Open alone", async () => {
     let finish!: (value: LifecycleRow) => void;
     const execute = vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; }));
     const rpc = archiveFixture(execute), s = sheet();
     expect(rpc.preview).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
-    const press = archiveAction(s).props.onPress as () => void;
-    press(); press(); await settle(); s.render();
-    expect(archiveAction(s).props).toMatchObject({ pending: true, disabled: true });
+    const archive = archiveItem(s).props.onPress as () => void;
+    archive(); archive(); await settle(); s.render();
+    expect(archiveItem(s).props).toMatchObject({ "aria-disabled": true, disabled: true, accessibilityLabel: "Archive. Archive is not available for this session right now." });
+    expect(byTestId(s.tree, "kontor-switch-archiving")?.props).toMatchObject({ role: "status", "aria-busy": true, children: "Archiving LSA • ASMA-1 • Route…" });
     expect(rpc.preview).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: "archive", scope: "filtered", agentIds: ["agent-a"] }));
     expect(execute).toHaveBeenCalledExactlyOnceWith({ reviewId: "00000000-0000-4000-8000-000000000002", agentId: "agent-a" });
     expect(s.onOpen).not.toHaveBeenCalled(); expect(s.onClose).not.toHaveBeenCalled();
     finish(archiveRow({ outcome: "archived", runtime: "closed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Confirmed." } }));
     await settle(); s.render();
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeUndefined();
+    expect(rowIds(s.tree)).not.toContain("agent-a");
     expect(text(s.tree)).toContain("Archived LSA • ASMA-1 • Route.");
   });
-  it("archive X retains a refused row and reports its existing reason without dispatch", async () => {
+  it("Archive retains a refused row and reports its existing reason without dispatch", async () => {
     const rpc = archiveFixture(undefined, archiveRow({ eligible: false, outcome: "blocked", reason: "A managed child is protected." })), s = sheet();
-    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
-    expect(rpc.execute).not.toHaveBeenCalled(); expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    press(archiveItem(s)); await settle(); s.render();
+    expect(rpc.execute).not.toHaveBeenCalled(); expect(rowIds(s.tree)).toContain("agent-a");
     expect(byTestId(s.tree, "kontor-switch-archive-result")?.props).toMatchObject({ accessibilityRole: "alert", children: "A managed child is protected." });
   });
-  it("archive X keeps a newer unarchived native row when an older archive response settles", async () => {
+  it("Archive keeps a newer unarchived native row when an older archive response settles", async () => {
     let finish!: (value: LifecycleRow) => void;
     const original = sessionEntry("agent-a", { title: "Exact session", updatedAt: "2026-10-25T12:00:00Z" });
     const newer = { ...original, updatedAt: "2026-10-25T12:02:00Z" };
     const rpc = archiveFixture(vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; })));
     const s = sheet({ directory: directory([original]) });
-    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
-    expect(archiveAction(s).props).toMatchObject({ pending: true, disabled: true });
+    press(archiveItem(s)); await settle(); s.render();
+    expect(archiveItem(s).props["aria-disabled"]).toBe(true);
     s.props.directory = directory([newer]); s.render();
     finish(archiveRow({ title: original.title, outcome: "archived", runtime: "closed", availability: { agentId: original.id, state: "readable", archivedAt: "2026-10-25T12:01:00Z", checkedAt: "2026-10-25T12:01:00Z", revision: original.updatedAt, reason: "Older exact-ID read." } }));
     await settle(); s.render();
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")?.props.accessibilityLabel).toContain("Exact session");
+    expect(byTestId(within(s.tree, "session-row-agent-a"), "session-row-body")?.props.accessibilityLabel).toContain("Exact session");
     expect(s.props.directory.entries[0]).toEqual(newer);
     expect(text(s.tree)).not.toContain("Archived Exact session");
     expect(text(s.tree)).toContain("current native state");
     expect(action(s.tree, "Open Sessions to review archive")).toBeDefined();
-    expect(archiveAction(s).props.pending).toBe(false);
+    expect(archiveItem(s).props["aria-disabled"]).toBeUndefined();
     expect(rpc.preview).toHaveBeenCalledTimes(1); expect(rpc.execute).toHaveBeenCalledTimes(1);
     expect(s.onOpen).not.toHaveBeenCalled(); expect(s.onClose).not.toHaveBeenCalled();
   });
-  it("archive X never calls an uncertain reply success and offers the existing Sessions review path without resending", async () => {
+  it("Archive never calls an uncertain reply success and offers the existing Sessions review path without resending", async () => {
     const rpc = archiveFixture(vi.fn(async () => archiveRow({ outcome: "uncertain", runtime: "unconfirmed", availability: { agentId: "agent-a", state: "readable", archivedAt: null, checkedAt: "2026-10-25", revision: "fixture", reason: "Not archived on this read." } }))), s = sheet();
-    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
-    expect(archiveAction(s).props.disabled).toBe(true); expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    press(archiveItem(s)); await settle(); s.render();
+    expect(archiveItem(s).props["aria-disabled"]).toBe(true); expect(rowIds(s.tree)).toContain("agent-a");
     expect(text(s.tree)).not.toContain("Archived LSA"); expect(text(s.tree)).toContain("archive result unknown");
-    (action(s.tree, "Open Sessions to review archive")!.props.onPress as () => void)();
-    expect(s.onShowAll).toHaveBeenCalledExactlyOnceWith(""); expect(rpc.execute).toHaveBeenCalledTimes(1);
+    press(action(s.tree, "Open Sessions to review archive"));
+    expect(s.onShowView).toHaveBeenCalledExactlyOnceWith({ status: "all", query: "", membership: "sessions" }); expect(rpc.execute).toHaveBeenCalledTimes(1);
   });
-  it("archive X keeps a lost reply visible and requires review before another send", async () => {
+  it("Archive keeps a lost reply visible and requires review before another send", async () => {
     const rpc = archiveFixture(vi.fn(async () => { throw new Error("Reply lost"); })), s = sheet();
-    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    press(archiveItem(s)); await settle(); s.render();
     expect(text(s.tree)).toContain("Archive did not report a result: Reply lost");
-    expect(archiveAction(s).props.disabled).toBe(true);
-    (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
+    expect(archiveItem(s).props["aria-disabled"]).toBe(true);
+    press(archiveItem(s)); await settle(); s.render();
     expect(rpc.preview).toHaveBeenCalledTimes(1); expect(rpc.execute).toHaveBeenCalledTimes(1);
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    expect(rowIds(s.tree)).toContain("agent-a");
     expect(action(s.tree, "Open Sessions to review archive")).toBeDefined();
   });
-  it("archive X follows confirmed native archive membership while keeping runtime-unconfirmed wording", async () => {
+  it("Archive follows confirmed native archive membership while keeping runtime-unconfirmed wording", async () => {
     archiveFixture(vi.fn(async () => archiveRow({ outcome: "archived", runtime: "unconfirmed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Membership only." } })));
-    const s = sheet(); (archiveAction(s).props.onPress as () => void)(); await settle(); s.render();
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeUndefined();
+    const s = sheet(); press(archiveItem(s)); await settle(); s.render();
+    expect(rowIds(s.tree)).not.toContain("agent-a");
     expect(text(s.tree)).toContain("runtime stop not confirmed"); expect(text(s.tree)).not.toContain("Archived LSA");
   });
-  it.each([false, true])("archive X rejects late results after a host switch, including A→B→A (return=%s)", async (returnToFirstHost) => {
+  it.each([false, true])("Archive rejects late results after a host switch, including A→B→A (return=%s)", async (returnToFirstHost) => {
     let finish!: (value: LifecycleRow) => void;
     archiveFixture(vi.fn(() => new Promise<LifecycleRow>((resolve) => { finish = resolve; })));
-    const s = sheet(); (archiveAction(s).props.onPress as () => void)(); await settle();
+    const s = sheet(); press(archiveItem(s)); await settle();
     s.props.hostId = "host-b"; s.render();
     if (returnToFirstHost) { s.props.hostId = "host-a"; s.render(); }
     finish(archiveRow({ outcome: "archived", runtime: "closed", availability: { agentId: "agent-a", state: "readable", archivedAt: "2026-10-25", checkedAt: "2026-10-25", revision: "fixture", reason: "Old host result." } }));
     await settle(); s.render();
     expect(byTestId(s.tree, "kontor-switch-archive-result")).toBeUndefined();
     expect(s.props.directory.entries[0]!.archivedAt).toBeNull();
+  });
+
+  const STATES = ["recent", "activity", "running", "needs_input", "error", "all", "idle", "attention", "favorites"];
+  const tiles = (s: ReturnType<typeof sheet>) => within(s.tree, "kontor-switch-states").filter((node) => String(node.props.testID).startsWith("kontor-switch-state-"));
+  const ids = (s: ReturnType<typeof sheet>) => tiles(s).map((node) => String(node.props.testID).slice("kontor-switch-state-".length));
+
+  it.each([[296, 4], [366, 5], [524, 9], [600, 9]] as const)("fits whole 44pt state tiles in a %ipx row, with More and Kontor pinned after them", (width, shown) => {
+    const s = sheet();
+    measure(s, width);
+    const strip = stateRow(s.tree), [states, more, kontor] = strip.props.children as Element[];
+    expect(strip.props).toMatchObject({ role: "toolbar", accessibilityLabel: "Session states", style: { flexDirection: "row", alignItems: "center", gap: 4 } });
+    expect(ids(s)).toEqual(STATES.slice(0, shown));
+    // Whole tiles only: each 44pt tile and its 4pt gap, then More and Kontor at 44pt each, fit the measured row.
+    expect(shown * 48 + 2 * 48 - 4).toBeLessThanOrEqual(width);
+    expect(tiles(s).map((node) => node.props.target)).toEqual(Array(shown).fill(44));
+    expect([more!.props.testID, kontor!.props.testID, more!.props.target, kontor!.props.target]).toEqual(["kontor-switch-more", "kontor-switch-kontor", 44, 44]);
+    expect(states!.props.style).toEqual({ flex: 1, minWidth: 0, flexDirection: "row", gap: 4 });
+    expect(within(s.tree, "kontor-switch-states").some((node) => node.type === "ScrollView")).toBe(false);
+    expect(byTestId(s.tree, "kontor-switch-kontor")?.props).toMatchObject({ icon: "Building2", caption: "Kontor", label: "Open in Kontor" });
+    expect(tiles(s).map((node) => [node.props.label, node.props.count])).toEqual(STATES.slice(0, shown).map((state) => [expect.stringMatching(/^[A-Z].*, .+/), expect.objectContaining({ label: expect.any(String) })]));
+  });
+
+  it("names each tile with its exact count and keeps the original icons and the selected check on Last visited", () => {
+    const s = sheet();
+    measure(s, 600);
+    expect(tiles(s).map((node) => [String(node.props.label).split(",")[0], node.props.icon, node.props.selected])).toEqual([
+      ["Last visited", "Clock", true], ["Last activity", "Activity", false], ["Running", "Play", false], ["Questions", "MessageCircleQuestion", false], ["Errors", "CircleAlert", false],
+      ["All", "LayoutGrid", false], ["Idle", "Pause", false], ["Attention", "Bell", false], ["Favorites", "Star", false]]);
+  });
+
+  it("keeps a state chosen past the tiles that fit in the last tile, once, and through narrow, wide and narrow again", () => {
+    const s = sheet({ directory: complete(RUNNING) });
+    measure(s, 296);
+    choose(s, "kontor-switch-more");
+    choose(s, "kontor-switch-more-favorites");
+    expect(byTestId(s.tree, "kontor-switch-more-panel")).toBeUndefined();
+    expect(ids(s)).toEqual(["recent", "activity", "running", "favorites"]);
+    expect(tiles(s).filter((node) => node.props.selected).map((node) => node.props.testID)).toEqual(["kontor-switch-state-favorites"]);
+    search(s, " billing ");
+    measure(s, 600);
+    expect(ids(s)).toEqual(STATES);
+    expect(byTestId(s.tree, "kontor-switch-state-favorites")?.props.selected).toBe(true);
+    measure(s, 296);
+    expect(ids(s)).toEqual(["recent", "activity", "running", "favorites"]);
+    expect(byTestId(s.tree, "kontor-switch-search")?.props.value).toBe(" billing ");
+    expect(byTestId(s.tree, "kontor-switch-list")?.props.accessibilityLabel).toBe("Favorites sessions matching billing");
+  });
+
+  it("shows a state chosen under More on More, never as a tile", () => {
+    const s = sheet();
+    measure(s, 296);
+    choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-current");
+    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ selected: true, label: "More: Current" });
+    expect(ids(s)).toEqual(["recent", "activity", "running", "needs_input"]);
+    expect(tiles(s).some((node) => node.props.selected)).toBe(false);
+  });
+
+  it("filters Running in place without a hand-off, showing at most 20 of every match", () => {
+    const s = sheet({ directory: complete(RUNNING) });
+    choose(s, "kontor-switch-state-running");
+    expect(byTestId(s.tree, "kontor-switch-state-running")?.props.selected).toBe(true);
+    expect(byTestId(s.tree, "kontor-switch-list")?.props.accessibilityLabel).toBe("Running sessions");
+    expect(rowIds(s.tree)).toHaveLength(20);
+    expect(rowIds(s.tree).filter((id) => !id.startsWith("run-") && !id.startsWith("billing-"))).toEqual([]);
+    expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("20 of 23");
+    expect(s.onShowView).not.toHaveBeenCalled(); expect(s.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("reveals the rest of a capped list in place, in the same order, and starts short again for another state or search", () => {
+    const s = sheet({ directory: complete(RUNNING) });
+    choose(s, "kontor-switch-state-running");
+    const first = rowIds(s.tree);
+    press(action(s.tree, "Show 3 more")); s.render();
+    expect(rowIds(s.tree)).toHaveLength(23);
+    expect(rowIds(s.tree).slice(0, 20)).toEqual(first);
+    expect(new Set(rowIds(s.tree)).size).toBe(23);
+    expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("23 of 23");
+    expect(action(s.tree, "Show 3 more")).toBeUndefined();
+    choose(s, "kontor-switch-state-recent"); choose(s, "kontor-switch-state-running");
+    expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("20 of 23");
+  });
+
+  it("narrows the chosen state by the search and refines its count", () => {
+    const s = sheet({ directory: complete(RUNNING) });
+    choose(s, "kontor-switch-state-running");
+    search(s, " billing ");
+    expect(rowIds(s.tree).sort()).toEqual(["billing-1", "billing-2"]);
+    expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("2 of 2");
+    expect(byTestId(s.tree, "kontor-switch-list")?.props.accessibilityLabel).toBe("Running sessions matching billing");
+    expect(byTestId(s.tree, "kontor-switch-state-running")?.props.count).toMatchObject({ text: "2/23" });
+    search(s, "nothing like it");
+    expect(byTestId(s.tree, "kontor-switch-empty")?.props.children).toBe("No Running session matches “nothing like it”.");
+  });
+
+  // R9b: a search, state or layout change drops a waiting state-icon open even while that row stays listed; a lone tap still opens.
+  it("drops a waiting state-icon open when the search, state, layout or a group changes with the row still listed", () => {
+    vi.useFakeTimers();
+    try {
+      const s = sheet({ directory: complete([prompted("agent-a", Date.now() - 60_000, { title: "LSA • ASMA-1 • Route" })]) });
+      const tap = () => press(byTestId(within(s.tree, "session-row-agent-a"), "session-row-state"));
+      const layout = (next: string) => { (s.tree.find((node) => (node.type as { name?: string }).name === "SessionLayoutControl")!.props.onChange as (value: string) => void)(next); s.render(); };
+      measure(s, 600);
+      for (const intent of [() => search(s, "route"), () => choose(s, "kontor-switch-state-all"), () => layout("flat"), () => search(s, "")]) {
+        tap(); intent();
+        expect(rowIds(s.tree)).toContain("agent-a");
+        vi.advanceTimersByTime(600);
+        expect(s.onOpen).not.toHaveBeenCalled();
+      }
+      tap(); vi.advanceTimersByTime(600);
+      expect(s.onOpen).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "agent-a" }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("hands Kontor the chosen state and trimmed search in ordinary Sessions", () => {
+    const s = sheet({ directory: complete(RUNNING) });
+    choose(s, "kontor-switch-state-running");
+    search(s, " billing ");
+    press(byTestId(s.tree, "kontor-switch-kontor"));
+    expect(s.onShowView).toHaveBeenCalledExactlyOnceWith({ status: "running", query: "billing", membership: "sessions" });
+    expect(s.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("opens More with the other states and archived sessions; Archived hands Kontor the search in archived membership", () => {
+    const s = sheet();
+    expect(byTestId(s.tree, "kontor-switch-more-panel")).toBeUndefined();
+    choose(s, "kontor-switch-more");
+    expect(byTestId(s.tree, "kontor-switch-more")?.props.expanded).toBe(true);
+    expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.onPress).map((node) => node.props.label)).toEqual(["Last visited", "Last activity", "Running", "Questions",
+      "Errors", "All", "Idle", "Attention", "Favorites", "Current", "Starting", "Closed", "Earlier errors", "Provider blocked (observed)", "Archived sessions"]);
+    expect(within(s.tree, "kontor-switch-more-panel").filter((node) => node.props.role === "group").map((node) => node.props.accessibilityLabel)).toEqual(["All states", "More states"]);
+    expect(byTestId(s.tree, "kontor-switch-more-recent")?.props).toMatchObject({ selected: true, icon: "Clock" });
+    search(s, " route ");
+    press(byTestId(s.tree, "kontor-switch-more-archived"));
+    expect(s.onShowView).toHaveBeenCalledExactlyOnceWith({ status: "all", query: "route", membership: "archived" });
+  });
+
+  it("filters a More state in place and names it on More, but sends Provider blocked to Kontor's exact reads", () => {
+    const s = sheet({ directory: complete([...RUNNING, sessionEntry("done", { status: "closed", title: "Route review done" })]) });
+    choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-closed");
+    expect(byTestId(s.tree, "kontor-switch-more-panel")).toBeUndefined();
+    expect(byTestId(s.tree, "kontor-switch-more")?.props).toMatchObject({ label: "More: Closed", selected: true });
+    expect(rowIds(s.tree)).toEqual(["done"]);
+    choose(s, "kontor-switch-more"); choose(s, "kontor-switch-more-provider_blocked");
+    expect(s.onShowView).toHaveBeenCalledExactlyOnceWith({ status: "provider_blocked", query: "", membership: "sessions" });
+    expect(byTestId(s.tree, "kontor-switch-more")?.props.label).toBe("More: Closed");
+    expect(rowIds(s.tree)).toEqual(["done"]);
+  });
+
+  it("orders Last activity by the last prompt or running turn, never by metadata updates", () => {
+    const at = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+    const s = sheet({ directory: directory([
+      prompted("prompted-3h", NOW - 180 * 60_000, { updatedAt: at(0) }),
+      sessionEntry("turn-1h", { status: "running", activeTurnStartedAt: at(60), updatedAt: at(300) }),
+      prompted("prompted-2h", NOW - 120 * 60_000, { updatedAt: at(240) }),
+      sessionEntry("renamed-only", { updatedAt: at(0) }),
+    ]) });
+    choose(s, "kontor-switch-state-activity");
+    expect(rowIds(s.tree)).toEqual(["turn-1h", "prompted-2h", "prompted-3h"]);
+    expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("3 of 3");
+  });
+
+  it("opens every group of a grouped state until it is collapsed here, with no favorite stars", () => {
+    const s = sheet({ directory: complete(RUNNING) });
+    choose(s, "kontor-switch-state-running");
+    const headers = () => s.tree.filter((node) => node.type === OrganizationRowView && (node.props.row as { kind: string }).kind === "group")
+      .map((node) => elements(node).find((child) => child.props["aria-expanded"] !== undefined)!);
+    expect(headers().length).toBeGreaterThan(0);
+    expect(headers().every((node) => node.props["aria-expanded"] === true)).toBe(true);
+    expect(s.tree.some((node) => /^(Unfavorite|Favorite) /.test(String(node.props.accessibilityLabel)))).toBe(false);
+    press(headers()[0]); s.render();
+    expect(headers()[0]!.props["aria-expanded"]).toBe(false);
+    expect(rowIds(s.tree)).toEqual([]);
+  });
+
+  it("offers Clear recent only on Last visited", () => {
+    const s = sheet();
+    expect(action(s.tree, "Clear recent")).toBeDefined();
+    choose(s, "kontor-switch-state-running");
+    expect(action(s.tree, "Clear recent")).toBeUndefined();
+    choose(s, "kontor-switch-state-recent");
+    expect(action(s.tree, "Clear recent")).toBeDefined();
+  });
+
+  it("marks the session it was opened from", () => {
+    recordVisit("host-a", "agent-b", Date.now() - 600_000);
+    const s = sheet({ currentId: "agent-a", directory: directory([prompted("agent-a", Date.now() - 60_000), sessionEntry("agent-b")]) });
+    expect(text(within(s.tree, "session-row-agent-a"))).toContain("open now");
+    expect(text(within(s.tree, "session-row-agent-b"))).toMatch(/open \d+m/);
+    expect(byTestId(s.tree, "session-row-agent-a")?.props.style).toMatchObject({ borderLeftWidth: 2 });
+    expect(byTestId(s.tree, "session-row-agent-b")?.props.style).toMatchObject({ borderLeftWidth: 0 });
   });
 
   it("covers the screen on a phone and does not steal focus there", () => {
@@ -264,7 +534,7 @@ describe("Start or switch sheet", () => {
 
   it("restores trigger focus through the shared native helper on Close and panel dismissal", async () => {
     const s = sheet();
-    (action(s.tree, "Close")!.props.onPress as () => void)();
+    press(action(s.tree, "Close"));
     expect(s.onClose).toHaveBeenCalledTimes(1);
     await settle();
     expect(model.focusControl).toHaveBeenCalledTimes(1);
@@ -273,79 +543,138 @@ describe("Start or switch sheet", () => {
     expect(model.focusControl).toHaveBeenCalledTimes(2);
   });
 
-  it("offers New session only after the host's options say it is on, and opens the form in place", async () => {
+  it("offers New lead only after the host's options say it is on, and opens the form in place", async () => {
     const s = sheet();
-    expect(action(s.tree, "New session")).toBeUndefined();
+    expect(byTestId(s.tree, "kontor-switch-new-lead")).toBeUndefined();
     await settle(); s.render();
     expect(model.rpc["sessions.create-options"]).toHaveBeenCalledTimes(1);
-    (action(s.tree, "New session")!.props.onPress as () => void)(); s.render();
-    expect(s.tree[0]!.props.label).toBe("New session");
+    expect(text(within(s.tree, "kontor-switch-new-lead"))).toBe("New lead");
+    choose(s, "kontor-switch-new-lead");
+    expect(s.tree[0]!.props.label).toBe("New lead");
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
-    expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true });
-    expect(form.props.hostId).toBe("host-a");
+    expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true, hostId: "host-a" });
     expect(form.props.onOpenCreated).toBeDefined();
     (form.props.onCancel as () => void)(); s.render();
     expect(byTestId(s.tree, "kontor-switch-list")).toBeDefined();
   });
 
-  it.each(["Close", "Back", "Cancel"])("invalidates the creation continuation immediately on %s", async (leave) => {
+  it("keeps the settled hint through a quick LSA→TPM→LSA switch, blocks Create until the latest read answers, and never applies a stale read", async () => {
+    const reads: { scope: { role?: string }; answer: (options: CreateOptions) => void }[] = [];
+    model.rpc["sessions.create-options"] = vi.fn((scope: { role?: string }) => new Promise<CreateOptions>((answer) => { reads.push({ scope, answer }); }));
+    model.rpc["sessions.create-features"] = vi.fn(async () => ({ features: [], problem: null }));
+    const s = sheet();
+    reads.shift()!.answer(OPTIONS); await settle(); s.render();
+    choose(s, "kontor-switch-new-lead");
+    // Every frame the form draws: its visible hint, and whether Create is blocked and why.
+    const frames: { hint: unknown; blocked: unknown; why: unknown }[] = [];
+    let form: Element[] = [];
+    const draw = () => {
+      s.render();
+      form = elements(model.scoped("form", () => NewLsaForm(s.tree.find((node) => node.type === NewLsaForm)!.props as Parameters<typeof NewLsaForm>[0])));
+      const create = byTestId(form, "kontor-new-lsa-create")!;
+      frames.push({ hint: byTestId(form, "kontor-new-lsa-problem")?.props.children ?? null, blocked: create.props.disabled, why: create.props.accessibilityHint ?? null });
+    };
+    // A choice re-renders, then its read's effect renders again, as React commits before an effect runs.
+    const role = (next: string) => { (form.find((node) => node.props.label === "Role" && node.props.onSelect)!.props.onSelect as (id: string) => void)(next); draw(); draw(); };
+    draw();
+    (byTestId(form, "kontor-new-lsa-topic")!.props.onChangeText as (topic: string) => void)("Route review"); draw();
+    expect(frames.at(-1)).toEqual({ hint: null, blocked: false, why: null });
+    const before = frames.length;
+    role("TPM"); role("LSA");
+    expect(reads.map((read) => read.scope.role)).toEqual(["TPM", "LSA"]);
+    const waiting = "Refreshing this desk's choices… Creation stays disabled until the host answers.";
+    expect(frames.slice(before + 1).every((frame) => frame.blocked === true && frame.why === waiting)).toBe(true);
+    // The latest read answers first; the earlier one arrives late and is never applied.
+    const [stale, latest] = reads;
+    latest!.answer(OPTIONS); await settle(); draw();
+    stale!.answer({ ...OPTIONS, enabled: false, disabledReason: "Stale TPM read." }); await settle(); draw();
+    expect(frames.at(-1)).toEqual({ hint: "Choose a Jira issue.", blocked: true, why: "Choose a Jira issue." });
+    // The hint changes once, to what the switch settles on: no passing status, no stale or intermediate problem.
+    const shown = frames.map((frame) => frame.hint).filter((hint, index, all) => index === 0 || hint !== all[index - 1]);
+    expect(shown).toEqual(["Type a topic of at least 3 characters.", null, "Choose a Jira issue."]);
+  });
+
+  it.each(["dismissal", "Back", "Cancel"])("invalidates the creation continuation immediately on %s", async (leave) => {
     const s = sheet();
     await settle(); s.render();
-    (action(s.tree, "New session")!.props.onPress as () => void)(); s.render();
+    choose(s, "kontor-switch-new-lead");
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
     const active = form.props.isActive as () => boolean;
     expect(active()).toBe(true);
+    // The form carries no Close of its own; Escape or the backdrop dismisses the sheet.
+    expect(action(s.tree, "Close")).toBeUndefined();
     if (leave === "Cancel") (form.props.onCancel as () => void)();
-    else if (leave === "Close") (action(s.tree, "Close")!.props.onPress as () => void)();
-    else (s.tree.find((node) => node.props.label === "Back to recent sessions")!.props.onPress as () => void)();
+    else if (leave === "dismissal") (s.tree[0]!.props.onClose as () => void)();
+    else press(s.tree.find((node) => node.props.label === "Back to sessions"));
     expect(active()).toBe(false);
   });
 
   it.each([
-    ["the switch is off", async () => ({ ...OPTIONS, enabled: false, disabledReason: "New session is off on this host. The operator turns it on at the host computer." }), "New session is off on this host. The operator turns it on at the host computer."],
-    ["the options read failed", async () => { throw new Error("handler crashed"); }, "New session unavailable: Kontor could not read this host's options (handler crashed)."],
-  ])("states why New session is absent when %s", async (_label, read, message) => {
+    ["the switch is off", async () => ({ ...OPTIONS, enabled: false, disabledReason: "New lead is off on this host. The operator turns it on at the host computer." }), "New lead is off on this host. The operator turns it on at the host computer."],
+    ["the options read failed", async () => { throw new Error("handler crashed"); }, "New lead unavailable: Kontor could not read this host's options (handler crashed)."],
+  ])("states why New lead is absent when %s", async (_label, read, message) => {
     model.rpc["sessions.create-options"] = vi.fn(read);
     const s = sheet();
     await settle(); s.render();
-    expect(action(s.tree, "New session")).toBeUndefined();
+    expect(byTestId(s.tree, "kontor-switch-new-lead")).toBeUndefined();
     expect(byTestId(s.tree, "kontor-switch-create-status")?.props.children).toBe(message);
   });
 
   it("asks nothing of an offline host and shows the last known list", () => {
     const s = sheet({ hostStatus: "offline", directory: directory([prompted("agent-a", Date.now() - 60_000)], false) });
     expect(model.rpc["sessions.create-options"]).not.toHaveBeenCalled();
-    expect(byTestId(s.tree, "kontor-switch-create-status")?.props.children).toContain("host offline");
+    expect(byTestId(s.tree, "kontor-switch-create-status")?.props.children).toBe("New lead: host offline. Nothing can be created until it reconnects.");
     expect(byTestId(s.tree, "kontor-switch-freshness")).toBeDefined();
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
+    expect(rowIds(s.tree)).toEqual(["agent-a"]);
   });
 
   it("keeps Check reachable for a pending creation after the operator turns creation off", async () => {
-    model.rpc["sessions.create-options"]!.mockResolvedValue({ ...OPTIONS, enabled: false, disabledReason: "New session is off on this host.", pending: outcome("unknown") });
+    model.rpc["sessions.create-options"]!.mockResolvedValue({ ...OPTIONS, enabled: false, disabledReason: "New lead is off on this host.", pending: outcome("unknown") });
     const s = sheet();
     await settle(); s.render();
-    expect(action(s.tree, "New session")).toBeUndefined();
-    (action(s.tree, "Check creation")!.props.onPress as () => void)(); s.render();
+    expect(byTestId(s.tree, "kontor-switch-new-lead")?.props.accessibilityLabel).toBe("Check pending session creation");
+    expect(text(within(s.tree, "kontor-switch-new-lead"))).toBe("Check creation");
+    choose(s, "kontor-switch-new-lead");
     expect(s.tree.find((node) => node.type === NewLsaForm)?.props.options).toMatchObject({ status: "ready", options: { enabled: false, pending: { state: "unknown" } } });
   });
 
-  it("searches, hands a long result to Sessions, and says when nothing matches", () => {
-    const entries = Array.from({ length: 22 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
-    const s = sheet({ directory: directory(entries) });
-    (byTestId(s.tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)(" route "); s.render();
-    expect(byTestId(s.tree, "kontor-switch-list")?.props.accessibilityLabel).toBe("Matching sessions");
-    (action(s.tree, "Show all 22 in Sessions")!.props.onPress as () => void)();
-    expect(s.onShowAll).toHaveBeenCalledWith("route");
-    (byTestId(s.tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)("nothing like it"); s.render();
+  it("searches Last visited only, at most 20 of its matches with the full count, and says when nothing matches", () => {
+    const visited = Array.from({ length: 22 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
+    for (const entry of visited) recordVisit("host-a", entry.id, Date.now() - 120_000);
+    const s = sheet({ directory: directory([...visited, sessionEntry("unvisited", { title: "Route review elsewhere" })]) });
+    search(s, " route ");
+    expect(byTestId(s.tree, "kontor-switch-list")?.props.accessibilityLabel).toBe("Last visited sessions matching route");
+    expect(rowIds(s.tree)).toHaveLength(20);
+    expect(rowIds(s.tree)).not.toContain("unvisited");
+    expect(byTestId(s.tree, "kontor-switch-count")?.props.children).toBe("20 of 22");
+    search(s, "nothing like it");
     expect(byTestId(s.tree, "kontor-switch-empty")?.props.children).toBe("No session matches “nothing like it”.");
+  });
+
+  it("counts, lists and hands Kontor one Last visited set for a search", () => {
+    const entries = visitedRoutes();
+    const s = sheet({ directory: complete(entries) });
+    search(s, " route ");
+    const record = readRecent("host-a").record, recentIds = recentRows(entries, record).map((row) => row.entry.id);
+    const listed = switchList(entries, "recent", " route ", Date.now(), record, []);
+    expect(listed.total).toBe(3);
+    expect(rowIds(s.tree)).toEqual(listed.rows.map((entry) => entry.id));
+    expect(startSwitchCounts(complete(entries), "Live", { query: " route ", recent: recentIds }).recent.numerator).toBe(String(listed.total));
+    expect(byTestId(s.tree, "kontor-switch-state-recent")?.props.count).toMatchObject({ numerator: String(listed.total) });
+    press(byTestId(s.tree, "kontor-switch-kontor"));
+    expect(s.onShowView).toHaveBeenCalledExactlyOnceWith({ status: "recent", query: "route", membership: "sessions" });
+    const view = s.onShowView.mock.calls[0]![0] as SwitchView;
+    const kontor = entries.filter((entry) => matchesMembership(entry, view.membership) && matchesStatus(entry, view.status, [], recentIds) && matchesQuery(entry, view.query));
+    expect(kontor.map((entry) => entry.id).sort()).toEqual(listed.rows.map((entry) => entry.id).sort());
   });
 
   it("clears Recent on this device and says so", () => {
     recordVisit("host-a", "agent-a", Date.now());
     const s = sheet({ directory: directory([sessionEntry("agent-a")]) });
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeDefined();
-    (action(s.tree, "Clear recent on this device")!.props.onPress as () => void)(); s.render();
-    expect(byTestId(s.tree, "kontor-switch-row-agent-a")).toBeUndefined();
+    expect(rowIds(s.tree)).toEqual(["agent-a"]);
+    expect(action(s.tree, "Clear recent")?.props.accessibilityLabel).toBe("Clear recent on this device");
+    press(action(s.tree, "Clear recent")); s.render();
+    expect(rowIds(s.tree)).toEqual([]);
     expect(String(byTestId(s.tree, "kontor-switch-empty")?.props.children)).toMatch(/^Cleared on this device at /);
     expect(text(s.tree)).toContain("Remembered until Paseo restarts on this device.");
   });
@@ -359,26 +688,20 @@ describe("Start or switch sheet", () => {
     const values = new Map([["kontor.recent@1", raw]]);
     configureRecentStorage({ read: (key) => values.get(key), write: (key, value) => { if (value !== null) values.set(key, value); } });
     const s = sheet({ directory: directory([sessionEntry("legacy-id"), sessionEntry("agent-a")]) });
-    expect(byTestId(s.tree, "kontor-switch-row-legacy-id")).toBeUndefined();
-    expect(text(s.tree)).toContain("Native sidebar opens and other devices are not included.");
+    expect(rowIds(s.tree)).not.toContain("legacy-id");
+    expect(byTestId(s.tree, "kontor-switch-device")?.props.accessibilityLabel).toContain("Native sidebar opens and other devices are not included.");
     expect(text(s.tree)).not.toContain("Prompted");
-    expect(text(s.tree)).toContain("Saved entries from an earlier version (1), visit time and host unknown, are listed under Recent in Sessions.");
-    const all = action(s.tree, "Show all 1 recent in Sessions")!;
-    expect(all.props.accessibilityLabel).toBe("Show all 1 recent sessions and saved entries in Sessions");
-    (all.props.onPress as () => void)();
-    expect(s.onShowAll).toHaveBeenCalledWith("");
-    (action(s.tree, "Clear recent on this device")!.props.onPress as () => void)(); s.render();
+    expect(text(s.tree)).toContain("Saved entries from an earlier version (1), visit time and host unknown, are listed under Last visited in Sessions.");
+    press(action(s.tree, "Clear recent")); s.render();
     expect(values.get("kontor.recent@1")).toBe(raw);
     expect(text(s.tree)).toContain("Saved entries from an earlier version (1)");
   });
 
-  it.each([320, 390])("keeps the existing compact sheet and accessible 44px rows at %ipx", (width) => {
+  it.each([320, 390])("covers the screen at %ipx with rows whose actions keep a 44pt target", (width) => {
     const s = sheet({ compact: true, rootSize: { width, height: 844 } });
     expect(s.tree[0]!.props.placement).toEqual({ align: "stretch", width: 0, cover: true });
-    const row = byTestId(s.tree, "kontor-switch-row-agent-a")!;
-    expect(row.props.role).toBe("menuitem");
-    expect(row.props.accessibilityLabel).toMatch(/^LSA .*Opened/);
-    expect((row.props.style as (state: { pressed: boolean }) => object)({ pressed: false })).toMatchObject({ minHeight: 44 });
+    expect(byTestId(within(s.tree, "session-row-agent-a"), "session-row-body")?.props.role).toBe("button");
+    expect((byTestId(s.tree, "session-actions-agent-a")!.props.style as (state: { pressed: boolean }) => object)({ pressed: false })).toMatchObject({ minHeight: 44 });
   });
 });
 
@@ -397,33 +720,37 @@ describe("Start or switch popover from the composer pill", () => {
     return { render, search, openScreen, close, get tree() { return tree; } };
   }
   const navigation = () => ({ openAgent: vi.fn(), openWorkspace: vi.fn() }) as unknown as SessionNavigation & { openAgent: ReturnType<typeof vi.fn> };
+  const handedKey = (p: ReturnType<typeof pop>, call = 0) => (p.openScreen.mock.calls[call]![0] as { params: { target: string } }).params.target;
 
-  it("draws the shared body in the host's surface: no nested sheet, title, Close or second scroller, with Open Kontor inside", async () => {
+  it("draws the shared body in the host's surface: no nested sheet, Close or second scroller", async () => {
     const p = pop();
     await settle(); p.render();
     expect(model.rpc["sessions.create-options"]).toHaveBeenCalledWith({ workspaceId: "wks-adam" });
     expect(p.tree.some((node) => node.type === AnchoredMenu)).toBe(false);
-    expect(text(p.tree)).not.toContain("Start or switch");
     expect(action(p.tree, "Close")).toBeUndefined();
-    expect(action(p.tree, "Open Kontor")?.props).toMatchObject({ icon: "Building2" });
-    expect(action(p.tree, "New session")).toBeDefined();
-    expect(byTestId(p.tree, "kontor-switch-list")).toMatchObject({ type: "View", props: { role: "menu", accessibilityLabel: "Recent sessions" } });
-    expect(p.tree.some((node) => node.type === "ScrollView")).toBe(false);
+    expect(text(p.tree)).toContain("Start or switch session\nThis host");
+    // The compact host sheet shows the title itself, so the body keeps only its scope there.
+    const sheet = text(pop({ compact: true }).tree);
+    expect(sheet).not.toContain("Start or switch session"); expect(sheet).toContain("This host");
+    expect(byTestId(p.tree, "kontor-switch-new-lead")).toBeDefined();
+    expect(byTestId(p.tree, "kontor-switch-kontor")).toBeDefined();
+    expect(byTestId(p.tree, "kontor-switch-list")).toMatchObject({ type: "View", props: { role: "list", accessibilityLabel: "Last visited sessions" } });
+    // The host's surface scrolls the body; nothing inside it scrolls, and the state toolbar shows whole tiles instead.
+    expect(p.tree.filter((node) => node.type === "ScrollView")).toEqual([]);
     expect(byTestId(p.tree, "kontor-switch-search")?.props.autoFocus).toBe(true);
-    expect(pop({ compact: true }).tree.find((node) => node.props.testID === "kontor-switch-search")?.props.autoFocus).toBe(false);
+    expect(byTestId(pop({ compact: true }).tree, "kontor-switch-search")?.props.autoFocus).toBe(false);
   });
 
-  it("draws the same Recent rows, search and footnotes as the Kontor screen's sheet", () => {
+  it("draws the same Last visited rows and coverage note as the Kontor screen's sheet", () => {
     const p = pop();
     const sheetTree = elements(StartSwitchSheet({ anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors: COLORS, hostId: "host-a", hostStatus: "online",
-      directory: model.directory, canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(), onShowAll: vi.fn(), onClose: vi.fn() }));
-    const rows = (tree: Element[]) => tree.filter((node) => String(node.props.testID).startsWith("kontor-switch-row-")).map((node) => node.props.accessibilityLabel);
+      directory: model.directory, canOpen: true, onOpen: vi.fn(), onOpenCreated: vi.fn(), onShowView: vi.fn(), onClose: vi.fn() }));
+    const rows = (tree: Element[]) => tree.filter((node) => node.props.testID === "session-row-body").map((node) => node.props.accessibilityLabel);
     expect(rows(p.tree)).toEqual(rows(sheetTree));
     expect(rows(p.tree)).toHaveLength(1);
-    for (const line of ["Opened from Kontor · this host and app profile only", "Native sidebar opens and other devices are not included."]) {
-      expect(text(p.tree)).toContain(line);
-      expect(text(sheetTree)).toContain(line);
-    }
+    const coverage = (tree: Element[]) => byTestId(tree, "kontor-switch-device")?.props.accessibilityLabel;
+    expect(coverage(p.tree)).toContain("Opened from Kontor · this host and app profile only");
+    expect(coverage(sheetTree)).toBe(coverage(p.tree));
   });
 
   it("reads the shared directory without setting its Archived choice", () => {
@@ -432,95 +759,83 @@ describe("Start or switch popover from the composer pill", () => {
     expect(model.directoryArgs[0]).not.toHaveProperty("includeArchived");
   });
 
-  it("offers four canonical status shortcuts from the existing directory, not Recent, with one host-scoped hand-off despite repeated taps", () => {
-    const p = pop({ complete: true, entries: [sessionEntry("run", { status: "running" }), sessionEntry("question", { needsInput: true }),
-      sessionEntry("finished", { requiresAttention: true, attentionReason: "finished" }), sessionEntry("error", { status: "error" })] });
-    const shortcuts = p.tree.filter(node => String(node.props.testID).startsWith("kontor-switch-status-") && node.props.onPress);
-    expect(shortcuts).toHaveLength(4);
-    for (const node of shortcuts) expect(node.props.target).toBeGreaterThanOrEqual(44);
-    expect(byTestId(p.tree, "kontor-switch-status-needs_input")!.props).toMatchObject({ count: { text: "1" }, label: expect.stringContaining("Questions / Needs input, 1 sessions") });
-    expect(byTestId(p.tree, "kontor-switch-status-provider_blocked")!.props).toMatchObject({ count: { text: "…" } });
-    expect(model.directoryArgs).toEqual([{ hostId: "host-a", hostStatus: "online" }]);
-    const press = byTestId(p.tree, "kontor-switch-status-needs_input")!.props.onPress as () => void;
-    press(); press();
-    (byTestId(p.tree, "kontor-switch-status-error")!.props.onPress as () => void)();
+  it("filters a state in place, then hands its view to Kontor once per open despite repeated taps", () => {
+    const p = pop({ complete: true, entries: [sessionEntry("run", { status: "running", title: "Route run" }), sessionEntry("question", { needsInput: true }), sessionEntry("error", { status: "error" })] });
+    press(byTestId(p.tree, "kontor-switch-state-running")); p.render();
+    expect(rowIds(p.tree)).toEqual(["run"]);
+    expect(p.openScreen).not.toHaveBeenCalled();
+    p.search(" route ");
+    const kontor = byTestId(p.tree, "kontor-switch-kontor")!.props.onPress as () => void;
+    kontor(); kontor();
+    press(byTestId(p.tree, "kontor-switch-more")); p.render();
+    press(byTestId(p.tree, "kontor-switch-more-archived"));
     expect(p.openScreen).toHaveBeenCalledTimes(1); expect(p.close).toHaveBeenCalledTimes(1);
-    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
-    expect(takeHandOff("host-a", key)).toEqual({ kind: "state", status: "needs_input", scope: { projectId: null, membership: "sessions", refinements: "none" } });
+    expect(takeHandOff("host-a", handedKey(p))).toEqual({ kind: "view", status: "running", query: "route", membership: "sessions" });
     expect(readRecent("host-a").record.visits).toHaveLength(1);
   });
 
-  it("keeps a failed status hand-off visible and retryable, without closing or retaining its failed request", () => {
+  it("keeps a failed view hand-off visible and retryable, without closing or retaining its failed request", () => {
     const p = pop();
     p.openScreen.mockImplementationOnce(() => { throw new Error("Screen unavailable"); });
-    const press = byTestId(p.tree, "kontor-switch-status-running")!.props.onPress as () => void;
-    press();
+    const kontor = byTestId(p.tree, "kontor-switch-kontor")!.props.onPress as () => void;
+    kontor();
     expect(p.close).not.toHaveBeenCalled(); expect(model.toast.error).toHaveBeenCalledWith("Screen unavailable");
-    const failedKey = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
-    expect(takeHandOff("host-a", failedKey)).toBeNull();
-    press();
+    expect(takeHandOff("host-a", handedKey(p))).toBeNull();
+    kontor();
     expect(p.openScreen).toHaveBeenCalledTimes(2); expect(p.close).toHaveBeenCalledOnce();
-  });
-
-  it("opens Kontor without a request and closes", () => {
-    const p = pop();
-    (action(p.tree, "Open Kontor")!.props.onPress as () => void)();
-    expect(p.openScreen).toHaveBeenCalledExactlyOnceWith({ screenId: "sessions" });
-    expect(p.close).toHaveBeenCalledTimes(1);
   });
 
   it("hands a row's exact ID to the Kontor screen and closes; only the screen's successful open records a visit", () => {
     const p = pop();
+    measure(p, 600);
+    press(byTestId(p.tree, "kontor-switch-state-all")); p.render();
     p.search("review qa");
     const before = readRecent("host-a").record.visits.map((visit) => visit.id);
-    (byTestId(p.tree, "kontor-switch-row-agent-b")!.props.onPress as () => void)();
+    press(byTestId(within(p.tree, "session-row-agent-b"), "session-row-body"));
     expect(p.close).toHaveBeenCalledTimes(1);
     const input = p.openScreen.mock.calls[0]![0] as { screenId: string; params: { target: string } };
     expect(input).toEqual({ screenId: "sessions", params: { target: expect.any(String) } });
     expect(JSON.stringify(input)).not.toContain("agent-b");
     expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(before);
     const nav = navigation();
-    expect(openHandOff({ hostId: "host-a", key: input.params.target, entries: model.directory.entries, navigation: nav, onSearch: vi.fn() })).toEqual({ ok: true });
+    expect(openHandOff({ hostId: "host-a", key: input.params.target, entries: model.directory.entries, navigation: nav, onView: vi.fn() })).toEqual({ ok: true });
     expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-b", serverId: "host-a" });
     expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-b", ...before]);
-  });
-
-  it("hands a long search to Sessions through the same request", () => {
-    const entries = Array.from({ length: 22 }, (_, index) => sessionEntry(`agent-${index}`, { title: `Route review ${index}` }));
-    const p = pop({ entries });
-    p.search(" route ");
-    (action(p.tree, "Show all 22 in Sessions")!.props.onPress as () => void)();
-    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
-    expect(takeHandOff("host-a", key)).toEqual({ kind: "search", query: "route" });
   });
 
   it("keeps the popover open, withdraws the request and says why when Kontor cannot open", () => {
     const p = pop();
     p.openScreen.mockImplementation(() => { throw new Error("Plugin screen is unavailable: sessions"); });
-    (byTestId(p.tree, "kontor-switch-row-agent-a")!.props.onPress as () => void)();
+    press(byTestId(within(p.tree, "session-row-agent-a"), "session-row-body"));
     expect(p.close).not.toHaveBeenCalled();
     expect(model.toast.error).toHaveBeenCalledExactlyOnceWith("Plugin screen is unavailable: sessions");
-    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
-    expect(takeHandOff("host-a", key)).toBeNull();
+    expect(takeHandOff("host-a", handedKey(p))).toBeNull();
   });
 
   it("hands a created session to Kontor as a hand-off, not an open, and keeps the outcome when Kontor cannot open", async () => {
     const p = pop();
     await settle(); p.render();
-    (action(p.tree, "New session")!.props.onPress as () => void)(); p.render();
+    press(byTestId(p.tree, "kontor-switch-new-lead")); p.render();
     const form = p.tree.find((node) => node.type === NewLsaForm)!;
     expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" } });
-    expect(text(p.tree)).toContain("New session");
+    expect(text(p.tree)).toContain("New lead");
     expect(action(p.tree, "Close")).toBeUndefined();
     const onOpenCreated = form.props.onOpenCreated as (outcome: CreateOutcome) => OpenSessionResult;
     expect(onOpenCreated(outcome("verified"))).toEqual({ ok: true, handoff: true });
     expect(p.close).toHaveBeenCalledTimes(1);
-    const key = (p.openScreen.mock.calls[0]![0] as { params: { target: string } }).params.target;
-    expect(takeHandOff("host-a", key)).toMatchObject({ kind: "created", outcome: { agentId: "agent-new" } });
+    expect(takeHandOff("host-a", handedKey(p))).toMatchObject({ kind: "created", outcome: { agentId: "agent-new" } });
     p.openScreen.mockImplementation(() => { throw new Error("router busy"); });
     expect(onOpenCreated(outcome("verified"))).toEqual({ ok: false, reason: "navigation", message: "router busy" });
     expect(p.close).toHaveBeenCalledTimes(1);
     expect(model.toast.error).not.toHaveBeenCalled();
+  });
+
+  it("marks the session the composer pill belongs to", () => {
+    recordVisit("host-a", "agent-current", Date.now() - 600_000);
+    const p = pop({ entries: [prompted("agent-a", Date.now() - 60_000), sessionEntry("agent-current")] });
+    expect(text(within(p.tree, "session-row-agent-current"))).toContain("open now");
+    expect(byTestId(p.tree, "session-row-agent-current")?.props.style).toMatchObject({ borderLeftWidth: 2 });
+    expect(byTestId(p.tree, "session-row-agent-a")?.props.style).toMatchObject({ borderLeftWidth: 0 });
   });
 
   it("asks nothing of an offline host and shows its last known rows", () => {
@@ -530,664 +845,6 @@ describe("Start or switch popover from the composer pill", () => {
     expect(model.rpc["sessions.create-options"]).not.toHaveBeenCalled();
     expect(byTestId(p.tree, "kontor-switch-create-status")?.props.children).toContain("host offline");
     expect(byTestId(p.tree, "kontor-switch-freshness")).toBeDefined();
-    expect(byTestId(p.tree, "kontor-switch-row-agent-a")).toBeDefined();
-  });
-});
-
-describe("New session draft", () => {
-  it("starts from the host's LSA profile, then each provider's own defaults", () => {
-    const draft = resolveDraft(OPTIONS, { topic: " Route   review " });
-    expect(draft).toMatchObject({ desk: { projectId: "prj-adam" }, role: "LSA", start: "ad-hoc", provider: { id: "claude" }, model: { id: "opus" }, effort: { id: "max" }, mode: { id: "default" },
-      topic: "Route review", title: "LSA • ADHOC • Route review", problem: null, fromProfile: true });
-    expect(resolveDraft(OPTIONS, { topic: "Route review", provider: "opencode" })).toMatchObject({ model: { id: "big" }, effort: null, mode: null, fromProfile: false, problem: null });
-    expect(resolveDraft({ ...OPTIONS, profile: null }, { topic: "Route review" })).toMatchObject({ provider: { id: "claude" }, effort: { id: "high" }, fromProfile: false });
-  });
-
-  it.each([
-    [{ ...OPTIONS, enabled: false, disabledReason: "Switched off." }, "Route review", "Switched off."],
-    [{ ...OPTIONS, pending: outcome("unknown") }, "Route review", "An earlier creation, “LSA • ADHOC • Route review”, is not settled. Check it first."],
-    [{ ...OPTIONS, desks: [] }, "Route review", "No desk on this host has lead workspaces."],
-    [{ ...OPTIONS, providers: [OPTIONS.providers[1]!] }, "Route review", "Provider claude is no longer active. The host's lsa profile chooses it. Choose an active provider."],
-    [OPTIONS, "Route review", "Gemini: Provider error: not signed in. Choose an active provider.", "gemini"],
-    [OPTIONS, "ab", "Type a topic of at least 3 characters."],
-    [OPTIONS, "A • B", "A topic cannot contain • or ·, which separate title parts."],
-  ])("names the reason Create is disabled", (options, topic, problem, provider?: string) => {
-    expect(resolveDraft(options, { topic, provider }).problem).toBe(problem);
-  });
-
-  it("starts on the desk the options were scoped to", () => {
-    expect(resolveDraft({ ...OPTIONS, catalogProjectId: "prj-tickets" }, { topic: "Route review" }).desk?.projectId).toBe("prj-tickets");
-  });
-
-  it("makes version-4 request IDs", () => {
-    const ids = new Set(Array.from({ length: 50 }, newRequestId));
-    expect(ids.size).toBe(50);
-    for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  });
-
-  it("promises the persona only where it is confirmed", () => {
-    expect(personaLine("supported", "Claude")).toContain("Claude and Codex apply it");
-    expect(personaLine("unverified", "OpenCode")).toBe("Persona: delivered as a bootstrap prompt before the first task, because Kontor has not confirmed that OpenCode applies a system prompt.");
-  });
-
-  it("keeps invalidated explicit and saved choices invalid instead of replacing them", () => {
-    expect(resolveDraft(OPTIONS, { topic: "Route review", provider: "removed" })).toMatchObject({ provider: null, problem: expect.stringContaining("Provider removed is no longer active") });
-    expect(resolveDraft(OPTIONS, { topic: "Route review", model: "removed" })).toMatchObject({ model: null, problem: expect.stringContaining("Model removed is no longer active") });
-    expect(resolveDraft({ ...OPTIONS, profile: { ...OPTIONS.profile!, model: "removed" } }, { topic: "Route review" })).toMatchObject({ model: null, problem: expect.stringContaining("Model removed is no longer active") });
-    expect(resolveDraft(OPTIONS, { topic: "Route review", effort: "removed" })).toMatchObject({ effort: null, problem: expect.stringContaining("Effort removed is no longer offered") });
-    expect(resolveDraft(OPTIONS, { topic: "Route review", modeId: "removed" })).toMatchObject({ mode: null, problem: expect.stringContaining("Mode removed is no longer offered") });
-  });
-
-  it.each(["effort", "modeId"] as const)("rejects a cleared %s once the current catalog requires a value", (setting) => {
-    const draft = { topic: "Route review", [setting]: null };
-    expect(resolveDraft(OPTIONS, draft)).toMatchObject({ problem: expect.stringContaining(setting === "effort" ? "Choose an available effort" : "Choose an available mode") });
-  });
-});
-
-describe("New session form", () => {
-  function form(options: CreateOptionsState = { status: "ready", options: OPTIONS }, props: Partial<Parameters<typeof NewLsaForm>[0]> = {}) {
-    const onRefresh = vi.fn(), onOpenCreated = vi.fn<(outcome: CreateOutcome) => OpenSessionResult>(() => ({ ok: true })), onCancel = vi.fn();
-    const all = { hostId: "host-a", colors: COLORS, compact: false, options, onRefresh, canOpen: true, onOpenCreated, onCancel, ...props };
-    let tree: Element[] = [];
-    const render = () => { model.cursor = 0; model.effect = 0; tree = elements(NewLsaForm(all)); return tree; };
-    render();
-    const type = (topic: string) => { (byTestId(tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)(topic); render(); };
-    const press = (id: string) => { ((byTestId(tree, id) ?? action(tree, id))!.props.onPress as () => void)(); render(); };
-    return { render, type, press, onRefresh, onOpenCreated, onCancel, unmount: () => model.unmount(), setHost: (hostId: string) => { all.hostId = hostId; render(); }, setOptions: (options: CreateOptionsState) => { all.options = options; render(); }, get tree() { return tree; } };
-  }
-
-  it.each([
-    [{ status: "loading" } as const, "Reading this host's desks and providers…"],
-    [{ status: "offline" } as const, "Host offline. Nothing can be created until it reconnects."],
-  ])("waits truthfully while options are %s", (state, message) => {
-    expect(text(form(state).tree)).not.toContain("Create LSA");
-    expect(text(form(state).tree)).toBe(message);
-  });
-
-  it("offers Try again when the options read failed", () => {
-    const f = form({ status: "error", message: "timeout" });
-    f.press("Try again");
-    expect(f.onRefresh).toHaveBeenCalledTimes(1);
-  });
-
-  it("handles an empty active catalog with a refresh action and no create", () => {
-    const f = form({ status: "ready", options: { ...OPTIONS, profile: null, providers: [] } });
-    expect(text(f.tree)).toContain("No active provider is available for this desk.");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.press("Refresh choices");
-    expect(f.onRefresh).toHaveBeenCalledTimes(1);
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["loading", "Some providers are still loading."],
-    ["unknown", "Some provider availability is unknown."],
-    ["error", "Some providers could not be read."],
-    ["unavailable", "Some providers are unavailable."],
-  ] as const)("distinguishes %s from disabled without offering an inactive radio", (status, message) => {
-    const f = form({ status: "ready", options: { ...OPTIONS, profile: null, providers: [{ ...OPTIONS.providers[0]!, label: "Unready provider", available: false, status, note: message }] } });
-    expect(text(f.tree)).toContain(message);
-    expect(f.tree.some((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "Unready provider")).toBe(false);
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-  });
-
-  it("retains an explicit model when a refresh removes it and asks for a new choice", () => {
-    const f = form(); f.type("Route review");
-    (f.tree.find((node) => node.props.accessibilityLabel === "Sonnet")!.props.onPress as () => void)(); f.render();
-    f.setOptions({ status: "ready", options: { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, models: provider.models.filter((model) => model.id !== "sonnet") })) } });
-    expect(text(f.tree)).toContain("Model sonnet is no longer active");
-    expect(f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "Opus")?.props["aria-checked"]).toBe(false);
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-  });
-
-  it("requires a catalog scoped to a newly selected desk", () => {
-    const f = form(); f.type("Route review");
-    (f.tree.find((node) => node.props.accessibilityLabel === "DESK • PR REVIEW")!.props.onPress as () => void)(); f.render();
-    expect(f.onRefresh).toHaveBeenCalledWith({ projectId: "prj-pr", role: "LSA", start: "ad-hoc" });
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    expect(text(f.tree)).toContain("Refresh this desk's provider catalog");
-    f.setOptions({ status: "ready", options: { ...OPTIONS, catalogProjectId: "prj-pr" } });
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-  });
-
-  it("offers truthful recovery when the selected desk vanishes but another ADAM workspace remains", () => {
-    const f = form(); f.type("Route review");
-    const vanished = { ...OPTIONS, desks: [OPTIONS.desks[2]!], catalogProjectId: null, providers: [] };
-    f.setOptions({ status: "ready", options: vanished });
-    expect(text(f.tree)).toContain("The selected desk is no longer available. Choose a listed desk or Refresh desks.");
-    expect(text(f.tree)).toContain("Choose an available desk to read its providers.");
-    expect(text(f.tree)).not.toContain("No desk on this host has lead workspaces.");
-    expect(text(f.tree)).not.toContain("No active provider on this host.");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    const remaining = () => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "DESK • PR REVIEW")!;
-    expect(remaining().props["aria-checked"]).toBe(false);
-    f.press("Refresh desks");
-    expect(f.onRefresh).toHaveBeenLastCalledWith(expect.objectContaining({ role: "LSA", start: "ad-hoc" }));
-    f.setOptions({ status: "ready", options: vanished });
-    expect(remaining().props["aria-checked"]).toBe(false);
-    (remaining().props.onPress as () => void)(); f.render();
-    expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-pr", role: "LSA", start: "ad-hoc" });
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.setOptions({ status: "ready", options: { ...OPTIONS, desks: vanished.desks, catalogProjectId: "prj-pr" } });
-    expect(remaining().props["aria-checked"]).toBe(true);
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-    expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-  });
-
-  it("retains the keyboard-selected desk and draft through loading and failed scoped reads, with no implicit submit", () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const options = { ...OPTIONS, desks: [OPTIONS.desks[0]!, { projectId: "prj-ops", project: "DESK • OPS", desk: "OPS", kind: "other" as const, cwd: "/fixtures/ops", lead: { ADHOC: null, LSA: null, TPM: null } }] };
-    const f = form({ status: "ready", options }); f.type("Route review");
-    const desk = (label: string) => f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === `DESK • ${label}`)!;
-    const focus = [vi.fn(), vi.fn()];
-    (desk("ADAM").props.onKeyDown as (event: object) => void)({ key: "ArrowRight", preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: { parentElement: { querySelectorAll: () => focus.map((focus) => ({ focus })) } } });
-    f.render();
-    expect(focus[1]).toHaveBeenCalledTimes(1);
-    expect(f.onRefresh).toHaveBeenCalledExactlyOnceWith({ projectId: "prj-ops", role: "LSA", start: "ad-hoc" });
-    for (const state of [{ status: "loading" }, { status: "error", message: "scoped read failed" }] as const) {
-      f.setOptions(state);
-      expect(desk("OPS")?.props).toMatchObject({ "aria-checked": true, tabIndex: 0 });
-      expect(desk("ADAM")?.props).toMatchObject({ "aria-checked": false, tabIndex: -1 });
-      expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
-      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-      f.press("kontor-new-lsa-create");
-      expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-    }
-    f.setOptions({ status: "ready", options: { ...options, catalogProjectId: "prj-ops" } });
-    expect(desk("OPS")?.props).toMatchObject({ "aria-checked": true, tabIndex: 0 });
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-    f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ projectId: "prj-ops", topic: "Route review" }));
-  });
-
-  it.each(["offline", "host change"])("discards retained presentation options on %s", (change) => {
-    const f = form(); f.type("Route review");
-    f.setOptions({ status: "loading" });
-    expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
-    if (change === "offline") f.setOptions({ status: "offline" });
-    else f.setHost("host-b");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")).toBeUndefined();
-    expect(f.tree.some((node) => node.props.accessibilityRole === "radio")).toBe(false);
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-  });
-
-  it("requires an explicit action to clear saved effort and mode when the host no longer offers either", () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form({ status: "ready", options: { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, modes: [], defaultMode: null, models: provider.models.map((model) => ({ ...model, efforts: [], defaultEffort: null })) })) } });
-    f.type("Route review");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.press("Use current effort default");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.press("Use current mode default");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-    f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ effort: null, modeId: null }));
-  });
-
-  it("requires explicit recovery when a refresh adds effort and mode after both were cleared", () => {
-    const options = { ...OPTIONS, providers: OPTIONS.providers.map((provider) => ({ ...provider, modes: [], defaultMode: null, models: provider.models.map((model) => ({ ...model, efforts: [], defaultEffort: null })) })) };
-    const f = form({ status: "ready", options }); f.type("Route review");
-    f.press("Use current effort default"); f.press("Use current mode default");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-    f.setOptions({ status: "loading" });
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.setOptions({ status: "ready", options: OPTIONS });
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    expect(text(f.tree)).toContain("Choose an available effort");
-    expect(f.tree.filter((node) => node.props.accessibilityRole === "radio" && ["High", "Max", "Default", "Bypass ⚠"].includes(String(node.props.accessibilityLabel))).every((node) => node.props["aria-checked"] === false)).toBe(true);
-    f.press("Use current effort default");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    expect(text(f.tree)).toContain("Choose an available mode");
-    f.press("Use current mode default");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-  });
-
-  it("disables Create with a visible, announced reason until the topic is valid", () => {
-    const f = form();
-    const create = () => byTestId(f.tree, "kontor-new-lsa-create")!;
-    expect(create().props).toMatchObject({ disabled: true, accessibilityState: { disabled: true }, accessibilityHint: "Type a topic of at least 3 characters." });
-    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Type a topic of at least 3 characters.");
-    f.type("Route review");
-    expect(create().props).toMatchObject({ disabled: false, accessibilityLabel: "Create LSA • ADHOC • Route review", accessibilityHint: undefined });
-    expect(text(f.tree)).toContain("Title: LSA • ADHOC • Route review.");
-  });
-
-  it("offers active choices as radios and keeps unavailable providers out of the picker", () => {
-    const f = form();
-    const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
-    expect(f.tree.filter((node) => node.props.accessibilityRole === "radiogroup").map((node) => node.props.accessibilityLabel)).toEqual(["Role", "Start", "Desk", "Provider", "Model", "Effort", "Mode"]);
-    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
-    expect(radios.some((node) => String(node.props.accessibilityLabel).includes("Gemini"))).toBe(false);
-    expect(radios.every((node) => (node.props.style as (state: { focused: boolean }) => { minHeight: number })({ focused: false }).minHeight >= 44)).toBe(true);
-  });
-
-  it("warns about a dangerous mode before Create", () => {
-    const f = form();
-    (f.tree.find((node) => node.props.accessibilityLabel === "Bypass ⚠")!.props.onPress as () => void)(); f.render();
-    expect(byTestId(f.tree, "kontor-new-lsa-danger")?.props.children).toEqual(["⚠ ", "Bypass", " is a dangerous permission mode on this host."]);
-  });
-
-  it("selects a focused unchecked radio with Space, moves focus with arrows and skips disabled providers", () => {
-    const f = form();
-    const group = (label: string) => elements(f.tree.find((node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === label)).filter((node) => node.props.accessibilityRole === "radio");
-    const key = (label: string, index: number, value: string) => {
-      const radios = group(label), focus = radios.map(() => ({ focus: vi.fn() }));
-      const event = { key: value, preventDefault: vi.fn(), stopPropagation: vi.fn(), currentTarget: { parentElement: { querySelectorAll: () => focus } } };
-      (radios[index]!.props.onKeyDown as (event: object) => void)(event); f.render();
-      expect(event.preventDefault).toHaveBeenCalled();
-      return focus;
-    };
-    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([0, -1, -1]);
-    key("Desk", 1, " ");
-    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([false, true, false]);
-    expect(group("Desk").map((node) => node.props.tabIndex)).toEqual([-1, 0, -1]);
-    expect(key("Desk", 1, "ArrowLeft")[0]!.focus).toHaveBeenCalledTimes(1);
-    expect(group("Desk").map((node) => node.props["aria-checked"])).toEqual([true, false, false]);
-    expect(key("Provider", 0, "ArrowRight")[1]!.focus).toHaveBeenCalledTimes(1);
-    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([false, true]);
-    expect(key("Provider", 1, "ArrowDown")[0]!.focus).toHaveBeenCalledTimes(1);
-    expect(group("Provider").map((node) => node.props["aria-checked"])).toEqual([true, false]);
-  });
-
-  it("keeps native radio and disabled semantics without web-only keyboard or tab props", () => {
-    model.platform = "ios";
-    const f = form();
-    const radios = f.tree.filter((node) => node.props.accessibilityRole === "radio");
-    expect(radios.length).toBeGreaterThan(0);
-    expect(radios.every((node) => node.props.onKeyDown === undefined && node.props.tabIndex === undefined)).toBe(true);
-    expect(radios.find((node) => node.props.accessibilityLabel === "DESK • ADAM")?.props.accessibilityState).toEqual({ checked: true, disabled: false });
-    expect(radios.every((node) => !node.props.disabled)).toBe(true);
-  });
-
-  it("sends one request and waits for explicit Open of the exact verified result without a directory or redundant options refresh", async () => {
-    const f = form();
-    let answer: (value: CreateOutcome) => void = () => {};
-    model.rpc["sessions.create"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
-    f.type(" Route   review ");
-    f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), role: "LSA", start: "ad-hoc", projectId: "prj-adam", topic: "Route review", sourceAgentId: null, provider: "claude", model: "opus", effort: "max", modeId: "default" });
-    expect(text(f.tree)).toContain("Nothing is reported until the host answers.");
-    expect(byTestId(f.tree, "kontor-new-lsa-create")).toBeUndefined();
-    const requestId = model.rpc["sessions.create"]!.mock.calls[0]![0].requestId;
-    answer(outcome("verified", { requestId })); await settle(); f.render();
-    expect(byTestId(f.tree, "kontor-new-lsa-verified")?.props).toMatchObject({ accessibilityLiveRegion: "polite" });
-    expect(text(f.tree)).toContain("Created and verified");
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    expect(action(f.tree, "Open session")).toBeDefined();
-    const open = action(f.tree, "Open session")!.props.onPress as () => void;
-    open(); open(); f.render();
-    expect(f.onOpenCreated).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ state: "verified", agentId: "agent-new", requestId }));
-    expect(f.onRefresh).not.toHaveBeenCalled();
-  });
-
-  it("keeps readback differences visible with an exact-ID Open action without a directory wait", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("differences", { differences: ["Model reads sonnet."] }));
-    const f = form();
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(text(f.tree)).toContain("Created with differences");
-    expect(text(f.tree)).toContain("Model reads sonnet.");
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    expect(text(f.tree)).toContain("Session ID: agent-new");
-    f.press("Open session");
-    expect(f.onOpenCreated).toHaveBeenCalledWith(expect.objectContaining({ state: "differences", agentId: "agent-new" }));
-  });
-
-  it("ignores a second submit before React has rendered the busy state", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form();
-    f.type("Route review");
-    const submit = byTestId(f.tree, "kontor-new-lsa-create")!.props.onPress as () => void;
-    submit(); submit();
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
-    await settle(); f.render();
-    expect(text(f.tree)).toContain("Created and verified");
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    f.press("Open session");
-    expect(f.onOpenCreated).toHaveBeenCalledTimes(1);
-  });
-
-  it("retains Created and the exact ID after opening fails, then retries only opening", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form();
-    f.onOpenCreated.mockReturnValueOnce({ ok: false, reason: "failed", message: "navigation unavailable" });
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(text(f.tree)).toContain("Created and verified");
-    expect(text(f.tree)).toContain("Session ID: agent-new");
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    f.press("Open session");
-    expect(text(f.tree)).toContain("Opening failed: navigation unavailable");
-    expect(action(f.tree, "Back to the form")).toBeUndefined();
-    f.press("Open session");
-    expect(f.onOpenCreated).toHaveBeenCalledTimes(2);
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
-    expect(text(f.tree)).toContain("Opened in Paseo.");
-  });
-
-  it("says a hand-off to Kontor is opening there, never that Paseo opened it, and offers no second Open", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form(undefined, { onOpenCreated: vi.fn<(outcome: CreateOutcome) => OpenSessionResult>(() => ({ ok: true, handoff: true })) });
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    f.press("Open session");
-    expect(byTestId(f.tree, "kontor-new-lsa-open-status")?.props.children).toBe("Opening in Kontor…");
-    expect(text(f.tree)).not.toContain("Opened in Paseo.");
-    expect(text(f.tree)).toContain("Session ID: agent-new");
-    expect(action(f.tree, "Open session")).toBeUndefined();
-  });
-
-  it("records Recently viewed only after a successful user Open, never creation", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const navigation = { openAgent: vi.fn(), openWorkspace: vi.fn() } as unknown as SessionNavigation;
-    const f = form(undefined, { onOpenCreated: (outcome) => openCreatedSession({ outcome, serverId: "host-a", navigation }) });
-    expect(readRecent("host-a").record.visits).toEqual([]);
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(navigation.openAgent).not.toHaveBeenCalled();
-    expect(readRecent("host-a").record.visits).toEqual([]);
-    f.press("Open session");
-    expect(navigation.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "agent-new", serverId: "host-a" });
-    expect(readRecent("host-a").record.visits.map((visit) => visit.id)).toEqual(["agent-new"]);
-    expect(readRecent("host-b").record.visits).toEqual([]);
-  });
-
-  it.each(["close", "unmount", "host switch", "offline"])("rejects an old user Open action after %s without navigation or MRU", async (cancel) => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    let active = true;
-    const navigation = { openAgent: vi.fn(), openWorkspace: vi.fn() } as unknown as SessionNavigation;
-    const f = form(undefined, { isActive: () => active, onOpenCreated: (outcome) => openCreatedSession({ outcome, serverId: "host-a", navigation }) });
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    const open = action(f.tree, "Open session")!.props.onPress as () => void;
-    if (cancel === "close") active = false;
-    else if (cancel === "unmount") f.unmount();
-    else if (cancel === "host switch") f.setHost("host-b");
-    else f.setOptions({ status: "offline" });
-    open();
-    expect(navigation.openAgent).not.toHaveBeenCalled();
-    expect(readRecent("host-a").record.visits).toEqual([]);
-    expect(readRecent("host-b").record.visits).toEqual([]);
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(["close", "unmount", "host switch"])("never navigates or refreshes a late response after %s", async (cancel) => {
-    let answer: (value: CreateOutcome) => void = () => {};
-    let active = true;
-    model.rpc["sessions.create"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
-    const f = form(undefined, { isActive: () => active });
-    f.type("Route review"); f.press("kontor-new-lsa-create");
-    const requestId = model.rpc["sessions.create"]!.mock.calls[0]![0].requestId;
-    if (cancel === "close") active = false;
-    else if (cancel === "unmount") f.unmount();
-    else f.setHost("host-b");
-    answer(outcome("verified", { requestId })); await settle(); f.render();
-    expect(byTestId(f.tree, "kontor-new-lsa-verified")).toBeUndefined();
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    expect(f.onRefresh).not.toHaveBeenCalled();
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
-    expect(readRecent("host-a").record.visits).toEqual([]);
-  });
-
-  it("keeps a mismatched request reply unknown instead of opening another session", async () => {
-    model.rpc["sessions.create"]!.mockResolvedValue(outcome("verified"));
-    const f = form(); f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(text(f.tree)).toContain("different request ID");
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    expect(action(f.tree, "Check")).toBeDefined();
-    expect(action(f.tree, "Back to the form")).toBeUndefined();
-    expect(action(f.tree, "Open session")).toBeUndefined();
-  });
-
-  it.each(["close", "unmount", "host switch"])("ignores a late successful Check after %s", async (cancel) => {
-    let answer!: (value: CreateOutcome) => void;
-    let active = true;
-    model.rpc["sessions.create-check"]!.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
-    const pending = outcome("unknown");
-    const f = form({ status: "ready", options: { ...OPTIONS, pending } }, { isActive: () => active });
-    f.press("Check");
-    if (cancel === "close") active = false;
-    else if (cancel === "unmount") f.unmount();
-    else f.setHost("host-b");
-    answer(outcome("verified", { requestId: pending.requestId })); await settle(); f.render();
-    expect(byTestId(f.tree, "kontor-new-lsa-verified")).toBeUndefined();
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-    expect(readRecent("host-a").record.visits).toEqual([]);
-  });
-
-  it("keeps the confirmed result visible while options refresh fails or the host disconnects", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form();
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    for (const options of [{ status: "loading" }, { status: "error", message: "read failed" }, { status: "offline" }] as const) {
-      f.setOptions(options);
-      expect(text(f.tree)).toContain("Created and verified");
-      expect(text(f.tree)).not.toContain("Nothing was created");
-    }
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    expect(action(f.tree, "Open session")?.props.disabled).toBe(true);
-  });
-
-  it("turns an unknown outcome into a Check, never a retry", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("unknown"));
-    model.rpc["sessions.create-check"]!.mockImplementation(reply("unknown", { message: "No session is visible yet. Creation may still complete." }));
-    const f = form();
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(text(f.tree)).toContain("Outcome unknown");
-    expect(action(f.tree, "Back to the form")).toBeUndefined();
-    expect(action(f.tree, "Open session")).toBeUndefined();
-    f.press("Check"); await settle(); f.render();
-    expect(model.rpc["sessions.create-check"]).toHaveBeenCalledWith({ requestId: model.rpc["sessions.create"]!.mock.calls[0]![0].requestId });
-    expect(text(f.tree)).toContain("Outcome unknown");
-    expect(text(f.tree)).toContain("Creation may still complete");
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
-  });
-
-  it("treats a lost reply as unknown with Check, using the same request", async () => {
-    model.rpc["sessions.create"]!.mockRejectedValue(new Error("socket closed"));
-    model.rpc["sessions.create-check"]!.mockImplementation(reply("verified"));
-    const f = form();
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(byTestId(f.tree, "kontor-new-lsa-lost")).toBeDefined();
-    expect(action(f.tree, "Back to the form")).toBeUndefined();
-    expect(text(f.tree)).toContain("may or may not have reached the host");
-    const requestId = model.rpc["sessions.create"]!.mock.calls[0]![0].requestId;
-    f.press("Check"); await settle(); f.render();
-    expect(model.rpc["sessions.create-check"]).toHaveBeenCalledWith({ requestId });
-    expect(text(f.tree)).toContain("Created and verified");
-    expect(f.onOpenCreated).not.toHaveBeenCalled();
-    f.press("Open session");
-    expect(f.onOpenCreated).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId, agentId: "agent-new" }));
-    expect(model.rpc["sessions.create"]).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns a refusal to the form with the draft kept", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("refused", { message: "Mode plan is not offered by Claude. Nothing was created." }));
-    const f = form();
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    expect(text(f.tree)).toContain("Not created");
-    f.press("Back to the form");
-    expect(byTestId(f.tree, "kontor-new-lsa-topic")?.props.value).toBe("Route review");
-  });
-
-  it("shows an unsettled earlier creation with Check instead of the form", () => {
-    const f = form({ status: "ready", options: { ...OPTIONS, pending: outcome("unknown") } });
-    expect(byTestId(f.tree, "kontor-new-lsa-topic")).toBeUndefined();
-    expect(byTestId(f.tree, "kontor-new-lsa-unknown")).toBeDefined();
-    expect(action(f.tree, "Check")).toBeDefined();
-  });
-
-  describe("From Jira ticket", () => {
-    const UNDER_ACTIVE = { ...ISSUE_STORY, key: "ASMA-101", summary: "Wire the ticket desk", parent: { key: "ASMA-100", summary: ISSUE_EPIC.summary, statusCategory: "In Progress", open: true } } as const;
-    const JIRA = { ...OPTIONS, issues: [ISSUE_EPIC, UNDER_ACTIVE, ISSUE_STORY] };
-    const radio = (tree: Element[], label: string) => tree.find((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith(label));
-    const choose = (f: ReturnType<typeof form>, label: string) => { (radio(f.tree, label)!.props.onPress as () => void)(); f.render(); };
-    const edit = (f: ReturnType<typeof form>, id: string, value: string) => { (byTestId(f.tree, id)!.props.onChangeText as (value: string) => void)(value); f.render(); };
-    const flushPicker = async (current: ReturnType<typeof form>) => { await vi.advanceTimersByTimeAsync(250); for (let i = 0; i < 4; i++) await Promise.resolve(); current.render(); };
-    const jiraRow = (tree: Element[], key: string) => byTestId(tree, `kontor-jira-picker-row-${key}`);
-    const openJiraPicker = async (current: ReturnType<typeof form>) => { current.press("Choose Jira issue"); await flushPicker(current); };
-    const pickJira = (current: ReturnType<typeof form>, key: string) => { (jiraRow(current.tree, key)!.props.onPress as () => void)(); current.render(); };
-    beforeEach(() => { vi.useFakeTimers(); });
-    afterEach(() => { vi.useRealTimers(); });
-
-    it("switches TPM to From Jira ticket, previews the epic's desk and submits the key with the default topic", async () => {
-      model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-      model.rpc["sessions.create-options"] = vi.fn(async () => OPTIONS);
-      const f = form();
-      choose(f, "TPM");
-      expect(radio(f.tree, "From Jira ticket")!.props["aria-checked"]).toBe(true);
-      expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Choose a Jira issue.");
-      await openJiraPicker(f);
-      pickJira(f, "ASMA-100");
-      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
-      expect(byTestId(f.tree, "kontor-new-session-jira-topic")?.props.value).toBe("Deliver the desk layout");
-      expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Deliver the desk layout.");
-      f.press("kontor-new-lsa-create");
-      expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ role: "TPM", start: "from-jira", issueKey: "ASMA-100", projectId: "prj-adam", topic: "Deliver the desk layout" }));
-    });
-
-    it("routes a standalone ticket opened from ADAM to DESK • TICKETS and reads that desk's catalog first", async () => {
-      model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-      model.rpc["sessions.create-options"] = vi.fn(async () => JIRA);
-      const f = form({ status: "ready", options: JIRA });
-      choose(f, "From Jira ticket");
-      await flushPicker(f);
-      expect(f.tree.some((node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Desk")).toBe(false);
-      pickJira(f, "ASMA-103");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-tickets", role: "LSA", start: "from-jira", issueKey: "ASMA-103" });
-      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • TICKETS, because ASMA-103 is a User Story without an active parent epic.");
-      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-      f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-tickets" } });
-      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-      f.press("kontor-new-lsa-create");
-      expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ start: "from-jira", issueKey: "ASMA-103", projectId: "prj-tickets" }));
-    });
-
-    it("keeps the exact key when the title is edited or a later search no longer lists the issue", async () => {
-      model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-      model.rpc["sessions.create-options"] = vi.fn(async () => JIRA);
-      const f = form({ status: "ready", options: JIRA });
-      choose(f, "TPM");
-      await openJiraPicker(f);
-      pickJira(f, "ASMA-100");
-      edit(f, "kontor-new-session-jira-topic", "Desk layout follow-up");
-      expect(byTestId(f.tree, "kontor-new-session-jira-topic")?.props.accessibilityLabel).toBe("Title topic after TPM • ASMA-100");
-      expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Desk layout follow-up.");
-      f.press("Change Jira issue");
-      edit(f, "kontor-jira-picker-search", "ticket desk");
-      await flushPicker(f);
-      expect(model.rpc["sessions.create-options"]).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: "prj-adam", role: "TPM", start: "from-jira", issueKey: "ticket desk" }));
-      f.press("Back");
-      f.setOptions({ status: "ready", options: { ...JIRA, issues: [UNDER_ACTIVE] } });
-      expect(text(f.tree)).toContain("Title: TPM • ASMA-100 • Desk layout follow-up.");
-      edit(f, "kontor-new-session-jira-topic", "ASMA-100 • Forged");
-      expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("A topic cannot contain • or ·, which separate title parts.");
-      edit(f, "kontor-new-session-jira-topic", "Desk layout follow-up");
-      f.press("kontor-new-lsa-create");
-      expect(model.rpc["sessions.create"]).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ role: "TPM", issueKey: "ASMA-100", projectId: "prj-adam", topic: "Desk layout follow-up" }));
-    });
-
-    it("shows a task under an active epic with its exact reason and a path to the owning epic, never as a choice", async () => {
-      model.rpc["sessions.create-options"] = vi.fn(async () => JIRA);
-      const f = form({ status: "ready", options: JIRA });
-      choose(f, "From Jira ticket");
-      await flushPicker(f);
-      expect(radio(f.tree, "ASMA-101")).toBeUndefined();
-      expect(jiraRow(f.tree, "ASMA-101")?.props.accessibilityState).toMatchObject({ disabled: true });
-      expect(String(jiraRow(f.tree, "ASMA-101")?.props.accessibilityLabel)).toContain("ASMA-101 is under the active epic ASMA-100 (In Progress), whose ESW delivers it. Start from ASMA-100 instead.");
-      f.press("Start from ASMA-100");
-      await flushPicker(f);
-      pickJira(f, "ASMA-100");
-      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
-    });
-
-    it("looks an unlisted owning epic up by its key on the ADAM catalog", async () => {
-      model.rpc["sessions.create-options"] = vi.fn(async (input) => ({ ...JIRA, catalogProjectId: input.projectId ?? JIRA.catalogProjectId, issues: input.issueKey === "ASMA-100" ? [ISSUE_EPIC] : input.projectId === "prj-tickets" ? [UNDER_ACTIVE] : JIRA.issues }));
-      const f = form({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-tickets", issues: [UNDER_ACTIVE] } });
-      choose(f, "From Jira ticket");
-      await flushPicker(f);
-      f.press("Start from ASMA-100");
-      await flushPicker(f);
-      expect(byTestId(f.tree, "kontor-jira-picker-search")?.props.value).toBe("ASMA-100");
-      expect(model.rpc["sessions.create-options"]).toHaveBeenLastCalledWith(expect.objectContaining({ issueKey: "ASMA-100", start: "from-jira" }));
-      pickJira(f, "ASMA-100");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira", issueKey: "ASMA-100" });
-      f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-adam", issues: [ISSUE_EPIC] } });
-      expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-    });
-
-    const serverLikeJiraBrowse = (input: CreateScope, catalog: typeof JIRA) => {
-      if (input.start !== "from-jira") return [];
-      const desk = catalog.desks.find((entry) => entry.projectId === (input.projectId ?? catalog.catalogProjectId));
-      const issueClass = input.issueClass ?? (desk?.kind === "adam" ? "epic" : desk?.kind === "tickets" ? "non-epic" : "eligible");
-      if (issueClass === "eligible") return catalog.issues;
-      if (issueClass === "epic") return catalog.issues.filter((issue) => issue.epic);
-      return catalog.issues.filter((issue) => !issue.epic);
-    };
-
-    it("is offered from PR REVIEW, browses eligible issues, and routes the pick to ADAM or TICKETS", async () => {
-      model.rpc["sessions.create-options"] = vi.fn(async (input: CreateScope) => ({
-        ...JIRA,
-        catalogProjectId: input.projectId ?? JIRA.catalogProjectId,
-        issues: serverLikeJiraBrowse(input, JIRA),
-      }));
-      const f = form({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-adam" } });
-      choose(f, "DESK • PR REVIEW");
-      f.setOptions({ status: "ready", options: { ...JIRA, catalogProjectId: "prj-pr", issues: [] } });
-      expect(radio(f.tree, "From Jira ticket")!.props["aria-disabled"]).toBe(false);
-      choose(f, "From Jira ticket");
-      await flushPicker(f);
-      expect(model.rpc["sessions.create-options"]).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: "prj-pr", start: "from-jira", issueClass: "eligible" }));
-      expect(jiraRow(f.tree, "ASMA-100")).toBeDefined();
-      pickJira(f, "ASMA-100");
-      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • ADAM, because ASMA-100 is an epic.");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-adam", role: "LSA", start: "from-jira", issueKey: "ASMA-100" });
-      (action(f.tree, "Change Jira issue")!.props.onPress as () => void)(); f.render(); await flushPicker(f);
-      pickJira(f, "ASMA-103");
-      expect(byTestId(f.tree, "kontor-new-session-desk")?.props.children).toBe("Desk: DESK • TICKETS, because ASMA-103 is a User Story without an active parent epic.");
-      expect(f.onRefresh).toHaveBeenLastCalledWith({ projectId: "prj-tickets", role: "LSA", start: "from-jira", issueKey: "ASMA-103" });
-    });
-
-    it("names a ticket desk with no checkout instead of hiding the ticket", async () => {
-      model.rpc["sessions.create-options"] = vi.fn(async () => ({ ...JIRA, desks: [OPTIONS.desks[0]!] }));
-      const f = form({ status: "ready", options: { ...JIRA, desks: [OPTIONS.desks[0]!] } });
-      choose(f, "From Jira ticket");
-      await flushPicker(f);
-      expect(String(jiraRow(f.tree, "ASMA-103")?.props.accessibilityLabel)).toContain("ASMA-103 starts on DESK • TICKETS, which has no checkout on this host.");
-    });
-  });
-
-  it("names a disabled profile provider and its cause, promises no persona and substitutes nothing", () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const work = { ...OPTIONS.providers[0]!, id: "codex-b", label: "Codex · Work (Carasent)", status: "disabled" as const, available: false, note: "Disabled on this host.", persona: "unverified" as const };
-    const f = form({ status: "ready", options: { ...OPTIONS, providers: [...OPTIONS.providers, work], profile: { name: "LSA", provider: "codex-b", model: "opus", modeId: "default", effort: "max" } } });
-    f.type("Route review");
-    expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe("Codex · Work (Carasent): Disabled on this host. The host's LSA profile chooses it. Choose an active provider.");
-    expect(text(f.tree)).not.toContain("Persona:");
-    expect(f.tree.find((node) => String(node.props.label).startsWith("Provider, model and mode"))?.props.label).toBe("Provider, model and mode: Codex · Work (Carasent), disabled");
-    expect(f.tree.some((node) => node.props.accessibilityRole === "radio" && String(node.props.accessibilityLabel).startsWith("Codex"))).toBe(false);
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(true);
-    f.press("kontor-new-lsa-create");
-    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
-    (f.tree.find((node) => node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === "Claude")!.props.onPress as () => void)(); f.render();
-    expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
-  });
-
-  it("says when the chosen role workspace is missing and will be created", () => {
-    const f = form({ status: "ready", options: { ...OPTIONS, desks: OPTIONS.desks.map((desk) => desk.projectId === "prj-adam" ? { ...desk, lead: { ...desk.lead, ADHOC: null } } : desk) } });
-    f.type("Route review");
-    expect(text(f.tree)).toContain("The ADHOC workspace is created on this desk.");
-  });
-
-  it("keeps the handed state from a popover hand-off and spends the Open action", async () => {
-    model.rpc["sessions.create"]!.mockImplementation(reply("verified"));
-    const f = form();
-    f.onOpenCreated.mockReturnValueOnce({ ok: true, handoff: true });
-    f.type("Route review"); f.press("kontor-new-lsa-create"); await settle(); f.render();
-    f.press("Open session");
-    expect(text(f.tree)).toContain("Opening in Kontor…");
-    expect(action(f.tree, "Open session")).toBeUndefined();
-    expect(f.onOpenCreated).toHaveBeenCalledTimes(1);
+    expect(rowIds(p.tree)).toEqual(["agent-a"]);
   });
 });

@@ -29,7 +29,7 @@ The lifecycle adapter accepts only selected archive batches of 1–50 IDs. An
 omitted active child blocks a parent; selected children must finish first.
 Synthetic archive membership and runtime retirement remain separate. An
 archived/unconfirmed reply retains its exact-owner fence through later successful
-reviews and Resume. The no-ID latest read derives unresolved references; reads
+reviews. Resume is refused, as on the host. The no-ID latest read derives unresolved references; reads
 of a named review do not. Reconciliation reads exact IDs without redispatching.
 These fixtures exercise current UI behavior, not every production server race,
 durable filesystem or provider failure. Reloading the page resets the simulated

@@ -85,7 +85,9 @@ pill is the in-session return control where the composer supports it.
   warnings stay visible. Routine retirement/availability explanations, exact
   model IDs and token reports remain in Details. The existing In tree action
   uses a 44 pt icon target on compact layouts; opening and archive controls keep
-  their separate targets and exact-session behavior. Wide rows stay unchanged.
+  their separate targets and exact-session behavior. Wide rows keep their layout
+  and, like compact ones, add only one retirement line for a conflict or a
+  needed review.
 - **Token counts.** Wide-row input/output and separate cache-read counts use stable
   compact units across device locales: K = 1,000 and M = 1,000,000, with at most
   one decimal (300K, 1.2M). Rounding carries across unit boundaries. The arrows,
@@ -163,26 +165,45 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 ### Start or switch and Recent
 
 - **One sheet.** **Start or switch** in the Kontor context row (an icon button
-  on compact layouts) and the global Command Center item **Start or switch
-  Kontor session…** open one sheet. With no query it lists the first 8 Recent
-  sessions, and **Show all N recent in Sessions** opens Sessions on Recent with
-  every kept visit and the saved entries; typing matches every non-archived
-  session by title, place and labels, Recent first, at most 20 rows, and
-  **Show all N in Sessions** hands the query to Sessions unscoped. A row opens by native ID through the same
-  path as Sessions. A separate 44px archive X uses the same control and exact-ID
-  archive preflight/action as Sessions; it never opens the row. Pending and
-  refusal/result feedback stays in the sheet. Confirmed native membership removes
-  the row; uncertain outcomes stay visible for review in Sessions and are never
-  called success. Opening the sheet adds no archive or inventory read.
-- **State shortcuts.** The shared sheet and chat popover show Running,
-  Questions (Needs input), Provider blocked and Errors over this host's
-  nonarchived sessions in all projects. These counts use the retained directory,
-  not the eight Recent rows. A shortcut opens the same Sessions filter without
-  retaining an incompatible search or refinement; presentation preferences stay.
-  Partial, stale or unavailable reads show updating/unknown counts. Provider
-  blocked requires exact refusal evidence; unchecked errors are never inferred
-  blocked or reported as a verified zero. Until that evidence has been read,
-  Blocked stays unknown; opening the shortcut does not probe providers.
+  on compact layouts), the global Command Center item **Start or switch
+  Kontor session…** and the chat's composer pill open one switcher: **Start or
+  switch session** for **This host**, with a compact **New lead** at the right of
+  the heading when the host allows creation.
+- **States filter in place.** The strip under the heading has **Last visited**,
+  **Last activity**, **Running**, **Questions** and **Errors**, each an icon over
+  its count, then **More** and **Kontor** (Building2). Hold or hover a state for
+  what it counts. Counts follow this host's non-archived sessions and the search;
+  partial, stale or unavailable reads show updating or unknown counts. **More**
+  lists All, Current, Idle, Favorites, Attention, Starting, Closed, Earlier
+  errors and Provider blocked with their counts, plus **Archived sessions**,
+  which Kontor lists. Provider blocked needs exact refusal evidence, so unchecked
+  errors are never counted blocked or reported as a verified zero; the switcher
+  never probes providers and opens that state in Kontor, which reads the
+  evidence. Choosing any other state filters the list here; search narrows it.
+  **Last visited** keeps its own order: the first 8 visits, or at most 20 of
+  its matches with a search, never sessions this device has not opened.
+  **Last activity**
+  orders by the newest prompt or running turn start and never by metadata
+  updates, attention or Mark as unread. Other states show at most 20 matches.
+  The footer reads **N of M**; **Clear recent** appears on **Last visited**.
+- **Kontor carries the view.** **Kontor** opens Kontor's Sessions unscoped with
+  the same state, search and membership; nothing chosen here is discarded.
+- **Layout.** ListTree (grouped) and List (flat) sit beside the search and use
+  the saved Sessions layout; the tree is Kontor's own organization tree with its
+  groups opened. **Last visited** and **Last activity** are always one list and
+  leave the saved layout unchanged.
+- **Rows.** Each session is one dense row: state on the left, title and opened
+  age, then origin (role, scope, desk, workspace, metadata age), then the
+  model's vendor mark, alias and effort with the session's token totals. Paseo
+  reports no session totals, so they read ↓ — ↑ —; the last usage report is
+  never shown as a total. Tapping a row opens the session by native ID through
+  the same path as Sessions; the session the switcher was opened from is marked.
+  The trailing **…** opens the row's actions: **Add to favorites** or **Remove
+  from favorites**, **Copy exact session ID** (reported copied only after the
+  clipboard accepted it) and **Archive**, which uses the same exact-ID archive
+  preflight and action as Sessions. Pending and refusal/result feedback stays in
+  the switcher; uncertain outcomes stay visible for review in Sessions and are
+  never called success. Opening the switcher adds no archive or inventory read.
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.
@@ -246,7 +267,7 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   privacy and cross-device acceptance. A Paseo change is not automatically
   required to synchronize visits initiated through Kontor. Native views from
   outside Kontor still need the separate view-event capability above.
-- **New session (bounded create).** Available by default when
+- **New lead (bounded create).** Available by default when
   `$PASEO_HOME/plugin-config/kontor/create.json`
   (default `~/.paseo/plugin-config/kontor/create.json`) is absent on the host
   computer. The operator can write exactly `{"create":"off"}` to disable it
@@ -254,7 +275,7 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   unreadable path (including a dangling symlink in any component) keeps it off.
   The sheet says why. The file is read on every request and never written by
   the plugin.
-  Submitting **New session** creates one Adam lead in the desk's lead
+  Submitting **New lead** creates one Adam lead in the desk's lead
   workspace. Ad hoc is LSA-only and lands in `ADHOC`; From Jira ticket puts an
   `LSA` or `TPM` in `LSA` or `TPM`. A missing lead workspace is created on the
   desk and read back before the session is dispatched. The title is
@@ -1268,7 +1289,7 @@ archive scope, session count and pages read).
    before the screen reports **Live** again.
 5. The notices at the top (source, navigation, settings and unconfirmed
    archives) form one tray with a **Hide notices** button. Hidden notices leave
-   one status button beside **Resume** (in the count row before **Grouped /
+   one status button at the start of the toolbar row (in the count row before **Grouped /
    Flat** on compact, and where the tray was on compact **Filters**) that names them and shows the tray again. Hiding runs nothing
    and resolves nothing; any new or changed notice opens the tray again, and so
    does a notice that returns after a completed read reported it gone, while one
@@ -1424,8 +1445,8 @@ the repeated-member rule and both log lines. `test/floor-growth.test.ts` covers 
 file that grows past 2 MiB after it is opened, and `test/floor-close.test.ts` a
 failed read or close of the file, including a server start under a failed
 close. `test/sessions-notice-tray.test.tsx` covers hiding and showing the top
-notices on the wide, slim and 320/390 compact layouts: placement beside
-Resume or in the compact count row, no RPC or toast on hide, persistence across a remount, reopening for a
+notices on the wide, slim and 320/390 compact layouts: placement at the
+start of the toolbar row or in the compact count row, no RPC or toast on hide, persistence across a remount, reopening for a
 new archive or read error, continuous presence through in-flight and failed reads,
 reopening when the same notice returns after a completed read without it, focus
 moves, Escape and touch targets. `test/server-entry.test.ts` starts
@@ -1511,14 +1532,15 @@ a settled action reconciles its exact stale list snapshot until it changes.
 The action outcome remains visible when its row disappears.
 The Current filter and the Recent default are part of the combined Sessions view.
 
-**Select** shares a wrapping row with the mutually exclusive **Grouped** and
+The **⋯** actions entry for the sessions shown, where Resume stood, shares a
+wrapping row with the mutually exclusive **Grouped** and
 **Flat** layout choices. On compact layouts **Search** comes first in that row,
 so the quick filter row keeps its space for states; opened, the search field
 takes a line of its own with Clear or Close. The row uses icons with accessible names and
 long-press, hover and keyboard help;
 all three targets are at least 44 pt. The layout group uses a subtle fill and
-check mark, with no enclosing frame. **Select** enters bulk
-archive selection on desktop and mobile; a row long press
+check mark, with no enclosing frame. **⋯ → Select sessions** enters bulk
+selection on desktop and mobile; a row long press
 also enters selection. Checkboxes draw a 22 px box inside a 44-point target:
 an outlined box when clear and a filled box with a check mark when selected,
 at least 3:1 against every Paseo surface in light and dark themes. They support
@@ -1569,7 +1591,8 @@ blocked**, which changes only the selection, and **Dismiss**. Blocked sessions
 stay ordinary live sessions and are never counted as archived.
 There is no whole-host bulk archive or automatic provider-history load.
 
-Archive does not require provider history. Resume requires its separate history
-and route preflight. Provider-history
+Archive does not require provider history. The toolbar Resume and its
+same-session resume flow were removed; an old Resume receipt stays readable as
+history and nothing re-sends it. Provider-history
 existence is unverified unless an authorized operation supplies that evidence;
 no bulk provider launch or permanent-death inference is performed.

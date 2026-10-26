@@ -29,9 +29,14 @@ export const Host=createContext('fixture-a');
 export const useRpc=contract=>{const host=useContext(Host);return input=>window.fixture.rpc(contract.name,input,host);};
 export const getPaseoClient=host=>window.fixture.client(host);
 export const useHosts=()=>[{serverId:'fixture-a',status:'online'}];
+// No saved new-lead default is read here, so a lead names its model explicitly.
+export const useSettings=()=>({status:'loading'});
 `);
 fs.writeFileSync(path.join(fixture, 'sdk-native.tsx'), `import React from 'react';
-export {TextInput,ScrollView} from 'react-native';
+import {View} from 'react-native';
+export {TextInput,ScrollView,FlatList} from 'react-native';
+export const copyText=async()=>{};
+export const Modal=Object.assign(({open,title,children})=>open?<View role="dialog" aria-label={title}>{children}</View>:null,{Content:({children})=><View>{children}</View>});
 export const useToast=()=>({error:message=>{throw new Error(message);},show:()=>{}});
 export const Icon=({name,size=16,color})=><span aria-hidden="true" data-icon={name} style={{display:'inline-block',width:size,height:size,color}}>◇</span>;
 `);
@@ -40,6 +45,7 @@ import {createRoot} from 'react-dom/client';import {Pressable,Text,View} from 'r
 import {Host} from './sdk-client';
 import {StartSwitchSheet,StartSwitchPopover} from ${JSON.stringify(path.join(plugin, 'client/start-switch-sheet.tsx'))};
 import {configureRecentStorage} from ${JSON.stringify(path.join(plugin, 'client/recent-sessions.ts'))};
+import {toDirectoryEntry} from ${JSON.stringify(path.join(plugin, 'client/session-directory.ts'))};
 document.body.style.margin='0';
 const mode=new URLSearchParams(location.search).get('mode');
 const dark=new URLSearchParams(location.search).has('dark');
@@ -52,10 +58,12 @@ const issueClassMatches=(row,issueClass)=>issueClass==='epic'?row.epic:issueClas
 const desks=[{projectId:'adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/adam',lead:{ADHOC:'adhoc',LSA:'lsa',TPM:'tpm'}},{projectId:'tickets',project:'DESK • TICKETS',desk:'TICKETS',kind:'tickets',cwd:'/fixture/tickets',lead:{ADHOC:'adhoc-t',LSA:'lsa-t',TPM:'tpm-t'}},{projectId:'pr-review',project:'DESK • PR REVIEW',desk:'PR REVIEW',kind:'pr-review',cwd:'/fixture/pr',lead:{ADHOC:null,LSA:'pr-lsa',TPM:'pr-tpm'}}];
 window.fixture={calls:[],mode:'normal',sourceTitle:null,client:host=>({agents:{list:async input=>{window.fixture.calls.push({name:'agents.list',host,input});const offset=input.page.cursor?35:0;return {entries:sessions.slice(offset,offset+35),pageInfo:{hasMore:offset===0,nextCursor:offset===0?'page2':null}};},ref:id=>({refresh:async()=>{window.fixture.calls.push({name:'agent.refresh',id,host});if(window.fixture.mode==='transport')throw new Error('Fixture transport timeout');if(window.fixture.mode==='absent')return null;const entry=sessions.find(row=>row.agent.id===id);return entry?{...entry,agent:{...entry.agent,title:window.fixture.sourceTitle||entry.agent.title}}:null;},timeline:{refetch:async()=>{if(window.fixture.mode==='context-error')throw new Error('Fixture timeline unavailable');return {entries:window.fixture.mode==='no-message'?[]:[{item:{type:'assistant_message',text:'Last assistant message fixture'}}]};}}})}}),
 rpc:async(name,input,host)=>{window.fixture.calls.push({name,input,host});if(name==='sessions.create-options'){const query=(input.issueKey||'').toLowerCase();if(query==='slow')await new Promise(resolve=>{window.fixture.releaseSlow=resolve;});if(query==='transport')throw new Error('Fixture Jira transport');const issueClass=input.issueClass||'eligible';const matches=issues.filter(issue=>issueClassMatches(issue,issueClass)&&(!query||issue.summary.toLowerCase().includes(query)||issue.key.toLowerCase()===query));return {enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:input.projectId||'adam',issues:input.start==='from-jira'?matches.slice(0,50):[],jiraProblem:null,desks,profile:null,providers:[{id:'fixture',label:'Fixture provider',available:true,note:null,persona:'supported',status:'ready',models:[{id:'fixture',label:'Fixture model',efforts:[],defaultEffort:null}],defaultModel:'fixture',modes:[],defaultMode:null}]};}
+if(name==='sessions.create-features')return {features:[],problem:null};
+if(name==='sessions.navigator-capabilities'){const no={supported:false,reason:'Not offered by this fixture host.'};return {usageTotals:no,summaries:no,draftAttach:no,takeover:no,takeoverBulk:no,takeoverRoute:no};}
 if(name==='sessions.create')return {requestId:input.requestId,state:'verified',title:'Fixture create',agentId:'fixture-created',workspaceId:'lsa',message:'Fixture only',differences:[],persona:'supported',checkedAt:new Date().toISOString()};throw new Error('Unexpected RPC '+name);}};
 function App(){const root=useRef(null),anchor=useRef(null);const [open,setOpen]=useState(true);return <Host.Provider value="fixture-a"><View ref={root} style={{height:innerHeight,width:innerWidth,backgroundColor:colors.surface0}}>
 <Pressable ref={anchor} accessibilityRole="button" accessibilityLabel="Start or switch" style={{margin:16,minHeight:44}}><Text style={{color:colors.foreground}}>Start or switch</Text></Pressable>
-{open?(mode==='composer'?<View style={{width:'100%',maxWidth:520,alignSelf:'center',maxHeight:innerHeight-40}}><StartSwitchPopover host={{id:'fixture-a'}} theme={{colors}} layout={{compact:innerWidth<700}} workspaceId="adhoc" close={()=>setOpen(false)} openScreen={()=>{}} screenId="kontor"/></View>:<StartSwitchSheet anchor={anchor} root={root} rootSize={{width:innerWidth,height:innerHeight}} compact={innerWidth<700} colors={colors} hostId="fixture-a" hostStatus="online" directory={{entries:[],status:'ready',live:true,lastUpdatedAt:Date.now(),error:null,staleReason:null,pages:1,includeArchived:false}} canOpen onClose={()=>setOpen(false)} onOpen={()=>{}} onOpenCreated={()=>({ok:true})} onShowAll={()=>{}}/>):null}
+{open?(mode==='composer'?<View style={{width:'100%',maxWidth:520,alignSelf:'center',maxHeight:innerHeight-40}}><StartSwitchPopover host={{id:'fixture-a'}} theme={{colors}} layout={{compact:innerWidth<700}} workspaceId="adhoc" close={()=>setOpen(false)} openScreen={()=>{}} screenId="kontor"/></View>:<StartSwitchSheet anchor={anchor} root={root} rootSize={{width:innerWidth,height:innerHeight}} compact={innerWidth<700} colors={colors} hostId="fixture-a" hostStatus="online" directory={{entries:sessions.map(row=>toDirectoryEntry(row)),status:'ready',live:true,inventoryComplete:true,lastUpdatedAt:Date.now(),error:null,staleReason:null,pages:1,includeArchived:false}} canOpen onClose={()=>setOpen(false)} onOpen={()=>{}} onOpenCreated={()=>({ok:true})} onShowView={()=>{}}/>):null}
 </View></Host.Provider>;}createRoot(document.getElementById('root')).render(<App/>);
 `);
 const report = { cases: [], synthetic: true, nativePhoneAndAT: 'unverified', backendNewestEligible50: 'UNRESOLVED: fixture does not qualify the installed backend', actualJiraIcons: 'UNRESOLVED: contract has type names only', prReviewFromJiraBrowse: 'synthetic loopback only' };
@@ -65,8 +73,24 @@ async function start(width, mode = 'screen', height = 844) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width < 700, isMobile: width < 700 });
   const page = await context.newPage(); page.setDefaultTimeout(5000);
   await page.goto(server.resolvedUrls.local[0] + '?mode=' + mode + (width === 390 ? '&dark' : ''));
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
+  await page.getByRole('button', { name: 'New lead', exact: true }).click();
   return { page, context };
+}
+const sid = i => '00000000-0000-4000-8000-' + String(i).padStart(12, '0');
+// Choosing From Jira opens the issue picker at once.
+const fromJira = page => page.getByRole('radio', { name: /^From Jira,/ }).click();
+// This host lists no Codex provider, so a lead that creates names its model explicitly.
+async function chooseModel(page) {
+  await page.getByTestId('kontor-new-lead-model').click();
+  await page.getByRole('radio', { name: /^Fixture model, / }).click();
+  await page.getByTestId('kontor-model-use').click();
+  await page.getByTestId('kontor-model-picker').waitFor({ state: 'detached' });
+}
+// Sources are this host's listed sessions on the shared rows; Use names the session, and its context is read again at Create.
+async function useSource(page, id) {
+  await page.getByTestId(`kontor-lead-source-${id}`).getByTestId('session-row-body').click();
+  await page.getByTestId('kontor-lead-source-use').click();
+  await page.getByTestId('kontor-lead-source-picker').waitFor({ state: 'detached' });
 }
 async function bounds(page, width, height, name) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'no horizontal overflow');
@@ -87,7 +111,7 @@ async function bounds(page, width, height, name) {
   for (const width of [320, 390, 1440]) for (const mode of ['screen', 'composer']) await run(width + '-' + mode + '-picker-layout-and-selection', async () => {
     const { page, context } = await start(width, mode);
     try {
-      await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
+      await fromJira(page);
       const search = page.getByRole('combobox', { name: 'Choose a Jira issue' });
       await expect(page.getByRole('option')).toHaveCount(50);
       await bounds(page, width, 844, width + '-' + mode + '-jira');
@@ -104,39 +128,37 @@ async function bounds(page, width, height, name) {
       await page.setViewportSize({ width, height: 480 }); await search.focus(); await bounds(page, width, 480, width + '-' + mode + '-keyboard-constrained');
       await page.getByRole('button', { name: 'Back from choose a jira issue' }).click();
       await page.getByRole('button', { name: 'Choose source session' }).click();
-      await expect(page.getByRole('option')).toHaveCount(10);
-      await expect(page.getByRole('option').first()).toHaveAccessibleName(/Human context 50/);
-      const source = page.getByRole('combobox', { name: 'Choose a source session' });
-      await source.fill('Human context 1 with'); await expect(page.getByRole('option')).toHaveCount(1);
-      await source.fill(''); await page.getByRole('button', { name: 'Include archived' }).click();
-      await expect(page.getByRole('option').first()).toHaveAccessibleName(/Human context 70.*Archived/);
-      await page.getByRole('button', { name: 'Include archived' }).click();
-      await source.fill('00000000-0000-4000-8000-000000000070'); await expect(page.getByRole('option')).toHaveAccessibleName(/Human context 70.*Archived/);
-      await page.getByRole('option').click();
-      await expect(page.getByTestId('kontor-source-selected')).toContainText('Human context 70');
+      const picker = page.getByTestId('kontor-lead-source-picker'), sources = picker.getByRole('radio');
+      await expect(sources).toHaveCount(50);
+      await expect(page.getByTestId(`kontor-lead-source-${sid(51)}`)).toHaveCount(0);
+      const source = page.getByTestId('kontor-lead-source-search');
+      await source.fill('Human context 23 with'); await expect(sources).toHaveCount(1);
+      await source.fill(''); await expect(sources).toHaveCount(50);
+      await expect(page.getByTestId('kontor-lead-source-use')).toBeDisabled();
+      const row = page.getByTestId(`kontor-lead-source-${sid(23)}`).getByTestId('session-row-body');
+      await row.click(); await expect(row).toHaveAttribute('aria-checked', 'true');
+      await expect(page.getByTestId('kontor-lead-source-summary')).toContainText('No summary is pinned');
+      await page.getByTestId('kontor-lead-source-use').click();
+      await expect(page.getByTestId('kontor-source-selected')).toContainText('Human context 23');
       await page.getByRole('button', { name: 'Clear source' }).click(); await expect(page.getByTestId('kontor-source-selected')).toHaveCount(0);
       assert.equal(await page.evaluate(() => window.fixture.calls.some(call => call.name === 'sessions.create')), false);
     } finally { await context.close(); }
   });
-  await run('stale-Jira-error-retry-and-source-read-states', async () => {
+  await run('stale-Jira-error-retry', async () => {
     const { page, context } = await start(390);
     try {
-      await page.getByRole('radio', { name: /^From Jira ticket/ }).click(); const jira = page.getByRole('combobox', { name: 'Choose a Jira issue' });
+      await fromJira(page); const jira = page.getByRole('combobox', { name: 'Choose a Jira issue' });
       await jira.fill('slow'); await page.waitForFunction(() => !!window.fixture.releaseSlow); await jira.fill('Outside initial window');
       await expect(page.getByRole('option')).toHaveCount(1); await page.evaluate(() => window.fixture.releaseSlow()); await expect(page.getByRole('option')).toHaveCount(1);
       await jira.fill('transport'); await expect(page.getByText(/Fixture Jira transport/)).toBeVisible();
       await jira.fill(''); await expect(page.getByRole('option')).toHaveCount(50); await page.getByRole('button', { name: 'Back from choose a jira issue' }).click();
-      await page.getByRole('button', { name: 'Choose source session' }).click(); const source = page.getByRole('combobox', { name: 'Choose a source session' });
-      await page.evaluate(() => { window.fixture.mode = 'absent'; }); await source.fill('00000000-0000-4000-8000-000000000070'); await expect(page.getByText('Session not found.', { exact: true })).toBeVisible();
-      await page.evaluate(() => { window.fixture.mode = 'transport'; }); await source.fill('00000000-0000-4000-8000-000000000069'); await expect(page.getByText(/Session lookup failed: Fixture transport timeout/)).toBeVisible();
-      await page.evaluate(() => { window.fixture.mode = 'context-error'; }); await page.getByRole('button', { name: 'Retry', exact: true }).click(); await expect(page.getByRole('option')).toHaveAccessibleName(/Human context 69.*Context could not be read/);
-      await page.screenshot({ path: path.join(output, 'source-context-unavailable.png') });
+      await page.screenshot({ path: path.join(output, 'jira-retried.png') });
     } finally { await context.close(); }
   });
   for (const width of [320, 390]) for (const mode of ['screen', 'composer']) await run(width + '-' + mode + '-combobox-keyboard', async () => {
     const { page, context } = await start(width, mode);
     try {
-      await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
+      await fromJira(page);
       const search = page.getByRole('combobox', { name: 'Choose a Jira issue' }); await search.fill('Outside initial window');
       const option = page.locator('#kontor-jira-picker-option-ASMA-811');
       await expect(page.getByRole('option')).toHaveCount(1);
@@ -164,17 +186,23 @@ async function bounds(page, width, height, name) {
   await run('source-create-revalidation-title-error-clear-and-optional-fresh-start', async () => {
     const { page, context } = await start(390);
     try {
+      await chooseModel(page);
       await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Keep typed topic');
-      await page.getByRole('button', { name: 'Choose source session' }).click(); await page.getByRole('option').first().click();
+      await page.getByRole('button', { name: 'Choose source session' }).click(); await useSource(page, sid(1));
       await page.evaluate(() => { window.fixture.sourceTitle = 'Renamed human source'; });
-      await page.getByTestId('kontor-new-lsa-create').click(); await expect(page.getByText(/source session.s title changed/)).toBeVisible();
-      await expect(page.getByTestId('kontor-source-selected')).toHaveText('Renamed human source');
+      const create = page.getByTestId('kontor-new-lsa-create'), noCreate = async () => assert.equal(await page.evaluate(() => window.fixture.calls.some(call => call.name === 'sessions.create')), false);
+      await create.click(); await expect(page.getByText(/source session.s title changed/)).toBeVisible();
       await expect(page.getByRole('textbox', { name: 'Topic', exact: true })).toHaveValue('Keep typed topic');
-      assert.equal(await page.evaluate(() => window.fixture.calls.some(call => call.name === 'sessions.create')), false);
-      await page.getByRole('button', { name: 'Change source' }).click(); await page.getByRole('option').first().click();
-      await page.evaluate(() => { window.fixture.mode = 'transport'; });
-      await page.getByTestId('kontor-new-lsa-create').click(); await expect(page.getByText(/Source lookup failed: Fixture transport timeout/)).toBeVisible();
-      assert.equal(await page.evaluate(() => window.fixture.calls.some(call => call.name === 'sessions.create')), false);
+      await noCreate();
+      for (const [mode, message] of [['transport', /Source lookup failed: Fixture transport timeout/], ['absent', /The source session was not found\. Choose another source, or Clear it\./], ['context-error', /Context could not be read: Fixture timeline unavailable/]]) {
+        // Each refusal holds Create until the source is chosen again; a listed source is its row, and pressing it changes the source.
+        await expect(create).toBeDisabled();
+        await page.getByTestId('kontor-source-selected').getByTestId('session-row-body').click(); await useSource(page, sid(1));
+        await page.evaluate(next => { window.fixture.mode = next; }, mode);
+        await create.click(); await expect(page.getByText(message)).toBeVisible();
+        await noCreate();
+      }
+      await page.screenshot({ path: path.join(output, 'source-context-unavailable.png') });
       await page.getByRole('button', { name: 'Clear source' }).click();
       await page.getByTestId('kontor-new-lsa-create').click(); await page.getByTestId('kontor-new-lsa-verified').waitFor();
       const calls = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
@@ -194,8 +222,9 @@ async function bounds(page, width, height, name) {
   for (const width of [320, 390, 1440]) await run(width + '-pr-review-from-jira-browse-and-desk-routing', async () => {
     const { page, context } = await start(width, 'screen');
     try {
+      await page.getByTestId('kontor-new-lead-desk').click();
       await page.getByRole('radio', { name: 'DESK • PR REVIEW', exact: true }).click();
-      await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
+      await fromJira(page);
       const search = page.getByRole('combobox', { name: 'Choose a Jira issue' });
       await expect(page.getByRole('option')).toHaveCount(50);
       await search.fill('ASMA-900');
@@ -215,7 +244,7 @@ async function bounds(page, width, height, name) {
   for (const width of [320, 390, 1440]) await run(width + '-jira-filter-clears-stale-activedescendant', async () => {
     const { page, context } = await start(width, 'screen');
     try {
-      await page.getByRole('radio', { name: /^From Jira ticket/ }).click();
+      await fromJira(page);
       const search = page.getByRole('combobox', { name: 'Choose a Jira issue' });
       await expect(page.getByRole('option')).toHaveCount(50);
       await search.focus();
@@ -233,12 +262,13 @@ async function bounds(page, width, height, name) {
   await run('source-create-exact-selected-ID', async () => {
     const { page, context } = await start(390);
     try {
+      await chooseModel(page);
       await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Exact source context');
       await page.getByRole('button', { name: 'Choose source session' }).click();
-      await page.getByRole('combobox', { name: 'Choose a source session' }).fill('00000000-0000-4000-8000-000000000070');
-      await page.getByRole('option').click(); await page.getByTestId('kontor-new-lsa-create').click(); await page.getByTestId('kontor-new-lsa-verified').waitFor();
+      await page.getByTestId('kontor-lead-source-search').fill('Human context 23 with');
+      await useSource(page, sid(23)); await page.getByTestId('kontor-new-lsa-create').click(); await page.getByTestId('kontor-new-lsa-verified').waitFor();
       const calls = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
-      assert.equal(calls.length, 1); assert.equal(calls[0].input.sourceAgentId, '00000000-0000-4000-8000-000000000070');
+      assert.equal(calls.length, 1); assert.equal(calls[0].input.sourceAgentId, sid(23));
     } finally { await context.close(); }
   });
 })().catch(error => { report.error = String(error.stack); }).finally(async () => {

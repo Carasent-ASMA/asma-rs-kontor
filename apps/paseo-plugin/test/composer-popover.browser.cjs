@@ -35,12 +35,17 @@ export const useRpc = contract => input => window.fixture.rpc(contract.name, inp
 export const getPaseoClient = hostId => window.fixture.client(hostId);
 import {useSyncExternalStore} from 'react';
 let cache;
+// No saved new-lead default is read here, so a lead names its model explicitly.
+export const useSettings = () => ({ status: 'loading' });
 export const useHosts = () => useSyncExternalStore(listener=>{window.fixture.hostListeners.add(listener);return()=>window.fixture.hostListeners.delete(listener)},()=>{const status=window.fixture.hostStatus;if(cache?.[0].status!==status)cache=[{serverId:'fixture-a',label:'Fixture host',status}];return cache});
 `);
 fs.writeFileSync(path.join(fixture, 'sdk-native.tsx'), `import React from 'react';
 ${glyphImports}
 const icons={Play,MessageCircleQuestion,Ban,CircleAlert,X};
-export {TextInput,ScrollView} from 'react-native';
+import {Pressable,Text,View} from 'react-native';
+export {TextInput,ScrollView,FlatList} from 'react-native';
+export const copyText = async () => {};
+export const Modal = Object.assign(({open,title,onOpenChange,children}) => open ? <View role="dialog" aria-label={title}><Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={()=>onOpenChange(false)}><Text>×</Text></Pressable>{children}</View> : null, { Content: ({children}) => <View>{children}</View> });
 export const useToast = () => ({ error: message => { window.fixture.toasts.push(message); }, show: () => {} });
 export const Icon = ({name,size=16,color}) => {const Glyph=icons[name];return Glyph?<Glyph aria-hidden="true" width={size} height={size} color={color}/>:<span aria-hidden="true" style={{width:size,height:size,color}}>‹</span>;};
 `);
@@ -51,7 +56,7 @@ import {StartSwitchPopover} from ${client('start-switch-sheet.tsx')};
 import {openHandOff} from ${client('session-actions.ts')};
 import {configureRecentStorage,readRecent,recordVisit} from ${client('recent-sessions.ts')};
 import {useSessionDirectory,startHostDirectory} from ${client('use-session-directory.ts')};
-import {stateShortcutPatch} from ${client('session-state-shortcuts.ts')};
+import {switchViewPatch} from ${client('session-state-shortcuts.ts')};
 import {readSessionView,patchSessionView} from ${client('session-view-store.ts')};
 import {filterDirectoryEntries} from ${client('session-view.ts')};
 import {providerBlockedView} from ${client('provider-blocked-filter.ts')};
@@ -74,11 +79,13 @@ const now=Date.now(); recordVisit(HOST,'dup-1',now-120000); recordVisit(HOST,'du
 const catalog={enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:'project-adam',issues:[],jiraProblem:null,
  desks:[{projectId:'project-adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/project-adam',lead:{ADHOC:'wks-adhoc',LSA:'wks-lsa',TPM:'wks-tpm'}}],profile:null,
  providers:[{id:'active',label:'Active provider',status:'ready',available:true,note:null,persona:'supported',models:[{id:'first',label:'Active model',efforts:[],defaultEffort:null}],defaultModel:'first',modes:[],defaultMode:null}]};
-window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Set(),inventoryCalls:[],observers:[],stateFilters:[],draft:'unfinished chat draft',pendingQuestion:'pending-permission',calls:[],screens:[],opens:[],searches:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
+window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Set(),inventoryCalls:[],observers:[],views:[],draft:'unfinished chat draft',pendingQuestion:'pending-permission',calls:[],screens:[],opens:[],toasts:[],results:[],closes:0,holdArrival:false,holdClose:false,failOpenScreen:false,
  client:hostId=>{if(hostId!==HOST)throw new Error('Unexpected host '+hostId);return {agents:{list}};},
  recent:()=>readRecent(HOST).record.visits.map(visit=>visit.id),
  rpc:async(name,input)=>{window.fixture.calls.push({name,input});
   if(name==='sessions.create-options'){await new Promise(resolve=>setTimeout(resolve,10));return catalog;}
+  if(name==='sessions.create-features')return {features:[],problem:null};
+  if(name==='sessions.navigator-capabilities'){const no={supported:false,reason:'Not offered by this fixture host.'};return {usageTotals:no,summaries:no,draftAttach:no,takeover:no,takeoverBulk:no,takeoverRoute:no};}
   if(name==='sessions.create'){await new Promise(resolve=>setTimeout(resolve,120));return {requestId:input.requestId,state:'verified',title:'LSA • ADHOC • '+input.topic,agentId:'fixture-created-exact',workspaceId:'wks-adhoc',message:'Created and verified.',differences:[],persona:'supported',checkedAt:new Date().toISOString()};}
   if(name==='sessions.lifecycle-preview'){
    const item=rows.find(row=>row.agent.id===input.agentIds[0]);if(!item)throw new Error('Unknown exact ID');const a=item.agent,blocked=window.fixture.archiveMode==='blocked';
@@ -98,7 +105,8 @@ startHostDirectory(HOST,'online');
 const navigation={openAgent:input=>{window.fixture.opens.push(input);},openWorkspace:()=>{throw new Error('Unexpected workspace navigation');}};
 /** Stand-in for the Kontor screen's hand-off effect: the same call, keyed on the same param. */
 function KontorStandIn({params}){const directory=useSessionDirectory({hostId:HOST,hostStatus:'online'});const toast=useToast();const [view,setView]=useState(()=>readSessionView(HOST));
- useEffect(()=>{const result=openHandOff({hostId:HOST,key:params.target,entries:directory.state.entries,navigation,onSearch:text=>window.fixture.searches.push(text),onState:shortcut=>{const next=patchSessionView(HOST,stateShortcutPatch(readSessionView(HOST),shortcut));setView(next);window.fixture.stateFilters.push(shortcut)}});
+ // The switcher's state, search and membership arrive whole, as the Kontor screen's Sessions applies them.
+ useEffect(()=>{const result=openHandOff({hostId:HOST,key:params.target,entries:directory.state.entries,navigation,onView:shown=>{const next=patchSessionView(HOST,switchViewPatch(readSessionView(HOST),shown));setView(next);window.fixture.views.push(shown)}});
   window.fixture.results.push(result);if(result&&!result.ok&&result.reason!=='stale')toast.error(result.message);},[params.target]);
  const matching=view.status==='provider_blocked'?providerBlockedView({state:directory.state,includeArchived:false,candidates:directory.state.entries,reads:new Map(),freshness:'Live',blocked:null}).sessions:filterDirectoryEntries(directory.state.entries,view);
  return <View><Text testID="fixture-status-filter" style={{color:colors.foreground}}>{view.status}</Text><Text testID="fixture-status-ids" style={{color:colors.foreground}}>{matching.map(entry=>entry.id).join(',')}</Text><Text testID="fixture-screen" style={{color:colors.foreground,margin:16}}>Kontor {params.target?'with a request':'without a request'}</Text></View>;}
@@ -137,9 +145,9 @@ async function pageFor(width, theme = 'light') {
 }
 async function openPopover(page) {
   await page.getByTestId('host-pill').click();
-  await page.getByTestId('kontor-switch-row-dup-1').waitFor();
+  await page.getByTestId('session-row-dup-1').waitFor();
 }
-const state = page => page.evaluate(() => ({ screens: window.fixture.screens, opens: window.fixture.opens, searches: window.fixture.searches, toasts: window.fixture.toasts, recent: window.fixture.recent(), closes: window.fixture.closes, results: window.fixture.results }));
+const state = page => page.evaluate(() => ({ screens: window.fixture.screens, opens: window.fixture.opens, views: window.fixture.views, toasts: window.fixture.toasts, recent: window.fixture.recent(), closes: window.fixture.closes, results: window.fixture.results }));
 /** A hand-off URL carries one opaque key and nothing that names the session. */
 function assertKeyOnly(screen, forbidden) {
   assert.equal(screen.screenId, 'kontor');
@@ -147,6 +155,30 @@ function assertKeyOnly(screen, forbidden) {
   for (const text of forbidden) assert.ok(!screen.params.target.includes(text), `key leaks ${text}`);
 }
 const within = (box, frame) => box.x >= frame.x - 0.5 && box.x + box.width <= frame.x + frame.width + 0.5;
+// A row's actions are its trailing menu (board C1); nothing runs until one is chosen.
+const actionsMenu = page => page.getByRole('dialog', { name: 'Session actions', exact: true });
+async function rowAction(page, id, key) {
+  await page.getByTestId(`session-actions-${id}`).click();
+  await actionsMenu(page).getByTestId(`session-action-${key}`).click();
+  await actionsMenu(page).waitFor({ state: 'detached' });
+}
+const ROW_PARTS = new Set(['state', 'body', 'opened', 'origin', 'model', 'tokens', 'note', 'choice']);
+const listedIds = page => page.getByTestId('kontor-switch-list').evaluate(list => [...list.querySelectorAll('[data-testid^="session-row-"]')].map(node => node.dataset.testid.slice(12)))
+  .then(ids => ids.filter(id => !ROW_PARTS.has(id)));
+// Every nonarchived session is listed under All, one of the nine states: a tile where the toolbar has room for it, else in More.
+async function pickState(page, status) {
+  const tile = page.getByTestId('kontor-switch-state-' + status);
+  if (await tile.count()) return tile.click();
+  await page.getByTestId('kontor-switch-more').click(); await page.getByTestId('kontor-switch-more-' + status).click();
+}
+const showAll = page => pickState(page, 'all');
+// This host lists no Codex provider and no saved default is read, so a lead names its model explicitly.
+async function chooseModel(page) {
+  await page.getByTestId('kontor-new-lead-model').click();
+  await page.getByRole('radio', { name: /^Active model, / }).click();
+  await page.getByTestId('kontor-model-use').click();
+  await page.getByTestId('kontor-model-picker').waitFor({ state: 'detached' });
+}
 async function run(name, test) {
   if(process.env.CASE_FILTER&&(!new RegExp(process.env.CASE_FILTER).test(name)||report.cases.some(test=>test.status==='FAIL')))return;
   try { const extra = await test(); report.cases.push({ name, status: 'PASS', ...(extra ?? {}) }); }
@@ -167,52 +199,72 @@ async function run(name, test) {
   });
   await server.listen(); browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
-    for(const width of [320,390,1440]) await run(`archive-x-${width}`,async()=>{
+    for(const width of [320,390,1440]) await run(`archive-menu-${width}`,async()=>{
       const {page,context}=await pageFor(width,'light');const errors=[];page.on('pageerror',error=>errors.push(error.message));
       const count=async name=>page.evaluate(name=>window.fixture.calls.filter(call=>call.name===name).length,name);
       try{
         const initial=await page.evaluate(()=>({inventory:window.fixture.inventoryCalls.length,lifecycle:window.fixture.calls.filter(call=>call.name.startsWith('sessions.lifecycle')).length}));assert.equal(initial.lifecycle,0);
-        const x=page.getByRole('button',{name:'Archive session: Route review (dup-1)',exact:true}),open=page.getByTestId('kontor-switch-row-dup-1');
-        const box=await x.boundingBox(),openBox=await open.boundingBox();assert.ok(box.width>=44&&box.height>=44);assert.ok(openBox.x+openBox.width<=box.x+0.5,'Open and archive hit areas are independent');
-        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:path.join(output,`archive-x-${width}.png`)});
-        await x.focus();assert.equal(await x.evaluate(node=>document.activeElement===node),true);await x.press('Enter');await page.keyboard.press('Enter');
-        await expect(page.getByRole('button',{name:'Archiving Route review…',exact:true})).toHaveAttribute('aria-busy','true');
+        const trigger=page.getByTestId('session-actions-dup-1'),open=page.getByTestId('session-row-dup-1');
+        const box=await trigger.boundingBox(),openBox=await open.getByTestId('session-row-body').boundingBox();assert.ok(box.width>=40&&box.height>=44);assert.ok(openBox.x+openBox.width<=box.x+0.5,'Open and the actions menu have independent hit areas');
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:path.join(output,`archive-menu-${width}.png`)});
+        await trigger.focus();assert.equal(await trigger.evaluate(node=>document.activeElement===node),true);await trigger.press('Enter');
+        const archive=actionsMenu(page).getByTestId('session-action-archive');await archive.focus();await archive.press('Enter');
+        // Asserted last, so the outcome below is still proven when no progress shows.
+        const busy=await page.locator('[aria-busy="true"]').or(page.getByText(/^Archiving/)).first().waitFor({timeout:1000}).then(()=>true,()=>false);
         await expect(open).toHaveCount(0);await expect(page.getByTestId('kontor-switch-archive-result')).toHaveText('Archived Route review.');
-        await expect(page.getByTestId('kontor-switch-status-running')).toHaveText('1');assert.equal(await count('sessions.lifecycle-preview'),1);assert.equal(await count('sessions.lifecycle-execute-item'),1);
+        await expect(page.getByTestId('kontor-switch-state-running')).toHaveText('1');assert.equal(await count('sessions.lifecycle-preview'),1);assert.equal(await count('sessions.lifecycle-execute-item'),1);
         assert.deepEqual(await page.evaluate(()=>({screens:window.fixture.screens.length,opens:window.fixture.opens.length,closes:window.fixture.closes,draft:window.fixture.draft,pending:window.fixture.pendingQuestion})),{screens:0,opens:0,closes:0,draft:'unfinished chat draft',pending:'pending-permission'});
-        await page.evaluate(()=>window.fixture.archiveMode='blocked');await page.getByRole('button',{name:'Archive session: Route review (dup-2)',exact:true}).click();
-        await expect(page.getByTestId('kontor-switch-archive-result')).toHaveText('Managed child is protected.');await expect(page.getByTestId('kontor-switch-row-dup-2')).toHaveCount(1);assert.equal(await count('sessions.lifecycle-execute-item'),1);
-        await page.getByRole('textbox',{name:'Jump to any session',exact:true}).fill('Batch');await page.evaluate(()=>window.fixture.archiveMode='uncertain');
-        const uncertain=page.getByRole('button',{name:'Archive session: Batch 01 (batch-01)',exact:true});await uncertain.click();
-        await expect(page.getByTestId('kontor-switch-archive-result')).toContainText('archive result unknown');await expect(uncertain).toHaveAttribute('aria-disabled','true');
-        await expect(page.getByTestId('kontor-switch-row-batch-01')).toHaveCount(1);await expect(page.getByRole('textbox',{name:'Jump to any session',exact:true})).toHaveValue('Batch');
+        await page.evaluate(()=>window.fixture.archiveMode='blocked');await rowAction(page,'dup-2','archive');
+        await expect(page.getByTestId('kontor-switch-archive-result')).toHaveText('Managed child is protected.');await expect(page.getByTestId('session-row-dup-2')).toHaveCount(1);assert.equal(await count('sessions.lifecycle-execute-item'),1);
+        await showAll(page);await page.getByRole('textbox',{name:'Find a session',exact:true}).fill('Batch');await page.evaluate(()=>window.fixture.archiveMode='uncertain');
+        await rowAction(page,'batch-01','archive');
+        await expect(page.getByTestId('kontor-switch-archive-result')).toContainText('archive result unknown');
+        // An unresolved archive holds the row's Archive until its review settles.
+        await page.getByTestId('session-actions-batch-01').click();const held=actionsMenu(page).getByTestId('session-action-archive');
+        assert.equal(await held.getAttribute('aria-label'),'Archive. Archive is not available for this session right now.');await held.press('Enter');await expect(held).toHaveCount(1);
+        const heldDisabled=await held.getAttribute('aria-disabled');
+        await actionsMenu(page).getByRole('button',{name:'Close',exact:true}).click();await actionsMenu(page).waitFor({state:'detached'});
+        await expect(page.getByTestId('session-row-batch-01')).toHaveCount(1);await expect(page.getByRole('textbox',{name:'Find a session',exact:true})).toHaveValue('Batch');
         await expect(page.getByRole('button',{name:'Open Sessions to review archive',exact:true})).toHaveCount(1);assert.equal(await count('sessions.lifecycle-execute-item'),2);
-        assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),initial.inventory,'Archive UI must not add inventory reads');await page.screenshot({path:path.join(output,`archive-x-${width}-uncertain.png`)});
-        assert.deepEqual(errors,[]);return{box,openBox,inventoryReads:initial.inventory,preview:await count('sessions.lifecycle-preview'),execute:await count('sessions.lifecycle-execute-item'),exactId:true,noOpenOrClose:true,uncertainRetained:true,errors};
+        assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),initial.inventory,'Archive UI must not add inventory reads');await page.screenshot({path:path.join(output,`archive-menu-${width}-uncertain.png`)});
+        assert.deepEqual(errors,[]);
+        assert.deepEqual([busy?null:'a running single archive shows it is in progress',heldDisabled==='true'?null:'an unavailable menu item is exposed as disabled'].filter(Boolean),[]);
+        return{box,openBox,inventoryReads:initial.inventory,preview:await count('sessions.lifecycle-preview'),execute:await count('sessions.lifecycle-execute-item'),exactId:true,noOpenOrClose:true,uncertainRetained:true,errors};
       }finally{await context.close();}
     });
     for (const width of [320,390,1440]) for (const theme of ['light','dark']) await run(`statuses-${width}-${theme}`,async()=>{
       const {page,context}=await pageFor(width,theme);const errors=[];page.on('pageerror',error=>errors.push(error.message));
       try{
-        await expect(page.getByTestId('kontor-switch-status-running')).toHaveText('2');
-        const scope=await page.getByTestId('kontor-switch-status-scope').innerText();assert.equal(scope,'This host · all projects · nonarchived');
-        const expected={running:'2',needs_input:'2',provider_blocked:'…',error:'1'},boxes=[];
-        for(const [status,count] of Object.entries(expected)){const control=page.getByTestId('kontor-switch-status-'+status);assert.equal(await control.innerText(),count);assert.match(await control.getAttribute('aria-label'),/This host, all projects, nonarchived/);const box=await control.boundingBox();assert.ok(box.width>=44&&box.height>=44);boxes.push(box);}
+        await expect(page.getByTestId('kontor-switch-state-running')).toHaveText('2');
+        // The strip counts this host's nonarchived sessions; the heading names the host.
+        await expect(page.getByText('This host',{exact:true})).toHaveCount(1);
+        const expected={running:'2',needs_input:'2',error:'1'},boxes=[];
+        // A state the toolbar has no whole tile for keeps its count in More.
+        for(const [status,count] of Object.entries(expected)){const control=page.getByTestId('kontor-switch-state-'+status);
+          if(!await control.count()){await page.getByTestId('kontor-switch-more').click();assert.ok((await page.getByTestId('kontor-switch-more-'+status).getAttribute('aria-label')).endsWith(', '+count));await page.getByTestId('kontor-switch-more').click();continue;}
+          assert.equal(await control.innerText(),count);const box=await control.boundingBox();assert.ok(box.width>=40&&box.height>=40,'state cells keep the strip\'s 40pt floor');boxes.push(box);}
+        // Provider blocked stays unknown until Kontor's Sessions reads the refusals; it is under More.
+        await page.getByTestId('kontor-switch-more').click();assert.equal(await page.getByTestId('kontor-switch-more-provider_blocked').getAttribute('aria-label'),'Provider blocked (observed), …');await page.getByTestId('kontor-switch-more').click();
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-        await page.getByRole('button',{name:'New session',exact:true}).waitFor();await page.getByRole('button',{name:'Open Kontor',exact:true}).waitFor();
+        await page.getByRole('button',{name:'New lead',exact:true}).waitFor();await page.getByRole('button',{name:'Open in Kontor',exact:true}).waitFor();
         const before=await page.evaluate(()=>({calls:window.fixture.inventoryCalls.length,draft:window.fixture.draft,pending:window.fixture.pendingQuestion}));
         await page.screenshot({path:path.join(output,`statuses-${width}-${theme}.png`)});
         await page.evaluate(()=>window.fixture.release());await page.getByTestId('host-popover').waitFor({state:'detached'});await openPopover(page);assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),before.calls,'opening strip must add zero inventory requests');
-        await page.evaluate(()=>window.fixture.setHost('offline'));await page.waitForFunction(()=>document.querySelector('[data-testid=kontor-switch-status-running]')?.textContent==='…');
-        assert.match(await page.getByTestId('kontor-switch-status-read').innerText(),/offline/i);
-        await page.evaluate(()=>window.fixture.setHost('online'));await page.waitForFunction(()=>document.querySelector('[data-testid=kontor-switch-status-running]')?.textContent==='2');
+        await page.evaluate(()=>window.fixture.setHost('offline'));await page.waitForFunction(()=>document.querySelector('[data-testid=kontor-switch-state-running]')?.textContent==='…');
+        assert.match(await page.getByTestId('kontor-switch-freshness').innerText(),/offline/i);
+        await page.evaluate(()=>window.fixture.setHost('online'));await page.waitForFunction(()=>document.querySelector('[data-testid=kontor-switch-state-running]')?.textContent==='2');
         const afterReconnect=await page.evaluate(()=>window.fixture.inventoryCalls.length);await page.evaluate(()=>window.fixture.release());await page.getByTestId('host-popover').waitFor({state:'detached'});await openPopover(page);assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),afterReconnect);
-        const press=page.getByTestId('kontor-switch-status-needs_input');await press.focus();assert.equal(await press.evaluate(node=>document.activeElement===node),true);await press.press('Enter');
-        await page.waitForFunction(()=>window.fixture.stateFilters.length===1);await expect(page.getByTestId('fixture-status-filter')).toHaveText('needs_input');
+        // A state narrows the switcher in place; Open in Kontor hands that view to Sessions whole.
+        const press=page.getByTestId('kontor-switch-state-needs_input');await press.focus();assert.equal(await press.evaluate(node=>document.activeElement===node),true);await press.press('Enter');
+        await expect(press).toHaveAttribute('aria-pressed','true');assert.deepEqual((await listedIds(page)).sort(),['batch-02','dup-2']);
+        await page.getByRole('button',{name:'Open in Kontor',exact:true}).click();
+        await page.waitForFunction(()=>window.fixture.views.length===1);await expect(page.getByTestId('fixture-status-filter')).toHaveText('needs_input');
         assert.deepEqual((await page.getByTestId('fixture-status-ids').innerText()).split(',').sort(),['batch-02','dup-2']);
-        const result=await page.evaluate(()=>({screens:window.fixture.screens.length,closes:window.fixture.closes,draft:window.fixture.draft,pending:window.fixture.pendingQuestion,opens:window.fixture.opens,rpcs:window.fixture.calls.map(call=>call.name)}));
-        assert.equal(result.screens,1);assert.equal(result.closes,1);assert.equal(result.draft,before.draft);assert.equal(result.pending,before.pending);assert.deepEqual(result.opens,[]);assert.ok(result.rpcs.every(name=>name==='sessions.create-options'));assert.deepEqual(errors,[]);
-        return {boxes,scope,expected,reopenDismissal:'Synthetic host close callback; no Escape-from-textbox claim',inventoryBefore:before.calls,inventoryAfterReconnect:afterReconnect,result,errors};
+        const result=await page.evaluate(()=>({screens:window.fixture.screens.length,closes:window.fixture.closes,draft:window.fixture.draft,pending:window.fixture.pendingQuestion,opens:window.fixture.opens,views:window.fixture.views,rpcs:window.fixture.calls.map(call=>call.name)}));
+        assert.equal(result.screens,1);assert.equal(result.closes,1);assert.equal(result.draft,before.draft);assert.equal(result.pending,before.pending);assert.deepEqual(result.opens,[]);
+        assert.deepEqual(result.views,[{status:'needs_input',query:'',membership:'sessions'}]);
+        assert.ok(result.rpcs.every(name=>name==='sessions.create-options'||name==='sessions.navigator-capabilities'),'only read-only catalog and capability reads');assert.deepEqual(errors,[]);
+        return {boxes,expected,reopenDismissal:'Synthetic host close callback; no Escape-from-textbox claim',inventoryBefore:before.calls,inventoryAfterReconnect:afterReconnect,result,errors};
       }finally{await context.close();}
     });
     for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) await run(`${width}-${theme}-layout`, async () => {
@@ -225,12 +277,12 @@ async function run(name, test) {
         assert.ok(scroller.scrollWidth <= scroller.clientWidth, 'no horizontal scroll inside the popover');
         if (compact) assert.equal(Math.round(frame.width), width);
         else { assert.ok(frame.width >= 280 - 0.5 && frame.width <= 420 + 0.5); assert.ok(frame.height <= 440 + 0.5); }
-        // The host owns the title and dismissal: the body adds neither.
-        assert.equal(await page.getByText('Start or switch session', { exact: true }).count(), compact ? 1 : 0);
+        // The host owns dismissal: the body adds no Close. Its title is checked last.
         assert.equal(await page.getByRole('heading', { name: 'Start or switch', exact: true }).count(), 0);
         assert.equal(await page.getByRole('button', { name: /^Close/ }).count(), 0);
-        const controls = [page.getByRole('button', { name: 'Open Kontor', exact: true }), page.getByRole('button', { name: 'New session', exact: true }), page.getByRole('textbox', { name: 'Jump to any session', exact: true }),
-          page.getByTestId('kontor-switch-row-dup-1'), page.getByTestId('kontor-switch-row-dup-2'), page.getByRole('button', { name: 'Clear recent on this device', exact: true })];
+        // The search target is its 44pt field around the input; the strip's Open in Kontor shares the strip's 40pt floor.
+        const controls = [page.getByRole('button', { name: 'Open in Kontor', exact: true }), page.getByRole('button', { name: 'New lead', exact: true }), page.getByRole('textbox', { name: 'Find a session', exact: true }).locator('xpath=..'),
+          page.getByTestId('session-row-dup-1'), page.getByTestId('session-row-dup-2'), page.getByRole('button', { name: 'Clear recent on this device', exact: true })];
         await expect(controls[0]).toBeInViewport();
         await expect(controls[1]).toBeVisible();
         const sizes = [];
@@ -239,12 +291,15 @@ async function run(name, test) {
           const box = await control.boundingBox();
           assert.ok(within(box, frame), 'control inside the popover');
           sizes.push(Math.round(box.height));
-          if (compact) assert.ok(box.height >= 44, 'compact touch target');
+          if (compact) assert.ok(box.height >= (control === controls[0] ? 40 : 44), 'compact touch target');
         }
-        // Equal titles stay two rows, each naming its own ID.
-        assert.deepEqual(await page.getByRole('menuitem', { name: /^Route review,/ }).evaluateAll(nodes => nodes.map(node => node.dataset.testid)), ['kontor-switch-row-dup-2', 'kontor-switch-row-dup-1']);
+        // Equal titles stay two rows, each its own exact ID.
+        assert.deepEqual(await listedIds(page), ['dup-2', 'dup-1']);
+        for (const id of ['dup-2', 'dup-1']) assert.match(await page.getByTestId(`session-row-${id}`).getByTestId('session-row-body').getAttribute('aria-label'), /^Route review\. /);
         await page.getByTestId('host-scroller').evaluate(node => node.scrollTo(0, 0));
         await page.screenshot({ path: path.join(output, `${width}-${theme}-popover.png`) });
+        // The body names itself once; in the compact host sheet, which carries the same title, it must not repeat it.
+        assert.equal(await page.getByText('Start or switch session', { exact: true }).count(), 1, 'one Start or switch session title');
         return { frame, scroller, controlHeights: sizes };
       } finally { await context.close(); }
     });
@@ -252,7 +307,7 @@ async function run(name, test) {
       const { page, context } = await pageFor(width);
       try {
         await page.evaluate(() => { window.fixture.holdArrival = true; });
-        await page.getByTestId('kontor-switch-row-dup-1').click();
+        await page.getByTestId('session-row-dup-1').click();
         await page.getByTestId('host-popover').waitFor({ state: 'detached' });
         let now = await state(page);
         assert.equal(now.screens.length, 1); assertKeyOnly(now.screens[0], ['dup', 'Route']);
@@ -272,40 +327,47 @@ async function run(name, test) {
         assert.equal(now.opens.length, 1); assert.deepEqual(now.toasts, []);
       } finally { await context.close(); }
     });
-    for (const width of [320, 390, 1440]) await run(`${width}-open-kontor-without-request`, async () => {
+    for (const width of [320, 390, 1440]) await run(`${width}-open-kontor-hands-off-view`, async () => {
       const { page, context } = await pageFor(width);
       try {
-        await page.getByRole('button', { name: 'Open Kontor', exact: true }).click();
-        await page.getByText('Kontor without a request', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Open in Kontor', exact: true }).click();
+        await page.getByText('Kontor with a request', { exact: true }).waitFor();
         const now = await state(page);
-        assert.deepEqual(now.screens, [{ screenId: 'kontor' }]);
+        assert.equal(now.screens.length, 1); assertKeyOnly(now.screens[0], ['dup', 'Route']);
+        assert.deepEqual(now.views, [{ status: 'recent', query: '', membership: 'sessions' }]);
         assert.equal(await page.getByTestId('host-popover').count(), 0);
-        assert.deepEqual(now.opens, []); assert.deepEqual(now.searches, []); assert.deepEqual(now.toasts, []);
-        assert.deepEqual(now.results, [null, null]);
+        assert.deepEqual(now.opens, []); assert.deepEqual(now.toasts, []);
+        // StrictMode ran the effect twice: the second read found the key used.
+        assert.deepEqual(now.results.map(result => result?.ok ? 'ok' : result?.reason), ['ok', 'stale']);
       } finally { await context.close(); }
     });
-    for (const width of [320, 390, 1440]) await run(`${width}-search-show-all`, async () => {
+    for (const width of [320, 390, 1440]) await run(`${width}-search-show-more-hands-off`, async () => {
       const { page, context } = await pageFor(width);
       try {
-        await page.getByRole('textbox', { name: 'Jump to any session', exact: true }).fill('batch');
-        const showAll = page.getByRole('button', { name: 'Show all 25 in Sessions', exact: true });
-        await showAll.waitFor();
-        assert.equal(await page.getByRole('menu', { name: 'Matching sessions', exact: true }).getByRole('menuitem').count(), 20);
-        assert.equal(await page.getByTestId('kontor-switch-row-batch-archived').count(), 0);
+        await showAll(page);
+        await page.getByRole('textbox', { name: 'Find a session', exact: true }).fill('batch');
+        await expect(page.getByTestId('kontor-switch-count')).toHaveText('20 of 25');
+        assert.equal((await listedIds(page)).length, 20);
+        assert.equal(await page.getByTestId('session-row-batch-archived').count(), 0);
         await page.screenshot({ path: path.join(output, `${width}-search.png`) });
-        await showAll.click();
+        // The rest are one Show more away, never silently dropped.
+        await page.getByRole('button', { name: 'Show the other 5 of 25', exact: true }).click();
+        await expect(page.getByTestId('kontor-switch-count')).toHaveText('25 of 25');
+        assert.equal((await listedIds(page)).length, 25);
+        await page.getByRole('button', { name: 'Open in Kontor', exact: true }).click();
         await page.getByText('Kontor with a request', { exact: true }).waitFor();
         const now = await state(page);
         assert.equal(now.screens.length, 1); assertKeyOnly(now.screens[0], ['batch']);
-        assert.deepEqual(now.searches, ['batch']); assert.deepEqual(now.opens, []); assert.deepEqual(now.toasts, []);
+        assert.deepEqual(now.views, [{ status: 'all', query: 'batch', membership: 'sessions' }]); assert.deepEqual(now.opens, []); assert.deepEqual(now.toasts, []);
         assert.deepEqual(now.recent, ['dup-2', 'dup-1']);
       } finally { await context.close(); }
     });
     for (const width of [320, 390, 1440]) await run(`${width}-new-lsa-inside-popover`, async () => {
       const { page, context } = await pageFor(width);
       try {
-        await page.getByRole('button', { name: 'New session', exact: true }).click();
-        await page.getByRole('heading', { name: 'New session', exact: true }).waitFor();
+        await page.getByRole('button', { name: 'New lead', exact: true }).click();
+        await page.getByRole('heading', { name: 'New lead', exact: true }).waitFor();
+        await chooseModel(page);
         await page.getByRole('textbox', { name: 'Topic', exact: true }).fill('Popover review');
         const create = page.getByTestId('kontor-new-lsa-create');
         await expect(create).toBeEnabled();
@@ -341,8 +403,8 @@ async function run(name, test) {
     for (const width of [320, 390, 1440]) await run(`${width}-help-and-escape-observed`, async () => {
       const { page, context } = await pageFor(width);
       try {
-        await page.getByRole('button', { name: 'New session', exact: true }).click();
-        const back = page.getByRole('button', { name: 'Back to recent sessions', exact: true });
+        await page.getByRole('button', { name: 'New lead', exact: true }).click();
+        const back = page.getByRole('button', { name: 'Back to sessions', exact: true });
         const help = page.getByRole('tooltip'), popover = page.getByTestId('host-popover');
         const observe = async name => {
           const shown = await help.waitFor({ timeout: 2000 }).then(() => true, () => false);
@@ -367,7 +429,7 @@ async function run(name, test) {
           await page.waitForTimeout(700);
           observation.longHold = await observe('long-hold');
           await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-          observation.longHold.stayedInNewLsa = await page.getByRole('heading', { name: 'New session', exact: true }).count() === 1;
+          observation.longHold.stayedInNewLsa = await page.getByRole('heading', { name: 'New lead', exact: true }).count() === 1;
           await page.getByRole('textbox', { name: 'Topic', exact: true }).focus();
         }
         // Keyboard: leave the Back button and return to it.
@@ -391,19 +453,18 @@ async function run(name, test) {
       try {
         const input = await page.evaluate(() => window.fixture.calls.find(call => call.name === 'sessions.create-options')?.input);
         assert.deepEqual(input, { workspaceId: 'wks-adam' });
-        await page.getByRole('button', { name: 'New session', exact: true }).click();
-        const desk = page.getByRole('radio', { name: 'DESK • ADAM', exact: true });
-        await desk.waitFor();
-        assert.equal(await desk.getAttribute('aria-checked'), 'true');
+        await page.getByRole('button', { name: 'New lead', exact: true }).click();
+        // One desk is a fact, not a choice; the workspace the popover opened in chose it.
+        await expect(page.getByTestId('kontor-new-lead-desk')).toContainText('DESK • ADAM');
       } finally { await context.close(); }
     });
     await run('390-stale-screen-leaves-newer-request', async () => {
       const { page, context } = await pageFor(390);
       try {
         await page.evaluate(() => { window.fixture.holdArrival = true; });
-        await page.getByTestId('kontor-switch-row-dup-1').click();
+        await page.getByTestId('session-row-dup-1').click();
         await openPopover(page);
-        await page.getByTestId('kontor-switch-row-dup-2').click();
+        await page.getByTestId('session-row-dup-2').click();
         await page.evaluate(() => window.fixture.show(0));
         await page.waitForFunction(() => window.fixture.results.length >= 2);
         let now = await state(page);
@@ -419,13 +480,13 @@ async function run(name, test) {
       const { page, context } = await pageFor(390);
       try {
         await page.evaluate(() => { window.fixture.failOpenScreen = true; });
-        await page.getByTestId('kontor-switch-row-dup-1').click();
+        await page.getByTestId('session-row-dup-1').click();
         let now = await state(page);
         assert.deepEqual(now.toasts, ['Fixture could not open Kontor.']);
         assert.equal(now.closes, 0); assert.equal(await page.getByTestId('host-popover').count(), 1);
         assert.deepEqual(now.screens, []); assert.deepEqual(now.opens, []);
         await page.evaluate(() => { window.fixture.failOpenScreen = false; });
-        await page.getByTestId('kontor-switch-row-dup-1').click();
+        await page.getByTestId('session-row-dup-1').click();
         await page.waitForFunction(() => window.fixture.opens.length === 1);
         now = await state(page);
         assert.deepEqual(now.opens, [{ agentId: 'dup-1', serverId: 'fixture-a' }]);

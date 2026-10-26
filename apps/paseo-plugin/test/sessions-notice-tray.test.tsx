@@ -116,21 +116,15 @@ const sheet = () => all().find((element) => element.type === ArchiveRecoveryShee
 const count = (name: string) => fake.calls.filter(([called]) => called === name).length;
 const press = (element: Element | undefined) => (element!.props.onPress as () => void)();
 const button = (props: Record<string, unknown>) => (NoticesButton as unknown as (props: Record<string, unknown>) => Element)(props);
-const isResume = (element: Element) => element.props.accessibilityLabel === "Resume sessions";
 /**
- * Wide: the status button sits beside Resume in the same row (the slim row passes both to SlimToolbar), so it adds no row.
- * Compact: it sits in the count row before Grouped / Flat, and the Resume column holds only Resume.
+ * Wide: the status button sits in the toolbar row (the slim row passes it to SlimToolbar), so it adds no row.
+ * Compact: it sits in the count row before Grouped / Flat. No layout keeps a standalone Resume.
  */
 function placed(layout: Layout) {
-  const tree = all();
-  if (layout.startsWith("compact")) {
-    const bar = tree.find((element) => element.props.testID === "sessions-layout-bar");
-    const column = tree.find((element) => ([element.props.children].flat(2) as Element[]).some((kid) => !!kid && typeof kid === "object" && isResume(kid)));
-    return !!bar && walk(bar).some((element) => element.type === NoticesButton) && !walk(column).some((element) => element.type === NoticesButton);
-  }
-  const slim = tree.find((element) => element.type === SlimToolbar && (element.props.notice as Element | null)?.type === NoticesButton);
-  if (slim) return isResume(slim.props.action as Element);
-  return tree.some((element) => { const kids = ([element.props.children].flat(2) as Element[]).filter((kid) => !!kid && typeof kid === "object"); return kids.some((kid) => kid.type === NoticesButton) && kids.some(isResume); });
+  const tree = all(), within = (testID: string) => walk(tree.find((element) => element.props.testID === testID)).some((element) => element.type === NoticesButton);
+  if (tree.some((element) => element.props.accessibilityLabel === "Resume sessions")) return false;
+  if (layout.startsWith("compact")) return within("sessions-layout-bar");
+  return tree.some((element) => element.type === SlimToolbar && (element.props.notice as Element | null)?.type === NoticesButton) || within("sessions-full-toolbar");
 }
 
 describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice tray on the %s layout", (layout) => {
@@ -149,7 +143,7 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
   });
   afterEach(() => harness.unmount());
 
-  it("hides the unconfirmed archive behind one status button (beside Resume, or in the compact count row), with no action and no false success", async () => {
+  it("hides the unconfirmed archive behind one status button (in the toolbar row, or in the compact count row), with no action and no false success", async () => {
     mount(layout); await settle();
     expect(lineText()).toBe(ONE); expect(trigger()).toBeUndefined();
     const before = fake.calls.length;
@@ -225,9 +219,14 @@ describe.each(["full", "slim", "compact-320", "compact-390"] as const)("Notice t
     const style = (button(trigger()!.props).props.style as (state: object) => { minHeight: number; minWidth: number })({});
     expect(style.minHeight).toBeGreaterThanOrEqual(44); expect(style.minWidth).toBeGreaterThanOrEqual(44);
     if (layout.startsWith("compact")) {
-      // 320 and 390 keep the quick toolbar at its width; the button sits in the 80 pt Resume column and shows a count.
-      expect(all().find((element) => element.type === MobileQuickToolbar)?.props.width).toBe(Number(layout.slice(-3)) - 112);
+      // 320 and 390 give the quick toolbar a growing column it measures itself; only Attention's 80 pt Check IDs column takes room. The button shows a count.
+      const column = () => all().find((element) => (element.props.children as { type?: unknown } | undefined)?.type === MobileQuickToolbar)!;
+      expect(all().find((element) => element.type === MobileQuickToolbar)?.props).not.toHaveProperty("width");
+      expect(column().props.style).toEqual({ flex: 1, minWidth: 0 });
       expect(walk(button(trigger()!.props)).find((element) => element.type === "Text")?.props.children).toBe(1);
+      harness.unmount(); patchSessionView("host-a", { status: "attention" }); mount(layout); await settle();
+      expect(column().props.style).toEqual({ flex: 1, minWidth: 0 });
+      expect(all().find((element) => element.props.style && (element.props.style as { width?: number }).width === 80 && walk(element).some((child) => child.props.accessibilityLabel === "Check availability"))).toBeDefined();
     }
   });
 });

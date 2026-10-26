@@ -30,6 +30,8 @@ export type FixtureAgent = NativeTelemetry & {
   model: string | null;
   parentAgentId?: string | null;
   labels: Record<string, string>;
+  /** The listed settings, such as Speed and Plan, with the values this seat holds; a creation readback reads these. */
+  features?: import("../../../paseo-plugin/shared/session-create").CreateFeature[];
 };
 export type FixtureProject = { projectKey: string; projectName: string; workspaceName: string | null };
 export type FixtureSession = { agent: FixtureAgent; project: FixtureProject | null };
@@ -79,7 +81,8 @@ function session(seed: Seed): FixtureSession {
       archivedAt: seed.archived ? at(seed.minutes - 1) : null,
       createdAt: at(seed.minutes + 240), updatedAt: at(seed.minutes),
       cwd: workspace?.directory ?? `/work/scratch/${seed.id}`, workspaceId: workspace?.id ?? null,
-      provider: "claude", model: seed.model ?? "claude-opus-5-5", parentAgentId: null, labels: seed.labels ?? {},
+      // Every synthetic seat runs at Claude's default permissions, so a takeover has a reported mode to keep.
+      provider: "claude", model: seed.model ?? "claude-opus-5-5", currentModeId: "default", parentAgentId: null, labels: seed.labels ?? {},
     },
     project: project ? { ...project, workspaceName: workspace?.name ?? null } : null,
   };

@@ -16,7 +16,7 @@ export const PASEO_LIGHT: PluginTheme["colors"] = {
   statusSuccess: "#3e704a", statusWarning: "#7b5d39", statusDanger: "#9d433b",
 };
 
-const params = new URLSearchParams(window.location.search);
+const params = new URLSearchParams(globalThis.location?.search ?? "");
 export const themeName: "dark" | "light" = params.get("theme") === "light" ? "light" : "dark";
 export function shellColors(): PluginTheme["colors"] {
   return themeName === "light" ? PASEO_LIGHT : PASEO_DARK;

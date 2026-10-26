@@ -4,6 +4,7 @@ import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { focusControl } from "./mobile-filters";
 import { OTHER_WORKSTREAM } from "./session-organization";
+import { readableInk } from "./session-status-ink";
 import { workstreamOptionLabel, type WorkstreamOption } from "./plan-workstreams";
 
 /** Case, punctuation, spacing and "&"/"and" do not matter when finding an association. */
@@ -112,7 +113,7 @@ export function WorkstreamSelector({ options, hidden = [], selected, open, regis
         </Pressable>
         <Pressable testID={`workstream-details-${key}`} accessibilityRole="button" accessibilityLabel={`Details for ${label}`} accessibilityState={{ expanded: details === key }} aria-expanded={details === key}
           onPress={() => setDetails(details === key ? null : key)} style={{ minHeight: height, minWidth: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 6 }}>
-          <Text style={{ color: colors.accent, fontSize: 12 }}>Details</Text>
+          <Text style={{ color: readableInk(colors.accent, colors, 4.5), fontSize: 12 }}>Details</Text>
         </Pressable>
       </View>
       {details === key ? <Text testID={`workstream-facts-${key}`} selectable style={{ marginLeft: 32, color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{facts}</Text> : null}

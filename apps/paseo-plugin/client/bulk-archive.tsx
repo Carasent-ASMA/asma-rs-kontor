@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
-import { useActionHelp } from "./control-help";
+import { Icon, Modal, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { ARCHIVE_BATCH_LIMIT, archiveSummary, unresolvedArchive, type LifecycleRow } from "../shared/session-lifecycle";
 import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
 import { RECOVERY_STATES, recoveryState } from "./archive-feedback";
+import { SheetFooter } from "./operation-sheet";
 
 type Lifecycle = ReturnType<typeof useSessionLifecycle>;
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -15,17 +15,21 @@ const ACTIVE = ["running", "initializing"];
 /** "N of M" over the sessions the confirm button counted; a preflight-blocked row's request archives nothing. */
 const progress = (rows: readonly LifecycleRow[]) => { const sent = rows.filter((row) => row.eligible); return `${Math.min(sent.filter((row) => row.outcome !== "pending").length + 1, sent.length)} of ${sent.length}`; };
 
+/**
+ * The exact session IDs chosen on one host. A change of filters never adds or drops one: `hidden` counts the selected
+ * sessions the current view no longer shows. Only a shown session can be added; any selected one can be removed.
+ */
 export function useArchiveSelection(hostId: string, shown: readonly string[]) {
   const [selecting, setSelecting] = useState(false), [selected, setSelected] = useState<string[]>([]);
   useEffect(() => { setSelecting(false); setSelected([]); }, [hostId]);
-  const scope = JSON.stringify(shown);
-  useEffect(() => { setSelected((ids) => { const kept = ids.filter((id) => shown.includes(id)); return kept.length === ids.length ? ids : kept; }); }, [scope]);
   const toggle = (id: string) => {
-    if (!shown.includes(id)) return;
+    if (!shown.includes(id) && !selected.includes(id)) return;
     setSelecting(true);
     setSelected((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : ids.length < ARCHIVE_BATCH_LIMIT ? [...ids, id] : ids);
   };
-  return { selecting, selected, toggle, selectShown: () => { if (shown.length <= ARCHIVE_BATCH_LIMIT) setSelected([...shown]); },
+  /** Adds `ids`, every known match, when the selection stays within one batch; otherwise nothing changes. */
+  const selectAll = (ids: readonly string[]) => setSelected((current) => { const next = [...new Set([...current, ...ids])]; return next.length <= ARCHIVE_BATCH_LIMIT ? next : current; });
+  return { selecting, selected, hidden: selected.filter((id) => !shown.includes(id)).length, toggle, selectAll, selectShown: () => selectAll(shown),
     remove: (ids: readonly string[]) => setSelected((current) => current.filter((id) => !ids.includes(id))),
     clear: () => { setSelecting(false); setSelected([]); }, start: () => setSelecting(true) };
 }
@@ -50,88 +54,29 @@ export function archiveIssue(row: LifecycleRow, rows?: readonly LifecycleRow[]):
   return waiting && row.outcome === "blocked" ? { ...result, text: "Waits for its selected children to archive" } : result;
 }
 
-/** A drawn box in a 44pt target. Fill plus a check or minus mark the state, so colour is never the only cue. */
-function Checkbox({ testID, label, hint, checked, disabled, pending = false, colors, onPress }: {
-  testID: string; label: string; hint?: string; checked: boolean | "mixed"; disabled: boolean; pending?: boolean; colors: Colors; onPress: () => void;
-}) {
-  const on = checked !== false;
-  return <Pressable testID={testID} accessibilityRole="checkbox" accessibilityLabel={label} accessibilityHint={hint}
-    accessibilityState={{ checked, disabled, busy: pending }} aria-checked={checked} disabled={disabled}
-    {...(Platform.OS === "web" ? { onKeyDown: (event: { key: string; repeat?: boolean; preventDefault(): void; stopPropagation(): void }) => {
-      if (event.key !== " " && event.key !== "Spacebar") return;
-      event.preventDefault(); event.stopPropagation(); if (!event.repeat && !disabled) onPress();
-    } } : {})}
-    onPress={onPress} style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center",
-      borderRadius: 8, borderWidth: 2, borderColor: focused ? colors.foreground : "transparent", opacity: disabled ? 0.4 : 1 })}>
-    <View testID={`${testID}-box`} style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 2, alignItems: "center", justifyContent: "center",
-      borderColor: on ? colors.foreground : colors.foregroundMuted, backgroundColor: on ? colors.foreground : undefined }}>
-      {pending ? <Icon name="Loader" size={14} color={on ? colors.surface0 : colors.foregroundMuted} /> : on ? <Icon name={checked === "mixed" ? "Minus" : "Check"} size={16} color={colors.surface0} /> : null}
-    </View>
-  </Pressable>;
-}
-
-function PrimaryButton({ label, accessibilityLabel, disabled, colors, onPress, ref }: { label: string; accessibilityLabel?: string; disabled: boolean; colors: Colors; onPress: () => void; ref?: RefObject<View | null> }) {
-  return <Pressable ref={ref} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ disabled }} aria-disabled={disabled} disabled={disabled} onPress={onPress}
-    style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: COARSE_POINTER ? 44 : 34, minWidth: 44, paddingHorizontal: 14, borderRadius: 8, alignItems: "center", justifyContent: "center",
-      borderWidth: 2, borderColor: focused ? colors.foreground : "transparent", backgroundColor: disabled ? colors.surface2 : colors.accent })}>
-    <Text numberOfLines={1} style={{ color: disabled ? colors.foregroundMuted : colors.accentForeground, fontSize: 13, fontWeight: "600" }}>{label}</Text>
-  </Pressable>;
-}
-
-export function ArchiveSelectionCheckbox({ session, checked, disabled, pending, colors, onPress, outcome, onCheck }: {
-  session: { id: string; title: string }; checked: boolean; disabled: boolean; pending: boolean; colors: Colors; onPress: () => void; outcome?: LifecycleRow; onCheck?: () => void;
-}) {
-  const checkbox = <Checkbox testID={`sessions-select-${session.id}`} label={`Select ${session.title} (${session.id}) for archive`} checked={checked} disabled={disabled} pending={pending} colors={colors} onPress={onPress} />;
-  return outcome && (unresolvedArchive(outcome) || outcome.reconcileReviewId) ? <View style={{ alignItems: "center" }}>{checkbox}
-    <Action colors={colors} label="Refresh status" accessibilityLabel={`Refresh archive status: ${session.title} (${session.id})`} disabled={disabled} onPress={() => onCheck?.()} />
-  </View> : checkbox;
+/** Whether a row's archive still owes the sessions list a line under the session. */
+export function archiveFeedbackShown(row: LifecycleRow | undefined): row is LifecycleRow {
+  return !!row && (row.outcome === "blocked" || unresolvedArchive(row));
 }
 
 /** One line in the sessions list; the full reason and the session's ID stay in the dialog's row details. */
 export function ArchiveRowFeedback({ row, colors }: { row: LifecycleRow | undefined; colors: Colors }) {
-  if (!row || !(row.outcome === "blocked" || unresolvedArchive(row))) return null;
+  if (!archiveFeedbackShown(row)) return null;
   return <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
     <Icon name="CircleAlert" size={12} color={colors.statusWarning} />
     <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.statusWarning, fontSize: 12, lineHeight: 17 }}>{row.outcome === "blocked" ? `Archive blocked · ${archiveIssue(row).text}` : archiveIssue(row).text}</Text>
   </View>;
 }
 
-export function ArchiveSelectionToggle({ selection, disabled, colors, toggleRef }: {
-  selection: ReturnType<typeof useArchiveSelection>; disabled: boolean; colors: Colors; toggleRef?: RefObject<View | null>;
+/** A batch's progress, Stop, its one announcement and what can follow it; selecting itself is board D1's header and bar. */
+export function BulkArchiveToolbar({ selection, lifecycle, colors, maxHeight, announce = true }: {
+  selection: ReturnType<typeof useArchiveSelection>; lifecycle: Lifecycle; colors: Colors; maxHeight?: number; announce?: boolean;
 }) {
-  const hint = selection.selecting ? "Cancel selection. Clear selected sessions without archiving." : "Select sessions. Choose sessions for archive, then review and confirm.";
-  const help = useActionHelp(hint, toggleRef);
-  return <Pressable {...help.bindings} testID="sessions-selection-toggle" accessibilityRole="button"
-    accessibilityLabel={selection.selecting ? "Cancel archive selection" : "Select sessions for archive"} accessibilityHint={hint}
-    accessibilityState={{ selected: selection.selecting, disabled }} aria-pressed={selection.selecting} disabled={disabled}
-    onPress={() => { help.dismiss(); if (selection.selecting) selection.clear(); else selection.start(); }}
-    style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minWidth: 44, minHeight: 44, paddingHorizontal: 8, paddingVertical: 6,
-      alignItems: "center", justifyContent: "center", borderRadius: 6, borderWidth: 1, borderColor: focused ? colors.foreground : "transparent",
-      backgroundColor: pressed || selection.selecting ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
-    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><Icon name={selection.selecting ? "X" : "ListChecks"} size={18} color={colors.foreground} /></View>
-  </Pressable>;
-}
-
-export function BulkArchiveToolbar({ selection, shownCount, disabled, lifecycle, colors, onReview, reviewRef, maxHeight, announce = true }: {
-  selection: ReturnType<typeof useArchiveSelection>; shownCount: number; disabled: boolean; lifecycle: Lifecycle; colors: Colors; onReview: () => void; reviewRef?: RefObject<View | null>; maxHeight?: number; announce?: boolean;
-}) {
-  const { batch, running, review } = lifecycle, count = selection.selected.length, all = shownCount > 0 && count === shownCount;
+  const { batch, running, review } = lifecycle;
   // Results stay until Dismiss; deselecting blocked rows only changes this selection and never archives anything.
   const blocked = batch && !running ? (review?.rows ?? []).filter((row) => row.outcome === "blocked" && selection.selected.includes(row.id)).map((row) => row.id) : [];
   return <ScrollView testID="sessions-bulk-archive" style={{ flexGrow: 0, flexShrink: 0, maxHeight }} contentContainerStyle={{ gap: 4 }} keyboardShouldPersistTaps="handled">
-    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-      {selection.selecting ? <>
-        <Checkbox testID="sessions-select-all" colors={colors} checked={all ? true : count ? "mixed" : false} disabled={disabled || !shownCount || (!all && shownCount > ARCHIVE_BATCH_LIMIT)}
-          label={all ? "Clear selection" : `Select all ${plural(shownCount, "shown session")}`}
-          hint={shownCount > ARCHIVE_BATCH_LIMIT ? `More than ${ARCHIVE_BATCH_LIMIT} shown: narrow the view or select sessions one by one.` : undefined}
-          onPress={() => all ? selection.remove(selection.selected) : selection.selectShown()} />
-        <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{`${count} selected`}</Text>
-        {shownCount > ARCHIVE_BATCH_LIMIT || count >= ARCHIVE_BATCH_LIMIT ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{`Max ${ARCHIVE_BATCH_LIMIT} per batch`}</Text> : null}
-        <View style={{ flexGrow: 1 }} />
-        <PrimaryButton ref={reviewRef} colors={colors} label={`Archive ${count}…`} accessibilityLabel={`Review archive of ${plural(count, "selected session")}`} disabled={disabled || !count} onPress={onReview} />
-      </> : null}
-      {running && batch ? <Action colors={colors} label="Stop before next session" onPress={lifecycle.stop} /> : null}
-    </View>
+    {running && batch ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}><Action colors={colors} label="Stop before next session" onPress={lifecycle.stop} /></View> : null}
     {batch ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
       {running ? <Text style={{ color: colors.foreground, fontSize: 12 }}>{`Archiving ${progress(review?.rows ?? [])}`}</Text> : null}
       {announce ? <Text testID="sessions-bulk-status" role="status" accessibilityLiveRegion="polite" style={{ flexShrink: 1, color: colors.foreground, fontSize: 12 }}>{batch.announcement}</Text> : null}
@@ -149,15 +94,22 @@ const sectionOf = (row: LifecycleRow): Section => unresolvedArchive(row) ? "unco
 /**
  * Review, then one explicit confirmation (HIG alerts: short title, one consequence, verb buttons, Cancel). Each status
  * is a section heading once; rows lead with the title and one reason, and IDs and full messages wait in row details.
+ * Board D4: Cancel LEFT and Archive N RIGHT in one row. Anchored to `anchor` inside `root`, or the host's modal when a
+ * surface has neither, such as the composer popover.
  */
 export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, compact, onClose, onFinished }: {
-  lifecycle: Lifecycle; root: RefObject<View | null>; anchor: RefObject<View | null>; rootSize: MenuSize; colors: Colors; compact: boolean; onClose: () => void; onFinished: (summary: string) => void;
+  lifecycle: Lifecycle; root?: RefObject<View | null>; anchor?: RefObject<View | null>; rootSize?: MenuSize; colors: Colors; compact: boolean;
+  /** `archived`: every session any review in this dialog saw archived or gone, including reviews before Review again. */
+  onClose: (archived: string[]) => void; onFinished: (summary: string) => void;
 }) {
   const closeButton = useRef<View | null>(null), closed = useRef(false), { review, busy, running, batch } = lifecycle;
   const [details, setDetails] = useState<string | null>(null), [stopping, setStopping] = useState(false);
   useEffect(() => { const timer = setTimeout(() => (closeButton.current as View & { focus?: () => void } | null)?.focus?.(), 0); return () => clearTimeout(timer); }, []);
   const muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 };
-  const close = () => { closed.current = true; lifecycle.stop(); onClose(); };
+  // Review again replaces the review's rows, so the sessions earlier batches archived are kept here for the caller.
+  const archived = useRef(new Set<string>());
+  for (const row of review?.rows ?? []) if (row.outcome === "archived" || row.outcome === "already_archived" || row.outcome === "absent") archived.current.add(row.id);
+  const close = () => { closed.current = true; lifecycle.stop(); onClose([...archived.current]); };
   // The dialog states the outcome while it is open; a toast reports only a batch that finishes after it closed.
   const archive = async () => { setStopping(false); const summary = await lifecycle.run(); if (summary && closed.current) onFinished(summary); };
   const reading = busy && !batch, rows = reading ? [] : review?.rows ?? [], done = !!batch && !running;
@@ -165,7 +117,7 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
   // Blocked and unattempted rows can be read again; an unconfirmed archive keeps its exact-ID Refresh status and is never resent.
   const again = rows.filter((row) => row.outcome === "pending" || row.outcome === "blocked" && !row.reconcileReviewId).map((row) => row.id);
   const preview = (ids: string[]) => { setDetails(null); setStopping(false); void lifecycle.prepare("archive", "filtered", ids, true); };
-  const title = reading || !review ? "Archive selected sessions" : running ? "Archiving…" : done ? stopping ? "Archive stopped" : "Archive finished" : `Archive ${plural(rows.length, "session")}?`;
+  const title = reading || !review ? "Archive selected sessions" : running ? "Archiving…" : done ? stopping ? "Archive stopped" : "Archive finished" : `Archive ${plural(rows.length, "session")}`;
   const summary = running && batch ? `${stopping ? "Stopping after session" : "Session"} ${progress(rows)}`
     : done ? archiveSummary(rows) : blocked.length ? `${ready.length} ready · ${blocked.length} blocked` : null;
   const attention = rows.some((row) => ["blocked", "unconfirmed"].includes(sectionOf(row)));
@@ -202,11 +154,10 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
   const list = (entries: LifecycleRow[]) => <View role="list" style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: "hidden" }}>{entries.map(item)}</View>;
   const LABELS: Record<Section, string> = { blocked: "Blocked", unconfirmed: "Not confirmed", ready: done ? "Not attempted" : running ? "Queued" : "Ready",
     archived: "Archived", already: "Already archived", absent: "Not found on this host" };
-  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }}
-    onClose={close} colors={colors} label="Confirm bulk archive" dialog testID="bulk-archive-dialog"
-    header={<View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8, paddingLeft: 7 }}><Text accessibilityRole="header" numberOfLines={2} style={{ flexShrink: 1, color: colors.foreground, fontSize: 16, fontWeight: "600" }}>{title}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>}>
+  const body = <>
     <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ padding: 12, gap: 12 }}>
       {reading ? <Text style={muted}>Reading selected sessions and managed children…</Text> : review ? <>
+        {batch ? null : <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>Only the selected sessions are requested for archive.</Text>}
         {summary ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           {done ? <Icon name={attention ? "CircleAlert" : "Check"} size={16} color={attention ? colors.statusWarning : colors.statusSuccess} /> : null}
           <Text testID="bulk-archive-summary" {...(batch ? { role: "status", accessibilityLiveRegion: "polite" as const } : {})} style={{ flexShrink: 1, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{summary}</Text>
@@ -230,6 +181,10 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
             {list(entries)}
           </View>;
         })}
+        {batch ? null : <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 8, backgroundColor: colors.surface2 }}>
+          <Icon name="Info" size={16} color={colors.foregroundMuted} />
+          <Text style={{ ...muted, flex: 1 }}>Archived sessions stay available in Kontor.</Text>
+        </View>}
         <Disclosure small colors={colors} label="About archive">
           <View style={{ gap: 6, paddingTop: 2 }}>
             <Text style={muted}>Only selected session IDs are directly requested for archive. At preflight, a parent is blocked unless every active managed child is selected. Children archive first; a blocked or unconfirmed child keeps its parent blocked.</Text>
@@ -240,15 +195,20 @@ export function BulkArchiveDialog({ lifecycle, root, anchor, rootSize, colors, c
       </> : null}
       {lifecycle.error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{lifecycle.error}</Text> : null}
     </ScrollView>
-    {review && !reading ? <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 8, paddingHorizontal: 7, paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
-      {running ? <Action colors={colors} label="Stop before next session" onPress={() => { setStopping(true); lifecycle.stop(); }} />
-        : done ? <>
-          {again.length ? <Action colors={colors} label={`Review ${again.length} again`} accessibilityLabel={`Review ${plural(again.length, "blocked or unattempted session")} again`} disabled={busy} onPress={() => preview(again)} /> : null}
-          <PrimaryButton colors={colors} label="Done" disabled={false} onPress={close} />
-        </> : <>
-          <Action colors={colors} label="Cancel" onPress={close} />
-          <PrimaryButton colors={colors} label={`Archive ${plural(ready.length, "session")}`} disabled={busy || running || !ready.length} onPress={() => { void archive(); }} />
-        </>}
+    {review && !reading ? <View style={{ paddingHorizontal: 7 }}>
+      {running ? <SheetFooter colors={colors} secondary={{ testID: "bulk-archive-stop", label: "Stop before next session", onPress: () => { setStopping(true); lifecycle.stop(); } }} />
+        : done ? <SheetFooter colors={colors} secondary={{ testID: "bulk-archive-close", label: "Close", onPress: close }} primary={again.length ? { testID: "bulk-archive-again", label: `Review ${again.length} again`,
+          accessibilityLabel: `Review ${plural(again.length, "blocked or unattempted session")} again`, disabled: busy, onPress: () => preview(again) } : null} />
+        : <SheetFooter colors={colors} secondary={{ testID: "bulk-archive-cancel", label: "Cancel", onPress: close }}
+          primary={{ testID: "bulk-archive-confirm", label: `Archive ${ready.length}`, accessibilityLabel: `Archive ${plural(ready.length, "session")}`, disabled: busy || running || !ready.length, onPress: () => { void archive(); } }} />}
     </View> : null}
+  </>;
+  if (!root || !anchor || !rootSize) return <Modal title={title} open onOpenChange={(open) => { if (!open) close(); }}>
+    <Modal.Content scrollable={false} contentContainerStyle={{ padding: 4, gap: 4 }}><View testID="bulk-archive-dialog" accessibilityLabel="Confirm bulk archive" style={{ flexShrink: 1, minHeight: 0 }}>{body}</View></Modal.Content>
+  </Modal>;
+  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }}
+    onClose={close} colors={colors} label="Confirm bulk archive" dialog testID="bulk-archive-dialog"
+    header={<View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8, paddingLeft: 7 }}><Text accessibilityRole="header" numberOfLines={2} style={{ flexShrink: 1, color: colors.foreground, fontSize: 16, fontWeight: "600" }}>{title}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>}>
+    {body}
   </AnchoredMenu>;
 }

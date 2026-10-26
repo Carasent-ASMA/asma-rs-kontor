@@ -6,6 +6,7 @@ import { confirmedEpic, nativeSummary, portfolioFilter, portfolioRows, readTime,
 import { inventoryReadLabel } from "./native-freshness";
 import { SourceDetails } from "./source-details";
 import { Action, Copy, Disclosure, type Colors } from "./page-controls";
+import { readableInk } from "./session-status-ink";
 import { kontordSentence } from "./kontord-copy";
 
 type EpicTab = "Plan" | "Board" | "Graph" | "Sessions";
@@ -131,7 +132,7 @@ function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, col
       <View style={{ width: `${Math.round(100 * row.tasks!.done / row.tasks!.total)}%`, height: "100%", backgroundColor: colors.accent }} />
     </View><Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{progress}</Text></> : <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Progress unavailable</Text>}
   </View>;
-  const ctaView = <Text style={{ width: wide ? 100 : undefined, textAlign: wide ? "right" : "left", color: colors.accent, fontSize: 12, fontWeight: "700" }}>{cta} →</Text>;
+  const ctaView = <Text style={{ width: wide ? 100 : undefined, textAlign: wide ? "right" : "left", color: readableInk(colors.accent, colors, 4.5), fontSize: 12, fontWeight: "700" }}>{cta} →</Text>;
   return <View style={{ borderBottomWidth: last ? 0 : 1, borderColor: colors.border }}>
     <Pressable accessibilityRole="button" accessibilityLabel={`${row.title}. ${next}. ${stage}. ${progress ?? "Progress unavailable"}. ${cta}. ${signals}. ${records}. ${coverage}`} onPress={() => go(row.plans.length ? "Plan" : "Board")}
       style={{ flexDirection: wide ? "row" : "column", alignItems: wide ? "center" : "stretch", gap: wide ? 16 : 10, paddingHorizontal: 14, paddingTop: 14, paddingBottom: 10 }}>

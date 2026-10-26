@@ -11,12 +11,13 @@ assert.ok(origin && output);
 fs.mkdirSync(output, { recursive: true });
 const report = { cases: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 const HOST = 'srv_prototype';
+// A row's title leaves its role prefix to the origin line.
 const VISITED = [
-  ['agt_qa_99103', 'QA • ASMA-99103 verify results'],
-  ['agt_swe_99104_a', 'SWE • ASMA-99104 chain (first)'],
+  ['agt_qa_99103', 'ASMA-99103 verify results'],
+  ['agt_swe_99104_a', 'ASMA-99104 chain (first)'],
   ['missing-session', null],
-  ['agt_sa_99103', 'SA • ASMA-99103 scope'],
-  ['agt_lsa_99101', 'LSA • ASMA-99101 sessions organisation'],
+  ['agt_sa_99103', 'ASMA-99103 scope'],
+  ['agt_lsa_99101', 'ASMA-99101 sessions organisation'],
 ];
 const LEGACY = JSON.stringify({ clearedAt: null, visits: [{ id: 'agt_reva_pr812', at: 1 }, { id: 'gone-legacy', at: 2 }] });
 
@@ -64,8 +65,8 @@ async function check(browser, width, height, theme, seeded) {
       // Search narrows Recent; the open order stays.
       if (compact) await page.getByTestId('sessions-mobile-search-trigger').click();
       await page.getByTestId('sessions-search').fill('99103');
-      await list.getByText('QA • ASMA-99103 verify results', { exact: true }).waitFor();
-      assert.equal(await list.getByText('LSA • ASMA-99101 sessions organisation', { exact: true }).count(), 0);
+      await list.getByText('ASMA-99103 verify results', { exact: true }).waitFor();
+      assert.equal(await list.getByText('ASMA-99101 sessions organisation', { exact: true }).count(), 0);
       assert.match(await page.getByTestId('sessions-recent-account').innerText(), /5 kept · 2 shown · 2 hidden by search, scope or filters · 1 not found/);
       await page.getByTestId('sessions-search').fill('');
       // Opening a saved entry records a real visit; its bytes from the earlier version stay.
@@ -78,8 +79,19 @@ async function check(browser, width, height, theme, seeded) {
       assert.match(await empty.innerText(), /No recent sessions yet\. Sessions you open from Kontor on this host and device appear here/);
       await page.screenshot({ path: path.join(output, `${name}.png`), fullPage: false });
       await page.getByTestId('sessions-empty-current').click();
+      // Current sits under More: the advanced states on a wide screen; on a phone the Filters trigger shows it once chosen,
+      // and the state toolbar gains no tile: its tiles stay the nine states' leading whole ones.
+      if (!compact && !(await page.getByTestId('sessions-filter-current').isVisible())) await page.getByTestId('sessions-advanced-toggle').click();
       if (!compact) assert.equal(await page.getByTestId('sessions-filter-current').getAttribute('aria-pressed'), 'true');
-      else assert.equal(await page.getByTestId('sessions-quick-current').getAttribute('aria-pressed'), 'true');
+      else {
+        const trigger = page.getByTestId('sessions-mobile-filters-trigger');
+        assert.equal(await trigger.getAttribute('aria-pressed'), 'true');
+        assert.match(await trigger.getAttribute('aria-label'), /^Filters and view, state: Current, /);
+        assert.equal(await page.getByTestId('sessions-quick-current').count(), 0);
+        const tiles = await page.locator('[data-testid^="sessions-quick-"]').evaluateAll(nodes => nodes.map(node => node.dataset.testid.slice(15)));
+        assert.ok(tiles.length > 0);
+        assert.deepEqual(tiles, ['recent', 'activity', 'running', 'needs_input', 'error', 'all', 'idle', 'attention', 'favorites'].slice(0, tiles.length));
+      }
       assert.equal(await page.getByTestId('sessions-layout').getAttribute('aria-disabled'), null);
     }
     assert.deepEqual(errors, []);

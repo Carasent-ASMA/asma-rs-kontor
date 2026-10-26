@@ -524,7 +524,9 @@ describe("Sessions list place across live updates", () => {
     const first = inView(4200)[0]!;
     const row = (list().props.data as { kind: string; entry: DirectoryEntry }[]).find(row => `result:${row.entry.id}` === first.key)!;
     const rendered = (list().props.renderItem as (info: { item: unknown }) => Element)({ item: row });
-    (rendered.props.onShowInTree as (entry: DirectoryEntry) => void)(row.entry);
+    // A result row holds Show in tree in its actions menu.
+    const mode = walk(rendered).find((element) => (element.props.mode as { kind?: string } | undefined)?.kind === "open")!.props.mode as { actions: Element };
+    void (mode.actions.props.actions as { key: string; perform: () => unknown }[]).find((action) => action.key === "show-in-tree")!.perform();
     harness.flush();
     const peekRow = (list().props.data as { kind: string; entry?: DirectoryEntry }[]).find(row => row.kind === "session")!;
     const Cell = list().props.CellRendererComponent as (props: object) => Element;

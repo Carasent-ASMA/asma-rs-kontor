@@ -2,19 +2,19 @@ import { sessionStatusInk } from "./session-status-ink";
 import { useEffect, useImperativeHandle, useRef, useState, type ComponentRef, type Ref, type RefObject } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
-import { useControlHelp } from "./control-help";
+import { useActionHelp, useControlHelp } from "./control-help";
 import { focusControl } from "./mobile-filters";
 import { type Colors } from "./page-controls";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS, visibleQuickFilters } from "./mobile-quick-filter-options";
 import type { SessionStateCount } from "./session-state-counts";
-import { QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
+import { MORE_STATUS_FILTERS, QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
 
-/** One existing pressable owns activation and shared pointer/keyboard help. Touch learns the icons in More. */
+/** One existing pressable owns activation and shared help: hover, focus, or a long hold on touch. */
 export function QuickToolbarButton({ label, help = label, icon, iconColor, colors, onPress, selected, expanded, count, caption, testID, target = 44, ref }: {
   label: string; help?: string; icon: string; iconColor?: string; colors: Colors; onPress(): void;
   selected?: boolean; expanded?: boolean; count?: SessionStateCount; caption?: string; testID?: string; target?: number; ref?: Ref<View>;
 }) {
-  const controlHelp = useControlHelp(help, ref);
+  const controlHelp = useActionHelp(help, ref);
   return <Pressable {...controlHelp.bindings} testID={testID} accessibilityRole="button" accessibilityLabel={label}
     accessibilityState={{ ...(selected === undefined ? {} : { selected }), ...(expanded === undefined ? {} : { expanded }) }}
     aria-pressed={selected} aria-expanded={expanded}
@@ -24,16 +24,21 @@ export function QuickToolbarButton({ label, help = label, icon, iconColor, color
       borderColor: selected || focused ? colors.accent : colors.border, backgroundColor: pressed || selected ? colors.surface2 : colors.surface1 })}>
     {count?.denominator !== undefined ? <View testID="session-state-ratio" style={{ flexDirection: "row", alignItems: "center", gap: 1 }}>
       <Icon name={icon} size={18} color={iconColor ?? colors.foreground} />
-      <View style={{ alignItems: "stretch" }}>
-        <Text style={{ textAlign: "center", color: colors.foreground, fontSize: 10, lineHeight: 13, fontVariant: ["tabular-nums"], borderBottomWidth: 1, borderBottomColor: colors.foregroundMuted }}>{count.numerator}</Text>
-        <Text style={{ textAlign: "center", color: colors.foregroundMuted, fontSize: 10, lineHeight: 13, fontVariant: ["tabular-nums"] }}>{count.denominator}</Text>
-      </View>
+      <StateRatio count={count} colors={colors} />
     </View> : <>
       <Icon name={icon} size={18} color={iconColor ?? (selected ? colors.accent : colors.foreground)} />
       {count !== undefined || caption ? <Text numberOfLines={1} style={{ maxWidth: "100%", color: colors.foregroundMuted, fontSize: 10, lineHeight: 13 }}>{caption ?? count?.text}</Text> : null}
     </>}
     {selected ? <View importantForAccessibility="no" accessibilityElementsHidden style={{ position: "absolute", top: 1, right: 1 }}><Icon name="Check" size={10} color={colors.foreground} /></View> : null}
   </Pressable>;
+}
+
+/** Filtered over total, split by a rule, once another filter narrows a state; the exact counts stay in the label. */
+export function StateRatio({ count, colors }: { count: SessionStateCount; colors: Pick<Colors, "foreground" | "foregroundMuted"> }) {
+  return <View testID="session-state-ratio-count" style={{ alignItems: "stretch" }}>
+    <Text style={{ textAlign: "center", color: colors.foreground, fontSize: 10, lineHeight: 13, fontVariant: ["tabular-nums"], borderBottomWidth: 1, borderBottomColor: colors.foregroundMuted }}>{count.numerator}</Text>
+    <Text style={{ textAlign: "center", color: colors.foregroundMuted, fontSize: 10, lineHeight: 13, fontVariant: ["tabular-nums"] }}>{count.denominator}</Text>
+  </View>;
 }
 
 type SearchProps = {
@@ -72,32 +77,56 @@ export function CompactSearch({ colors, query, searchInputRef, onQuery }: Search
   </View>;
 }
 
+type Utility = Omit<Parameters<typeof QuickToolbarButton>[0], "colors" | "target">;
+const GAP = 4;
+
+/**
+ * The state toolbar Kontor's compact Sessions and Start or switch both draw. Its measured row holds as many whole state
+ * tiles as fit, Last visited first, with a chosen state past them in the last tile; More and the caller's trailing action
+ * keep their own room at the end. Nothing scrolls or wraps, and More reaches every state.
+ */
+export function StateToolbar({ testID, stateTestID, colors, status, counts, onStatus, more, trailing }: {
+  testID: string; stateTestID: string; colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>;
+  onStatus(status: StatusFilter): void; more: Utility; trailing: Utility;
+}) {
+  const { fontScale } = useWindowDimensions();
+  const [width, setWidth] = useState(0);
+  const target = Math.max(44, Math.ceil(36 * fontScale));
+  // Until the row is measured, the narrowest supported phone row stands in, so the first frame never overflows.
+  const choices = visibleQuickFilters(width || 296, status, target, GAP);
+  return <View testID={testID} role="toolbar" accessibilityLabel="Session states" onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+    style={{ flexDirection: "row", alignItems: "center", gap: GAP }}>
+    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", gap: GAP }}>
+      {choices.map((choice) => <QuickToolbarButton key={choice} testID={`${stateTestID}${choice}`} icon={QUICK_FILTER_ICONS[choice]} iconColor={sessionStatusInk(choice, colors)} colors={colors} target={target}
+        label={`${quickFilterLabel(choice)}, ${counts[choice].label}`} help={`${quickFilterLabel(choice)}. ${counts[choice].label}. ${QUICK_FILTER_MEANINGS[choice]}`} count={counts[choice]} selected={status === choice} onPress={() => onStatus(choice)} />)}
+    </View>
+    <QuickToolbarButton {...more} colors={colors} target={target} />
+    <QuickToolbarButton {...trailing} colors={colors} target={target} />
+  </View>;
+}
+
 type ToolbarProps = {
-  colors: Colors; width: number; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>;
+  colors: Colors; status: StatusFilter; counts: Readonly<Record<StatusFilter, SessionStateCount>>;
   activeCount: number; filtersTriggerRef: RefObject<View | null>; chooserRef: RefObject<View | null>; chooserOpen: boolean;
   helpDismissRef: Ref<() => void>;
   onStatus(status: StatusFilter): void; onFilters(): void; onChooser(): void;
 };
 
-/** State choices, Recent first, then More and Filters; narrow rows explicitly overflow into the named legend. */
+/** Kontor's compact state toolbar: More opens the nine shortcuts' chooser and Filters the full filter page, which holds the other states. */
 export function MobileQuickToolbar(props: ToolbarProps) {
-  const { colors, status, counts, width, filtersTriggerRef, chooserRef } = props;
-  const { fontScale } = useWindowDimensions();
+  const { colors, status, counts } = props;
   const help = useControlHelp("");
   useImperativeHandle(props.helpDismissRef, () => help.dismiss, [help.dismiss]);
-  const target = Math.max(44, Math.ceil(36 * fontScale));
-  const choices = visibleQuickFilters(width || 296, status, target);
+  // A state chosen in Filters shows on the Filters trigger, as the switcher's More shows its own; it never adds a shortcut.
+  const extra = MORE_STATUS_FILTERS.includes(status) ? status : null;
   return <View testID="sessions-mobile-toolbar" style={{ gap: 4 }}>
-    <View testID="sessions-mobile-quick-row" style={{ flexDirection: "row", flexWrap: width > 0 && width < 4 * (target + 4) ? "wrap" : "nowrap", alignItems: "center", gap: 4 }}>
-      {choices.map((choice) => <QuickToolbarButton key={choice} testID={`sessions-quick-${choice}`} icon={QUICK_FILTER_ICONS[choice]} iconColor={sessionStatusInk(choice, colors)} colors={colors} target={target}
-        label={`${quickFilterLabel(choice)}, ${counts[choice].label}`} help={`${quickFilterLabel(choice)}. ${counts[choice].label}. ${QUICK_FILTER_MEANINGS[choice]}`} count={counts[choice]} selected={status === choice} onPress={() => props.onStatus(choice)} />)}
-      <View style={{ flex: 1 }} />
-      <QuickToolbarButton ref={chooserRef} testID="sessions-mobile-quick-chooser-trigger" label={`All ${QUICK_STATUS_FILTERS.length} quick filters and icon meanings, current: ${quickFilterLabel(status)}`}
-        icon="ListFilter" caption="More" expanded={props.chooserOpen} colors={colors} target={target} onPress={props.onChooser} />
-      <QuickToolbarButton ref={filtersTriggerRef} testID="sessions-mobile-filters-trigger"
-        label={props.activeCount ? `Filters and view, ${props.activeCount} active filters or view choices` : "Filters and view"}
-        help="Filters and view. Opens the full filter page. Choices apply immediately; Back keeps them."
-        icon="SlidersHorizontal" caption="Filters" colors={colors} target={target} onPress={props.onFilters} />
-    </View>
+    <StateToolbar testID="sessions-mobile-quick-row" stateTestID="sessions-quick-" colors={colors} status={status} counts={counts} onStatus={props.onStatus}
+      more={{ ref: props.chooserRef, testID: "sessions-mobile-quick-chooser-trigger", label: `All ${QUICK_STATUS_FILTERS.length} quick filters and icon meanings, current: ${quickFilterLabel(status)}`,
+        icon: "ListFilter", caption: "More", expanded: props.chooserOpen, onPress: props.onChooser }}
+      trailing={{ ref: props.filtersTriggerRef, testID: "sessions-mobile-filters-trigger",
+        label: ["Filters and view", extra ? `state: ${quickFilterLabel(extra)}, ${counts[extra].label}` : null, props.activeCount ? `${props.activeCount} active filters or view choices` : null].filter(Boolean).join(", "),
+        help: "Filters and view. Opens the full filter page. Choices apply immediately; Back keeps them.",
+        icon: extra ? QUICK_FILTER_ICONS[extra] : "SlidersHorizontal", iconColor: extra ? sessionStatusInk(extra, colors) : undefined, caption: extra ? undefined : "Filters",
+        count: extra ? counts[extra] : undefined, selected: extra ? true : undefined, onPress: props.onFilters }} />
   </View>;
 }

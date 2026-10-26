@@ -7,12 +7,13 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorkspace, PaseoWorkspaceCreateOptions, PaseoWorkspaceListOptions, PaseoWorkspaceListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { UNSUPPORTED } from "../shared/session-navigator";
 import { readConfig } from "./config";
 import { readFloor } from "./floor";
 import {
-  CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createOutcomeSchema, createRequestSchema,
-  deskIssueProblem, deskKind, deskName, executeCreate, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateOptions, topicProblem,
-  type CreateDesk, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type JiraIssue, type JiraIssueClass, type LeadWorkspace,
+  CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
+  deskIssueProblem, deskKind, deskName, executeCreate, featureValuesProblem, featureValuesSchema, issueTopic, jiraIssueSchema, leadTitle, leadWorkspaceName, normalizeTopic, readCreateFeatures, readCreateOptions, topicProblem,
+  type CreateDesk, type CreateFeature, type CreateOptions, type CreateOutcome, type CreateRequest, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue, type JiraIssueClass, type LeadWorkspace,
 } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -26,7 +27,7 @@ export type CreateClient = {
     create(options: PaseoWorkspaceCreateOptions): Promise<Pick<WorkspaceHandle, "id" | "refresh">>;
   };
   agents: { list(options?: PaseoAgentListOptions): Promise<PaseoAgentListResult>; ref(id: string): Pick<AgentHandle, "refresh" | "timeline"> };
-  providers: Pick<PaseoApi["providers"], "snapshot">;
+  providers: Pick<PaseoApi["providers"], "snapshot" | "listFeatures">;
   config: Pick<PaseoApi["config"], "get">;
 };
 
@@ -168,6 +169,8 @@ export type SeatCreateSpec = {
   model: string;
   effort: string | null;
   modeId: string | null;
+  /** Listed provider settings such as Speed and Plan; absent keeps each one's own value. */
+  featureValues?: FeatureValues;
   /** The lead workspace the seat belongs in; null asks the core to create it after the intent. */
   workspaceId: string | null;
   /** The desk's anchor workspace, recorded before a missing lead workspace has an id. */
@@ -222,7 +225,7 @@ export async function expectedPlacementProblem(client: { workspaces: { ref(id: s
 const recordSchema = z.object({
   request: z.object({
     requestId: z.string().uuid(), title: z.string(), cwd: z.string(), workspaceId: z.string().min(1).max(200),
-    labels: z.record(z.string(), z.string()), provider: z.string(), model: z.string(), effort: z.string().nullable(), modeId: z.string().nullable(), at: z.string(),
+    labels: z.record(z.string(), z.string()), provider: z.string(), model: z.string(), effort: z.string().nullable(), modeId: z.string().nullable(), featureValues: featureValuesSchema.optional(), at: z.string(),
   }).passthrough(),
   outcome: createOutcomeSchema.nullable(),
 });
@@ -292,36 +295,7 @@ export function deskProjects(workspaces: readonly PaseoWorkspace[]): CreateOptio
   return desksOf(workspaces).map(({ anchorWorkspaceId: _anchor, ...desk }) => desk);
 }
 
-export function createProviders(snapshot: Awaited<ReturnType<PaseoApi["providers"]["snapshot"]>>): CreateProvider[] {
-  return snapshot.entries.map((entry) => {
-    const selectable = (entry.models ?? []).filter((model) => model.isSelectable !== false);
-    const models = selectable.map((model) => ({ id: model.id, label: model.label, efforts: (model.thinkingOptions ?? []).map((option) => ({ id: option.id, label: option.label })),
-      defaultEffort: model.defaultThinkingOptionId ?? model.thinkingOptions?.find((option) => option.isDefault)?.id ?? null }));
-    const status: CreateProvider["status"] = entry.enabled === false ? "disabled" : entry.enabled !== true ? "unknown"
-      : ["ready", "loading", "error", "unavailable"].includes(entry.status) ? entry.status : "unknown";
-    let note: string | null = null;
-    if (status === "disabled") note = "Disabled on this host.";
-    else if (status === "unknown") note = "Provider availability is unknown.";
-    else if (status !== "ready") note = `Provider ${status}${entry.error ? `: ${entry.error}` : ""}.`;
-    else if (!models.length) note = "No selectable model on this host.";
-    return { id: entry.provider, label: entry.label ?? entry.provider, available: note === null, status, note, persona: personaSupport(entry.provider), models,
-      defaultModel: selectable.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null,
-      modes: (entry.modes ?? []).map((mode) => ({ id: mode.id, label: mode.label, dangerous: mode.colorTier === "dangerous" })),
-      defaultMode: entry.defaultModeId ?? null };
-  });
-}
-
-/** What the request asks for that a choice from these providers cannot give, or null. */
-function choiceProblem(providers: readonly CreateProvider[], request: Pick<CreateRequest, "provider" | "model" | "effort" | "modeId">): string | null {
-  const provider = providers.find((entry) => entry.id === request.provider);
-  if (!provider) return `Provider ${request.provider} is not on this host.`;
-  if (!provider.available) return `${provider.label}: ${provider.note}`;
-  const model = provider.models.find((entry) => entry.id === request.model);
-  if (!model) return `Model ${request.model} is not selectable for ${provider.label}.`;
-  if (model.efforts.length ? !model.efforts.some((effort) => effort.id === request.effort) : request.effort !== null) return `Effort ${request.effort ?? "none"} is not offered for ${model.label}.`;
-  if (provider.modes.length ? !provider.modes.some((mode) => mode.id === request.modeId) : request.modeId !== null) return `Mode ${request.modeId ?? "none"} is not offered by ${provider.label}.`;
-  return null;
-}
+export { createProviders };
 
 /** Each requested field the host's readback does not show; empty when it matches. */
 export function readbackDifferences(agent: Agent, request: CreateRecord["request"]): string[] {
@@ -337,8 +311,21 @@ export function readbackDifferences(agent: Agent, request: CreateRecord["request
   if (request.modeId !== null && mode !== request.modeId) differences.push(`Mode reads ${mode ?? "not reported yet"}.`);
   const effort = agent.effectiveThinkingOptionId ?? agent.runtimeInfo?.thinkingOptionId ?? null;
   if (request.effort !== null && effort !== request.effort) differences.push(`Effort reads ${effort ?? "not reported yet"}.`);
+  for (const [key, value] of Object.entries(request.featureValues ?? {})) {
+    const feature = agent.features?.find((entry) => entry.id === key);
+    if (feature?.value !== value) differences.push(`${feature?.label ?? key} reads ${feature?.value ?? "not reported yet"}.`);
+  }
   if (agent.archivedAt) differences.push("Already archived.");
   return differences;
+}
+
+/** The select and toggle settings the host lists for one model in a checkout; a failed read is a problem, never an empty list. */
+export async function createFeatures(client: Pick<CreateClient, "providers">, cwd: string, choice: Pick<SeatCreateSpec, "provider" | "model" | "modeId" | "effort">): Promise<{ features: CreateFeature[]; problem: string | null }> {
+  const result = await client.providers.listFeatures({ provider: `${choice.provider}/${choice.model}`, cwd, ...(choice.modeId ? { modeId: choice.modeId } : {}), ...(choice.effort ? { thinkingOptionId: choice.effort } : {}) });
+  if (result.error) return { features: [], problem: result.error };
+  return { features: (result.features ?? []).map((feature): CreateFeature => feature.type === "toggle"
+    ? { type: "toggle", id: feature.id, label: feature.label, value: feature.value }
+    : { type: "select", id: feature.id, label: feature.label, value: feature.value, options: feature.options.map((option) => ({ id: option.id, label: option.label, isDefault: option.isDefault === true })) }), problem: null };
 }
 
 /** One live Jira search through asma-cli; a failure is distinct from an empty result. */
@@ -519,8 +506,13 @@ export function createSessionCreateService(client: CreateClient, root: string, s
         }
         cwd = snapshot.workspaceDirectory;
       }
-      const choice = choiceProblem(createProviders(await client.providers.snapshot({ cwd })), spec);
+      const choice = createChoiceProblem(createProviders(await client.providers.snapshot({ cwd })), spec);
       if (choice) return { problem: choice };
+      if (spec.featureValues && Object.keys(spec.featureValues).length) {
+        const listed = await createFeatures(client, cwd, spec);
+        const settings = listed.problem ? `Model settings could not be read: ${listed.problem}.` : featureValuesProblem(listed.features, spec.featureValues);
+        if (settings) return { problem: settings };
+      }
       const target = await spec.revalidate?.();
       if (target) return { problem: target };
       if (workspaceId) {
@@ -554,7 +546,8 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const { cwd } = checked;
     let { workspaceId } = checked;
     const record: CreateRecord = { request: { requestId, title: spec.title, cwd, workspaceId: workspaceId ?? spec.anchorWorkspaceId,
-      labels: spec.labels, provider: spec.provider, model: spec.model, effort: spec.effort, modeId: spec.modeId, at: new Date().toISOString() }, outcome: null };
+      labels: spec.labels, provider: spec.provider, model: spec.model, effort: spec.effort, modeId: spec.modeId,
+      ...(spec.featureValues && Object.keys(spec.featureValues).length ? { featureValues: spec.featureValues } : {}), at: new Date().toISOString() }, outcome: null };
     try { await writeRecord(record); } catch (error) {
       // Not dispatched; a partial intent is removed so it does not block, and stays blocking if it cannot be.
       await rm(path(requestId), { force: true }).catch(() => {});
@@ -581,10 +574,11 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       if (placement) return settle(record, outcome(record, "refused", null, placement));
       const expired = effectValidityProblem(spec);
       if (expired) return settle(record, outcome(record, "refused", null, expired));
+      const config = { provider: `${spec.provider}/${spec.model}`, ...(spec.modeId ? { modeId: spec.modeId } : {}), ...(spec.effort ? { thinkingOptionId: spec.effort } : {}),
+        ...(record.request.featureValues ? { featureValues: record.request.featureValues } : {}) };
       const handle = await Promise.race([
         client.workspaces.ref(record.request.workspaceId).agents.create({ idempotencyKey: requestId, title: spec.title, labels: spec.labels,
-          ...(spec.persona.supported ? { config: { provider: `${spec.provider}/${spec.model}`, ...(spec.modeId ? { modeId: spec.modeId } : {}), ...(spec.effort ? { thinkingOptionId: spec.effort } : {}), systemPrompt: spec.persona.text } }
-            : { config: { provider: `${spec.provider}/${spec.model}`, ...(spec.modeId ? { modeId: spec.modeId } : {}), ...(spec.effort ? { thinkingOptionId: spec.effort } : {}) } }),
+          config: spec.persona.supported ? { ...config, systemPrompt: spec.persona.text } : config,
           ...(spec.bootstrap ? { prompt: spec.bootstrap } : {}) }),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer within ${Math.round(answerMs / 1000)} s`)), answerMs); }),
       ]);
@@ -621,6 +615,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     if (problem) return refusal(problem);
     const title = leadTitle(input.role, key, topic);
     let source: string | null = null;
+    if (input.sourceSummary) return refusal(UNSUPPORTED.summaries.reason, title);
     if (input.sourceAgentId?.trim()) {
       try { source = await sourceSummary(client, input.sourceAgentId.trim()); }
       catch (error) { return refusal(`The source session could not be read: ${errorText(error)}.`, title); }
@@ -632,7 +627,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const labels: Record<string, string> = { role: input.role, [TITLE_AUTO_LABEL]: title, persona: personaVersion(personaKind, supported), [CREATE_REQUEST_LABEL]: input.requestId,
       ...(key && desk.kind === "adam" ? { epic: key } : key && desk.kind === "tickets" ? { ticket: key } : {}) };
     return { spec: {
-      requestId: input.requestId, title, labels, provider: input.provider, model: input.model, effort: input.effort, modeId: input.modeId,
+      requestId: input.requestId, title, labels, provider: input.provider, model: input.model, effort: input.effort, modeId: input.modeId, featureValues: input.featureValues,
       workspaceId, anchorWorkspaceId: desk.anchorWorkspaceId, workspaceName, cwd: desk.cwd,
       createWorkspace: workspaceId ? null : () => createLeadWorkspace(client, desk, workspaceName),
       revalidate: key ? async () => {
@@ -665,12 +660,22 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     });
   }
 
-  return { options, create: (input: CreateRequest) => createSeat(input.requestId, () => buildNewSession(input)), check, createSeat, preflight, record: readRecord };
+  /** The settings a desk offers for one model, read live for the picker; New lead sends only what this lists. */
+  async function features(input: { projectId: string; provider: string; model: string }): Promise<{ features: CreateFeature[]; problem: string | null }> {
+    const workspaces = await allPages((cursor) => client.workspaces.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
+    const desk = desksOf(workspaces).find((entry) => entry.projectId === input.projectId);
+    if (!desk) return { features: [], problem: "That desk is no longer available on this host." };
+    try { return await createFeatures(client, desk.cwd, { ...input, modeId: null, effort: null }); }
+    catch (error) { return { features: [], problem: errorText(error) }; }
+  }
+
+  return { options, features, create: (input: CreateRequest) => createSeat(input.requestId, () => buildNewSession(input)), check, createSeat, preflight, record: readRecord };
 }
 
 export function contributeSessionCreate(server: PluginServerContext): void {
   const root = createStateRoot(), file = createSwitchFile();
   server.handle(readCreateOptions, (input, { paseo }) => createSessionCreateService(paseo, root, file).options(input));
   server.handle(executeCreate, (input, { paseo }) => createSessionCreateService(paseo, root, file).create(input));
+  server.handle(readCreateFeatures, (input, { paseo }) => createSessionCreateService(paseo, root, file).features(input));
   server.handle(checkCreate, (input, { paseo }) => createSessionCreateService(paseo, root, file).check(input.requestId));
 }

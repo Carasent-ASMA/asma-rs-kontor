@@ -15,7 +15,9 @@ fs.mkdirSync(output, { recursive: true });
 const report = { cases: [], nativeDeviceAndScreenReaderAcceptance: 'unverified' };
 let browser;
 
-const summary = page => page.locator('[data-testid^="session-retirement-summary-"]').first();
+// A row keeps retirement to one line at most, for a conflict or a needed review; its disposition and evidence are in Details.
+const ordinaryRow = page => page.locator('[data-testid^="sessions-row-"]:has([data-testid="session-row-body"])').first();
+const notices = page => page.locator('[data-testid^="sessions-compact-warning-"]');
 const detailsButton = page => page.getByTestId('sessions-row-details').first();
 const dialog = page => page.getByTestId('sessions-details');
 const conflicts = page => page.locator('[data-testid^="sessions-retirement-conflict-"]');
@@ -31,6 +33,9 @@ function assertReadOnly(calls) {
 async function openDetails(page, trigger) {
   await trigger.focus();
   await page.keyboard.press('Enter');
+  await retirementDetails(page);
+}
+async function retirementDetails(page) {
   await dialog(page).waitFor();
   const text = await page.getByTestId('sessions-details-lines').innerText();
   assert.ok(text.includes('Retirement evidence'), 'details name the retirement evidence section');
@@ -66,9 +71,13 @@ async function check(width, height, theme, touch) {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(`${origin}/?${touch ? 'layout=compact&' : ''}theme=${theme}&retirement=1&rows=6`);
-    await summary(page).waitFor();
-    assert.ok((await summary(page).innerText()).includes('Retirement'), 'row keeps the retirement disposition');
-    assert.ok((await summary(page).innerText()).includes('Native'), 'row keeps native status and membership');
+    const row = ordinaryRow(page);
+    await row.waitFor();
+    assert.equal(await page.locator('[data-testid^="session-retirement-summary-"]').count(), 0, 'no row draws a multi-line retirement summary');
+    assert.equal(await notices(page).count(), 0, 'routine retirement adds no row line');
+    const spoken = await row.getByTestId('session-row-body').getAttribute('aria-label');
+    assert.ok(spoken.includes('Native status'), 'row keeps native status');
+    if (!touch) assert.match(spoken, /Retirement (Retain|Ready|Unknown)/, 'a wide row still speaks its disposition');
     assert.ok(await conflicts(page).count(), 'ordinary membership exposes an archived conflict without reviving it');
     const conflictText = await conflicts(page).first().innerText();
     assert.ok(conflictText.includes('Archived conflict'), 'the conflict is labeled separately');
@@ -81,6 +90,14 @@ async function check(width, height, theme, touch) {
     await page.getByRole('button', { name: /^Close details:/ }).click();
     await dialog(page).waitFor({ state: 'detached' });
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'sessions-row-details', 'closing details returns focus to its trigger');
+
+    // The row's own disposition and evidence: its actions menu, then Details.
+    const actions = row.locator('[data-testid^="session-actions-"]').first();
+    await (touch ? actions.tap() : actions.click());
+    await (touch ? page.getByTestId('session-action-details').tap() : page.getByTestId('session-action-details').click());
+    await retirementDetails(page);
+    await page.getByRole('button', { name: /^Close details:/ }).click();
+    await dialog(page).waitFor({ state: 'detached' });
 
     if (!touch) await checkArchivedConflictRetention(page);
     if (touch) {

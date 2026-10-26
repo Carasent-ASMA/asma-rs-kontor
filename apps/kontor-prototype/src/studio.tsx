@@ -12,7 +12,7 @@ import { SCENARIOS } from "./scenarios";
 type Layout = "both" | "phone" | "desktop";
 type StudioState = { readonly scenario: string; readonly theme: "dark" | "light"; readonly layout: Layout };
 
-const PROVENANCE = "The plugin's own client source on react-native-web with a fixture host. Fictional data; no Paseo connection. Navigation runs in the host shim; settings saves, links, the clipboard and toasts are mocked and logged in each frame's Host log. Browser rendering, not a device.";
+const PROVENANCE = "The plugin's own client source on react-native-web with a fixture host. Fictional data, except scenarios marked captured, which read an operator-local capture frozen at a recorded time; no Paseo connection. Navigation runs in the host shim; settings saves, links, the clipboard and toasts are mocked and logged in each frame's Host log. Browser rendering, not a device.";
 
 function readState(search: string): StudioState {
   const params = new URLSearchParams(search);

@@ -44,7 +44,7 @@ scenarios and light/dark appearance. Query parameters:
   native Settings import, and logged Linking calls.
 - `runtime.ts`: paginated fixture agents, projects and workspaces; source,
   registry, responsibility and Kontor-status RPCs. Unknown calls fail visibly.
-- `session-lifecycle.ts`: disposable fixture reviews, archive/Resume outcomes,
+- `session-lifecycle.ts`: disposable fixture reviews, archive outcomes (Resume is refused, as on the host),
   exact-ID availability, dispositions and reconciliation. These simulate effects
   only in the page's map; they do not qualify the production server behavior.
 - `session-create.ts`: synthetic New LSA options and idempotent outcomes. Creation
