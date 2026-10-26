@@ -1,0 +1,1224 @@
+diff --git a/packages/protocol/src/messages.ts b/packages/protocol/src/messages.ts
+--- a/packages/protocol/src/messages.ts
++++ b/packages/protocol/src/messages.ts
+@@ -910,6 +910,7 @@
+   projectKeys: z.array(z.string()).optional(),
+   statuses: z.array(AgentStatusSchema).optional(),
+   includeArchived: z.boolean().optional(),
++  includeUnavailablePersisted: z.boolean().optional(),
+   requiresAttention: z.boolean().optional(),
+   thinkingOptionId: z.string().nullable().optional(),
+   // Retained for wire parsing; private helpers are excluded from public discovery.
+@@ -2871,6 +2872,23 @@
+   agentId: z.union([z.string(), z.array(z.string())]),
+   requestId: z.string().optional(),
+ });
++
++export const AgentAcknowledgeAttentionRequestSchema = z.object({
++  type: z.literal("agent.acknowledge_attention.request"),
++  agentId: z.string().min(1),
++  expectedUpdatedAt: z.string(),
++  expectedAttentionTimestamp: z.string().nullable(),
++  requestId: z.string(),
++});
++
++export const AgentAttentionAcknowledgementOutcomeSchema = z.enum([
++  "seen",
++  "already_seen",
++  "changed",
++  "needs_input",
++  "missing",
++  "error",
++]);
+ 
+ export const ClientHeartbeatMessageSchema = z.object({
+   type: z.literal("client_heartbeat"),
+@@ -3362,6 +3380,7 @@
+   FileDownloadTokenRequestSchema,
+   FileUploadRequestSchema,
+   ClearAgentAttentionMessageSchema,
++  AgentAcknowledgeAttentionRequestSchema,
+   ClientHeartbeatMessageSchema,
+   PingMessageSchema,
+   ListCommandsRequestSchema,
+@@ -3749,6 +3768,7 @@
+         agentProfiles: z.boolean().optional(),
+         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
+         agentConfigApply: z.boolean().optional(),
++        agentAttentionAcknowledgement: z.boolean().optional(),
+       })
+       .optional(),
+   })
+@@ -4861,6 +4881,17 @@
+     requestId: z.string(),
+     agentId: z.string().or(z.array(z.string())),
+     agents: z.array(AgentSnapshotPayloadSchema),
++  }),
++});
++
++export const AgentAcknowledgeAttentionResponseSchema = z.object({
++  type: z.literal("agent.acknowledge_attention.response"),
++  payload: z.object({
++    requestId: z.string(),
++    agentId: z.string(),
++    outcome: AgentAttentionAcknowledgementOutcomeSchema,
++    agent: AgentSnapshotPayloadSchema.nullable(),
++    error: z.string().nullable(),
+   }),
+ });
+ 
+@@ -6941,6 +6972,7 @@
+   AgentForkContextResponseMessageSchema,
+   CancelAgentResponseMessageSchema,
+   ClearAgentAttentionResponseMessageSchema,
++  AgentAcknowledgeAttentionResponseSchema,
+   WorkspaceCreateResponseSchema,
+   AgentCreateResponseSchema,
+   WorkspaceCreationUpdateSchema,
+diff --git a/packages/client/src/daemon-client.ts b/packages/client/src/daemon-client.ts
+--- a/packages/client/src/daemon-client.ts
++++ b/packages/client/src/daemon-client.ts
+@@ -2088,6 +2088,43 @@
+     });
+   }
+ 
++  supportsAgentAttentionAcknowledgement(): boolean {
++    return this.lastServerInfoMessage?.features?.agentAttentionAcknowledgement === true;
++  }
++
++  async acknowledgeAgentAttention(input: {
++    agentId: string;
++    expectedUpdatedAt: string;
++    expectedAttentionTimestamp: string | null;
++  }) {
++    if (!this.supportsAgentAttentionAcknowledgement()) {
++      throw new Error(
++        "This host does not support metadata-only read acknowledgement. Update Paseo.",
++      );
++    }
++    const requestId = this.createRequestId();
++    const response = await this.sendRequest({
++      requestId,
++      message: { type: "agent.acknowledge_attention.request", ...input, requestId },
++      options: { skipQueue: true },
++      select: (message) => {
++        if (
++          message.type !== "agent.acknowledge_attention.response" ||
++          message.payload.requestId !== requestId
++        )
++          return null;
++        return message.payload;
++      },
++    });
++    if (
++      response.agentId !== input.agentId ||
++      (response.agent && response.agent.id !== input.agentId)
++    ) {
++      throw new Error("Read acknowledgement identified a different session.");
++    }
++    return response;
++  }
++
+   async clearWorkspaceAttention(workspaceId: string | string[]): Promise<void> {
+     const requestId = this.createRequestId();
+     const message = SessionInboundMessageSchema.parse({
+diff --git a/packages/client/src/index.ts b/packages/client/src/index.ts
+--- a/packages/client/src/index.ts
++++ b/packages/client/src/index.ts
+@@ -362,6 +362,10 @@
+   readonly timeline: PaseoAgentTimelineHandle;
+   current(): PaseoAgent | null;
+   refresh(requestId?: string): Promise<PaseoAgentRefetchResult | null>;
++  markSeen(input: {
++    expectedUpdatedAt: string;
++    expectedAttentionTimestamp: string | null;
++  }): ReturnType<DaemonClient["acknowledgeAgentAttention"]>;
+   send(text: string, options?: PaseoAgentSendOptions): Promise<void>;
+   respondToPermission(options: PaseoAgentRespondToPermissionOptions): Promise<void>;
+   /** Sends a prompt and resolves when that turn finishes or needs attention. */
+@@ -382,6 +386,7 @@
+ }
+ 
+ export interface PaseoAgentActions {
++  readonly supportsMarkSeen?: boolean;
+   list(options: PaseoAgentListOptions & { subscribe: {} }): Promise<
+     PaseoAgentListResult & {
+       subscriptionId: string;
+@@ -725,6 +730,9 @@
+       subscribe: listenWorkspaces,
+     },
+     agents: {
++      get supportsMarkSeen() {
++        return daemonClient.supportsAgentAttentionAcknowledgement();
++      },
+       list: listAgents,
+       ref: (agent) => createAgentHandle(agent),
+       create: (options) => createAgent(options),
+@@ -945,6 +953,16 @@
+       send: async (text, options) => {
+         await daemonClient.sendAgentMessage(id, text, options);
+       },
++      markSeen: async (input) => {
++        const result = await daemonClient.acknowledgeAgentAttention({
++          agentId: id,
++          expectedUpdatedAt: input.expectedUpdatedAt,
++          expectedAttentionTimestamp: input.expectedAttentionTimestamp,
++        });
++        if (result.outcome === "missing") current = null;
++        else if (result.agent) current = result.agent;
++        return result;
++      },
+       respondToPermission: async ({ requestId, response }) => {
+         await daemonClient.respondToPermission(id, requestId, response);
+       },
+diff --git a/packages/client/src/index.test.ts b/packages/client/src/index.test.ts
+--- a/packages/client/src/index.test.ts
++++ b/packages/client/src/index.test.ts
+@@ -55,6 +55,57 @@
+ afterEach(() => {
+   vi.unstubAllGlobals();
+   FakeWebSocket.instances.length = 0;
++});
++
++test("markSeen refuses an unsupported host without a legacy write", async () => {
++  const client = createPaseoClient({ url: "ws://127.0.0.1:1" });
++  try {
++    expect(client.agents.supportsMarkSeen).toBe(false);
++    await expect(
++      client.agents.ref("00000000-0000-4000-8000-000000000001").markSeen({
++        expectedUpdatedAt: "2026-01-01T00:00:00.000Z",
++        expectedAttentionTimestamp: null,
++      }),
++    ).rejects.toThrow("does not support metadata-only read acknowledgement");
++  } finally {
++    await client.close();
++  }
++});
++
++test("markSeen binds the exact handle ID despite extra runtime input fields", async () => {
++  const { client, ws } = await connectClient({ agentAttentionAcknowledgement: true });
++  const intendedId = "00000000-0000-4000-8000-000000000001";
++  const input = {
++    agentId: "00000000-0000-4000-8000-000000000002",
++    expectedUpdatedAt: "2026-01-01T00:00:00.000Z",
++    expectedAttentionTimestamp: null,
++  };
++  try {
++    const pending = client.agents.ref(intendedId).markSeen(input);
++    const request = parseSentSessionMessage(ws.sent.at(-1));
++    ws.message(
++      sessionMessage({
++        type: "agent.acknowledge_attention.response",
++        payload: {
++          requestId: request.requestId,
++          agentId: request.agentId,
++          outcome: "missing",
++          agent: null,
++          error: null,
++        },
++      }),
++    );
++    const result = await pending;
++    expect(request).toMatchObject({
++      type: "agent.acknowledge_attention.request",
++      agentId: intendedId,
++      expectedUpdatedAt: input.expectedUpdatedAt,
++      expectedAttentionTimestamp: null,
++    });
++    expect(result.agentId).toBe(intendedId);
++  } finally {
++    await client.close();
++  }
+ });
+ 
+ function sessionMessage(message: object): string {
+diff --git a/packages/server/src/server/agent/agent-storage.ts b/packages/server/src/server/agent/agent-storage.ts
+--- a/packages/server/src/server/agent/agent-storage.ts
++++ b/packages/server/src/server/agent/agent-storage.ts
+@@ -4,7 +4,11 @@
+ import type { Logger } from "pino";
+ 
+ import { writeJsonFileAtomic } from "../atomic-file.js";
+-import { AgentFeatureSchema, AgentStatusSchema } from "../messages.js";
++import {
++  AgentFeatureSchema,
++  AgentStatusSchema,
++  type AgentAttentionAcknowledgementOutcomeSchema,
++} from "../messages.js";
+ import { toStoredAgentRecord } from "./agent-projections.js";
+ import type { ManagedAgent } from "./agent-manager.js";
+ import type { AgentSessionConfig } from "./agent-sdk-types.js";
+@@ -155,13 +159,60 @@
+     await this.queueRecordWrite(record);
+   }
+ 
++  async acknowledgeAttention(input: {
++    agentId: string;
++    expectedUpdatedAt: string;
++    expectedAttentionTimestamp: string | null;
++    liveAgent: ManagedAgent | null;
++  }): Promise<z.infer<typeof AgentAttentionAcknowledgementOutcomeSchema>> {
++    await this.load();
++    let outcome: z.infer<typeof AgentAttentionAcknowledgementOutcomeSchema> = "changed";
++    await this.queueRecordMutation(input.agentId, (stored) => {
++      const live = input.liveAgent;
++      if (!stored || stored.internal) {
++        outcome = "missing";
++        return null;
++      }
++      const record = live
++        ? toStoredAgentRecord(live, {
++            title: stored.title,
++            createdAt: stored.createdAt,
++          })
++        : stored;
++      if (record.attentionReason === "permission" || (live?.pendingPermissions.size ?? 0) > 0) {
++        outcome = "needs_input";
++        return null;
++      }
++      if (!record.requiresAttention) {
++        outcome = "already_seen";
++        return null;
++      }
++      if (
++        record.updatedAt !== input.expectedUpdatedAt ||
++        (record.attentionTimestamp ?? null) !== input.expectedAttentionTimestamp
++      ) {
++        outcome = "changed";
++        return null;
++      }
++      outcome = "seen";
++      return {
++        ...record,
++        archivedAt: stored.archivedAt,
++        requiresAttention: false,
++        attentionReason: null,
++        attentionTimestamp: null,
++      };
++    });
++    return outcome;
++  }
++
+   private queueRecordWrite(record: StoredAgentRecord): Promise<void> {
+     return this.queueRecordMutation(record.id, () => record);
+   }
+ 
+   private queueRecordMutation(
+     agentId: string,
+-    mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord,
++    mutate: (existing: StoredAgentRecord | null) => StoredAgentRecord | null,
+   ): Promise<void> {
+     const prev = this.pendingWrites.get(agentId) ?? Promise.resolve();
+     const next = prev.then(async () => {
+@@ -170,6 +221,7 @@
+       }
+ 
+       const record = mutate(this.cache.get(agentId) ?? null);
++      if (!record) return undefined;
+       await this.writeRecord(record);
+       return undefined;
+     });
+diff --git a/packages/server/src/server/agent/agent-manager.ts b/packages/server/src/server/agent/agent-manager.ts
+--- a/packages/server/src/server/agent/agent-manager.ts
++++ b/packages/server/src/server/agent/agent-manager.ts
+@@ -228,6 +228,7 @@
+ 
+ export type AgentManagerEvent =
+   | { type: "agent_state"; agent: ManagedAgent }
++  | { type: "stored_agent_state"; record: StoredAgentRecord }
+   | { type: "provider_subagent"; event: ProviderSubagentStoreEvent }
+   | { type: "timeline_replacement"; agentId: string; epoch: string }
+   | {
+@@ -2227,6 +2228,36 @@
+       await this.persistSnapshot(agent);
+       this.emitState(agent, { persist: false });
+     }
++  }
++
++  async acknowledgeAgentAttention(input: {
++    agentId: string;
++    expectedUpdatedAt: string;
++    expectedAttentionTimestamp: string | null;
++  }) {
++    return this.runLifecycleMutation(input.agentId, async () => {
++      const liveAgent = this.agents.get(input.agentId) ?? null;
++      const outcome = await this.requireRegistry().acknowledgeAttention({ ...input, liveAgent });
++      if (outcome !== "seen") return outcome;
++      if (!liveAgent) {
++        const record = await this.requireRegistry().get(input.agentId);
++        if (record) this.dispatch({ type: "stored_agent_state", record });
++        return outcome;
++      }
++      const sameRevision = liveAgent.updatedAt.toISOString() === input.expectedUpdatedAt;
++      const sameAttention =
++        liveAgent.attention.requiresAttention &&
++        liveAgent.attention.attentionTimestamp.toISOString() === input.expectedAttentionTimestamp;
++      if (!sameRevision || !sameAttention || liveAgent.pendingPermissions.size > 0) {
++        await this.persistSnapshot(liveAgent);
++        return "changed" as const;
++      }
++      liveAgent.attention = { requiresAttention: false };
++      // Flush after any background snapshot queued during the acknowledgement write.
++      await this.persistSnapshot(liveAgent);
++      this.emitState(liveAgent, { persist: false });
++      return outcome;
++    });
+   }
+ 
+   async markAgentUnread(agentId: string): Promise<void> {
+@@ -5187,6 +5218,13 @@
+       }
+       if (
+         subscriber.agentId &&
++        event.type === "stored_agent_state" &&
++        subscriber.agentId !== event.record.id
++      ) {
++        continue;
++      }
++      if (
++        subscriber.agentId &&
+         event.type === "provider_subagent" &&
+         subscriber.agentId !==
+           (event.event.type === "upsert"
+@@ -5209,6 +5247,7 @@
+ 
+   private eventBelongsToInternalAgent(event: AgentManagerEvent): boolean {
+     if (event.type === "agent_state") return event.agent.internal === true;
++    if (event.type === "stored_agent_state") return event.record.internal === true;
+     if (event.type === "agent_stream") return this.agents.get(event.agentId)?.internal === true;
+     if (event.type !== "provider_subagent") return false;
+     const parentAgentId =
+diff --git a/packages/server/src/server/agent/agent-storage.test.ts b/packages/server/src/server/agent/agent-storage.test.ts
+--- a/packages/server/src/server/agent/agent-storage.test.ts
++++ b/packages/server/src/server/agent/agent-storage.test.ts
+@@ -148,6 +148,105 @@
+     rmSync(tmpDir, { recursive: true, force: true });
+   });
+ 
++  test.each(["running", "idle", "error", "closed"] as const)(
++    "read acknowledgement preserves %s lifecycle and stored provider metadata",
++    async (lifecycle) => {
++      const liveAgent = createManagedAgent({
++        lifecycle,
++        lastError: "Retained error",
++        attention: {
++          requiresAttention: true,
++          attentionReason: "finished",
++          attentionTimestamp: new Date("2025-01-01T00:00:00.000Z"),
++        },
++      });
++      await storage.applySnapshot(liveAgent);
++      const before = (await storage.get(liveAgent.id))!;
++      await storage.upsert({
++        ...before,
++        provider: "unavailable-provider",
++        archivedAt: "2025-01-02T00:00:00.000Z",
++      });
++      expect(
++        await storage.acknowledgeAttention({
++          agentId: liveAgent.id,
++          expectedUpdatedAt: before.updatedAt,
++          expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++          liveAgent: null,
++        }),
++      ).toBe("seen");
++      const reloaded = new AgentStorage(storagePath, logger);
++      expect(await reloaded.get(liveAgent.id)).toEqual(
++        JSON.parse(
++          JSON.stringify({
++            ...before,
++            labels: {},
++            provider: "unavailable-provider",
++            archivedAt: "2025-01-02T00:00:00.000Z",
++            requiresAttention: false,
++            attentionReason: null,
++            attentionTimestamp: null,
++          }),
++        ),
++      );
++    },
++  );
++
++  test("read acknowledgement preserves new arrivals, permission waits, exact-ID absence and pending deletion", async () => {
++    const agent = createManagedAgent({
++      attention: {
++        requiresAttention: true,
++        attentionReason: "finished",
++        attentionTimestamp: new Date("2025-01-01T00:00:00.000Z"),
++      },
++    });
++    await storage.applySnapshot(agent);
++    const before = (await storage.get(agent.id))!;
++    const request = {
++      agentId: agent.id,
++      expectedUpdatedAt: before.updatedAt,
++      expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++      liveAgent: null,
++    };
++    await storage.upsert({ ...before, updatedAt: "2025-01-01T00:00:01.000Z" });
++    expect(await storage.acknowledgeAttention(request)).toBe("changed");
++    expect((await storage.get(agent.id))?.requiresAttention).toBe(true);
++    await storage.upsert({ ...before, attentionReason: "permission" });
++    expect(await storage.acknowledgeAttention(request)).toBe("needs_input");
++    expect((await storage.get(agent.id))?.attentionReason).toBe("permission");
++    expect(await storage.acknowledgeAttention({ ...request, agentId: "absent" })).toBe("missing");
++    expect(await storage.get("absent")).toBe(null);
++    storage.beginDelete(agent.id);
++    expect(await storage.acknowledgeAttention(request)).toBe("changed");
++  });
++
++  test("concurrent acknowledgements settle once without clearing a different exact ID", async () => {
++    const agent = createManagedAgent({
++      id: "agent-1",
++      attention: {
++        requiresAttention: true,
++        attentionReason: "finished",
++        attentionTimestamp: new Date("2025-01-01T00:00:00.000Z"),
++      },
++    });
++    await storage.applySnapshot(agent);
++    await storage.applySnapshot(createManagedAgent({ ...agent, id: "agent-10" }));
++    const before = (await storage.get(agent.id))!;
++    const request = {
++      agentId: agent.id,
++      expectedUpdatedAt: before.updatedAt,
++      expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++      liveAgent: null,
++    };
++    expect(
++      await Promise.all([
++        storage.acknowledgeAttention(request),
++        storage.acknowledgeAttention(request),
++      ]),
++    ).toEqual(["seen", "already_seen"]);
++    expect((await storage.get("agent-10"))?.requiresAttention).toBe(true);
++  });
++
+   test("applySnapshot persists configs and snapshot metadata", async () => {
+     await storage.applySnapshot(
+       createManagedAgent({
+diff --git a/packages/server/src/server/agent-attention-acknowledgement.test.ts b/packages/server/src/server/agent-attention-acknowledgement.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/server/src/server/agent-attention-acknowledgement.test.ts
+@@ -0,0 +1,258 @@
++import { afterEach, expect, test, vi } from "vitest";
++import { createPaseoApi, type PaseoApi } from "@getpaseo/client";
++import { DaemonClient } from "./test-utils/daemon-client.js";
++import { createTestPaseoDaemon, type TestPaseoDaemon } from "./test-utils/paseo-daemon.js";
++import { createTestAgentClient } from "./test-utils/fake-agent-client.js";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import pino from "pino";
++import { AgentStorage } from "./agent/agent-storage.js";
++
++const cleanups: (() => Promise<void>)[] = [];
++afterEach(async () => {
++  for (const cleanup of cleanups.splice(0).toReversed()) await cleanup();
++});
++
++async function connect(daemon: TestPaseoDaemon): Promise<PaseoApi> {
++  const client = new DaemonClient({
++    url: `ws://127.0.0.1:${daemon.port}/ws`,
++    appVersion: "0.12.0",
++  });
++  await client.connect();
++  const api = createPaseoApi(client);
++  cleanups.push(async () => {
++    await api.dispose();
++    await client.close();
++  });
++  return api;
++}
++
++test("public markSeen persists, synchronizes, relights, and refuses a newer revision without loading history", async () => {
++  const provider = createTestAgentClient("codex");
++  const created = vi.spyOn(provider, "createSession");
++  const resumed = vi.spyOn(provider, "resumeSession");
++  const daemon = await createTestPaseoDaemon({ agentClients: { codex: provider } });
++  cleanups.push(daemon.close);
++  const api = await connect(daemon);
++  const otherDevice = await connect(daemon);
++  const agent = await api.agents.create({
++    cwd: daemon.staticDir,
++    config: { provider: "codex/test" },
++    title: "Disposable read acknowledgement",
++  });
++  await agent.run("Return one word.");
++  const before = (await agent.refresh())!.agent;
++  expect(before.requiresAttention).toBe(true);
++  expect(before.attentionReason).toBe("finished");
++  const observation = await otherDevice.agents.list({ subscribe: {} });
++  let observedSeen!: () => void;
++  const seenOnOtherDevice = new Promise<void>((resolve) => {
++    observedSeen = resolve;
++  });
++  observation.subscription.subscribe({
++    snapshot: () => {},
++    update: (update) => {
++      if (
++        update.type === "agent_update" &&
++        update.payload.kind === "upsert" &&
++        update.payload.agent.id === agent.id &&
++        !update.payload.agent.requiresAttention
++      )
++        observedSeen();
++    },
++  });
++  const requestsBefore = created.mock.calls.length;
++  const result = await agent.markSeen({
++    expectedUpdatedAt: before.updatedAt,
++    expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++  });
++  expect(result).toMatchObject({
++    agentId: agent.id,
++    outcome: "seen",
++    error: null,
++    agent: {
++      id: agent.id,
++      requiresAttention: false,
++      attentionReason: null,
++      status: before.status,
++      updatedAt: before.updatedAt,
++    },
++  });
++  await seenOnOtherDevice;
++  const reconnected = await connect(daemon);
++  expect((await reconnected.agents.ref(agent.id).refresh())?.agent.requiresAttention).toBe(false);
++  expect(created).toHaveBeenCalledTimes(requestsBefore);
++  expect(resumed).not.toHaveBeenCalled();
++  expect(
++    (
++      await agent.markSeen({
++        expectedUpdatedAt: before.updatedAt,
++        expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++      })
++    ).outcome,
++  ).toBe("already_seen");
++  await agent.run("Return a second word.");
++  const newer = (await agent.refresh())!.agent;
++  expect(newer.requiresAttention).toBe(true);
++  expect(
++    (
++      await agent.markSeen({
++        expectedUpdatedAt: before.updatedAt,
++        expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++      })
++    ).outcome,
++  ).toBe("changed");
++  expect((await agent.refresh())!.agent.requiresAttention).toBe(true);
++  await observation.subscription.release();
++}, 30_000);
++
++test("read acknowledgement remains durable after a metadata flush races the live-state update", async () => {
++  const daemon = await createTestPaseoDaemon({
++    agentClients: { codex: createTestAgentClient("codex") },
++  });
++  cleanups.push(daemon.close);
++  const api = await connect(daemon);
++  const agent = await api.agents.create({
++    cwd: daemon.staticDir,
++    config: { provider: "codex/test" },
++  });
++  await agent.run("Return one word.");
++  const before = (await agent.refresh())!.agent;
++  const acknowledge = AgentStorage.prototype.acknowledgeAttention;
++  const flush = vi
++    .spyOn(AgentStorage.prototype, "acknowledgeAttention")
++    .mockImplementationOnce(async function (this: AgentStorage, input) {
++      const outcome = await acknowledge.call(this, input);
++      if (input.liveAgent) await this.applySnapshot(input.liveAgent);
++      return outcome;
++    });
++  try {
++    expect(
++      (
++        await agent.markSeen({
++          expectedUpdatedAt: before.updatedAt,
++          expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++        })
++      ).outcome,
++    ).toBe("seen");
++    const durable = new AgentStorage(daemon.config.agentStoragePath, pino({ level: "silent" }));
++    expect((await durable.get(agent.id))?.requiresAttention).toBe(false);
++  } finally {
++    flush.mockRestore();
++  }
++}, 30_000);
++
++test("stored-only unread acknowledgement does not resume a broken provider and archives remain archived", async () => {
++  const root = await mkdtemp(path.join(tmpdir(), "paseo-read-ack-"));
++  cleanups.push(() => rm(root, { recursive: true, force: true }));
++  const first = await createTestPaseoDaemon({
++    paseoHomeRoot: root,
++    cleanup: false,
++    providerOverrides: { "disposable-read": { extends: "codex", label: "Disposable Read" } },
++    agentClients: { "disposable-read": createTestAgentClient("disposable-read") },
++  });
++  cleanups.push(async () => {
++    await first.close();
++    await rm(first.staticDir, { recursive: true, force: true });
++  });
++  const api = await connect(first);
++  const agent = await api.agents.create({
++    cwd: first.staticDir,
++    config: { provider: "disposable-read/test" },
++    title: "Disposable stored result",
++  });
++  await agent.run("Return one word.");
++  await first.close();
++  const unavailable = createTestAgentClient("codex");
++  const resumed = vi
++    .spyOn(unavailable, "resumeSession")
++    .mockRejectedValue(new Error("Provider history deliberately unavailable"));
++  const created = vi
++    .spyOn(unavailable, "createSession")
++    .mockRejectedValue(new Error("Provider deliberately unavailable"));
++  const second = await createTestPaseoDaemon({
++    paseoHomeRoot: root,
++    cleanup: false,
++    agentClients: { codex: unavailable },
++  });
++  cleanups.push(async () => {
++    await second.close();
++    await rm(second.staticDir, { recursive: true, force: true });
++  });
++  const reconnected = await connect(second);
++  const stored = reconnected.agents.ref(agent.id);
++  const before = (await stored.refresh())!.agent;
++  expect(before.requiresAttention).toBe(true);
++  expect(before.providerUnavailable).toBe(true);
++  const all = await reconnected.agents.list({
++    filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true },
++    page: { limit: 1 },
++  });
++  expect(all.entries.map((entry) => entry.agent.id)).toContain(agent.id);
++  expect(
++    await stored.markSeen({
++      expectedUpdatedAt: before.updatedAt,
++      expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++    }),
++  ).toMatchObject({ outcome: "seen", agent: { requiresAttention: false, status: before.status } });
++  expect(resumed).not.toHaveBeenCalled();
++  expect(created).not.toHaveBeenCalled();
++  await stored.archive();
++  const archived = (await stored.refresh())!.agent;
++  expect(archived.archivedAt).toEqual(expect.any(String));
++  expect(
++    await stored.markSeen({
++      expectedUpdatedAt: archived.updatedAt,
++      expectedAttentionTimestamp: archived.attentionTimestamp ?? null,
++    }),
++  ).toMatchObject({
++    outcome: "already_seen",
++    agent: { archivedAt: archived.archivedAt, status: archived.status },
++  });
++  expect(resumed).not.toHaveBeenCalled();
++  expect(created).not.toHaveBeenCalled();
++}, 30_000);
++
++test("permission waits survive a public read acknowledgement", async () => {
++  const daemon = await createTestPaseoDaemon({
++    agentClients: { claude: createTestAgentClient("claude") },
++  });
++  cleanups.push(daemon.close);
++  const api = await connect(daemon);
++  const waiting = await api.agents.create({
++    cwd: daemon.staticDir,
++    config: { provider: "claude/test", modeId: "default" },
++  });
++  expect((await waiting.run("rm -f permission.txt")).status).toBe("permission");
++  const before = (await waiting.refresh())!.agent;
++  expect(before.pendingPermissions).toHaveLength(1);
++  const acknowledged = await waiting.markSeen({
++    expectedUpdatedAt: before.updatedAt,
++    expectedAttentionTimestamp: before.attentionTimestamp ?? null,
++  });
++  expect(acknowledged).toMatchObject({
++    outcome: "needs_input",
++    agent: { pendingPermissions: before.pendingPermissions, status: before.status },
++  });
++}, 30_000);
++
++test("public markSeen distinguishes missing exact ID from a read record", async () => {
++  const daemon = await createTestPaseoDaemon({
++    agentClients: { codex: createTestAgentClient("codex") },
++  });
++  cleanups.push(daemon.close);
++  const api = await connect(daemon);
++  const agentId = "00000000-0000-4000-8000-000000000001";
++  expect(
++    await api.agents.ref(agentId).markSeen({
++      expectedUpdatedAt: "2026-01-01T00:00:00.000Z",
++      expectedAttentionTimestamp: null,
++    }),
++  ).toMatchObject({
++    agentId,
++    outcome: "missing",
++    agent: null,
++    error: null,
++  });
++});
+diff --git a/packages/server/src/server/session.ts b/packages/server/src/server/session.ts
+--- a/packages/server/src/server/session.ts
++++ b/packages/server/src/server/session.ts
+@@ -1933,6 +1933,11 @@
+           return;
+         }
+ 
++        if (event.type === "stored_agent_state") {
++          void this.agentUpdates.forwardStoredAgent(event.record);
++          return;
++        }
++
+         if (event.type === "agent_state") {
+           this.sessionLogger.trace(
+             {
+@@ -2792,6 +2797,8 @@
+ 
+   private dispatchAgentConfigMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+     switch (msg.type) {
++      case "agent.acknowledge_attention.request":
++        return this.handleAcknowledgeAgentAttention(msg);
+       case "set_agent_mode_request":
+         return this.agentConfigSession.handleSetAgentModeRequest(msg);
+       case "set_agent_model_request":
+@@ -4897,6 +4904,39 @@
+   /**
+    * Handle clearing agent attention flag
+    */
++  private async handleAcknowledgeAgentAttention(
++    input: Extract<SessionInboundMessage, { type: "agent.acknowledge_attention.request" }>,
++  ): Promise<void> {
++    let outcome: "seen" | "already_seen" | "changed" | "needs_input" | "missing" | "error" =
++      "error";
++    let agent: AgentSnapshotPayload | null = null;
++    let error: string | null = null;
++    try {
++      outcome = await this.agentManager.acknowledgeAgentAttention(input);
++      const live = this.agentManager.getAgent(input.agentId);
++      const stored = await this.agentStorage.get(input.agentId);
++      if (live && !live.internal) agent = await this.buildAgentPayload(live);
++      else if (stored && !stored.internal) agent = this.buildStoredAgentPayload(stored);
++    } catch (cause) {
++      this.sessionLogger.error(
++        { err: cause, agentId: input.agentId },
++        "Failed to acknowledge attention",
++      );
++      outcome = "error";
++      error = "Paseo could not confirm the read acknowledgement. Refresh before retrying.";
++    }
++    this.emit({
++      type: "agent.acknowledge_attention.response",
++      payload: {
++        requestId: input.requestId,
++        agentId: input.agentId,
++        outcome,
++        agent,
++        error,
++      },
++    });
++  }
++
+   private async handleClearAgentAttention(
+     agentId: string | string[],
+     requestId?: string,
+@@ -5452,21 +5492,25 @@
+     pageInfo: FetchAgentsResponsePageInfo;
+     searchTruncated?: boolean;
+   }> {
++    const requestedFilter = request.filter ?? {};
+     const filter =
+-      request.type === "fetch_agent_history_request" &&
+-      request.filter?.includeArchived === undefined
+-        ? { ...request.filter, includeArchived: true }
+-        : request.filter;
++      request.type === "fetch_agent_history_request"
++        ? {
++            ...requestedFilter,
++            includeArchived: requestedFilter.includeArchived ?? true,
++            includeUnavailablePersisted: true,
++          }
++        : requestedFilter;
+     const scope = request.type === "fetch_agents_request" ? request.scope : undefined;
+     const sort = this.agentsPager.normalizeSort(request.sort);
+ 
+     let agents = await this.listAgentPayloads({
+-      labels: filter?.labels,
+-      includeArchived: filter?.includeArchived,
++      labels: filter.labels,
++      includeArchived: filter.includeArchived,
+       includeBackground:
+-        filter?.includeBackground ||
++        filter.includeBackground ||
+         (request.type === "fetch_agents_request" && request.includeBackground),
+-      includeUnavailablePersisted: request.type === "fetch_agent_history_request",
++      includeUnavailablePersisted: filter.includeUnavailablePersisted,
+     });
+     const activePlacementsByWorkspaceId =
+       scope === "active" ? await this.buildActiveProjectPlacementsByWorkspaceId() : null;
+diff --git a/packages/server/src/server/websocket-server.ts b/packages/server/src/server/websocket-server.ts
+--- a/packages/server/src/server/websocket-server.ts
++++ b/packages/server/src/server/websocket-server.ts
+@@ -1945,6 +1945,7 @@
+         agentProfiles: true,
+         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
+         agentConfigApply: true,
++        agentAttentionAcknowledgement: true,
+       },
+     };
+   }
+diff --git a/packages/server/src/server/authorization/operation-permissions.ts b/packages/server/src/server/authorization/operation-permissions.ts
+--- a/packages/server/src/server/authorization/operation-permissions.ts
++++ b/packages/server/src/server/authorization/operation-permissions.ts
+@@ -60,6 +60,7 @@
+   checkout_status_request: "workspace.read",
+   checkout_switch_branch_request: "workspace.write",
+   clear_agent_attention: "workspace.write",
++  "agent.acknowledge_attention.request": "workspace.write",
+   client_heartbeat: "workspace.read",
+   close_items_request: "workspace.manage",
+   create_agent_request: ["workspace.write", "hub.execute"],
+@@ -285,6 +286,7 @@
+   checkout_status_update: "workspace.read",
+   checkout_switch_branch_response: "workspace.write",
+   clear_agent_attention_response: "workspace.write",
++  "agent.acknowledge_attention.response": "workspace.write",
+   close_items_response: "workspace.manage",
+   create_paseo_worktree_response: "workspace.manage",
+   create_terminal_response: "workspace.write",
+diff --git a/public-docs/sdk/reference.md b/public-docs/sdk/reference.md
+--- a/public-docs/sdk/reference.md
++++ b/public-docs/sdk/reference.md
+@@ -77,37 +77,42 @@
+ 
+ ### Agent handle
+ 
+-| Member                         | Result                            | Behavior                                                                                                |
+-| ------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
+-| `id`                           | `string`                          | Stable daemon agent ID.                                                                                 |
+-| `workspaceId`                  | `string \| null`                  | Current workspace placement.                                                                            |
+-| `cwd`                          | `string \| null`                  | Current working directory.                                                                              |
+-| `status`                       | Agent status or `null`            | Current lifecycle status.                                                                               |
+-| `capabilities`                 | Capability flags or `null`        | What the provider session supports.                                                                     |
+-| `availableModes`               | Agent modes or `null`             | Modes the session can switch to.                                                                        |
+-| `pendingPermissions`           | Permission requests or `null`     | Requests waiting on an answer.                                                                          |
+-| `activeTurn`                   | Active turn or `null`             | The turn in flight, with `turnId` and `startedAt`.                                                      |
+-| `lastUsage`                    | Usage or `null`                   | Token counts, cost, and context-window use from the last turn.                                          |
+-| `lastError`                    | `string \| null`                  | Last error the daemon recorded for the agent.                                                           |
+-| `features`                     | Agent features or `null`          | Provider feature toggles and selects with their current values.                                         |
+-| `runtimeInfo`                  | Runtime info or `null`            | Live provider, session ID, model, thinking option, and mode.                                            |
+-| `archivedAt`                   | `string \| null`                  | Archive timestamp; `null` while the agent is active.                                                    |
+-| `current()`                    | `PaseoAgent \| null`              | Current detailed value observed by this handle; never fetches.                                          |
+-| `refresh(requestId?)`          | `PaseoAgentRefetchResult \| null` | Fetches the current agent and project placement.                                                        |
+-| `send(text, options?)`         | `Promise<void>`                   | Resolves when the daemon accepts the prompt.                                                            |
+-| `respondToPermission(options)` | `Promise<void>`                   | Answers a pending permission by `requestId` with an allow or deny `response`.                           |
+-| `run(text, options?)`          | `PaseoAgentRunResult`             | Sends a prompt and waits for that turn. `timeoutMs` controls the wait; it defaults to 10 minutes.       |
+-| `waitForFinish(timeoutMs?)`    | `PaseoAgentRunResult`             | Waits for the active turn, including an initial prompt. Default timeout: 10 minutes.                    |
+-| `commands(options?)`           | `PaseoAgentCommandsResult`        | Asks the live session for its slash commands and skills, including built-in ones. Options: `requestId`. |
+-| `subscribe(handler)`           | Unsubscribe function              | Filters agent-directory updates to this ID and refreshes the handle properties.                         |
+-| `archive()`                    | `{ archivedAt }`                  | Soft-deletes the agent and closes its runtime.                                                          |
+-| `detach()`                     | `Promise<void>`                   | Removes the parent relationship without stopping the agent.                                             |
++| Member                                                        | Result                            | Behavior                                                                                                |
++| ------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
++| `id`                                                          | `string`                          | Stable daemon agent ID.                                                                                 |
++| `workspaceId`                                                 | `string \| null`                  | Current workspace placement.                                                                            |
++| `cwd`                                                         | `string \| null`                  | Current working directory.                                                                              |
++| `status`                                                      | Agent status or `null`            | Current lifecycle status.                                                                               |
++| `capabilities`                                                | Capability flags or `null`        | What the provider session supports.                                                                     |
++| `availableModes`                                              | Agent modes or `null`             | Modes the session can switch to.                                                                        |
++| `pendingPermissions`                                          | Permission requests or `null`     | Requests waiting on an answer.                                                                          |
++| `activeTurn`                                                  | Active turn or `null`             | The turn in flight, with `turnId` and `startedAt`.                                                      |
++| `lastUsage`                                                   | Usage or `null`                   | Token counts, cost, and context-window use from the last turn.                                          |
++| `lastError`                                                   | `string \| null`                  | Last error the daemon recorded for the agent.                                                           |
++| `features`                                                    | Agent features or `null`          | Provider feature toggles and selects with their current values.                                         |
++| `runtimeInfo`                                                 | Runtime info or `null`            | Live provider, session ID, model, thinking option, and mode.                                            |
++| `archivedAt`                                                  | `string \| null`                  | Archive timestamp; `null` while the agent is active.                                                    |
++| `current()`                                                   | `PaseoAgent \| null`              | Current detailed value observed by this handle; never fetches.                                          |
++| `refresh(requestId?)`                                         | `PaseoAgentRefetchResult \| null` | Fetches the current agent and project placement.                                                        |
++| `markSeen({ expectedUpdatedAt, expectedAttentionTimestamp })` | Native acknowledgement result     | Acknowledges only the observed revision without starting a provider or loading history.                 |
++| `send(text, options?)`                                        | `Promise<void>`                   | Resolves when the daemon accepts the prompt.                                                            |
++| `respondToPermission(options)`                                | `Promise<void>`                   | Answers a pending permission by `requestId` with an allow or deny `response`.                           |
++| `run(text, options?)`                                         | `PaseoAgentRunResult`             | Sends a prompt and waits for that turn. `timeoutMs` controls the wait; it defaults to 10 minutes.       |
++| `waitForFinish(timeoutMs?)`                                   | `PaseoAgentRunResult`             | Waits for the active turn, including an initial prompt. Default timeout: 10 minutes.                    |
++| `commands(options?)`                                          | `PaseoAgentCommandsResult`        | Asks the live session for its slash commands and skills, including built-in ones. Options: `requestId`. |
++| `subscribe(handler)`                                          | Unsubscribe function              | Filters agent-directory updates to this ID and refreshes the handle properties.                         |
++| `archive()`                                                   | `{ archivedAt }`                  | Soft-deletes the agent and closes its runtime.                                                          |
++| `detach()`                                                    | `Promise<void>`                   | Removes the parent relationship without stopping the agent.                                             |
+ 
+ `workspaceId` through `archivedAt` mirror the last snapshot the handle observed. A handle from `ref()` reads `null` for all of them until `refresh()`, `run()`, `waitForFinish()`, a timeline refetch, or `subscribe()` delivers a snapshot. Optional values in an observed snapshot also read as `null`. Call `current()` when you need the whole snapshot or need to distinguish those states.
+ 
+ `PaseoAgentRunResult` contains `status`, `final`, `error`, and `lastMessage`. `final` refreshes the handle when present.
+ 
+ `PaseoAgentCommandsResult` contains `agentId`, `commands`, and `error`. Each command has `name`, `description`, `argumentHint`, and an optional `kind` of `"command"` or `"skill"`. A provider that cannot answer reports it in `error` rather than rejecting; providers that expose no command list at all return an empty array.
++
++`agents.supportsMarkSeen` reports the host capability. `markSeen` requires `server_info.features.agentAttentionAcknowledgement`. Pass the `updatedAt` and `attentionTimestamp` from the native snapshot being acknowledged. A changed revision returns `changed` without clearing it. Results distinguish `seen`, `already_seen`, `needs_input`, `missing`, and `error`; `agent` contains a fresh native snapshot when available. Permission waits are preserved. Acknowledging an error notice leaves the error lifecycle and `lastError` intact. It does not recover provider history or offer an undo operation.
++
++For a host-wide metadata inventory, `agents.list({ filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true } })` explicitly includes retained records whose providers are absent. Walk every page before acknowledging the counted scope. On timeout or disconnection, refresh the exact ID instead of treating the missing response as success. A fresh unread result can arrive after acknowledgement; render the native snapshot and directory events rather than forcing an unread count to zero.
+ 
+ ### Timeline handle
+ 
+diff --git a/packages/server/src/server/agent/agent-attention-metadata.test.ts b/packages/server/src/server/agent/agent-attention-metadata.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/server/src/server/agent/agent-attention-metadata.test.ts
+@@ -0,0 +1,215 @@
++import { afterEach, expect, test } from "vitest";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import pino from "pino";
++import { AgentManager, type AgentManagerEvent } from "./agent-manager.js";
++import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
++import { buildStoredAgentPayload } from "./agent-projections.js";
++import { createAgentUpdatesService } from "../session/agent-updates/agent-updates-service.js";
++import type { SessionOutboundMessage } from "../messages.js";
++
++const roots: string[] = [];
++afterEach(async () => {
++  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
++});
++
++async function createStoredError(overrides: Partial<StoredAgentRecord> = {}) {
++  const root = await mkdtemp(join(tmpdir(), "paseo-attention-metadata-"));
++  roots.push(root);
++  const logger = pino({ level: "silent" });
++  const storage = new AgentStorage(root, logger);
++  const record: StoredAgentRecord = {
++    id: "00000000-0000-4000-8000-000000000001",
++    workspaceId: "workspace-fixture",
++    provider: "unavailable-provider",
++    cwd: "/fixtures/read-acknowledgement",
++    createdAt: "2026-01-01T00:00:00.000Z",
++    updatedAt: "2026-01-01T00:00:01.000Z",
++    lastStatus: "error",
++    lastError: "Retained provider error",
++    archivedAt: "2026-01-01T00:00:02.000Z",
++    requiresAttention: true,
++    attentionReason: "error",
++    attentionTimestamp: "2026-01-01T00:00:01.000Z",
++    labels: {},
++    ...overrides,
++  };
++  await storage.upsert(record);
++  const manager = new AgentManager({ registry: storage, logger, clients: {} });
++  return { root, logger, storage, record, manager };
++}
++
++test("stored error acknowledgement preserves status through the actual directory subscription", async () => {
++  const { root, logger, record, manager } = await createStoredError();
++  const messages: SessionOutboundMessage[] = [];
++  const events: AgentManagerEvent[] = [];
++  const forwards: Promise<unknown>[] = [];
++  const updates = createAgentUpdatesService({
++    emit: (message) => messages.push(message),
++    enrichAgentPayload: async (payload) => payload,
++    buildStoredAgentPayload: (stored) => buildStoredAgentPayload(stored, []),
++    isProviderVisibleToClient: () => true,
++    buildProjectPlacementForWorkspaceId: async () => ({
++      projectKey: "fixture-project",
++      projectName: "Fixture",
++      checkout: {
++        cwd: record.cwd,
++        isGit: false,
++        worktreeRoot: null,
++        currentBranch: null,
++        remoteUrl: null,
++        isPaseoOwnedWorktree: false,
++        mainRepoRoot: null,
++      },
++    }),
++    emitWorkspaceUpdateForWorkspaceId: async () => {},
++    sequenceAgentUpdate: (payload) => payload,
++    logger,
++  });
++  updates.beginSubscription({
++    subscriptionId: "errors",
++    filter: { includeArchived: true, includeUnavailablePersisted: true, statuses: ["error"] },
++  });
++  updates.flushBootstrapped("errors");
++  updates.beginSubscription({
++    subscriptionId: "closed",
++    filter: { includeArchived: true, includeUnavailablePersisted: true, statuses: ["closed"] },
++  });
++  updates.flushBootstrapped("closed");
++  updates.beginSubscription({
++    subscriptionId: "all",
++    filter: { includeArchived: true, includeUnavailablePersisted: true },
++  });
++  updates.flushBootstrapped("all");
++  updates.beginSubscription({
++    subscriptionId: "active",
++    filter: { includeUnavailablePersisted: true },
++  });
++  updates.flushBootstrapped("active");
++  const unsubscribe = manager.subscribe((event) => {
++    events.push(event);
++    if (event.type === "agent_state") forwards.push(updates.forwardLiveAgent(event.agent));
++    if (event.type === "stored_agent_state")
++      forwards.push(updates.forwardStoredAgent(event.record));
++  });
++  try {
++    expect(
++      await manager.acknowledgeAgentAttention({
++        agentId: record.id,
++        expectedUpdatedAt: record.updatedAt,
++        expectedAttentionTimestamp: record.attentionTimestamp ?? null,
++      }),
++    ).toBe("seen");
++    await Promise.all(forwards);
++    const durable = await new AgentStorage(root, logger).get(record.id);
++    expect(durable).toEqual({
++      ...record,
++      requiresAttention: false,
++      attentionReason: null,
++      attentionTimestamp: null,
++    });
++    expect(events).toHaveLength(1);
++    const event = events[0];
++    if (event.type !== "stored_agent_state") throw new Error("Expected native stored agent state");
++    expect(event.record.lastStatus).toBe("error");
++    expect(messages).toEqual([
++      {
++        type: "agent_update",
++        payload: expect.objectContaining({
++          kind: "upsert",
++          agent: expect.objectContaining({
++            id: record.id,
++            status: "error",
++            lastError: record.lastError,
++            archivedAt: record.archivedAt,
++            providerUnavailable: true,
++            requiresAttention: false,
++          }),
++        }),
++      },
++      { type: "agent_update", payload: { kind: "remove", agentId: record.id } },
++      {
++        type: "agent_update",
++        payload: expect.objectContaining({
++          kind: "upsert",
++          agent: expect.objectContaining({
++            id: record.id,
++            status: "error",
++            lastError: record.lastError,
++            archivedAt: record.archivedAt,
++            providerUnavailable: true,
++            requiresAttention: false,
++          }),
++        }),
++      },
++      { type: "agent_update", payload: { kind: "remove", agentId: record.id } },
++    ]);
++    expect(manager.getAgent(record.id)).toBeNull();
++  } finally {
++    unsubscribe();
++    updates.dispose();
++  }
++});
++
++test.each(["initializing", "running", "idle", "error", "closed"] as const)(
++  "stored acknowledgement preserves %s metadata and only reaches its exact native subscribers",
++  async (lastStatus) => {
++    const { record, storage, manager } = await createStoredError({ lastStatus, archivedAt: null });
++    const exact: AgentManagerEvent[] = [];
++    const other: AgentManagerEvent[] = [];
++    const unsubscribeExact = manager.subscribe((event) => exact.push(event), {
++      agentId: record.id,
++      replayState: false,
++    });
++    const unsubscribeOther = manager.subscribe((event) => other.push(event), {
++      agentId: "00000000-0000-4000-8000-000000000002",
++      replayState: false,
++    });
++    try {
++      const request = {
++        agentId: record.id,
++        expectedUpdatedAt: record.updatedAt,
++        expectedAttentionTimestamp: record.attentionTimestamp ?? null,
++      };
++      expect(await manager.acknowledgeAgentAttention(request)).toBe("seen");
++      expect(await manager.acknowledgeAgentAttention(request)).toBe("already_seen");
++      const seen = {
++        ...record,
++        requiresAttention: false,
++        attentionReason: null,
++        attentionTimestamp: null,
++      };
++      expect(await storage.get(record.id)).toEqual(seen);
++      expect(exact).toEqual([{ type: "stored_agent_state", record: seen }]);
++      expect(other).toEqual([]);
++      expect(manager.getRegisteredProviderIds()).toEqual([]);
++      expect(manager.getAgent(record.id)).toBeNull();
++    } finally {
++      unsubscribeExact();
++      unsubscribeOther();
++    }
++  },
++);
++
++test("stored permission needs and internal records remain unread without an acknowledgement event", async () => {
++  const { record, storage, manager } = await createStoredError({ attentionReason: "permission" });
++  const events: AgentManagerEvent[] = [];
++  const unsubscribe = manager.subscribe((event) => events.push(event), { includeInternal: true });
++  try {
++    const request = {
++      agentId: record.id,
++      expectedUpdatedAt: record.updatedAt,
++      expectedAttentionTimestamp: record.attentionTimestamp ?? null,
++    };
++    expect(await manager.acknowledgeAgentAttention(request)).toBe("needs_input");
++    expect(await storage.get(record.id)).toEqual(record);
++    await storage.upsert({ ...record, attentionReason: "error", internal: true });
++    expect(await manager.acknowledgeAgentAttention(request)).toBe("missing");
++    expect((await storage.get(record.id))?.requiresAttention).toBe(true);
++    expect(events).toEqual([]);
++    expect(manager.getAgent(record.id)).toBeNull();
++  } finally {
++    unsubscribe();
++  }
++});
+diff --git a/packages/server/src/server/agent/agent-prompt.ts b/packages/server/src/server/agent/agent-prompt.ts
+--- a/packages/server/src/server/agent/agent-prompt.ts
++++ b/packages/server/src/server/agent/agent-prompt.ts
+@@ -643,7 +643,7 @@
+         return;
+       }
+ 
+-      if (event.type === "timeline_replacement") {
++      if (event.type === "timeline_replacement" || event.type === "stored_agent_state") {
+         return;
+       }
+ 
+diff --git a/packages/server/src/server/session/agent-updates/agent-updates-service.ts b/packages/server/src/server/session/agent-updates/agent-updates-service.ts
+--- a/packages/server/src/server/session/agent-updates/agent-updates-service.ts
++++ b/packages/server/src/server/session/agent-updates/agent-updates-service.ts
+@@ -41,6 +41,7 @@
+   hasSubscription(): boolean;
+   includesLiveAgent(agent: ManagedAgent, subscriptionIds?: ReadonlySet<string>): Promise<boolean>;
+   forwardLiveAgent(agent: ManagedAgent): Promise<void>;
++  forwardStoredAgent(record: StoredAgentRecord): Promise<void>;
+   emitStoredRecord(record: StoredAgentRecord): Promise<AgentSnapshotPayload>;
+   removeAgent(agentId: string): Promise<void>;
+   dispose(): void;
+@@ -337,6 +338,11 @@
+     return enqueueAgentUpdate(payload.id, () => emitLiveAgentUpdate(payload));
+   }
+ 
++  function forwardStoredAgent(record: StoredAgentRecord): Promise<void> {
++    const payload = deps.buildStoredAgentPayload(record);
++    return enqueueAgentUpdate(record.id, () => emitLiveAgentUpdate(payload));
++  }
++
+   function removeAgent(agentId: string): Promise<void> {
+     return enqueueAgentUpdate(agentId, () => {
+       for (const sub of subscriptions.values()) {
+@@ -356,6 +362,7 @@
+     hasSubscription,
+     includesLiveAgent,
+     forwardLiveAgent,
++    forwardStoredAgent,
+     emitStoredRecord,
+     removeAgent,
+     dispose,

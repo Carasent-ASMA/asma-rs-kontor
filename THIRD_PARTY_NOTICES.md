@@ -43,3 +43,11 @@ their own licenses and are never distributed from this repository.
 
 The license texts for the two licenses under which Kontor itself is published
 are in `LICENSE-MIT` and `LICENSE-APACHE`.
+
+## Paseo acknowledgement patch
+
+`docs/upstream/paseo-v0.12.0-mark-seen.patch` contains modified source and
+context from [Paseo v0.12.0](https://github.com/getpaseo/paseo/tree/cafe4b01c8522ff39560241c5deb01427dc8dc5b),
+Copyright (c) 2025-present Mohamed Boudra. That revision licenses this source
+under Apache-2.0; see `LICENSE-APACHE`. The patch is a source candidate for
+metadata-only read acknowledgement, not a bundled or installed Paseo runtime.
