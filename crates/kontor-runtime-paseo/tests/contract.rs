@@ -11389,6 +11389,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
 
 fn hosted_retire_request(seat_binding_id: SeatBindingId) -> HostedSeatRetireRequest {
     HostedSeatRetireRequest {
+        resolved_route: None,
         placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
@@ -11554,6 +11555,7 @@ async fn a_paseo_0_8_archive_readback_is_not_retirement_evidence() {
             .answering_rpc("fetch_agent_request", consultation),
     );
     let request = ConsultationSeatRetireRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
@@ -11583,6 +11585,7 @@ async fn an_acknowledged_consultation_archive_that_reads_back_working_is_refused
     let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
     let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
     let request = ConsultationSeatRetireRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),

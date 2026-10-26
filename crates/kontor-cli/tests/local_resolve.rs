@@ -923,14 +923,9 @@ fn stated_route_health_is_the_only_availability_and_fails_closed() {
     // An unknown first route is passed over; a fresh positive one is chosen,
     // and the stated health is echoed so the receipt reproduces the choice.
     let health = route_health(&serde_json::json!([
+        observation("codex-b", "gpt-5.6-sol", "unknown", "2026-10-25T08:59:59Z"),
         observation(
-            "codex-work",
-            "gpt-5.6-sol",
-            "unknown",
-            "2026-10-25T08:59:59Z"
-        ),
-        observation(
-            "claude-personal",
+            "claude-a",
             "claude-opus-5",
             "available",
             "2026-10-25T08:59:00Z"
@@ -938,10 +933,7 @@ fn stated_route_health_is_the_only_availability_and_fails_closed() {
     ]));
     let (exit, envelope) = with(&health);
     assert_eq!(exit, 0, "{envelope}");
-    assert_eq!(
-        envelope["body"]["selected"]["rung"]["provider"],
-        "claude-personal"
-    );
+    assert_eq!(envelope["body"]["selected"]["rung"]["provider"], "claude-a");
     assert_eq!(
         excluded(&envelope, "/considered"),
         [
@@ -958,13 +950,13 @@ fn stated_route_health_is_the_only_availability_and_fails_closed() {
     // Stale, unavailable and later-dated observations admit nothing.
     let (exit, envelope) = with(&route_health(&serde_json::json!([
         observation(
-            "codex-work",
+            "codex-b",
             "gpt-5.6-sol",
             "available",
             "2026-10-25T08:58:59Z"
         ),
         observation(
-            "claude-personal",
+            "claude-a",
             "claude-opus-5",
             "available",
             "2026-10-25T09:00:01Z"
@@ -976,7 +968,7 @@ fn stated_route_health_is_the_only_availability_and_fails_closed() {
         ["route_health_stale", "route_health_unknown"]
     );
     let (exit, envelope) = with(&route_health(&serde_json::json!([observation(
-        "codex-work",
+        "codex-b",
         "gpt-5.6-sol",
         "unavailable",
         "2026-10-25T08:59:59Z"

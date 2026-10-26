@@ -855,14 +855,14 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     let walked = resolution.select_observed(
         &open,
         Some(&health(vec![
-            observed("claude-personal", "claude-opus-5", Unknown, 5),
-            observed("claude-work", "claude-opus-5", Available, 61),
-            observed("codex-work", "gpt-5.6-sol", Available, 60),
+            observed("claude-a", "claude-opus-5", Unknown, 5),
+            observed("claude-b", "claude-opus-5", Available, 61),
+            observed("codex-b", "gpt-5.6-sol", Available, 60),
         ])),
     );
     assert_eq!(
         walked.selected.as_ref().map(route_of),
-        Some(("codex-work", "gpt-5.6-sol", 2, 1))
+        Some(("codex-b", "gpt-5.6-sol", 2, 1))
     );
     assert_eq!(
         health_verdicts(&walked),
@@ -884,10 +884,10 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     let refused = resolution.select_observed(
         &open,
         Some(&health(vec![
-            observed("claude-personal", "claude-opus-5", Unavailable, 1),
-            observed("claude-work", "claude-opus-5", Available, -1),
-            observed("codex-work", "gpt-5.6-sol", Available, 1),
-            observed("codex-work", "gpt-5.6-sol", Unavailable, 2),
+            observed("claude-a", "claude-opus-5", Unavailable, 1),
+            observed("claude-b", "claude-opus-5", Available, -1),
+            observed("codex-b", "gpt-5.6-sol", Available, 1),
+            observed("codex-b", "gpt-5.6-sol", Unavailable, 2),
         ])),
     );
     assert!(refused.selected.is_none());
@@ -901,9 +901,9 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     );
 
     // An observation of another mode or effort is not this route's.
-    let mut other_mode = observed("claude-personal", "claude-opus-5", Available, 1);
+    let mut other_mode = observed("claude-a", "claude-opus-5", Available, 1);
     other_mode.mode = Some("bypassPermissions".to_owned());
-    let mut other_effort = observed("claude-work", "claude-opus-5", Available, 1);
+    let mut other_effort = observed("claude-b", "claude-opus-5", Available, 1);
     other_effort.effort = Some(EffortLevel::High);
     let elsewhere =
         resolution.select_observed(&open, Some(&health(vec![other_mode, other_effort])));
@@ -911,17 +911,17 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
 
     // A stated exclusion still wins, and both inputs are echoed.
     let eligibility = Eligibility {
-        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
         excluded_vendors: BTreeSet::new(),
     };
     let stated = health(vec![
-        observed("claude-personal", "claude-opus-5", Available, 1),
-        observed("claude-work", "claude-opus-5", Available, 1),
+        observed("claude-a", "claude-opus-5", Available, 1),
+        observed("claude-b", "claude-opus-5", Available, 1),
     ]);
     let chosen = resolution.select_observed(&eligibility, Some(&stated));
     assert_eq!(
         chosen.selected.as_ref().map(route_of),
-        Some(("claude-work", "claude-opus-5", 1, 2))
+        Some(("claude-b", "claude-opus-5", 1, 2))
     );
     assert_eq!(health_verdicts(&chosen)[0], Some(AccountUnavailableNow));
     assert_eq!(chosen.eligibility, eligibility);
@@ -946,7 +946,7 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
 fn route_health_refuses_fields_it_does_not_declare() {
     let accepted: RouteHealth = serde_yaml_ng::from_str(
         r#"{"as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "observations": [
-            {"account": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh", "state": "available",
+            {"account": "codex-b", "model": "gpt-5.6-sol", "effort": "xhigh", "state": "available",
              "observed_at": "2026-10-25T08:59:30Z", "revision": "r1"}]}"#,
     )
     .expect("a declared document");
