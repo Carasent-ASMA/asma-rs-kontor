@@ -8,8 +8,10 @@ import { UNSUPPORTED } from "../shared/session-navigator";
 import {
   DRAFT_PLACEMENT_API_GAP,
   DRAFT_READ_API_GAP,
+  MALFORMED_HOST_DRAFT_READ,
   createSummaryAttachService,
   draftAttachInstalledCapability,
+  parseHostSummaryDraftRead,
   paseoSummaryDraftPlacer,
   readDestinationAttachState,
 } from "../server/session-summary-attach";
@@ -69,6 +71,21 @@ async function seedSummary(summaryRoot: string, source: Agent, text: string) {
   await writeFile(file, JSON.stringify(store));
   return readPinnedSummary(summaryRoot, { summaryId: store.summaryId, revision: 1 });
 }
+
+describe("parseHostSummaryDraftRead", () => {
+  it.each([
+    [null, "empty"],
+    [undefined, "malformed"],
+    ["", "malformed"],
+    [false, "malformed"],
+    [{ summaryId: "00000000-0000-4000-8000-000000000099", revision: 1 }, "occupied"],
+    [{ summaryId: "not-a-uuid", revision: 1 }, "malformed"],
+    [{ summaryId: "00000000-0000-4000-8000-000000000099", revision: 0 }, "malformed"],
+    [{ revision: 1 }, "malformed"],
+  ] as const)("classifies %j as %s", (raw, state) => {
+    expect(parseHostSummaryDraftRead(raw).state).toBe(state);
+  });
+});
 
 describe("summary attach host route", () => {
   it("keeps draftAttach unsupported with the exact gap when placeSummaryDraft is absent", () => {
@@ -233,6 +250,57 @@ describe("summary attach with qualified SDK", () => {
     expect(placed).toHaveLength(0);
     const state = await readDestinationAttachState(attachRoot, DEST.id);
     expect(state.intents).toEqual({});
+  });
+
+  it.each([undefined, "", false, { revision: 1 }, { summaryId: "00000000-0000-4000-8000-000000000099" }])(
+    "returns unknown without placement when readSummaryDraft returns %j",
+    async (badRead) => {
+      const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
+      const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);
+      const drafts = new Map<string, { summaryId: string; revision: number; text: string; sourceAgentId: string }>();
+      const revision = await seedSummary(summaryRoot, SOURCE, "Adversarial attach body");
+      const placed: unknown[] = [];
+      const paseo = {
+        agents: {
+          ref: (id: string) => ({ refresh: async () => ({ agent: DEST, project: null }) }),
+          generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
+          placeSummaryDraft: async (destinationAgentId: string, draft: { summaryId: string; revision: number; text: string; sourceAgentId: string }) => {
+            placed.push({ destinationAgentId, draft });
+            drafts.set(destinationAgentId, draft);
+          },
+          readSummaryDraft: async () => badRead as never,
+        },
+      };
+      const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
+      const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
+      const outcome = await service.attach(pin);
+      expect(outcome).toMatchObject({ state: "unknown", message: expect.stringContaining(MALFORMED_HOST_DRAFT_READ) });
+      expect(placed).toHaveLength(0);
+    },
+  );
+
+  it("does not overwrite an existing different draft when readSummaryDraft returns undefined", async () => {
+    const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
+    const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);
+    const existing = { summaryId: "00000000-0000-4000-8000-000000000099", revision: 2, text: "keep me", sourceAgentId: "agent-other" };
+    const drafts = new Map<string, typeof existing>([[DEST.id, existing]]);
+    const revision = await seedSummary(summaryRoot, SOURCE, "Adversarial attach body");
+    const placed: unknown[] = [];
+    const paseo = {
+      agents: {
+        ref: () => ({ refresh: async () => ({ agent: DEST, project: null }) }),
+        generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
+        placeSummaryDraft: async (destinationAgentId: string, draft: { summaryId: string; revision: number; text: string; sourceAgentId: string }) => {
+          placed.push({ destinationAgentId, draft });
+          drafts.set(destinationAgentId, draft);
+        },
+        readSummaryDraft: async () => undefined as never,
+      },
+    };
+    const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
+    await service.attach({ summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id });
+    expect(placed).toHaveLength(0);
+    expect(drafts.get(DEST.id)).toEqual(existing);
   });
 
   it("concurrent attaches to one destination serialize without splitting drafts", async () => {

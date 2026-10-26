@@ -19,9 +19,23 @@ export const DRAFT_READ_API_GAP =
 const ATTACH_STORE_LIMIT =
   "Attach intents and outcomes persist under the Kontor plugin host-backed state root (plugin-state/kontor/session-summary-attach-v1); this plugin is the sole writer for those records on this host.";
 
+export const MALFORMED_HOST_DRAFT_READ =
+  "The host readSummaryDraft result was malformed; Kontor cannot treat it as empty or occupied. Nothing was placed.";
+
+const hostSummaryDraftReadSchema = z.object({ summaryId: z.string().uuid(), revision: z.number().int().positive() }).strict();
+export type HostSummaryDraftPin = z.infer<typeof hostSummaryDraftReadSchema>;
+
+/** Only host `null` means no draft; a valid pin means occupied; every other value is malformed. */
+export function parseHostSummaryDraftRead(raw: unknown): { state: "empty" } | { state: "occupied"; draft: HostSummaryDraftPin } | { state: "malformed" } {
+  if (raw === null) return { state: "empty" };
+  if (raw === undefined || raw === "" || raw === false) return { state: "malformed" };
+  const parsed = hostSummaryDraftReadSchema.safeParse(raw);
+  return parsed.success ? { state: "occupied", draft: parsed.data } : { state: "malformed" };
+}
+
 export const DRAFT_ATTACH_LIMITS = [
   "Attach places the saved revision in the destination seat's draft through the host SDK placeSummaryDraft route; nothing is sent.",
-  "Draft occupancy and retry reconciliation are read only through readSummaryDraft on the host; local state never substitutes for a host draft read.",
+  "Draft occupancy and retry reconciliation are read only through readSummaryDraft on the host; only a host null means empty and a valid summaryId/revision means occupied.",
   "Attach refuses destinations that are running, initializing, or in an active turn until the seat is idle.",
   "Each destination keeps at most one host draft; Attach never replaces an existing draft.",
   ATTACH_STORE_LIMIT,
@@ -46,7 +60,11 @@ export function paseoSummaryDraftPlacer(paseo: PaseoApi): SummaryDraftPlacer | u
   const readDraft = host.agents.readSummaryDraft.bind(host.agents);
   return {
     placeDraft: (destinationAgentId, revision) => place(destinationAgentId, { summaryId: revision.summaryId, revision: revision.revision, text: revision.text, sourceAgentId: revision.sourceAgentId }),
-    readDraft,
+    readDraft: async (destinationAgentId) => {
+      const parsed = parseHostSummaryDraftRead(await readDraft(destinationAgentId));
+      if (parsed.state === "malformed") throw new Error(MALFORMED_HOST_DRAFT_READ);
+      return parsed.state === "empty" ? null : parsed.draft;
+    },
   };
 }
 
@@ -166,7 +184,10 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       let hostDraft: { summaryId: string; revision: number } | null;
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
-        return unknownOutcome(pin, destination!.id, `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`);
+        const message = error instanceof Error && error.message === MALFORMED_HOST_DRAFT_READ
+          ? `${MALFORMED_HOST_DRAFT_READ} Check the destination's draft on the host.`
+          : `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`;
+        return unknownOutcome(pin, destination!.id, message);
       }
 
       if (hostDraft && !pinMatches(hostDraft, pin)) {
@@ -209,7 +230,10 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
 
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
-        return unknownOutcome(pin, destination!.id, `Draft placement was sent but the host draft could not be read back (${error instanceof Error ? error.message : String(error)}). Check the destination's draft; Kontor will not place it again automatically.`);
+        const message = error instanceof Error && error.message === MALFORMED_HOST_DRAFT_READ
+          ? `Draft placement was sent but ${MALFORMED_HOST_DRAFT_READ} Kontor will not record success; check the destination's draft.`
+          : `Draft placement was sent but the host draft could not be read back (${error instanceof Error ? error.message : String(error)}). Check the destination's draft; Kontor will not place it again automatically.`;
+        return unknownOutcome(pin, destination!.id, message);
       }
       if (!pinMatches(hostDraft, pin)) {
         return unknownOutcome(pin, destination!.id, "Draft placement was sent but the host draft does not show this summary revision yet. Check the destination's draft; Kontor will not place it again automatically.");
