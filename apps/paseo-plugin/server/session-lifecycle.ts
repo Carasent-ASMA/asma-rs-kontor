@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { PaseoApi, PaseoAgentListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readConfig, type KontorPluginConfig } from "./config";
-import { parent } from "./labels";
+import { parent, seatBinding } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
@@ -711,6 +711,49 @@ function freshContinuity(receipt: TakeoverContinuity): boolean {
   const age = Date.now() - Date.parse(receipt.observedAt);
   return age >= 0 && age <= 60_000;
 }
+const takeoverEvidenceSchema = z.object({
+  agentId: z.string().min(1), requestId: z.string().uuid(), observedAt: z.iso.datetime(), continuity: continuitySchema,
+  sessionRefusal: refusalObservationSchema.nullable(),
+}).strict();
+const takeoverEvidencePath = (root: string, agentId: string, requestId: string) => join(root, `takeover-evidence-${hash(`${agentId}:${requestId}`)}.json`);
+function orchestratedOwnerBindingRevision(owner: Agent): string {
+  const labels = owner.labels ?? {};
+  return hash(JSON.stringify([labels.orchestration ?? "", seatBinding(labels).seat ?? "", parent(owner) ?? ""]));
+}
+/** Bounded direct continuity: child inventory substitutes for unreadable schedules; session-local refusal is persisted with the receipt. */
+export async function readTakeoverContinuity(client: TakeoverClient, root: string, agentId: string, requestId: string): Promise<TakeoverContinuity | null> {
+  let agent: Agent | null | undefined;
+  try { const found = await client.agents.ref(agentId).refresh(); agent = !found ? null : found.agent.id === agentId ? found.agent : undefined; }
+  catch { return null; }
+  if (!agent) return null;
+  const observedAt = new Date().toISOString(), adapter = takeoverAdapter(agent);
+  const mode = agent.currentModeId ?? agent.runtimeInfo?.modeId ?? null;
+  const sessionRefusal = sessionLocalRefusalForTakeover(agent, mode, observedAt);
+  let continuity: TakeoverContinuity;
+  if (adapter.adapter === "governed") {
+    continuity = { agentId, requestId, revision: hash(JSON.stringify([lifecycleRevision(agent), "governed"])), observedAt, surface: "governed", wakes: "unknown", owner: null };
+  } else if (adapter.adapter === "refused") return null;
+  else {
+    const managedChildren = childrenOf(agent, await inventory(client, "archive"));
+    const wakes: TakeoverContinuity["wakes"] = managedChildren.length ? "preserved" : "clear";
+    let owner: TakeoverContinuity["owner"] = null;
+    if (adapter.basis === "orchestrated") {
+      const supervisorId = adapter.owner;
+      let supervisor: Agent | null | undefined;
+      try { const found = await client.agents.ref(supervisorId).refresh(); supervisor = !found ? null : found.agent.id === supervisorId ? found.agent : undefined; }
+      catch { return null; }
+      if (!supervisor || supervisor.archivedAt != null) return null;
+      owner = { agentId: supervisor.id, revision: lifecycleRevision(supervisor), bindingRevision: orchestratedOwnerBindingRevision(supervisor) };
+    }
+    continuity = {
+      agentId, requestId,
+      revision: hash(JSON.stringify([lifecycleRevision(agent), adapter.basis, sessionRefusal?.kind ?? "clean", owner?.revision ?? null, wakes])),
+      observedAt, surface: "direct", wakes, owner,
+    };
+  }
+  await writeDurable(takeoverEvidencePath(root, agentId, requestId), takeoverEvidenceSchema.parse({ agentId, requestId, observedAt, continuity, sessionRefusal }));
+  return continuity;
+}
 async function writeDurable(file: string, value: unknown) {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`, output = await open(temporary, "wx", 0o600);
@@ -1090,6 +1133,7 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   const takeover = (paseo: PaseoApi) => createTakeoverService(paseo, root, {
     config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), operatorFleetDiscovery: readOperatorFleetDiscovery,
     evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
+    continuity: (agentId, requestId) => readTakeoverContinuity(paseo, root, agentId, requestId),
   });
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));
   server.handle(applyTakeover, (input, { paseo }) => takeover(paseo).apply(input));

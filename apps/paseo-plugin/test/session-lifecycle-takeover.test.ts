@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
-import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, type TakeoverDeps } from "../server/session-lifecycle";
+import { readFile } from "node:fs/promises";
+import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, readTakeoverContinuity, type TakeoverDeps } from "../server/session-lifecycle";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
@@ -103,6 +104,20 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const fence = () => readdir(root).then((names) => names.filter((name) => name.startsWith("intent-")));
   return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
 }
+
+describe("direct takeover continuity", () => {
+  it("issues a bounded direct receipt, persists session-local refusal, and reaches ready without injected continuity", async () => {
+    const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", status: "error", lastError: "429 quota" }) });
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+    expect(receipt).toMatchObject({ agentId: "agent-1", requestId, surface: "direct", wakes: "clear", owner: null });
+    const evidence = JSON.parse(await readFile(join(h.root, `takeover-evidence-${hash(`agent-1:${requestId}`)}.json`), "utf8"));
+    expect(evidence.sessionRefusal?.kind).toBe("quota");
+    const readyHost = await host();
+    readyHost.deps.continuity = (agentId, id) => readTakeoverContinuity(readyHost.client as never, readyHost.root, agentId, id);
+    expect((await readyHost.ready()).state).toBe("ready");
+  });
+});
 
 describe("takeover review", () => {
   it("accepts only the closed review and confirmation inputs, never caller-built evidence or commands", () => {
