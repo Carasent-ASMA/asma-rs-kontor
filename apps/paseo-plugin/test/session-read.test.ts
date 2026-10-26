@@ -98,6 +98,8 @@ describe("native read acknowledgement", () => {
       { filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200 }, timeout: DIRECTORY_REQUEST_TIMEOUT_MS, signal },
       { filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200, cursor: "next" }, timeout: DIRECTORY_REQUEST_TIMEOUT_MS, signal },
     ]);
+    expect(s.list.mock.calls[0][0]?.signal).toBe(signal);
+    expect(s.list.mock.calls[1][0]?.signal).toBe(signal);
     const outcomes = [];
     for await (const item of s.actions.markHost(preview)) outcomes.push(item.outcome);
     expect(outcomes).toEqual(["seen", "seen"]);
