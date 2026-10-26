@@ -15,7 +15,8 @@ work) creates or reuses every workspace. The rest of this file says
 - [Seats and reuse](#idle-seat-reuse)
 - [Autonomous coordination](#autonomous-coordination)
 - [Capacity](#capacity)
-- [Adam, DESK and RSW placement](#adam-desk-and-rsw-placement)
+- [Desks and lead workspaces](#desks-and-lead-workspaces-2026-10-24)
+- [Tickets desk](tickets-desk.md)
 - [Consultation callers and routing](#consultation-callers-and-routing)
 - [Advisor sessions](#advisor-sessions)
 - [Committee sessions](#committee-sessions-final-gates-root-cause-hard-problems)
@@ -87,8 +88,8 @@ to every handoff, takeover brief or prompt. For the naming source:
 - LSA and TPM stay separate identities and authorities even though they share
   the workspace. Ticket delivery stays in TSWs.
 - **A new epic gets no ECP.** Follow
-  [Adam, DESK and RSW placement](#adam-desk-and-rsw-placement): its Adam tab
-  lives in the `DESK • ADAM` project.
+  [Adam, DESK and RSW placement](#adam-desk-and-rsw-placement): its epic lead
+  lives in a lead workspace of the `DESK • ADAM` project.
 - Name each ticket TSW from the configured template. Recommended:
   `TSW • <task key>`. Name its persistent delivery seats by the provisional
   seat rule.
@@ -133,8 +134,9 @@ LSA • EXM-8001 • Release readiness
   seat's **selected placement**:
   - epic worker: the epic project `projectId` plus the exact TSW, ASW or CSW
     `workspaceId` (and the ECP `workspaceId` on an existing epic);
-  - desk seat: the `DESK • <name>` project `projectId` plus the exact `ADAM` or
-    RSW `workspaceId`.
+  - desk seat: the `DESK • <name>` project `projectId` plus the exact `LSA`,
+    `TPM`, `ADHOC` or `RSW` `workspaceId`; a `DESK • TICKETS` ticket adds its
+    `TSW` `workspaceId`.
 - Do not use a team auto-launch transition for Paseo-selected work while its
   backlog API lacks those bindings. Paseo would otherwise create a standalone
   project rooted at the ticket worktree, even when the right TSW exists.
@@ -186,7 +188,7 @@ key/value metadata and not the seat's display name:
   seat per `(team_run_id, role_slot_id)`.
 - After each role turn, persist its handoff, verdict and evidence, and leave
   the same seat idle.
-- Compact only under the [context policy](autonomous-tpm-operation.md#context-policy);
+- Compact only under the [context policy](autonomous-tpm-operation.md#persistent-identity-and-fresh-working-context);
   never create a replacement just to shrink context.
 - Replace a role session only when it is unusable or replacement is explicitly
   authorized. Follow [seat-takeover](../../seat-takeover/SKILL.md): keep evidence
@@ -233,17 +235,41 @@ key/value metadata and not the seat's display name:
 <a id="adam-desk-and-rsw-placement"></a>
 ## Adam, DESK and RSW placement (new work)
 
-Applies to new work. Existing epics keep their names and placement.
+Applies to new work. Existing epics keep their names and placement. Names,
+including the lead-workspace rule, follow the project's new-work naming card
+and its desk layout amendment.
 
-- One durable top-level Paseo project `DESK • ADAM` holds one Adam tab per
-  epic, in its `ADAM` workspace. Tab names follow the project's new-work naming
-  card.
-- The workforce lives in the epic project (or the RSW) as Adam's children.
+### Desks and lead workspaces (2026-10-24)
+
+- Every durable desk project (`DESK • ADAM`, `DESK • TICKETS`, `DESK • PR REVIEW`
+  and any later desk) has native workspaces named exactly `LSA`, `TPM` and
+  `ADHOC` on the desk's checkout path. Create a missing one and read back its
+  id, name and `cwd`. The navigator shows them first, in that order.
+- `LSA` holds key-bound LSAs and durable desk LSA seats. `TPM` holds key-bound
+  TPMs, including PR desk Adams. `ADHOC` holds only ad-hoc LSA sessions
+  `LSA • ADHOC • <topic>`. `ADHOC` is a scope word, not a workspace-kind code.
+- No new session is created in an `ADAM` workspace. A legacy `ADAM` workspace
+  still renders until its tabs finish and it is archived when empty.
+- One durable top-level Paseo project `DESK • ADAM` holds each epic's lead tab
+  in `LSA`, or in `TPM` for a TPM. A bound epic lead never lands in `ADHOC`,
+  which holds ad-hoc LSA sessions only. Tab names follow the project's new-work
+  naming card.
+- Promotion is a handoff. Creation accepts an optional source session; the new
+  bound lead reads that source's handoff summary before its first task. The
+  ad-hoc persona no longer renames itself: on a confirmed key it writes the
+  summary through [seat-handoff](../../seat-handoff/SKILL.md) and asks the
+  operator to start the bound lead with the source named. The source is
+  released only after the bound lead reads the summary back.
+- The workforce lives in the epic project (or the RSW) as the lead's children.
 - A new epic gets no `ECP` workspace. Its ticket TSWs and consultation
   ASW/CSW workspaces stay inside the epic project.
+- `DESK • TICKETS` is the desk for small non-epic work. Each accepted ticket
+  gets one `TSW • <ticket key> • <topic>` workspace in that desk. Routing, the
+  tracker duty, the wall protocol and team staffing are in the
+  [tickets-desk procedure](tickets-desk.md).
 - The PR review desk is its own durable desk project. Each pull request gets
-  one PR Adam tab in that project's `ADAM` workspace and one RSW review room
-  with its declared review seats.
+  one PR Adam tab in that project's `TPM` workspace and one RSW review room with
+  its declared review seats. `DESK • PR REVIEW` offers ad hoc creation only.
 
 ## Consultation callers and routing
 
@@ -255,8 +281,8 @@ Applies to new work. Existing epics keep their names and placement.
   questions to the `LSA`, which may then invoke an Advisor or Committee. The
   placement owner may invoke one directly when it is the right caller.
 - Invocation and placement are separate authorities. Only the placement owner
-  creates or reuses a TSW, ASW or CSW, passing the epic `projectId` and reading
-  back the workspace identity, kind and `cwd`.
+  creates or reuses a TSW, ASW or CSW, passing the calling work's `projectId`
+  and reading back the workspace identity, kind and `cwd`.
 - This is a placement rule, not a caller allowlist. Callers request placement
   through the supported orchestration path. A child seat, advisor, prototype or
   research session never creates a workspace or project directly.
@@ -289,10 +315,11 @@ Applies to new work. Existing epics keep their names and placement.
 
 ## Committee sessions (final gates, root-cause, hard problems)
 
-A committee is one **CSW** inside the same epic project, a sibling of the ECP
-and ticket TSWs, never seats inside a working ticket TSW. Create it when the
-orchestration flow calls for a committee: final close-out gate, root-cause
-analysis, competing plans, reviewer disagreement or advisor uncertainty.
+A committee is one **CSW** in the project of the work that called it: the epic
+project for epic work, the desk project for desk work. It sits beside that work,
+never inside a working ticket TSW. Create it when the orchestration flow calls
+for a committee: final close-out gate, root-cause analysis, competing plans,
+reviewer disagreement or advisor uncertainty.
 
 The committee method itself — read-only seats, fleet-bound models, contrasting
 reviewers, a fresh judge, independent findings, aggregation and reuse — is owned
@@ -300,13 +327,16 @@ by [`committee-protocol`](../../committee-protocol/SKILL.md). This reference
 owns only the Paseo-direct placement.
 
 - The CSW title comes from the pinned Team Definition. Recommended:
-  `CSW • <scope key> • <topic>` (task question or epic-wide question).
+  `CSW • <scope key | ADHOC> • <topic>` (task question, epic-wide question, or
+  `ADHOC` for desk or ad-hoc work).
 - Scope follows the debated subject, not the caller. An epic-wide CSW is still a
-  Committee workspace, not an Advisor workspace.
+  Committee workspace, not an Advisor workspace. Desk work places its CSW in
+  the calling desk project, beside the calling `TSW` or lead workspace.
 - Only the placement owner creates or reuses the CSW
   ([routing](#consultation-callers-and-routing)).
-- Every CSW create passes the existing epic `projectId` explicitly. Never rely on
-  Paseo's fallback project inference.
+- Every CSW create passes the calling work's `projectId` explicitly: the epic
+  project for epic work, the desk project for desk work. Never rely on Paseo's
+  fallback project inference.
 - An omitted `projectId`, a newly created project, wrong-project readback, a
   duplicate topic CSW or a worktree-rooted project records `placement_blocked`
   and admits zero seats.
@@ -324,13 +354,14 @@ owns only the Paseo-direct placement.
   `SEAT A`, `SEAT B` and `JUDGE`, with no tracker-key, topic or role-code
   suffix. The protocol's independence rules decide which models may fill them.
 - Reuse the same committee seats for corrective re-reviews under the
-  [context policy](autonomous-tpm-operation.md#context-policy). Do not create
-  duplicate reviewer sessions. A materially different subject gets another CSW.
+  [context policy](autonomous-tpm-operation.md#persistent-identity-and-fresh-working-context).
+  Do not create duplicate reviewer sessions. A materially different subject gets
+  another CSW.
 
 ### Used alone (free work)
 
 A `workflow: free` caller may run a committee without an epic or a TPM. The
-caller acts as the coordinator and, at the user's explicit choice, either reuses
-the chosen workspace as the CSW or creates a CSW workspace inside the chosen
-existing project, with the existing id and path readback. The
+caller acts as the coordinator and creates a CSW workspace inside the chosen
+existing project, with the existing id and path readback. Reusing the chosen
+workspace as the CSW is withdrawn. The
 [committee protocol](../../committee-protocol/SKILL.md) is otherwise unchanged.
