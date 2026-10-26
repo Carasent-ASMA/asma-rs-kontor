@@ -42,7 +42,7 @@ async function check(browser, width, height, theme, source = 'live', fontScale =
       await back(page);
     }
     assert.match(await selected().getAttribute('aria-label'), /120 of 240 sessions/);
-    assert.equal(await page.getByTestId('sessions-applied-filters').innerText(), 'My work • “Keep”');
+    assert.equal(await page.getByTestId('sessions-applied-filters').innerText(), 'My work • Current • “Keep”');
     // Filtered over total, split by a rule rather than a slash, on the chosen state's control on both layouts.
     if (source === 'live') assert.deepEqual(await selected().getByTestId('session-state-ratio-count').evaluate(node => ({
       texts: [...node.children].map(child => child.textContent), rule: getComputedStyle(node.firstElementChild).borderBottomStyle,

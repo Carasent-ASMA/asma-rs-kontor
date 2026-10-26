@@ -8,6 +8,7 @@ import type { NewLeadDefault } from "../shared/organization";
 import type { SummaryRevision } from "../shared/session-navigator";
 import { Action, COARSE_POINTER, Copy, IconButton, type Colors } from "./page-controls";
 import { readableInk } from "./session-status-ink";
+import { prefixBeforeSeparator } from "./session-organization";
 import type { CreateOptionsState } from "./start-switch-sheet";
 import type { OpenSessionResult } from "./session-actions";
 import type { DirectoryEntry } from "./session-directory";
@@ -38,6 +39,10 @@ export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; 
 const AD_HOC = "ad-hoc" as const, FROM_JIRA = "from-jira" as const;
 /** The selected role's full name, under the role switch (board B1). */
 const ROLE_NAMES: Record<CreateRole, string> = { LSA: "Lead Software Architect", TPM: "Technical Program Manager" };
+/** "DESK • PR REVIEW" is PR REVIEW under the Desk label; another project name stays whole. */
+function deskShortName(project: string): string {
+  return prefixBeforeSeparator(project)?.toLocaleLowerCase() === "desk" ? project.slice(project.indexOf("\u2022") + 1).trim() || project : project;
+}
 
 /** Why no Codex default can stand in for a model the operator has not chosen. */
 function codexUnknown(providers: readonly CreateProvider[]): string {
@@ -160,17 +165,15 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const [source, setSource] = useState<LeadSourceChoice | null>(initialSource ? { hostId, entry: initialSource.entry, contextProblem: null, summary: initialSource.summary } : null);
   const [sourceProblem, setSourceProblem] = useState<string | null>(null);
   const [defaultProblem, setDefaultProblem] = useState<string | null>(null);
-  // The desk list and the technical Details open on demand, so the form keeps one line each (board B1).
-  const [open, setOpen] = useState<"desk" | "details" | null>(null);
+  // The technical Details open on demand, so the form keeps one line for them (board B1).
+  const [open, setOpen] = useState<"details" | null>(null);
   const clock = useClock();
   const pickerReturn = useRef<View>(null), restorePickerFocus = useRef(false);
   const lastPicker = useRef<Picker | null>(null);
   if (picker) lastPicker.current = picker;
   useEffect(() => { if (!picker && restorePickerFocus.current) { restorePickerFocus.current = false; focusControl(pickerReturn.current); } }, [picker]);
   const closePicker = () => { restorePickerFocus.current = true; setPicker(null); };
-  // Choosing a desk closes its list, which held focus; focus returns to the desk toggle once the list is gone.
-  const deskToggle = useRef<View>(null), restoreDeskFocus = useRef(false), deskChoosable = useRef(false);
-  useEffect(() => { if (open === null && restoreDeskFocus.current) { restoreDeskFocus.current = false; focusControl(deskToggle.current); } }, [open]);
+  const deskChoosable = useRef(false);
   /** A read repeats the desk whose catalog is wanted and, for From Jira, the issue search. */
   const scopeOf = (next: CreateDraft, projectId = next.projectId): CreateScope => ({ projectId, role: next.role, start: next.start,
     ...(next.start === FROM_JIRA && next.issueQuery?.trim() ? { issueKey: next.issueQuery.trim() } : {}) });
@@ -373,7 +376,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     </Pressable>
     {tag ? <Text testID="kontor-new-lead-model-tag" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{tag}</Text> : null}
   </View>;
-  const toggle = (key: "desk" | "details") => setOpen(open === key ? null : key);
+  const toggle = (key: "details") => setOpen(open === key ? null : key);
   // A source from the listed sessions is drawn on the shared row; a host-wide search result keeps its title and state.
   const listed = source ? sources?.find((entry) => entry.id === source.entry.id) ?? null : null;
   const clearSource = () => { setSource(null); setSourceProblem(null); set({ sourceAgentId: undefined }); };
@@ -384,16 +387,20 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     : "Desk: follows the issue. An epic starts on DESK • ADAM; another open issue without an active parent epic starts on DESK • TICKETS.";
   // One desk is a fact, several a compact choice; From Jira takes the issue's desk (board B1). A chosen desk that vanished
   // makes even one remaining desk a choice, so "Choose a listed desk" can be done; once a choice it stays one in this
-  // form, so focus returns to it after that desk is chosen.
+  // form. Its desks sit side by side across the form, as Role and Start do, with Refresh on the Desk line, and are named
+  // without the "DESK •" that line already says.
   if (ready.desks.length > 1 || !choice.desk && ready.desks.length) deskChoosable.current = true;
+  const refreshDesks = <IconButton label={choice.desk || fromJira ? "Refresh choices" : "Refresh desks"} icon="RefreshCw" colors={colors} onPress={() => refresh({})} />;
+  const deskChoice = !fromJira && deskChoosable.current && ready.desks.length > 0;
   const desk = fromJira ? <View style={line}>
       <Text style={{ ...heading, flex: 1 }}>Desk</Text>
       <Text testID="kontor-new-session-desk" accessibilityLabel={deskRule} numberOfLines={1} style={value}>{choice.issue && deskName ? deskName : "Follows the issue"}</Text>
     </View>
-    : deskChoosable.current && ready.desks.length ? <Disclosure ref={deskToggle} testID="kontor-new-lead-desk" label="Desk" value={deskName ?? "Choose a desk"} open={open === "desk"} onToggle={() => toggle("desk")} colors={colors} tall={tall}>
-      <Choices bare label="Desk" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId }); refresh({ projectId }); restoreDeskFocus.current = true; setOpen(null); }}
-        options={ready.desks.map((entry) => ({ id: entry.projectId, label: entry.project }))} />
-    </Disclosure>
+    : deskChoice ? <View testID="kontor-new-lead-desk" style={{ gap: 4 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><Text style={{ ...heading, flex: 1 }}>Desk</Text>{refreshDesks}</View>
+      <Choices bare label="Desk" layout="segmented" colors={colors} tall={tall} selected={choice.desk?.projectId ?? null} onSelect={(projectId) => { set({ projectId }); refresh({ projectId }); }}
+        options={ready.desks.map((entry) => ({ id: entry.projectId, label: deskShortName(entry.project) }))} />
+    </View>
     : <View testID="kontor-new-lead-desk" style={line}>
       <Text style={{ ...heading, flex: 1 }}>Desk</Text>
       <Text numberOfLines={1} style={value}>{deskName ?? "No desk on this host has lead workspaces."}</Text>
@@ -405,10 +412,10 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       const nextStart: CreateStart = role === "TPM" && choice.start === AD_HOC ? FROM_JIRA : choice.start;
       set({ role: role as CreateRole, start: nextStart }); refresh({ role: role as CreateRole, start: nextStart }); }}
       options={[{ id: "LSA", label: "LSA", note: ROLE_NAMES.LSA }, { id: "TPM", label: "TPM", note: ROLE_NAMES.TPM }]} />
-    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+    {deskChoice ? desk : <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
       <View style={{ flex: 1, minWidth: 0 }}>{desk}</View>
-      <IconButton label={choice.desk || fromJira ? "Refresh choices" : "Refresh desks"} icon="RefreshCw" colors={colors} onPress={() => refresh({})} />
-    </View>
+      {refreshDesks}
+    </View>}
     <Choices label="Start" layout="segmented" caption="TPM is key-bound: it starts from a Jira ticket." captionShown={choice.role === "TPM"} colors={colors} tall={tall} selected={choice.start}
       onSelect={(start) => { set({ start: start as CreateStart }); refresh({ start: start as CreateStart }); if (start === FROM_JIRA) setPicker("jira"); }}
       options={[

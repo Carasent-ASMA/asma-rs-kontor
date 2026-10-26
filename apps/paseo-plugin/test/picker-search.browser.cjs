@@ -222,8 +222,7 @@ async function bounds(page, width, height, name) {
   for (const width of [320, 390, 1440]) await run(width + '-pr-review-from-jira-browse-and-desk-routing', async () => {
     const { page, context } = await start(width, 'screen');
     try {
-      await page.getByTestId('kontor-new-lead-desk').click();
-      await page.getByRole('radio', { name: 'DESK • PR REVIEW', exact: true }).click();
+      await page.getByRole('radio', { name: 'PR REVIEW', exact: true }).click();
       await fromJira(page);
       const search = page.getByRole('combobox', { name: 'Choose a Jira issue' });
       await expect(page.getByRole('option')).toHaveCount(50);

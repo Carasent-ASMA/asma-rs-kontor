@@ -5,7 +5,7 @@ import { Pressable, ScrollView, Text, View, useWindowDimensions } from "react-na
 import { hostNavigation, navigate, sessionScopeKey } from "../../../paseo-plugin/client/navigation-state";
 import { patchSessionView } from "../../../paseo-plugin/client/session-view-store";
 import { hostEvents, subscribeHostEvents, logHostEvent } from "./event-log";
-import type { PluginButtonContentProps } from "paseo-sdk/client";
+import type { PluginButtonContentProps, PluginButtonIconProps } from "paseo-sdk/client";
 import { contributedScreen, contributedSidebar, pillsFor, registryVersion, setOpenScreenHandler, subscribeRegistry, type HostRoute, type Pill } from "./plugin-host";
 import { fakePaseo, fixtureSessions, HOST_ID, HOST_LABEL, invokeRpc, scenario, setHostStatus, simulateUpdate } from "./runtime";
 import { Icon, ToastLayer } from "./sdk-react-native";
@@ -156,7 +156,7 @@ function AgentShim({ agentId, hostProps, onOpenWorkspace }: { agentId: string; h
         {pillsFor(agentId).map((pill) => <Pressable key={pill.id} ref={(node: unknown) => { if (node) anchors.current.set(pill.id, node as HTMLElement); else anchors.current.delete(pill.id); }} testID={`host-pill-${pill.id}`} accessibilityRole="button" accessibilityLabel={pill.button.title}
           accessibilityState={pill.button.behavior.kind === "popover" ? { expanded: popover?.id === pill.id } : undefined} disabled={pill.button.disabled} onPress={() => press(pill)}
           style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 32, paddingHorizontal: 10, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface1 }}>
-          {typeof pill.button.icon === "string" ? <Icon name={pill.button.icon} size={14} color={colors.foreground} /> : null}
+          <PillIcon pill={pill} hostProps={hostProps} color={colors.foreground} />
           <Text style={{ color: colors.foreground, fontSize: 12 }}>{pill.button.label ?? pill.button.title}</Text>
         </Pressable>)}
       </View>
@@ -169,6 +169,14 @@ function AgentShim({ agentId, hostProps, onOpenWorkspace }: { agentId: string; h
       <open.Content {...(hostProps as object as PluginButtonContentProps)} layout={{ compact: width < SHEET_BELOW_WIDTH, platform: "web" }} context="agent" workspaceId={open.pill.workspaceId} agentId={open.pill.agentId} close={() => setPopover(null)} />
     </PluginPopover> : null}
   </View>;
+}
+
+/** A pill's icon as Paseo draws it: a registered icon name, or the plugin's own component given the SDK's icon props. */
+function PillIcon({ pill, hostProps, color }: { pill: Pill; hostProps: Record<string, unknown>; color: string }) {
+  const icon = pill.button.icon;
+  if (typeof icon === "string") return <Icon name={icon} size={14} color={color} />;
+  const Registered = icon;
+  return <Registered {...(hostProps as object as PluginButtonIconProps)} context="agent" workspaceId={pill.workspaceId} agentId={pill.agentId} size={14} color={color} />;
 }
 
 function WorkspaceShim({ workspaceId, onOpenAgent }: { workspaceId: string; onOpenAgent: (id: string) => void }) {

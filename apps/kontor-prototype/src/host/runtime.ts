@@ -6,7 +6,7 @@ import { modelUsageSessions } from "../fixtures/model-usage";
 import { lifecycleSessions } from "../fixtures/lifecycle";
 import { recoverySessions } from "../fixtures/recovery";
 import { fixtureLifecycle } from "./session-lifecycle";
-import { fixtureCreate } from "./session-create";
+import { fixtureCreate, fixtureDesk } from "./session-create";
 import { fixtureNavigator } from "./session-navigator";
 import { fixtureTakeover, isTakeoverSimMode } from "./session-takeover";
 import { integrationSessions, SYNTHETIC_TOTALS } from "../fixtures/integration";
@@ -157,10 +157,10 @@ const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario
   const seed = baseSessions()[0]!;
   const workspaceName = request.start === "ad-hoc" ? "ADHOC" : request.role;
   const row: FixtureSession = { ...seed, agent: { ...seed.agent, id, title, status: "idle", requiresAttention: false, attentionReason: null,
-    workspaceId, cwd: "/fixture/prj_proof_adam", provider: request.provider, model: request.model,
+    workspaceId, cwd: fixtureDesk(request.projectId).cwd, provider: request.provider, model: request.model,
     effectiveThinkingOptionId: request.effort ?? undefined, currentModeId: request.modeId ?? undefined, archivedAt: null,
     labels: { role: request.role, scope: request.issueKey ?? "ADHOC", "create.request": request.requestId }, ...(features ? { features } : {}), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-    project: { projectKey: "prj_proof_adam", projectName: "DESK • ADAM", workspaceName } };
+    project: { projectKey: fixtureDesk(request.projectId).projectId, projectName: fixtureDesk(request.projectId).project, workspaceName } };
   upsert(row);
   logHostEvent("simulated.update", `Created ${id} in fixture memory only`);
   return id;

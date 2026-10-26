@@ -223,7 +223,7 @@ describe("state ratios and applied-filter readback", () => {
     patchSessionView("host-a", { status: "running", work: "all", query: "alpha" });
     mount({ projectId: "prj_1" });
     expect(counts().running!.text).toBe("0/2"); expect(counts().current!.text).toBe("1/3"); expect(counts().all!.text).toBe("2/5");
-    expect(summary()!.props.children).toBe("“alpha”");
+    expect(summary()!.props.children).toBe("Running • “alpha”");
     expect(summary()!.props.accessibilityLabel).toContain("0 matching sessions");
     // Active state never zeroes the alternatives; changing layout does not change either side.
     const before = counts(); layout("grouped"); expect(counts()).toEqual(before); layout("flat");
@@ -250,8 +250,8 @@ describe("state ratios and applied-filter readback", () => {
     mount({ projectId: "prj_1", responsibility: { status: "ready", projection, revision: "r1", readAt: "2026-10-21", diagnostics: [] } });
     expect(counts().all!.text).toBe("1/4"); expect(counts().running!.text).toBe("1/1"); expect(counts().idle!.text).toBe("0/3");
     const text = String(summary()!.props.children);
-    for (const part of ["My work", "Assigned to Alex Example", "“Review topic”", "DEMO-2", "alpha", "DEMO-1"]) expect(text).toContain(part);
-    expect(text).not.toMatch(/Current|matching sessions|Grouped|Flat/);
+    for (const part of ["My work", "Current", "Assigned to Alex Example", "“Review topic”", "DEMO-2", "alpha", "DEMO-1"]) expect(text).toContain(part);
+    expect(text).not.toMatch(/Running|Last activity|Active|matching sessions|Grouped|Flat/);
     // The archive and other project's sessions cannot enter the denominator.
     expect(counts().all!.label).toContain("1 of 4 sessions");
     for (const status of [...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS]) expect(counts()[status]).toBeDefined();

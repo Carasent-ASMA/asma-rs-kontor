@@ -747,6 +747,9 @@ try {
     const { context, page } = await open(width, theme, "unified-switcher");
     const label = `${width}-${theme}`, sheet = width < 600;
     const pill = await composerPill(page), title = await pill.getAttribute("aria-label");
+    // The pill draws Kontor's building mark alone, in the state's ink; the session's state is in its title.
+    const marks = await pill.evaluate(node => [...node.querySelectorAll("svg")].map(svg => /lucide-building/.test(svg.getAttribute("class") ?? "")));
+    assert.deepEqual(marks, [true], `${label}: the building mark alone`);
     const surface = page.getByTestId(sheet ? "host-popover-sheet" : "host-popover");
     const place = async () => {
       const [anchor, box, viewport] = [await pill.boundingBox(), await surface.boundingBox(), page.viewportSize()];
