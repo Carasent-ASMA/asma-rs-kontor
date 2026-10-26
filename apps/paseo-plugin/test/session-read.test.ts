@@ -110,6 +110,20 @@ describe("native read acknowledgement", () => {
     expect(s.markSeen).not.toHaveBeenCalled();
   });
 
+  it("counts genuine input needs even when there is no unread result to acknowledge", async () => {
+    const waiting = agent("input", {
+      status: "running", requiresAttention: false, attentionReason: "permission", attentionTimestamp: null,
+    });
+    const s = setup([waiting]);
+    const preview = await s.actions.prepareHost();
+    expect(preview).toMatchObject({ targets: [], needsInputCount: 1, recordCount: 1 });
+    const outcomes = [];
+    for await (const item of s.actions.markHost(preview)) outcomes.push(item);
+    expect(outcomes).toEqual([]);
+    expect(s.markSeen).not.toHaveBeenCalled();
+    expect(s.native.get("input")).toEqual(waiting);
+  });
+
   it("never acknowledges another host even if a batch mixes host identities", async () => {
     const s = setup();
     const foreign = { ...s.target(), hostId: "host-b" };

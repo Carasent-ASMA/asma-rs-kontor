@@ -105,7 +105,7 @@ export function createSessionReadActions(hostId: string, client: () => Client) {
     return {
       hostId,
       targets: unread.filter((entry) => !entry.needsInput).map((entry) => sessionReadTarget(hostId, entry)),
-      needsInputCount: unread.filter((entry) => entry.needsInput).length,
+      needsInputCount: inventory.entries.filter((entry) => entry.needsInput).length,
       recordCount: inventory.entries.length,
       pages: inventory.pages,
     };
