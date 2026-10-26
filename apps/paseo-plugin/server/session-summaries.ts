@@ -63,6 +63,19 @@ type SummaryStore = z.infer<typeof storeSchema>;
 
 const storePath = (root: string, agentId: string) => join(root, `source-${createHash("sha256").update(agentId).digest("hex")}.json`);
 
+/** Serializes read-modify-write per source on this worker; rename alone is not CAS across concurrent writers. */
+const sourceStoreTails = new Map<string, Promise<unknown>>();
+
+export function withSourceStoreLock<T>(root: string, agentId: string, work: () => Promise<T>): Promise<T> {
+  const key = `${root}\0${agentId}`;
+  const tail = sourceStoreTails.get(key) ?? Promise.resolve();
+  const run = tail.catch(() => undefined).then(work);
+  sourceStoreTails.set(key, run);
+  return run.finally(() => {
+    if (sourceStoreTails.get(key) === run) sourceStoreTails.delete(key);
+  });
+}
+
 async function writeStore(root: string, agentId: string, store: SummaryStore) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const file = storePath(root, agentId), temporary = `${file}.${randomUUID()}.tmp`;
@@ -102,6 +115,25 @@ export function createSessionSummaryService(paseo: PaseoApi, root: string, gener
     return found?.agent.id === agentId ? found.agent : null;
   }
 
+  async function persistRevision(agent: Agent, agentId: string, sections: SummaryRevision["sections"], cutoff: string, savedAt: string, text: string, key: string): Promise<SummaryRevision> {
+    return withSourceStoreLock(root, agentId, async () => {
+      const existing = await readStore(root, agentId);
+      if (existing) {
+        const latest = existing.revisions[String(existing.latestRevision)];
+        if (latest && contentKey(latest.text, latest.cutoff) === key) return latest;
+        const revision = existing.latestRevision + 1;
+        const next: SummaryRevision = { summaryId: existing.summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text };
+        const store: SummaryStore = { ...existing, sourceTitle: agent.title ?? agentId, latestRevision: revision, revisions: { ...existing.revisions, [String(revision)]: next } };
+        await writeStore(root, agentId, store);
+        return next;
+      }
+      const summaryId = randomUUID(), revision = 1;
+      const created: SummaryRevision = { summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text };
+      await writeStore(root, agentId, { summaryId, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, latestRevision: revision, revisions: { "1": created } });
+      return created;
+    });
+  }
+
   async function save(agentId: string): Promise<SummaryRevision> {
     const agent = await exact(agentId);
     if (!agent) throw new Error("This session is not on this host, so no summary was saved.");
@@ -111,21 +143,7 @@ export function createSessionSummaryService(paseo: PaseoApi, root: string, gener
     if (!cutoff) throw new Error("The host returned no summary cutoff timestamp.");
     const savedAt = new Date().toISOString();
     const text = formatSummaryText(sections);
-    const key = contentKey(text, cutoff);
-    const existing = await readStore(root, agentId);
-    if (existing) {
-      const latest = existing.revisions[String(existing.latestRevision)];
-      if (latest && contentKey(latest.text, latest.cutoff) === key) return latest;
-      const revision = existing.latestRevision + 1;
-      const next: SummaryRevision = { summaryId: existing.summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text };
-      const store: SummaryStore = { ...existing, sourceTitle: agent.title ?? agentId, latestRevision: revision, revisions: { ...existing.revisions, [String(revision)]: next } };
-      await writeStore(root, agentId, store);
-      return next;
-    }
-    const summaryId = randomUUID(), revision = 1;
-    const created: SummaryRevision = { summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text };
-    await writeStore(root, agentId, { summaryId, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, latestRevision: revision, revisions: { "1": created } });
-    return created;
+    return persistRevision(agent, agentId, sections, cutoff, savedAt, text, contentKey(text, cutoff));
   }
 
   async function latest(agentIds: string[]): Promise<Record<string, SummaryRevision | null>> {
@@ -140,7 +158,7 @@ export function createSessionSummaryService(paseo: PaseoApi, root: string, gener
   return { save, latest };
 }
 
-async function readPinned(root: string, pin: SummaryPin): Promise<SummaryRevision> {
+export async function readPinnedSummary(root: string, pin: SummaryPin): Promise<SummaryRevision> {
   const { readdir } = await import("node:fs/promises");
   let names: string[];
   try { names = await readdir(root); }
@@ -161,17 +179,28 @@ export function summaryStateRoot() {
 
 export function contributeSessionSummaries(server: PluginServerContext) {
   const root = summaryStateRoot();
-  server.handle(saveSummary, (input, { paseo }) => createSessionSummaryService(paseo, root).save(input.agentId));
+  server.handle(saveSummary, (input, { paseo }) => sessionSummaryService(paseo, root).save(input.agentId));
   server.handle(readSummary, (input, { paseo }) => {
     assertSupported(paseo);
-    return readPinned(root, input);
+    return readPinnedSummary(root, input);
   });
   server.handle(latestSummaries, (input, { paseo }) => {
     assertSupported(paseo);
-    return createSessionSummaryService(paseo, root).latest(input.agentIds);
+    return sessionSummaryService(paseo, root).latest(input.agentIds);
   });
   server.handle(attachSummary, (_input, { paseo }) => {
     assertSupported(paseo);
     throw new Error(SUMMARY_ATTACH_GAP);
   });
+}
+
+const sessionSummaryServices = new WeakMap<PaseoApi, ReturnType<typeof createSessionSummaryService>>();
+
+function sessionSummaryService(paseo: PaseoApi, root: string) {
+  let service = sessionSummaryServices.get(paseo);
+  if (!service) {
+    service = createSessionSummaryService(paseo, root);
+    sessionSummaryServices.set(paseo, service);
+  }
+  return service;
 }

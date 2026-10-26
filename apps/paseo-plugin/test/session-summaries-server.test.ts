@@ -8,6 +8,7 @@ import {
   SUMMARY_MODEL_API_GAP,
   createSessionSummaryService,
   paseoSummaryGenerator,
+  readPinnedSummary,
   summariesInstalledCapability,
   summaryStateRoot,
 } from "../server/session-summaries";
@@ -62,5 +63,68 @@ describe("session summary host route", () => {
 
   it("uses the configured plugin host-backed state root", () => {
     expect(summaryStateRoot()).toMatch(/plugin-state\/kontor\/session-summaries-v1$/);
+  });
+});
+
+describe("session summary store serialization", () => {
+  const agent = { id: "agent-1", title: "Route review", updatedAt: "2026-10-25T10:00:00Z" } as Agent;
+
+  async function service(root: string, generate: () => Promise<{ sections: typeof SECTIONS; cutoff: string }>) {
+    const paseo = paseoWithGenerator(agent, generate);
+    return { service: createSessionSummaryService(paseo as never, root), root };
+  }
+
+  it("concurrent first saves with identical content dedupe to one summaryId and revision 1", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kontor-summary-")); dirs.push(root);
+    const payload = { sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" };
+    const { service: s } = await service(root, async () => payload);
+    const [left, right] = await Promise.all([s.save("agent-1"), s.save("agent-1")]);
+    expect(left.summaryId).toBe(right.summaryId);
+    expect(left.revision).toBe(1);
+    expect(right.revision).toBe(1);
+    expect(left.text).toBe(right.text);
+    await expect(readPinnedSummary(root, { summaryId: left.summaryId, revision: 1 })).resolves.toEqual(left);
+  });
+
+  it("concurrent saves with different content yield sequential revisions under one summaryId", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kontor-summary-")); dirs.push(root);
+    let calls = 0;
+    const { service: s } = await service(root, async () => {
+      const n = ++calls;
+      if (n === 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      return n === 1
+        ? { sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }
+        : { sections: { ...SECTIONS, task: "Ship the desk layout" }, cutoff: "2026-10-25T11:00:00Z" };
+    });
+    const [first, second] = await Promise.all([s.save("agent-1"), s.save("agent-1")]);
+    expect(first.summaryId).toBe(second.summaryId);
+    expect(new Set([first.revision, second.revision])).toEqual(new Set([1, 2]));
+    expect(first.text).not.toBe(second.text);
+    await expect(readPinnedSummary(root, { summaryId: first.summaryId, revision: first.revision })).resolves.toMatchObject({ text: first.text });
+    await expect(readPinnedSummary(root, { summaryId: second.summaryId, revision: second.revision })).resolves.toMatchObject({ text: second.text });
+  });
+
+  it("does not assign the same revision number to different text under one summaryId", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kontor-summary-")); dirs.push(root);
+    let calls = 0;
+    const { service: s } = await service(root, async () => {
+      calls++;
+      return calls % 2 === 1
+        ? { sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }
+        : { sections: { ...SECTIONS, nextStep: "Merge" }, cutoff: "2026-10-25T10:30:00Z" };
+    });
+    const results = await Promise.all(Array.from({ length: 4 }, () => s.save("agent-1")));
+    for (const result of results) {
+      const stored = await readPinnedSummary(root, { summaryId: result.summaryId, revision: result.revision });
+      expect(stored.text).toBe(result.text);
+      expect(stored.cutoff).toBe(result.cutoff);
+    }
+    const slot = new Map<string, string>();
+    for (const result of results) {
+      const key = `${result.summaryId}:${result.revision}`;
+      const prior = slot.get(key);
+      if (prior !== undefined) expect(prior).toBe(result.text);
+      else slot.set(key, result.text);
+    }
   });
 });
