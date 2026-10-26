@@ -693,7 +693,7 @@ async function readDirectWakeState(client: TakeoverClient, agentId: string): Pro
   try {
     const page = await client.schedules.forAgent(agentId);
     if (!Array.isArray(page?.entries)) return "unknown";
-    return page.entries.length ? "preserved" : "clear";
+    return page.entries.length ? "unknown" : "clear";
   } catch {
     return "unknown";
   }
@@ -863,8 +863,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     } catch (error) { return answer("unknown", `Its continuity receipt could not be read: ${errorText(error)}. Nothing is retired.`); }
     if (continuity.surface === "governed") return answer("refused", GOVERNED_ELSEWHERE);
     if (continuity.surface !== "direct") return answer("unknown", "Its continuity source cannot confirm direct ownership. Nothing is retired.");
-    if (continuity.agentId !== agentId || continuity.requestId !== requestId || !freshContinuity(continuity) || continuity.wakes === "unknown")
-      return answer("unknown", "Its wake-continuity receipt is stale, unknown or names another session or successor request. Nothing is retired.");
+    if (continuity.agentId !== agentId || continuity.requestId !== requestId || !freshContinuity(continuity) || continuity.wakes !== "clear")
+      return answer("unknown", "Its wake-continuity receipt is stale, not clear, or names another session or successor request. Nothing is retired.");
     if (direct.basis === "orchestrated" ? continuity.owner?.agentId !== direct.owner || continuity.owner.revision !== ownerRevision : continuity.owner !== null)
       return answer("refused", "Its continuity receipt does not confirm its current owner and binding revision. Nothing is retired.");
     const carried = Object.fromEntries(CARRIED_LABELS.flatMap((key) => labels[key] === undefined ? [] : [[key, labels[key]!]]));
