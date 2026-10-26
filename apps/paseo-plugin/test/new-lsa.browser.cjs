@@ -93,7 +93,6 @@ async function chooseModel(page, label = 'Active model') {
   await page.getByTestId('kontor-model-use').click();
   await page.getByTestId('kontor-model-picker').waitFor({ state: 'detached' });
 }
-const focused = page => page.evaluate(() => document.activeElement?.dataset?.testid ?? document.activeElement?.tagName ?? null);
 async function createdWaitingForOpen(page) {
   await page.getByTestId('kontor-new-lsa-verified').waitFor();
   await page.getByText('Session ID: fixture-created-exact', { exact: true }).waitFor();
@@ -161,18 +160,19 @@ async function run(name, test) {
         const topic = page.getByRole('textbox', { name: 'Topic', exact: true });
         await topic.fill('Route review');
         await topic.evaluate(input => { input.setSelectionRange(2, 7); window.fixture.topicElement = input; });
-        // Several desks are a compact choice behind the Desk line; a choice closes it.
-        const desk = page.getByTestId('kontor-new-lead-desk');
-        await desk.click();
-        const adam = page.getByRole('radio', { name: 'DESK • ADAM', exact: true });
-        const ops = page.getByRole('radio', { name: 'DESK • OPS', exact: true });
+        // Several desks sit side by side on one line under Desk, named without "DESK •"; an arrow chooses at once.
+        const adam = page.getByRole('radio', { name: 'ADAM', exact: true });
+        const ops = page.getByRole('radio', { name: 'OPS', exact: true });
         assert.deepEqual([await adam.getAttribute('aria-checked'), await adam.getAttribute('tabindex'), await ops.getAttribute('tabindex')], ['true', '0', '-1']);
+        const [adamBox, opsBox] = [await adam.boundingBox(), await ops.boundingBox()];
+        assert.ok(Math.abs(adamBox.y - opsBox.y) < 1 && adamBox.x + adamBox.width <= opsBox.x, `one desk line: ${JSON.stringify([adamBox, opsBox])}`);
+        assert.equal(await page.getByTestId('kontor-new-lead-desk').locator('[aria-expanded]').count(), 0, 'no list to open');
         await adam.focus(); await adam.press('ArrowRight');
         await page.waitForFunction(() => typeof window.fixture.finishCatalog === 'function');
         // Asserted last, so the refresh below is still proven when focus is lost.
-        const focusAfterChoice = await focused(page);
+        const focusAfterChoice = await ops.evaluate(node => node === document.activeElement);
         const assertSelection = async () => {
-          assert.equal(await desk.getAttribute('aria-label'), 'Desk: DESK • OPS');
+          assert.deepEqual([await adam.getAttribute('aria-checked'), await ops.getAttribute('aria-checked')], ['false', 'true']);
           assert.deepEqual(await topic.evaluate(input => [input === window.fixture.topicElement, input.value, input.selectionStart, input.selectionEnd]), [true, 'Route review', 2, 7]);
         };
         await assertSelection();
@@ -192,7 +192,7 @@ async function run(name, test) {
         await page.getByTestId('fixture-opened').filter({ hasText: 'fixture-created-exact' }).waitFor();
         const creates = await page.evaluate(() => window.fixture.calls.filter(call => call.name === 'sessions.create'));
         assert.equal(creates.length, 1); assert.equal(creates[0].input.projectId, 'project-ops');
-        assert.equal(focusAfterChoice, 'kontor-new-lead-desk', 'a keyboard desk choice returns focus to the Desk line, not the page');
+        assert.equal(focusAfterChoice, true, 'a keyboard desk choice keeps focus on the chosen desk, not the page');
       } finally { await context.close(); }
     });
     await run('invalidated-selection', async () => {
@@ -220,8 +220,7 @@ async function run(name, test) {
         assert.equal(await page.getByText('No desk on this host has lead workspaces.', { exact: true }).count(), 0, 'a listed desk is never called missing');
         assert.equal(await page.getByText(/No active provider.*host/).count(), 0);
         // The remaining desk is offered as a choice, never chosen for the operator.
-        const remaining = page.getByRole('radio', { name: 'DESK • PR REVIEW', exact: true });
-        if (!await remaining.count()) await page.getByTestId('kontor-new-lead-desk').click();
+        const remaining = page.getByRole('radio', { name: 'PR REVIEW', exact: true });
         assert.equal(await remaining.getAttribute('aria-checked'), 'false');
         await expect(page.getByTestId('kontor-new-lsa-create')).toBeDisabled();
         await page.getByRole('button', { name: 'Refresh desks', exact: true }).click();
@@ -229,10 +228,9 @@ async function run(name, test) {
         await expect(problem).toHaveText('The selected desk is no longer available. Choose a listed desk or Refresh desks.');
         assert.equal(await remaining.getAttribute('aria-checked'), 'false');
         await page.screenshot({ path: path.join(output, `${width}-vanished-desk.png`) });
-        if (!await remaining.count()) await page.getByTestId('kontor-new-lead-desk').click();
         await remaining.click();
         await expect(page.getByTestId('kontor-new-lsa-create')).toBeEnabled();
-        assert.equal(await page.getByTestId('kontor-new-lead-desk').getAttribute('aria-label'), 'Desk: DESK • PR REVIEW');
+        assert.equal(await remaining.getAttribute('aria-checked'), 'true');
         assert.equal(await page.getByRole('textbox', { name: 'Topic', exact: true }).inputValue(), 'Route review');
         const state = await page.evaluate(() => ({ calls: window.fixture.calls, opens: window.fixture.opens, visits: window.fixture.recent('fixture-a').visits }));
         assert.deepEqual(state.calls.filter(call => call.name === 'sessions.create-options').map(call => call.input), [{}, { projectId: 'project-adam', role: 'LSA', start: 'ad-hoc' }, { role: 'LSA', start: 'ad-hoc' }, { projectId: 'project-pr', role: 'LSA', start: 'ad-hoc' }]);

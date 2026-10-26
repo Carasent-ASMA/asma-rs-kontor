@@ -6,7 +6,7 @@ import type { PluginButtonIconProps } from "@getpaseo/plugin/client";
 import { composerSessionPresentation } from "../client/composer-session-state";
 import { deriveNeedsInput, type DirectoryEntry } from "../client/session-directory";
 import { sessionState, STATE_LABELS } from "../client/session-organization";
-import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
+import { sessionStatusInk } from "../client/session-status-ink";
 
 function entry(patch: Partial<DirectoryEntry> = {}): DirectoryEntry {
   return {
@@ -38,14 +38,14 @@ describe("composer exact-session state presentation", () => {
     { patch: { status: "initializing" }, state: "initializing" },
     { patch: { status: "closed" }, state: "closed" },
     { patch: { status: "idle", requiresAttention: true, attentionReason: "error" }, state: "idle" },
-  ] as const)("uses canonical $state, including precedence and retained earlier error", ({ patch, state }) => {
+  ] as const)("draws the Kontor building in canonical $state ink, including precedence and retained earlier error", ({ patch, state }) => {
     const record = entry(patch);
     expect(sessionState(record)).toBe(state);
     const value = composerSessionPresentation(record, { live: true }, "Start or switch session");
     expect(value.title).toBe(`Start or switch session · ${STATE_LABELS[state]}`);
     const root = value.icon(props);
-    const icon = root.props.children as ReactElement<{ name: string }>;
-    expect(icon.props.name).toBe(QUICK_FILTER_ICONS[state === "failed" ? "error" : state]);
+    const icon = root.props.children as ReactElement<{ name: string; color: string }>;
+    expect(icon.props).toMatchObject({ name: "Building2", size: props.size, color: sessionStatusInk(state === "failed" ? "error" : state, props.theme.colors) });
     expect(root.props.accessible).toBe(false);
   });
 
@@ -55,12 +55,12 @@ describe("composer exact-session state presentation", () => {
     expect(composerSessionPresentation(record, { live: true }, "Kontor").title).toBe("Kontor · Needs input");
   });
 
-  it("retains a muted last-known shape offline or unverified, without claiming Live or Offline", () => {
+  it("mutes the building to last known offline or unverified, without claiming Live or Offline", () => {
     const record = entry({ status: "running" });
     const value = composerSessionPresentation(record, { live: false }, "Kontor");
     expect(value.title).toBe("Kontor · Last known: Running");
     const icon = value.icon(props).props.children as ReactElement<{ name: string; color: string }>;
-    expect(icon.props).toMatchObject({ name: "Play", color: props.theme.colors.foregroundMuted });
+    expect(icon.props).toMatchObject({ name: "Building2", color: props.theme.colors.foregroundMuted });
     expect(value.title).not.toMatch(/Live|Offline/);
   });
 

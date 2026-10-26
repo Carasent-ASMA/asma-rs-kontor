@@ -8,6 +8,10 @@ import type { SummaryRevision } from "../../../paseo-plugin/shared/session-navig
 const ISSUE: JiraIssue = { id: "100", key: "ASMA-100", summary: "Deliver the desk layout", created: "2026-10-01T10:00:00.000+0000", type: "Epic", epic: true, status: "In Development", statusCategory: "In Progress", open: true, parent: null };
 const DESK = { projectId: "prj_proof_adam", project: "DESK • ADAM", desk: "ADAM", kind: "adam" as const, cwd: "/fixture/prj_proof_adam",
   lead: { ADHOC: "wks_proof_adhoc", LSA: "wks_proof_lsa", TPM: "wks_proof_tpm" } };
+/** A host's fictional desks in the native names' order; each lists the same catalog, so any one can be chosen and created on. */
+const DESKS = [DESK, ...([["review", "PR REVIEW", "pr-review"], ["tickets", "TICKETS", "tickets"]] as const).map(([key, desk, kind]) => ({ projectId: `prj_proof_${key}`, project: `DESK • ${desk}`, desk, kind,
+  cwd: `/fixture/prj_proof_${key}`, lead: { ADHOC: `wks_proof_${key}_adhoc`, LSA: `wks_proof_${key}_lsa`, TPM: `wks_proof_${key}_tpm` } }))];
+export const fixtureDesk = (projectId: string) => DESKS.find((desk) => desk.projectId === projectId) ?? DESK;
 const PROFILES = {
   LSA: { name: "LSA (fictional)", provider: "codex", model: "gpt-6.1-sol", modeId: "fixture-mode", effort: "xhigh" },
   TPM: { name: "TPM (fictional)", provider: "codex", model: "gpt-6.1-sol", modeId: "fixture-mode", effort: "xhigh" },
@@ -82,10 +86,10 @@ export function fixtureCreate(enabled: boolean, seats: FixtureSeats, summaries: 
   const unsettled: CreateOutcome | null = pending ? { requestId: crypto.randomUUID(), state: "unknown", title: leadTitle("LSA", null, "SIMULATED pending creation"), agentId: null, workspaceId: null,
     message: "SIMULATED: an earlier creation was sent and its effect is not confirmed. Check reads it; nothing is resent.", differences: [], persona: "supported", checkedAt: new Date().toISOString() } : null;
   if (unsettled) outcomes.set(unsettled.requestId, unsettled);
-  const options = (role: "LSA" | "TPM" = "LSA"): CreateOptions => ({
+  const options = (role: "LSA" | "TPM" = "LSA", projectId?: string): CreateOptions => ({
     enabled, disabledReason: enabled ? null : "SIMULATED: this scenario has no Adam desk. Use Combined navigator review.",
-    desks: enabled ? [DESK] : [],
-    catalogProjectId: enabled ? "prj_proof_adam" : null,
+    desks: enabled ? DESKS : [],
+    catalogProjectId: enabled ? fixtureDesk(projectId ?? DESK.projectId).projectId : null,
     providers: structuredClone(PROVIDERS),
     profile: PROFILES[role],
     issues: enabled ? [ISSUE] : [],
@@ -93,12 +97,12 @@ export function fixtureCreate(enabled: boolean, seats: FixtureSeats, summaries: 
     pending: unsettled, notes: ["SIMULATED creation changes only this page's in-memory session map.", CATALOG_NOTE],
   });
   const features = (input: { projectId: string; provider: string; model: string }): { features: CreateFeature[]; problem: string | null } => {
-    if (!enabled || input.projectId !== DESK.projectId) return { features: [], problem: "SIMULATED: that desk is not on this host." };
+    if (!enabled || !DESKS.some((desk) => desk.projectId === input.projectId)) return { features: [], problem: "SIMULATED: that desk is not on this host." };
     const listed = listedFeatures(input.provider, input.model);
     return listed ? { features: listed, problem: null } : { features: [], problem: `SIMULATED: ${input.model} is not in this host's catalog.` };
   };
   return async (method: string, input: unknown): Promise<unknown> => {
-    if (method === "sessions.create-options") return structuredClone(options((input as CreateScope | undefined)?.role));
+    if (method === "sessions.create-options") return structuredClone(options((input as CreateScope | undefined)?.role, (input as CreateScope | undefined)?.projectId));
     if (method === "sessions.create-features") return features(input as { projectId: string; provider: string; model: string });
     if (method === "sessions.create-check") {
       const result = outcomes.get((input as { requestId: string }).requestId);
@@ -109,7 +113,7 @@ export function fixtureCreate(enabled: boolean, seats: FixtureSeats, summaries: 
     const request = createRequestSchema.parse(input);
     const prior = outcomes.get(request.requestId);
     if (prior) return structuredClone(prior);
-    const current = options(request.role);
+    const current = options(request.role, request.projectId);
     const desk = current.desks.find((entry) => entry.projectId === request.projectId);
     const issue = request.start === "from-jira" ? current.issues.find((entry) => entry.key === request.issueKey?.trim().toUpperCase()) ?? null : null;
     const topic = request.start === "from-jira" && request.topic === undefined ? issueTopic(issue?.summary ?? "") : normalizeTopic(request.topic ?? "");
@@ -126,7 +130,7 @@ export function fixtureCreate(enabled: boolean, seats: FixtureSeats, summaries: 
     const problem = !enabled ? current.disabledReason
       : unsettled ? `SIMULATED: an earlier creation, “${unsettled.title}”, is not settled. Check it first; nothing was created.`
       : !desk ? "SIMULATED: this scenario has no matching desk."
-        : !workspaceId ? `SIMULATED: DESK • ADAM has no ${workspaceName} checkout.`
+        : !workspaceId ? `SIMULATED: ${desk.project} has no ${workspaceName} checkout.`
           : request.start === "from-jira" && !issue ? "SIMULATED: choose a fixture issue."
             : topicProblem(topic) ? topicProblem(topic)
               : createChoiceProblem(PROVIDERS, request) ?? (listed ? listed.problem ?? featureValuesProblem(listed.features, values) : null) ?? pinProblem;

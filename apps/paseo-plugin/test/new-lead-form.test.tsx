@@ -201,28 +201,33 @@ describe("New lead form", () => {
     expect(startNote()).toMatchObject({ children: "TPM is key-bound: it starts from a Jira ticket.", "aria-hidden": false, style: { opacity: 1 } });
   });
 
-  it("offers several desks as one compact line that opens their list", async () => {
-    const second = { ...OPTIONS.desks[0]!, projectId: "prj-tickets", project: "DESK • TICKETS", desk: "TICKETS", kind: "tickets" as const };
-    const f = mount(NewLsaForm, formProps({ options: { status: "ready", options: { ...OPTIONS, desks: [...OPTIONS.desks, second] } } }));
-    expect(opener(f.tree, "kontor-new-lead-desk")?.props).toMatchObject({ accessibilityLabel: "Desk: DESK • ADAM", "aria-expanded": false });
-    expect(byLabel(f.tree, "DESK • TICKETS")).toBeUndefined();
-    press(opener(f.tree, "kontor-new-lead-desk")); f.render();
-    press(byLabel(f.tree, "DESK • TICKETS")); f.render();
-    expect(opener(f.tree, "kontor-new-lead-desk")?.props).toMatchObject({ accessibilityLabel: "Desk: DESK • TICKETS", "aria-expanded": false });
+  it("offers several desks side by side under Desk, in order and short, chosen in one press", async () => {
+    const desk = (projectId: string, name: string, kind: "pr-review" | "tickets") => ({ ...OPTIONS.desks[0]!, projectId, project: `DESK • ${name}`, desk: name, kind });
+    const desks = [...OPTIONS.desks, desk("prj-pr", "PR REVIEW", "pr-review"), desk("prj-tickets", "TICKETS", "tickets")];
+    const f = mount(NewLsaForm, formProps({ options: { status: "ready", options: { ...OPTIONS, desks } } }));
+    const group = () => f.tree.find((node) => node.props.accessibilityRole === "radiogroup" && node.props.accessibilityLabel === "Desk");
+    const radios = () => f.tree.filter((node) => node.props.accessibilityRole === "radio" && ["ADAM", "PR REVIEW", "TICKETS"].includes(node.props.accessibilityLabel as string))
+      .map((node) => [node.props.accessibilityLabel, node.props["aria-checked"]]);
+    expect(group()).toBeDefined();
+    expect(opener(f.tree, "kontor-new-lead-desk")).toBeUndefined();
+    expect(f.tree.some((node) => node.props["aria-expanded"] !== undefined && node.props.testID === "kontor-new-lead-desk")).toBe(false);
+    expect(radios()).toEqual([["ADAM", true], ["PR REVIEW", false], ["TICKETS", false]]);
+    press(byLabel(f.tree, "TICKETS")); f.render();
+    expect(radios()).toEqual([["ADAM", false], ["PR REVIEW", false], ["TICKETS", true]]);
+    expect(f.props.onRefresh).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: "prj-tickets", role: "LSA" }));
   });
 
   it("keeps the one remaining desk choosable when the chosen desk vanished, as its problem asks", async () => {
     const second = { ...OPTIONS.desks[0]!, projectId: "prj-tickets", project: "DESK • TICKETS", desk: "TICKETS", kind: "tickets" as const };
     const f = mount(NewLsaForm, formProps({ options: { status: "ready", options: { ...OPTIONS, desks: [...OPTIONS.desks, second] } } }));
-    press(opener(f.tree, "kontor-new-lead-desk")); f.render();
-    press(byLabel(f.tree, "DESK • TICKETS")); f.render();
+    press(byLabel(f.tree, "TICKETS")); f.render();
     f.props.options = { status: "ready", options: OPTIONS }; f.render();
-    expect(opener(f.tree, "kontor-new-lead-desk")?.props.accessibilityLabel).toBe("Desk: Choose a desk");
+    // The remaining desk is offered, never chosen for the operator.
+    expect(byLabel(f.tree, "ADAM")?.props["aria-checked"]).toBe(false);
     expect(text(f.tree)).toContain("Choose a listed desk");
-    press(opener(f.tree, "kontor-new-lead-desk")); f.render();
-    press(byLabel(f.tree, "DESK • ADAM")); f.render();
-    // Still the choice it became, so focus has the toggle to return to.
-    expect(opener(f.tree, "kontor-new-lead-desk")?.props).toMatchObject({ accessibilityLabel: "Desk: DESK • ADAM", "aria-expanded": false });
+    press(byLabel(f.tree, "ADAM")); f.render();
+    // Still the choice it became.
+    expect(byLabel(f.tree, "ADAM")?.props).toMatchObject({ accessibilityRole: "radio", "aria-checked": true });
   });
 
   it("never reads a vanished desk again: Refresh desks asks for the desks that remain", async () => {

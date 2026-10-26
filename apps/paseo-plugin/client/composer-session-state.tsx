@@ -2,15 +2,15 @@ import type { PluginButtonIconProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { View } from "react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
-import { QUICK_FILTER_ICONS } from "./mobile-quick-filter-options";
 import { sessionState, STATE_LABELS, type OrganizationState } from "./session-organization";
 import { sessionStatusInk } from "./session-status-ink";
 
+/** Kontor's building mark, as in the sidebar, in the state's ink, muted while only last known; the title names the state. */
 function stateIcon(state: OrganizationState, lastKnown: boolean) {
   const status = state === "failed" ? "error" : state;
   return function ComposerSessionIcon({ theme, size }: PluginButtonIconProps) {
     return <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden>
-      <Icon name={QUICK_FILTER_ICONS[status]} size={size}
+      <Icon name="Building2" size={size}
         color={lastKnown ? theme.colors.foregroundMuted : sessionStatusInk(status, theme.colors)} />
     </View>;
   };

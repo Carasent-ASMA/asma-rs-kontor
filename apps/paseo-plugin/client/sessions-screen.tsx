@@ -51,6 +51,8 @@ import {
   readCoversMembership,
   MORE_STATUS_FILTERS,
   QUICK_STATUS_FILTERS,
+  ALL_STATUS_FILTER,
+  DEFAULT_SESSION_FILTERS,
   statusFilterLabel,
   sessionAvailabilityLabel,
   type SessionFilters,
@@ -3296,15 +3298,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     </View>
   );
   // On short screens the utility row must scroll, so it cannot consume the list's last usable pixels.
-  // One canonical readback of applied refinements. State and layout have their own selected controls.
+  // One canonical readback of applied refinements, wrapped in full. A state other than the default Last visited and the
+  // unrefined All is named here too, since a phone's state controls show it only as a glyph or under More; layout has its own control.
   const appliedParts = [...new Set([scopeLabel, work === "mine" ? "My work" : null,
+    view.status === DEFAULT_SESSION_FILTERS.status || view.status === ALL_STATUS_FILTER ? null : statusFilterLabel(view.status),
     assignmentPart && (assignment === "me" || assignment === "unknown") ? `${assignmentPart}${subjectLabel ? ` (${subjectLabel})` : ""}` : assignmentPart,
     view.query.trim() ? `“${view.query.trim().replace(/\s+/g, " ")}”` : null, task?.label,
     compact ? scopeChoiceLabel : null, !compact || streams === null ? null : streams.length ? streams.map((key) => workstreamOptions.find((option) => option.key === key)?.label ?? `Unavailable (${key})`).join(", ") : "No associations",
     compact && view.epic ? `${epicScopeLabel(view.epic)}${epicChoices.some((choice) => choice.key === epicScopeKey(view.epic)) ? "" : " (unavailable)"}` : null, includeArchived ? "Archived" : null, sortPart,
   ].filter((part): part is string => !!part))];
   const appliedSummary = appliedParts.length ? <Text testID="sessions-applied-filters" accessibilityLiveRegion="polite"
-    accessibilityLabel={`${appliedParts.join(". ")}. ${filterCount.label}`} numberOfLines={2}
+    accessibilityLabel={`${appliedParts.join(". ")}. ${filterCount.label}`}
     style={{ color: assignmentBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: 4 }}>{appliedParts.join(" • ")}</Text> : null;
   const layoutBar = <View testID="sessions-layout-bar" style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap", alignItems: compact ? "stretch" : "center", gap: 4 }}>
     {appliedSummary ? <View style={{ flexGrow: compact ? 0 : 1 }}>{appliedSummary}</View> : null}

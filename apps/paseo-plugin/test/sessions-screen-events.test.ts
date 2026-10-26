@@ -1261,7 +1261,9 @@ describe("SessionsScreen toolbar events", () => {
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
     expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
-    expect(header()).toEqual(["sessions-layout-bar", "sessions-view-controls"]);
+    // The folded toolbar's Idle stays said in the applied readback.
+    expect(header()).toEqual(["sessions-layout-bar", "sessions-applied-filters", "sessions-view-controls"]);
+    expect(textOf(findByTestID(harness.current(), "sessions-applied-filters"))).toBe("Idle");
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
@@ -2424,9 +2426,11 @@ describe("SessionsScreen mobile filter page", () => {
     closeMobileFilters();
     expect(testIDs(harness.current())).not.toContain("sessions-mobile-selected-filter");
     const bar = findByTestID(harness.current(), "sessions-layout-bar");
-    // Only what no visible control says: not the state chip, the work line or the layout control.
-    expect(textOf(findByTestID(bar, "sessions-applied-filters"))).toBe("ASMA-1 • “session”");
-    expect(findByTestID(bar, "sessions-applied-filters").props.accessibilityLabel).toBe(`ASMA-1. “session”. ${filters.label}`);
+    // The state by name, which a phone's toolbar shows only as a glyph; not the work line or the layout control.
+    expect(textOf(findByTestID(bar, "sessions-applied-filters"))).toBe("ASMA-1 • Idle • “session”");
+    expect(findByTestID(bar, "sessions-applied-filters").props.accessibilityLabel).toBe(`ASMA-1. Idle. “session”. ${filters.label}`);
+    // Every criterion is drawn in full: the readback wraps rather than ellipsizing at two lines.
+    expect(findByTestID(bar, "sessions-applied-filters").props.numberOfLines).toBeUndefined();
     expect(walk(bar).some((node) => node.type === SessionLayoutControl)).toBe(true);
     const clear = () => findByTestID(findByTestID(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent, "sessions-work"), "sessions-mobile-clear-filters");
     expect(clear().props).toMatchObject({ disabled: false, style: expect.objectContaining({ minHeight: 44 }) });

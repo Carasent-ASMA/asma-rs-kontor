@@ -339,7 +339,8 @@ function Toggle({ label, checked, onPress, colors, tall }: { label: string; chec
 /**
  * A labelled single choice as radio chips; an unavailable option stays visible with its reason.
  * - `wrap`: chips wrap under the label.
- * - `segmented`: equal parts of one row under the label, with `caption` explaining the chosen one (board B1).
+ * - `segmented`: parts filling one row under the label, each at least its label's width, with `caption` explaining the
+ *   chosen one (board B1). A part that no longer fits, as with large text, moves to the next row rather than being cut.
  *   `captionShown: false` keeps the caption's space, unseen and unspoken, for one that comes and goes.
  * - `inline`: the label, then the chips at its right on the same line (board B2).
  * `bare` leaves the label to the control that opened the choice.
@@ -354,7 +355,7 @@ export function Choices({ label, options, selected, onSelect, colors, tall, empt
   const inline = layout === "inline", parts = layout === "segmented";
   return <View accessibilityRole="radiogroup" accessibilityLabel={label} style={{ gap: 4, ...(inline ? { flexDirection: "row", alignItems: "center" } : {}) }}>
     {bare ? null : <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600", ...(inline ? { flex: 1 } : {}) }}>{label}</Text>}
-    {options.length ? <View style={{ flexDirection: "row", flexWrap: inline || parts ? "nowrap" : "wrap", gap: parts || dense ? 4 : 6 }}>
+    {options.length ? <View style={{ flexDirection: "row", flexWrap: inline ? "nowrap" : "wrap", gap: parts || dense ? 4 : 6 }}>
       {options.map((option) => {
         const checked = option.id === selected, disabled = !!option.disabled;
         return <Pressable key={option.id} accessibilityRole="radio" accessibilityLabel={option.note ? `${option.label}, ${option.note}` : option.label} accessibilityState={{ checked, disabled }} aria-checked={checked} aria-disabled={disabled}
@@ -379,7 +380,7 @@ export function Choices({ label, options, selected, onSelect, colors, tall, empt
             event.currentTarget.parentElement?.querySelectorAll('[role="radio"]')[options.findIndex((choice) => choice.id === next.id)]?.focus();
           } } : {})}
           disabled={disabled} onPress={() => onSelect(option.id)} style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 30, maxWidth: "100%", paddingHorizontal: dense ? 6 : 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, justifyContent: "center",
-            ...(parts ? { flex: 1, alignItems: "center" } : {}),
+            ...(parts ? { flexGrow: 1, flexShrink: 1, flexBasis: "auto", alignItems: "center" } : {}),
             borderColor: checked || focused ? colors.accent : colors.border, backgroundColor: checked ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
           <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: checked ? "600" : "400" }}>{option.label}</Text>
         </Pressable>;
