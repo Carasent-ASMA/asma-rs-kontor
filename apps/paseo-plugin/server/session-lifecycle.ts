@@ -660,6 +660,8 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
 type TakeoverClient = {
   agents: { list: LifecycleClient["agents"]["list"]; ref(id: string): Pick<ReturnType<PaseoApi["agents"]["ref"]>, "refresh" | "archive" | "send" | "timeline"> };
   workspaces: { ref(id: string): Pick<ReturnType<PaseoApi["workspaces"]["ref"]>, "refresh"> };
+  /** Optional bounded wake read; without it, empty child inventory does not imply wakes clear. */
+  schedules?: { forAgent(agentId: string): Promise<{ entries: unknown[] }> };
 };
 export type ProfileChoice = { bindingKey: string; chain: string };
 /** Read from the selected owner, never supplied by the review caller or inferred from labels. */
@@ -690,7 +692,7 @@ type Pinned = {
 };
 const TAKEOVER_LIMITS = [
   "Archive and creation are two host calls; no host primitive makes them one step.",
-  "Schedules and heartbeats are not readable through the plugin API; without a qualified continuity receipt, retirement is blocked.",
+  "Schedules and heartbeats are not readable through the plugin API unless the host exposes schedules.forAgent; without a qualified wake-continuity receipt, retirement is blocked.",
   "The successor's first message is the handoff summary, not the whole conversation.",
 ];
 const SUPERVISOR_LIMIT = "The successor keeps its supervisor as a label; the creation core sets no native parent link.";
@@ -720,7 +722,17 @@ function orchestratedOwnerBindingRevision(owner: Agent): string {
   const labels = owner.labels ?? {};
   return hash(JSON.stringify([labels.orchestration ?? "", seatBinding(labels).seat ?? "", parent(owner) ?? ""]));
 }
-/** Bounded direct continuity: child inventory substitutes for unreadable schedules; session-local refusal is persisted with the receipt. */
+async function readDirectWakeState(client: TakeoverClient, agentId: string): Promise<TakeoverContinuity["wakes"]> {
+  if (!client.schedules?.forAgent) return "unknown";
+  try {
+    const page = await client.schedules.forAgent(agentId);
+    return page.entries.length ? "preserved" : "clear";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Bounded direct continuity: session-local refusal is persisted; wakes clear only after a qualified schedule read. */
 export async function readTakeoverContinuity(client: TakeoverClient, root: string, agentId: string, requestId: string): Promise<TakeoverContinuity | null> {
   let agent: Agent | null | undefined;
   try { const found = await client.agents.ref(agentId).refresh(); agent = !found ? null : found.agent.id === agentId ? found.agent : undefined; }
@@ -735,7 +747,7 @@ export async function readTakeoverContinuity(client: TakeoverClient, root: strin
   } else if (adapter.adapter === "refused") return null;
   else {
     const managedChildren = childrenOf(agent, await inventory(client, "archive"));
-    const wakes: TakeoverContinuity["wakes"] = managedChildren.length ? "preserved" : "clear";
+    const wakes: TakeoverContinuity["wakes"] = managedChildren.length ? "preserved" : await readDirectWakeState(client, agentId);
     let owner: TakeoverContinuity["owner"] = null;
     if (adapter.basis === "orchestrated") {
       const supervisorId = adapter.owner;

@@ -106,16 +106,76 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
 }
 
 describe("direct takeover continuity", () => {
-  it("issues a bounded direct receipt, persists session-local refusal, and reaches ready without injected continuity", async () => {
+  it("issues a bounded direct receipt with wakes unknown when schedules are unreadable", async () => {
     const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", status: "error", lastError: "429 quota" }) });
     const requestId = "11111111-1111-4111-8111-111111111111";
     const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
-    expect(receipt).toMatchObject({ agentId: "agent-1", requestId, surface: "direct", wakes: "clear", owner: null });
+    expect(receipt).toMatchObject({ agentId: "agent-1", requestId, surface: "direct", wakes: "unknown", owner: null });
     const evidence = JSON.parse(await readFile(join(h.root, `takeover-evidence-${hash(`agent-1:${requestId}`)}.json`), "utf8"));
     expect(evidence.sessionRefusal?.kind).toBe("quota");
-    const readyHost = await host();
-    readyHost.deps.continuity = (agentId, id) => readTakeoverContinuity(readyHost.client as never, readyHost.root, agentId, id);
-    expect((await readyHost.ready()).state).toBe("ready");
+    const blocked = await host();
+    blocked.deps.continuity = (agentId, id) => readTakeoverContinuity(blocked.client as never, blocked.root, agentId, id);
+    expect((await blocked.ready()).state).toBe("unknown");
+  });
+
+  it("QA1-PR515-P2-01 production reader review then apply survives +1s observation refresh", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-10-25T09:00:00.000Z") });
+    try {
+      const h = await host();
+      (h.client as { schedules?: { forAgent: () => Promise<{ entries: unknown[] }> } }).schedules = { forAgent: async () => ({ entries: [] }) };
+      h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id);
+      const review = await h.ready();
+      expect(review.state).toBe("ready");
+      vi.advanceTimersByTime(1_100);
+      const applied = await h.apply(review);
+      expect(applied.state).toBe("succeeded");
+      expect(h.effects.archive).toEqual(["agent-1"]);
+      expect(h.effects.create).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses apply when continuity semantics drift between review and apply", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-10-25T09:00:00.000Z") });
+    try {
+      const h = await host();
+      let scheduleEntries: unknown[] = [];
+      (h.client as { schedules?: { forAgent: () => Promise<{ entries: unknown[] }> } }).schedules = { forAgent: async () => ({ entries: scheduleEntries }) };
+      h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id);
+      const review = await h.ready();
+      expect(review.state).toBe("ready");
+      scheduleEntries = [{ id: "hb-1" }];
+      const applied = await h.apply(review);
+      expect(applied.state).toBe("refused");
+      expect(h.effects.archive).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses apply when continuity observation is stale at apply", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-10-25T09:00:00.000Z") });
+    try {
+      const h = await host();
+      (h.client as { schedules?: { forAgent: () => Promise<{ entries: unknown[] }> } }).schedules = { forAgent: async () => ({ entries: [] }) };
+      let continuityReads = 0;
+      h.deps.continuity = async (agentId, id) => {
+        const receipt = await readTakeoverContinuity(h.client as never, h.root, agentId, id);
+        if (!receipt) return null;
+        continuityReads++;
+        if (continuityReads > 1) return { ...receipt, observedAt: "2026-10-25T08:58:00.000Z" };
+        return receipt;
+      };
+      const review = await h.ready();
+      expect(review.state).toBe("ready");
+      vi.advanceTimersByTime(1_100);
+      const applied = await h.apply(review);
+      expect(applied.state).toBe("refused");
+      expect(h.effects.archive).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
