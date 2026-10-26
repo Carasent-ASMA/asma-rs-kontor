@@ -3,9 +3,11 @@
  *
  * Two stores, chosen by where the console is running:
  *
- * * **Desktop** — Stronghold. The bearer is a realm credential read from a 0600
- *   file, and the desktop shell is the only place in this application with
- *   somewhere durable to put one.
+ * * **Desktop** — the operating system's credential store (Keychain, Credential
+ *   Manager, Secret Service), through the desktop shell's `credential_*`
+ *   commands. The bearer is a realm credential read from a 0600 file, and the
+ *   desktop shell is the only place in this application with somewhere durable
+ *   to put one.
  * * **Browser** — the base URL only, in `sessionStorage`, and the token nowhere
  *   at all. A bearer in web storage outlives the tab, is readable by anything
  *   that gets script into the page, and buys only the convenience of not
@@ -30,12 +32,8 @@ export interface CredentialStore {
 
 /** The key the base URL is remembered under. */
 const BASE_URL_KEY = 'kontor.endpoint.base_url'
-/** The Stronghold record the endpoint is kept in. */
-const VAULT_RECORD = 'kontor.endpoint'
-/** The Stronghold client this console owns. */
-const VAULT_CLIENT = 'kontor-console'
-/** The vault file, relative to the application's own data directory. */
-const VAULT_FILE = 'kontor-console.stronghold'
+/** The keychain profile this console keeps its endpoint under. */
+const PROFILE = 'default'
 
 /** Whether this console is running inside the desktop shell. */
 export async function inDesktop(): Promise<boolean> {
@@ -72,69 +70,93 @@ export function rememberedBaseUrl(): string {
   return globalThis.sessionStorage?.getItem(BASE_URL_KEY) ?? ''
 }
 
+/** Why the desktop shell could not use the OS credential store. */
+export type KeychainErrorKind = 'unavailable' | 'locked' | 'denied' | 'not_found' | 'invalid'
+
+/** How to connect anyway when the keychain refuses. */
+const SESSION_ONLY = 'untick “Keep this endpoint” to connect for this session only'
+
+const KEYCHAIN_MESSAGES: Record<KeychainErrorKind, string> = {
+  unavailable: `the OS keychain is not available on this machine; ${SESSION_ONLY}`,
+  locked: `the OS keychain is locked; unlock it and try again, or ${SESSION_ONLY}`,
+  denied: `access to the OS keychain was denied; ${SESSION_ONLY}`,
+  not_found: 'no endpoint is saved in the OS keychain',
+  invalid: `the saved endpoint is not valid; forget it, or ${SESSION_ONLY}`,
+}
+
+/** A refusal from the OS credential store. The message never carries a value. */
+export class KeychainError extends Error {
+  constructor(readonly kind: KeychainErrorKind) {
+    super(KEYCHAIN_MESSAGES[kind])
+    this.name = 'KeychainError'
+  }
+}
+
 /**
- * The desktop store: Stronghold, unlocked with the operator's vault password.
+ * The desktop store: the operating system's credential store.
  *
- * Every import is dynamic, so a browser build never loads the plugin and a test
- * never needs it present.
+ * There is no vault password, so `secret`'s value is never read. Its presence
+ * is: the form passes it only when the operator asked to keep the endpoint, and
+ * without it `save` keeps nothing. Every failure is thrown to the caller; there
+ * is no other store to fall back to.
+ *
+ * The import is dynamic, so a browser build never loads the Tauri API.
  */
-export const strongholdStore: CredentialStore = {
+export const keychainStore: CredentialStore = {
   durable: true,
 
-  async load(secret?: string): Promise<Endpoint | null> {
-    if (!secret) {
-      return null
+  async load(): Promise<Endpoint | null> {
+    try {
+      const saved = await keychain<unknown>('credential_load', {})
+      if (!isEndpoint(saved)) {
+        throw new KeychainError('invalid')
+      }
+      return saved
+    } catch (cause) {
+      if (cause instanceof KeychainError && cause.kind === 'not_found') {
+        return null
+      }
+      throw cause
     }
-    const { store } = await openVault(secret)
-    const record = await store.get(VAULT_RECORD)
-    if (!record) {
-      return null
-    }
-    const text = new TextDecoder().decode(new Uint8Array(record))
-    const parsed: unknown = JSON.parse(text)
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      typeof (parsed as Endpoint).baseUrl === 'string' &&
-      typeof (parsed as Endpoint).token === 'string'
-    ) {
-      return parsed as Endpoint
-    }
-    return null
   },
 
   async save(endpoint: Endpoint, secret?: string): Promise<void> {
-    if (!secret) {
+    if (secret === undefined) {
       return
     }
-    const { vault, store } = await openVault(secret)
-    const encoded = Array.from(new TextEncoder().encode(JSON.stringify(endpoint)))
-    await store.insert(VAULT_RECORD, encoded)
-    await vault.save()
+    await keychain<void>('credential_save', { baseUrl: endpoint.baseUrl, token: endpoint.token })
   },
 
-  async clear(secret?: string): Promise<void> {
-    if (!secret) {
-      return
+  async clear(): Promise<void> {
+    try {
+      await keychain<void>('credential_clear', {})
+    } catch (cause) {
+      if (!(cause instanceof KeychainError && cause.kind === 'not_found')) {
+        throw cause
+      }
     }
-    const { vault, store } = await openVault(secret)
-    await store.remove(VAULT_RECORD)
-    await vault.save()
   },
 }
 
-/** Open — or create — this console's vault and its one client. */
-async function openVault(secret: string) {
-  const [{ Stronghold }, { appDataDir }] = await Promise.all([
-    import('@tauri-apps/plugin-stronghold'),
-    import('@tauri-apps/api/path'),
-  ])
-  const vault = await Stronghold.load(`${await appDataDir()}/${VAULT_FILE}`, secret)
-  let client
+function isEndpoint(value: unknown): value is Endpoint {
+  const candidate = value as Partial<Endpoint> | null
+  return (
+    typeof candidate?.baseUrl === 'string' &&
+    candidate.baseUrl !== '' &&
+    typeof candidate.token === 'string' &&
+    candidate.token !== ''
+  )
+}
+
+/** Call one `credential_*` command, turning its refusal into a `KeychainError`. */
+async function keychain<T>(command: string, args: Record<string, string>): Promise<T> {
+  const { invoke } = await import('@tauri-apps/api/core')
   try {
-    client = await vault.loadClient(VAULT_CLIENT)
-  } catch {
-    client = await vault.createClient(VAULT_CLIENT)
+    return await invoke<T>(command, { profile: PROFILE, ...args })
+  } catch (cause) {
+    const kind = (cause as { kind?: unknown } | null)?.kind
+    throw new KeychainError(
+      typeof kind === 'string' && Object.hasOwn(KEYCHAIN_MESSAGES, kind) ? (kind as KeychainErrorKind) : 'unavailable',
+    )
   }
-  return { vault, store: client.getStore() }
 }
