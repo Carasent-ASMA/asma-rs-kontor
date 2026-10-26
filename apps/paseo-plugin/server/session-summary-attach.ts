@@ -123,6 +123,15 @@ function destinationBusy(agent: Agent): string | null {
   return null;
 }
 
+function destinationAttachRefusal(agent: Agent | null, pin: SummaryPin, revision: SummaryRevision, destinationAgentId: string): AttachOutcome | null {
+  if (!agent) return refusedOutcome(pin, destinationAgentId, `No session ${destinationAgentId} is on this host; nothing was placed.`);
+  if (agent.archivedAt) return refusedOutcome(pin, agent.id, `“${agent.title ?? agent.id}” is archived, so it has no draft. Nothing was drafted.`);
+  if (agent.id === revision.sourceAgentId) return refusedOutcome(pin, agent.id, "A summary goes to another seat, not back to its own source. Nothing was drafted.");
+  const busy = destinationBusy(agent);
+  if (busy) return refusedOutcome(pin, agent.id, busy);
+  return null;
+}
+
 export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string, attachRoot: string) {
   async function exact(agentId: string): Promise<Agent | null> {
     const found = await paseo.agents.ref(agentId).refresh();
@@ -142,10 +151,7 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
     try { revision = await readPinnedSummary(summaryRoot, pin); }
     catch { return refusedOutcome(pin, pin.destinationAgentId, `No saved summary ${pin.summaryId} r${pin.revision} is stored on this host; nothing was placed.`); }
 
-    const destination = await exact(pin.destinationAgentId);
-    if (!destination) return refusedOutcome(pin, pin.destinationAgentId, `No session ${pin.destinationAgentId} is on this host; nothing was placed.`);
-    if (destination.archivedAt) return refusedOutcome(pin, destination.id, `“${destination.title ?? destination.id}” is archived, so it has no draft. Nothing was drafted.`);
-    if (destination.id === revision.sourceAgentId) return refusedOutcome(pin, destination.id, "A summary goes to another seat, not back to its own source. Nothing was drafted.");
+    if (pin.destinationAgentId === revision.sourceAgentId) return refusedOutcome(pin, pin.destinationAgentId, "A summary goes to another seat, not back to its own source. Nothing was drafted.");
 
     return withSourceStoreLock(attachRoot, pin.destinationAgentId, async () => {
       const key = placementKey(pin, pin.destinationAgentId);
@@ -153,17 +159,21 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       const prior = state.placements[key];
       if (prior) return prior;
 
+      let destination = await exact(pin.destinationAgentId);
+      let refusal = destinationAttachRefusal(destination, pin, revision, pin.destinationAgentId);
+      if (refusal) return refusal;
+
       let hostDraft: { summaryId: string; revision: number } | null;
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
-        return unknownOutcome(pin, destination.id, `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`);
+        return unknownOutcome(pin, destination!.id, `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`);
       }
 
       if (hostDraft && !pinMatches(hostDraft, pin)) {
-        return refusedOutcome(pin, destination.id, `“${destination.title ?? destination.id}” already has a draft (r${hostDraft.revision} of another summary). Attach never replaces a draft; send or clear it there first. Nothing was drafted.`);
+        return refusedOutcome(pin, destination!.id, `“${destination!.title ?? destination!.id}” already has a draft (r${hostDraft.revision} of another summary). Attach never replaces a draft; send or clear it there first. Nothing was drafted.`);
       }
       if (pinMatches(hostDraft, pin)) {
-        const outcome = draftedOutcome(revision, destination, `r${revision.revision} is already in the draft of “${destination.title ?? destination.id}”; nothing changed and nothing was sent.`);
+        const outcome = draftedOutcome(revision, destination!, `r${revision.revision} is already in the draft of “${destination!.title ?? destination!.id}”; nothing changed and nothing was sent.`);
         state.placements[key] = outcome;
         delete state.intents[key];
         await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
@@ -172,30 +182,40 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
 
       const pending = state.intents[key];
       if (pending) {
-        return unknownOutcome(pin, destination.id, "An attach intent is recorded but the host draft does not show this summary revision yet; Kontor will not place it again. Check the destination's draft before retrying.");
+        return unknownOutcome(pin, destination!.id, "An attach intent is recorded but the host draft does not show this summary revision yet; Kontor will not place it again. Check the destination's draft before retrying.");
       }
 
-      const busy = destinationBusy(destination);
-      if (busy) return refusedOutcome(pin, destination.id, busy);
+      destination = await exact(pin.destinationAgentId);
+      refusal = destinationAttachRefusal(destination, pin, revision, pin.destinationAgentId);
+      if (refusal) return refusal;
 
       const intent: AttachIntent = { intentId: randomUUID(), placementKey: key, summaryId: pin.summaryId, revision: pin.revision, destinationAgentId: pin.destinationAgentId, requestedAt: new Date().toISOString() };
       state = { ...state, intents: { ...state.intents, [key]: intent } };
       await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
 
+      destination = await exact(pin.destinationAgentId);
+      refusal = destinationAttachRefusal(destination, pin, revision, pin.destinationAgentId);
+      if (refusal) {
+        state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
+        delete state.intents[key];
+        await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
+        return refusal;
+      }
+
       try { await placer.placeDraft(pin.destinationAgentId, revision); }
       catch (error) {
-        return unknownOutcome(pin, destination.id, `The host did not confirm draft placement (${error instanceof Error ? error.message : String(error)}). The attach intent stays recorded; Kontor will not place it again until the host draft read shows this revision.`);
+        return unknownOutcome(pin, destination!.id, `The host did not confirm draft placement (${error instanceof Error ? error.message : String(error)}). The attach intent stays recorded; Kontor will not place it again until the host draft read shows this revision.`);
       }
 
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
-        return unknownOutcome(pin, destination.id, `Draft placement was sent but the host draft could not be read back (${error instanceof Error ? error.message : String(error)}). Check the destination's draft; Kontor will not place it again automatically.`);
+        return unknownOutcome(pin, destination!.id, `Draft placement was sent but the host draft could not be read back (${error instanceof Error ? error.message : String(error)}). Check the destination's draft; Kontor will not place it again automatically.`);
       }
       if (!pinMatches(hostDraft, pin)) {
-        return unknownOutcome(pin, destination.id, "Draft placement was sent but the host draft does not show this summary revision yet. Check the destination's draft; Kontor will not place it again automatically.");
+        return unknownOutcome(pin, destination!.id, "Draft placement was sent but the host draft does not show this summary revision yet. Check the destination's draft; Kontor will not place it again automatically.");
       }
 
-      const outcome = draftedOutcome(revision, destination, `r${revision.revision} is in the draft of “${destination.title ?? destination.id}” for review. Nothing was sent and nobody else owns it.`);
+      const outcome = draftedOutcome(revision, destination!, `r${revision.revision} is in the draft of “${destination!.title ?? destination!.id}” for review. Nothing was sent and nobody else owns it.`);
       state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
       state.placements[key] = outcome;
       delete state.intents[key];

@@ -522,7 +522,10 @@ describe("new session create", () => {
       cutoff: "2026-10-25T10:00:00Z", savedAt: "2026-10-25T10:05:00Z", sections: { task: "Saved task", decisions: "", currentState: "", nextStep: "" }, text: "Saved task\n\nfrom store" };
     await writePinnedSummary(s.summaryRoot, revision);
     const verified = await s.service.create(request({ sourceAgentId: null, sourceSummary: { summaryId: revision.summaryId, revision: 2 } }));
-    expect(verified).toMatchObject({ state: "verified", message: expect.stringContaining("Saved summary r2 of agent-source") });
+    expect(verified).toMatchObject({
+      state: "verified",
+      message: "Created and verified: the request pinned saved summary r2 of agent-source for the first task; the host readback does not expose the bootstrap content.",
+    });
     expect(s.create.mock.calls[0]![0].prompt).toContain("Saved task");
     expect(s.timeline).not.toHaveBeenCalled();
     const refused = await s.service.create(request({ sourceSummary: { summaryId: revision.summaryId, revision: 9 } }));

@@ -197,6 +197,44 @@ describe("summary attach with qualified SDK", () => {
     expect(placeCalls).toBe(1);
   });
 
+  it("refuses when the destination is archived after the lock starts and never records intent or place", async () => {
+    const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
+    const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);
+    const drafts = new Map<string, { summaryId: string; revision: number; text: string; sourceAgentId: string }>();
+    const revision = await seedSummary(summaryRoot, SOURCE, "Race body");
+    let refreshCalls = 0;
+    const archived = agent(DEST.id, { archivedAt: "2026-10-20T09:00:00Z", title: "Billing" });
+    const paseo = {
+      agents: {
+        ref: (id: string) => ({
+          refresh: async () => {
+            refreshCalls++;
+            if (id !== DEST.id) return null;
+            if (refreshCalls === 1) return { agent: DEST, project: null };
+            return { agent: archived, project: null };
+          },
+        }),
+        generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
+        placeSummaryDraft: async (destinationAgentId: string, draft: { summaryId: string; revision: number; text: string; sourceAgentId: string }) => {
+          drafts.set(destinationAgentId, draft);
+        },
+        readSummaryDraft: async () => null,
+      },
+    };
+    const placed: unknown[] = [];
+    paseo.agents.placeSummaryDraft = async (destinationAgentId: string, draft: { summaryId: string; revision: number; text: string; sourceAgentId: string }) => {
+      placed.push({ destinationAgentId, draft });
+      drafts.set(destinationAgentId, draft);
+    };
+    const service = createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
+    const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
+    const outcome = await service.attach(pin);
+    expect(outcome).toMatchObject({ state: "refused", message: expect.stringMatching(/archived/) });
+    expect(placed).toHaveLength(0);
+    const state = await readDestinationAttachState(attachRoot, DEST.id);
+    expect(state.intents).toEqual({});
+  });
+
   it("concurrent attaches to one destination serialize without splitting drafts", async () => {
     const summaryRoot = await mkdtemp(join(tmpdir(), "kontor-attach-")); dirs.push(summaryRoot);
     const attachRoot = await mkdtemp(join(tmpdir(), "kontor-attach-meta-")); dirs.push(attachRoot);

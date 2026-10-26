@@ -462,7 +462,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     if (!differences.length && pin.success) {
       try {
         const revision = await readPinnedSummary(summaryRoot, pin.data);
-        message = `Created and verified: Saved summary r${revision.revision} of ${revision.sourceAgentId} is attached before the first task.`;
+        message = `Created and verified: the request pinned saved summary r${revision.revision} of ${revision.sourceAgentId} for the first task; the host readback does not expose the bootstrap content.`;
       } catch { /* keep generic verified message */ }
     }
     return differences.length
