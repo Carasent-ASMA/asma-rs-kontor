@@ -156,7 +156,7 @@ async function keychain<T>(command: string, args: Record<string, string>): Promi
   } catch (cause) {
     const kind = (cause as { kind?: unknown } | null)?.kind
     throw new KeychainError(
-      typeof kind === 'string' && kind in KEYCHAIN_MESSAGES ? (kind as KeychainErrorKind) : 'unavailable',
+      typeof kind === 'string' && Object.hasOwn(KEYCHAIN_MESSAGES, kind) ? (kind as KeychainErrorKind) : 'unavailable',
     )
   }
 }

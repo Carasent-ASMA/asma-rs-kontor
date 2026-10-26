@@ -136,12 +136,16 @@ describe('keychainStore', () => {
     expect((error as KeychainError).message).not.toContain(ONE.token)
   })
 
-  it('reports an unknown refusal kind as unavailable', async () => {
-    mockShell({ kind: 'exploded' })
-    const error = await keychainStore.load().catch((cause: unknown) => cause)
-    expect(error).toBeInstanceOf(KeychainError)
-    expect((error as KeychainError).kind).toBe('unavailable')
-  })
+  it.each(['exploded', 'toString', 'constructor', 'hasOwnProperty', '__proto__'])(
+    'reports an unknown or inherited refusal kind (%s) as unavailable',
+    async (kind) => {
+      mockShell({ kind })
+      const error = await keychainStore.load().catch((cause: unknown) => cause)
+      expect(error).toBeInstanceOf(KeychainError)
+      expect((error as KeychainError).kind).toBe('unavailable')
+      expect((error as KeychainError).message).toContain('the OS keychain is not available')
+    },
+  )
 })
 
 describe('browserStore', () => {
