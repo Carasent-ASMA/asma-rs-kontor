@@ -1,7 +1,7 @@
 import { createPaseoClient, type PaseoAgent, type PaseoAgentListResult } from "@getpaseo/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSessionReadActions, sessionReadTarget } from "../client/session-read";
-import { toDirectoryEntry } from "../client/session-directory";
+import { DIRECTORY_REQUEST_TIMEOUT_MS, toDirectoryEntry } from "../client/session-directory";
 
 function agent(id: string, patch: Partial<PaseoAgent> = {}): PaseoAgent {
   return {
@@ -90,13 +90,16 @@ describe("native read acknowledgement", () => {
     const s = setup([agent("active"), agent("archived", { archivedAt: "2026-01-02T00:00:00.000Z" }), agent("input", { attentionReason: "permission" })]);
     s.list.mockResolvedValueOnce(page([s.native.get("active")!], "next"))
       .mockResolvedValueOnce(page([s.native.get("archived")!, s.native.get("input")!]));
-    const preview = await s.actions.prepareHost();
+    const signal = new AbortController().signal;
+    const preview = await s.actions.prepareHost(signal);
     expect(preview).toMatchObject({ hostId: "host-a", pages: 2, needsInputCount: 1, recordCount: 3 });
     expect(preview.targets.map(({ id }) => id)).toEqual(["active", "archived"]);
     expect(s.list.mock.calls.map(([options]) => options)).toEqual([
-      { filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200 } },
-      { filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200, cursor: "next" } },
+      { filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200 }, timeout: DIRECTORY_REQUEST_TIMEOUT_MS, signal },
+      { filter: { includeArchived: true, includeBackground: true, includeUnavailablePersisted: true }, sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200, cursor: "next" }, timeout: DIRECTORY_REQUEST_TIMEOUT_MS, signal },
     ]);
+    expect(s.list.mock.calls[0]?.[0]?.signal).toBe(signal);
+    expect(s.list.mock.calls[1]?.[0]?.signal).toBe(signal);
     const outcomes = [];
     for await (const item of s.actions.markHost(preview)) outcomes.push(item.outcome);
     expect(outcomes).toEqual(["seen", "seen"]);
