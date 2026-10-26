@@ -232,6 +232,18 @@ const takeoverSpecPin = (spec: { effectValidity?: unknown }) => {
   return rest;
 };
 
+/** Continuity facts apply pins; observation time is freshness-only at assess/apply. */
+export type TakeoverContinuitySemantics = Pick<
+  import("./session-lifecycle.js").TakeoverContinuity,
+  "agentId" | "requestId" | "revision" | "surface" | "wakes" | "owner"
+>;
+export function takeoverContinuitySemantics(receipt: TakeoverContinuitySemantics): TakeoverContinuitySemantics {
+  return { agentId: receipt.agentId, requestId: receipt.requestId, revision: receipt.revision, surface: receipt.surface, wakes: receipt.wakes, owner: receipt.owner };
+}
+export function takeoverContinuitySemanticsMatch(left: TakeoverContinuitySemantics, right: TakeoverContinuitySemantics): boolean {
+  return isDeepStrictEqual(takeoverContinuitySemantics(left), takeoverContinuitySemantics(right));
+}
+
 /** Apply recomputes pins; transport-only evidence refresh is allowed when semantic identity and freshness hold. */
 export function takeoverPinnedMatches(reviewed: {
   predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
@@ -244,7 +256,8 @@ export function takeoverPinnedMatches(reviewed: {
 }): boolean {
   if (reviewed.predecessor !== current.predecessor || reviewed.bindingKey !== current.bindingKey) return false;
   if (reviewed.created !== current.created || reviewed.ownerRevision !== current.ownerRevision) return false;
-  if (!isDeepStrictEqual(reviewed.owner, current.owner) || !isDeepStrictEqual(reviewed.continuity, current.continuity)) return false;
+  if (!isDeepStrictEqual(reviewed.owner, current.owner)) return false;
+  if (!takeoverContinuitySemanticsMatch(reviewed.continuity as TakeoverContinuitySemantics, current.continuity as TakeoverContinuitySemantics)) return false;
   if (!isDeepStrictEqual(reviewed.route.provenance, current.route.provenance)) return false;
   if (!isDeepStrictEqual(reviewed.route.selected, current.route.selected)) return false;
   if (!isDeepStrictEqual(reviewed.route.considered, current.route.considered)) return false;

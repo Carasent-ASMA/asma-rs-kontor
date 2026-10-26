@@ -321,4 +321,20 @@ describe("takeover pinned equivalence", () => {
     expect(takeoverPinnedMatches(reviewed, pin("evidence-2"))).toBe(false);
     expect(takeoverPinnedMatches(reviewed, pin("evidence-1", "codex-b"))).toBe(false);
   });
+
+  it("accepts a fresh continuity observation when semantic identity is unchanged", () => {
+    const reviewed = pin("evidence-1");
+    const current = pin("evidence-1");
+    current.continuity = { ...current.continuity, observedAt: "2026-10-25T09:00:01.100Z" };
+    expect(takeoverPinnedMatches(reviewed, current)).toBe(true);
+  });
+
+  it("refuses continuity semantic drift including wakes", () => {
+    const reviewed = pin("evidence-1");
+    const current = pin("evidence-1");
+    expect(takeoverPinnedMatches(reviewed, {
+      ...current,
+      continuity: { agentId: "a", requestId: REQUEST, revision: "r2", observedAt: "2026-10-25T09:00:00.000Z", surface: "direct", wakes: "preserved", owner: null },
+    })).toBe(false);
+  });
 });

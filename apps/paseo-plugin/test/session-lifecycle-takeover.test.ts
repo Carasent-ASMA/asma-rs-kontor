@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
-import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, type TakeoverDeps } from "../server/session-lifecycle";
+import { readFile } from "node:fs/promises";
+import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, readTakeoverContinuity, type TakeoverDeps } from "../server/session-lifecycle";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
@@ -103,6 +104,157 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const fence = () => readdir(root).then((names) => names.filter((name) => name.startsWith("intent-")));
   return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
 }
+
+describe("direct takeover continuity", () => {
+  type Host = Awaited<ReturnType<typeof host>>;
+  const productionContinuity = (h: Host, schedules?: { forAgent: (agentId: string) => Promise<{ entries: unknown[] }> }) => {
+    if (schedules) (h.client as { schedules?: typeof schedules }).schedules = schedules;
+    h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id);
+    return h;
+  };
+  const noRetirementEffects = (h: Host) => {
+    expect(h.effects.archive).toHaveLength(0);
+    expect(h.effects.create).toHaveLength(0);
+  };
+
+  describe("AUD schedule wake read shape", () => {
+    const requestId = "33333333-3333-4333-8333-333333333333";
+
+    it("qualified empty array entries yields wakes clear on the production reader", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [] }) });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("clear");
+    });
+
+    it("non-empty array entries yields wakes preserved on the production reader", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [{ id: "hb-1" }] }) });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("preserved");
+    });
+
+    it.each([
+      ["object entries", { entries: {} }],
+      ["string entries", { entries: "" }],
+      ["missing entries", {}],
+    ] as const)("malformed schedules.forAgent (%s) yields unknown and blocks retirement", async (_label, page) => {
+      const h = productionContinuity(await host(), { forAgent: async () => page as { entries: unknown[] } });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      noRetirementEffects(h);
+    });
+
+    it("null schedules.forAgent page yields unknown and blocks retirement", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => null as unknown as { entries: unknown[] } });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      noRetirementEffects(h);
+    });
+
+    it("schedules.forAgent throw yields unknown and blocks retirement", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => { throw new Error("unreadable"); } });
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      noRetirementEffects(h);
+    });
+  });
+
+  describe("AUD-8641-S3-02 unsupported global wake reader", () => {
+    it("production reader records wakes unknown when schedules.forAgent is absent", async () => {
+      const h = await host({ predecessor: agent("agent-1", { provider: "claude-a", status: "error", lastError: "429 quota" }) });
+      const requestId = "11111111-1111-4111-8111-111111111111";
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+      expect(receipt).toMatchObject({ agentId: "agent-1", requestId, surface: "direct", wakes: "unknown", owner: null });
+      const evidence = JSON.parse(await readFile(join(h.root, `takeover-evidence-${hash(`agent-1:${requestId}`)}.json`), "utf8"));
+      expect(evidence.sessionRefusal?.kind).toBe("quota");
+    });
+
+    it("createTakeoverService assess blocks retirement with unknown and zero host effects", async () => {
+      const h = productionContinuity(await host());
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      expect(review.message).toMatch(/wake-continuity receipt/i);
+      expect(review.digest).toBeNull();
+      noRetirementEffects(h);
+    });
+  });
+
+  describe("AUD-8641-S3-01 continuity semantic pin", () => {
+    it("production reader review then apply survives +1ms observation refresh on the service path", async () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-25T09:00:00.000Z") });
+      try {
+        const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [] }) });
+        const review = await h.ready();
+        expect(review.state).toBe("ready");
+        expect(review.digest).toMatch(/^[a-f0-9]{64}$/);
+        vi.advanceTimersByTime(1);
+        const applied = await h.apply(review);
+        expect(applied.state).toBe("succeeded");
+        expect(h.effects.archive).toEqual(["agent-1"]);
+        expect(h.effects.create).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("refuses apply when continuity semantics drift between review and apply", async () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-25T09:00:00.000Z") });
+      try {
+        let scheduleEntries: unknown[] = [];
+        const h = productionContinuity(await host(), { forAgent: async () => ({ entries: scheduleEntries }) });
+        const review = await h.ready();
+        expect(review.state).toBe("ready");
+        scheduleEntries = [{ id: "hb-1" }];
+        const applied = await h.apply(review);
+        expect(applied.state).toBe("refused");
+        expect(h.effects.archive).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("refuses apply when continuity observation is stale at apply", async () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-25T09:00:00.000Z") });
+      try {
+        let continuityReads = 0;
+        const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [] }) });
+        const reader = h.deps.continuity!;
+        h.deps.continuity = async (agentId, id) => {
+          const receipt = await reader(agentId, id);
+          if (!receipt) return null;
+          continuityReads++;
+          if (continuityReads > 1) return { ...receipt, observedAt: "2026-10-25T08:58:00.000Z" };
+          return receipt;
+        };
+        const review = await h.ready();
+        expect(review.state).toBe("ready");
+        vi.advanceTimersByTime(1);
+        const applied = await h.apply(review);
+        expect(applied.state).toBe("refused");
+        expect(h.effects.archive).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("refuses takeover when a visible managed child is present (wakes preserved on reader)", async () => {
+    const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
+    const h = productionContinuity(await host({ others: [child] }));
+    const requestId = "22222222-2222-4222-8222-222222222222";
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+    expect(receipt?.wakes).toBe("preserved");
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state).toBe("refused");
+    expect(review.message).toMatch(/active child sessions/i);
+    noRetirementEffects(h);
+  });
+});
 
 describe("takeover review", () => {
   it("accepts only the closed review and confirmation inputs, never caller-built evidence or commands", () => {
