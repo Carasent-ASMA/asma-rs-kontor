@@ -10,7 +10,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import { Connect } from './Connect'
-import { KeychainError, keychainStore } from './credentials'
+import { browserStore, KeychainError, keychainStore, rememberedBaseUrl } from './credentials'
 import desktopCommands from '../../../desktop/src-tauri/src/lib.rs?raw'
 
 const { invoke, isTauri } = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(() => true) }))
@@ -134,6 +134,29 @@ describe('keychainStore', () => {
     expect(error).toBeInstanceOf(KeychainError)
     expect((error as KeychainError).kind).toBe('unavailable')
     expect((error as KeychainError).message).not.toContain(ONE.token)
+  })
+
+  it('reports an unknown refusal kind as unavailable', async () => {
+    mockShell({ kind: 'exploded' })
+    const error = await keychainStore.load().catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(KeychainError)
+    expect((error as KeychainError).kind).toBe('unavailable')
+  })
+})
+
+describe('browserStore', () => {
+  it('keeps the base URL for this session only, never the token', async () => {
+    await browserStore.save(ONE)
+    expect(webStorageWrites).toHaveBeenCalledTimes(1)
+    expect(webStorageWrites.mock.calls.flat()).not.toContain(ONE.token)
+    expect(rememberedBaseUrl()).toBe(ONE.baseUrl)
+    expect(localStorage.length).toBe(0)
+    expect(await browserStore.load()).toBeNull()
+
+    await browserStore.clear()
+    expect(rememberedBaseUrl()).toBe('')
+    // The one write above is this test's own; the file-wide guard covers the rest.
+    webStorageWrites.mockClear()
   })
 })
 

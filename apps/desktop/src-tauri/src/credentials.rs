@@ -461,6 +461,8 @@ mod tests {
             ("ftp://127.0.0.1", "synthetic"),
             ("http://", "synthetic"),
             ("http://user:pw@127.0.0.1", "synthetic"),
+            ("http://user@127.0.0.1", "synthetic"),
+            ("http://:pw@127.0.0.1", "synthetic"),
             (long_url.as_str(), "synthetic"),
             ("http://127.0.0.1:7717", ""),
             ("http://127.0.0.1:7717", " "),
