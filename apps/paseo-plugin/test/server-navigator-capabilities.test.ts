@@ -9,9 +9,14 @@ describe("installed navigator capabilities", () => {
   it("qualifies takeover on the installed creator/verifier path and names wake API gap when schedules are absent", () => {
     const caps = readInstalledNavigatorCapabilities(paseo);
     expect(caps.takeover).toEqual({ supported: true, limits: expect.arrayContaining([...TAKEOVER_LIMITS, expect.stringMatching(/schedules\.forAgent/)]) });
-    expect(caps.takeoverRoute.supported).toBe(true);
+    expect(caps.takeoverRoute).toEqual(UNSUPPORTED.takeoverRoute);
     expect(caps.summaries).toEqual(UNSUPPORTED.summaries);
     expect(caps.takeoverBulk).toEqual(UNSUPPORTED.takeoverBulk);
+  });
+
+  it("does not advertise model override for takeover on the installed host", () => {
+    expect(readInstalledNavigatorCapabilities(paseo).takeoverRoute).toEqual(UNSUPPORTED.takeoverRoute);
+    expect(readInstalledNavigatorCapabilities(paseo).takeover.supported).toBe(true);
   });
 
   it("omits wake API gap when schedules.forAgent is present on the SDK", () => {
