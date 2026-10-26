@@ -341,6 +341,7 @@ describe("New lead form", () => {
     const f = mount(NewLsaForm, formProps({ sources: [source] }));
     press(f.tree.find((node) => node.type === Action && node.props.label === "Choose source session")); f.render();
     expect(f.tree[0]!.type).toBe(LeadSourcePicker);
+    expect(f.tree[0]!.props.height).toBeUndefined();
     (f.tree[0]!.props.onUse as (choice: { entry: typeof source; summary: null }) => void)({ entry: source, summary: null }); f.render();
     (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
     expect(text(f.tree)).not.toContain("Source summary is attached");
@@ -710,6 +711,133 @@ describe("Choose source", () => {
     expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
     press(byTestId(p.tree, "kontor-lead-source-use"));
     expect(onUse).toHaveBeenCalledExactlyOnceWith({ entry: sources[0], summary: null });
+  });
+
+  /** Lays the parts that stay put out as drawn: one title line, the subtitle, the search and the actions. */
+  const draw = (p: { tree: Element[]; render: () => void }, sizes: { line: number; about: number; search: number; actions: number }) => {
+    const lay = (node: Element | undefined, height: number) => (node!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 300, height } } });
+    lay(p.tree.find((node) => node.props.accessibilityRole === "header"), sizes.line);
+    lay(p.tree.find((node) => node.type === "Text" && node.props.onLayout && node.props.accessibilityRole !== "header"), sizes.about);
+    lay(byTestId(p.tree, "kontor-lead-source-search"), sizes.search);
+    lay(p.tree.find((node) => node.type === "View" && node.props.onLayout && byTestId(elements(node.props.children as ReactNode), "kontor-lead-source-use")), sizes.actions);
+    p.render();
+  };
+  const DRAWN = { line: 17, about: 17, search: 44, actions: 51 };
+
+  it("keeps a given height, as in the host's popover: only the rows and a long summary scroll, the actions never", async () => {
+    const height = vi.fn(() => 300);
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height });
+    draw(p, DRAWN);
+    // The host's own title is a line of the same 14-point text, so the height follows the title's line as drawn.
+    expect(height).toHaveBeenLastCalledWith(17);
+    press(byTestId(p.tree, "kontor-lead-source-agent-src")); p.render(); await settle(); p.render();
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ height: 300, gap: 8, paddingVertical: 6 });
+    expect(text(p.tree)).toContain("Bring context from another session");
+    const [list, summary, ...more] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(more).toEqual([]);
+    expect(list!.props).toMatchObject({ testID: "kontor-lead-source-list", style: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 } });
+    // 300 less spacing, title, subtitle, search and actions leaves 135 for the rows and a summary: it takes up to half.
+    expect(summary!.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1, maxHeight: 63 });
+    expect(byTestId(elements(summary!.props.children as ReactNode), "kontor-lead-source-summary")).toBeDefined();
+    for (const scroll of [list!, summary!]) for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) expect(byTestId(elements(scroll.props.children as ReactNode), id)).toBeUndefined();
+    expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
+  });
+
+  it("tightens where the rows would keep less than a row beside a two-line summary: the summary opens under its row", async () => {
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height: () => 170 });
+    draw(p, DRAWN);
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ height: 170, gap: 4, paddingVertical: 0 });
+    expect(text(p.tree)).not.toContain("Bring context from another session");
+    press(byTestId(p.tree, "kontor-lead-source-agent-src")); p.render(); await settle(); p.render();
+    // One scroll holds the rows and, under the picked one, its summary; search and actions stay outside it.
+    const [list, ...more] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(more).toEqual([]);
+    const picked = elements(list!.props.children as ReactNode).find((node) => node.type === "View" && node.props.onLayout && byTestId(elements(node.props.children as ReactNode), "kontor-lead-source-agent-src"))!;
+    expect(byTestId(elements(picked.props.children as ReactNode), "kontor-lead-source-summary")).toBeDefined();
+    for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) expect(byTestId(elements(list!.props.children as ReactNode), id)).toBeUndefined();
+    expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
+    // A search that hides the picked row keeps its summary in the same scroll, after the rows it found: they keep the room.
+    (byTestId(p.tree, "kontor-lead-source-search")!.props.onChangeText as (value: string) => void)("Billing"); p.render();
+    const [found, ...boxes] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(boxes).toEqual([]);
+    const [group, after, ...rest] = [found!.props.children].flat().filter(Boolean) as Element[];
+    expect(group!.props.role).toBe("radiogroup");
+    expect(byTestId(elements(group!.props.children as ReactNode), "kontor-lead-source-agent-other")).toBeDefined();
+    expect(byTestId(elements(group!.props.children as ReactNode), "kontor-lead-source-summary")).toBeUndefined();
+    expect(byTestId(elements(after!.props.children as ReactNode), "kontor-lead-source-summary")).toBeDefined();
+    expect(rest).toEqual([]);
+  });
+
+  it("scrolls its title with the rows where even tight they would keep less than a row: search and actions stay", async () => {
+    const titled = (nodes: Element[]) => nodes.filter((node) => node.props.accessibilityRole === "header");
+    // 168 less the tight spacing, title, search and actions leaves the rows a row's 44; one less scrolls the title.
+    let height = 168;
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height: () => height });
+    draw(p, DRAWN);
+    expect(titled(elements(byTestId(p.tree, "kontor-lead-source-list")!.props.children as ReactNode))).toEqual([]);
+    height = 167; p.render();
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ height: 167, gap: 4, paddingVertical: 0 });
+    const [list, ...more] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(more).toEqual([]);
+    const [title, ...again] = titled(elements(list!.props.children as ReactNode));
+    expect(again).toEqual([]);
+    expect(text([title!])).toBe("Choose source session");
+    expect(title!.props.onLayout).toBeUndefined();
+    // An unseen copy keeps the title's place above the search, hidden from assistive technology, and still measures its line.
+    const copy = p.tree.find((node) => node.type === "View" && node.props["aria-hidden"] === true)!;
+    expect(copy.props).toMatchObject({ accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants", pointerEvents: "none", style: { position: "absolute", opacity: 0 } });
+    const [measured, ...others] = titled(elements(copy.props.children as ReactNode));
+    expect(others).toEqual([]);
+    expect(measured!.props.onLayout).toBeInstanceOf(Function);
+    expect(titled(p.tree).filter((node) => node !== title && node !== measured)).toEqual([]);
+    for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) expect(byTestId(elements(list!.props.children as ReactNode), id)).toBeUndefined();
+    expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
+    // The picked row stays in view below the title: its place counts from the rows' own place in the scroll.
+    const scrollTo = vi.fn();
+    (list!.props.ref as { current: unknown }).current = { scrollTo };
+    const group = p.tree.find((node) => node.props.role === "radiogroup")!;
+    (group.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 21, width: 300, height: 91 } } });
+    press(byTestId(p.tree, "kontor-lead-source-agent-other")); p.render(); await settle(); p.render();
+    (p.tree.find((node) => node.type === "View" && [node.props.children].flat().some((child) => (child as Element | null)?.props?.testID === "kontor-lead-source-agent-other"))!
+      .props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 46, width: 300, height: 45 } } });
+    (byTestId(p.tree, "kontor-lead-source-list")!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 30 } } });
+    expect(scrollTo).toHaveBeenLastCalledWith({ y: 67, animated: false });
+  });
+
+  it("keeps the picked row in the rows' view when the summary takes room from them or opens under it", async () => {
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height: () => 300 });
+    const scrollTo = vi.fn();
+    (byTestId(p.tree, "kontor-lead-source-list")!.props.ref as { current: unknown }).current = { scrollTo };
+    const place = (id: string, y: number) => (p.tree.find((node) => node.type === "View" && [node.props.children].flat().some((child) => (child as Element | null)?.props?.testID === `kontor-lead-source-${id}`))!
+      .props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y, width: 300, height: 45 } } });
+    const room = (height: number) => (byTestId(p.tree, "kontor-lead-source-list")!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 300, height } } });
+    place("agent-src", 0); place("agent-other", 46);
+    room(91); expect(scrollTo).not.toHaveBeenCalled();
+    press(byTestId(p.tree, "kontor-lead-source-agent-other")); p.render(); await settle(); p.render();
+    room(91); expect(scrollTo).not.toHaveBeenCalled();
+    room(60); expect(scrollTo).toHaveBeenLastCalledWith({ y: 31, animated: false });
+    (byTestId(p.tree, "kontor-lead-source-list")!.props.onScroll as (event: unknown) => void)({ nativeEvent: { contentOffset: { x: 0, y: 80 } } });
+    room(60); expect(scrollTo).toHaveBeenLastCalledWith({ y: 46, animated: false });
+    room(30); expect(scrollTo).toHaveBeenLastCalledWith({ y: 46, animated: false });
+    // The picked row's own height changes as its summary opens under it.
+    place("agent-src", 0); expect(scrollTo).toHaveBeenCalledTimes(3);
+    place("agent-other", 46); expect(scrollTo).toHaveBeenCalledTimes(4);
+    // A search that hides the picked row leaves the rows it found where they are.
+    (byTestId(p.tree, "kontor-lead-source-search")!.props.onChangeText as (value: string) => void)("Route"); p.render();
+    room(30); expect(scrollTo).toHaveBeenCalledTimes(4);
+  });
+
+  it("leaves its bounds to the surface around it without a height, as in the Kontor screen's sheet", () => {
+    const p = mount(LeadSourcePicker, sourceProps());
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ flexShrink: 1, minHeight: 0, height: undefined });
+    expect(byTestId(p.tree, "kontor-lead-source-list")?.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
+  });
+
+  it("hands the host popover's height to Choose source", () => {
+    const pickerHeight = (line: number) => 433 - line;
+    const f = mount(NewLsaForm, formProps({ sources, pickerHeight }));
+    press(f.tree.find((node) => node.type === Action && node.props.label === "Choose source session")); f.render();
+    expect(f.tree[0]).toMatchObject({ type: LeadSourcePicker, props: { height: pickerHeight } });
   });
 
   it("saves a first revision on Use when the session has none, and pins it", async () => {

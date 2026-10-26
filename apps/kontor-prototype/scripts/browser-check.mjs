@@ -815,7 +815,15 @@ try {
     await page.getByTestId("kontor-switch-new-lead").click();
     await reach("kontor-new-lsa-create", "new-lead");
     await page.getByRole("button", { name: "Choose source session", exact: true }).click();
-    await reach("kontor-lead-source-use", "source");
+    // Choose source keeps the host's surface still: only its rows scroll, and its search, Cancel and Use show without scrolling.
+    await page.getByTestId("kontor-lead-source-picker").waitFor();
+    await page.waitForTimeout(300);
+    for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) assert(inside(await page.getByTestId(id).boundingBox(), await surface.boundingBox()), `${label}: ${id} shows without scrolling`);
+    assert(await page.getByTestId("kontor-lead-source-picker").evaluate(picker => {
+      for (let node = picker.parentElement; node; node = node.parentElement) if (["auto", "scroll"].includes(getComputedStyle(node).overflowY)) return node.scrollHeight <= node.clientHeight + 1;
+      return true;
+    }), `${label}: the host's surface has nothing to scroll under Choose source`);
+    await page.screenshot({ path: join(values.output, `${label}-composer-source.png`) });
     await page.keyboard.press("Escape");
     await surface.waitFor({ state: "detached" });
     await pill.click();

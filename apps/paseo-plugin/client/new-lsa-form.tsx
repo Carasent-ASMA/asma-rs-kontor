@@ -144,7 +144,7 @@ function leadName(providers: readonly CreateProvider[], choice: LeadModel | null
   return model ? `${model.label}${effort ? ` · ${effort.label}` : ""}` : null;
 }
 
-export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel, sources, opened, header, initialSource = null, hostScrolls = false }: {
+export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel, sources, opened, header, initialSource = null, hostScrolls = false, pickerHeight }: {
   hostId: string; colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: (scope?: CreateScope) => void; canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult; onCancel: () => void;
   /** A sheet close invalidates pending continuations immediately, before React's unmount cleanup. */
@@ -153,6 +153,8 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   sources?: readonly DirectoryEntry[];
   /** When this device last opened each session from Kontor, for the source rows. */
   opened?: ReadonlyMap<string, number>;
+  /** Inside the host's popover, which scrolls an unbounded body: the height Choose source keeps so its actions stay in view, given its title's line. */
+  pickerHeight?: (line: number) => number;
   /** The surface's own heading: the model chip then stands at its right, pinned above the form. Pickers bring their own. */
   header?: React.ReactNode;
   /** A source chosen before the form opened, such as Attach summary's New lead, with its saved revision pinned. */
@@ -365,7 +367,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   };
   if (picker === "jira") return <JiraIssuePicker colors={colors} desks={ready.desks} scope={scopeOf(draft)} initialQuery={draft.issueQuery ?? ""} selected={choice.issue?.key ?? null}
     onBack={closePicker} onSelect={(issue, issueQuery) => { pick(issue); setDraft((previous) => ({ ...previous, issueQuery })); closePicker(); }} />;
-  if (picker === "source") return sources ? <LeadSourcePicker colors={colors} compact={compact} sources={sources} opened={opened} selected={source?.hostId === hostId ? source.entry.id : null} onCancel={closePicker}
+  if (picker === "source") return sources ? <LeadSourcePicker colors={colors} compact={compact} sources={sources} opened={opened} height={pickerHeight} selected={source?.hostId === hostId ? source.entry.id : null} onCancel={closePicker}
     onUse={(next) => { setSource({ hostId, entry: next.entry, contextProblem: null, summary: next.summary }); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />
     : <SourceSessionPicker hostId={hostId} colors={colors} selected={source?.hostId === hostId ? source.entry.id : null}
       onBack={closePicker} onSelect={(next) => { setSource(next); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />;
