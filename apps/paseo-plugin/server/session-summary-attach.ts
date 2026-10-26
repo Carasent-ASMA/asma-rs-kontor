@@ -189,6 +189,18 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       const prior = state.placements[key];
       if (prior) return prior;
 
+      const failText = (error: unknown) => error instanceof Error ? error.message : String(error);
+      async function abandonIntentAfterPrePlaceReadFailure(message: string, agentId: string): Promise<AttachOutcome> {
+        try {
+          const latest = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
+          delete latest.intents[key];
+          await writeDestinationAttachState(attachRoot, pin.destinationAgentId, latest);
+          return unknownOutcome(pin, agentId, message);
+        } catch (error) {
+          return unknownOutcome(pin, agentId, `${message} Kontor could not clear the attach intent on the host (${failText(error)}); the outcome is uncertain. Check the destination's draft before retrying.`);
+        }
+      }
+
       let destination = await exact(pin.destinationAgentId);
       let refusal = destinationAttachRefusal(destination, pin, revision, pin.destinationAgentId);
       if (refusal) return refusal;
@@ -249,8 +261,10 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
 
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
-        if (error instanceof MalformedHostDraftReadError) return unknownOutcome(pin, destination!.id, `${MALFORMED_HOST_DRAFT_READ_PRE} Check the destination's draft on the host.`);
-        return unknownOutcome(pin, destination!.id, `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`);
+        const message = error instanceof MalformedHostDraftReadError
+          ? `${MALFORMED_HOST_DRAFT_READ_PRE} Check the destination's draft on the host.`
+          : `The host draft could not be read (${failText(error)}). Nothing was placed.`;
+        return abandonIntentAfterPrePlaceReadFailure(message, destination!.id);
       }
       if (hostDraft && !pinMatches(hostDraft, pin)) {
         state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
