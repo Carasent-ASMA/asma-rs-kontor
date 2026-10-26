@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
-import { SCOPE_LABEL_RULE, SUMMARY_DELIVERY_NOT_VERIFIED, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
+import { BOOTSTRAP_TIMELINE_TAIL_LIMIT, SCOPE_LABEL_RULE, SUMMARY_DELIVERY_NOT_VERIFIED, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
 import type { SummaryRevision } from "../shared/session-navigator";
 import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
 
@@ -67,7 +67,7 @@ const dirs: string[] = [];
 afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 async function setup({ switchText = null as string | null, answerMs = 5_000, existing = [] as Agent[], offline = false, timelineText = "Handoff: the plan is approved." as string | null,
-  workspaceProblem = null as string | null, failWorkspaceCreate = false } = {}) {
+  workspaceProblem = null as string | null, failWorkspaceCreate = false, mirrorBootstrapOnTimeline = true } = {}) {
   const root = await mkdtemp(join(tmpdir(), "kontor-create-test-")); dirs.push(root);
   const switchFile = join(root, "create.json"), stateRoot = join(root, "state"), summaryRoot = join(root, "summaries");
   if (switchText !== null) await writeFile(switchFile, switchText);
@@ -85,7 +85,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
     const value = agent("agent-new", { title: input.title, labels: input.labels, provider, model, cwd: placed.workspaceDirectory!, workspaceId: placed.id,
       currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, features, ...readbackPatch });
     agents.set(value.id, value);
-    if (input.prompt) bootstrapByAgent.set(value.id, input.prompt);
+    if (input.prompt && mirrorBootstrapOnTimeline) bootstrapByAgent.set(value.id, input.prompt);
     return { id: value.id } as Awaited<ReturnType<NativeCreate>>;
   });
   const workspacesCreate = vi.fn<NativeWorkspaceCreate>(async (input) => {
@@ -102,7 +102,8 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
   const snapshot = vi.fn<CreateClient["providers"]["snapshot"]>(async () => SNAPSHOT);
   const listFeatures = vi.fn<CreateClient["providers"]["listFeatures"]>(async () => FEATURES);
   const bootstrapByAgent = new Map<string, string>();
-  const timeline = vi.fn(async () => ({ entries: timelineText === null ? [] : [{ item: { type: "assistant_message", text: timelineText } }] }));
+  type TimelineOpts = { limit?: number; direction?: "tail" | "head"; cursor?: string };
+  const timeline = vi.fn(async (_opts?: TimelineOpts) => ({ entries: timelineText === null ? [] : [{ item: { type: "assistant_message", text: timelineText } }] }));
   const jira = vi.fn<JiraSearch>(async ({ query, issueClass, openOnly }) => {
     if (offline) return { issues: [], hasMore: false, nextPageToken: null, failure: "Jira is unreachable" };
     const needle = query.trim().toLowerCase(), exactKey = /^asma-[1-9]\d*$/.test(needle);
@@ -120,7 +121,7 @@ async function setup({ switchText = null as string | null, answerMs = 5_000, exi
       create: workspacesCreate,
     },
     agents: { list, ref: (id: string) => ({ refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: PROJECT } : null; },
-      timeline: { refetch: async (opts?: unknown) => {
+      timeline: { refetch: async (opts?: TimelineOpts) => {
         const bootstrap = bootstrapByAgent.get(id);
         if (bootstrap) return { entries: [{ item: { type: "user_message", text: bootstrap } }] };
         return timeline(opts);
@@ -517,10 +518,18 @@ describe("new session create", () => {
     const s = await setup({ timelineText: "Handoff: ASMA-100 is approved; begin with the core." });
     const input = request({ sourceAgentId: "agent-source" });
     const outcome = await s.service.create(input);
-    expect(outcome).toMatchObject({ state: "verified" });
+    expect(outcome).toMatchObject({ state: "verified", message: expect.stringMatching(/handoff summary is in the delivered bootstrap/i) });
     expect(s.timeline).toHaveBeenCalledWith({ limit: 100, direction: "tail" });
     expect(s.create.mock.calls[0]![0].prompt).toContain("Handoff: ASMA-100 is approved; begin with the core.");
     expect(s.create.mock.calls[0]![0].prompt).toContain("before your first task");
+  });
+
+  it("does not verify a sourceAgentId handoff when the bootstrap never reached the new session timeline", async () => {
+    const s = await setup({ mirrorBootstrapOnTimeline: false });
+    s.agents.set("agent-source", agent("agent-source", { labels: {} }));
+    const outcome = await s.service.create(request({ sourceAgentId: "agent-source" }));
+    expect(outcome).toMatchObject({ state: "unknown", message: expect.stringContaining(SUMMARY_DELIVERY_NOT_VERIFIED) });
+    expect(outcome.message).not.toMatch(/handoff summary is in the delivered bootstrap/i);
   });
 
   it("pins an exact saved summary revision into the bootstrap and refuses a missing pin", async () => {
@@ -605,6 +614,36 @@ describe("new session create", () => {
     const outcome = await s.service.create(request());
     expect(outcome).toMatchObject({ state: "differences", agentId: "agent-new" });
     expect(outcome.differences).toEqual(["Placed outside the chosen workspace.", "Model reads sonnet."]);
+  });
+
+  it("keeps a differences outcome terminal on Check", async () => {
+    const s = await setup();
+    s.setReadback({ model: "sonnet" });
+    const input = request();
+    const created = await s.service.create(input);
+    expect(created.state).toBe("differences");
+    expect(await s.service.check(input.requestId)).toEqual(created);
+  });
+
+  it("returns unknown when bootstrap delivery falls outside the tail read bound", async () => {
+    const s = await setup({ timelineText: null, mirrorBootstrapOnTimeline: false });
+    const revision: SummaryRevision = { summaryId: "00000000-0000-4000-8000-0000000000ee", revision: 1, sourceAgentId: "agent-src", sourceTitle: "Route",
+      cutoff: "2026-10-25T10:00:00Z", savedAt: "2026-10-25T10:05:00Z", sections: { task: "Tail bound", decisions: "", currentState: "", nextStep: "" }, text: "Tail bound body" };
+    await writePinnedSummary(s.summaryRoot, revision);
+    const baseRef = s.client.agents.ref;
+    s.client.agents.ref = ((id: string) => {
+      const handle = baseRef(id);
+      if (id !== "agent-new") return handle;
+      return {
+        refresh: handle.refresh,
+        timeline: { refetch: async () => {
+          const filler = Array.from({ length: BOOTSTRAP_TIMELINE_TAIL_LIMIT }, (_, index) => ({ item: { type: "user_message" as const, text: `noise-${index}` } }));
+          return { entries: filler, pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } };
+        } },
+      };
+    }) as CreateClient["agents"]["ref"];
+    const outcome = await s.service.create(request({ sourceAgentId: null, sourceSummary: { summaryId: revision.summaryId, revision: 1 } }));
+    expect(outcome).toMatchObject({ state: "unknown", message: expect.stringMatching(new RegExp(`last ${BOOTSTRAP_TIMELINE_TAIL_LIMIT} timeline entries`)) });
   });
 
   it("reports a working directory mismatch even when the workspace ID matches", async () => {
