@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { UNSUPPORTED } from "../shared/session-navigator";
 import { TAKEOVER_LIMITS } from "../server/session-lifecycle";
+import { SUMMARY_MODEL_API_GAP } from "../server/session-summaries";
 import { asTakeoverClient, paseoWakeScheduleReader, readInstalledNavigatorCapabilities } from "../server/session-navigator";
 
 describe("installed navigator capabilities", () => {
@@ -10,7 +11,7 @@ describe("installed navigator capabilities", () => {
     const caps = readInstalledNavigatorCapabilities(paseo);
     expect(caps.takeover).toEqual({ supported: true, limits: expect.arrayContaining([...TAKEOVER_LIMITS, expect.stringMatching(/schedules\.forAgent/)]) });
     expect(caps.takeoverRoute).toEqual(UNSUPPORTED.takeoverRoute);
-    expect(caps.summaries).toEqual(UNSUPPORTED.summaries);
+    expect(caps.summaries).toEqual({ supported: false, reason: SUMMARY_MODEL_API_GAP });
     expect(caps.takeoverBulk).toEqual(UNSUPPORTED.takeoverBulk);
   });
 

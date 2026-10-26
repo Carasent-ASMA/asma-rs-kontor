@@ -1,6 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readNavigatorCapabilities, UNSUPPORTED, type NavigatorCapabilities } from "../shared/session-navigator";
+import { summariesInstalledCapability } from "./session-summaries";
 import { TAKEOVER_LIMITS, type TakeoverClient } from "./session-lifecycle";
 
 const WAKE_SCHEDULE_API_GAP =
@@ -22,7 +23,7 @@ export function readInstalledNavigatorCapabilities(paseo: PaseoApi): NavigatorCa
   const takeoverLimits = paseoWakeScheduleReader(paseo) ? TAKEOVER_LIMITS : [...TAKEOVER_LIMITS, WAKE_SCHEDULE_API_GAP];
   return {
     usageTotals: UNSUPPORTED.usageTotals,
-    summaries: UNSUPPORTED.summaries,
+    summaries: summariesInstalledCapability(paseo),
     draftAttach: UNSUPPORTED.draftAttach,
     takeover: { supported: true, limits: takeoverLimits },
     takeoverBulk: UNSUPPORTED.takeoverBulk,
