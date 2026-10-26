@@ -12,21 +12,28 @@ type Agent = PaseoAgentListResult["entries"][number]["agent"];
 /** Baseline gap when the host SDK exposes no draft-placement route (see shared UNSUPPORTED.draftAttach). */
 export const DRAFT_PLACEMENT_API_GAP = UNSUPPORTED.draftAttach.reason;
 
+/** Exact gap when placement exists without a supported host draft read for verify/reconcile. */
+export const DRAFT_READ_API_GAP =
+  "The host SDK exposes placeSummaryDraft but not readSummaryDraft; Kontor cannot verify draft placement or reconcile attach intents on this host.";
+
 const ATTACH_STORE_LIMIT =
-  "Attach idempotency and destination draft occupancy persist under the Kontor plugin host-backed state root (plugin-state/kontor/session-summary-attach-v1); this plugin is the sole writer for those records on this host.";
+  "Attach intents and outcomes persist under the Kontor plugin host-backed state root (plugin-state/kontor/session-summary-attach-v1); this plugin is the sole writer for those records on this host.";
 
 export const DRAFT_ATTACH_LIMITS = [
   "Attach places the saved revision in the destination seat's draft through the host SDK placeSummaryDraft route; nothing is sent.",
-  "Each destination keeps at most one draft; Attach never replaces an existing draft or an in-flight task.",
+  "Draft occupancy and retry reconciliation are read only through readSummaryDraft on the host; local state never substitutes for a host draft read.",
+  "Attach refuses destinations that are running, initializing, or in an active turn until the seat is idle.",
+  "Each destination keeps at most one host draft; Attach never replaces an existing draft.",
   ATTACH_STORE_LIMIT,
+  "Attach intent serialization is in-process per worker on this host, like the summary store; multi-process workers are not qualified without a shared lock.",
 ];
 
 export type SummaryDraftPlacer = {
   placeDraft(destinationAgentId: string, revision: SummaryRevision): Promise<void>;
-  readDraft?(destinationAgentId: string): Promise<{ summaryId: string; revision: number } | null>;
+  readDraft(destinationAgentId: string): Promise<{ summaryId: string; revision: number } | null>;
 };
 
-/** Optional host SDK route when the installed client adds agents.placeSummaryDraft. */
+/** Qualified only when both placeSummaryDraft and readSummaryDraft exist on the SDK. */
 export function paseoSummaryDraftPlacer(paseo: PaseoApi): SummaryDraftPlacer | undefined {
   const host = paseo as {
     agents?: typeof paseo.agents & {
@@ -34,9 +41,9 @@ export function paseoSummaryDraftPlacer(paseo: PaseoApi): SummaryDraftPlacer | u
       readSummaryDraft?(destinationAgentId: string): Promise<{ summaryId: string; revision: number } | null>;
     };
   };
-  if (typeof host.agents?.placeSummaryDraft !== "function") return undefined;
+  if (typeof host.agents?.placeSummaryDraft !== "function" || typeof host.agents?.readSummaryDraft !== "function") return undefined;
   const place = host.agents.placeSummaryDraft.bind(host.agents);
-  const readDraft = typeof host.agents.readSummaryDraft === "function" ? host.agents.readSummaryDraft.bind(host.agents) : undefined;
+  const readDraft = host.agents.readSummaryDraft.bind(host.agents);
   return {
     placeDraft: (destinationAgentId, revision) => place(destinationAgentId, { summaryId: revision.summaryId, revision: revision.revision, text: revision.text, sourceAgentId: revision.sourceAgentId }),
     readDraft,
@@ -45,20 +52,25 @@ export function paseoSummaryDraftPlacer(paseo: PaseoApi): SummaryDraftPlacer | u
 
 export function draftAttachInstalledCapability(paseo: PaseoApi): Capability {
   if (!paseoSummaryGenerator(paseo)) return { supported: false, reason: "This host has no saved summary store; Kontor cannot attach a summary revision here." };
-  if (!paseoSummaryDraftPlacer(paseo)) return UNSUPPORTED.draftAttach;
+  const host = paseo as { agents?: { placeSummaryDraft?: unknown; readSummaryDraft?: unknown } };
+  if (typeof host.agents?.placeSummaryDraft !== "function") return { supported: false, reason: DRAFT_PLACEMENT_API_GAP };
+  if (typeof host.agents?.readSummaryDraft !== "function") return { supported: false, reason: DRAFT_READ_API_GAP };
   return { supported: true, limits: DRAFT_ATTACH_LIMITS };
 }
 
-const destinationDraftSchema = z.object({
+const attachIntentSchema = z.object({
+  intentId: z.string().uuid(),
+  placementKey: z.string().min(1),
   summaryId: z.string().uuid(),
   revision: z.number().int().positive(),
-  sourceAgentId: z.string().min(1),
-  at: z.string(),
-}).strict().nullable();
+  destinationAgentId: z.string().min(1),
+  requestedAt: z.string(),
+}).strict();
+type AttachIntent = z.infer<typeof attachIntentSchema>;
 
 const destinationAttachSchema = z.object({
-  draft: destinationDraftSchema,
   placements: z.record(z.string(), attachOutcomeSchema),
+  intents: z.record(z.string(), attachIntentSchema),
 }).strict();
 type DestinationAttachState = z.infer<typeof destinationAttachSchema>;
 
@@ -68,16 +80,20 @@ function placementKey(pin: SummaryPin, destinationAgentId: string) {
   return `${pin.summaryId}:${pin.revision}:${destinationAgentId}`;
 }
 
-async function readDestinationState(root: string, destinationAgentId: string): Promise<DestinationAttachState> {
+function pinMatches(draft: { summaryId: string; revision: number } | null, pin: SummaryPin) {
+  return !!draft && draft.summaryId === pin.summaryId && draft.revision === pin.revision;
+}
+
+export async function readDestinationAttachState(root: string, destinationAgentId: string): Promise<DestinationAttachState> {
   try {
     return destinationAttachSchema.parse(JSON.parse(await readFile(destinationPath(root, destinationAgentId), "utf8")));
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return { draft: null, placements: {} };
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return { placements: {}, intents: {} };
     throw error;
   }
 }
 
-async function writeDestinationState(root: string, destinationAgentId: string, state: DestinationAttachState) {
+async function writeDestinationAttachState(root: string, destinationAgentId: string, state: DestinationAttachState) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const file = destinationPath(root, destinationAgentId), temporary = `${file}.${randomUUID()}.tmp`;
   const output = await open(temporary, "wx", 0o600);
@@ -93,8 +109,18 @@ function draftedOutcome(revision: SummaryRevision, destination: Agent, message: 
   return { state: "drafted", message, destinationAgentId: destination.id, summaryId: revision.summaryId, revision: revision.revision };
 }
 
-function refusedOutcome(revision: SummaryPin, destinationAgentId: string, message: string): AttachOutcome {
-  return { state: "refused", message, destinationAgentId, summaryId: revision.summaryId, revision: revision.revision };
+function refusedOutcome(pin: SummaryPin, destinationAgentId: string, message: string): AttachOutcome {
+  return { state: "refused", message, destinationAgentId, summaryId: pin.summaryId, revision: pin.revision };
+}
+
+function unknownOutcome(pin: SummaryPin, destinationAgentId: string, message: string): AttachOutcome {
+  return { state: "unknown", message, destinationAgentId, summaryId: pin.summaryId, revision: pin.revision };
+}
+
+function destinationBusy(agent: Agent): string | null {
+  if (agent.status === "running" || agent.status === "initializing") return `“${agent.title ?? agent.id}” is ${agent.status}; Attach waits until the seat is idle. Nothing was drafted.`;
+  if (agent.activeTurn) return `“${agent.title ?? agent.id}” has an active turn; Attach waits until it finishes. Nothing was drafted.`;
+  return null;
 }
 
 export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string, attachRoot: string) {
@@ -105,7 +131,11 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
 
   async function attach(pin: SummaryPin & { destinationAgentId: string }): Promise<AttachOutcome> {
     const placer = paseoSummaryDraftPlacer(paseo);
-    if (!placer) throw new Error(DRAFT_PLACEMENT_API_GAP);
+    if (!placer) {
+      const host = paseo as { agents?: { placeSummaryDraft?: unknown; readSummaryDraft?: unknown } };
+      if (typeof host.agents?.placeSummaryDraft !== "function") throw new Error(DRAFT_PLACEMENT_API_GAP);
+      throw new Error(DRAFT_READ_API_GAP);
+    }
     if (!paseoSummaryGenerator(paseo)) throw new Error("This host has no saved summary store; Kontor cannot attach a summary revision here.");
 
     let revision: SummaryRevision;
@@ -119,30 +149,57 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
 
     return withSourceStoreLock(attachRoot, pin.destinationAgentId, async () => {
       const key = placementKey(pin, pin.destinationAgentId);
-      const state = await readDestinationState(attachRoot, pin.destinationAgentId);
+      let state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
       const prior = state.placements[key];
       if (prior) return prior;
 
-      const hostDraft = await placer.readDraft?.(pin.destinationAgentId) ?? null;
-      const recorded = state.draft;
-      const occupied = hostDraft ?? recorded;
-      if (occupied && (occupied.summaryId !== revision.summaryId || occupied.revision !== revision.revision)) {
-        const who = recorded?.sourceAgentId ?? revision.sourceAgentId;
-        const rev = occupied.revision;
-        return refusedOutcome(pin, destination.id, `“${destination.title ?? destination.id}” already has a draft (r${rev} of ${who}). Attach never replaces a draft; send or clear it there first. Nothing was drafted.`);
+      let hostDraft: { summaryId: string; revision: number } | null;
+      try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
+      catch (error) {
+        return unknownOutcome(pin, destination.id, `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`);
       }
-      if (occupied?.summaryId === revision.summaryId && occupied.revision === revision.revision) {
+
+      if (hostDraft && !pinMatches(hostDraft, pin)) {
+        return refusedOutcome(pin, destination.id, `“${destination.title ?? destination.id}” already has a draft (r${hostDraft.revision} of another summary). Attach never replaces a draft; send or clear it there first. Nothing was drafted.`);
+      }
+      if (pinMatches(hostDraft, pin)) {
         const outcome = draftedOutcome(revision, destination, `r${revision.revision} is already in the draft of “${destination.title ?? destination.id}”; nothing changed and nothing was sent.`);
         state.placements[key] = outcome;
-        await writeDestinationState(attachRoot, pin.destinationAgentId, state);
+        delete state.intents[key];
+        await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
         return outcome;
       }
 
-      await placer.placeDraft(pin.destinationAgentId, revision);
+      const pending = state.intents[key];
+      if (pending) {
+        return unknownOutcome(pin, destination.id, "An attach intent is recorded but the host draft does not show this summary revision yet; Kontor will not place it again. Check the destination's draft before retrying.");
+      }
+
+      const busy = destinationBusy(destination);
+      if (busy) return refusedOutcome(pin, destination.id, busy);
+
+      const intent: AttachIntent = { intentId: randomUUID(), placementKey: key, summaryId: pin.summaryId, revision: pin.revision, destinationAgentId: pin.destinationAgentId, requestedAt: new Date().toISOString() };
+      state = { ...state, intents: { ...state.intents, [key]: intent } };
+      await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
+
+      try { await placer.placeDraft(pin.destinationAgentId, revision); }
+      catch (error) {
+        return unknownOutcome(pin, destination.id, `The host did not confirm draft placement (${error instanceof Error ? error.message : String(error)}). The attach intent stays recorded; Kontor will not place it again until the host draft read shows this revision.`);
+      }
+
+      try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
+      catch (error) {
+        return unknownOutcome(pin, destination.id, `Draft placement was sent but the host draft could not be read back (${error instanceof Error ? error.message : String(error)}). Check the destination's draft; Kontor will not place it again automatically.`);
+      }
+      if (!pinMatches(hostDraft, pin)) {
+        return unknownOutcome(pin, destination.id, "Draft placement was sent but the host draft does not show this summary revision yet. Check the destination's draft; Kontor will not place it again automatically.");
+      }
+
       const outcome = draftedOutcome(revision, destination, `r${revision.revision} is in the draft of “${destination.title ?? destination.id}” for review. Nothing was sent and nobody else owns it.`);
-      state.draft = { summaryId: revision.summaryId, revision: revision.revision, sourceAgentId: revision.sourceAgentId, at: new Date().toISOString() };
+      state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
       state.placements[key] = outcome;
-      await writeDestinationState(attachRoot, pin.destinationAgentId, state);
+      delete state.intents[key];
+      await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
       return outcome;
     });
   }
