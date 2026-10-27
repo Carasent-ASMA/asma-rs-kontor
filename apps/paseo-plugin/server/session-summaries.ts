@@ -10,9 +10,9 @@ import { attachStateRoot, createSummaryAttachService } from "./session-summary-a
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 
-/** Exact gap on the installed @getpaseo/client surface (PaseoAgentHandle has timeline/send/run only). */
+/** Exact gap when the host does not advertise compact summary generation. */
 export const SUMMARY_MODEL_API_GAP =
-  "The host SDK exposes no compact session-summary generation API on PaseoAgentHandle or PaseoAgentActions (only timeline read, send and run); Kontor cannot request a structured model summary without prompting the live session.";
+  "This host does not advertise compact session-summary generation (agentCompactSummary); Kontor cannot save a model-generated revision through the SDK on this connection.";
 
 const PLUGIN_STATE_STORE_LIMIT =
   "Saved revisions persist under the Kontor plugin host-backed state root (plugin-state/kontor/session-summaries-v1); this plugin is the sole writer for summary revisions on this host.";
@@ -33,8 +33,18 @@ export type SessionSummaryGenerator = {
   generate(agentId: string): Promise<CompactSummaryPayload>;
 };
 
-/** Optional host SDK route when the installed client adds agents.generateCompactSummary. */
+export function paseoCompactSummaryHostFeature(paseo: PaseoApi): boolean {
+  const host = paseo as PaseoApi & {
+    supportsHostFeature?(feature: "agentCompactSummary"): boolean;
+  };
+  return typeof host.supportsHostFeature === "function"
+    ? host.supportsHostFeature("agentCompactSummary")
+    : false;
+}
+
+/** Host SDK route when the connected host advertises and implements agents.generateCompactSummary. */
 export function paseoSummaryGenerator(paseo: PaseoApi): SessionSummaryGenerator | undefined {
+  if (!paseoCompactSummaryHostFeature(paseo)) return undefined;
   const host = paseo as {
     agents?: typeof paseo.agents & {
       generateCompactSummary?(agentId: string): Promise<CompactSummaryPayload>;
@@ -46,6 +56,7 @@ export function paseoSummaryGenerator(paseo: PaseoApi): SessionSummaryGenerator 
 }
 
 export function summariesInstalledCapability(paseo: PaseoApi): Capability {
+  if (!paseoCompactSummaryHostFeature(paseo)) return { supported: false, reason: SUMMARY_MODEL_API_GAP };
   if (!paseoSummaryGenerator(paseo)) return { supported: false, reason: SUMMARY_MODEL_API_GAP };
   return { supported: true, limits: SUMMARY_LIMITS_WITH_GENERATION };
 }

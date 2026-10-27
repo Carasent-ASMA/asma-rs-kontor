@@ -23,6 +23,7 @@ afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recu
 
 function paseoWithGenerator(agent: Agent, generate: () => Promise<{ sections: typeof SECTIONS; cutoff: string }>) {
   return {
+    supportsHostFeature: (feature: "agentCompactSummary") => feature === "agentCompactSummary",
     agents: {
       ref: (id: string) => ({ refresh: async () => id === agent.id ? { agent, project: null } : null }),
       generateCompactSummary: async () => generate(),
@@ -40,8 +41,11 @@ describe("session summary host route", () => {
     expect(caps.takeover.supported).toBe(true);
   });
 
-  it("qualifies summaries and store limits when generateCompactSummary is on the SDK", () => {
-    const paseo = { agents: { generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }) } } as never;
+  it("qualifies summaries and store limits when the host advertises agentCompactSummary", () => {
+    const paseo = {
+      supportsHostFeature: (feature: "agentCompactSummary") => feature === "agentCompactSummary",
+      agents: { generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }) },
+    } as never;
     expect(summariesInstalledCapability(paseo)).toEqual({ supported: true, limits: SUMMARY_LIMITS_WITH_GENERATION });
   });
 
