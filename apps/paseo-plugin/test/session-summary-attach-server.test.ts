@@ -256,6 +256,27 @@ describe("one-shot atomic saved-revision attachment", () => {
     expect(h.calls).toHaveLength(1);
   });
 
+  it.each(["initial", "pre-attach", "post-attach", "restart", "destination-refresh"] as const)("redacts malformed-store host read errors during %s", async phase => {
+    const h = await harness(); const read = h.paseo.agents.readSummaryDraft; let reads = 0;
+    const failure = new Error(`Invalid summary-drafts-v1 JSON at /synthetic/private-store: body preview AUD_SECRET ${"private-body".repeat(10_000)}`);
+    if (phase === "restart") await h.service().attach(h.pin);
+    if (phase === "destination-refresh") h.paseo.agents.ref = () => ({ refresh: async () => { throw failure; } });
+    else h.paseo.agents.readSummaryDraft = async id => {
+      reads++;
+      if (phase === "initial" || phase === "restart" || phase === "pre-attach" && reads >= 2 || phase === "post-attach" && h.calls.length) throw failure;
+      return read(id);
+    };
+    const result = await h.service().attach(h.pin);
+    expect(result.state).toBe("unknown");
+    expect(result.message).not.toMatch(/AUD_SECRET|private-body|body preview|private-store|Invalid summary-drafts-v1/);
+    expect(result.message.length).toBeLessThan(600);
+    expect(h.calls).toHaveLength(phase === "post-attach" || phase === "restart" ? 1 : 0);
+    if (phase === "post-attach" || phase === "restart") {
+      const again = await h.service().attach(h.pin); expect(again.state).toBe("unknown");
+      expect(again.message).not.toContain("AUD_SECRET"); expect(h.calls).toHaveLength(1);
+    }
+  });
+
   it.each([undefined, false, { state: "drafted", draft: null }, { state: "already", draft: { summaryId: OTHER.summaryId, revision: 4 } }])("keeps malformed or mismatched attach confirmation unknown: %j", async result => {
     const h = await harness();
     h.paseo.agents.attachSummaryDraft = async (id, draft) => { h.calls.push({ id, draft }); return result; };

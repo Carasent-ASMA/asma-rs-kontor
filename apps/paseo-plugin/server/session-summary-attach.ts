@@ -188,15 +188,14 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       let state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
       const prior = state.placements[key];
 
-      const failText = (error: unknown) => error instanceof Error ? error.message : String(error);
       async function abandonIntentAfterPrePlaceReadFailure(message: string, agentId: string): Promise<AttachOutcome> {
         try {
           const latest = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
           delete latest.intents[key];
           await writeDestinationAttachState(attachRoot, pin.destinationAgentId, latest);
           return unknownOutcome(pin, agentId, message);
-        } catch (error) {
-          return unknownOutcome(pin, agentId, `${message} Kontor could not clear the attach intent on the host (${failText(error)}); the outcome is uncertain. Check the destination's draft before retrying.`);
+        } catch {
+          return unknownOutcome(pin, agentId, `${message} Kontor could not clear the attach intent; the outcome is uncertain. Check the destination's draft before retrying.`);
         }
       }
 
@@ -235,7 +234,7 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
         if (error instanceof MalformedHostDraftReadError) return unknownOutcome(pin, destination!.id, `${MALFORMED_HOST_DRAFT_READ_PRE} Check the destination's draft on the host.`);
-        return unknownOutcome(pin, destination!.id, `The host draft could not be read (${error instanceof Error ? error.message : String(error)}). Nothing was placed.`);
+        return unknownOutcome(pin, destination!.id, "The host draft could not be read. Nothing was placed by this request.");
       }
 
       if (hostDraft && !pinMatches(hostDraft, pin)) {
@@ -270,7 +269,7 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       catch (error) {
         const message = error instanceof MalformedHostDraftReadError
           ? `${MALFORMED_HOST_DRAFT_READ_PRE} Check the destination's draft on the host.`
-          : `The host draft could not be read (${failText(error)}). Nothing was placed.`;
+          : "The host draft could not be read. Nothing was placed by this request.";
         return abandonIntentAfterPrePlaceReadFailure(message, destination!.id);
       }
       if (hostDraft && !pinMatches(hostDraft, pin)) {
@@ -310,7 +309,7 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {
         if (error instanceof MalformedHostDraftReadError) return unknownOutcome(pin, destination!.id, MALFORMED_HOST_DRAFT_READ_POST);
-        return unknownOutcome(pin, destination!.id, `Draft placement was sent but the host draft could not be read back (${error instanceof Error ? error.message : String(error)}). Check the destination's draft; Kontor will not place it again automatically.`);
+        return unknownOutcome(pin, destination!.id, "Draft placement was sent but host draft readback is unavailable. Check the destination's draft; Kontor will not place it again automatically.");
       }
       if (!pinMatches(hostDraft, pin)) {
         return unknownOutcome(pin, destination!.id, "Draft placement was sent but the host draft does not show this summary revision yet. Check the destination's draft; Kontor will not place it again automatically.");
@@ -322,7 +321,7 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
       delete state.intents[key];
       await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
       return outcome;
-    });
+    }).catch(() => unknownOutcome(pin, pin.destinationAgentId, "Attachment could not be verified. Placement may already exist; check the destination's draft. Kontor will not retry automatically."));
   }
 
   return { attach };
