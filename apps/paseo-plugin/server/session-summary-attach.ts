@@ -142,7 +142,7 @@ export function attachStateRoot() {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-summary-attach-v1");
 }
 
-function draftedOutcome(revision: SummaryRevision, destination: Agent, message: string): AttachOutcome {
+function draftedOutcome(revision: SummaryPin, destination: Pick<Agent, "id">, message: string): AttachOutcome {
   return { state: "drafted", message, destinationAgentId: destination.id, summaryId: revision.summaryId, revision: revision.revision };
 }
 
@@ -183,14 +183,6 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
     }
     if (!paseoSummaryGenerator(paseo)) throw new Error("This host has no saved summary store; Kontor cannot attach a summary revision here.");
 
-    let revision: SummaryRevision;
-    try { revision = await readPinnedSummary(summaryRoot, pin); }
-    catch { return refusedOutcome(pin, pin.destinationAgentId, `No saved summary ${pin.summaryId} r${pin.revision} is stored on this host; nothing was placed.`); }
-
-    if (revision.summaryId !== pin.summaryId || revision.revision !== pin.revision) return refusedOutcome(pin, pin.destinationAgentId, "The saved revision does not match the requested pin; nothing was attached.");
-
-    if (pin.destinationAgentId === revision.sourceAgentId) return refusedOutcome(pin, pin.destinationAgentId, "A summary goes to another seat, not back to its own source. Nothing was drafted.");
-
     return withSourceStoreLock(attachRoot, pin.destinationAgentId, async () => {
       const key = placementKey(pin, pin.destinationAgentId);
       let state = await readDestinationAttachState(attachRoot, pin.destinationAgentId);
@@ -208,29 +200,37 @@ export function createSummaryAttachService(paseo: PaseoApi, summaryRoot: string,
         }
       }
 
-      let destination = await exact(pin.destinationAgentId);
-      let refusal = destinationAttachRefusal(destination, pin, revision, pin.destinationAgentId);
-      if (refusal) return refusal;
-
       let hostDraft: { summaryId: string; revision: number } | null;
       const pending = state.intents[key];
       if (pending || prior) {
+        // Reconcile durable history before new-action validation; a missing session is not proof of no placement.
+        const recordedPin = `${pin.summaryId} r${pin.revision}`;
         try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
-        catch (error) {
-          if (error instanceof MalformedHostDraftReadError) {
-            return unknownOutcome(pin, destination!.id, "An attach intent or outcome is recorded but the host readSummaryDraft result was malformed; Kontor will not place it again. Check the destination's draft before retrying.");
-          }
-          return unknownOutcome(pin, destination!.id, `An attach intent or outcome is recorded but the host draft could not be read (${error instanceof Error ? error.message : String(error)}). Kontor will not place it again.`);
+        catch {
+          return unknownOutcome(pin, pin.destinationAgentId, `An attach intent or outcome is recorded for ${recordedPin}, but host draft readback is unavailable or malformed. Placement may already exist; Kontor will not attach again.`);
         }
         if (pinMatches(hostDraft, pin)) {
-          const outcome = draftedOutcome(revision, destination!, `r${revision.revision} is already in the draft of “${destination!.title ?? destination!.id}”; nothing changed and nothing was sent.`);
+          const outcome = draftedOutcome(pin, { id: pin.destinationAgentId }, `${recordedPin} is already in the host draft for destination ${pin.destinationAgentId}; no new attachment was dispatched and nothing was sent.`);
           state.placements[key] = outcome;
           delete state.intents[key];
           await writeDestinationAttachState(attachRoot, pin.destinationAgentId, state);
           return outcome;
         }
-        return unknownOutcome(pin, destination!.id, "An attach intent or outcome is recorded but the host draft does not show this summary revision yet; Kontor will not place it again. Check the destination's draft before retrying.");
+        const occupancy = hostDraft ? `Current occupied pin: ${hostDraft.summaryId} r${hostDraft.revision}.` : "The host draft currently returns no pin.";
+        return unknownOutcome(pin, pin.destinationAgentId, `An attach intent or outcome is recorded for ${recordedPin}. ${occupancy} Earlier placement may have occurred; existing work is preserved and Kontor will not attach again.`);
       }
+
+      let revision: SummaryRevision;
+      try { revision = await readPinnedSummary(summaryRoot, pin); }
+      catch { return refusedOutcome(pin, pin.destinationAgentId, `No saved summary ${pin.summaryId} r${pin.revision} is stored on this host; nothing was placed.`); }
+
+      if (revision.summaryId !== pin.summaryId || revision.revision !== pin.revision) return refusedOutcome(pin, pin.destinationAgentId, "The saved revision does not match the requested pin; nothing was attached.");
+
+      if (pin.destinationAgentId === revision.sourceAgentId) return refusedOutcome(pin, pin.destinationAgentId, "A summary goes to another seat, not back to its own source. Nothing was drafted.");
+
+      let destination = await exact(pin.destinationAgentId);
+      let refusal = destinationAttachRefusal(destination, pin, revision, pin.destinationAgentId);
+      if (refusal) return refusal;
 
       try { hostDraft = await placer.readDraft(pin.destinationAgentId); }
       catch (error) {

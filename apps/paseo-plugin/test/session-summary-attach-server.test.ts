@@ -198,6 +198,38 @@ describe("one-shot atomic saved-revision attachment", () => {
     expect(h.calls).toHaveLength(1);
   });
 
+  it.each(["reply-failure", "confirmed-success"] as const)("reconciles %s after restart even when destination refresh is null", async history => {
+    const h = await harness(); const attach = h.paseo.agents.attachSummaryDraft, read = h.paseo.agents.readSummaryDraft;
+    if (history === "reply-failure") {
+      h.paseo.agents.attachSummaryDraft = async (id, draft) => { await attach(id, draft); throw new Error("reply lost"); };
+      h.paseo.agents.readSummaryDraft = async id => { if (h.calls.length) throw new Error("readback lost"); return read(id); };
+    }
+    expect((await h.service().attach(h.pin)).state).toBe(history === "reply-failure" ? "unknown" : "drafted");
+    delete h.agents[DEST.id]; h.paseo.agents.readSummaryDraft = read;
+    const resumed = await h.service().attach(h.pin);
+    expect(resumed).toMatchObject({ state: "drafted", message: expect.stringContaining(`${h.pin.summaryId} r${h.pin.revision}`) });
+    expect(resumed.message).toContain("already"); expect(resumed.message).not.toMatch(/nothing was placed|No session/);
+    expect(h.calls).toHaveLength(1); expect(h.drafts.get(DEST.id)?.text).toBe(h.revision.text);
+  });
+
+  it.each(["reply-failure", "confirmed-success"] as const)("keeps %s history unknown with an occupied pin when the destination disappears", async history => {
+    const h = await harness(); const attach = h.paseo.agents.attachSummaryDraft;
+    if (history === "reply-failure") h.paseo.agents.attachSummaryDraft = async (id, draft) => { await attach(id, draft); throw new Error("reply lost"); };
+    await h.service().attach(h.pin); delete h.agents[DEST.id]; h.drafts.set(DEST.id, OTHER);
+    const resumed = await h.service().attach(h.pin);
+    expect(resumed).toMatchObject({ state: "unknown", message: expect.stringContaining(`${OTHER.summaryId} r${OTHER.revision}`) });
+    expect(resumed.message).not.toMatch(/nothing was placed|No session/);
+    expect(h.calls).toHaveLength(1); expect(h.drafts.get(DEST.id)).toEqual(OTHER);
+  });
+
+  it.each(["unreadable", "empty"] as const)("retains durable uncertainty when destination refresh is null and host readback is %s", async readback => {
+    const h = await harness(); await h.service().attach(h.pin); delete h.agents[DEST.id];
+    h.paseo.agents.readSummaryDraft = async () => { if (readback === "unreadable") throw new Error("readback lost"); return null; };
+    const resumed = await h.service().attach(h.pin);
+    expect(resumed.state).toBe("unknown"); expect(resumed.message).toContain(h.pin.summaryId);
+    expect(resumed.message).not.toMatch(/nothing was placed|No session/); expect(h.calls).toHaveLength(1);
+  });
+
   it("retains an uncertain intent after host failure and never automatically reattaches after restart", async () => {
     const h = await harness();
     h.paseo.agents.attachSummaryDraft = async (id, draft) => { h.calls.push({ id, draft }); throw new Error("host refused or transport disconnected"); };
