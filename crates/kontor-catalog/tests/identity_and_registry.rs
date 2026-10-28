@@ -421,3 +421,72 @@ async fn conflicting_explicit_and_declared_workstreams_keep_the_operator_choice(
             .any(|conflict| conflict.kind == ConflictKind::AssociationConflict)
     );
 }
+
+#[tokio::test]
+async fn removing_one_worktree_occurrence_does_not_remove_the_sibling() {
+    let repo = Repo::new();
+    repo.write(
+        "_docs/plans/sibling.md",
+        &plan("Sibling plan", Some("ASMA-9250"), Some("kontor"), ""),
+    );
+    repo.commit("sibling");
+    let worktree_root = TempDir::new().expect("a worktree parent");
+    let worktree = repo.worktree(&worktree_root.path().join("wt"), "sibling");
+    let fixture = Fixture::open(
+        &[
+            (repo.root().to_path_buf(), false),
+            (worktree.clone(), false),
+        ],
+        None,
+        30,
+    );
+    sweep(&fixture.catalog).await;
+    let before = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(before.entries[0].occurrences.len(), 2);
+
+    std::fs::remove_file(worktree.join("_docs/plans/sibling.md"))
+        .expect("remove the worktree plan");
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args(["add", "-A"])
+        .output()
+        .expect("git add");
+    assert!(output.status.success());
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args(["commit", "-q", "-m", "remove worktree sibling"])
+        .output()
+        .expect("git commit");
+    assert!(output.status.success());
+
+    sweep(&fixture.catalog).await;
+    let after = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(
+        after.entries.len(),
+        1,
+        "the repository occurrence keeps the plan"
+    );
+    assert_eq!(
+        after.entries[0].occurrences.len(),
+        1,
+        "only the removed worktree occurrence is tombstoned"
+    );
+    let history = fixture
+        .catalog
+        .entries(&EntryFilter {
+            include_removed: true,
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    assert_eq!(history.entries[0].occurrences.len(), 2);
+    assert_eq!(
+        history.entries[0]
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.state == kontor_catalog::EntryState::Removed)
+            .count(),
+        1
+    );
+}
