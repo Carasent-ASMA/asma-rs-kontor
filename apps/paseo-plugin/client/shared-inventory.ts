@@ -49,7 +49,7 @@ export type SharedInventory = {
 };
 
 export type SharedInventoryState = {
-  readonly directory: { readonly state: DirectoryState; readonly refresh: () => void };
+  readonly directory: { readonly state: DirectoryState; readonly refresh: () => void; readonly retry?: () => void };
   readonly workspaces: SharedWorkspaceDirectory;
   readonly catalog: WorkCatalogRead | null;
 };
@@ -132,7 +132,8 @@ function catalogEntry(
     projectKey,
     projectName,
     workspaceName,
-    searchText: searchTextOf({ title, workspaceName, projectName, projectKey, cwd, labels }),
+    searchText: searchTextOf({ title, workspaceName, projectName, projectKey, cwd, labels,
+      usage: { provider: session.provider || live?.provider || "unknown", model: session.model ?? live?.model ?? null, telemetry: live?.telemetry } }),
     availability: live?.availability,
     jira: live?.jira,
   };
@@ -314,5 +315,5 @@ export function useSharedInventory(input: {
     direct.refresh();
     catalog.refresh();
   }, [direct.refresh, catalog.refresh]);
-  return { directory: { state: adapted.directory, refresh }, workspaces: adapted.workspaces, catalog: catalog.read };
+  return { directory: { state: adapted.directory, refresh, retry: direct.retry }, workspaces: adapted.workspaces, catalog: catalog.read };
 }
