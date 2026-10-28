@@ -1,3 +1,4 @@
+import { contributeProceduralTakeover } from "./server/procedural-takeover";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { contribute } from "./server/hooks";
 import { readFloor, reportFloor } from "./server/floor";
@@ -9,16 +10,20 @@ import { readTeamsSource } from "./shared/teams-source-snapshot";
 import { sourceCatalog, contributeReadSources } from "./server/read-sources";
 import { contributeSessionLifecycle } from "./server/session-lifecycle";
 import { contributeSessionCreate } from "./server/session-create";
+import { contributeSessionPromotion } from "./server/session-promotion";
 import { contributeResponsibility } from "./server/responsibility";
 import { contributeKontorStatus } from "./server/kontor-status";
-import { readNavigatorCapabilities, UNSUPPORTED } from "./shared/session-navigator";
+import { contributeSessionNavigator } from "./server/session-navigator";
+import { contributeSessionSummaries } from "./server/session-summaries";
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
+  contributeProceduralTakeover(server);
   // Registered whatever the floor; each request reads create.json: absent defaults on, explicit off or invalid/unreadable paths fail closed.
   contributeSessionCreate(server);
-  // Saved summaries, draft attachment, whole-session totals, bulk and manual-route takeover have no owner on this host yet.
-  server.handle(readNavigatorCapabilities, () => UNSUPPORTED);
+  contributeSessionPromotion(server);
+  contributeSessionNavigator(server);
+  contributeSessionSummaries(server);
   const settings = server.registerSettings(organizationSettings);
   server.registerSettings(keyboardSettings);
   server.handle(readTeamsSource, (input) => {

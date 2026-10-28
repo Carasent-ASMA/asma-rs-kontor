@@ -270,6 +270,14 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     return by;
   };
   const layout = {
+    // Native measure replies can outlive the screen that requested them.
+    cancelMeasurements() {
+      captureVersion += 1;
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+    },
     // Stop reissuing an old capture against post-update cells before the parent's layout effect runs.
     renderRows(rows: readonly ListRow[]) { renderedRows = rows; },
     /** Cells measure themselves: with getItemLayout the list measures none. */
@@ -389,8 +397,9 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       const node = mounted.get(place.key);
       if (typeof node?.measure === "function") {
         const held = place;
+        const requestVersion = captureVersion;
         node.measure((_x, y) => {
-          if (place !== held || !Number.isFinite(y)) return;
+          if (captureVersion !== requestVersion || place !== held || !Number.isFinite(y)) return;
           const by = y - held.top;
           if (Math.abs(by) < 0.5) return;
           place = { ...held, top: y };
@@ -1618,6 +1627,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   /** How far the browser pulled a held row place back to the end of a list that got shorter; the next hold returns it. */
   const clampedByRef = useRef(0);
   const [rowLayout] = useState(() => createRowLayout((by, fromOffset) => resizedRef.current(by, fromOffset)));
+  useLayoutEffect(() => () => rowLayout.cancelMeasurements(), [rowLayout]);
   const resultsPlaceRef = useRef<{ readonly saved: ReturnType<typeof rowLayout.bookmark>; readonly returning: boolean } | null>(null);
   const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
   /** Lowest offset since the compact toolbar opened; see compactToolbarScroll. */
@@ -2124,9 +2134,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const rowClock = useClock();
   const opened = useMemo(() => new Map(recent.record.visits.map((visit) => [visit.id, visit.at])), [recent.record]);
   const recentIds = useMemo(() => recent.record.visits.map((visit) => visit.id), [recent.record]);
+  // A current verified promotion is a logical epic binding even though the native ADHOC labels stay untouched.
+  const projectedEntries = useMemo(() => {
+    if (!retirement) return state.entries;
+    return state.entries.map((entry) => {
+      const promotion = retirement.projections.get(entry.id)?.promotion;
+      if (!promotion || promotion.source.fresh !== "current" || entry.labels.epic) return entry;
+      return { ...entry, labels: { ...entry.labels, epic: promotion.epic } };
+    });
+  }, [state.entries, retirement]);
   const scoped = useMemo(
-    () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
-    [state.entries, projectId, epicKey, mappings],
+    () => projectedEntries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
+    [projectedEntries, projectId, epicKey, mappings],
   );
   const scopedWorkspaces = useMemo(() => workspaces?.filter((workspace) => (projectId === null || workspace.projectKey === projectId)
     && (epicKey === null || mappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === epicKey.trim().toLocaleLowerCase())), [workspaces, projectId, epicKey, mappings]);
@@ -3362,7 +3381,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Only a workspace list failure stays below the list; the routine read note is in Filters.
   const workspaceFooter = state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null
     : <Text testID="sessions-footer" style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}>{workspaceNote}.</Text>;
-  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
+  const promotionCoverageNotice = retirement?.promotionRead.state === "unknown" ? (
+    <View testID="sessions-promotion-coverage" style={{ paddingHorizontal: 4, paddingVertical: 2 }}>
+      <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{`Promotion evidence unavailable: ${retirement.promotionRead.error ?? "the host did not report a readable promotion list"}.`}</Text>
+    </View>
+  ) : null;
+  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
   withHeaderRef.current = listHeader !== null;
 
   return (

@@ -67,7 +67,7 @@ export const UNSUPPORTED = {
   usageTotals: { supported: false, reason: "This host reports only each session's latest usage, not totals since it started." },
   summaries: { supported: false, reason: "This host has no saved summary store; Kontor cannot save or pin a summary revision here." },
   draftAttach: { supported: false, reason: "This Paseo app gives plugins no way to place a draft in another session for review." },
-  takeover: { supported: false, reason: "Take over is not qualified on this host: no owner here creates and verifies the new session, so nothing would continue the task." },
+  takeover: { supported: false, reason: "Take over is held until message admission and task continuation are qualified. Nothing is retired." },
   takeoverBulk: { supported: false, reason: "Take over of several sessions is not qualified on this host; take over one session at a time." },
   takeoverRoute: { supported: false, reason: "This host takes over only on the seat's configured chain; choosing a model for one takeover is not supported." },
 } as const satisfies NavigatorCapabilities;

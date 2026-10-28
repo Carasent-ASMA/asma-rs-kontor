@@ -2,12 +2,12 @@ import { isValidElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginTheme } from "@getpaseo/plugin";
 
-const fixture = vi.hoisted(() => ({ effects: [] as Array<() => void | (() => void)>, native: false, dismiss: vi.fn(), hold: vi.fn() }));
+const fixture = vi.hoisted(() => ({ effects: [] as Array<() => void | (() => void)>, native: false, helpTexts: [] as string[], dismiss: vi.fn(), hold: vi.fn() }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useRef: (current: unknown) => ({ current }), useEffect: (effect: () => void | (() => void)) => fixture.effects.push(effect),
 }));
 vi.mock("react-native", () => ({ Platform: { get OS() { return fixture.native ? "ios" : "web"; } }, Pressable: "Pressable", Text: "Text", View: "View" }));
-vi.mock("../client/control-help", () => ({ useActionHelp: (_text: string, ref: { current: unknown }) => ({ bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss, hold: fixture.hold }) }));
+vi.mock("../client/control-help", () => ({ useActionHelp: (text: string, ref: { current: unknown }) => { fixture.helpTexts.push(text); return { bindings: { ref: (node: unknown) => { ref.current = node; } }, dismiss: fixture.dismiss, hold: fixture.hold }; } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { SessionLayoutControl } from "../client/session-layout-control";
 
@@ -15,7 +15,7 @@ type Element = { props: Record<string, unknown> };
 const walk = (node: ReactNode): Element[] => Array.isArray(node) ? node.flatMap(walk)
   : isValidElement<{ children?: ReactNode }>(node) ? [node, ...walk(node.props.children)] : [];
 const colors = { foreground: "#fafafa", surface1: "#181b1a", surface2: "#272a29", accent: "#20744a", border: "#252b2a" } as PluginTheme["colors"];
-afterEach(() => { fixture.effects = []; fixture.native = false; vi.clearAllMocks(); });
+afterEach(() => { fixture.effects = []; fixture.native = false; fixture.helpTexts = []; vi.clearAllMocks(); });
 
 function mount(value: "grouped" | "flat" = "grouped", disabled?: string) {
   const onChange = vi.fn();
@@ -95,6 +95,32 @@ describe("visible session layout segments", () => {
     expect(control.onChange).not.toHaveBeenCalled();
   });
 
+  it.each(["grouped", "flat"] as const)("native disabled %s keeps its reason and never requests tooltip help", (value) => {
+    fixture.native = true;
+    const why = "Recent lists sessions in the order you opened them.";
+    const { segments, onChange } = mount(value, why);
+    expect(fixture.helpTexts).toEqual(["", ""]);
+    for (const node of segments) {
+      expect(node.props.accessibilityHint).toBe(why);
+      expect(node.props.accessibilityState).toMatchObject({ disabled: true });
+      (node.props.onPress as () => void)();
+    }
+    expect(segments.map((node) => node.props.accessibilityLabel)).toEqual(["Grouped", "Flat"]);
+    expect(fixture.hold).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+  it.each(["grouped", "flat"] as const)("native selected %s suppresses help while the other radio still switches", (value) => {
+    fixture.native = true;
+    const { segments, onChange } = mount(value);
+    const selected = value === "grouped" ? 0 : 1;
+    expect(fixture.helpTexts[selected]).toBe("");
+    expect(fixture.helpTexts[1 - selected]).toContain("Search, filters and sort stay the same.");
+    expect(segments[selected]!.props.accessibilityHint).toContain("Search, filters and sort stay the same.");
+    (segments[selected]!.props.onPress as () => void)();
+    expect(onChange).not.toHaveBeenCalled(); expect(fixture.hold).not.toHaveBeenCalled();
+    (segments[1 - selected]!.props.onPress as () => void)();
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(value === "grouped" ? "flat" : "grouped");
+  });
   it("keeps native checked semantics and hints without web listeners or Tab overrides", () => {
     fixture.native = true;
     const { segments, root } = mount("flat");

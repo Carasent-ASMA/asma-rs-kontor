@@ -73,6 +73,15 @@ describe("server entry floor mode", () => {
     writeFileSync(file, content, { mode: 0o600 });
   };
 
+  it("registers procedural prepare/execute/check without enabling the legacy takeover action", () => {
+    const started = start();
+    expect(started.handlers).toEqual(expect.arrayContaining([
+      "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check",
+    ]));
+    expect(existsSync(join(home, "plugin-state"))).toBe(false);
+    started.cleanup();
+  });
+
   it("registers the three hooks when floor.json is absent, with the mode line only", () => {
     const started = start();
     expect(started.hooks).toEqual(HOOKS);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { getPaseoClient, useRpc } from "@getpaseo/plugin/client";
+import { newRequestId } from "./request-id";
 import { checkCreate, executeCreate, featureValuesProblem, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
   type CreateFeature, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue } from "../shared/session-create";
 import type { NewLeadDefault } from "../shared/organization";
@@ -106,16 +107,6 @@ export function resolveDraft(options: CreateOptions, draft: CreateDraft, saved: 
     codex, lead, defaultNote: auto || !providerId ? lead.note : null };
 }
 
-/** A version-4 UUID for the request's idempotency; not a secret. */
-export function newRequestId(): string {
-  const bytes = new Uint8Array(16);
-  const crypto = (globalThis as { crypto?: { getRandomValues?: (array: Uint8Array) => Uint8Array } }).crypto;
-  if (crypto?.getRandomValues) crypto.getRandomValues(bytes);
-  else bytes.forEach((_, index) => { bytes[index] = Math.floor(Math.random() * 256); });
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40; bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 
 const HEADINGS: Record<CreateOutcome["state"], string> = {
   verified: "Created and verified", differences: "Created with differences", unknown: "Outcome unknown", refused: "Not created",
@@ -421,7 +412,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       <Text style={{ ...heading, flex: 1 }}>Desk</Text>
       <Text numberOfLines={1} style={value}>{deskName ?? "No desk on this host has lead workspaces."}</Text>
     </View>;
-  const binding = `${fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The lead stays ad hoc and writes a handoff summary when a key is confirmed."}${choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}`;
+  const binding = `${fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The lead starts ad hoc; when an epic key is confirmed it is promoted in place if no epic lead exists, otherwise it hands off to that exact existing lead."}${choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}`;
   return wrap(<>
     {settingsLine ? <Text testID="kontor-new-lead-settings" style={muted}>{settingsLine}</Text> : null}
     <Choices label="Role" layout="segmented" caption={ROLE_NAMES[choice.role]} colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {
