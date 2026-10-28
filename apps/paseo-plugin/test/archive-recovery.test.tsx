@@ -35,6 +35,31 @@ const actions = (tree: unknown, label: string) => walk(tree).filter((element) =>
 beforeEach(() => { harness.fresh(); vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW); });
 
 describe("U4 Review archive sheet", () => {
+  it("keeps the archived notice to one sentence and actions while diagnostics stay collapsed", () => {
+    const one = item("aud", "unconfirmed", { outcome: "archived", runtime: "unconfirmed", message: "RAW_DIAGNOSTIC" });
+    const { tree } = sheet({ items: [one], notes: { [recoveryKey(one.ref)]: { at: NOW, outcome: "unchanged", title: "A", state: "unconfirmed" } } });
+    const listed = walk(tree).find((element) => element.props.role === "listitem")!;
+    const outside = [listed.props.children].flat().filter((child) => (child as Element | null)?.type !== Disclosure);
+    expect(texts(outside)).toEqual(["SWE • DEMO • aud", "Archived. Paseo hasn’t confirmed the session has stopped."]);
+    expect(actions(listed, "Refresh status")).toHaveLength(1);
+    expect(actions(listed, "Hide notice")).toHaveLength(1);
+    const details = walk(listed).find((element) => element.type === Disclosure)!;
+    expect(details.props.open).toBeUndefined();
+    expect(texts(details).join(" ")).toMatch(/RAW_DIAGNOSTIC/);
+    expect(texts(details).join(" ")).toMatch(/host reports idle/);
+    expect(texts(details).join(" ")).toMatch(/unchanged/);
+  });
+  it("keeps raw read failures in details and does not call an unknown result archived", () => {
+    const one = item("lost", "unknown", { availability: undefined }, "RAW_READ_ERROR");
+    const { tree } = sheet({ items: [one] });
+    const listed = walk(tree).find((element) => element.props.role === "listitem")!;
+    const outside = [listed.props.children].flat().filter((child) => (child as Element | null)?.type !== Disclosure);
+    expect(texts(outside)).toContain("Archive result unknown");
+    expect(texts(outside).join(" ")).not.toMatch(/RAW_READ_ERROR|Archived\. Paseo/);
+    expect(texts(outside)).toContain("Couldn’t refresh status. Try again when the host is available.");
+    expect(texts(listed).join(" ")).toContain("RAW_READ_ERROR");
+  });
+
   it("lists every unresolved item with its state, plain reason, observed facts and its actions", () => {
     const unknown = item("lost", "unknown", { message: "Archive returned but exact-ID terminal retirement readback is unavailable. Check native outcome; do not retry the request.", availability: undefined });
     const unconfirmed = item("aud", "unconfirmed", { outcome: "archived", runtime: "unconfirmed" });
@@ -46,7 +71,7 @@ describe("U4 Review archive sheet", () => {
     expect(texts(listed[0])).toEqual(expect.arrayContaining(["SWE • DEMO • lost", "Archive result unknown", "Not checked yet",
       "The archive request was sent, but the host has not confirmed whether the session was archived. Another archive request will not be sent while its outcome is uncertain."]));
     // Membership and the runtime stop are separate facts.
-    expect(texts(listed[1])).toEqual(expect.arrayContaining(["Archived", "Runtime stop not confirmed", "Last checked 5 minutes ago · archived 10 minutes ago · host reports idle",
+    expect(texts(listed[1])).toEqual(expect.arrayContaining(["Archived. Paseo hasn’t confirmed the session has stopped.", "Last checked 5 minutes ago · archived 10 minutes ago · host reports idle",
       "The host lists it in the archive but has not reported its runtime stopped, so it is not called stopped. Refresh status asks again; no archive request is sent again."]));
     // Jargon and IDs wait in Technical details.
     const outside = [listed[0]!.props.children].flat().filter((child) => (child as Element | null)?.type !== Disclosure);
@@ -100,13 +125,13 @@ describe("U4 Review archive sheet", () => {
       [recoveryKey(c.ref)]: { at: NOW, outcome: "failed", title: "C", error: "Fixture host read failed." }, "r:gone": { at: NOW, outcome: "confirmed", title: "SWE • DEMO • gone" } } as const;
     const { tree } = sheet({ items: [a, b, c], notes, refreshing: recoveryKey(a.ref) });
     expect(walk(tree).filter((element) => element.props.role === "status").map((element) => element.props.children)).toEqual([
-      "SWE • DEMO • gone: confirmed archived · notice cleared", "Checked just now · unchanged", "Checked just now · now Archived · runtime stop not confirmed", "Couldn't check: Fixture host read failed."]);
+      "SWE • DEMO • gone: confirmed archived · notice cleared", "Couldn’t refresh status. Try again when the host is available."]);
     expect(actions(tree, "Checking…")).toHaveLength(1); expect(actions(tree, "Refresh status")).toHaveLength(2);
     expect(texts(tree)).toContain("Its latest record could not be read: Fixture host offline.");
     const all = sheet({ items: [a, b], refreshing: "all" }).tree; expect(actions(all, "Checking…")).toHaveLength(2);
   });
   it("AR-01 offers no Open for a session its exact-ID read shows archived, says why in one line, and keeps Refresh status", () => {
-    const NOT_OPENED = "Not opened here: opening an archived session asks Paseo to restore its workspace, which this archive does not need. The Archived list still opens it.";
+    const NOT_OPENED = "Opening an archived session asks Paseo to restore its workspace. Use the Archived list to open it.";
     // An archived parent, a workspace Paseo cannot restore or a restore path that diverged all start here: an archived read.
     const archived = [item("aud", "unconfirmed", { outcome: "archived", runtime: "unconfirmed" }), item("legacy", "unconfirmed"), item("unknown-archived", "unknown")];
     for (const entry of archived) {
@@ -123,7 +148,7 @@ describe("U4 Review archive sheet", () => {
   });
   it("AR-02 offers Hide notice only after an unchanged Refresh status of an archived session", () => {
     const one = item("aud", "unconfirmed", { outcome: "archived", runtime: "unconfirmed" }), key = recoveryKey(one.ref);
-    const ACK = "Still archived, and the host still does not report its runtime stopped. Refreshing will not change that; you can hide this notice. It returns if its state changes.";
+    const ACK = "Hiding this notice leaves the archive unresolved. It returns if its state changes.";
     const unchanged = { [key]: { at: NOW, outcome: "unchanged", title: "A", state: "unconfirmed" } } as const;
     const { tree, props } = sheet({ items: [one], notes: unchanged });
     expect(texts(tree)).toEqual(expect.arrayContaining(["Checked just now · unchanged", ACK]));
@@ -145,7 +170,7 @@ describe("U4 Review archive sheet", () => {
     expect(texts(sheet({ items: [item("a", "unknown")] }).tree)).not.toContain("Hidden archive notices are kept for this app session only on this device.");
     const empty = sheet({ error: "Fixture list failed." }, { compact: false }).tree;
     expect(empty.props.placement).toMatchObject({ align: "end", width: 660 });
-    expect(texts(empty)).toEqual(expect.arrayContaining(["No archives need attention", "Archive checks could not be read: Fixture list failed."]));
+    expect(texts(empty)).toEqual(expect.arrayContaining(["No archives need attention", "Couldn’t read archive checks. Try again when the host is available.", "Fixture list failed."]));
   });
 });
 

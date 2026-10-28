@@ -11,7 +11,7 @@ import { readableInk } from "./session-status-ink";
  * One action: shown with the reason it cannot run instead of hiding it, so the menu teaches what exists.
  * - `detail`: a second line under the label while it can run.
  * - `option`: a pill at the row's end that runs a variant of the action, such as Take over's Auto ▾.
- * - `caption`: a line under the row; `footer` closes the sheet.
+ * - `caption` and `footer`: supporting text attached to this action.
  * - `opens`: it leads to another screen, so it carries a chevron.
  */
 export type SessionAction = {
@@ -37,7 +37,7 @@ function ActionRow({ action, colors, onDone }: { action: SessionAction; colors: 
     </View>
     {action.opens ? <Icon name="ChevronRight" size={16} color={colors.foregroundMuted} /> : null}
   </Pressable>;
-  if (!option && !action.caption) return row;
+  if (!option && !action.caption && !action.footer) return row;
   return <View style={{ gap: 2, paddingBottom: 4, borderRadius: 8, borderWidth: option ? 1 : 0, borderColor: blocked ? colors.border : colors.accent }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingRight: 6 }}>
       {row}
@@ -49,6 +49,7 @@ function ActionRow({ action, colors, onDone }: { action: SessionAction; colors: 
         <Icon name="ChevronDown" size={14} color={colors.foreground} />
       </Pressable> : null}
     </View>
+    {action.footer ? <Text testID={`session-action-${action.key}-disclosure`} style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10 }}>{action.footer}</Text> : null}
     {action.caption ? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 38 }}>{action.caption}</Text> : null}
   </View>;
 }
@@ -86,7 +87,6 @@ export function SessionActionsMenu({ entry, colors, actions, ref }: { entry: Pic
         <View role="menu" accessibilityLabel={`Actions for ${entry.title}`} {...(Platform.OS === "web" ? { onKeyDown: moveMenuFocus } : {})} style={{ gap: 2 }}>
           {ordered.map((action) => <ActionRow key={action.key} action={action} colors={colors} onDone={() => setOpen(false)} />)}
         </View>
-        {ordered.flatMap((action) => action.footer ? [<Text key={action.key} style={{ color: colors.foregroundMuted, fontSize: 11, textAlign: "center", paddingTop: 6 }}>{action.footer}</Text>] : [])}
       </Modal.Content>
     </Modal> : null}
   </>;
