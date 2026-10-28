@@ -68,7 +68,7 @@ export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact
       {archived ? <Text style={muted}>Not opened here: opening an archived session asks Paseo to restore its workspace, which this archive does not need. The Archived list still opens it.</Text> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <Action colors={colors} label={refreshing ? "Checking…" : "Refresh status"} accessibilityLabel={`Refresh archive status: ${name}`} disabled={!canRefresh}
-          onPress={() => { if (canRefresh) void recovery.refresh(entry.ref); }} />
+          onPress={() => { if (canRefresh) return recovery.refresh(entry.ref); }} />
         {archived ? null : <Action colors={colors} label="Open session" accessibilityLabel={`Open session: ${name}`} onPress={() => onOpen(entry)} />}
         {acknowledge ? <Action colors={colors} label="Hide notice" accessibilityLabel={`Hide archive notice: ${name}`} onPress={() => onHide(entry)} /> : null}
       </View>

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
-vi.mock("react-native", () => ({ Platform: { OS: "web" }, Pressable: "Pressable", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ Platform: { OS: "web" }, ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
 vi.mock("../client/anchored-menu", () => ({ AnchoredMenu: "AnchoredMenu" }));
 vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ bindings: {}, dismiss() {} }) }));
@@ -60,6 +60,30 @@ describe("U4 Review archive sheet", () => {
     (refresh.props.onPress as () => void)(); (open.props.onPress as () => void)();
     expect(props.recovery.refresh).toHaveBeenCalledExactlyOnceWith(unconfirmed.ref); expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(unknown);
     (actions(tree.props.header, "Close")[0]!.props.onPress as () => void)(); expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+  it.each(["resolve", "reject"])("keeps the refresh Action pending until its promise settles (%s)", async (outcome) => {
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const pending = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const refresh = vi.fn(() => pending);
+    const { tree } = sheet({ items: [item("aud", "unconfirmed")], refresh });
+    const props = actions(tree, "Refresh status")[0]!.props as Parameters<typeof Action>[0];
+    // Give the control its own hook slots, as React does for a child component.
+    harness.fresh();
+    const draw = () => harness.current.render(() => Action(props)) as Element;
+    let control = draw();
+    (control.props.onPress as () => void)(); (control.props.onPress as () => void)();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    control = draw();
+    expect(control.props).toMatchObject({ "aria-busy": true, accessibilityState: { busy: true } });
+    expect(walk(control).some((node) => node.type === "ActivityIndicator")).toBe(true);
+    if (outcome === "resolve") resolve(); else reject(new Error("Fixture read failed."));
+    await Promise.resolve(); await Promise.resolve();
+    control = draw();
+    expect(control.props["aria-busy"]).toBeUndefined();
+    expect(walk(control).some((node) => node.type === "ActivityIndicator")).toBe(false);
+    (control.props.onPress as () => void)();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await Promise.resolve();
   });
   it("disables Refresh status while another action runs or the host is offline, and says why", () => {
     const one = item("aud", "unconfirmed");
