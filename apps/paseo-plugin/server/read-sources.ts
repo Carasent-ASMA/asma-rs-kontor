@@ -88,9 +88,11 @@ export async function readWorkstreamRegistry(workspace = process.env.KONTOR_PLUG
       workspace = config.workspaceRoot;
     }
     if (!workspace || !isAbsolute(workspace)) throw new Error("Configure an absolute workspace root in KONTOR_PLUGIN_ASMA_WORKSPACE or plugin-config/kontor/registry.json");
-    result.path = join(workspace, "config/orchestration/workstreams.json");
+    result.path = join(workspace, "config/orchestration/workstreams.yml");
     const content = await boundedRead(result.path);
-    const raw = z.object({ schema_version: z.literal(1), workstreams: workstreamRegistrySchema.shape.workstreams, desks: workstreamRegistrySchema.shape.desks }).parse(JSON.parse(content));
+    const document = parseDocument(content);
+    if (document.errors.length) throw new Error(`Workstream registry must be valid YAML and must not repeat keys: ${document.errors.map((error) => error.message).join("; ")}`);
+    const raw = z.object({ schema_version: z.literal(1), workstreams: workstreamRegistrySchema.shape.workstreams, desks: workstreamRegistrySchema.shape.desks }).parse(document.toJS());
     return { ...result, workstreams: raw.workstreams, desks: raw.desks, revision: sha256(content) };
   } catch (error) { result.diagnostics.push(`Workstream registry unavailable: ${error instanceof Error ? error.message : String(error)}`); return result; }
 }
