@@ -170,6 +170,47 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     expect(h.effects.archive).toHaveLength(0);
     expect(h.effects.create).toHaveLength(0);
   });
+
+  it("does not infer a canonical scope from a missing native epic label", async () => {
+    const title = "LSA • ASMA-1 • Route review";
+    const predecessor = agent("agent-1", { title, labels: { role: "LSA", "title.auto": title, persona: personaVersion("lsa-ad-hoc", true) } });
+    const h = await host({ predecessor, workspace: { ...WORKSPACE, name: "LSA", title: null }, targetProvider: "claude" });
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(h.createRoot, "promotion-v1"), { recursive: true });
+    const native = { workspaceId: "wks-1", workspace: "LSA", title, titleAuto: title, observedAt: "2026-10-25T08:00:00Z", revision: "r1" };
+    const handoff = promotionRecordSchema.parse({ schemaVersion: 1, requestId: "44444444-4444-4444-8444-444444444441", agentId: "agent-source",
+      epic: "ASMA-2", branch: "handoff", state: "handoff", native, logical: { workspace: "LSA", node: "epic:ASMA-2", bindingRevision: "b".repeat(64) },
+      persona: { issued: personaVersion("lsa-ad-hoc", true), effective: personaVersion("lsa-ad-hoc", true) }, canonicalAgentId: predecessor.id,
+      summarySha256: "b".repeat(64), summaryRevision: "r2", acknowledgement: "verified", message: "handoff", createdAt: "2026-10-25T08:01:00Z", updatedAt: "2026-10-25T08:01:00Z" });
+    await writeFile(join(h.createRoot, "promotion-v1", `${handoff.requestId}.json`), JSON.stringify(handoff));
+    const review = await h.ready();
+    expect(review.state).toBe("unknown");
+    expect(review.message).toContain("native owner");
+    expect(h.effects.archive).toHaveLength(0);
+    expect(h.effects.create).toHaveLength(0);
+  });
+
+  it("blocks takeover when the promoted native workspace or persona has drifted", async () => {
+    for (const drift of ["workspace", "persona"] as const) {
+      const title = "LSA • ASMA-1 • Route review";
+      const predecessor = agent("agent-1", { title, workspaceId: drift === "workspace" ? "wks-2" : "wks-1",
+        labels: { role: "LSA", epic: "ASMA-1", "title.auto": title, persona: drift === "persona" ? "other-persona" : personaVersion("lsa-ad-hoc", true) } });
+      const workspace = drift === "workspace" ? { ...WORKSPACE, id: "wks-2", workspaceDirectory: "/fixtures/wks-2", name: "ADHOC", title: null } : { ...WORKSPACE, name: "ADHOC", title: null };
+      const h = await host({ predecessor, workspace, targetProvider: "claude" });
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(join(h.createRoot, "promotion-v1"), { recursive: true });
+      const native = { workspaceId: "wks-1", workspace: "ADHOC", title, titleAuto: title, observedAt: "2026-10-25T08:00:00Z", revision: "r1" };
+      const promoted = promotionRecordSchema.parse({ schemaVersion: 1, requestId: `5555555${drift === "workspace" ? "0" : "1"}-5555-4555-8555-555555555555`, agentId: predecessor.id,
+        epic: "ASMA-1", branch: "promote", state: "promoted", native, logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "a".repeat(64) },
+        persona: { issued: personaVersion("lsa-ad-hoc", true), effective: personaVersion("lsa-ad-hoc", true) }, canonicalAgentId: predecessor.id,
+        summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted", createdAt: "2026-10-25T08:00:00Z", updatedAt: "2026-10-25T08:00:00Z" });
+      await writeFile(join(h.createRoot, "promotion-v1", `${promoted.requestId}.json`), JSON.stringify(promoted));
+      const review = await h.ready();
+      expect(review.state).toBe("unknown");
+      expect(h.effects.archive).toHaveLength(0);
+      expect(h.effects.create).toHaveLength(0);
+    }
+  });
   it("does not retire a session whose promotion store is unreadable or unsettled", async () => {
     for (const corrupt of [true, false]) {
       const h = await host();

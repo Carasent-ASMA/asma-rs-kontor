@@ -175,6 +175,7 @@ export type SessionProjectionHookInput = {
 export function useSessionRetirementProjection(hostId: string, input: SessionProjectionHookInput): {
   readonly projections: ReadonlyMap<string, SessionProjection>;
   readonly receipts: { readonly state: ProjectionReceipts["state"]; readonly complete: boolean; readonly error: string | null; readonly readAt: string | null };
+  readonly promotionRead: { readonly state: "idle" | "reading" | "ready" | "unknown"; readonly error: string | null };
   readonly reload: () => void;
 } {
   const read = useRpc(readLifecycleReview), readPromotions = useRpc(readPromotionList);
@@ -313,10 +314,11 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       })();
       const fresh = promotions.state !== "ready" ? "unknown" as const
         : validation.state === "current" && !localProblem ? "current" as const : localProblem || validation.state === "stale" ? "stale" as const : "unknown" as const;
+      const coverage = promotions.state === "ready" ? "" : ` Promotion read coverage is ${promotions.state}${promotions.error ? `: ${promotions.error}` : ""}.`;
       return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
           title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
         source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
-        detail: `${record.state} promotion record: ${localProblem ?? validation.message}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+        detail: `${record.state} promotion record: ${localProblem ?? validation.message}${coverage}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
         fresh } };
     };
     const projections = new Map<string, SessionProjection>();
@@ -362,5 +364,6 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     return projections;
   }, [hostId, input.entries, input.directory, input.sources, input.reads, input.associations, receipts, promotions]);
   const current = receipts.hostId === hostId ? receipts : emptyReceipts(hostId);
-  return { projections, receipts: { state: current.state, complete: current.state === "ready", error: current.error, readAt: current.readAt }, reload: () => { void load(); } };
+  return { projections, receipts: { state: current.state, complete: current.state === "ready", error: current.error, readAt: current.readAt },
+    promotionRead: { state: promotions.hostId === hostId ? promotions.state : "idle", error: promotions.hostId === hostId ? promotions.error : null }, reload: () => { void load(); } };
 }

@@ -102,6 +102,7 @@ const retiredProjection = deriveSessionProjection(projectionInput("retired", { s
 const retirement = (projections: readonly SessionProjection[]): SessionRetirementRead => ({
   projections: new Map(projections.map((projection) => [projection.sessionId, projection])),
   receipts: { state: "ready", complete: true, error: null, readAt: "2026-10-24T08:00:03.000Z" },
+  promotionRead: { state: "ready", error: null },
   reload: vi.fn(),
 });
 

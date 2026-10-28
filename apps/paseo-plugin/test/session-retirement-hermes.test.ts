@@ -163,9 +163,12 @@ describe("read-only retirement projection under the iOS (Hermes) scoping of plug
     const first = h.draw();
     expect(first.projections.get(A)?.promotion?.source.fresh).toBe("current");
     first.reload(); await settle();
-    const failed = h.draw().projections.get(A)?.promotion;
+    const last = h.draw();
+    const failed = last.projections.get(A)?.promotion;
     expect(failed?.source.fresh).toBe("unknown");
     expect(failed?.epic).toBe("ASMA-100");
+    expect(failed?.source.detail).toContain("Promotion read coverage is unknown: list failed");
+    expect(last.promotionRead).toEqual({ state: "unknown", error: "list failed" });
   });
   it("preserves successful receipts and only marks the failed receipt's sessions Unknown", async () => {
     let failSecond = true, failFirst = false;

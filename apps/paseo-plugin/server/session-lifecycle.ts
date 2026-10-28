@@ -9,7 +9,7 @@ import { readConfig, type KontorPluginConfig } from "./config";
 import { parent, seatBinding } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
-import { placement, promotionBindingFor, transferPromotion } from "./session-canonical";
+import { canonicalBindingProblem, placement, promotionBindingFor, transferPromotion } from "./session-canonical";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
 import {
   BINDING_KEY, GOVERNED_ELSEWHERE, configuredAccountCatalogFromFleet, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
@@ -788,6 +788,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     agent = first;
     const promotion = await promotionBindingFor(deps.promotionRoot, agentId, first.labels?.epic ?? null);
     if (promotion.state === "blocked") return answer("unknown", promotion.message);
+    if (promotion.state === "settled") {
+      const ownerProblem = await canonicalBindingProblem(client, deps.promotionRoot, promotion.record.epic, agentId);
+      if (ownerProblem) return answer("unknown", `The settled promotion binding does not match its native owner: ${ownerProblem}`);
+    }
     const direct = owner = takeoverAdapter(first);
     if (direct.adapter === "governed") return answer("refused", GOVERNED_ELSEWHERE);
     if (direct.adapter === "refused") return answer("refused", direct.reason);
