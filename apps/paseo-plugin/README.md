@@ -19,7 +19,13 @@ records the exact source ID, captured history epoch/sequence range and input
 hash. A changed source epoch creates a new revision rather than rewriting the
 old pin. Generation intent and worker identity are saved before dispatch. A
 retry reads the same uncertain worker; it does not send another prompt. A
-confirmed provider/parse failure permits an explicit new attempt. These files
+confirmed provider/parse failure permits an explicit new attempt. Before saving,
+Kontor verifies the worker's effective route, provider-session identity and
+complete canonical history: one exact initial prompt/client-message ID followed
+by the returned assistant text. Missing correlation, history gaps or another
+user turn stay held without resending. A source provider-session change during
+capture refuses generation. Older jobs without prompt correlation remain held.
+These files
 have one plugin worker as writer; multiple workers sharing a root are not
 qualified.
 
