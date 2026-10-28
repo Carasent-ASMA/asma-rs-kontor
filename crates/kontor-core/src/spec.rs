@@ -91,29 +91,11 @@ pub struct ModelRung {
 
 impl ModelRung {
     /// Validate one route independently of a live provider catalog.
-    ///
-    /// The DeepSeek V4 Pro family is denied at the domain boundary. It was
-    /// previously reachable through a runtime-only fallback even though the
-    /// governed catalog did not expose it, so catalog omission alone was not a
-    /// sufficient exclusion.
     pub fn validate(&self) -> crate::DomainResult<()> {
         if self.provider.0.trim().is_empty() || self.model.0.trim().is_empty() {
             return Err(crate::DomainError::invalid(
                 "ModelRung",
                 "a model rung must name both provider and model",
-            ));
-        }
-        let normalized: String = self
-            .model
-            .0
-            .chars()
-            .filter(|character| character.is_ascii_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect();
-        if normalized.contains("deepseekv4pro") {
-            return Err(crate::DomainError::invalid(
-                "ModelRung",
-                "the model route is excluded by deployment policy",
             ));
         }
         Ok(())

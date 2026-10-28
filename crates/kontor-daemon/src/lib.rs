@@ -908,12 +908,13 @@ impl Daemon {
         folder.refuse_legacy(&config.state_root)?;
         let supervision = folder.parse_optional("paseo-supervision.yml", supervision::parse)?;
         let settings = folder.runtimes()?;
+        let fleet = folder.fleet_snapshot()?;
         config.config_dir = Some(folder.root().to_path_buf());
         config.selected_config = Some(folder);
         // Seat MCP composition is resolved here — once, at daemon level — so the
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
-        let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
+        let registry = runtimes::build_registry(&settings, seat_mcp.as_ref(), Some(&fleet))?;
         Self::start_with_supervision(config, registry, supervision, None, None)
     }
 

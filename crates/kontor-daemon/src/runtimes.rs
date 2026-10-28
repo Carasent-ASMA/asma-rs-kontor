@@ -34,6 +34,7 @@ use kontor_core::id::{
     ExternalId, ExternalName, MiniProjectId, RoleSlotId, RuntimeKindKey, TaskId, TopologyNodeId,
 };
 use kontor_core::spec::SeatAutonomy;
+use kontor_fleet::FleetSnapshot;
 use kontor_runtime::adapter::RuntimeAdapter;
 use kontor_runtime::workspace::WorkspaceRoot;
 use kontor_runtime_paseo::adapter::{
@@ -471,12 +472,13 @@ fn deferred_family(bytes: &[u8]) -> Option<&'static str> {
 pub fn build_registry(
     settings: &RuntimeSettings,
     seat_mcp: Option<&SeatMcp>,
+    fleet: Option<&FleetSnapshot>,
 ) -> Result<RuntimeRegistry, FleetError> {
     let mut registry = RuntimeRegistry::new();
     let mut claimed: BTreeSet<RuntimeKindKey> = BTreeSet::new();
     for setting in &settings.runtimes {
         let (family, adapter) = match setting {
-            RuntimeSetting::Paseo(paseo) => compose_paseo(paseo, seat_mcp)?,
+            RuntimeSetting::Paseo(paseo) => compose_paseo(paseo, seat_mcp, fleet)?,
         };
         if !claimed.insert(family.clone()) {
             return Err(FleetError::DuplicateFamily {
@@ -536,6 +538,7 @@ pub fn zerosub_transport(settings: &RuntimeSettings) -> Option<PaseoLiveTranspor
 fn compose_paseo(
     setting: &PaseoSetting,
     seat_mcp: Option<&SeatMcp>,
+    fleet: Option<&FleetSnapshot>,
 ) -> Result<(RuntimeKindKey, Arc<dyn RuntimeAdapter>), FleetError> {
     let refuse = |rule: &'static str| FleetError::Invalid {
         family: setting.runtime_kind.clone(),
@@ -611,10 +614,16 @@ fn compose_paseo(
         fallback
             .validate()
             .map_err(|_| refuse("provider_fallbacks model route"))?;
-        if !crate::applications::model_route_is_catalogued(
-            fallback,
-            crate::applications::CatalogAuthority::CompiledOnly,
-        ) {
+        let listed = fleet.map_or_else(
+            || {
+                crate::applications::model_route_is_catalogued(
+                    fallback,
+                    crate::applications::CatalogAuthority::CompiledOnly,
+                )
+            },
+            |snapshot| snapshot.lists_family_route(fallback),
+        );
+        if !listed {
             return Err(refuse("provider_fallbacks model route"));
         }
     }
@@ -733,7 +742,7 @@ mod tests {
         let settings = read(directory.path()).expect("an absent file is not a failure");
         assert!(settings.runtimes.is_empty());
         assert!(
-            build_registry(&settings, None)
+            build_registry(&settings, None, None)
                 .expect("an empty fleet composes")
                 .families()
                 .next()
@@ -747,7 +756,7 @@ mod tests {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![paseo("paseo.agent")],
         };
-        let registry = build_registry(&settings, None).expect("the lane composes");
+        let registry = build_registry(&settings, None, None).expect("the lane composes");
         let families: Vec<String> = registry.families().map(ToString::to_string).collect();
         assert_eq!(families, vec!["paseo.agent".to_owned()]);
         assert!(
@@ -787,7 +796,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
         assert!(
-            build_registry(&settings, None).is_ok(),
+            build_registry(&settings, None, None).is_ok(),
             "a named adoption composes"
         );
 
@@ -802,7 +811,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(broken)],
         };
         assert!(
-            build_registry(&settings, None).is_err(),
+            build_registry(&settings, None, None).is_err(),
             "an unparseable topology node id is a configuration error"
         );
     }
@@ -815,7 +824,7 @@ mod tests {
         };
         assert!(
             matches!(
-                build_registry(&settings, None),
+                build_registry(&settings, None, None),
                 Err(FleetError::DuplicateFamily { .. })
             ),
             "the second would otherwise silently replace the first"
@@ -835,8 +844,8 @@ mod tests {
                 }
             })],
         };
-        let error =
-            build_registry(&settings, None).expect_err("a worktree root that is not absolute");
+        let error = build_registry(&settings, None, None)
+            .expect_err("a worktree root that is not absolute");
         let rendered = error.to_string();
         assert!(
             rendered.contains("canonical_worktree_cwd"),
@@ -864,7 +873,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
 
-        let error = build_registry(&settings, None)
+        let error = build_registry(&settings, None, None)
             .expect_err("a Jira key is not a durable Kontor MiniProjectId");
         assert!(
             matches!(
@@ -880,6 +889,17 @@ mod tests {
 
     #[test]
     fn a_runtime_fallback_cannot_bypass_the_governed_model_catalog() {
+        let fleet = |model: &str| {
+            FleetSnapshot::parse_policy(&format!(
+                "schema_version: 2\n\
+                 domains:\n  open: {{ provider: opencode, accounts: [opencode-test] }}\n\
+                 models:\n  selected: {{ domain: open, id: {model}, vendor: synthetic, efforts: [max] }}\n\
+                 chains: {{}}\n\
+                 bindings: {{}}\n"
+            ))
+            .expect("the selected fleet is valid")
+        };
+        let selected = fleet("synthetic/allowed");
         for model in ["deepseek/deepseek-v4-pro", "vendor/unknown-model"] {
             let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
             setting.provider_fallbacks.insert(
@@ -895,7 +915,7 @@ mod tests {
                 runtimes: vec![RuntimeSetting::Paseo(setting)],
             };
 
-            let error = build_registry(&settings, None)
+            let error = build_registry(&settings, None, Some(&selected))
                 .expect_err("a runtime-only model route must fail closed");
             assert!(
                 matches!(
@@ -908,6 +928,32 @@ mod tests {
                 "the refusal names the governed field without echoing it: {error:?}"
             );
         }
+
+        let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
+        setting.provider_fallbacks.insert(
+            "codex".to_owned(),
+            kontor_core::spec::ModelRung {
+                provider: kontor_core::spec::ProviderRef("opencode".to_owned()),
+                model: kontor_core::spec::ModelRef("synthetic/allowed".to_owned()),
+                effort: Some(kontor_core::spec::EffortLevel::Max),
+            },
+        );
+        let mut settings = RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![RuntimeSetting::Paseo(setting)],
+        };
+        build_registry(&settings, None, Some(&selected))
+            .expect("the selected fleet admits its listed fallback");
+
+        let named_by_data = fleet("deepseek/deepseek-v4-pro");
+        let RuntimeSetting::Paseo(setting) = &mut settings.runtimes[0];
+        setting
+            .provider_fallbacks
+            .get_mut("codex")
+            .expect("the fallback exists")
+            .model = kontor_core::spec::ModelRef("deepseek/deepseek-v4-pro".to_owned());
+        build_registry(&settings, None, Some(&named_by_data))
+            .expect("model names carry no authority outside selected fleet data");
     }
 
     #[test]
@@ -927,7 +973,7 @@ mod tests {
                     schema_version: RUNTIMES_SCHEMA,
                     runtimes: vec![RuntimeSetting::Paseo(setting)],
                 };
-                build_registry(&settings, None).expect("current and frozen routes load");
+                build_registry(&settings, None, None).expect("current and frozen routes load");
             }
         }
     }
@@ -978,7 +1024,8 @@ mod tests {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![RuntimeSetting::Paseo(setting)],
         };
-        let registry = build_registry(&settings, None).expect("the complete Paseo plane composes");
+        let registry =
+            build_registry(&settings, None, None).expect("the complete Paseo plane composes");
         assert!(
             registry
                 .get(&RuntimeKindKey::parse("paseo.agent").expect("a valid key"))
@@ -1176,7 +1223,7 @@ mod tests {
             setting.task_scopes = scopes;
             assert!(
                 matches!(
-                    compose_paseo(&setting, None),
+                    compose_paseo(&setting, None, None),
                     Err(FleetError::Invalid {
                         rule: "task_scopes permission_overrides",
                         ..
@@ -1211,7 +1258,7 @@ mod tests {
             let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
             setting.task_scopes = scopes;
             assert!(
-                compose_paseo(&setting, None).is_ok(),
+                compose_paseo(&setting, None, None).is_ok(),
                 "`{accepted}` is a floor member and is a legitimate exception"
             );
         }
@@ -1235,7 +1282,7 @@ mod tests {
         setting.task_scopes = refused;
         assert!(
             matches!(
-                compose_paseo(&setting, None),
+                compose_paseo(&setting, None, None),
                 Err(FleetError::Invalid {
                     rule: "task_scopes permission_overrides",
                     ..
@@ -1258,7 +1305,7 @@ mod tests {
         let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
         setting.task_scopes = named;
         assert!(
-            compose_paseo(&setting, None).is_ok(),
+            compose_paseo(&setting, None, None).is_ok(),
             "a named pattern is a legitimate, bounded exception"
         );
     }

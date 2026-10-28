@@ -569,6 +569,30 @@ fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
     }
 }
 
+#[test]
+fn a_runtime_family_route_is_authorized_only_by_selected_fleet_data() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let (tpm, lsa) = (key(&roster, &seats[0]), key(&roster, &seats[1]));
+    let snapshot =
+        FleetSnapshot::parse_policy(&policy(lsa.as_str(), tpm.as_str())).expect("valid policy");
+    let rung = |provider: &str, model: &str, effort: EffortLevel| ModelRung {
+        provider: ProviderRef(provider.to_owned()),
+        model: ModelRef(model.to_owned()),
+        effort: Some(effort),
+    };
+
+    let family = rung("codex", "gpt-5.6-sol", EffortLevel::Xhigh);
+    assert!(snapshot.lists_family_route(&family));
+    assert!(
+        !snapshot.lists(&family),
+        "a family-level runtime route is not an account-level placement route"
+    );
+    assert!(!snapshot.lists_family_route(&rung("claude", "gpt-5.6-sol", EffortLevel::Xhigh,)));
+    assert!(!snapshot.lists_family_route(&rung("codex", "gpt-5.6-sol", EffortLevel::High,)));
+    assert!(!snapshot.lists_family_route(&rung("codex", "unlisted-model", EffortLevel::Xhigh,)));
+}
+
 /// ASMA-8433: a characterization guard for the fleet gate the host-local pool
 /// edit depends on — no `kontor-fleet` production change is involved. A host
 /// that lists the ZeroSub pool's plain `claude` account first admits the

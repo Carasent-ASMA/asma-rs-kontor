@@ -96,6 +96,17 @@ pub struct ConfigFolder {
 }
 
 impl ConfigFolder {
+    /// Parse the fleet selected by this folder without activating it.
+    ///
+    /// # Errors
+    /// Refuses unreadable or invalid selected fleet bytes by their field path.
+    pub fn fleet_snapshot(&self) -> Result<kontor_fleet::FleetSnapshot, ConfigError> {
+        let text = std::fs::read_to_string(&self.fleet)
+            .map_err(|_| refusal(&self.fleet, "fleet configuration cannot be read"))?;
+        kontor_fleet::FleetSnapshot::parse_policy(&text)
+            .map_err(|_| refusal(&self.fleet, "invalid fleet configuration"))
+    }
+
     /// Select the flag before the environment, resolving relative paths once.
     ///
     /// # Errors

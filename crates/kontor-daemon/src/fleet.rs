@@ -1570,14 +1570,6 @@ mod tests {
                 V13,
                 EXAMPLE.replacen("efforts: [low, high, max]", "efforts: [low, high, high]", 1),
             ),
-            (
-                V14,
-                EXAMPLE.replacen(
-                    "id: deepseek/deepseek-flash,",
-                    "id: deepseek/deepseek-v4-pro,",
-                    1,
-                ),
-            ),
             (V15, EXAMPLE.replacen("  review-a:", "  Review-a:", 1)),
             (
                 V16,
@@ -2183,7 +2175,6 @@ bindings:
             "a model effort is not in the runtime effort vocabulary"
         );
         assert_eq!(V13, "a model lists an effort twice");
-        assert_eq!(V14, "a model route failed route validation");
         assert_eq!(V15, "a chain name must be a lowercase slug");
         assert_eq!(V16, "a chain must have 1 to 16 non-empty steps");
         assert_eq!(V17, "a chain entry names an unknown model");

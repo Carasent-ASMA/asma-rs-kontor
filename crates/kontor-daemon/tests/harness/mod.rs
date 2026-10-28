@@ -236,6 +236,7 @@ struct WorldComposition {
     /// A test-owned `attention.yml` written before the daemon starts.
     attention: Option<String>,
     native_consultations: bool,
+    selected_config: bool,
     native_route_policy: Option<String>,
     native_role_catalog: Option<kontor_core::spec::RoleCatalogRevision>,
 }
@@ -300,6 +301,21 @@ impl World {
     /// that does not exist, which is what it should find.
     pub(crate) async fn open_empty() -> Self {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
+    }
+
+    pub(crate) async fn open_empty_with_selected_config() -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                selected_config: true,
+                ..WorldComposition::default()
+            },
+        )
+        .await
     }
 
     /// Start an empty Realm with the test-owned runtime-refusal quota signals.
@@ -729,6 +745,53 @@ impl World {
                 composition.native_route_policy.as_deref(),
                 composition.native_role_catalog.as_ref(),
             ));
+        } else if composition.selected_config {
+            let folder = native_config_fixture::write_config_folder(directory.path());
+            let entry = folder.join("orchestration/orchestration.yml");
+            let mut selected: serde_json::Value =
+                serde_yaml_ng::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+            selected["project"]["forge"]["base_branch"] = native_checkout_fixture::BASE.into();
+            std::fs::write(entry, serde_yaml_ng::to_string(&selected).unwrap()).unwrap();
+            let profiles = folder.join("packs/profiles.yml");
+            let mut selected: serde_json::Value =
+                serde_yaml_ng::from_str(&std::fs::read_to_string(&profiles).unwrap()).unwrap();
+            for team in selected["teams"].as_array_mut().unwrap() {
+                for slot in team["slots"].as_array_mut().unwrap() {
+                    slot["model_chain"] = serde_json::json!({
+                        "rungs": [{
+                            "provider": "codex-primary",
+                            "model": "gpt-example",
+                            "effort": "xhigh"
+                        }]
+                    });
+                }
+            }
+            std::fs::write(profiles, serde_yaml_ng::to_string(&selected).unwrap()).unwrap();
+            let project_root =
+                native_checkout_fixture::repository(&directory.path().join("journey-repository"));
+            std::fs::write(
+                folder.join("host.yml"),
+                serde_yaml_ng::to_string(&serde_json::json!({
+                    "schema_version": 1,
+                    "checkouts": {
+                        "root": native_checkout_fixture::source(&project_root),
+                        "modules": {}
+                    },
+                    "provider_accounts": {
+                        "codex-primary": {
+                            "provider": "codex",
+                            "native_alias": "synthetic-codex",
+                            "harness": "paseo",
+                            "credential": "env:SYNTHETIC_REFERENCE",
+                            "serves": {"sol-example": "gpt-example"}
+                        }
+                    },
+                    "routes": {"codex": ["codex-primary"]}
+                }))
+                .unwrap(),
+            )
+            .expect("the selected host binding is written");
+            config = config.with_config_dir(folder);
         } else {
             config =
                 config.with_connector_specs(tracker_fixtures::catalog().expect("test catalog"));

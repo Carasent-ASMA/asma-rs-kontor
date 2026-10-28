@@ -307,7 +307,7 @@ fn confirm_jira_identity(world: &World, project: &str, epic: &str, task_jira_key
             ordinal: 0,
             item_kind: JiraItemKind::Epic,
             intent_kind: JiraIntentKind::Link,
-            requested_key: Some(ExternalId::parse("ASMA-8000").expect("an epic Jira key")),
+            requested_key: Some(ExternalId::parse("EXM-8000").expect("an epic Jira key")),
             marker: ExternalId::parse(&format!("kontor-test-epic-{epic}")).expect("an epic marker"),
         }];
         let tasks = store
@@ -428,12 +428,15 @@ fn confirm_jira_identity(world: &World, project: &str, epic: &str, task_jira_key
 /// two callers is exactly where an authority gap hides.
 #[tokio::test]
 async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
-    let world = World::open_empty().await;
+    let world = World::open_empty_with_selected_config().await;
     world.script(HISTORY_LIVE);
     world.daemon.reconcile().await;
     let (lead, transport) = lead_seat(&world);
     let repository = world.directory.path().join("journey-repository");
     std::fs::create_dir_all(&repository).expect("isolated artifact repository");
+    let repository = repository
+        .canonicalize()
+        .expect("the selected project root is canonical");
     let git = |args: &[&str]| {
         let output = std::process::Command::new("git")
             .arg("-C")
@@ -451,7 +454,11 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             .trim()
             .to_owned()
     };
-    git(&["init", "--quiet"]);
+    assert_eq!(
+        git(&["rev-parse", "--show-toplevel"]),
+        repository.to_string_lossy(),
+        "the selected project root is the configured checkout"
+    );
     let content = b"MCP journey committed implementation and review evidence.\n";
     std::fs::write(repository.join("evidence.md"), content).expect("committed fixture");
     git(&["add", "evidence.md"]);
@@ -607,7 +614,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     )
     .await;
     assert_eq!(validation["violations"], serde_json::json!([]));
-    let published = ok(
+    let definition = ok(
         &lead,
         "kontor_team_definition_publish",
         serde_json::json!({
@@ -621,14 +628,15 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     .await;
     let domain_selection =
         harness::DomainSelectionFixture::activate(&world, ProjectId::parse(&project).unwrap());
+
     let selection = ok(
         &lead,
         "kontor_project_team_definition_selection_preview",
         serde_json::json!({
             "project_id": project,
             "target_definition": {
-                "id": published["definition"]["id"],
-                "version": published["definition"]["version"],
+                "id": definition["definition"]["id"],
+                "version": definition["definition"]["version"],
             },
         }),
     )
@@ -668,6 +676,78 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
 
     drop(domain_selection);
 
+    let proposal = ok(&lead, "kontor_fleet_bundle_propose", serde_json::json!({})).await;
+    let orchestration = std::fs::read_to_string(
+        world
+            .directory
+            .path()
+            .join("selected config with spaces/orchestration/orchestration.yml"),
+    )
+    .expect("the selected orchestration bytes are readable");
+    let fleet = std::fs::read_to_string(
+        world
+            .directory
+            .path()
+            .join("selected config with spaces/orchestration/fleet.yml"),
+    )
+    .expect("the selected fleet bytes are readable");
+    let core_team = proposal["core_team"]
+        .as_str()
+        .expect("the proposal names Core Team bytes")
+        .to_owned();
+    let preview = ok(
+        &lead,
+        "kontor_fleet_bundle_preview",
+        serde_json::json!({
+            "orchestration": orchestration,
+            "fleet": fleet,
+            "core_team": core_team,
+        }),
+    )
+    .await;
+    let published = ok(
+        &lead,
+        "kontor_fleet_bundle_publish",
+        serde_json::json!({
+            "idempotency_key": "journey-fleet-publish",
+            "orchestration": orchestration,
+            "fleet": fleet,
+            "core_team": core_team,
+            "preview_hash": preview["preview_hash"],
+        }),
+    )
+    .await;
+    let standing = ok(&lead, "kontor_fleet_bundle_get", serde_json::json!({})).await;
+    let expected = standing["activation"]["policy_hash"]
+        .as_str()
+        .map(|policy_hash| {
+            serde_json::json!({
+                "policy_hash": policy_hash,
+                "source_bundle_hash": standing["activation"]["source_bundle_hash"],
+            })
+        });
+    let mut activation = serde_json::json!({
+        "idempotency_key": "journey-fleet-activate",
+        "source_bundle_hash": published["manifest"]["source_bundle_hash"],
+    });
+    if let Some(expected) = expected {
+        activation["expected_active"] = expected;
+    }
+    ok(&lead, "kontor_fleet_bundle_activate", activation).await;
+    let active = kontor_fleet_activation::load(world.directory.path())
+        .expect("the selected fleet activation is readable");
+    let bundle = active
+        .bundle
+        .as_ref()
+        .expect("the selected fleet activation retains its source bundle");
+    let matrix =
+        kontor_fleet_activation::routes::read_matrix(world.directory.path(), &bundle.manifest)
+            .expect("the activated selected runtime matrix is readable");
+    assert!(
+        matrix.allows("paseo", "codex"),
+        "the selected folder authorizes its explicit neutral Codex host route"
+    );
+
     // 3. An account profile a run could be pinned to.
     let account = ok(
         &lead,
@@ -678,7 +758,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "label": "Primary",
             "harness": "fake.runtime",
             "credential_alias": "journey-alias",
-            "selectable_providers": ["claude", "claude-b", "claude-a", "codex", "codex-b", "codex-a", "opencode"],
+            "selectable_providers": ["codex-primary"],
             "enabled": true,
         }),
     )
@@ -687,9 +767,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
 
     // The scripted runtime has no vendor quota endpoint. Its actual pinned
     // account declares this limitation through the supported MCP surface.
-    for provider in [
-        "claude", "claude-b", "claude-a", "codex", "codex-b", "codex-a", "opencode",
-    ] {
+    for provider in ["codex-primary"] {
         ok(
             &lead,
             "kontor_provider_quota_record",
@@ -710,7 +788,14 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     let journey_worktrees: Vec<String> = (0..2)
         .map(|index| {
             let root = world.directory.path().join(format!("journey-{index}"));
-            std::fs::create_dir_all(root.join(".git")).expect("a journey worktree");
+            git(&[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                &format!("feat/EXM-{}-journey", index + 1),
+                root.to_str().expect("a UTF-8 worktree path"),
+            ]);
             std::fs::canonicalize(&root)
                 .expect("a canonical journey worktree")
                 .to_string_lossy()
@@ -732,7 +817,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             // epic nothing can be named under.
             "epic_backlog_code": "JOURNEY",
             "execution_scope": {
-                "external_epic_key": "ASMA-8000",
+                "external_epic_key": "EXM-8000",
                 "short_title": "Bootstrap epic",
                 "kontor_backlog_code": "JOURNEY",
                 "ai_short_name": "Bootstrap Epic",
@@ -744,18 +829,18 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             // scheduler is refusing on the dependency edge rather than on a
             // worktree collision. Admission proves the declared path rather
             // than taking the declaration for it, so these are real checkouts
-            // under the world's own directory (ASMA-8115).
+            // under the world's own directory.
             "tasks": [
                 {"title": "Design the thing", "short_code": "JOURNEY-01",
                  "ai_short_name": "Design Thing",
                  "worktree": journey_worktrees[0], "ticket_links": [
-                    {"connector": "jira", "external_issue_key": "ASMA-1"}
+                    {"connector": "jira", "external_issue_key": "EXM-1"}
                 ]},
                 {"title": "Build the thing", "short_code": "JOURNEY-02",
                  "ai_short_name": "Build Thing",
                  "worktree": journey_worktrees[1],
                  "depends_on": ["Design the thing"], "ticket_links": [
-                    {"connector": "jira", "external_issue_key": "ASMA-2"}
+                    {"connector": "jira", "external_issue_key": "EXM-2"}
                  ]}
             ],
         }),
@@ -767,7 +852,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         2,
         "one tool call applied the whole graph"
     );
-    confirm_jira_identity(&world, &project, &epic, &["ASMA-1", "ASMA-2"]);
+    confirm_jira_identity(&world, &project, &epic, &["EXM-1", "EXM-2"]);
 
     // 5. The projection reads the graph back, including the workflow revision a
     //    gate recording has to present.
@@ -789,7 +874,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
 
     // Admission proves the exact ESW/ECP/TSW readback before it commits a
     // TeamRun, so the journey places its own work through the same tool
-    // surface it uses for everything else (ASMA-8115). Both tickets are placed,
+    // surface it uses for everything else. Both tickets are placed,
     // so the second task is refused on its dependency edge — the thing this
     // journey is about — rather than on a placement it was never given.
     let project_view = ok(
@@ -871,8 +956,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     );
     assert_eq!(
         transport.calls(),
-        30,
-        "thirty tool invocations made thirty requests, including explicit Core Team preview/apply: {routes:#?}"
+        29,
+        "twenty-nine tool invocations made twenty-nine requests, including selected fleet publication and explicit Core Team preview/apply: {routes:#?}"
     );
 
     for suffix in ["/core-team:preview", "/core-team:apply"] {

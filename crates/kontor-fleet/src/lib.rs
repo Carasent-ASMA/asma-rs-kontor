@@ -81,7 +81,6 @@ pub mod rule {
     pub const V11: &str = "a model vendor must be a lowercase slug";
     pub const V12: &str = "a model effort is not in the runtime effort vocabulary";
     pub const V13: &str = "a model lists an effort twice";
-    pub const V14: &str = "a model route failed route validation";
     pub const V15: &str = "a chain name must be a lowercase slug";
     pub const V16: &str = "a chain must have 1 to 16 non-empty steps";
     pub const V17: &str = "a chain entry names an unknown model";
@@ -127,8 +126,8 @@ pub mod rule {
 }
 
 use rule::{
-    A09, F04, P07, V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14, V15, V16,
-    V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33,
+    A09, F04, P07, V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V15, V16, V17,
+    V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33,
 };
 
 /// Why a fleet document could not be used as written.
@@ -859,6 +858,37 @@ impl FleetSnapshot {
             .is_some_and(|effort| model.efforts.iter().any(|listed| listed == effort.as_str()))
     }
 
+    /// Whether this snapshot lists a family-level runtime fallback.
+    ///
+    /// Runtime settings name a provider family, while placement names one of
+    /// that family's logical accounts. The selected fleet remains the model and
+    /// effort authority for both forms.
+    #[must_use]
+    pub fn lists_family_route(&self, rung: &ModelRung) -> bool {
+        let Some(provider) = normalize_provider(&rung.provider.0) else {
+            return false;
+        };
+        let mut matches = self.document.models.values().filter(|model| {
+            model.id == rung.model.0
+                && self
+                    .document
+                    .domains
+                    .get(&model.domain)
+                    .is_some_and(|domain| domain.provider == provider)
+        });
+        let Some(model) = matches.next() else {
+            return false;
+        };
+        if matches.next().is_some() {
+            return false;
+        }
+        if model.efforts.is_empty() {
+            return rung.effort.is_none();
+        }
+        rung.effort
+            .is_some_and(|effort| model.efforts.iter().any(|listed| listed == effort.as_str()))
+    }
+
     /// The model's maker for a route the snapshot lists, if any.
     #[must_use]
     pub fn vendor_of(&self, rung: &ModelRung) -> Option<&str> {
@@ -1047,21 +1077,6 @@ impl FleetDocument {
             let unique: BTreeSet<&str> = model.efforts.iter().map(String::as_str).collect();
             if unique.len() != model.efforts.len() {
                 return Err(invalid(V13));
-            }
-        }
-        for model in self.models.values() {
-            let Some(domain) = self.domains.get(&model.domain) else {
-                return Err(invalid(V09));
-            };
-            for account in &domain.accounts {
-                let rung = ModelRung {
-                    provider: ProviderRef(account.clone()),
-                    model: ModelRef(model.id.clone()),
-                    effort: None,
-                };
-                if rung.validate().is_err() {
-                    return Err(invalid(V14));
-                }
             }
         }
         Ok(())
