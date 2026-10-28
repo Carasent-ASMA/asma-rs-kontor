@@ -3365,7 +3365,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Only a workspace list failure stays below the list; the routine read note is in Filters.
   const workspaceFooter = state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null
     : <Text testID="sessions-footer" style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}>{workspaceNote}.</Text>;
-  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
+  const promotionCoverageNotice = retirement?.promotionRead.state === "unknown" ? (
+    <View testID="sessions-promotion-coverage" style={{ paddingHorizontal: 4, paddingVertical: 2 }}>
+      <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{`Promotion evidence unavailable: ${retirement.promotionRead.error ?? "the host did not report a readable promotion list"}.`}</Text>
+    </View>
+  ) : null;
+  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
   withHeaderRef.current = listHeader !== null;
 
   return (
