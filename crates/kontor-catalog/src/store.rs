@@ -1212,6 +1212,10 @@ fn promote_complete(
            AND logical_plan_id IS NOT NULL
            AND logical_plan_id IN (
                SELECT logical_plan_id FROM catalog_logical_plans WHERE state = 'removed'
+           )
+           AND last_seen_generation = (
+               SELECT p.last_seen_generation FROM catalog_logical_plans p
+               WHERE p.logical_plan_id = catalog_associations.logical_plan_id
            )",
         [],
     )?;

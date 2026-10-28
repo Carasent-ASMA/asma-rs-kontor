@@ -2244,9 +2244,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Native catalog rows carry no labels. Desk and outside-desk facts depend on
   // those labels, so their counts are unknown, never zero, while direct cannot
   // supply the labels.
+  const allSessionsUnknown = state.lastUpdatedAt === null || state.source === "unavailable";
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => labelsUnavailable && id !== null
     ? null
-    : scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [labelsUnavailable, scoped, mappings]);
+    : id === null && allSessionsUnknown
+      ? null
+      : scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [labelsUnavailable, allSessionsUnknown, scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces, !labelsUnavailable), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces, labelsUnavailable]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
   const workstreamChoices = useMemo(() => work === "all" || labelsUnavailable ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),

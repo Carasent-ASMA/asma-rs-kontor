@@ -1133,7 +1133,7 @@ describe("SessionsScreen toolbar events", () => {
     };
     renderScreen();
     const chip = (index: number) => findByTestID(harness.current(), `sessions-shortcut-${index}`);
-    for (const index of [1, 2, 3, 4]) {
+    for (const index of [0, 1, 2, 3, 4]) {
       expect(chip(index).props.count).toBeNull();
     }
   });
@@ -2084,6 +2084,24 @@ describe("SessionsScreen toolbar events", () => {
     expect(listRows().every((row) => row.kind !== "result")).toBe(true);
   });
 
+  it("marks a catalog-only row as a visible catalog copy", () => {
+    directory.state = { ...emptyDirectoryState(), entries: [{ ...sessionEntry("copy"), catalogCopyAt: "2026-10-25T06:14:01Z" }], status: "ready", live: false, source: "catalog", inventoryComplete: true, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", grouping: "flat", status: "all", work: "all", includeArchived: false, task: null, shortcut: null, streams: null, epic: null });
+    renderScreen();
+    const row = drawSession("copy");
+    expect(textOf(row)).toContain("catalog copy · as of 2026-10-25T06:14:01Z");
+    expect(String(findByTestID(row, "session-row-body").props.accessibilityLabel)).toContain("catalog copy");
+  });
+
+  it("does not claim a task has no linked sessions when labels are unavailable", () => {
+    directory.state = { ...emptyDirectoryState(), entries: [], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", task: { jira: "ASMA-9", kontorId: null, label: "ASMA-9" } });
+    renderScreen();
+    const empty = textOf(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent);
+    expect(empty).toContain("Session labels are unavailable, so a link to ASMA-9 cannot be established.");
+    expect(empty).not.toContain("No session in this view is linked to ASMA-9.");
+  });
+
   it("scopes an epic through the display mapping the tree uses", () => {
     const values = { ...DEFAULT_ORGANIZATION_SETTINGS, displayMappings: { "workspace:wks_mapped": { epic: "asma-9" } } };
     patchSessionView("host-a:epic", { query: "", scrollOffset: 0, ...toolbarOpenPatch(true) });
@@ -2713,6 +2731,16 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(choiceFacts("adopus-graphql")).not.toContain("0 sessions");
     expect(selector().about).toContain("Session counts are unavailable");
     expect(selector().options.map((option) => option.key)).toContain("adopus-graphql");
+  });
+
+  it.each([true, false])("keeps My work choices when label counts are unavailable (compact=%s)", async (compact) => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", advancedOpen: true, includeArchived: false, work: "mine", ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry });
+    if (compact) openMobileFilters();
+    expect(selector().options.map((option) => option.key)).toContain("adopus-graphql");
+    expect(selector().about).toContain("My work shows every choice");
   });
 
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {

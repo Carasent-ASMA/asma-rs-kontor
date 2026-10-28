@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PaseoWorkspace } from "@getpaseo/client";
 import { declaredScope } from "../client/session-organization";
 import { openSessionById } from "../client/session-actions";
-import { adaptSharedInventory } from "../client/shared-inventory";
+import { adaptSharedInventory, catalogDirectory } from "../client/shared-inventory";
 import { emptyDirectoryState, type DirectoryState } from "../client/session-directory";
 import { sessionEntry } from "./session-fixtures";
 import type { DirectWorkspaceDirectory } from "../client/use-workspace-directory";
@@ -308,6 +308,7 @@ describe("the shared native inventory adapter", () => {
         staleReason: "Live updates stopped.",
         entries: [frozen, ghost],
         lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
       },
       catalog: catalog(native({
         view: nativeView({
@@ -392,6 +393,141 @@ describe("the shared native inventory adapter", () => {
     const result = openSessionById({ entries: adapted.directory.entries, id: "session-a", serverId: HOST_ID, navigation });
     expect(result.ok).toBe(true);
     expect(navigation.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "session-a", serverId: HOST_ID });
+  });
+
+  it("D1a keeps a session created after the walk during the re-walk window", () => {
+    const created = sessionEntry("session-created", {
+      status: "running", updatedAt: "2026-10-25T06:15:00Z",
+    });
+    const adapted = adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: false, staleReason: "Refreshing the archive scope.",
+        entries: [created], lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
+      },
+      catalog: catalog(native()),
+    });
+    expect(adapted.directory.entries.map((entry) => entry.id)).toContain("session-created");
+    expect(adapted.directory.entries.find((entry) => entry.id === "session-created")?.catalogCopyAt).toBeUndefined();
+  });
+
+  it("D1b drops a direct row deleted before a complete newer catalog", () => {
+    const deleted = sessionEntry("session-deleted", {
+      status: "idle", updatedAt: "2026-10-25T05:00:00Z",
+    });
+    const adapted = adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: true,
+        entries: [deleted], lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
+      },
+      catalog: catalog(native()),
+    });
+    expect(adapted.directory.entries.some((entry) => entry.id === "session-deleted")).toBe(false);
+  });
+
+  it("D1c lets a newer catalog status replace a frozen direct row", () => {
+    const frozen = sessionEntry("session-a", {
+      status: "running", updatedAt: "2026-10-25T05:00:00Z",
+    });
+    const adapted = adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: true,
+        entries: [frozen], lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
+      },
+      catalog: catalog(native({ view: nativeView({ sessions: [nativeSession("session-a", { status: "idle", updatedAt: AS_OF })] }) })),
+    });
+    expect(adapted.directory.entries.find((entry) => entry.id === "session-a")).toMatchObject({ status: "idle" });
+  });
+
+  it("D1 tie keeps the direct row over an equal-time catalog row", () => {
+    const directA = sessionEntry("session-a", { status: "running", updatedAt: AS_OF });
+    const adapted = adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: true,
+        entries: [directA], lastUpdatedAt: Date.parse(AS_OF),
+        directKnownThrough: Date.parse(AS_OF),
+      },
+      catalog: catalog(native({ view: nativeView({ sessions: [nativeSession("session-a", { status: "idle", updatedAt: AS_OF })] }) })),
+    });
+    expect(adapted.directory.entries.find((entry) => entry.id === "session-a")).toMatchObject({ status: "running" });
+  });
+
+  it("D1d drops a catalog-only ghost when direct was complete through the catalog instant", () => {
+    const directA = sessionEntry("session-a", { updatedAt: "2026-10-25T06:15:00Z" });
+    const adapted = adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: true,
+        entries: [directA], lastUpdatedAt: Date.parse("2026-10-25T06:15:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T06:15:00Z"),
+      },
+      catalog: catalog(native({ view: nativeView({ sessions: [nativeSession("session-a", { updatedAt: AS_OF }), nativeSession("session-ghost", { updatedAt: "2026-10-25T05:00:00Z" })] }) })),
+    });
+    expect(adapted.directory.entries.some((entry) => entry.id === "session-ghost")).toBe(false);
+  });
+
+  it("D1e keeps and visibly marks a catalog-only row when the catalog is newer", () => {
+    const directA = sessionEntry("session-a", { updatedAt: "2026-10-25T05:00:00Z" });
+    const adapted = adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: true,
+        entries: [directA], lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
+      },
+      catalog: catalog(native({ view: nativeView({ sessions: [nativeSession("session-a", { updatedAt: AS_OF }), nativeSession("session-copy")] }) })),
+    });
+    expect(adapted.directory.entries.find((entry) => entry.id === "session-copy")).toMatchObject({ catalogCopyAt: AS_OF });
+  });
+
+  it("D1f a partial catalog never drops a direct row", () => {
+    const directOnly = sessionEntry("session-direct-only", { updatedAt: "2026-10-25T05:00:00Z" });
+    const directState = direct({
+      status: "stale", live: false, inventoryComplete: true,
+      entries: [directOnly], lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+      directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
+    });
+    const merged = catalogDirectory(nativeView({ truncated: true }), directState, false, true, null);
+    expect(merged.entries.some((entry) => entry.id === "session-direct-only")).toBe(true);
+    const adapted = adapt({ direct: directState, catalog: catalog(native({ view: nativeView({ truncated: true }) })) });
+    expect(adapted.directory.entries.some((entry) => entry.id === "session-direct-only")).toBe(true);
+  });
+
+  it("D1g applies the archive filter symmetrically to direct and catalog rows", () => {
+    const active = sessionEntry("session-active", { updatedAt: "2026-10-25T06:00:00Z" });
+    const archived = sessionEntry("session-archived", { archivedAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-25T06:00:00Z" });
+    const view = nativeView({ sessions: [
+      nativeSession("session-active", { updatedAt: AS_OF }),
+      nativeSession("session-archived", { archivedAt: "2026-10-24T00:00:00Z", updatedAt: AS_OF }),
+    ] });
+    const base = {
+      status: "stale" as const, live: false, inventoryComplete: true,
+      entries: [active, archived], lastUpdatedAt: Date.parse("2026-10-25T06:00:00Z"),
+      directKnownThrough: Date.parse("2026-10-25T06:00:00Z"),
+    };
+    const activeOnly = adapt({ direct: { ...base, includeArchived: false }, catalog: catalog(native({ view })) });
+    expect(activeOnly.directory.entries.map((entry) => entry.id)).toEqual(["session-active"]);
+    const withArchive = adapt({ direct: { ...base, includeArchived: true }, catalog: catalog(native({ view })), includeArchived: true });
+    expect(withArchive.directory.entries.map((entry) => entry.id).sort()).toEqual(["session-active", "session-archived"]);
+  });
+
+  it("D1h does not use the client clock in the merge decision", () => {
+    const directA = sessionEntry("session-a", { updatedAt: "2026-10-25T05:00:00Z" });
+    const run = () => adapt({
+      direct: {
+        status: "stale", live: false, inventoryComplete: true,
+        entries: [directA], lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+        directKnownThrough: Date.parse("2026-10-25T05:00:00Z"),
+      },
+      catalog: catalog(native({ view: nativeView({ sessions: [nativeSession("session-a", { updatedAt: AS_OF }), nativeSession("session-copy")] }) })),
+    }).directory.entries.map((entry) => `${entry.id}:${entry.status}:${entry.catalogCopyAt ?? "direct"}`).sort();
+    const skew = vi.spyOn(Date, "now");
+    skew.mockReturnValue(Date.parse(AS_OF) + 10 * 60_000);
+    const ahead = run();
+    skew.mockReturnValue(Date.parse(AS_OF) - 10 * 60_000);
+    const behind = run();
+    skew.mockRestore();
+    expect(ahead).toEqual(behind);
   });
 
   it("uses catalog workspaces for selectors only when the direct workspace read cannot answer", () => {

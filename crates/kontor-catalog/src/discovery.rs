@@ -161,7 +161,12 @@ pub async fn discover_with_budget(
                     // source, not evidence that the whole root was read. Drop
                     // the containing root's absence evidence so its occurrence
                     // cannot be tombstoned, then keep the sweep complete.
-                    let canonical = std::fs::canonicalize(&source.path).ok();
+                    let canonical = std::fs::canonicalize(&source.path).ok().or_else(|| {
+                        source
+                            .path
+                            .parent()
+                            .and_then(|parent| std::fs::canonicalize(parent).ok())
+                    });
                     scanned_roots.retain(|root| {
                         let root_path = Path::new(&root.repository_root);
                         !source.path.starts_with(root_path)

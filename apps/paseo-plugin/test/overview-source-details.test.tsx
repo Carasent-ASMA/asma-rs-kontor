@@ -36,7 +36,7 @@ function overview(reads: Record<string, SourceRead>, extra: Partial<Props> = {})
   const child = elements(outer).find((element) => element.props.tab === "Overview")!;
   return (child.type as (props: Props) => ReactNode)(child.props as Props);
 }
-const catalogRead = (nativeTruncated: boolean, entriesTruncated = false, options: { sourceAsOf?: string | null; nativeMode?: "catalog" | "snapshot" | "unavailable" } = {}) => ({
+const catalogRead = (nativeTruncated: boolean, entriesTruncated = false, options: { sourceAsOf?: string | null; nativeMode?: "catalog" | "snapshot" | "unavailable"; viewSource?: "database" | "snapshot" } = {}) => ({
   mode: "catalog",
   checkedAt: "2026-10-25T09:00:00Z",
   sourceAsOf: options.sourceAsOf === undefined ? "2026-10-25T08:15:00Z" : options.sourceAsOf,
@@ -52,7 +52,7 @@ const catalogRead = (nativeTruncated: boolean, entriesTruncated = false, options
       runtimeInstance: "paseo:ws://127.0.0.1:6767/ws",
       generation: 12,
       asOf: "2026-10-25T08:55:00Z",
-      source: options.nativeMode === "snapshot" ? "snapshot" : "database",
+      source: options.viewSource ?? (options.nativeMode === "snapshot" ? "snapshot" : "database"),
       archiveScope: true,
       truncated: nativeTruncated,
       projects: [],
@@ -188,6 +188,7 @@ describe("compact Overview source evidence", () => {
     expect(String(cue(catalogRead(false), { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null,
       pages: 1, includeArchived: false, source: "catalog", inventoryComplete: false, labelsComplete: false }).props.accessibilityLabel)).toContain("catalog partial");
     expect(String(cue(catalogRead(false, false, { nativeMode: "snapshot" })).props.accessibilityLabel)).toContain("catalog snapshot");
+    expect(String(cue(catalogRead(false, false, { nativeMode: "catalog", viewSource: "snapshot" })).props.accessibilityLabel)).toContain("catalog snapshot");
     expect(String(cue(catalogRead(false, false, { nativeMode: "unavailable" })).props.accessibilityLabel)).toContain("catalog unavailable");
   });
 

@@ -207,15 +207,17 @@ async fn a_permission_denied_source_inside_a_root_keeps_its_plan() {
         "_docs/plans/plan.md",
         &plan("Plan", Some("ASMA-9010"), Some("kontor"), ""),
     );
-    let source_path = repo.write(
+    let source_path = std::fs::canonicalize(repo.write(
         "notes/operator.md",
         &plan("Operator plan", Some("ASMA-9015"), Some("kontor"), ""),
-    );
+    ))
+    .expect("the source path canonicalizes");
     repo.commit("plans");
+    let root = std::fs::canonicalize(repo.root()).expect("the repository root canonicalizes");
     let fixture = Fixture::open_settings(kontor_catalog::CatalogSettings {
         schema_version: 1,
         repositories: vec![kontor_catalog::RepositoryConfig {
-            root: repo.root().to_path_buf(),
+            root,
             include_github_plans: false,
         }],
         sources: vec![kontor_catalog::config::OperatorSource {
@@ -302,6 +304,70 @@ async fn a_permission_denied_source_inside_a_root_keeps_its_plan() {
             .state,
         EntryState::Removed,
         "a genuinely deleted source is still tombstoned"
+    );
+}
+
+#[tokio::test]
+async fn an_unsearchable_source_parent_inside_a_root_keeps_its_plan() {
+    let repo = Repo::new();
+    repo.write(
+        "_docs/plans/plan.md",
+        &plan("Plan", Some("ASMA-9010"), Some("kontor"), ""),
+    );
+    let source_path = repo.write(
+        "outer/locked/operator.md",
+        &plan("Operator plan", Some("ASMA-9015"), Some("kontor"), ""),
+    );
+    repo.commit("plans");
+    let root = std::fs::canonicalize(repo.root()).expect("the repository root canonicalizes");
+    let source_path = std::fs::canonicalize(source_path).expect("the source path canonicalizes");
+    let parent = source_path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the source grandparent");
+    let fixture = Fixture::open_settings(kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root,
+            include_github_plans: false,
+        }],
+        sources: vec![kontor_catalog::config::OperatorSource {
+            id: "locked-source".to_owned(),
+            title: None,
+            kind: kontor_catalog::config::SourceKind::Plan,
+            path: source_path.clone(),
+            workstream: None,
+            epic: None,
+            project_id: None,
+            revision_kind: Default::default(),
+            expected_sha256: None,
+            logical_plan_id: None,
+        }],
+        ..kontor_catalog::CatalogSettings::default()
+    });
+    sweep(&fixture.catalog).await;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o000))
+        .expect("the source grandparent becomes unsearchable");
+    let next = sweep(&fixture.catalog).await;
+    let entries = fixture
+        .catalog
+        .entries(&EntryFilter {
+            include_removed: true,
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))
+        .expect("the source grandparent is restored");
+    assert!(next.finished);
+    assert_eq!(
+        entries
+            .entries
+            .iter()
+            .find(|entry| entry.title == "Operator plan")
+            .unwrap()
+            .state,
+        EntryState::Active,
+        "an unsearchable source parent keeps the source's plan instead of tombstoning it"
     );
 }
 

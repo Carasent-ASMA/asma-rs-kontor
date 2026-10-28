@@ -27,6 +27,7 @@ export function selectionSummary(selected: readonly string[] | null, options: re
 }
 
 function kinds(option: WorkstreamOption, registryLoaded: boolean): string[] {
+  if (option.countsUnknown) return ["session count unavailable"];
   if (option.key === OTHER_WORKSTREAM.toLowerCase()) return ["no workstream link"];
   return [option.desk ? "desk category" : null, !option.desk && option.sessions + option.workspaces === 0 && option.plans > 0 ? "plan only" : null,
     registryLoaded && !option.desk && !option.registered ? "unregistered" : null].filter((kind): kind is string => kind !== null);
@@ -94,8 +95,8 @@ export function WorkstreamSelector({ options, hidden = [], selected, open, regis
     const key = option?.key ?? (choice as string);
     const label = option?.label ?? "Unavailable association";
     const checked = selected === null || selected.includes(key);
-    const count = option ? `${option.sessions} session${option.sessions === 1 ? "" : "s"}` : "not in this context";
-    const scoped = option && scopeCounts ? `${scopeCounts.get(key) ?? 0} ${scopeLabel}` : null;
+    const count = option ? option.countsUnknown ? "session count unavailable" : `${option.sessions} session${option.sessions === 1 ? "" : "s"}` : "not in this context";
+    const scoped = option && scopeCounts ? option.countsUnknown ? "assigned count unavailable" : `${scopeCounts.get(key) ?? 0} ${scopeLabel}` : null;
     const facts = option ? workstreamOptionLabel(option, registryLoaded) : `Saved key ${key} is selected but not offered in this context. It stays selected until you clear it or choose All or None.`;
     return <View key={key} style={{ gap: 2 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

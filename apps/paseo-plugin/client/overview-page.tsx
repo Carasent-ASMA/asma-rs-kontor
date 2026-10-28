@@ -36,7 +36,7 @@ export function catalogDisclosureCue(catalog: WorkCatalogRead | null | undefined
   if (catalog?.mode === "snapshot") return "catalog snapshot";
   if (catalog?.mode === "unavailable") return "catalog unavailable";
   if (catalog?.mode !== "catalog") return null;
-  if (catalog.native.mode === "snapshot") return "catalog snapshot";
+  if (catalog.native.mode === "snapshot" || catalog.native.view?.source === "snapshot") return "catalog snapshot";
   if (catalog.native.mode === "unavailable") return "catalog unavailable";
   const partial = (directory.source === "catalog" && directory.inventoryComplete !== true)
     || catalog.sourceAsOf === null

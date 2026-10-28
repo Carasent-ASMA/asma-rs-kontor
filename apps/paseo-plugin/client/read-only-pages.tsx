@@ -1,11 +1,11 @@
 import { useMemo, useRef, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
-import type { DirectoryEntry, DirectoryState } from "./session-directory";
+import { knownWhen, type DirectoryEntry, type DirectoryState } from "./session-directory";
 import { sourceReadPending, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import type { WorkCatalogRead } from "../shared/work-catalog";
 import type { Destination } from "./navigation-state";
-import { confirmedEpic, inboxEntries, readTime, searchRecords, shortDates } from "./page-data";
+import { confirmedEpicKnown, inboxEntries, readTime, searchRecords, shortDates } from "./page-data";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { TEAMS_SESSIONS_NOTE, TeamsSourcePage, type TeamsView } from "./teams-source-page";
 import { SourceDetails } from "./source-details";
@@ -33,17 +33,19 @@ type PageProps = {
   initialOffset: number; onScroll: (offset: number) => void;
 };
 const day = (value: string) => value.slice(0, 10);
-function sessionDetail(entry: DirectoryEntry): string {
-  return [entry.status, attentionLabel(entry), earlierErrorLabel(entry), entry.workspaceName ?? "Unassigned workspace", confirmedEpic(entry) ?? NO_LINKED_EPIC].filter(Boolean).join(" · ");
+function sessionDetail(entry: DirectoryEntry, labelsKnown = true): string {
+  const epic = confirmedEpicKnown(entry, labelsKnown);
+  return [entry.status, attentionLabel(entry), earlierErrorLabel(entry), entry.workspaceName ?? "Unassigned workspace", epic.known ? epic.value ?? NO_LINKED_EPIC : "Epic unknown: session labels unavailable"].filter(Boolean).join(" · ");
 }
 /** Compact native session rows; opening one uses Paseo's own session view. `label` adds exact values to the row's label. */
-function SessionRows({ entries, colors, onOpen, detail = sessionDetail, label }: { entries: readonly DirectoryEntry[]; colors: Colors; onOpen: (entry: DirectoryEntry) => void; detail?: (entry: DirectoryEntry) => string; label?: (entry: DirectoryEntry) => string }) {
+function SessionRows({ entries, colors, onOpen, detail, label, labelsKnown = true }: { entries: readonly DirectoryEntry[]; colors: Colors; onOpen: (entry: DirectoryEntry) => void; detail?: (entry: DirectoryEntry) => string; label?: (entry: DirectoryEntry) => string; labelsKnown?: boolean }) {
   if (!entries.length) return null;
+  const detailOf = (entry: DirectoryEntry) => [(detail ?? ((item) => sessionDetail(item, labelsKnown)))(entry), entry.catalogCopyAt ? `catalog copy · as of ${entry.catalogCopyAt}` : null].filter(Boolean).join(" · ");
   return <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface1, overflow: "hidden" }}>
     {entries.map((entry, index) => <Pressable key={entry.id} accessibilityRole="button" accessibilityLabel={`Open session ${entry.title}${label ? `, ${label(entry)}` : ""}`} onPress={() => onOpen(entry)}
       style={{ minHeight: 44, justifyContent: "center", gap: 2, paddingHorizontal: 12, paddingVertical: 7, borderTopWidth: index ? 1 : 0, borderColor: colors.border }}>
       <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{entry.title}</Text>
-      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{detail(entry)}</Text>
+      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{detailOf(entry)}</Text>
     </Pressable>)}
   </View>;
 }
@@ -153,6 +155,9 @@ export function ReadOnlyPage(props: PageProps) {
   const readingSources = Object.values(props.reads).filter(sourceReadPending).length;
   if (props.tab === "Plan") return <PlanReader {...props} view={props.planView} onView={props.onPlanView} />;
   const { colors } = props;
+  const labels = knownWhen(props.directory.labelsComplete === true, true);
+  const labelsKnown = labels.known;
+  const scopedLabelsUnknown = props.epicScoped === true && !labelsKnown;
   const inbox = props.tab === "Inbox" ? inboxEntries(props.entries) : [];
   const asOf = props.directory.lastUpdatedAt ? new Date(props.directory.lastUpdatedAt).toISOString() : "Unknown";
   // Pages without Source details keep their scope statement one tap away: About this page on Inbox
@@ -184,15 +189,15 @@ export function ReadOnlyPage(props: PageProps) {
     <View style={{ width: "100%", maxWidth: 1100, alignSelf: "center", gap: 12 }}>
       {props.tab === "Inbox" ? <>
         <AboutPage colors={colors}>{inboxScope}</AboutPage>
-        <SessionRows entries={inbox} colors={colors} onOpen={props.onOpen} />
-        {!inbox.length ? <Copy colors={colors}>Nothing needs input or attention in this read.</Copy> : null}
+        <SessionRows entries={inbox} colors={colors} onOpen={props.onOpen} labelsKnown={labelsKnown} />
+        {!inbox.length ? <Copy colors={colors}>{scopedLabelsUnknown ? "Session labels are unavailable, so this epic scope cannot say nothing needs input or attention." : "Nothing needs input or attention in this read."}</Copy> : null}
       </> : null}
       {props.tab === "Delivery" || props.tab === "Decisions" ? <RecordPage {...props} /> : null}
-      {props.tab === "AI teams & sessions" ? <TeamsSourcePage sources={props.teamsSources ?? props.sources.filter((source) => source.kind === "teams")} snapshots={props.teamsSnapshots} errors={props.teamsErrors} bindingDiagnostics={props.teamsBindingDiagnostics} available={props.teamsAvailable ?? false} reads={props.teamsJsonReads ?? props.reads} entries={props.entries} observedAt={props.directory.lastUpdatedAt === null ? "Unknown" : new Date(props.directory.lastUpdatedAt).toISOString()} colors={colors} view={props.teamsView} onView={props.onTeamsView} kontord={props.kontord}>
+      {props.tab === "AI teams & sessions" ? <TeamsSourcePage sources={props.teamsSources ?? props.sources.filter((source) => source.kind === "teams")} snapshots={props.teamsSnapshots} errors={props.teamsErrors} bindingDiagnostics={props.teamsBindingDiagnostics} available={props.teamsAvailable ?? false} reads={props.teamsJsonReads ?? props.reads} entries={props.entries} observedAt={props.directory.lastUpdatedAt === null ? "Unknown" : new Date(props.directory.lastUpdatedAt).toISOString()} sessionsKnown={!scopedLabelsUnknown} colors={colors} view={props.teamsView} onView={props.onTeamsView} kontord={props.kontord}>
         {/* The context picker names the context; a zero count is left to the empty sentence. */}
-        <Section title="Sessions in this context" titleLabel={`Native sessions in ${props.contextLabel ?? "All projects"}. ${TEAMS_SESSIONS_NOTE}`} detail={props.entries.length ? `${props.entries.length} session${props.entries.length === 1 ? "" : "s"}` : undefined} colors={colors}>
-          <SessionRows entries={props.entries} colors={colors} onOpen={props.onOpen} detail={(entry) => [entry.labels.role ? `role ${entry.labels.role}` : "role Unknown", entry.status, entry.workspaceName ?? "Unassigned workspace"].join(" · ")} />
-          {!props.entries.length ? <Copy colors={colors}>No sessions in this context.</Copy> : null}
+        <Section title="Sessions in this context" titleLabel={`Native sessions in ${props.contextLabel ?? "All projects"}. ${TEAMS_SESSIONS_NOTE}`} detail={scopedLabelsUnknown ? "session count unknown: shared catalog rows carry no labels" : props.entries.length ? `${props.entries.length} session${props.entries.length === 1 ? "" : "s"}` : undefined} colors={colors}>
+          <SessionRows entries={props.entries} colors={colors} onOpen={props.onOpen} labelsKnown={labelsKnown} detail={(entry) => [labelsKnown ? entry.labels.role ? `role ${entry.labels.role}` : "role Unknown" : "role unknown: session labels unavailable", entry.status, entry.workspaceName ?? "Unassigned workspace"].join(" · ")} />
+          {!props.entries.length ? <Copy colors={colors}>{scopedLabelsUnknown ? "Session labels are unavailable, so this epic scope cannot say there are no sessions." : "No sessions in this context."}</Copy> : null}
         </Section>
       </TeamsSourcePage> : null}
       {props.tab === "Activity" ? <>
@@ -201,18 +206,19 @@ export function ReadOnlyPage(props: PageProps) {
           <Copy colors={colors} muted small>{activityScope}</Copy>
           {activity.map((entry) => <Copy key={entry.id} colors={colors} small>{`${entry.title} · updated ${entry.updatedAt}`}</Copy>)}
         </Disclosure></View>
-        <SessionRows entries={activity} colors={colors} onOpen={props.onOpen}
+        <SessionRows entries={activity} colors={colors} onOpen={props.onOpen} labelsKnown={labelsKnown}
           detail={(entry) => `${readTime(entry.updatedAt)} · ${entry.status}`} label={(entry) => `updated ${entry.updatedAt}, native ${entry.status}`} />
-        {!props.entries.length ? <Copy colors={colors}>No sessions in this context.</Copy> : null}
+        {!props.entries.length ? <Copy colors={colors}>{scopedLabelsUnknown ? "Session labels are unavailable, so this epic scope cannot say there are no sessions." : "No sessions in this context."}</Copy> : null}
       </> : null}
       {props.tab === "Search" ? <>
         <TextInput accessibilityLabel="Search available records" accessibilityHint={SEARCH_SCOPE} placeholder="Search sessions, plans and tasks" placeholderTextColor={colors.foregroundMuted} value={props.query} onChangeText={props.setQuery} style={{ color: colors.foreground, fontSize: 13, paddingHorizontal: 10, minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }} />
         <AboutPage colors={colors}>{SEARCH_SCOPE}</AboutPage>
         {readingSources ? <Copy colors={colors} muted small>{`Reading… ${readingSources} configured source${readingSources === 1 ? "" : "s"} in this context.`}</Copy> : null}
-        {results.sessions.length ? <Section title="Sessions" detail={String(results.sessions.length)} colors={colors}><SessionRows entries={results.sessions} colors={colors} onOpen={props.onOpen} /></Section> : null}
+        {!labelsKnown ? <Copy colors={colors} muted small>Session labels are unavailable: label-only matches may be missing from these results.</Copy> : null}
+        {results.sessions.length ? <Section title="Sessions" detail={labelsKnown ? String(results.sessions.length) : `${results.sessions.length} readable · label matches unknown`} colors={colors}><SessionRows entries={results.sessions} colors={colors} onOpen={props.onOpen} labelsKnown={labelsKnown} /></Section> : null}
         {results.plans.length ? <Section title="Plans" detail={String(results.plans.length)} colors={colors}><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{results.plans.map((read) => <Action key={read.source.id} small={!props.compact} colors={colors} label={read.source.title} accessibilityLabel={`Plan: ${read.source.title}`} onPress={() => props.onSource(read.source.id)} />)}</View></Section> : null}
         {results.tasks.length ? <Section title="Plan tasks" detail={String(results.tasks.length)} colors={colors}><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{results.tasks.map(({ node, source }) => <Action key={`${source.id}:${node.id}`} small={!props.compact} colors={colors} label={`${node.jira ?? node.id} · ${node.title}`} onPress={() => props.onSource(source.id)} />)}</View></Section> : null}
-        {!results.sessions.length && !results.plans.length && !results.tasks.length && !readingSources ? <Copy colors={colors}>No matching records.</Copy> : null}
+        {!results.sessions.length && !results.plans.length && !results.tasks.length && !readingSources ? <Copy colors={colors}>{labelsKnown ? "No matching records." : "No matching records in readable fields; session label matches are unavailable."}</Copy> : null}
       </> : null}
     </View>
   </ScrollView>;

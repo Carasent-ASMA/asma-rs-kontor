@@ -139,32 +139,31 @@ function catalogEntry(
   };
 }
 
-function catalogDirectory(
+export function catalogDirectory(
   view: WorkCatalogNativeView,
   direct: DirectoryState,
   includeArchived: boolean,
   partial: boolean,
   warning: string | null,
 ): DirectoryState {
-  // The catalog and direct rows describe different instants. Compare per id:
-  // a newer catalog row replaces a frozen direct row, while a newer direct row
-  // keeps the re-walk window from rolling a session back to sweep time. A
-  // complete catalog newer than the direct walk may also drop a direct-only row
-  // that the catalog no longer lists, which is how a deleted ghost disappears.
-  const directRows = new Map(direct.entries.map((entry) => [entry.id, entry]));
+  // D1: compare the two inventories through their own host-stamped instants.
+  // C_t is the daemon sweep's asOf; D_t is the direct known-through instant.
+  // Never compare either with this client's Date.now(): a phone's clock is not
+  // evidence about the host.
+  const directRows = new Map(
+    direct.entries
+      .filter((entry) => includeArchived || entry.archivedAt === null)
+      .map((entry) => [entry.id, entry]),
+  );
   const catalogSessions = view.sessions.filter((session) => includeArchived || session.archivedAt === null);
   const catalogRows = new Map(catalogSessions.map((session) => [session.sessionId, session]));
   const asOf = timeOf(view.asOf);
-  const directWalkedAt = direct.lastUpdatedAt;
-  const catalogCoversDirect =
-    !partial
-    && asOf !== null
-    && directWalkedAt !== null
-    && asOf > directWalkedAt;
+  const knownThrough = direct.directKnownThrough ?? null;
+  const directComplete = direct.inventoryComplete === true;
   const entries: DirectoryEntry[] = [];
   let keptDirect = false;
   let catalogFilled = false;
-  for (const row of direct.entries) {
+  for (const row of directRows.values()) {
     const catalog = catalogRows.get(row.id);
     if (catalog) {
       const catalogAt = timeOf(catalog.updatedAt);
@@ -178,13 +177,30 @@ function catalogDirectory(
       }
       continue;
     }
-    if (catalogCoversDirect) continue;
+    // A direct-only row is direct's own evidence. The catalog may prove it
+    // absent only when the catalog is complete and newer than D_t and the row
+    // itself is not newer than C_t. The row timestamp keeps a session created
+    // after the sweep, which can be newer than the walk's known-through bound.
+    const rowAt = timeOf(row.updatedAt) ?? timeOf(row.createdAt);
+    const catalogCoversRow =
+      !partial
+      && asOf !== null
+      && knownThrough !== null
+      && asOf > knownThrough
+      && rowAt !== null
+      && rowAt <= asOf;
+    if (catalogCoversRow) continue;
     entries.push(row);
     keptDirect = true;
   }
   for (const session of catalogSessions) {
     if (directRows.has(session.sessionId)) continue;
-    entries.push(catalogEntry(session, view, undefined));
+    // A complete direct world through D_t that is at least as new as C_t did
+    // not list this id: it is a ghost. Otherwise keep it, visibly marked as a
+    // catalog copy rather than pretending it is a direct row.
+    const directCoversCatalog = directComplete && knownThrough !== null && asOf !== null && knownThrough >= asOf;
+    if (directCoversCatalog) continue;
+    entries.push({ ...catalogEntry(session, view, undefined), catalogCopyAt: view.asOf });
     catalogFilled = true;
   }
   const directStale = keptDirect ? direct.staleReason : null;
@@ -201,11 +217,11 @@ function catalogDirectory(
     source: warning !== null && view.source === "snapshot" ? "catalog-snapshot" : "catalog",
     sourceAsOf: view.asOf,
     labelsComplete: !catalogFilled,
+    directKnownThrough: knownThrough,
     catalogGeneration: view.generation,
     catalogRuntimeInstance: view.runtimeInstance,
   };
 }
-
 function snapshotDirectory(view: WorkCatalogNativeView, direct: DirectoryState, includeArchived: boolean): DirectoryState {
   const partial = !catalogComplete(view, includeArchived);
   const state = catalogDirectory(view, direct, includeArchived, partial, "Shared catalog last-known native snapshot; the live native catalog and Paseo directory are unavailable.");

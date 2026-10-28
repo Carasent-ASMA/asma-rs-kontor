@@ -6,6 +6,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ ActivityIndicator: "ActivityIndicator", ScrollView: "ScrollView", Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { ReadOnlyPage } from "../client/read-only-pages";
+import { emptyDirectoryState } from "../client/session-directory";
 import { readTime } from "../client/page-data";
 import { sessionEntry } from "./session-fixtures";
 type Props = Parameters<typeof ReadOnlyPage>[0];
@@ -31,7 +32,7 @@ function recordRead(tab: Tab, url?: string, status: SourceRead["status"] = "read
 }
 function render(tab: Props["tab"], reads: readonly SourceRead[], extra: Partial<Props> = {}) {
   const open = vi.fn();
-  const props: Props = { tab, colors: {} as Props["colors"], entries: [], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: null, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: reads.map((read) => read.source), reads: Object.fromEntries(reads.map((read) => [read.source.id, read])), sourceId: null, sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn(), onExternalLink: open, ...extra };
+  const props: Props = { tab, colors: {} as Props["colors"], entries: [], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: null, error: null, staleReason: null, pages: 1, includeArchived: false, labelsComplete: true }, sources: reads.map((read) => read.source), reads: Object.fromEntries(reads.map((read) => [read.source.id, read])), sourceId: null, sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn(), onExternalLink: open, ...extra };
   const nodes = elements(ReadOnlyPage(props));
   const visible = nodes.filter((node) => node.type === "Text").map((node) => text(node.props.children as ReactNode)).join("\n");
   const links = nodes.filter((node) => node.type === "Pressable" && /^Open (decision source|evidence):/.test(String(node.props.accessibilityLabel)));
@@ -188,6 +189,25 @@ describe("primary surfaces keep moved statements in labels and Source details", 
     expect(page.labels).toContain(`Open session ${entry.title}, updated ${entry.updatedAt}, native ${entry.status}`);
     expect(render("Activity", []).visible).toContain("No sessions in this context.");
   });
+  it("renders unknown instead of none on epic-scoped pages when session labels are unavailable", () => {
+    const directory = { ...emptyDirectoryState(), status: "ready" as const, source: "catalog" as const, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    const extra = { epicScoped: true, directory };
+    expect(render("Inbox", [], extra).visible).toContain("Session labels are unavailable, so this epic scope cannot say nothing needs input or attention.");
+    expect(render("Inbox", [], extra).visible).not.toContain("Nothing needs input or attention in this read.");
+    expect(render("Activity", [], extra).visible).toContain("Session labels are unavailable, so this epic scope cannot say there are no sessions.");
+    const teams = render("AI teams & sessions", [], extra);
+    expect(teams.visible).toContain("session count unknown: shared catalog rows carry no labels");
+    expect(teams.visible).toContain("Native observations: unknown: session labels unavailable");
+    expect(teams.visible).not.toContain("Native observations: 0 sessions");
+    expect(teams.visible).not.toContain("No sessions in this context.");
+    const search = render("Search", [], { ...extra, query: "ASMA-42" });
+    expect(search.visible).toContain("Session labels are unavailable: label-only matches may be missing from these results.");
+    expect(search.visible).toContain("No matching records in readable fields; session label matches are unavailable.");
+    expect(search.visible).not.toContain("No matching records.");
+    const row = sessionEntry("catalog", { labels: {} });
+    expect(render("Search", [], { ...extra, entries: [row], directory: { ...directory, entries: [row] }, query: "catalog" }).visible).toContain("Epic unknown: session labels unavailable");
+  });
+
   it("moves the Inbox and Search intros behind About this page, visible once opened", () => {
     const inbox = render("Inbox", []);
     expect(inbox.visible).toContain("Nothing needs input or attention in this read.");

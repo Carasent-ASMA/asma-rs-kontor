@@ -947,14 +947,7 @@ impl Daemon {
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref(), Some(&fleet))?;
         let native_census = runtimes::native_census_sources(&settings);
-        Self::start_with_supervision(
-            config,
-            registry,
-            supervision,
-            None,
-            None,
-            native_census,
-        )
+        Self::start_with_supervision(config, registry, supervision, None, None, native_census)
     }
 
     /// This Realm's identity.

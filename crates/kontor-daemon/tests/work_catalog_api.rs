@@ -274,9 +274,10 @@ async fn the_work_catalog_boundary_is_authenticated_and_generation_consistent() 
         .send(&world)
         .await;
     assert_eq!(
-        model_catalog.status, 200,
-        "the model catalog namespace is untouched by the work catalog"
+        model_catalog.status, 409,
+        "the model catalog namespace answers its own placement refusal, not the work catalog"
     );
+    assert_eq!(model_catalog.code(), "placement_blocked");
 }
 
 #[tokio::test]

@@ -99,6 +99,16 @@ describe("association selector", () => {
     expect(text(byTestID(tree, "workstream-facts-gone"))).toContain("Saved key gone is selected");
   });
 
+  it("renders unknown counts instead of zero or plan-only for unlabelled catalog rows", () => {
+    const unknown = option("unknown", "Unknown workstream", { sessions: 0, workspaces: 0, plans: 1, countsUnknown: true });
+    state.values[1] = "unknown";
+    const { tree } = render({ options: [unknown], scopeCounts: new Map([["unknown", 0]]), scopeLabel: "in My work" });
+    expect(byTestID(tree, "workstream-option-unknown")!.props.accessibilityLabel).toBe("Unknown workstream, session count unavailable, assigned count unavailable");
+    expect(text(tree)).not.toContain("0 sessions");
+    expect(text(tree)).not.toContain("plan only");
+    expect(text(byTestID(tree, "workstream-facts-unknown"))).toContain("session count unavailable");
+  });
+
   it("adds a person scope's own count beside each inventory count", () => {
     const { tree } = render({ scopeCounts: new Map([["alpha", 1]]), scopeLabel: "in My work" });
     expect(byTestID(tree, "workstream-option-alpha")!.props.accessibilityLabel).toBe("Alpha & Co, 2 sessions, 1 in My work");

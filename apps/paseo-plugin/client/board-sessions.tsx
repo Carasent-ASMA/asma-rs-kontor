@@ -184,8 +184,9 @@ export function TaskSessionsChooser({ taskKey, task, links, team, live, archived
   const item = ({ entry, role }: (typeof current)[number]) => {
     const state = chainLabel(entry);
     // The title as the session names itself; the role label beside it may repeat a title prefix, so it goes with the state.
-    return <MenuItem key={entry.id} indent={1} tall={compact} colors={colors} label={entry.title} detail={`${role ?? "No role label"} · ${state}`}
-      accessibilityLabel={`Open session ${entry.title}. Role label ${role ?? "none"}. ${state}${live ? "" : ", last known"}. Linked by its ${via.get(entry.id)} label.`}
+    const copy = entry.catalogCopyAt ? ` · catalog copy · as of ${entry.catalogCopyAt}` : "";
+    return <MenuItem key={entry.id} indent={1} tall={compact} colors={colors} label={entry.title} detail={`${role ?? "No role label"} · ${state}${copy}`}
+      accessibilityLabel={`Open session ${entry.title}. Role label ${role ?? "none"}. ${state}${live ? "" : ", last known"}${copy}. Linked by its ${via.get(entry.id)} label.`}
       onPress={() => choose(() => sessions.onOpen(entry))} />;
   };
   const section = (label: string) => <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 2 }}>{label}</Text>;
