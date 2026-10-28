@@ -14,8 +14,7 @@ const GENERATION: &str = "the member's occupancy generation is not the one the c
 const NATIVE: &str = "the expected native session is not the member's known one";
 const CONVERSATION: &str =
     "the expected provider conversation is not the one recorded for the member's known session";
-const CONTEXT: &str =
-    "the member's frozen context differs from the one its known session was launched under";
+const CONTEXT: &str = "consultation.source_layout_binding_mismatch";
 const STOPPED: &str = "the planning pair member's native session is stopped and this runtime does not resume it in place";
 
 /// `answer` is exactly `expected`, status and whole body.

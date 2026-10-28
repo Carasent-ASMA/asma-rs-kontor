@@ -1977,7 +1977,7 @@ fn each_external_terminal_class_requires_its_own_corresponding_internal_outcome(
 #[test]
 fn the_shipped_asma_task_workflow_plans_its_declared_two_hop_route() {
     const ASMA_TASK_WORKFLOW: &str =
-        include_str!("../../kontor-jira/fixtures/external-workflow-asma.json");
+        include_str!("../../kontor-jira/tests/fixtures/external-workflow-asma.json");
     let spec: ExternalWorkflowSpec =
         serde_json::from_str(ASMA_TASK_WORKFLOW).expect("the ASMA task workflow parses");
     spec.validate().expect("the shipped task workflow is valid");

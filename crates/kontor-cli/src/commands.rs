@@ -460,13 +460,13 @@ mod tests {
                 "--reason",
                 "permission_mode_unsupported",
                 "--recovery-profile",
-                r#"[{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}]"#,
+                r#"[{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}]"#,
             ])
             .expect("the generated Admin CLI accepts a native-less reroute");
         let (tool, sub) = resolve(&matches).expect("the reroute tool");
         let arguments = arguments(tool, sub).expect("the reroute payload is JSON");
         assert_eq!(arguments["expected_occupancy_generation"], 1);
-        assert_eq!(arguments["recovery_profile"][0]["provider"], "claude-work");
+        assert_eq!(arguments["recovery_profile"][0]["provider"], "claude-b");
     }
 
     #[test]
@@ -617,7 +617,7 @@ mod tests {
                 "--reason",
                 "provider_unavailable",
                 "--recovery-profile",
-                r#"[{"provider":"codex-work","model":"gpt-5.6-sol","effort":"xhigh"},{"provider":"codex-personal","model":"gpt-5.6-sol","effort":"xhigh"}]"#,
+                r#"[{"provider":"codex-b","model":"gpt-5.6-sol","effort":"xhigh"},{"provider":"codex-a","model":"gpt-5.6-sol","effort":"xhigh"}]"#,
             ])
             .expect("a well-formed command line");
         let (tool, sub) = resolve(&matches).expect("the consultation recovery tool");
@@ -626,12 +626,12 @@ mod tests {
             arguments["recovery_profile"],
             serde_json::json!([
                 {
-                    "provider": "codex-work",
+                    "provider": "codex-b",
                     "model": "gpt-5.6-sol",
                     "effort": "xhigh"
                 },
                 {
-                    "provider": "codex-personal",
+                    "provider": "codex-a",
                     "model": "gpt-5.6-sol",
                     "effort": "xhigh"
                 }

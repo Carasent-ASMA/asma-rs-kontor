@@ -1,7 +1,7 @@
 //! The optional `attention.yml` realm policy.
 //!
 //! This mirrors `supervision.rs` deliberately: a versioned YAML document in the
-//! realm state root, read at start, validated into typed errors that name a
+//! selected config folder, read at start, validated into typed errors that name a
 //! stable rule rather than a configured value. An absent file means the Realm
 //! emits nothing; there is no default destination, ever.
 //!
@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use crate::attention::payload::AlertKind;
 
-/// The optional policy file inside a Realm state root.
+/// The optional policy filename inside the selected config folder.
 pub const ATTENTION_FILE: &str = "attention.yml";
 
 /// The lowest and highest accepted delivery timeout.
@@ -195,7 +195,7 @@ struct RawEmit {
 ///
 /// Deliberately not `Debug`: the values are secret and must never reach a log.
 #[derive(Default)]
-struct EnvOverrides {
+pub(crate) struct EnvOverrides {
     teams_url: Option<String>,
     mentions: Option<String>,
 }
@@ -210,7 +210,10 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
 }
 
 /// Parse `attention.yml` with the `.env` values applied on top.
-fn parse_with(document: &str, env: &EnvOverrides) -> Result<AttentionPolicy, AttentionConfigError> {
+pub(crate) fn parse_with(
+    document: &str,
+    env: &EnvOverrides,
+) -> Result<AttentionPolicy, AttentionConfigError> {
     let raw: RawPolicy =
         serde_yaml_ng::from_str(document).map_err(|_| AttentionConfigError::Document)?;
     if raw.schema_version != 1 {
@@ -349,7 +352,7 @@ const ENV_GUARD: Guard = Guard {
 };
 
 /// Read the optional owner-only `<state root>/.env`.
-fn read_env(state_root: &Path) -> Result<EnvOverrides, AttentionConfigError> {
+pub(crate) fn read_env(state_root: &Path) -> Result<EnvOverrides, AttentionConfigError> {
     let path = state_root.join(ENV_FILE);
     let document = match read_guarded(state_root, &path, &ENV_GUARD) {
         Ok(document) => document,

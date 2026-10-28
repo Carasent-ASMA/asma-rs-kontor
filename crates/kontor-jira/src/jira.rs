@@ -56,20 +56,6 @@ use crate::{
     ensure_wire_schema,
 };
 
-/// The ASMA field specifications this build ships, as data.
-const BUNDLED_FIELD_SPECS: [&str; 2] = [
-    include_str!("../fixtures/ticket-fields-asma.json"),
-    include_str!("../fixtures/ticket-fields-asma-epic.json"),
-];
-
-/// The ASMA workflow specifications this build ships, as data.
-const BUNDLED_WORKFLOW_SPECS: [&str; 4] = [
-    include_str!("../fixtures/external-workflow-asma.json"),
-    include_str!("../fixtures/external-workflow-asma-high-stakes.json"),
-    include_str!("../fixtures/external-workflow-asma-docs.json"),
-    include_str!("../fixtures/external-workflow-asma-epic-v2.json"),
-];
-
 // ---------------------------------------------------------------------------
 // Specification selection
 // ---------------------------------------------------------------------------
@@ -182,26 +168,6 @@ impl SpecCatalog {
     #[must_use]
     pub fn empty() -> Self {
         Self::default()
-    }
-
-    /// The specifications bundled with this build.
-    ///
-    /// The bundled data has no privileged path: it goes through the same loader a
-    /// deployment uses for specifications of its own.
-    ///
-    /// # Errors
-    /// Returns [`AsmaError::Domain`] when the bundled data does not parse or does
-    /// not validate — a build-time defect in the data file, not a runtime
-    /// condition.
-    pub fn bundled() -> Result<Self, AsmaError> {
-        let mut catalog = Self::empty();
-        for specification in BUNDLED_FIELD_SPECS {
-            catalog.load_field_spec(specification)?;
-        }
-        for specification in BUNDLED_WORKFLOW_SPECS {
-            catalog.load_workflow_spec(specification)?;
-        }
-        Ok(catalog)
     }
 
     /// Every field specification this catalogue holds, in load order.

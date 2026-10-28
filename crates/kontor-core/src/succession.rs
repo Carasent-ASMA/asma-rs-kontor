@@ -367,7 +367,7 @@ pub struct NewSuccessionAttempt {
     /// Provider route on which the predecessor was blocked.
     pub quota_provider: String,
     /// Frozen successor route, absent while a placement wait is deferred.
-    pub successor_model_rung: Option<ModelRung>,
+    pub successor_model_rung: Option<crate::launch_route::StoredLaunchRoute>,
     /// Exact successor account, absent while a placement wait is deferred.
     pub successor_account_profile_id: Option<AccountProfileId>,
     /// Stable replay identity and digest of the complete planning intent.
@@ -435,7 +435,7 @@ pub struct SuccessionDeferredRefresh {
     /// Provider route proved blocked by the refreshed evidence.
     pub quota_provider: String,
     /// Real successor route selected from fresh headroom, or absent for Wait.
-    pub successor_model_rung: Option<ModelRung>,
+    pub successor_model_rung: Option<crate::launch_route::StoredLaunchRoute>,
     /// Real successor account selected from fresh headroom, or absent for Wait.
     pub successor_account_profile_id: Option<AccountProfileId>,
     /// Next exact Wait instant, absent when a successor is admitted.

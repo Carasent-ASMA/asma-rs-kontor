@@ -32,7 +32,10 @@ may sit anywhere on the machine and have any name.
     teams/core-team.yml        pinned Core Team roster
     tpm-supervision.yml        autonomous TPM cadence profile
     pr-desk.yml                PR desk policy: start budget, active-PR policy, silence windows, round limits
-  packs/team.yml               project team/profile overlay
+  packs/team.yml               selected pack manifest
+  packs/profiles.yml           neutral profile/team candidates
+  packs/operational-domain.yml topology, roles and delivery correspondence
+  packs/committee-presets.yml  neutral committee candidates
   tracker/jira.yml             tracker connection and credential reference
   forge/github-app.example.yml committed GitHub App placeholder
   host.example.yml             committed host schema example
@@ -98,6 +101,38 @@ external tool requires JSON or another native format, that file is a generated
 projection with a recorded YAML source and content hash; it is not a second
 editable source. Credential values stay in the deployment's secret store; YAML
 holds references only.
+
+## Selected pack candidates
+
+`project.team_pack` selects a schema-version-1 manifest with three required
+folder-relative YAML references: `profile_pack`, `operational_domain` and
+`committee_presets`. Each file uses its existing typed profile, operational
+or committee schema. Unknown manifest keys, missing references, invalid
+revisions and unresolved logical-role bindings refuse startup by source name.
+The daemon caches all four source hashes; it does not hot-read these files.
+
+The profile/team catalog advertises only the selected pack and explicitly
+registered packs. Omitting `project.team_pack` in a direct-only/empty daemon
+setup advertises no profiles or committee presets. Selected templates use the
+registered-input path, without the compiled-seed reconciliation privilege.
+Existing project revisions and running snapshots retain their immutable bytes.
+Committee candidates must be submitted to the existing preview/apply surface;
+reading their catalog or restarting does not publish them. An existing preset
+revision cannot be replaced by editing its YAML.
+
+The domain's existing delivery selectors derive the resolved Core Team seat
+`purposes` (`architecture_closer`, `process_closer`, `control`) by exact catalog
+role code. Do not author purposes in YAML or submit them as seat selections.
+Preview/apply pins them with catalog and source hashes; an epic retains its
+frozen purposes until explicit roster upgrade. Legacy empty markers remain
+readable but refuse authority-dependent operations as `role_purpose_unpinned`.
+
+The neutral pack has no accounts, clinical roles, persona scenarios or project
+system prompt. Its worker templates leave model routes to activated fleet
+bindings; committee model ids are explicit placeholders to replace before
+publication. Domain candidates are validated here; delivery-purpose pinning and
+the domain's runtime installation belong to the following WP-08 checkpoint.
+A project overlay carries its own profiles, role prompts and presets separately.
 
 ## Replace before use
 

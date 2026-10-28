@@ -24,6 +24,7 @@ aws-lc-rs = { workspace = true }
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+kontor-fleet = { path = "../kontor-fleet", version = "=0.2.1" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

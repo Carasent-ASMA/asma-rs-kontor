@@ -124,7 +124,7 @@ mod tests {
             sub_step: 2,
             vendor: "openai".to_owned(),
             eligibility: Some(LaunchEligibility {
-                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
                 excluded_vendors: BTreeSet::new(),
             }),
         }

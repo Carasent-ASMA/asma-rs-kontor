@@ -199,7 +199,7 @@ fn world() -> World {
     };
 
     let rung = ModelRung {
-        provider: ProviderRef("claude-work".to_owned()),
+        provider: ProviderRef("claude-b".to_owned()),
         model: ModelRef("claude-opus-5".to_owned()),
         effort: None,
     };
@@ -241,7 +241,7 @@ fn world() -> World {
             committee_role: None,
             logical_role: RoleKey::parse("advisor").expect("a logical role"),
             seat_binding_id: *id,
-            model_rung: rung.clone(),
+            model_rung: rung.clone().into(),
             occupancy_generation: 1,
             native_identity: None,
             provider_session_id: None,

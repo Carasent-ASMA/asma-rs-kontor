@@ -781,7 +781,7 @@ mod tests {
                 topology_node_id: TopologyNodeId::generate(),
                 cwd: WorkspaceRoot::parse("/realm/pair").expect("a member cwd"),
                 route: ModelRung {
-                    provider: ProviderRef("claude-personal".to_owned()),
+                    provider: ProviderRef("claude-a".to_owned()),
                     model: ModelRef("claude-opus-5".to_owned()),
                     effort: None,
                 },
@@ -906,15 +906,10 @@ mod tests {
         kontor_core::planning_pair::PlanningPairMembers::freeze(
             ContentHash::of(b"placement"),
             vec![
-                placed(
-                    PlanningPairSlot::SeatA,
-                    "codex-work",
-                    "gpt-5.6-sol",
-                    "openai",
-                ),
+                placed(PlanningPairSlot::SeatA, "codex-b", "gpt-5.6-sol", "openai"),
                 placed(
                     PlanningPairSlot::SeatB,
-                    "claude-personal",
+                    "claude-a",
                     "claude-opus-5",
                     "anthropic",
                 ),
@@ -1290,29 +1285,26 @@ mod tests {
             })
         };
         let first = seat_b_after(
-            &refused("codex-work", MemberSurfaceGap::ClosedToolsUnavailable),
+            &refused("codex-b", MemberSurfaceGap::ClosedToolsUnavailable),
             |_, _, _| {},
         );
         assert_eq!(
             first.members[0].plane,
             MemberPlane::RouteUnsupported {
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 gap: "closed_tools_unavailable",
             }
         );
         assert_eq!(first.members[1].plane, MemberPlane::RouteUnassessed);
         let second = seat_b_after(
-            &refused(
-                "claude-personal",
-                MemberSurfaceGap::RestrictionUnacknowledged,
-            ),
+            &refused("claude-a", MemberSurfaceGap::RestrictionUnacknowledged),
             |_, _, _| {},
         );
         assert_eq!(second.members[0].plane, matched(), "seat A's route passed");
         assert_eq!(
             second.members[1].plane,
             MemberPlane::RouteUnsupported {
-                provider: "claude-personal".to_owned(),
+                provider: "claude-a".to_owned(),
                 gap: "restriction_unacknowledged",
             }
         );
@@ -1325,14 +1317,14 @@ mod tests {
         assert_eq!(
             uncomposed.members[0].plane,
             MemberPlane::RouteUnsupported {
-                provider: "codex-work".to_owned(),
+                provider: "codex-b".to_owned(),
                 gap: "not_composed",
             }
         );
         assert_eq!(
             uncomposed.members[1].plane,
             MemberPlane::RouteUnsupported {
-                provider: "claude-personal".to_owned(),
+                provider: "claude-a".to_owned(),
                 gap: "not_composed",
             }
         );

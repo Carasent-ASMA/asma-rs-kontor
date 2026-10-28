@@ -39,7 +39,12 @@ pub(super) async fn materialize<O: InvokeOwner>(
     let adapter = owner.runtime()?;
     owner.require_member_routes(adapter.as_ref(), pair.pair.members().members())?;
     let epic_key = owner.epic_tracker_key(run.project_id, run.mini_project_id)?;
-    let cwd = owner.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+    let cwd = owner.consultation_root(
+        run.project_id,
+        project.root_path.as_str(),
+        epic_key.as_ref(),
+        node.id,
+    )?;
     let mut seats = pair.seats.clone();
     if seats.iter().all(|seat| seat.native_identity.is_some()) {
         return Ok(());
@@ -66,6 +71,7 @@ pub(super) async fn materialize<O: InvokeOwner>(
         node.task_id,
         adapter.as_ref(),
     )?;
+    let scope = owner.consultation_scope(run.project_id, node.id, scope)?;
     let capabilities = adapter
         .discover_capabilities()
         .await
@@ -105,7 +111,7 @@ pub(super) async fn materialize<O: InvokeOwner>(
         );
         let fleet_provenance = member_context::requested_fleet_provenance(&receipt, slot);
         adapter
-            .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
+            .validate_consultation_model_rung(&seat.model_rung.canonical_rung(), &route_provenance)
             .map_err(|error| owner.runtime_error(&error))?;
         let credential =
             owner.member_credential(seat.seat_binding_id, seat.occupancy_generation)?;
@@ -136,6 +142,7 @@ pub(super) async fn materialize<O: InvokeOwner>(
             .map_err(|error| owner.domain_error(&error))?;
         let outcome = adapter
             .launch_consultation(&ConsultationLaunchRequest {
+                resolved_route: seat.model_rung.frozen().cloned(),
                 scope: scope.clone(),
                 run_id: run.id,
                 seat_binding_id: seat.seat_binding_id,
@@ -145,7 +152,7 @@ pub(super) async fn materialize<O: InvokeOwner>(
                 cwd: cwd.clone(),
                 prompt,
                 credential,
-                model_rung: seat.model_rung.clone(),
+                model_rung: seat.model_rung.canonical_rung(),
                 route_provenance,
                 fleet_provenance: fleet_provenance.clone(),
                 context_policy: context_policy.clone(),

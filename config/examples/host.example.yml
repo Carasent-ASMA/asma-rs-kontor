@@ -32,6 +32,19 @@ binaries:
 project_cli:
   example: /usr/local/bin/example
 
+# Optional Git SOURCE checkouts for managed task creation. Replace paths with
+# canonical existing checkout roots and refs with this project's exact base.
+# Omit this block to disable managed task source selection. These paths are
+# independent of project.worktree_layout (the destination contract).
+checkouts:
+  root:
+    repository: example-org/example-project
+    path: /srv/checkouts/example-project
+    base_ref: refs/heads/main
+  # Exact durable Task.module keys, including every segment. An explicit
+  # module source may name the root repository too, for a new monorepo place.
+  modules: {}
+
 runtime:
   kontord:
     endpoint: http://127.0.0.1:7717

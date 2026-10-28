@@ -11,7 +11,7 @@
 //!
 //! | Kind | Document | Coverage |
 //! |---|---|---|
-//! | [`HolidayImportKind::NagerV4`] | the Nager holiday API's JSON array | national sets such as `US`, `MD`, `NO` |
+//! | [`HolidayImportKind::NagerV4`] | the Nager holiday API's JSON array | configured national sets |
 //! | [`HolidayImportKind::GovUkJson`] | GOV.UK `bank-holidays.json` | `GB-ENG`, `GB-WLS`, `GB-SCT`, `GB-NIR` |
 //! | [`HolidayImportKind::Ical`] | an iCalendar document | any all-day feed, local file or URL |
 //!
@@ -89,16 +89,23 @@ impl ImportRequest {
     /// Validate the request itself, before a document is read.
     ///
     /// # Errors
-    /// Rejects an inverted or unbounded range and an empty category selection.
-    pub fn validate(&self) -> CalendarResult<()> {
+    /// Rejects an unconfigured country, inverted or unbounded range, or empty categories.
+    pub fn validate(&self, holiday_countries: &[CountryCode]) -> CalendarResult<()> {
+        if holiday_countries.is_empty() {
+            return Err(kontor_core::DomainError::invalid(
+                "project.holiday_countries",
+                "must configure at least one country",
+            )
+            .into());
+        }
+        if !holiday_countries.contains(&self.country) {
+            return Err(kontor_core::DomainError::invalid(
+                "project.holiday_countries",
+                "does not configure the requested country",
+            )
+            .into());
+        }
         match self.kind {
-            HolidayImportKind::NagerV4 if !matches!(self.country.as_str(), "US" | "MD" | "NO") => {
-                return Err(kontor_core::DomainError::invalid(
-                    "ImportRequest",
-                    "Nager v4 is limited to US, MD and NO in this build",
-                )
-                .into());
-            }
             HolidayImportKind::GovUkJson if self.country.as_str() != "GB" => {
                 return Err(kontor_core::DomainError::invalid(
                     "ImportRequest",
@@ -204,7 +211,8 @@ pub struct ImportPreview {
     pub normalized_hash: ContentHash,
 }
 
-/// Parse and normalize one retrieved document. Pure.
+/// Parse and normalize one retrieved document using the selected project's
+/// `holiday_countries`. Pure; provider support is validated by the provider.
 ///
 /// # Errors
 /// * [`CalendarError::Malformed`] when the document is not the shape the
@@ -213,8 +221,12 @@ pub struct ImportPreview {
 ///   the import bounds.
 /// * [`CalendarError::TooManyWarnings`] when so many entries were refused that
 ///   this is the wrong document rather than a document with a few bad rows.
-pub fn preview(request: &ImportRequest, raw: &str) -> CalendarResult<ImportPreview> {
-    request.validate()?;
+pub fn preview(
+    request: &ImportRequest,
+    raw: &str,
+    holiday_countries: &[CountryCode],
+) -> CalendarResult<ImportPreview> {
+    request.validate(holiday_countries)?;
     if raw.len() > MAX_DOCUMENT_BYTES {
         return Err(CalendarError::TooLarge);
     }

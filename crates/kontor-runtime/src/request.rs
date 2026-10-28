@@ -341,6 +341,7 @@ pub struct LaunchRequest {
     parts: LaunchParts,
     expected_existing_native_id: Option<ExternalId>,
     fleet_provenance: Option<crate::provenance::FleetLaunchProvenance>,
+    resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
 }
 
 impl LaunchRequest {
@@ -358,6 +359,7 @@ impl LaunchRequest {
             parts,
             expected_existing_native_id: None,
             fleet_provenance: None,
+            resolved_route: None,
         }
     }
 
@@ -372,6 +374,7 @@ impl LaunchRequest {
             parts,
             expected_existing_native_id: Some(expected_existing_native_id),
             fleet_provenance: None,
+            resolved_route: None,
         }
     }
 
@@ -394,6 +397,22 @@ impl LaunchRequest {
     #[must_use]
     pub const fn fleet_provenance(&self) -> Option<&crate::provenance::FleetLaunchProvenance> {
         self.fleet_provenance.as_ref()
+    }
+
+    /// Private route read from the durable launch intent; never native labels.
+    #[must_use]
+    pub fn with_resolved_route(
+        mut self,
+        route: Option<kontor_core::launch_route::ResolvedRoute>,
+    ) -> Self {
+        self.resolved_route = route;
+        self
+    }
+
+    /// The exact private route frozen before dispatch, when present.
+    #[must_use]
+    pub const fn resolved_route(&self) -> Option<&kontor_core::launch_route::ResolvedRoute> {
+        self.resolved_route.as_ref()
     }
 
     /// The authority this launch is spending.
@@ -552,6 +571,8 @@ pub struct ResumeRequest {
     pub binding: RuntimeBindingSnapshot,
     /// When the resume was requested.
     pub requested_at: Timestamp,
+    /// Private route read from the original intent before native readback or resume.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
 }
 
 /// Deliver one message into an existing native session.
@@ -597,6 +618,8 @@ pub struct InspectRequest {
     pub binding: RuntimeBindingSnapshot,
     /// When the inspection was requested.
     pub requested_at: Timestamp,
+    /// Private route read from the original intent before native readback or resume.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
 }
 
 /// Bind an already-running native session to an agent run.

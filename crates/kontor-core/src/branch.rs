@@ -23,6 +23,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::DomainError;
 use crate::id::ExternalId;
 
@@ -83,6 +85,10 @@ closed_enum! {
         BindingMismatch => "branch_binding_mismatch",
         /// No confirmed tracker key exists to derive or verify a branch against.
         BindingUnconfirmed => "binding_unconfirmed",
+        /// The key belongs to another selected project.
+        ProjectMismatch => "branch_project_mismatch",
+        /// A canonical type outside the selected project's allowlist.
+        TypeNotAllowed => "branch_type_not_allowed",
     }
 }
 
@@ -112,6 +118,12 @@ impl BranchRefusal {
             }
             Self::BindingUnconfirmed => {
                 "binding_unconfirmed: no confirmed tracker key exists to derive or verify a branch for this work"
+            }
+            Self::ProjectMismatch => {
+                "branch_project_mismatch: the branch key is outside the selected project"
+            }
+            Self::TypeNotAllowed => {
+                "branch_type_not_allowed: the branch type is outside project.branch.types"
             }
         }
     }
@@ -302,6 +314,93 @@ impl fmt::Display for BranchName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.text)
     }
+}
+
+/// A project's narrowing of the shared branch grammar, never a replacement for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectBranchRules {
+    /// The exact public tracker project key, independent of an internal ProjectId.
+    pub project_key: String,
+    /// Allowed types from [`BranchType`], in authoring order.
+    pub types: Vec<BranchType>,
+    /// Anchored branch template with a literal project key or `<KEY>`.
+    pub pattern: String,
+    /// Anchored commit template with a literal project key or `<KEY>`.
+    pub commit_pattern: String,
+}
+
+impl ProjectBranchRules {
+    /// Validate the supported templates against the shared grammar.
+    ///
+    /// # Errors
+    /// Names the invalid field without including its configured contents.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        TrackerKey::parse(&format!("{}-1", self.project_key)).map_err(|_| "invalid project.key")?;
+        if self.types.is_empty()
+            || self
+                .types
+                .iter()
+                .enumerate()
+                .any(|(index, kind)| self.types[..index].contains(kind))
+        {
+            return Err("invalid project.branch.types");
+        }
+        let types = self
+            .types
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        if self.pattern.replace("<KEY>", &self.project_key)
+            != format!("^({types})/{}-<number>-<slug>$", self.project_key)
+        {
+            return Err("invalid project.branch.pattern");
+        }
+        if self.commit_pattern.replace("<KEY>", &self.project_key)
+            != format!("^{}-<number> <summary>$", self.project_key)
+        {
+            return Err("invalid project.branch.commit_pattern");
+        }
+        Ok(())
+    }
+
+    /// Apply the selected project's narrowing to an already canonical branch.
+    /// Confirmed task/epic binding must still be checked independently.
+    ///
+    /// # Errors
+    /// Refuses a disallowed type, a keyless branch, or another project's key.
+    pub fn ensure_branch(&self, branch: &BranchName) -> Result<(), BranchRefusal> {
+        if !self.types.contains(&branch.branch_type()) {
+            return Err(BranchRefusal::TypeNotAllowed);
+        }
+        let key = branch.key().ok_or(BranchRefusal::BindingUnconfirmed)?;
+        if key.as_str().split_once('-').map(|(project, _)| project)
+            != Some(self.project_key.as_str())
+        {
+            return Err(BranchRefusal::ProjectMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// Whether a configured base is an exact Git branch name, without resolving it.
+#[must_use]
+pub fn valid_base_branch(text: &str) -> bool {
+    !text.is_empty()
+        && !text.starts_with('-')
+        && text != "@"
+        && !text.contains("..")
+        && !text.contains("@{")
+        && !text
+            .chars()
+            .any(|ch| ch.is_control() || " ~^:?*[\\".contains(ch))
+        && text.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('.')
+                && !part.ends_with('.')
+                && !part.ends_with(".lock")
+        })
 }
 
 /// The canonical checkout of `branch` below `project_root`:

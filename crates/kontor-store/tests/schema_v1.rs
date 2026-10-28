@@ -13,6 +13,8 @@
 //! * turning an append-only table into an updatable one, or letting direct SQL
 //!   reopen a terminal run.
 
+mod support;
+
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -128,7 +130,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "intake_created_work",
     "intake_decisions",
     "intake_receipts",
-    "asma_epic_activations",
+    "epic_activations",
     "jira_epic_bindings",
     "jira_links",
     "jira_epic_rename_authorizations",
@@ -234,6 +236,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_short_codes",
     "task_worktree_corrections",
     "task_worktrees",
+    "task_checkout_placements",
     "tasks",
     "team_command_replays",
     "team_definitions",
@@ -822,7 +825,16 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // both permanence triggers across the table rebuild (ASMA-7968). v138
     // records durable completion for that correction so a replay never writes
     // a marker the operator restored for a later outage.
-    assert_eq!(SCHEMA_VERSION, 138);
+    // v139 retains the activated publication policy's immutable source hash.
+    // v140 freezes task checkout intents and their first Git readback.
+    // v141 adds nullable domain context to existing selection/epic wrappers,
+    // without backfill.
+    // v142 admits domain selection to the existing exact local-result ledger.
+    // v143 admits epic creation to the existing exact local-result ledger.
+    // v144 pins consultation checkout intent and correlated Git readback.
+    // v145 renames the activation authority and command kind while preserving
+    // every frozen document.
+    assert_eq!(SCHEMA_VERSION, 145);
 }
 
 #[test]
@@ -1485,7 +1497,7 @@ fn v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent() {
             "INSERT INTO provider_usage_observations
                  (id, project_id, account_profile_id, provider, evidence_hash, state,
                   resets_at, windows, observed_at, idempotency_key, intent_hash)
-             VALUES (?1, ?2, ?3, 'claude-work', ?4, 'available', NULL, '[]', ?5,
+             VALUES (?1, ?2, ?3, 'claude-b', ?4, 'available', NULL, '[]', ?5,
                      'probe-key', ?6)",
             rusqlite::params![
                 "0193f000-0000-7000-8000-000000000003",
@@ -1544,7 +1556,7 @@ fn v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_aut
                 "0193f000-0000-7000-8000-000000000002",
                 "0193f000-0000-7000-8000-000000000003",
                 r#"{"provider":"opencode","model":"deepseek/deepseek-v4-flash","effort":"max"}"#,
-                r#"{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}"#,
+                r#"{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}"#,
                 r#"{"schema_version":1,"ordered_routes":[]}"#,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -7158,6 +7170,39 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
+    support::rewind_activation_name(&connection);
+    // v137 adds a column too; the simulated v119 fixture must remove it before
+    // replaying the chain, just as it removes every later additive table.
+    let consultation_pins:i64=connection.query_row("SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert_eq!(
+        consultation_pins, 0,
+        "historical fixture must not erase consultation placement evidence"
+    );
+    connection.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback;").unwrap();
+    let checkout_rows: i64 = connection
+        .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        checkout_rows, 0,
+        "historical fixture must not erase checkout evidence"
+    );
+    let domain_pins: i64 = connection.query_row(
+        "SELECT (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL)
+              + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        domain_pins, 0,
+        "historical fixture must not erase domain pins"
+    );
+    connection.execute_batch("ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash;
+        ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
+    connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .unwrap();
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.

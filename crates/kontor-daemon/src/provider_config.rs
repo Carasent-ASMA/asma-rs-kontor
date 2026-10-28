@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn reconciliation_is_limited_to_owned_codex_configs() {
         let root = tempfile::tempdir().unwrap();
-        for alias in ["codex-personal", "claude-work"] {
+        for alias in ["codex-a", "claude-b"] {
             let home = root.path().join("provider-homes").join(alias);
             std::fs::create_dir_all(&home).unwrap();
             std::fs::write(
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(reconcile(root.path()).unwrap(), 1);
         assert_eq!(reconcile(root.path()).unwrap(), 0);
         assert!(
-            std::fs::read_to_string(root.path().join("provider-homes/claude-work/config.toml"))
+            std::fs::read_to_string(root.path().join("provider-homes/claude-b/config.toml"))
                 .unwrap()
                 .contains("true")
         );

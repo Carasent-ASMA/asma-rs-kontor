@@ -235,6 +235,7 @@ impl Runtime {
 
     fn launch_input(&self) -> SlotLaunch {
         SlotLaunch {
+            resolved_route: None,
             scope: execution_scope(self.task_id, self.workspace.root().clone()),
             display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
                 .expect("display name"),
@@ -498,10 +499,10 @@ fn the_bundled_pack_declares_per_slot_autonomy_as_a_new_revision() {
 fn bundled_claude_routes_try_both_accounts_before_the_next_model() {
     let pack = bundled_teams().expect("the bundled team pack loads");
     let expected = [
-        ("claude-work", "claude-opus-5"),
-        ("claude-personal", "claude-opus-5"),
-        ("codex-work", "gpt-5.6-sol"),
-        ("codex-personal", "gpt-5.6-sol"),
+        ("claude-b", "claude-opus-5"),
+        ("claude-a", "claude-opus-5"),
+        ("codex-b", "gpt-5.6-sol"),
+        ("codex-a", "gpt-5.6-sol"),
     ];
     let mut checked = 0;
     for slot in pack.teams.iter().flat_map(|team| &team.slots) {

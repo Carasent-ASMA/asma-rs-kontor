@@ -9,6 +9,70 @@ use kontor_core::branch::{
 };
 use kontor_core::id::ExternalId;
 
+#[test]
+fn selected_rules_narrow_the_core_grammar_without_changing_confirmed_binding() {
+    use kontor_core::branch::ProjectBranchRules;
+    let rules = ProjectBranchRules {
+        project_key: "EXM".into(),
+        types: vec![BranchType::Fix, BranchType::Docs],
+        pattern: "^(fix|docs)/<KEY>-<number>-<slug>$".into(),
+        commit_pattern: "^EXM-<number> <summary>$".into(),
+    };
+    rules.validate().unwrap();
+    let allowed = BranchName::parse("fix/EXM-42-do-work").unwrap();
+    rules.ensure_branch(&allowed).unwrap();
+    assert_eq!(
+        allowed.ensure_bound_to([&TrackerKey::parse("EXM-43").unwrap()]),
+        Err(BranchRefusal::BindingMismatch)
+    );
+    assert_eq!(
+        rules.ensure_branch(&BranchName::parse("feat/EXM-42-do-work").unwrap()),
+        Err(BranchRefusal::TypeNotAllowed)
+    );
+    assert_eq!(
+        rules.ensure_branch(&BranchName::parse("fix/ASMA-42-do-work").unwrap()),
+        Err(BranchRefusal::ProjectMismatch)
+    );
+    let mut invalid = rules.clone();
+    invalid.types.push(BranchType::Fix);
+    assert_eq!(invalid.validate(), Err("invalid project.branch.types"));
+    let mut invalid = rules.clone();
+    invalid.pattern = "^(fix|docs)/ASMA-<number>-<slug>$".into();
+    assert_eq!(invalid.validate(), Err("invalid project.branch.pattern"));
+    let mut invalid = rules;
+    invalid.commit_pattern = "^ASMA-<number> <summary>$".into();
+    assert_eq!(
+        invalid.validate(),
+        Err("invalid project.branch.commit_pattern")
+    );
+}
+
+#[test]
+fn configured_bases_are_exact_git_branch_names_without_normalization() {
+    use kontor_core::branch::valid_base_branch;
+    for valid in ["main", "develop", "stable/v1", "release-next"] {
+        assert!(valid_base_branch(valid), "{valid}");
+    }
+    for invalid in [
+        "",
+        "/main",
+        "main/",
+        "../main",
+        "a/../b",
+        "a//b",
+        "main.lock",
+        "@",
+        "a@{b",
+        "-main",
+        "a b",
+        "a\\b",
+        ".main",
+        "main.",
+        "a\nb",
+    ] {
+        assert!(!valid_base_branch(invalid), "{invalid}");
+    }
+}
 fn key(text: &str) -> TrackerKey {
     TrackerKey::parse(text).expect("a canonical tracker key")
 }

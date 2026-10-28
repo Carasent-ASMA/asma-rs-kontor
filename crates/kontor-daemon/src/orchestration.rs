@@ -64,6 +64,9 @@ pub struct OrchestrationSource {
     pub fleet: String,
     /// The Core Team source: [`CORE_TEAM_SOURCE`].
     pub core_team: String,
+    /// Project data; its publication policy resolves into the immutable manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<serde_yaml_ng::Value>,
 }
 
 /// `teams/core-team.yml`: the explicit selected roster.
@@ -120,6 +123,12 @@ pub struct ResolvedBundle {
     pub roster: CanonicalDocument,
     /// The manifest recording what was read and what was produced.
     pub manifest: BundleManifest,
+    /// Exact selected domain bytes, retained with the manifest's source descriptor.
+    pub operational_domain: Option<String>,
+    /// Exact orchestration source bytes retained by the existing bundle publisher.
+    pub orchestration_source: Option<String>,
+    /// Optional exact qualification bytes; candidate validation activates nothing.
+    pub qualification_source: Option<String>,
 }
 
 /// The role catalog pin a Core Team source declares, read before any catalog
@@ -148,16 +157,34 @@ pub fn catalog_pin_of(core_team: &str) -> Result<RoleCatalogPin, FleetError> {
 pub fn resolve_bundle(
     sources: &BundleSources<'_>,
     catalog: &RoleCatalogRevision,
+    domain: &kontor_profiles::OperationalDomainPack,
 ) -> Result<ResolvedBundle, FleetError> {
+    if !domain
+        .role_catalogs
+        .iter()
+        .any(|candidate| candidate == catalog)
+    {
+        return Err(invalid(O04));
+    }
+    crate::project_branch::parse(sources.orchestration).map_err(invalid)?;
+    let publication_policy =
+        crate::project_policy::parse(sources.orchestration).map_err(invalid)?;
     let selector: OrchestrationSource =
         serde_yaml_ng::from_str(sources.orchestration).map_err(|_| invalid(O01))?;
     if selector.schema_version != SOURCE_SCHEMA_VERSION {
         return Err(invalid(O01));
     }
-    if selector.fleet != FLEET_SOURCE || selector.core_team != CORE_TEAM_SOURCE {
+    if !matches!(
+        selector.fleet.as_str(),
+        FLEET_SOURCE | "orchestration/fleet.yml"
+    ) || !matches!(
+        selector.core_team.as_str(),
+        CORE_TEAM_SOURCE | "orchestration/teams/core-team.yml"
+    ) {
         return Err(invalid(O02));
     }
     let policy = FleetSnapshot::parse_policy(sources.fleet)?;
+    kontor_fleet::host_routes::RuntimeMatrix::parse(sources.orchestration)?;
     let source: CoreTeamSource =
         serde_yaml_ng::from_str(sources.core_team).map_err(|_| invalid(O03))?;
     if source.schema_version != SOURCE_SCHEMA_VERSION {
@@ -177,8 +204,13 @@ pub fn resolve_bundle(
             ad_hoc_allowed: seat.ad_hoc_allowed,
         })
         .collect();
-    let revision = CoreTeamRevision::resolve(source.version, catalog, &selections)
-        .map_err(|_| invalid(O05))?;
+    let revision = CoreTeamRevision::resolve(
+        source.version,
+        catalog,
+        &selections,
+        domain.delivery.purpose_roles(),
+    )
+    .map_err(|_| invalid(O05))?;
     let declared = source
         .seats
         .iter()
@@ -199,6 +231,10 @@ pub fn resolve_bundle(
                 ORCHESTRATION_SOURCE.to_owned(),
                 ContentHash::of(sources.orchestration.as_bytes()),
             ),
+            (
+                kontor_fleet_activation::routes::PROJECT_SOURCE.to_owned(),
+                ContentHash::of(sources.orchestration.as_bytes()),
+            ),
             (FLEET_SOURCE.to_owned(), policy.hash().clone()),
             (
                 CORE_TEAM_SOURCE.to_owned(),
@@ -209,12 +245,20 @@ pub fn resolve_bundle(
         policy_schema_version: policy.schema_version(),
         role_catalog: pin,
         core_team_revision_hash: roster.hash().clone(),
+        publication_policy,
+        consultation_layout: crate::project_paths::consultation_policy(sources.orchestration)
+            .map_err(invalid)?,
+        operational_domain: None,
+        qualification: None,
     };
     Ok(ResolvedBundle {
         policy,
         revision,
         roster,
         manifest,
+        operational_domain: None,
+        orchestration_source: Some(sources.orchestration.to_owned()),
+        qualification_source: None,
     })
 }
 
@@ -228,9 +272,17 @@ pub fn resolve_bundle(
 ///
 /// # Errors
 /// O-05 when the catalog cannot seat the mandatory roles.
-pub fn propose_core_team(catalog: &RoleCatalogRevision) -> Result<String, FleetError> {
-    let revision =
-        CoreTeamRevision::resolve(SpecVersion::FIRST, catalog, &[]).map_err(|_| invalid(O05))?;
+pub fn propose_core_team(
+    catalog: &RoleCatalogRevision,
+    domain: &kontor_profiles::OperationalDomainPack,
+) -> Result<String, FleetError> {
+    let revision = CoreTeamRevision::resolve(
+        SpecVersion::FIRST,
+        catalog,
+        &[],
+        domain.delivery.purpose_roles(),
+    )
+    .map_err(|_| invalid(O05))?;
     let source = CoreTeamSource {
         schema_version: SOURCE_SCHEMA_VERSION,
         version: revision.version,
@@ -259,6 +311,7 @@ pub fn propose_orchestration() -> Result<String, FleetError> {
         schema_version: SOURCE_SCHEMA_VERSION,
         fleet: FLEET_SOURCE.to_owned(),
         core_team: CORE_TEAM_SOURCE.to_owned(),
+        project: None,
     })
     .map_err(|_| invalid(O01))
 }
@@ -322,8 +375,8 @@ pub(crate) mod fixture {
             "\
 schema_version: 2
 domains:
-  codex: {{ provider: codex, accounts: [codex-work] }}
-  claude: {{ provider: claude, accounts: [claude-personal] }}
+  codex: {{ provider: codex, accounts: [codex-b] }}
+  claude: {{ provider: claude, accounts: [claude-a] }}
 models:
   sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}
   opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}
@@ -346,14 +399,26 @@ bindings:
 
     pub(crate) fn authoring() -> Authoring {
         let catalog = catalog();
-        let roster = CoreTeamRevision::resolve(kontor_core::id::SpecVersion::FIRST, &catalog, &[])
-            .expect("LSA and TPM")
-            .canonicalize()
-            .expect("canonical roster");
+        let roster = CoreTeamRevision::resolve(
+            kontor_core::id::SpecVersion::FIRST,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM")
+        .canonicalize()
+        .expect("canonical roster");
         Authoring {
             orchestration: propose_orchestration().expect("selector"),
             fleet: policy(roster.hash().as_str()),
-            core_team: propose_core_team(&catalog).expect("proposal"),
+            core_team: propose_core_team(
+                &catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap(),
+            )
+            .expect("proposal"),
             catalog,
         }
     }
@@ -379,11 +444,57 @@ mod tests {
     }
 
     #[test]
+    fn selected_consultation_layout_is_validated_and_bound_to_the_bundle_hash() {
+        let mut source = authoring();
+        source.orchestration = edited(&source.orchestration, |value| {
+            value["project"] = serde_yaml_ng::from_str(
+                "key: EXM\nworktree_layout: managed/trees/<key-slug>/<module>\nconsultation_layout: consultations/<key-slug>/<node>\nforge: {base_branch: trunk}\nbranch:\n  types: [chore]\n  pattern: '^(chore)/<KEY>-<number>-<slug>$'\n  commit_pattern: '^<KEY>-<number> <summary>$'\n",
+            ).unwrap();
+        });
+        let domain = kontor_profiles::bundled_operational_domain().unwrap();
+        let first = resolve_bundle(&source.sources(), &source.catalog, &domain).unwrap();
+        let layout = first.manifest.consultation_layout.as_ref().unwrap();
+        assert_eq!(layout.template, "consultations/<key-slug>/<node>");
+        assert_eq!(layout.worktree_layout, "managed/trees/<key-slug>/<module>");
+        assert_eq!(layout.base_branch, "trunk");
+        let first_hash = first.manifest.canonicalize().unwrap();
+        source.orchestration = edited(&source.orchestration, |value| {
+            value["project"]["consultation_layout"] = "rooms/<node>/<key-slug>".into();
+        });
+        let second = resolve_bundle(&source.sources(), &source.catalog, &domain).unwrap();
+        assert_eq!(first.roster, second.roster);
+        assert_ne!(
+            first_hash.hash(),
+            second.manifest.canonicalize().unwrap().hash()
+        );
+        source.orchestration = edited(&source.orchestration, |value| {
+            value["project"]["consultation_layout"] = "../<key-slug>/<node>".into();
+        });
+        assert_eq!(
+            refused(resolve_bundle(&source.sources(), &source.catalog, &domain)),
+            "invalid project.consultation_layout"
+        );
+    }
+
+    #[test]
     fn the_explicit_proposal_resolves_to_the_exact_mandatory_revision() {
         let authoring = authoring();
-        let bundle = resolve_bundle(&authoring.sources(), &authoring.catalog).expect("resolves");
-        let expected = CoreTeamRevision::resolve(SpecVersion::FIRST, &authoring.catalog, &[])
-            .expect("LSA and TPM");
+        let bundle = resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("resolves");
+        let expected = CoreTeamRevision::resolve(
+            SpecVersion::FIRST,
+            &authoring.catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("LSA and TPM");
         assert_eq!(bundle.revision, expected);
         assert_eq!(bundle.roster, expected.canonicalize().expect("canonical"));
         assert_eq!(
@@ -419,6 +530,10 @@ mod tests {
                     ContentHash::of(authoring.orchestration.as_bytes())
                 ),
                 (
+                    kontor_fleet_activation::routes::PROJECT_SOURCE.to_owned(),
+                    ContentHash::of(authoring.orchestration.as_bytes())
+                ),
+                (
                     FLEET_SOURCE.to_owned(),
                     ContentHash::of(authoring.fleet.as_bytes())
                 ),
@@ -429,7 +544,12 @@ mod tests {
             ])
         );
         // Deterministic: the same bytes are the same bundle.
-        let again = resolve_bundle(&authoring.sources(), &authoring.catalog).expect("resolves");
+        let again = resolve_bundle(
+            &authoring.sources(),
+            &authoring.catalog,
+            &kontor_profiles::bundled_operational_domain().unwrap(),
+        )
+        .expect("resolves");
         assert_eq!(
             again.manifest.canonicalize().expect("canonical").hash(),
             manifest.canonicalize().expect("canonical").hash()
@@ -465,7 +585,11 @@ mod tests {
                 ..authoring.sources()
             };
             assert_eq!(
-                refused(resolve_bundle(&sources, &authoring.catalog)),
+                refused(resolve_bundle(
+                    &sources,
+                    &authoring.catalog,
+                    &kontor_profiles::bundled_operational_domain().unwrap()
+                )),
                 O06,
                 "{core_team}"
             );
@@ -483,6 +607,7 @@ mod tests {
                     ..authoring.sources()
                 },
                 &authoring.catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap(),
             ))
         };
         let selector = |edit: fn(&mut serde_yaml_ng::Value)| edited(&authoring.orchestration, edit);
@@ -551,7 +676,14 @@ mod tests {
             fleet: "schema_version: 3\n",
             ..authoring.sources()
         };
-        assert!(resolve_bundle(&sources, &authoring.catalog).is_err());
+        assert!(
+            resolve_bundle(
+                &sources,
+                &authoring.catalog,
+                &kontor_profiles::bundled_operational_domain().unwrap()
+            )
+            .is_err()
+        );
     }
 
     #[test]

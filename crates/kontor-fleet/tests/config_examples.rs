@@ -581,6 +581,54 @@ fn the_neutral_orchestration_matches_the_project_schema() {
     validate_orchestration("config/examples/orchestration/orchestration.yml");
 }
 
+#[test]
+fn publication_is_an_optional_explicit_project_policy_in_the_same_schema() {
+    use kontor_core::id::{ExternalName, ProjectId};
+    use kontor_core::publication::PublicationPolicy;
+    use kontor_core::pull_request::ForgeRepository;
+
+    let schema = read("config/examples/orchestration/orchestration.schema.yml");
+    assert_eq!(
+        schema_keys(&schema["project"]["optional"], "project.optional"),
+        ["project_id", "publication", "consultation_layout"]
+    );
+    assert_eq!(
+        schema_keys(
+            &schema["publication_contract"]["required"],
+            "publication.required"
+        ),
+        ["root_repository", "module_repositories"]
+    );
+    let document = read("config/examples/orchestration/orchestration.yml");
+    let project = &document["project"];
+    let policy = PublicationPolicy {
+        project_id: ProjectId::parse(project["project_id"].as_str().unwrap()).unwrap(),
+        repositories: sequence(&project["forge"]["repositories"], "repositories")
+            .iter()
+            .map(|value| ForgeRepository::parse(value.as_str().unwrap()).unwrap())
+            .collect(),
+        root_repository: ForgeRepository::parse(
+            project["publication"]["root_repository"].as_str().unwrap(),
+        )
+        .unwrap(),
+        module_repositories: serde_yaml_ng::from_value(
+            project["publication"]["module_repositories"].clone(),
+        )
+        .unwrap(),
+        base_branch: ExternalName::parse(project["forge"]["base_branch"].as_str().unwrap())
+            .unwrap(),
+        branch_rules: None,
+    };
+    policy.validate().unwrap();
+    assert!(
+        policy.module_repositories.is_empty(),
+        "the neutral example is root-only"
+    );
+    let direct = read("tests/fixtures/config/asma-orchestration.yml");
+    assert!(direct["project"].get("project_id").is_none());
+    assert!(direct["project"].get("publication").is_none());
+}
+
 fn schema_keys(value: &Value, path: &str) -> Vec<String> {
     sequence(value, path)
         .iter()
@@ -1331,6 +1379,9 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
         "config/examples/quota-signals.yml",
         "config/examples/tracker/jira.yml",
         "config/examples/packs/team.yml",
+        "config/examples/packs/profiles.yml",
+        "config/examples/packs/operational-domain.yml",
+        "config/examples/packs/committee-presets.yml",
         "config/examples/orchestration/teams/core-team.yml",
         "config/examples/orchestration/route-qualifications.yml",
         "config/examples/orchestration/tpm-supervision.yml",
@@ -1361,11 +1412,10 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
     );
 
     let pack = read("config/examples/packs/team.yml");
-    for key in ["teams", "profiles", "committee_presets", "role_prompts"] {
-        assert!(
-            pack.get(key).and_then(Value::as_sequence).is_some(),
-            "packs/team.yml {key} is a sequence"
-        );
+    for key in ["profile_pack", "operational_domain", "committee_presets"] {
+        let reference = required_string(&pack, key, "packs/team.yml");
+        assert!(is_safe_relative_path(&reference));
+        assert!(read(&format!("config/examples/{reference}")).is_mapping());
     }
 }
 
@@ -2339,7 +2389,7 @@ fn supervision_names_the_tpm_profile_not_the_paseo_watchdog() {
     );
     assert!(
         root.join("paseo-supervision.yml").is_file(),
-        "the Paseo watchdog sample remains available for the state root"
+        "the selected folder contains the Paseo watchdog policy"
     );
 
     let schema = read("config/examples/orchestration/orchestration.schema.yml");
@@ -2353,13 +2403,15 @@ fn supervision_names_the_tpm_profile_not_the_paseo_watchdog() {
     assert!(
         contract["paseo_watchdog"]
             .as_str()
-            .is_some_and(|text| text.contains("<state-root>/supervision.yml")),
-        "the schema names the Paseo watchdog state-root path"
+            .is_some_and(|text| text.contains("paseo-supervision.yml in the selected folder")),
+        "the schema names the selected-folder Paseo watchdog path"
     );
 
     let docs = text("docs/CONFIGURATION.md");
     assert!(docs.contains("project.supervision"));
-    assert!(docs.contains("<state-root>/supervision.yml"));
+    assert!(docs.contains(
+        "configured daemon startup reads\n`paseo-supervision.yml` from the selected folder"
+    ));
 }
 
 #[test]

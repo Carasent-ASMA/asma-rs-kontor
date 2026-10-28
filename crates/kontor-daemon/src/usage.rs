@@ -392,6 +392,16 @@ impl UsagePoller {
     /// Compose a poller over the accounts registered in a state root.
     #[must_use]
     pub fn discover(state_root: &Path) -> Self {
+        let settings = crate::runtimes::read(state_root).unwrap_or_default();
+        Self::discover_with_runtimes(state_root, &settings)
+    }
+
+    /// Compose from selected host YAML, without re-reading a legacy runtime file.
+    #[must_use]
+    pub fn discover_with_runtimes(
+        state_root: &Path,
+        settings: &crate::runtimes::RuntimeSettings,
+    ) -> Self {
         Self {
             homes: ProviderHomes::discover(state_root),
             // A failed builder falls back to the default client rather than
@@ -404,9 +414,7 @@ impl UsagePoller {
             exact_reporter: None,
             // A runtimes file that does not read is the daemon's own startup
             // refusal to make; here it only means no pool is opted in.
-            zerosub: crate::runtimes::read(state_root)
-                .ok()
-                .and_then(|settings| crate::runtimes::zerosub_transport(&settings))
+            zerosub: crate::runtimes::zerosub_transport(settings)
                 .map(|paseo| Arc::new(paseo) as Arc<dyn PaseoTransport>),
             backoffs: Arc::new(backoff::ProbeBackoffs::load(state_root)),
         }
@@ -489,7 +497,7 @@ impl UsagePoller {
     ///
     /// A home can contain more than one credential document during migration.
     /// Route identity therefore selects the vendor first; token-shape discovery
-    /// cannot silently turn a `claude-work` preflight into a Codex observation.
+    /// cannot silently turn a `claude-b` preflight into a Codex observation.
     pub async fn probe_provider(
         &self,
         profile: &AccountProfile,
@@ -798,7 +806,7 @@ fn log_poll_failure(profile: &AccountProfile, failure: &impl fmt::Display) {
 /// Record one account reading under the provider aliases that can select it.
 ///
 /// The vendor endpoint names the family (`claude`), while the scheduler routes
-/// a concrete account through its alias (`claude-work`). A profile with no
+/// a concrete account through its alias (`claude-b`). A profile with no
 /// declared aliases keeps the family spelling for backwards compatibility.
 fn record_for_profile(state: &ApiState, profile: &AccountProfile, reading: &UsageReading) -> usize {
     let aliases = match kontor_accounts::selectable_providers(profile) {
@@ -1174,8 +1182,8 @@ mod tests {
         )
         .unwrap();
         let state = daemon.state();
-        let claude = probe_profile(&state, "claude-work");
-        let codex = probe_profile(&state, "codex-personal");
+        let claude = probe_profile(&state, "claude-b");
+        let codex = probe_profile(&state, "codex-a");
         let reporter = Arc::new(ProbeReporter {
             throttle_claude: true,
             ..ProbeReporter::default()
@@ -1201,7 +1209,7 @@ mod tests {
                 .with_store(|store| store.latest_provider_usage_observation(
                     claude.project_id,
                     claude.id,
-                    "claude-work"
+                    "claude-b"
                 ))
                 .unwrap()
                 .is_none()
@@ -1211,7 +1219,7 @@ mod tests {
                 .with_store(|store| store.latest_provider_usage_observation(
                     codex.project_id,
                     codex.id,
-                    "codex-personal"
+                    "codex-a"
                 ))
                 .unwrap()
                 .is_some()
@@ -1220,7 +1228,7 @@ mod tests {
         let restarted =
             UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);
         assert!(matches!(
-            restarted.probe_provider(&claude, "claude-work").await,
+            restarted.probe_provider(&claude, "claude-b").await,
             Err(ProviderUsageProbeFailure::Throttled {
                 retry_after_seconds: 1..=600
             })
@@ -1263,21 +1271,21 @@ mod tests {
             RuntimeRegistry::new(),
         )
         .unwrap();
-        let profile = probe_profile(&daemon.state(), "claude-work");
+        let profile = probe_profile(&daemon.state(), "claude-b");
         let reporter = Arc::new(Once::default());
         let poller =
             UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);
         assert!(matches!(
-            poller.probe_provider(&profile, "claude-work").await,
+            poller.probe_provider(&profile, "claude-b").await,
             Err(ProviderUsageProbeFailure::Throttled { .. })
         ));
         assert!(matches!(
-            poller.probe_provider(&profile, "claude-work").await,
+            poller.probe_provider(&profile, "claude-b").await,
             Err(ProviderUsageProbeFailure::Throttled { .. })
         ));
         assert_eq!(reporter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert!(poller.probe_provider(&profile, "claude-work").await.is_ok());
+        assert!(poller.probe_provider(&profile, "claude-b").await.is_ok());
         assert_eq!(
             reporter.0.load(std::sync::atomic::Ordering::SeqCst),
             2,
@@ -1288,18 +1296,12 @@ mod tests {
     #[tokio::test]
     async fn usage_collector_refreshes_unchanged_evidence_automatically_inside_the_window() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(
-            directory
-                .path()
-                .join(PROVIDER_HOMES_DIR)
-                .join("codex-personal"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(directory.path().join(PROVIDER_HOMES_DIR).join("codex-a")).unwrap();
         let mut config = DaemonConfig::at(directory.path()).with_port(0);
         config.evidence_window_seconds = 2;
         let daemon = Daemon::start(config, RuntimeRegistry::new()).unwrap();
         let state = daemon.state();
-        let profile = probe_profile(&state, "codex-personal");
+        let profile = probe_profile(&state, "codex-a");
         let reporter = Arc::new(ProbeReporter::default());
         let poller = UsagePoller::with_exact_reporter(directory.path(), reporter as Arc<_>);
         let mut appends = state.signals().appends();
@@ -1308,7 +1310,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 appends.changed().await.unwrap();
-                let observed = state.with_store(|store| store.latest_provider_usage_observation(profile.project_id,profile.id,"codex-personal")).unwrap().unwrap();
+                let observed = state.with_store(|store| store.latest_provider_usage_observation(profile.project_id,profile.id,"codex-a")).unwrap().unwrap();
                 if let Some((id, at)) = first {
                     if observed.id != id { assert!(observed.observed_at > at); break; }
                 } else { first = Some((observed.id,observed.observed_at)); }
@@ -1337,21 +1339,21 @@ mod tests {
     fn each_subdirectory_is_approved_under_its_own_name_and_files_are_not() {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let root = directory.path().join(PROVIDER_HOMES_DIR);
-        std::fs::create_dir_all(root.join("codex-work")).expect("a home");
-        std::fs::create_dir_all(root.join("codex-personal")).expect("a home");
+        std::fs::create_dir_all(root.join("codex-b")).expect("a home");
+        std::fs::create_dir_all(root.join("codex-a")).expect("a home");
         std::fs::write(root.join("notes.txt"), b"not a home").expect("a stray file");
 
         let homes = ProviderHomes::discover(directory.path());
         assert_eq!(homes.len(), 2);
-        assert!(homes.get(&alias("codex-work")).is_some());
-        assert!(homes.get(&alias("codex-personal")).is_some());
+        assert!(homes.get(&alias("codex-b")).is_some());
+        assert!(homes.get(&alias("codex-a")).is_some());
     }
 
     #[test]
     fn an_alias_is_looked_up_and_never_joined_so_traversal_matches_nothing() {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let root = directory.path().join(PROVIDER_HOMES_DIR);
-        std::fs::create_dir_all(root.join("codex-work")).expect("a home");
+        std::fs::create_dir_all(root.join("codex-b")).expect("a home");
         let homes = ProviderHomes::discover(directory.path());
 
         // The domain refuses the shape outright, and even if it did not there is
@@ -1365,14 +1367,11 @@ mod tests {
     fn the_approved_paths_are_not_printed_at_any_verbosity() {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let root = directory.path().join(PROVIDER_HOMES_DIR);
-        std::fs::create_dir_all(root.join("codex-work")).expect("a home");
+        std::fs::create_dir_all(root.join("codex-b")).expect("a home");
         let homes = ProviderHomes::discover(directory.path());
 
         let rendered = format!("{homes:?}");
-        assert!(
-            rendered.contains("codex-work"),
-            "the alias is safe to print"
-        );
+        assert!(rendered.contains("codex-b"), "the alias is safe to print");
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains(PROVIDER_HOMES_DIR));
     }
@@ -1436,14 +1435,14 @@ mod tests {
     #[test]
     fn a_claude_custom_home_selects_its_scoped_keychain_service() {
         assert_eq!(
-            claude_keychain_service(Path::new("/tmp/kontor/provider-homes/claude-work"))
+            claude_keychain_service(Path::new("/tmp/kontor/provider-homes/claude-b"))
                 .expect("a UTF-8 path"),
-            "Claude Code-credentials-20ebd982"
+            "Claude Code-credentials-2f5908b9"
         );
         assert_eq!(
-            claude_keychain_service(Path::new("/tmp/kontor/provider-homes/claude-personal"))
+            claude_keychain_service(Path::new("/tmp/kontor/provider-homes/claude-a"))
                 .expect("a UTF-8 path"),
-            "Claude Code-credentials-2c102035"
+            "Claude Code-credentials-a859d754"
         );
     }
 
@@ -1467,11 +1466,11 @@ mod tests {
     #[test]
     fn an_exact_account_alias_selects_only_its_vendor_family() {
         assert_eq!(
-            ProviderApi::for_provider("codex-personal"),
+            ProviderApi::for_provider("codex-a"),
             Some(ProviderApi::Codex)
         );
         assert_eq!(
-            ProviderApi::for_provider("claude-work"),
+            ProviderApi::for_provider("claude-b"),
             Some(ProviderApi::Claude)
         );
         assert_eq!(ProviderApi::for_provider("opencode"), None);
@@ -1532,7 +1531,7 @@ mod tests {
                     harness: RuntimeKindKey::parse("paseo").expect("a runtime"),
                     credential_ref: CredentialReference {
                         kind: CredentialReferenceKind::Keychain,
-                        alias: CredentialAlias::parse("codex-work").expect("an alias"),
+                        alias: CredentialAlias::parse("codex-b").expect("an alias"),
                     },
                     environment: empty.clone(),
                     routing: empty.clone(),
@@ -1637,7 +1636,7 @@ mod tests {
             .expect("a document");
         let routing = CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
-            "selectable_providers": ["claude-work"]
+            "selectable_providers": ["claude-b"]
         }))
         .expect("a routing document");
         let profile = state.with_store(|store| {
@@ -1658,7 +1657,7 @@ mod tests {
                     harness: RuntimeKindKey::parse("paseo").expect("a runtime"),
                     credential_ref: CredentialReference {
                         kind: CredentialReferenceKind::ConfigHome,
-                        alias: CredentialAlias::parse("claude-work").expect("an alias"),
+                        alias: CredentialAlias::parse("claude-b").expect("an alias"),
                     },
                     environment: empty.clone(),
                     routing,
@@ -1672,7 +1671,7 @@ mod tests {
                 .set_provider_quota_state(&NewProviderQuotaState {
                     project_id,
                     account_profile_id,
-                    provider: "claude-work".into(),
+                    provider: "claude-b".into(),
                     state: ProviderQuotaKind::Available,
                     resets_at: None,
                     windows: stale.clone(),
@@ -1716,9 +1715,7 @@ mod tests {
             .with_store(|store| store.list_provider_quota_states(project_id))
             .expect("the read succeeds")
             .into_iter()
-            .find(|row| {
-                row.account_profile_id == account_profile_id && row.provider == "claude-work"
-            })
+            .find(|row| row.account_profile_id == account_profile_id && row.provider == "claude-b")
             .expect("the row is still there");
         assert_eq!(restored.windows, observed, "the live reading wins");
         assert_eq!(restored.source, ProviderQuotaSource::ProviderReport);

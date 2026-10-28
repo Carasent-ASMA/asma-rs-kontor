@@ -3,9 +3,9 @@
 # the folder root, never from the consumer's current directory.
 #
 # `schema_version`, `fleet` and `core_team` are the existing bundle selector.
-# The `project:` block is the parameter block the workflow pack renders from;
-# WP-08 extends the bundle reader to read it. Until then this file is a schema
-# fixture, not a live bundle: the current reader accepts only the selector.
+# The `project:` block is read by selected-folder daemon startup and the
+# workflow pack. Bundle publication still uses its pinned selector contract;
+# selecting this folder alone never activates the policy.
 schema_version: 1
 fleet: orchestration/fleet.yml
 core_team: orchestration/teams/core-team.yml
@@ -15,6 +15,14 @@ project:
   # internal.
   key: EXM
   name: Example Project
+  # Synthetic internal id for this example. Supply the existing realm ProjectId;
+  # loading this file never creates it. Direct-only projects may omit this
+  # field together with publication, which leaves publication unconfigured.
+  project_id: '00000000-0000-7000-8000-000000000001'
+  publication:
+    root_repository: example-org/example-project
+    # Exact durable Task.module keys, independent of resource_roots aliases.
+    module_repositories: {}
   owner: Platform Owner
 
   # Project resource paths begin with one of these logical roots. Each root is
@@ -86,6 +94,7 @@ project:
   attention_channel: 'attention:platform-owner'
   glossary: project/docs/GLOSSARY.md
   worktree_layout: '.worktrees/<key-slug>/<module>'
+  consultation_layout: 'consultations/<key-slug>/<node>'
   check_runs: [publication-branch-title]
 
   capacity:

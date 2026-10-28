@@ -18,8 +18,8 @@
 //! `ws://127.0.0.1:6767/ws`:
 //!
 //! 1. connect, then send exactly one `hello` carrying
-//!    [`PASEO_WS_PROTOCOL_VERSION`] and [`PASEO_APP_VERSION`] as separate
-//!    fields;
+//!    [`PASEO_WS_PROTOCOL_VERSION`] and the client capabilities, with no client
+//!    application version;
 //! 2. wait for the daemon's pushed `status/server_info` and gate on it — no
 //!    operational request is written before that push agrees with both pins;
 //! 3. wrap every request as `{"type":"session","message":{…}}`, and accept an
@@ -68,10 +68,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::wire::{
-    MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_STREAM_QUEUE, PASEO_APP_VERSION,
-    PASEO_CAP_SELECTIVE_AGENT_TIMELINE, PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION,
-    PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION, PaseoDirection, PaseoProjection, PaseoServerInfo,
-    PaseoTimelineCursor,
+    MAX_FRAME_BYTES, MAX_OUTPUT_BYTES, MAX_STREAM_QUEUE, PASEO_CAP_SELECTIVE_AGENT_TIMELINE,
+    PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION, PASEO_CLIENT_TYPE, PASEO_WS_PROTOCOL_VERSION,
+    PaseoDirection, PaseoProjection, PaseoServerInfo, PaseoTimelineCursor,
 };
 
 /// The JSON flag every lifecycle command carries.
@@ -188,73 +187,53 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
     }
 }
 
-/// Resolve a consultation route under its immutable policy provenance.
-///
-/// OpenCode is not added to the ordinary provider table above. The sole
-/// exception is the exact ASMA-8001 progression fallback accepted by an
-/// operator in an Admin-authorized initial recovery profile, under either the
-/// historical `deepseek/deepseek-v4-flash` id or its 2026-09-12 renamed
-/// successor `deepseek/deepseek-flash`. Its `plan` mode is behavioral
-/// guidance, not OS-level containment; the qualified canary proved shell
-/// writes remain possible. Every other OpenCode provider alias, model,
-/// effort, template route and future recovery source remains refused.
-///
-/// Cursor carries the same class of risk acceptance (operator exception,
-/// 2026-09-23): its `plan` mode refuses direct file tools but, per the Grok 4.6
-/// canary, not shell writes. Only the exact `cursor`/`gpt-5.6-sol`/`xhigh`
-/// route under an operator-accepted recovery profile is admitted, never a
-/// template route; the composed consultation MCP remains the only write path
-/// Kontor hands the seat.
-///
-/// A route whose source is the live fleet configuration runs Cursor and
-/// OpenCode in `plan`, under any account alias of either, for any model the
-/// owner-only `fleet.yml` lists, except `cursor`/`auto-smart`, whose vendor is
-/// unknown and never eligible for a reviewer slot. Claude and Codex modes are
-/// unchanged. The file accepts the same risk as the two accepted fallbacks
-/// above: `plan` is behavioral guidance, not an OS-level boundary.
+/// Resolve permission from the exact immutable policy, independently of route lineage.
+/// Profile-only historical evidence never supplies a permission grant.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
-    if built_in_provider(&rung.provider.0) == "cursor" {
-        if provenance.is_fleet_configuration() && rung.model.0 != "auto-smart" {
-            return Ok(Some("plan"));
-        }
-        let exact_route = rung.provider.0 == "cursor"
-            && rung.model.0 == "gpt-5.6-sol"
-            && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
-        if exact_route && provenance.is_operator_accepted_recovery() {
-            return Ok(Some("plan"));
-        }
-        return Err(RuntimeError::PermissionModeUnsupported {
-            provider: rung.provider.0.clone(),
-        });
-    }
-    if built_in_provider(&rung.provider.0) == "opencode" {
-        if provenance.is_fleet_configuration() {
-            return Ok(Some("plan"));
-        }
-        let exact_model = rung.provider.0 == "opencode"
-            && matches!(
-                rung.model.0.as_str(),
-                "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
-            );
-        let exact_effort = rung.effort.is_some_and(|effort| effort.as_str() == "max");
-        if exact_model && exact_effort && provenance.is_operator_accepted_initial_recovery_profile()
+    consultation_route_permission_for_provider(rung, provenance, &rung.provider.0)
+}
+
+pub(crate) fn consultation_route_permission_for_provider(
+    rung: &ModelRung,
+    provenance: &ConsultationRouteProvenance,
+    working_provider: &str,
+) -> RuntimeResult<Option<&'static str>> {
+    let provider = built_in_provider(working_provider);
+    if matches!(provider, "cursor" | "opencode")
+        || matches!(built_in_provider(&rung.provider.0), "cursor" | "opencode")
+    {
+        let authorized_source = provenance.is_fleet_configuration()
+            || (provenance.legacy_recovery && provenance.is_operator_accepted_recovery());
+        let pinned = provenance.permission_policy_hash.as_ref();
+        if authorized_source
+            && (!provenance.is_fleet_configuration() || pinned == Some(&provenance.evidence_hash))
+            && pinned.is_some_and(|hash| {
+                provenance
+                    .fleet_permissions
+                    .as_ref()
+                    .is_some_and(|permissions| permissions.permits(hash, rung))
+            })
         {
-            return Ok(Some("plan"));
+            return if matches!(provider, "cursor" | "opencode") {
+                Ok(Some("plan"))
+            } else {
+                consultation_permission_mode(working_provider)
+            };
         }
         return Err(RuntimeError::PermissionModeUnsupported {
             provider: rung.provider.0.clone(),
         });
     }
-    consultation_permission_mode(&rung.provider.0)
+    consultation_permission_mode(working_provider)
 }
 
 /// The built-in Paseo provider an id resolves to.
 ///
 /// A second account for the same provider is an ordinary `agents.providers`
-/// entry that `extends` a built-in one, so `codex-work` and `codex-personal` are
+/// entry that `extends` a built-in one, so `codex-b` and `codex-a` are
 /// two provider ids over one harness. The mode tables above are keyed by the
 /// built-in because the mode vocabulary belongs to the harness, not to the
 /// account; `--provider` still carries the full id, which is what selects the
@@ -269,22 +248,8 @@ pub(crate) fn consultation_route_permission_mode(
 /// A Paseo provider id matches `^[a-z][a-z0-9-]*$`, so a colon cannot appear in
 /// one: the `codex:team` spelling the fleet policy uses for an account is a
 /// label, never a provider id.
-pub(crate) fn built_in_provider(provider: &str) -> &str {
-    const BUILT_INS: [&str; 7] = [
-        "claude", "codex", "copilot", "cursor", "opencode", "pi", "omp",
-    ];
-    for built_in in BUILT_INS {
-        if provider == built_in {
-            return built_in;
-        }
-        if let Some(account) = provider.strip_prefix(built_in)
-            && account.starts_with('-')
-        {
-            return built_in;
-        }
-    }
-    provider
-}
+// One normalization vocabulary; account/route authority remains exact policy data.
+pub(crate) use kontor_fleet::provider_family as built_in_provider;
 
 // ---------------------------------------------------------------------------
 // CLI commands
@@ -307,6 +272,8 @@ pub struct DeliveryCreate<'a> {
     pub canonical_cwd: &'a str,
     /// The frozen route.
     pub model_rung: &'a ModelRung,
+    /// Private binding from Kontor's durable launch intent.
+    pub resolved_route: Option<&'a kontor_core::launch_route::ResolvedRoute>,
     /// The declared posture.
     pub autonomy: SeatAutonomy,
     /// The visible seat title.
@@ -1125,7 +1092,9 @@ impl PaseoRpc {
     pub fn delivery_agent_create(
         parts: DeliveryCreate<'_>,
     ) -> RuntimeResult<DeliveryCreateRequest> {
-        let provider = parts.model_rung.provider.0.as_str();
+        crate::launch_route::validate(parts.model_rung, parts.resolved_route)?;
+        let native = crate::launch_route::native_rung(parts.model_rung, parts.resolved_route);
+        let provider = crate::launch_route::family(parts.model_rung, parts.resolved_route);
         let posture = crate::posture::render_posture(provider, parts.autonomy, parts.allowances)?;
 
         // Derived from the launch, never generated: a retry must ask about the
@@ -1140,9 +1109,9 @@ impl PaseoRpc {
         // session config carries what belongs to the session — route, title,
         // mode, provider options, MCP surface.
         let mut config = serde_json::json!({
-            "provider": parts.model_rung.provider.0,
+            "provider": native.provider.0,
             "cwd": parts.canonical_cwd,
-            "model": parts.model_rung.model.0,
+            "model": native.model.0,
             "title": parts.title,
         });
         if let Some(mode) = posture.mode {
@@ -1170,12 +1139,17 @@ impl PaseoRpc {
             "clientMessageId": client_message_id,
         });
 
+        let digest_input = parts.resolved_route.map(|route| {
+            serde_json::json!({
+                "launch": message, "resolved_route": route,
+            })
+        });
         let digest = crate::posture::LaunchIntent {
             binding_id: parts.binding_id,
             agent_run_id: parts.agent_run_id,
             workspace_id: parts.workspace_id,
             role_slot_id: parts.role_slot_id,
-            config: &message,
+            config: digest_input.as_ref().unwrap_or(&message),
             prompt: parts.prompt,
             client_message_id: &client_message_id,
         }
@@ -1292,7 +1266,41 @@ impl PaseoRpc {
         prompt: &str,
         credential: &str,
     ) -> RuntimeResult<Self> {
-        let mode = consultation_route_permission_mode(model_rung, route_provenance)?;
+        Self::consultation_agent_create_bound(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            route_provenance,
+            title,
+            labels,
+            prompt,
+            credential,
+            None,
+        )
+    }
+
+    /// Create from a private frozen binding while checking permissions on the logical slot.
+    ///
+    /// # Errors
+    /// A mismatched binding or unsupported permission mode refuses before transport.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consultation_agent_create_bound(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        route_provenance: &ConsultationRouteProvenance,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+        resolved_route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<Self> {
+        crate::launch_route::validate(model_rung, resolved_route)?;
+        let family = crate::launch_route::family(model_rung, resolved_route);
+        let mode =
+            consultation_route_permission_for_provider(model_rung, route_provenance, family)?;
         let prompt = format!(
             "{prompt}\nThis is a consultation, not an implementation planning session. Use file-reading tools to inspect evidence. Discover the injected Kontor tools with ToolSearch when necessary, read your consultation aggregate, and submit your own finding through its scoped MCP tool. The MCP process receives your credential automatically; do not read or print it. Do not request plan approval or delegate the review."
         );
@@ -1307,7 +1315,7 @@ impl PaseoRpc {
             credential,
             mode,
         )?;
-        let provider = built_in_provider(&model_rung.provider.0);
+        let provider = built_in_provider(family);
         if provider == "claude" {
             request.message["config"]["providerOptions"] = claude_contained_tools();
         } else if provider == "codex" {
@@ -1315,6 +1323,7 @@ impl PaseoRpc {
                 "sandbox_mode": "read-only", "approval_policy": "never"
             });
         }
+        crate::launch_route::bind_rpc(&mut request, resolved_route);
         Ok(request)
     }
 
@@ -1454,6 +1463,42 @@ impl PaseoRpc {
         if let Some(role_prompt) = role_prompt {
             request.message["config"]["systemPrompt"] = serde_json::json!(role_prompt);
         }
+        Ok(request)
+    }
+
+    /// Create from the exact private route retained by the hosted launch intent.
+    ///
+    /// # Errors
+    /// Unsupported or contradictory bindings and permission modes refuse.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hosted_seat_agent_create_bound(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        role_prompt: Option<&str>,
+        credential: &str,
+        autonomy: SeatAutonomy,
+        resolved_route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<Self> {
+        crate::launch_route::validate(model_rung, resolved_route)?;
+        let family = crate::launch_route::family_rung(model_rung, resolved_route);
+        let mut request = Self::hosted_seat_agent_create(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            &family,
+            title,
+            labels,
+            prompt,
+            role_prompt,
+            credential,
+            autonomy,
+        )?;
+        crate::launch_route::bind_rpc(&mut request, resolved_route);
         Ok(request)
     }
 
@@ -2012,9 +2057,8 @@ impl PaseoLiveTransport {
 
     /// The hello this transport opens every connection with.
     ///
-    /// Protocol and app version are separate fields, because they are separate
-    /// pins: the daemon closes the socket on a protocol number it does not
-    /// implement, and the app version is what this adapter's own gate reads.
+    /// Announce the protocol and capabilities only. The supported server floor
+    /// is checked against server readback, independently of this hello.
     #[must_use]
     pub fn hello(client_id: &str) -> serde_json::Value {
         serde_json::json!({
@@ -2022,7 +2066,6 @@ impl PaseoLiveTransport {
             "clientId": client_id,
             "clientType": PASEO_CLIENT_TYPE,
             "protocolVersion": PASEO_WS_PROTOCOL_VERSION,
-            "appVersion": PASEO_APP_VERSION,
             "capabilities": {
                 PASEO_CAP_SELECTIVE_AGENT_TIMELINE: true,
                 PASEO_CAP_TIMELINE_REPLACEMENT_INVALIDATION: true,
@@ -2345,9 +2388,28 @@ mod tests {
     }
 
     fn accepted_initial_recovery_provenance() -> ConsultationRouteProvenance {
-        ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(ContentHash::of(
-            b"initial recovery profile",
-        ))
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(
+            &include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+                .replace("example/review", "deepseek/deepseek-v4-flash")
+                .replace("example/default", "deepseek/deepseek-flash")
+                .replace(
+                    "id: deepseek/deepseek-flash",
+                    "id: deepseek/deepseek-flash\n    efforts: [max]",
+                )
+                .replace(
+                    "account: opencode-secondary, model: open-default, effort: null",
+                    "account: opencode, model: open-default, effort: max",
+                ),
+        )
+        .unwrap();
+        let mut provenance =
+            ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(
+                ContentHash::of(b"initial recovery profile"),
+            )
+            .for_legacy_recovery();
+        provenance.permission_policy_hash = Some(policy.hash().clone());
+        provenance.fleet_permissions = Some(policy.consultation_permissions());
+        provenance
     }
 
     #[test]
@@ -2501,11 +2563,11 @@ mod tests {
     fn an_account_qualified_provider_resolves_its_harness_mode_and_keeps_its_own_id() {
         for (provider, built_in) in [
             ("codex", "codex"),
-            ("codex-work", "codex"),
-            ("codex-personal", "codex"),
+            ("codex-b", "codex"),
+            ("codex-a", "codex"),
             ("claude", "claude"),
-            ("claude-work", "claude"),
-            ("opencode-personal", "opencode"),
+            ("claude-b", "claude"),
+            ("opencode-a", "opencode"),
             ("omp-second", "omp"),
             ("pi-second", "pi"),
             // An `acp` provider whose id merely contains a hyphen, and an id
@@ -2517,15 +2579,15 @@ mod tests {
         }
 
         assert_eq!(
-            permission_mode("codex-work").expect("an account of a supported provider"),
+            permission_mode("codex-b").expect("an account of a supported provider"),
             Some("auto-review")
         );
         assert_eq!(
-            paseo_mode("claude-work", SeatAutonomy::Bounded).expect("an account of Claude"),
+            paseo_mode("claude-b", SeatAutonomy::Bounded).expect("an account of Claude"),
             Some("bypassPermissions")
         );
         assert_eq!(
-            consultation_permission_mode("codex-personal").expect("an account of Codex"),
+            consultation_permission_mode("codex-a").expect("an account of Codex"),
             Some("auto-review")
         );
 
@@ -2538,7 +2600,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            &route("codex-work", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+            &route("codex-b", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
             SeatAutonomy::Supervised,
             "KON-OP-13 Implement",
             &labels(),
@@ -2549,7 +2611,7 @@ mod tests {
         let argv = command.argv();
         assert!(
             argv.windows(2)
-                .any(|pair| pair == ["--provider", "codex-work"]),
+                .any(|pair| pair == ["--provider", "codex-b"]),
             "the account id selects the credential home and must reach Paseo verbatim"
         );
         assert!(
@@ -2639,7 +2701,7 @@ mod tests {
         ));
     }
 
-    /// The ASMA-8001 fallback is exact and intentionally risk-accepted.
+    /// A pinned exact fallback remains intentionally risk-accepted.
     ///
     /// OpenCode `plan` describes the seat's expected behavior but does not
     /// claim OS-level containment. The qualified canary demonstrated that a
@@ -2701,7 +2763,7 @@ mod tests {
             ),
             (
                 route(
-                    "opencode-personal",
+                    "opencode-a",
                     "deepseek/deepseek-v4-flash",
                     Some(EffortLevel::Max),
                 ),
@@ -2724,6 +2786,9 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 ConsultationRouteProvenance {
+                    fleet_permissions: None,
+                    permission_policy_hash: None,
+                    legacy_recovery: false,
                     source: ConsultationRouteSource::InitialRecoveryProfile,
                     evidence_hash: profile_hash.clone(),
                     fallback_disposition: None,
@@ -2737,6 +2802,9 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 ConsultationRouteProvenance {
+                    fleet_permissions: None,
+                    permission_policy_hash: None,
+                    legacy_recovery: false,
                     source: ConsultationRouteSource::InitialRecoveryProfile,
                     evidence_hash: profile_hash.clone(),
                     fallback_disposition: Some(ConsultationFallbackDisposition::Rejected),
@@ -2750,6 +2818,9 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 ConsultationRouteProvenance {
+                    fleet_permissions: None,
+                    permission_policy_hash: None,
+                    legacy_recovery: false,
                     source: ConsultationRouteSource::MaterializationRecoveryProfile,
                     evidence_hash: profile_hash,
                     fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
@@ -2807,13 +2878,19 @@ mod tests {
         ));
     }
 
-    /// The 2026-09-23 operator exception admits one exact Cursor route under any
-    /// operator-accepted recovery profile, in `plan`, with the scoped credential
-    /// in the frame only. Template data, other routes, aliases and unaccepted
-    /// fallbacks stay refused before an RPC exists.
+    /// Recovery keeps profile lineage and scoped credential transport, but its
+    /// permission comes only from an exact immutable fleet policy pin.
     #[test]
     fn cursor_consultation_admits_only_the_exact_operator_accepted_recovery_route() {
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(
+            &include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+                .replace("review-model", "gpt-5.6-sol"),
+        )
+        .unwrap();
         let accepted = |source| ConsultationRouteProvenance {
+            fleet_permissions: Some(policy.consultation_permissions()),
+            permission_policy_hash: Some(policy.hash().clone()),
+            legacy_recovery: true,
             source,
             evidence_hash: ContentHash::of(b"recovery profile"),
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
@@ -2886,7 +2963,7 @@ mod tests {
                 "other model",
             ),
             (
-                route("cursor-work", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                route("cursor-b", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
                 recovery,
                 "provider alias",
             ),
@@ -2900,14 +2977,15 @@ mod tests {
         }
     }
 
-    /// REQ-016: a consultation route whose source is the live fleet
-    /// configuration runs Cursor and OpenCode, under any account alias, in
-    /// `plan` for any model the file lists, while Cursor Auto, template routes
-    /// and unlisted sources stay refused and Claude and Codex keep their
-    /// ordinary modes.
+    /// Fleet exceptions are exact permissions, never a provider-wide grant.
     #[test]
     fn a_fleet_route_runs_cursor_and_opencode_consultations_in_plan_mode() {
-        let fleet = ConsultationRouteProvenance::fleet_configuration(ContentHash::of(b"fleet"));
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(include_str!(
+            "../../../tests/fixtures/config/consultation-permissions.yml"
+        ))
+        .unwrap();
+        let mut fleet = ConsultationRouteProvenance::fleet_configuration(policy.hash().clone());
+        fleet.fleet_permissions = Some(policy.consultation_permissions());
         let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
             PaseoRpc::consultation_agent_create(
                 "request-fleet-route".to_owned(),
@@ -2923,23 +3001,15 @@ mod tests {
         };
         for (rung, case) in [
             (
-                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
                 "a Cursor fleet route",
             ),
             (
-                route(
-                    "opencode",
-                    "openrouter/z-ai/glm-5.3-flash",
-                    Some(EffortLevel::Max),
-                ),
+                route("opencode", "example/review", Some(EffortLevel::Max)),
                 "an OpenCode fleet route",
             ),
             (
-                route(
-                    "opencode-zai",
-                    "zai-coding-plan/glm-5.3",
-                    Some(EffortLevel::Max),
-                ),
+                route("opencode-secondary", "example/default", None),
                 "an OpenCode fleet route under a per-service alias",
             ),
         ] {
@@ -2947,6 +3017,38 @@ mod tests {
             assert_eq!(request.message["config"]["modeId"], "plan", "{case}");
             assert!(request.message.get("env").is_none());
         }
+        // A suffix identifies the same harness, but only an explicit exact
+        // allowance admits that account; the neighboring unlisted suffix refuses.
+        let text = include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+            .replacen("account: cursor,", "account: cursor-secondary,", 1);
+        let suffixed = kontor_fleet::FleetSnapshot::parse_policy(&text).unwrap();
+        let mut provenance =
+            ConsultationRouteProvenance::fleet_configuration(suffixed.hash().clone());
+        provenance.fleet_permissions = Some(suffixed.consultation_permissions());
+        let request = create(
+            &route("cursor-secondary", "review-model", Some(EffortLevel::Xhigh)),
+            &provenance,
+        )
+        .unwrap();
+        assert_eq!(request.message["config"]["modeId"], "plan");
+        assert!(
+            create(
+                &route("cursor-guessed", "review-model", Some(EffortLevel::Xhigh)),
+                &provenance
+            )
+            .is_err()
+        );
+        assert!(
+            create(
+                &route(
+                    "unknown-secondary",
+                    "review-model",
+                    Some(EffortLevel::Xhigh)
+                ),
+                &provenance
+            )
+            .is_err()
+        );
         for (rung, provenance, case) in [
             (
                 route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
@@ -2954,7 +3056,7 @@ mod tests {
                 "Cursor Auto has no vendor and is never eligible",
             ),
             (
-                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
                 template_provenance(),
                 "a template route keeps the fail-closed posture",
             ),
@@ -2964,6 +3066,38 @@ mod tests {
                 matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
                 "{case}: {error:?}"
             );
+        }
+        let mut wrong_hash = fleet.clone();
+        wrong_hash.evidence_hash = ContentHash::of(b"unrelated-policy");
+        let mut missing = fleet.clone();
+        missing.fleet_permissions = None;
+        for (rung, provenance) in [
+            (
+                route("cursor-secondary", "review-model", Some(EffortLevel::Xhigh)),
+                fleet.clone(),
+            ),
+            (
+                route("cursor", "other-model", Some(EffortLevel::Xhigh)),
+                fleet.clone(),
+            ),
+            (
+                route("cursor", "review-model", Some(EffortLevel::High)),
+                fleet.clone(),
+            ),
+            (route("cursor", "review-model", None), fleet.clone()),
+            (
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
+                wrong_hash,
+            ),
+            (
+                route("cursor", "review-model", Some(EffortLevel::Xhigh)),
+                missing,
+            ),
+        ] {
+            assert!(matches!(
+                create(&rung, &provenance),
+                Err(RuntimeError::PermissionModeUnsupported { .. })
+            ));
         }
         for (rung, expected) in [
             (
@@ -2981,6 +3115,81 @@ mod tests {
                 request.message["config"]["modeId"], expected,
                 "{} keeps its ordinary consultation mode under a fleet route",
                 rung.provider.0
+            );
+        }
+    }
+
+    #[test]
+    fn fleet_permission_cannot_override_the_existing_automatic_model_exclusion() {
+        let text = include_str!("../../../tests/fixtures/config/consultation-permissions.yml")
+            .replace("id: review-model", "id: auto-smart")
+            .replacen("permission_eligible: true", "permission_eligible: false", 1);
+        assert!(
+            kontor_fleet::FleetSnapshot::parse_policy(&text).is_err(),
+            "the model data excludes automatic selection before a permission projection exists"
+        );
+    }
+
+    #[test]
+    fn profile_permission_pin_is_independent_of_profile_hash_and_exactly_enforced() {
+        let policy = kontor_fleet::FleetSnapshot::parse_policy(include_str!(
+            "../../../tests/fixtures/config/consultation-permissions.yml"
+        ))
+        .unwrap();
+        let rung = route("cursor", "review-model", Some(EffortLevel::Xhigh));
+        let mut profile = ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(
+            ContentHash::of(b"canonical profile evidence"),
+        );
+        profile.source = ConsultationRouteSource::SeatRecoveryProfile;
+        profile.permission_policy_hash = Some(policy.hash().clone());
+        profile.fleet_permissions = Some(policy.consultation_permissions());
+        assert!(
+            consultation_route_permission_mode(&rung, &profile).is_err(),
+            "new admission cannot assert recovery authority"
+        );
+        profile = profile.for_legacy_recovery();
+        assert_ne!(
+            profile.permission_policy_hash.as_ref(),
+            Some(&profile.evidence_hash)
+        );
+        assert_eq!(
+            consultation_route_permission_mode(&rung, &profile).unwrap(),
+            Some("plan")
+        );
+        profile.permission_policy_hash = Some(ContentHash::of(b"unrelated policy"));
+        assert!(consultation_route_permission_mode(&rung, &profile).is_err());
+        profile.permission_policy_hash = None;
+        assert!(
+            consultation_route_permission_mode(&rung, &profile).is_err(),
+            "a profile hash is not a policy pin"
+        );
+    }
+
+    #[test]
+    fn historical_recovery_permissions_cannot_admit_new_consultations() {
+        for (rung, source) in [
+            (
+                route("cursor", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                ConsultationRouteSource::InitialRecoveryProfile,
+            ),
+            (
+                route(
+                    "opencode",
+                    "deepseek/deepseek-flash",
+                    Some(EffortLevel::Max),
+                ),
+                ConsultationRouteSource::InitialRecoveryProfile,
+            ),
+        ] {
+            let mut provenance =
+                ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(
+                    ContentHash::of(b"profile"),
+                );
+            provenance.source = source;
+            assert!(consultation_route_permission_mode(&rung, &provenance).is_err());
+            assert!(
+                consultation_route_permission_mode(&rung, &provenance.for_legacy_recovery())
+                    .is_err()
             );
         }
     }
@@ -3008,7 +3217,7 @@ mod tests {
                 "request-1".to_owned(),
                 "wks_1",
                 "/w/epic",
-                &route("claude-personal", "claude-opus-5", None),
+                &route("claude-a", "claude-opus-5", None),
                 "LSA",
                 &labels(),
                 "continue governed leadership",
@@ -3034,11 +3243,11 @@ mod tests {
     fn hosted_leadership_mcp_has_exact_scope_and_keeps_credentials_out_of_config() {
         for (provider, model) in [
             ("claude", "claude-opus-5"),
-            ("claude-personal", "claude-opus-5"),
-            ("claude-work", "claude-opus-5"),
+            ("claude-a", "claude-opus-5"),
+            ("claude-b", "claude-opus-5"),
             ("codex", "gpt-5.6-sol"),
-            ("codex-personal", "gpt-5.6-sol"),
-            ("codex-work", "gpt-5.6-sol"),
+            ("codex-a", "gpt-5.6-sol"),
+            ("codex-b", "gpt-5.6-sol"),
             ("opencode", "deepseek/deepseek-flash"),
         ] {
             let mut request = PaseoRpc::hosted_seat_agent_create(
@@ -3231,7 +3440,7 @@ mod tests {
         let command = PaseoCommand::agent_run(
             "wks_1",
             "/w/task-1",
-            &route("claude-work", "claude-opus-5", Some(EffortLevel::Xhigh)),
+            &route("claude-b", "claude-opus-5", Some(EffortLevel::Xhigh)),
             SeatAutonomy::Supervised,
             "Architect · ASMA-7681",
             &labels(),
@@ -3365,13 +3574,13 @@ mod tests {
     }
 
     #[test]
-    fn the_hello_pins_protocol_and_app_version_as_separate_fields() {
+    fn the_hello_announces_protocol_and_capabilities_without_a_client_version() {
         let hello = PaseoLiveTransport::hello("kontor-plane-1");
         assert_eq!(hello["type"], "hello");
         assert_eq!(hello["clientId"], "kontor-plane-1");
         assert_eq!(hello["clientType"], "cli");
         assert_eq!(hello["protocolVersion"], 1);
-        assert_eq!(hello["appVersion"], PASEO_APP_VERSION);
+        assert!(hello.get("appVersion").is_none());
         // The daemon's capability table spells this one snake_case; the
         // camelCase spelling is silently ignored, which is worse than an error.
         assert_eq!(hello["capabilities"]["selective_agent_timeline"], true);
@@ -3778,6 +3987,7 @@ mod tests {
         .expect("the evidenced create builds");
 
         let delivery = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            resolved_route: None,
             request_id: "req-1",
             workspace_id: "wks_1",
             canonical_cwd: "/w/task-1",

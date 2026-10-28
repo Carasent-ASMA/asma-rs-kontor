@@ -414,9 +414,9 @@ mod tests {
 
     #[test]
     fn a_non_ascii_marker_is_refused_because_the_matcher_is_ascii_exact() {
-        let document = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['brukergrense']\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex-b\n    version: 1\n    provider: codex-b\n    basis: plan_allowance\n    markers: ['brukergrense']\n";
         assert!(parse(document).is_ok(), "plain ASCII is fine");
-        let non_ascii = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['kvote overskredet \u{e5}']\n";
+        let non_ascii = "schema_version: 1\nsignals:\n  - id: t-codex-b\n    version: 1\n    provider: codex-b\n    basis: plan_allowance\n    markers: ['kvote overskredet \u{e5}']\n";
         assert!(matches!(
             parse(non_ascii),
             Err(QuotaSignalsError::Invalid {
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn an_unknown_iana_zone_is_refused_rather_than_degrading_every_reset() {
-        let document = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: 'try again at '\n    reset_zone: 'Europe/Nowhere'\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex-b\n    version: 1\n    provider: codex-b\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_prefix: 'try again at '\n    reset_zone: 'Europe/Nowhere'\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_zone_without_a_prefix_is_refused_as_intent_that_never_applies() {
-        let document = "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_zone: Europe/Oslo\n";
+        let document = "schema_version: 1\nsignals:\n  - id: t-codex-b\n    version: 1\n    provider: codex-b\n    basis: plan_allowance\n    markers: ['usage limit']\n    reset_zone: Europe/Oslo\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -507,7 +507,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary state root");
         std::fs::write(
             root.path().join(QUOTA_SIGNALS_FILE),
-            "schema_version: 1\nsignals:\n  - id: t-codex-work\n    version: 1\n    provider: codex-work\n    basis: plan_allowance\n    markers: []\n",
+            "schema_version: 1\nsignals:\n  - id: t-codex-b\n    version: 1\n    provider: codex-b\n    basis: plan_allowance\n    markers: []\n",
         )
         .expect("the document is written");
         assert!(
@@ -585,15 +585,15 @@ mod tests {
     fn signal_yaml(id: &str, version: u32, marker: &str) -> String {
         format!(
             "schema_version: 1\nsignals:\n  - id: {id}\n    version: {version}\n    \
-             provider: codex-work\n    basis: plan_allowance\n    markers: ['{marker}']\n"
+             provider: codex-b\n    basis: plan_allowance\n    markers: ['{marker}']\n"
         )
     }
 
     #[test]
     fn two_signals_may_not_share_one_id() {
-        let document = "schema_version: 1\nsignals:\n  - id: same\n    version: 1\n    provider: codex-work\n    \
+        let document = "schema_version: 1\nsignals:\n  - id: same\n    version: 1\n    provider: codex-b\n    \
              basis: plan_allowance\n    markers: ['usage limit']\n  - id: same\n    version: 2\n    \
-             provider: codex-personal\n    basis: plan_allowance\n    markers: ['usage limit']\n";
+             provider: codex-a\n    basis: plan_allowance\n    markers: ['usage limit']\n";
         assert!(matches!(
             parse(document),
             Err(QuotaSignalsError::Invalid {
@@ -618,7 +618,7 @@ mod tests {
         for bad in ["", "  untrimmed", "has\u{7}control"] {
             let document = format!(
                 "schema_version: 1\nsignals:\n  - id: \"{bad}\"\n    version: 1\n    \
-                 provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n"
+                 provider: codex-b\n    basis: plan_allowance\n    markers: ['usage limit']\n"
             );
             assert!(
                 matches!(
@@ -645,10 +645,10 @@ mod tests {
         for changed in [
             signal_yaml("codex-usage-limit", 1, "hit your usage limit"),
             "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
-             provider: codex-personal\n    basis: plan_allowance\n    markers: ['usage limit']\n"
+             provider: codex-a\n    basis: plan_allowance\n    markers: ['usage limit']\n"
                 .to_owned(),
             "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
-             provider: codex-work\n    basis: plan_allowance\n    markers: ['usage limit']\n    \
+             provider: codex-b\n    basis: plan_allowance\n    markers: ['usage limit']\n    \
              reset_prefix: 'try again at '\n"
                 .to_owned(),
         ] {
@@ -674,9 +674,9 @@ mod tests {
     #[test]
     fn reordering_markers_changes_the_definition_hash() {
         let ordered = "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
-             provider: codex-work\n    basis: plan_allowance\n    markers: ['a', 'b']\n";
+             provider: codex-b\n    basis: plan_allowance\n    markers: ['a', 'b']\n";
         let reversed = "schema_version: 1\nsignals:\n  - id: codex-usage-limit\n    version: 1\n    \
-             provider: codex-work\n    basis: plan_allowance\n    markers: ['b', 'a']\n";
+             provider: codex-b\n    basis: plan_allowance\n    markers: ['b', 'a']\n";
         assert_ne!(
             parse(ordered).expect("valid").signals[0]
                 .definition_hash()
@@ -692,8 +692,8 @@ mod tests {
     #[test]
     fn one_provider_may_hold_several_fingerprints_under_distinct_ids() {
         let document = "schema_version: 1\nsignals:\n  - id: claude-spend-limit\n    version: 1\n    \
-             provider: claude-work\n    basis: plan_allowance\n    markers: ['individual spend limit']\n  \
-             - id: claude-rate-limit\n    version: 1\n    provider: claude-work\n    \
+             provider: claude-b\n    basis: plan_allowance\n    markers: ['individual spend limit']\n  \
+             - id: claude-rate-limit\n    version: 1\n    provider: claude-b\n    \
              basis: plan_allowance\n    markers: ['rate limit']\n";
         let parsed = parse(document).expect("distinct ids on one provider are valid");
         assert_eq!(parsed.signals.len(), 2);

@@ -90,13 +90,27 @@ pub struct ExecutionScope {
     pub epic: EpicScope,
     /// The ticket, when the operation is about one.
     pub task: Option<TaskScope>,
+    checkout: Option<TaskCheckoutBinding>,
+    consultation: Option<Box<crate::consultation_checkout::ConsultationCheckout>>,
+}
+
+/// Selected-folder task checkout mode. Missing source never means legacy inference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskCheckoutBinding {
+    /// Frozen durable placement, absent until a source intent has been persisted.
+    pub snapshot: Option<Box<crate::checkout::TaskCheckout>>,
 }
 
 impl ExecutionScope {
     /// An epic-level scope, for a node or a consultation that serves no ticket.
     #[must_use]
     pub const fn for_epic(epic: EpicScope) -> Self {
-        Self { epic, task: None }
+        Self {
+            epic,
+            task: None,
+            checkout: None,
+            consultation: None,
+        }
     }
 
     /// An epic-level scope narrowed to one ticket.
@@ -105,7 +119,49 @@ impl ExecutionScope {
         Self {
             epic,
             task: Some(task),
+            checkout: None,
+            consultation: None,
         }
+    }
+
+    /// Mark a selected task scope, even when managed source selection is disabled.
+    #[must_use]
+    pub fn with_task_checkout(mut self, snapshot: Option<crate::checkout::TaskCheckout>) -> Self {
+        self.checkout = Some(TaskCheckoutBinding {
+            snapshot: snapshot.map(Box::new),
+        });
+        self
+    }
+
+    /// The selected source contract, or None only for an embedding's legacy scope.
+    #[must_use]
+    pub const fn task_checkout(&self) -> Option<&TaskCheckoutBinding> {
+        self.checkout.as_ref()
+    }
+
+    /// Non-task containers retain their own placement contract (consultations included).
+    #[must_use]
+    pub fn without_task_checkout(mut self) -> Self {
+        self.checkout = None;
+        self
+    }
+
+    /// Attach the exact persisted consultation intent to its native effects.
+    #[must_use]
+    pub fn with_consultation_checkout(
+        mut self,
+        pin: crate::consultation_checkout::ConsultationCheckout,
+    ) -> Self {
+        self.consultation = Some(Box::new(pin));
+        self
+    }
+
+    /// Consultation checkout proof; independent of the optional subject ticket.
+    #[must_use]
+    pub fn consultation_checkout(
+        &self,
+    ) -> Option<&crate::consultation_checkout::ConsultationCheckout> {
+        self.consultation.as_deref()
     }
 
     /// The ticket this operation serves, or a refusal that names what is missing.

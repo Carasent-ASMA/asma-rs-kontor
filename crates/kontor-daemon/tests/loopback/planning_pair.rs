@@ -329,6 +329,8 @@ async fn select_pair_team_definition(world: &World, project: &str, topology: &se
     .send(world)
     .await;
     assert_eq!(published.status, 200, "{}", published.body);
+    let _domain_selection =
+        harness::DomainSelectionFixture::activate(world, project_id_of(project));
     let preview = Call::post(
         format!("/v1/projects/{project}/team-definition-selection:preview"),
         &serde_json::json!({"target_definition": {
@@ -414,13 +416,21 @@ async fn pair_realm(root: &str) -> PairRealm {
 /// catalog revision persisted beside the bundled one — when it is given, and
 /// the fixture document's members under `role_code`.
 async fn pair_realm_with(
-    root: &str,
+    _root: &str,
     selected: Option<&RoleCatalogRevision>,
     role_code: &str,
 ) -> PairRealm {
-    let owned_world = World::open_empty_with_a_plane().await;
+    let owned_world =
+        World::open_native_consultations_with_catalog(&native_fixture_catalog(), selected).await;
     let world = &owned_world;
     world.daemon.reconcile().await;
+    let checkout = world
+        .directory
+        .path()
+        .join("checkout")
+        .canonicalize()
+        .unwrap();
+    let root = checkout.to_str().unwrap();
     let created = ensure_project(world, "planning-pair-project", "Kontor", root).await;
     assert_eq!(created.status, 200, "{}", created.body);
     let project = created.json()["project_id"]
@@ -438,7 +448,7 @@ async fn pair_realm_with(
         current_project_revision(world, &project).await,
     )
     .await;
-    let (quick, preview_hash) = match selected {
+    let (_quick, _preview_hash) = match selected {
         None => {
             publish_core_team(
                 world,
@@ -462,36 +472,38 @@ async fn pair_realm_with(
                     .expect("the selected catalog revision is persisted")
             });
             let version = catalog.version.get();
-            publish_core_team(
-                world,
-                &project,
-                serde_json::json!([{
-                    "role": {
-                        "catalog_revision": {"id": SEEDED_CATALOG, "version": version},
-                        "role_code": "LSA",
-                    },
-                    "presence": "required",
-                    "ad_hoc_allowed": true,
-                }]),
+            // Explicit fixture snapshot, not an API grant from an unselected catalog.
+            let domain = kontor_profiles::bundled_operational_domain().unwrap();
+            let roster = kontor_teams::CoreTeamRevision::resolve(
+                SpecVersion::parse(
+                    u32::try_from(current_core_team_revision(world, &project)).unwrap(),
+                )
+                .unwrap(),
+                catalog,
+                &[],
+                domain.delivery.purpose_roles(),
             )
-            .await;
+            .unwrap();
+            world.daemon.state().with_store(|store| {
+                store
+                    .publish_core_team_revision(
+                        &kontor_core::repository::StoredCoreTeamRevision {
+                            project_id: project_id_of(&project),
+                            version: roster.version,
+                            catalog_hash: roster.catalog_hash,
+                            seats: serde_json::to_value(roster.seats).unwrap(),
+                            published_at: kontor_api::now(),
+                        },
+                        catalog,
+                    )
+                    .expect("the explicit catalog/domain fixture roster is frozen");
+            });
             quick_session_selecting(world, &project, version, "LSA").await
         }
     };
-    let promoted = Call::post(
-        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
-        &promotion_apply_body(&preview_hash),
-    )
-    .signed_as(world, "operator")
-    .with_key("pp-promote")
-    .send(world)
-    .await;
-    assert_eq!(promoted.status, 200, "{}", promoted.body);
-    let epic = promoted.json()["epic_id"]
-        .as_str()
-        .expect("an epic id")
-        .to_owned();
+    let epic = pinned_runtime_epic(world, &project, "Planning pair epic").await;
     confirm_promoted_epic_identity(world, &project, &epic, "PROMO", "ASMA-9001");
+    activate_catalog_for_epic(world, &project, &epic, "pair-fixture-catalog").await;
     let materialized = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
         &control_seat_routes(1),
@@ -1556,7 +1568,9 @@ async fn a_reopened_realm_restores_a_sealed_planning_pair_and_continues_it() {
     let state_root = directory.path().to_owned();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_config_dir(state_root.join("selected config with spaces"))
+            .with_port(0),
         RuntimeRegistry::new(),
     )
     .expect("the same state root reopens");
@@ -1766,18 +1780,20 @@ async fn a_member_role_only_the_epics_selected_catalog_declares_is_frozen_from_i
 #[tokio::test]
 async fn a_member_role_outside_the_epics_selected_catalog_freezes_nothing() {
     let selected = successor_catalog(|catalog| {
-        catalog.roles.retain(|role| role.role_code.as_str() != "SA");
+        catalog
+            .roles
+            .retain(|role| role.role_code.as_str() != "SDET");
         catalog
             .roles
             .iter_mut()
-            .find(|role| role.role_code.as_str() == "AUD")
+            .find(|role| role.role_code.as_str() == "OBS")
             .expect("the bundled AUD entry")
             .lifecycle = kontor_core::spec::CodeLifecycle::Compatibility;
     });
     let realm = pair_realm_with(
         "/tmp/kontor-asma8282-pair-unselected-catalog",
         Some(&selected),
-        "SA",
+        "SDET",
     )
     .await;
     let world = &realm.world;
@@ -1796,7 +1812,7 @@ async fn a_member_role_outside_the_epics_selected_catalog_freezes_nothing() {
     let compatibility = publish_pair_document(
         world,
         &realm.project,
-        &pair_document_as("01991c00-0000-7000-8000-0000000000b4", PAIR_KIND, "AUD"),
+        &pair_document_as("01991c00-0000-7000-8000-0000000000b4", PAIR_KIND, "OBS"),
         "pp-catalog-compatibility-document",
     )
     .await;
@@ -2272,7 +2288,7 @@ async fn member_launches_carry_the_seats_current_generation_and_frozen_pins() {
         );
         assert_eq!(context.run_id, run_id);
         assert_eq!(context.slot.as_str(), seat.role_slot_id.as_str());
-        assert_eq!(context.route, seat.model_rung);
+        assert_eq!(context.route, seat.model_rung.canonical_rung());
         assert_eq!(context.profile.definition_hash, run.definition_hash);
         assert_eq!(context.placement_hash, *placement.placement.hash());
         assert_eq!(context.role_catalog.canonical_hash.as_str(), roster_pin);
@@ -2711,9 +2727,7 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
     let world = &realm.world;
     world.fake.take_calls();
     let body = realm.invoke_body(&realm.profile, "Both routes plan").await;
-    world
-        .fake
-        .withholding_planning_pair_members_on("claude-personal");
+    world.fake.withholding_planning_pair_members_on("claude-a");
     let seat_b_only = realm
         .invoke_with(&body, realm.caller_token(), "pp-seat-b-route")
         .await;
@@ -2725,7 +2739,7 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
     );
     assert_eq!(
         seat_b_only.json()["at"],
-        "providers/claude-personal/not_composed",
+        "providers/claude-a/not_composed",
         "seat B's route is refused on its own: {}",
         seat_b_only.body
     );
@@ -2742,7 +2756,7 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
         refused.body
     );
     assert!(
-        !refused.body.contains("claude-personal"),
+        !refused.body.contains("claude-a"),
         "seat B's refused provider is not named: {}",
         refused.body
     );
@@ -2891,9 +2905,7 @@ async fn the_hypothetical_fake_reconciles_only_the_exact_known_member_native_in_
             .await,
         Err(kontor_runtime::RuntimeError::StaleBinding { .. })
     ));
-    world
-        .fake
-        .withholding_planning_pair_members_on("claude-personal");
+    world.fake.withholding_planning_pair_members_on("claude-a");
     assert!(matches!(
         world
             .fake
@@ -4093,7 +4105,9 @@ async fn a_durable_unqualified_member_survives_a_restart_without_a_second_create
     let state_root = directory.path().to_owned();
     drop(daemon);
     let restarted = Daemon::start(
-        DaemonConfig::at(&state_root).with_port(0),
+        DaemonConfig::at(&state_root)
+            .with_config_dir(state_root.join("selected config with spaces"))
+            .with_port(0),
         RuntimeRegistry::new().with(
             fake_family(),
             Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,

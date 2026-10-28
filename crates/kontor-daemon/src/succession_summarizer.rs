@@ -86,6 +86,25 @@ pub fn read(
     };
     let config: SuccessionSummarizerConfig =
         serde_json::from_slice(&bytes).map_err(|_| ConfigError::Invalid)?;
+    compose(config, runtimes)
+}
+
+/// Compose the named runtime from YAML without resolving another authoring source.
+///
+/// # Errors
+/// Uses the same schema and capability refusals as the legacy reader.
+pub fn read_yaml(
+    document: &str,
+    runtimes: &RuntimeRegistry,
+) -> Result<Option<Arc<dyn SuccessionSummarizerTransport>>, ConfigError> {
+    let config = serde_yaml_ng::from_str(document).map_err(|_| ConfigError::Invalid)?;
+    compose(config, runtimes)
+}
+
+fn compose(
+    config: SuccessionSummarizerConfig,
+    runtimes: &RuntimeRegistry,
+) -> Result<Option<Arc<dyn SuccessionSummarizerTransport>>, ConfigError> {
     if config.schema_version != 1 {
         return Err(ConfigError::Invalid);
     }

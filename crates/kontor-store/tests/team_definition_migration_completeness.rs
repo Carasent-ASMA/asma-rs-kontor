@@ -195,6 +195,7 @@ fn world() -> World {
         .expect("v2 publishes");
     store
         .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            operational_domain_bundle_hash: None,
             project_id,
             mini_project_id,
             definition: snapshot(&definition),
@@ -765,6 +766,7 @@ fn an_empty_native_census_can_upgrade_and_replay_after_reopen() {
         .expect("the unmaterialized epic exists");
     w.store
         .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            operational_domain_bundle_hash: None,
             project_id: w.project_id,
             mini_project_id: epic,
             definition: snapshot(&w.definition),

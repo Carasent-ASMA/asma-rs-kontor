@@ -1673,7 +1673,7 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("materialize_jira", "mini_project", "witness", None),
     ("publish_epic_description", "mini_project", "witness", None),
     ("publish_ticket_description", "task", "witness", None),
-    ("activate_asma_epic", "mini_project", "witness", None),
+    ("activate_epic", "mini_project", "witness", None),
     ("transition_task", "task", "witness", None),
     ("withdraw_task", "task", "witness", None),
     ("resolve_context", "task", "witness", None),

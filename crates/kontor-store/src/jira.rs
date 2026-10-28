@@ -2000,8 +2000,8 @@ impl SqliteStore {
         transaction.commit().map_err(backend)
     }
 
-    /// Record ASMA activation after the service has proved every binding.
-    pub fn activate_asma_epic(
+    /// Record epic activation after the service has proved every binding.
+    pub fn activate_epic(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
@@ -2036,13 +2036,13 @@ impl SqliteStore {
             .map_err(backend)?;
         if epic_bound != 1 || confirmed != task_count {
             return Err(RepositoryError::Conflict {
-                subject: "ASMA epic activation",
-                rule: "ASMA activation requires one confirmed Jira binding per epic and task",
+                subject: "epic activation",
+                rule: "epic activation requires one confirmed Jira binding per epic and task",
             });
         }
         transaction
             .execute(
-                "INSERT OR IGNORE INTO asma_epic_activations
+                "INSERT OR IGNORE INTO epic_activations
                  (project_id, epic_id, receipt_id, activated_at) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     project_id.to_string(),
@@ -2055,7 +2055,7 @@ impl SqliteStore {
         transaction.commit().map_err(backend)
     }
 
-    pub fn asma_epic_is_active(
+    pub fn epic_is_active(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
@@ -2063,7 +2063,7 @@ impl SqliteStore {
         let transaction = self.begin()?;
         let active = transaction
             .query_row(
-                "SELECT 1 FROM asma_epic_activations WHERE project_id = ?1 AND epic_id = ?2",
+                "SELECT 1 FROM epic_activations WHERE project_id = ?1 AND epic_id = ?2",
                 params![project_id.to_string(), epic_id.to_string()],
                 |_| Ok(()),
             )

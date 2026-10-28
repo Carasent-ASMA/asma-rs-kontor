@@ -666,7 +666,7 @@ const EPIC_EXECUTION_SCOPE: &[FieldSpec] = &[
     field(
         "external_epic_key",
         ArgType::ExternalId,
-        "The external tracker key, such as `ASMA-7869`.",
+        "The confirmed external tracker key.",
     ),
     field(
         "short_title",
@@ -2253,6 +2253,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
+            opt(
+                "expected_operational_domain_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The operational-domain bundle hash the caller read; a different selected or pinned domain is refused.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,
@@ -2338,6 +2344,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The owning project.",
             ),
             IDEMPOTENCY,
+            opt(
+                "expected_operational_domain_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The operational-domain bundle hash the caller read; a different selected or pinned domain is refused.",
+            ),
             req(
                 "expected_revision",
                 Place::Body,

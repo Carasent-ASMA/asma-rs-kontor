@@ -3292,7 +3292,7 @@ export interface paths {
         /**
          * Catch a stalled workflow up to the phase its own durable evidence proves.
          * @description The advance is normally computed as a side effect of recording a gate or
-         *     settling a turn. When that moment is missed — ASMA-8205 passed its
+         *     settling a turn. When that moment is missed — a task passed its
          *     `high-verification-gate` at sequence 2 and the stored phase never moved —
          *     nothing re-derives it afterwards, and the workflow stalls with complete and
          *     unambiguous evidence sitting in front of it.
@@ -4556,6 +4556,8 @@ export interface components {
             epic_id: string;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             initial_hold?: null | components["schemas"]["AuthorizationProjectionDto"];
+            /** @description Exact immutable domain bundle bound to this epic operation. */
+            operational_domain_bundle_hash?: string | null;
             /** @description The project. */
             project_id: string;
             /** @description The Realm it belongs to. */
@@ -4610,6 +4612,8 @@ export interface components {
         };
         /** @description Newly selected default plus its durable receipt. */
         AppliedProjectTeamDefinitionSelectionDto: {
+            /** @description Exact selected domain context, absent only on historical readback. */
+            operational_domain_bundle_hash?: string | null;
             /** @description Durable apply/replay receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Exact selected default. */
@@ -4721,6 +4725,11 @@ export interface components {
              */
             epic_backlog_code?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
+            /**
+             * @description Optional preview precondition. A different selected/pinned domain refuses.
+             *     Omission resolves the explicitly selected project domain at apply time.
+             */
+            expected_operational_domain_bundle_hash?: string | null;
             /**
              * Format: int64
              * @description The revision the caller read the project at.
@@ -6456,7 +6465,7 @@ export interface components {
         };
         /**
          * @description A proposed Core Team composition: the caller's seats, or the Core Team
-         *     revision one published orchestration bundle declares (ASMA-8280 S-3).
+         *     revision one published orchestration bundle declares.
          *     Exactly one of the two.
          */
         CoreTeamPreviewRequest: {
@@ -6506,7 +6515,7 @@ export interface components {
          *     recorded is the subject the grant is scoped to — the logical seat and the
          *     occupancy generation — and a digest over exactly that public pair. A reader
          *     can therefore prove which generation-scoped grant the successor derived
-         *     without the record ever having held anything secret (ASMA-8187).
+         *     without the record ever having held anything secret.
          */
         CoreTeamRouteGrantSubjectDto: {
             /**
@@ -6742,6 +6751,8 @@ export interface components {
             native_seat?: null | components["schemas"]["CoreTeamNativeSeatDto"];
             /** @description When a concrete epic materializes it. */
             presence: string;
+            /** @description Frozen purposes derived by the server; legacy empty is non-granting. Never accepted as authored seat selections. */
+            purposes?: ("architecture_closer" | "process_closer" | "control")[];
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
             role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
@@ -6782,7 +6793,7 @@ export interface components {
          *     Exactly one of `model_route` and `eligibility`: the caller's exact route,
          *     which the activated fleet policy may admit or refuse but never replaces, or
          *     — when the caller names none — the policy's own choice under the
-         *     eligibility the caller states (ASMA-8280).
+         *     eligibility the caller states.
          */
         CoreTeamSeatRouteRequest: {
             eligibility?: null | components["schemas"]["FleetEligibilityRequest"];
@@ -7202,8 +7213,8 @@ export interface components {
             label: string;
             /**
              * @description The runtime provider aliases this account is addressable under, when the
-             *     deployment has registered one alias per login — `codex-work` for one
-             *     Codex account, `codex-personal` for the other. Frozen into the profile's
+             *     deployment has registered one alias per login — `codex-b` for one
+             *     Codex account, `codex-a` for the other. Frozen into the profile's
              *     immutable routing document at creation, because a pin that could move
              *     under a running seat would not be a pin. Empty means the account is not
              *     addressable per provider and no quota walk will select it, which is
@@ -7358,7 +7369,7 @@ export interface components {
         EpicExecutionScopeDto: {
             /** @description Immutable two-keyword summary captured at intake. */
             ai_short_name?: string | null;
-            /** @description The external tracker key, e.g. `ASMA-7869`. */
+            /** @description The confirmed external tracker key. */
             external_epic_key: string;
             /** @description Immutable Kontor backlog identity used by the built-in epic templates. */
             kontor_backlog_code?: string | null;
@@ -7752,7 +7763,7 @@ export interface components {
             source_bundle_hash: string;
         };
         /**
-         * @description The Realm's orchestration bundle selection (ASMA-8280 S-1).
+         * @description The Realm's orchestration bundle selection.
          *
          *     The same single activation pointer [`FleetPolicyDto`] reports, read for its
          *     bundle: a schema_version 1 record names a policy alone; a schema_version 2
@@ -7778,6 +7789,7 @@ export interface components {
         FleetBundleManifestDto: {
             /** @description The bundle's canonical Core Team revision. */
             core_team_revision_hash: string;
+            operational_domain?: null | components["schemas"]["OperationalDomainPinDto"];
             /** @description The bundle's policy. */
             policy_hash: string;
             /**
@@ -7785,6 +7797,7 @@ export interface components {
              * @description The schema that policy validates under.
              */
             policy_schema_version: number;
+            publication_policy?: null | components["schemas"]["FleetPublicationPolicyDto"];
             /** @description The resolver that produced the bundle. */
             resolver: string;
             /** @description The role catalog the Core Team revision was resolved against. */
@@ -7820,7 +7833,7 @@ export interface components {
             /** @description The exact bytes of `orchestration.yml`. */
             orchestration: string;
         };
-        /** @description A proposed initial orchestration bundle for review (ASMA-8280 S-2). */
+        /** @description A proposed initial orchestration bundle for review. */
         FleetBundleProposalDto: {
             /** @description The proposed `teams/core-team.yml` bytes: the mandatory roles alone. */
             core_team: string;
@@ -7886,7 +7899,7 @@ export interface components {
             realm_id: string;
         };
         /**
-         * @description The Realm's fleet policy selection (ASMA-8280).
+         * @description The Realm's fleet policy selection.
          *
          *     Exactly one source decides fleet routing: an activation record naming one
          *     published policy by content hash, or — when none exists — the unmigrated
@@ -7959,6 +7972,33 @@ export interface components {
          * @enum {string}
          */
         FleetPolicySelectionDto: "activation" | "fleet_yml";
+        /** @description The project's narrowing of the shared core grammar. */
+        FleetProjectBranchRulesDto: {
+            /** @description Anchored commit template; not evidence of an observed commit message. */
+            commit_pattern: string;
+            /** @description Anchored branch template. */
+            pattern: string;
+            /** @description Exact public tracker project key. */
+            project_key: string;
+            /** @description Allowed conventional branch types. */
+            types: string[];
+        };
+        /** @description The explicit project publication policy pinned by an orchestration bundle. */
+        FleetPublicationPolicyDto: {
+            /** @description The only permitted publication base branch. */
+            base_branch: string;
+            branch_rules?: null | components["schemas"]["FleetProjectBranchRulesDto"];
+            /** @description Exact durable Task.module keys and their additional repository. */
+            module_repositories: {
+                [key: string]: string;
+            };
+            /** @description The internal existing Kontor project this policy governs. */
+            project_id: string;
+            /** @description The project allowlist; membership alone grants no access. */
+            repositories: string[];
+            /** @description The repository every confirmed binding in the project may publish to. */
+            root_repository: string;
+        };
         /** @description The exact role catalog revision a bundle pins. */
         FleetRoleCatalogPinDto: {
             /** @description The catalog's stable identity. */
@@ -8486,11 +8526,11 @@ export interface components {
          * @enum {string}
          */
         JiraBindingStatusDto: "awaiting_jira_binding" | "confirmed";
-        /** @description A confirmed Jira materialization and ASMA activation receipt. */
+        /** @description A confirmed Jira materialization and epic activation receipt. */
         JiraMaterializationAppliedDto: {
             /** @description Whether the whole required binding set is activated. */
             activated: boolean;
-            /** @description The separate ASMA activation command receipt. */
+            /** @description The separate epic activation command receipt. */
             activation_receipt_id: string;
             /** @description Stable batch identity. */
             batch_id: string;
@@ -9005,8 +9045,8 @@ export interface components {
              */
             expected_revision: number;
             /**
-             * @description The exact confirmed external tracker key the review is opened under,
-             *     e.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize
+             * @description The exact confirmed external tracker key of the epic or one of its tasks.
+             *     It must authorize
              *     the pull request's repository.
              */
             external_key: string;
@@ -9020,6 +9060,13 @@ export interface components {
             } | null;
             /** @description The pull request. */
             pull_request: components["schemas"]["PullRequestRequest"];
+        };
+        /** @description Folder-relative authoring provenance and exact immutable domain byte identity. */
+        OperationalDomainPinDto: {
+            /** @description Selected-folder-relative YAML path; never a runtime lookup path. */
+            source: string;
+            /** @description SHA-256 of the exact authored UTF-8 bytes. */
+            source_hash: string;
         };
         /** @description One durable operational-gap record, as it was written. */
         OperationalGapDto: {
@@ -9459,6 +9506,8 @@ export interface components {
             epic_id?: string | null;
             execution_scope?: null | components["schemas"]["EpicExecutionScopeDto"];
             initial_hold?: null | components["schemas"]["InitialExecutionHoldPreviewDto"];
+            /** @description Exact immutable domain bundle bound to this epic operation. */
+            operational_domain_bundle_hash?: string | null;
             /** @description The owning project. */
             project_id: string;
             /** @description The Realm that judged the graph. */
@@ -9765,6 +9814,8 @@ export interface components {
         /** @description Exact comparison used to select the default for future epics. */
         ProjectTeamDefinitionSelectionPreviewDto: {
             current_definition?: null | components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Current domain context, absent on historical selections. */
+            current_operational_domain_bundle_hash?: string | null;
             /** @description Apply-bound comparison hash. */
             preview_hash: string;
             /** @description Owning project. */
@@ -9778,6 +9829,8 @@ export interface components {
             snapshot_cursor: number;
             /** @description Exact published target. */
             target_definition: components["schemas"]["PinnedTeamDefinitionDto"];
+            /** @description Verified activated bundle bound to this proposed selection. */
+            target_operational_domain_bundle_hash?: string | null;
         };
         /** @description What moving a project's default Team Definition is previewed against. */
         ProjectTeamDefinitionSelectionPreviewRequest: {
@@ -10113,6 +10166,8 @@ export interface components {
             replayed: boolean;
             /** @description The forge repository, as observed. */
             repository: string;
+            /** @description The immutable activated authorization bundle read for this judgement. */
+            source_bundle_hash?: string | null;
             /** @description The task the branch key resolved to, when the branch names a task. */
             task_id?: string | null;
             /** @description The pull-request title, when one exists. */
@@ -12532,7 +12587,7 @@ export interface components {
              *
              *     Content is part of this answer deliberately. Reporting `true` while an
              *     issue's description still held only `Kontor <kind> <uuid>: <title>` is
-             *     the defect ASMA-8123 fixes: a caller asking whether a ticket is
+             *     a content-projection defect: a caller asking whether a ticket is
              *     reconciled must not be told yes while its reader sees an internal UUID.
              */
             converged: boolean;
@@ -13129,7 +13184,7 @@ export interface components {
              * @description Commit instant recorded in the immutable audit row.
              */
             corrected_at: string;
-            /** @description Catalog module whose repository the target names. */
+            /** @description Exact durable task module used to render the target. */
             module: string;
             /** @description Exact replacement claim read from immutable evidence. */
             new_worktree: string;
@@ -13169,7 +13224,7 @@ export interface components {
         WorktreeClaimCorrectionPreviewDto: {
             /** @description Jira-key publication branch the supported materializer must create. */
             branch: string;
-            /** @description Catalog module whose repository the target names. */
+            /** @description Exact durable task module used to render the target. */
             module: string;
             /** @description Exact derived replacement. */
             new_worktree: string;
@@ -13198,7 +13253,7 @@ export interface components {
              * @description Exact task revision the caller inspected.
              */
             expected_revision: number;
-            /** @description Exact deterministic ASMA catalog-module target. */
+            /** @description Exact deterministic target rendered from the selected layout and durable module. */
             new_worktree: string;
             /** @description Exact currently stored claim; a mismatch refuses rather than overwrites. */
             old_worktree: string;
