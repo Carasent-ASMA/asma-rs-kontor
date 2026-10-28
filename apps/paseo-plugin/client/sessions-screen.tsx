@@ -2235,20 +2235,22 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
   // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
   const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
+  const labelsUnavailable = state.labelsComplete !== true;
+  const labelDerivedFilter = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || epicKey !== null || assignment !== "any";
   const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, recent: recentIds, refined, state, includeArchived,
-    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count }),
-    [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
+    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count,
+    restrictedUnknown: labelsUnavailable && labelDerivedFilter }),
+    [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView, labelsUnavailable, labelDerivedFilter]);
   // Native catalog rows carry no labels. Desk and outside-desk facts depend on
   // those labels, so their counts are unknown, never zero, while direct cannot
   // supply the labels.
-  const labelsUnavailable = state.labelsComplete === false;
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => labelsUnavailable && id !== null
     ? null
     : scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [labelsUnavailable, scoped, mappings]);
-  const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
+  const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces, !labelsUnavailable), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces, labelsUnavailable]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
-  const workstreamChoices = useMemo(() => work === "all" ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
-    [work, workstreamOptions, streams]);
+  const workstreamChoices = useMemo(() => work === "all" || labelsUnavailable ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
+    [work, workstreamOptions, streams, labelsUnavailable]);
   // My work counts, never lists, the choices it leaves out.
   const hiddenChoices = useMemo(() => work === "all" ? [] : workstreamOptions.filter((option) => !workstreamChoices.includes(option)), [work, workstreamOptions, workstreamChoices]);
   // Responsibility facts over this context's inventory, before the other filters.
@@ -2472,7 +2474,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     includeArchived ? "Archived history" : null,
   ].filter((part): part is string => !!part);
   // One explanation of the inventory counts, under About these counts in the association selector.
-  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; in All work the tree also lists empty native workspaces until workstream or assignment choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. ${work === "all" ? "Plan-only choices are included." : "My work lists choices with sessions here; All work adds plan-only choices."}${workstreamNote ? ` ${workstreamNote}` : ""} An assignment filter adds its own count to each choice and never changes these.`;
+  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; in All work the tree also lists empty native workspaces until workstream or assignment choices narrow it. ${labelsUnavailable ? "Session counts are unavailable because shared catalog rows carry no session labels; a choice's count is not zero. " : "Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. "}${work === "all" ? "Plan-only choices are included." : labelsUnavailable ? "My work shows every choice because session counts cannot decide which have sessions here." : "My work lists choices with sessions here; All work adds plan-only choices."}${workstreamNote ? ` ${workstreamNote}` : ""} An assignment filter adds its own count to each choice and never changes these.`;
   const workingAsStore = remembered?.persistence === "device" ? "remembered on this device for this host and tracker"
     : remembered?.persistence === "failed" ? "not remembered: this device's store failed, so a choice lasts this app session"
       : "not remembered on this device, which offers Kontor no store, so a choice lasts this app session";
@@ -3261,14 +3263,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Only the work scope and assignment narrow this view: say which, and offer the one way back that widens it.
   const scopeParts = [work === "mine" ? "My work" : null, assignmentPart].filter((part): part is string => part !== null);
   const onlyScope = scopeParts.length > 0 && activeCount === scopeParts.length;
+  const labelsUnknownEmpty = labelsUnavailable && candidates.length === 0 && labelDerivedFilter;
   const emptyMessage = assignmentBlocked
     ? `No sessions shown: ${assignmentPart} is not evaluated.`
+    : labelsUnknownEmpty
+    ? task
+      ? `Session labels are unavailable, so a link to ${task.label} cannot be established.`
+      : "No sessions shown: session labels are unavailable, so this filter cannot say none match."
     : task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
     : view.status === "recent"
     ? recentEmptyMessage(recent.record)
     : onlyScope
-    ? `No sessions in ${scopeParts.join(", ")} in this view.`
+    ? labelsUnavailable
+      ? `No sessions shown in ${scopeParts.join(", ")}; session labels are unavailable for desk, workstream, epic and task filters.`
+      : `No sessions in ${scopeParts.join(", ")} in this view.`
     : view.status === "provider_blocked" && blockedView.empty
     ? blockedView.empty
     : clearable

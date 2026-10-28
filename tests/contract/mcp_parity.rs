@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 236 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 236 is forever — it is what makes a later change to the daemon's
+//! 238 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 238 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -544,12 +544,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "233 forever": this is what makes a later contract change fail here, so a
+    // Not "238 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        236,
+        238,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        235,
+        237,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        237,
+        239,
         "the contract's operation count changed; parity must be re-decided"
     );
 }

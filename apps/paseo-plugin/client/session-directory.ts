@@ -201,6 +201,7 @@ export function emptyDirectoryState(includeArchived = false): DirectoryState {
     lastUpdatedAt: null,
     inventoryComplete: false,
     includeArchived,
+    labelsComplete: true,
   };
 }
 

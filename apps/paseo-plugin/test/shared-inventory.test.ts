@@ -194,6 +194,7 @@ describe("the shared native inventory adapter", () => {
     expect(unavailable.directory.entries).toEqual([]);
     expect(unavailable.directory.inventoryComplete).not.toBe(true);
     expect(unavailable.directory.status).toBe("error");
+    expect(unavailable.directory.labelsComplete).toBe(false);
 
     const partial = adapt({ catalog: catalog(native({ view: nativeView({ truncated: true }) })) });
     expect(partial.directory.source).toBe("catalog");
@@ -235,8 +236,9 @@ describe("the shared native inventory adapter", () => {
     });
     const renamed = sessionEntry("session-a", {
       title: "Live title", labels: { epic: "ASMA-1" }, pendingPermissionCount: 2, attentionReason: "permission",
+      updatedAt: "2026-10-25T07:00:00Z",
     });
-    const wrongTitle = sessionEntry("session-x", { title: "Same title", labels: { epic: "ASMA-9" } });
+    const wrongTitle = sessionEntry("session-x", { title: "Same title", labels: { epic: "ASMA-9" }, updatedAt: "2026-10-25T07:00:00Z" });
     const adapted = adapt({
       direct: { status: "stale", live: false, entries: [renamed, wrongTitle], inventoryComplete: false, lastUpdatedAt: Date.parse(AS_OF) },
       catalog: catalog(native({ view })),
@@ -257,8 +259,12 @@ describe("the shared native inventory adapter", () => {
   });
 
   it("does not let a sweep-time catalog drop a seconds-old direct transition read", () => {
-    const directA = sessionEntry("session-a", { status: "running", title: "Direct title" });
-    const directNew = sessionEntry("session-new", { status: "running", title: "Just created" });
+    const directA = sessionEntry("session-a", {
+      status: "running", title: "Direct title", updatedAt: "2026-10-25T06:14:02Z",
+    });
+    const directNew = sessionEntry("session-new", {
+      status: "running", title: "Just created", updatedAt: "2026-10-25T06:14:02Z",
+    });
     const adapted = adapt({
       direct: {
         status: "stale",
@@ -284,6 +290,91 @@ describe("the shared native inventory adapter", () => {
       serverId: HOST_ID,
       navigation: { openAgent: vi.fn(), openWorkspace: vi.fn() },
     }).ok).toBe(true);
+  });
+
+  it("lets a newer catalog row replace a frozen direct row and drops a deleted ghost", () => {
+    const frozen = sessionEntry("session-a", {
+      status: "running", title: "Direct title", updatedAt: "2026-10-25T05:00:00Z",
+    });
+    const ghost = sessionEntry("session-deleted-since", {
+      status: "idle", updatedAt: "2026-10-25T05:00:00Z",
+    });
+    const adapted = adapt({
+      direct: {
+        status: "stale",
+        live: false,
+        inventoryComplete: true,
+        error: "Live updates stopped",
+        staleReason: "Live updates stopped.",
+        entries: [frozen, ghost],
+        lastUpdatedAt: Date.parse("2026-10-25T05:00:00Z"),
+      },
+      catalog: catalog(native({
+        view: nativeView({
+          sessions: [
+            nativeSession("session-a", { status: "idle", updatedAt: "2026-10-25T06:14:01Z" }),
+            nativeSession("session-b"),
+          ],
+        }),
+      })),
+    });
+    const a = adapted.directory.entries.find((entry) => entry.id === "session-a")!;
+    expect(a.status).toBe("idle");
+    expect(a.title).toBe("Session session-a");
+    expect(adapted.directory.entries.some((entry) => entry.id === "session-deleted-since")).toBe(false);
+    expect(adapted.directory.status).toBe("ready");
+    expect(adapted.directory.staleReason).toBeNull();
+    expect(adapted.directory.labelsComplete).toBe(false);
+  });
+
+  it("keeps a newer direct row over an older catalog in the re-walk window", () => {
+    const fresh = sessionEntry("session-a", {
+      status: "running", title: "Direct title", updatedAt: "2026-10-25T06:15:00Z",
+    });
+    const added = sessionEntry("session-new", {
+      status: "running", title: "Just created", updatedAt: "2026-10-25T06:15:00Z",
+    });
+    const adapted = adapt({
+      direct: {
+        status: "stale",
+        live: false,
+        inventoryComplete: false,
+        staleReason: "Refreshing the archive scope.",
+        entries: [fresh, added],
+        lastUpdatedAt: Date.parse("2026-10-25T06:15:00Z"),
+      },
+      catalog: catalog(native()),
+    });
+    const a = adapted.directory.entries.find((entry) => entry.id === "session-a")!;
+    expect(a.status).toBe("running");
+    expect(a.title).toBe("Direct title");
+    expect(adapted.directory.entries.some((entry) => entry.id === "session-new")).toBe(true);
+    expect(adapted.directory.entries.some((entry) => entry.id === "session-b")).toBe(true);
+    expect(adapted.directory.staleReason).toBe("Refreshing the archive scope.");
+    expect(adapted.directory.labelsComplete).toBe(false);
+  });
+
+  it("keeps labels complete when every merged row still comes from direct", () => {
+    const a = sessionEntry("session-a", {
+      labels: { desk: "Adam", epic: "ASMA-1" }, updatedAt: "2026-10-25T06:15:00Z",
+    });
+    const b = sessionEntry("session-b", {
+      labels: { desk: "PR Review", epic: "ASMA-2" }, updatedAt: "2026-10-25T06:15:00Z",
+    });
+    const adapted = adapt({
+      direct: {
+        status: "stale",
+        live: false,
+        inventoryComplete: false,
+        staleReason: "Refreshing the archive scope.",
+        entries: [a, b],
+        lastUpdatedAt: Date.parse("2026-10-25T06:15:00Z"),
+      },
+      catalog: catalog(native()),
+    });
+    expect(adapted.directory.entries).toHaveLength(2);
+    expect(adapted.directory.labelsComplete).toBe(true);
+    expect(adapted.directory.entries.every((entry) => Object.keys(entry.labels).length > 0)).toBe(true);
   });
 
   it("keeps manual associations on the exact id rather than the title", () => {

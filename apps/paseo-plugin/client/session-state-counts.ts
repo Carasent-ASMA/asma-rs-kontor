@@ -52,10 +52,13 @@ export function sessionStateCounts(input: CountRead & {
   recent?: readonly string[];
   /** From providerBlockedView: exact-ID reads, never the state predicate. */
   providerBlocked: SessionStateCount;
+  /** A label-derived filter is active over rows whose labels are unknown: no count can be asserted. */
+  restrictedUnknown?: boolean;
 }): Readonly<Record<StatusFilter, SessionStateCount>> {
-  const { universe, candidates, favorites, refined, recent = [] } = input;
+  const { universe, candidates, favorites, refined, recent = [], restrictedUnknown = false } = input;
   return Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => {
     if (status === "provider_blocked") return [status, input.providerBlocked];
+    if (restrictedUnknown) return [status, { text: "—", label: "Count unavailable: shared catalog rows carry no session labels for this filter" }];
     const count = (entries: readonly DirectoryEntry[]) => new Set(entries.filter((entry) => matchesStatus(entry, status, favorites, recent)).map((entry) => entry.id)).size;
     const matched = count(candidates), total = count(universe);
     const numerator = compactSessionCount(matched), denominator = compactSessionCount(total);

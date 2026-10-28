@@ -21,7 +21,7 @@ type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
   teamsSnapshots?: Readonly<Record<string, TeamsSourceSnapshot>>; teamsErrors?: Readonly<Record<string, string>>;
   teamsBindingDiagnostics?: readonly string[]; teamsAvailable?: boolean; teamsView?: TeamsView; onTeamsView?: (view: TeamsView) => void;
-  contextLabel?: string; scoped?: boolean; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
+  contextLabel?: string; scoped?: boolean; epicScoped?: boolean; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   compact?: boolean; onChooseSource?: () => void; onDocumentLink?: (target: string) => void; onExternalLink?: (target: string) => void;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; catalog?: WorkCatalogRead | null; query: string; setQuery: (query: string) => void;

@@ -48,7 +48,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
   Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError, show: model.toastShow }),
   copyText: (text: string) => model.copyText(text),
 }));
-vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: model.directory ?? { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived }, refresh: () => {}, retry: model.nativeRetry }; } }));
+vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: model.directory ?? { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived, labelsComplete: true }, refresh: () => {}, retry: model.nativeRetry }; } }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
@@ -168,6 +168,25 @@ describe("Kontor shell native actions", () => {
     const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
     expect(sessions.props.projects).toEqual([{ id: "prj_empty", name: "DESK • RESEARCH", root: "/fixture/empty" }, { id: "prj_1", name: "Project" }]);
     expect(sessions.props.workspaces).toEqual([]);
+  });
+
+  it("does not state an epic session count when catalog labels are unavailable", () => {
+    const asOf = "2026-10-25T06:14:01Z";
+    const source = (kind: "plan" | "jira" | "native") => ({ source: kind, state: "complete" as const, generation: 4, attemptedGeneration: 4, asOf, error: null, retryAt: null, coverage: [], conflicts: [], pendingVerification: 0 });
+    model.sources = [{ id: "history", title: "Historical Jira", kind: "jira", path: "/configured/history.json", projectId: null, epic: "ASMA-2", workstream: null, revisionKind: "working copy" }];
+    model.directory = { ...emptyDirectoryState(), entries: [], status: "error", live: false, lastUpdatedAt: null, inventoryComplete: false, error: "Paseo unavailable" };
+    model.catalog = {
+      mode: "catalog", checkedAt: asOf, sourceAsOf: asOf, error: null, snapshot: null,
+      view: { schemaVersion: 1, sources: [source("plan"), source("jira"), source("native")], entries: [], entriesTruncated: false },
+      native: { mode: "catalog", hostId: "host-a", runtimeInstance: "paseo:ws://127.0.0.1:6767/ws", checkedAt: asOf, error: null, snapshotSavedAt: null,
+        view: { runtimeInstance: "paseo:ws://127.0.0.1:6767/ws", generation: 4, asOf, source: "database", archiveScope: true, truncated: false,
+          projects: [], workspaces: [], sessions: [{ sessionId: "catalog", workspaceId: null, projectId: null, projectName: null, workspaceName: null, title: "Catalog session", provider: "codex", model: null, status: "idle", archivedAt: null, attentionReason: null, cwd: "/catalog", createdAt: null, updatedAt: asOf, lastUserMessageAt: null, parentSessionId: null, checkout: null }] } },
+    };
+    const screen = mount(false, { tab: "Sessions" });
+    screen.openPicker();
+    const epic = screen.menuItems().find((node) => node.props.label === "ASMA-2")!;
+    expect(String(epic.props.detail)).toContain("session count unknown");
+    expect(String(epic.props.detail)).not.toContain("0 sessions");
   });
 
   it("renders the shared catalog's exact native sessions when direct enumeration fails", () => {

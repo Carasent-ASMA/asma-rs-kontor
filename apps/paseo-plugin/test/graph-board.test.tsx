@@ -494,14 +494,14 @@ describe("Board linked sessions", () => {
     expect(elements(mount({ selectedId: "plan", reads: [plan, jira] }).header).some((element) => element.props.testID === "board-sessions-meta")).toBe(false);
   });
 
-  it("says linked sessions are unknown, not absent, when catalog rows carry no labels", () => {
+  it.each([false, undefined])("says linked sessions are unknown when catalog labels are %s", (labelsComplete) => {
     const base = sessionsOf(entries);
     const sessions: BoardSessions = {
       ...base,
       state: {
         ...base.state,
         source: "catalog",
-        labelsComplete: false,
+        labelsComplete,
         live: false,
         status: "ready",
         inventoryComplete: true,
@@ -608,6 +608,13 @@ describe("Board declared teams", () => {
     expect(String(first!.props.accessibilityLabel)).toBe("Choose a linked session. 3 linked sessions. High-stakes · Delivery. Team Task team. SA: No session, then SWE: Running, then QA and AUD in parallel: QA: Needs input; AUD: No session. Not in the declared team: REV A: Idle. Sessions sit under a role by their role label.");
     expect(chain(third!)).toBe("SA –  →  SWE –  →  QA – & AUD –");
     expect(text(third!)).toContain("0 sessions ›");
+  });
+
+  it.each([false, undefined])("draws no declared-team control when catalog labels are %s", (labelsComplete) => {
+    const base = sessionsOf(entries());
+    const sessions: BoardSessions = { ...base, state: { ...base.state, source: "catalog", labelsComplete, live: false } };
+    const { data, row } = mount({ selectedId: "plan", reads: [plan, jira], sessions, taskTeams: reader({ [key(0)]: team }) });
+    expect(control(row(rowOf(data, 0)))).toBeUndefined();
   });
 
   it("opens the chooser for a declared team even with one session, and opens one session directly where no team is declared", () => {

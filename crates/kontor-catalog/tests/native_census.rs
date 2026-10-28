@@ -1042,22 +1042,25 @@ async fn native_pages_serve_active_sessions_before_archived_sessions() {
     let fixture = Fixture::open(&[], None, 30);
     let source = FakeSource::new(vec![census(
         vec![project("prj_desk", "DESK • ADAM", "/repo")],
-        vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
         vec![
-            session("agt_active_b", "Active B", "wks_adam", None),
+            workspace("wks_a", "prj_desk", "ADAM", "/repo/a"),
+            workspace("wks_b", "prj_desk", "ADAM", "/repo/b"),
+        ],
+        vec![
             session(
-                "agt_archived_a",
+                "agt_0_archived_a",
                 "Archived A",
-                "wks_adam",
+                "wks_a",
                 Some("2026-10-24T00:00:00Z"),
             ),
-            session("agt_active_a", "Active A", "wks_adam", None),
             session(
-                "agt_archived_b",
+                "agt_1_archived_b",
                 "Archived B",
-                "wks_adam",
+                "wks_a",
                 Some("2026-10-24T01:00:00Z"),
             ),
+            session("agt_8_live_b", "Active B", "wks_b", None),
+            session("agt_9_live_a", "Active A", "wks_b", None),
         ],
     )]);
     assert!(collect(&fixture.catalog, &source).await.complete);

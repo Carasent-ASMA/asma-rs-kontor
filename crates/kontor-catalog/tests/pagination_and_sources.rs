@@ -8,8 +8,10 @@
 
 mod support;
 
+use std::os::unix::fs::PermissionsExt;
+
 use kontor_catalog::{
-    CatalogError, CatalogSource, CatalogSourceState, EntryFilter, EntryKind, ReadSource,
+    CatalogError, CatalogSource, CatalogSourceState, EntryFilter, EntryKind, EntryState, ReadSource,
 };
 use support::{Fixture, Repo, plan, sweep};
 
@@ -195,6 +197,111 @@ async fn one_unreadable_operator_source_does_not_freeze_the_catalog() {
             .len(),
         2,
         "a newly committed plan appears despite the bad source"
+    );
+}
+
+#[tokio::test]
+async fn a_permission_denied_source_inside_a_root_keeps_its_plan() {
+    let repo = Repo::new();
+    repo.write(
+        "_docs/plans/plan.md",
+        &plan("Plan", Some("ASMA-9010"), Some("kontor"), ""),
+    );
+    let source_path = repo.write(
+        "notes/operator.md",
+        &plan("Operator plan", Some("ASMA-9015"), Some("kontor"), ""),
+    );
+    repo.commit("plans");
+    let fixture = Fixture::open_settings(kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: repo.root().to_path_buf(),
+            include_github_plans: false,
+        }],
+        sources: vec![kontor_catalog::config::OperatorSource {
+            id: "denied-source".to_owned(),
+            title: None,
+            kind: kontor_catalog::config::SourceKind::Plan,
+            path: source_path.clone(),
+            workstream: None,
+            epic: None,
+            project_id: None,
+            revision_kind: Default::default(),
+            expected_sha256: None,
+            logical_plan_id: None,
+        }],
+        ..kontor_catalog::CatalogSettings::default()
+    });
+    sweep(&fixture.catalog).await;
+    let before = fixture
+        .catalog
+        .entries(&EntryFilter {
+            include_removed: true,
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    assert_eq!(
+        before
+            .entries
+            .iter()
+            .find(|entry| entry.title == "Operator plan")
+            .unwrap()
+            .state,
+        EntryState::Active
+    );
+
+    repo.write(
+        "_docs/plans/second.md",
+        &plan("Second", Some("ASMA-9011"), Some("kontor"), ""),
+    );
+    repo.commit("second plan");
+    std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o000))
+        .expect("the source becomes unreadable");
+    let second = sweep(&fixture.catalog).await;
+    let after = fixture
+        .catalog
+        .entries(&EntryFilter {
+            include_removed: true,
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o644))
+        .expect("the source is restored");
+    assert!(second.finished);
+    assert_eq!(second.generation, 2);
+    assert!(
+        after.entries.iter().any(|entry| entry.title == "Second"),
+        "the sweep still advances"
+    );
+    assert_eq!(
+        after
+            .entries
+            .iter()
+            .find(|entry| entry.title == "Operator plan")
+            .unwrap()
+            .state,
+        EntryState::Active,
+        "a permission-denied source keeps its last rows instead of being tombstoned"
+    );
+
+    std::fs::remove_file(&source_path).expect("the source is deleted");
+    sweep(&fixture.catalog).await;
+    let removed = fixture
+        .catalog
+        .entries(&EntryFilter {
+            include_removed: true,
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    assert_eq!(
+        removed
+            .entries
+            .iter()
+            .find(|entry| entry.title == "Operator plan")
+            .unwrap()
+            .state,
+        EntryState::Removed,
+        "a genuinely deleted source is still tombstoned"
     );
 }
 

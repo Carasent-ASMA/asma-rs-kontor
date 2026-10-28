@@ -288,6 +288,79 @@ async fn an_incomplete_sweep_cannot_tombstone_an_absence_it_did_not_prove() {
 }
 
 #[tokio::test]
+async fn an_incomplete_sweep_does_not_hide_a_kept_plans_relations() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/kept.md",
+        &plan("Kept plan", Some("ASMA-9702"), Some("kontor"), ""),
+    );
+    repo.commit("kept");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    sweep(&fixture.catalog).await;
+    let before = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    let before = &before.entries[0];
+    let associations = before.associations.len();
+    let pending = fixture.catalog.sources().unwrap().sources[0].pending_verification;
+    assert!(associations >= 2, "epic and workstream associations");
+
+    let settings = settings_of(fixture.state.path());
+    let now = Timestamp::now();
+    fixture
+        .catalog
+        .release_owner()
+        .expect("release the fixture lease");
+    let database = Database::open(&Catalog::database_path(fixture.state.path())).expect("database");
+    database
+        .acquire_owner("partial-owner", 120, &now)
+        .expect("the partial lease");
+    let partial_sweep = database
+        .begin_sweep("partial-owner", &now)
+        .expect("the partial sweep begins");
+    let discovered = kontor_catalog::discovery::discover(&settings, now).await;
+    database
+        .commit_page(
+            &partial_sweep,
+            0,
+            &now,
+            &discovered.entries,
+            discovered.files_seen,
+        )
+        .expect("the partial page commits");
+    database
+        .finalize_sweep(
+            &partial_sweep,
+            &outcome(false, discovered.coverage, discovered.scanned_roots),
+            &now,
+        )
+        .expect("the partial sweep records its checkpoint");
+    database
+        .release_owner("partial-owner", &now)
+        .expect("release the partial lease");
+
+    let after_partial = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(
+        after_partial.entries[0].associations.len(),
+        associations,
+        "an incomplete sweep must not hide an existing association"
+    );
+    assert_eq!(
+        fixture.catalog.sources().unwrap().sources[0].pending_verification,
+        pending,
+        "the pending count still matches the carried generation"
+    );
+
+    std::fs::rename(repo.root(), fixture.state.path().join("moved-repository"))
+        .expect("the configured root becomes unreadable");
+    sweep(&fixture.catalog).await;
+    let after_carry = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(
+        after_carry.entries[0].associations.len(),
+        associations,
+        "the carried plan keeps every relation after the root becomes unreadable"
+    );
+}
+
+#[tokio::test]
 async fn a_plan_that_grew_past_the_read_bound_is_not_removed() {
     let repo = Repo::new();
     let content = plan("Grows", Some("ASMA-9704"), Some("kontor"), "");

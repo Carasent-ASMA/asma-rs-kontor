@@ -573,6 +573,7 @@ describe("SessionsScreen toolbar events", () => {
       lastUpdatedAt: 0,
       inventoryComplete: true,
       includeArchived: true,
+      labelsComplete: true,
     };
     patchSessionView("host-a", {
       query: "session-a",
@@ -1092,12 +1093,12 @@ describe("SessionsScreen toolbar events", () => {
     expect(count.label.toLowerCase()).not.toContain("stale");
   });
 
-  it("does not show false desk zeros when catalog rows carry no labels", () => {
+  it.each([false, undefined])("does not show false desk zeros when catalog labels are %s", (labelsComplete) => {
     directory.state = {
       ...(directory.state as object),
       entries: [sessionEntry("catalog-only", { labels: {} })],
       source: "catalog",
-      labelsComplete: false,
+      labelsComplete,
       status: "ready",
       live: false,
       inventoryComplete: true,
@@ -1105,6 +1106,33 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen();
     const chip = (index: number) => findByTestID(harness.current(), `sessions-shortcut-${index}`);
     expect(chip(0).props.count).toBe(1);
+    for (const index of [1, 2, 3, 4]) {
+      expect(chip(index).props.count).toBeNull();
+    }
+    (chip(2).props.onPress as () => void)(); harness.flush();
+    expect(textOf(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent)).toContain("session labels are unavailable");
+    expect(findByTestID(harness.current(), "sessions-filter-all").props.count).toMatchObject({ text: "—" });
+  });
+
+  it.each([false, undefined])("does not claim My work is empty when catalog labels are %s", (labelsComplete) => {
+    directory.state = { ...emptyDirectoryState(), entries: [], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work: "mine", advancedOpen: false, ...toolbarOpenPatch(true) });
+    renderScreen();
+    expect(textOf(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent)).toContain("session labels are unavailable");
+  });
+
+  it("does not show desk zeros when the directory is unavailable", () => {
+    directory.state = {
+      ...emptyDirectoryState(),
+      entries: [],
+      status: "error",
+      source: "unavailable",
+      labelsComplete: false,
+      error: "No host",
+      lastUpdatedAt: null,
+    };
+    renderScreen();
+    const chip = (index: number) => findByTestID(harness.current(), `sessions-shortcut-${index}`);
     for (const index of [1, 2, 3, 4]) {
       expect(chip(index).props.count).toBeNull();
     }
@@ -2197,6 +2225,7 @@ describe("SessionsScreen mobile filter page", () => {
       lastUpdatedAt: 0,
       inventoryComplete: true,
       includeArchived: false,
+      labelsComplete: true,
     };
   });
 
@@ -2674,6 +2703,18 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       expect(Object.keys(registry.desks)).toHaveLength(2);
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
+  it.each([true, false])("renders unknown session counts when catalog rows carry no labels (compact=%s)", async (compact) => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false };
+    patchSessionView("host-a", { query: "", advancedOpen: true, includeArchived: false, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry });
+    if (compact) openMobileFilters();
+    expect(choiceFacts("adopus-graphql")).toContain("session count unavailable");
+    expect(choiceFacts("adopus-graphql")).not.toContain("0 sessions");
+    expect(selector().about).toContain("Session counts are unavailable");
+    expect(selector().options.map((option) => option.key)).toContain("adopus-graphql");
+  });
+
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];

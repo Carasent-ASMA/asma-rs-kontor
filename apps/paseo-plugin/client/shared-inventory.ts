@@ -141,45 +141,74 @@ function catalogEntry(
 
 function catalogDirectory(
   view: WorkCatalogNativeView,
-  live: readonly DirectoryEntry[],
+  direct: DirectoryState,
   includeArchived: boolean,
   partial: boolean,
   warning: string | null,
 ): DirectoryState {
-  // Direct rows are fresher per id than any sweep-time catalog row: the
-  // catalog may have started before a session was created, renamed or changed
-  // state. Keep every direct row and use the catalog only for ids direct does
-  // not have. This also covers the archive-scope re-walk window, where a
-  // complete older catalog must not replace a seconds-old direct read.
-  const directIds = new Set(live.map((entry) => entry.id));
-  const entries = [...live];
-  for (const session of view.sessions) {
-    if (directIds.has(session.sessionId)) continue;
-    if (!includeArchived && session.archivedAt !== null) continue;
-    entries.push(catalogEntry(session, view, undefined));
-  }
+  // The catalog and direct rows describe different instants. Compare per id:
+  // a newer catalog row replaces a frozen direct row, while a newer direct row
+  // keeps the re-walk window from rolling a session back to sweep time. A
+  // complete catalog newer than the direct walk may also drop a direct-only row
+  // that the catalog no longer lists, which is how a deleted ghost disappears.
+  const directRows = new Map(direct.entries.map((entry) => [entry.id, entry]));
+  const catalogSessions = view.sessions.filter((session) => includeArchived || session.archivedAt === null);
+  const catalogRows = new Map(catalogSessions.map((session) => [session.sessionId, session]));
   const asOf = timeOf(view.asOf);
+  const directWalkedAt = direct.lastUpdatedAt;
+  const catalogCoversDirect =
+    !partial
+    && asOf !== null
+    && directWalkedAt !== null
+    && asOf > directWalkedAt;
+  const entries: DirectoryEntry[] = [];
+  let keptDirect = false;
+  let catalogFilled = false;
+  for (const row of direct.entries) {
+    const catalog = catalogRows.get(row.id);
+    if (catalog) {
+      const catalogAt = timeOf(catalog.updatedAt);
+      const directAt = timeOf(row.updatedAt);
+      if (catalogAt !== null && (directAt === null || catalogAt > directAt)) {
+        entries.push(catalogEntry(catalog, view, undefined));
+        catalogFilled = true;
+      } else {
+        entries.push(row);
+        keptDirect = true;
+      }
+      continue;
+    }
+    if (catalogCoversDirect) continue;
+    entries.push(row);
+    keptDirect = true;
+  }
+  for (const session of catalogSessions) {
+    if (directRows.has(session.sessionId)) continue;
+    entries.push(catalogEntry(session, view, undefined));
+    catalogFilled = true;
+  }
+  const directStale = keptDirect ? direct.staleReason : null;
   return {
     entries: sortDirectoryEntries(entries),
-    status: partial || warning !== null ? "stale" : "ready",
+    status: partial || warning !== null || directStale !== null ? "stale" : "ready",
     live: false,
     error: null,
-    staleReason: partial ? catalogPartialReason(view, includeArchived) : warning,
+    staleReason: partial ? catalogPartialReason(view, includeArchived) : warning ?? directStale,
     pages: 1,
     lastUpdatedAt: asOf,
     inventoryComplete: !partial,
     includeArchived,
     source: warning !== null && view.source === "snapshot" ? "catalog-snapshot" : "catalog",
     sourceAsOf: view.asOf,
-    labelsComplete: false,
+    labelsComplete: !catalogFilled,
     catalogGeneration: view.generation,
     catalogRuntimeInstance: view.runtimeInstance,
   };
 }
 
-function snapshotDirectory(view: WorkCatalogNativeView, includeArchived: boolean): DirectoryState {
+function snapshotDirectory(view: WorkCatalogNativeView, direct: DirectoryState, includeArchived: boolean): DirectoryState {
   const partial = !catalogComplete(view, includeArchived);
-  const state = catalogDirectory(view, [], includeArchived, partial, "Shared catalog last-known native snapshot; the live native catalog and Paseo directory are unavailable.");
+  const state = catalogDirectory(view, direct, includeArchived, partial, "Shared catalog last-known native snapshot; the live native catalog and Paseo directory are unavailable.");
   return { ...state, source: "catalog-snapshot", inventoryComplete: !partial };
 }
 
@@ -188,7 +217,7 @@ function directDirectory(direct: DirectoryState): DirectoryState {
 }
 
 function unavailableDirectory(direct: DirectoryState): DirectoryState {
-  return { ...direct, source: "unavailable", sourceAsOf: null, catalogGeneration: null, catalogRuntimeInstance: null };
+  return { ...direct, source: "unavailable", sourceAsOf: null, labelsComplete: false, catalogGeneration: null, catalogRuntimeInstance: null };
 }
 
 function directWorkspaces(direct: DirectWorkspaceDirectory): SharedWorkspaceDirectory {
@@ -284,7 +313,10 @@ export function adaptSharedInventory(input: {
   // already answered exactly; otherwise a stale catalog could shadow a fresh
   // direct inventory.
   const directAuthoritative =
-    input.direct.status === "ready" && input.direct.live && input.direct.inventoryComplete === true;
+    input.direct.status === "ready"
+    && input.direct.live
+    && input.direct.inventoryComplete === true
+    && input.direct.staleReason === null;
   const directWorkspacesAuthoritative =
     directAuthoritative
     || (((input.directWorkspaces.entries?.length ?? 0) > 0
@@ -296,13 +328,13 @@ export function adaptSharedInventory(input: {
     directAuthoritative
       ? directDirectory(input.direct)
       : liveComplete && live !== null
-        ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, false, null)
+        ? catalogDirectory(live.view, input.direct, input.includeArchived, false, null)
         : directUsable
           ? directDirectory(input.direct)
           : live !== null
-            ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, true, null)
+            ? catalogDirectory(live.view, input.direct, input.includeArchived, true, null)
             : snapshot !== null
-              ? snapshotDirectory(snapshot.view, input.includeArchived)
+              ? snapshotDirectory(snapshot.view, input.direct, input.includeArchived)
               : unavailableDirectory(input.direct);
 
   const workspaces =

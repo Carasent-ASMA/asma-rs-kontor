@@ -1368,7 +1368,7 @@ fn promote_incomplete(
             }
         }
         for association in &entry.associations {
-            insert_association(
+            insert_new_association(
                 transaction,
                 generation,
                 &entry.logical_plan_id,
@@ -1501,6 +1501,43 @@ fn insert_content_revision(
             occurrence.content.epic,
             occurrence.content.workstream,
             observed_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// Incomplete sweeps may add an association they have never seen, but may not
+/// move an existing one to a generation whose plan row was not updated.
+fn insert_new_association(
+    transaction: &rusqlite::Transaction<'_>,
+    generation: u64,
+    logical_plan_id: &str,
+    association: &ObservedAssociation,
+    observed_at: &str,
+) -> Result<(), StoreError> {
+    let association_id = association_id(
+        logical_plan_id,
+        association.relation,
+        &association.value,
+        association.kind,
+        association.source_id.as_deref(),
+    );
+    transaction.execute(
+        "INSERT OR IGNORE INTO catalog_associations
+             (association_id, logical_plan_id, relation, value, association_kind,
+              source_id, verified, dangling, note, first_seen, last_seen,
+              first_seen_generation, last_seen_generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7, ?8, ?8, ?9, ?9)",
+        params![
+            association_id,
+            logical_plan_id,
+            relation_text(association.relation),
+            association.value,
+            association_kind_text(association.kind),
+            association.source_id,
+            association.note,
+            observed_at,
+            generation_to_sql(generation)
         ],
     )?;
     Ok(())

@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readConfig } from "../server/config";
 import {
   loadWorkCatalog,
@@ -19,10 +19,16 @@ import {
 
 const temporary: string[] = [];
 afterAll(() => Promise.all(temporary.map((directory) => rm(directory, { recursive: true, force: true }))));
+// The observer budget is wall-clock. These tests do not exercise it, so keep
+// its timer from deciding a pass or fail under host load.
+beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+afterEach(() => vi.useRealTimers());
 
 const AS_OF = "2026-10-25T06:14:01Z";
 const HOST_ID = "srv_host_a";
 const RUNTIME = "paseo:ws://127.0.0.1:6767/ws";
+/** A fixed fixture size, independent of the mutable output-limit constant. */
+const FRAME_OVER_LIMIT = 8 * 1024 * 1024 + 1_024;
 
 const nativeProject = {
   runtime_instance: RUNTIME, project_id: "project-1", display_name: "Project One", custom_name: null,
@@ -117,6 +123,7 @@ type FakeOptions = {
   refuseNative?: boolean;
   silent?: boolean;
   staleCursorOnce?: boolean;
+  unterminatedNative?: boolean;
 };
 
 async function fakeMcp(options: FakeOptions = {}) {
@@ -136,6 +143,7 @@ const nativePages = ${JSON.stringify(options.nativePages ?? { first: nativePage(
 const refuseSources = ${options.refuseSources === true};
 const refuseNative = ${options.refuseNative === true};
 const staleCursorOnce = ${options.staleCursorOnce === true};
+const unterminatedNative = ${options.unterminatedNative === true};
 let staleSent = false;
 const text = (document, isError) => ({ content: [{ type: "text", text: JSON.stringify(document) }], ...(isError ? { isError: true } : {}) });
 const envelope = (tool, body) => text({ tool, status: 200, body });
@@ -177,6 +185,10 @@ process.stdin.setEncoding("utf8").on("data", (chunk) => {
       continue;
     }
     if (name === "kontor_work_catalog_native_inventory") {
+      if (unterminatedNative) {
+        process.stdout.write("x".repeat(${FRAME_OVER_LIMIT}));
+        continue;
+      }
       const key = message.params.arguments.cursor ?? "first";
       const result = refuseNative
         ? text({ tool: name, code: "not_found", rule: "no such tool", dispatched: false }, true)
@@ -371,10 +383,25 @@ describe("the plugin's shared catalog read", () => {
   });
 
   it("refuses one observer frame beyond the bounded read and keeps the plan catalog", async () => {
+    vi.useRealTimers();
     const huge = nativePage({
-      sessions: [nativeSession("huge", { title: "x".repeat(WORK_CATALOG_OUTPUT_LIMIT + 1_024) })],
+      sessions: [nativeSession("huge", { title: "x".repeat(FRAME_OVER_LIMIT) })],
     });
     const fake = await fakeMcp({ nativePages: { first: huge } });
+    const { paseoHome } = await sandbox();
+    const read = await loadWorkCatalog(configFor(fake.command, paseoHome), {
+      hostId: HOST_ID,
+      now: () => Date.parse(AS_OF),
+    });
+    expect(read.mode).toBe("catalog");
+    expect(read.view?.entries).toHaveLength(3);
+    expect(read.native.mode).toBe("unavailable");
+    expect(read.native.error).toContain("bounded read");
+  }, 30_000);
+
+  it("refuses an unterminated observer frame beyond the bounded read", async () => {
+    vi.useRealTimers();
+    const fake = await fakeMcp({ unterminatedNative: true });
     const { paseoHome } = await sandbox();
     const read = await loadWorkCatalog(configFor(fake.command, paseoHome), {
       hostId: HOST_ID,

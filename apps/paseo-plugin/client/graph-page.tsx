@@ -185,16 +185,19 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   // Catalog rows carry no labels, so an exact task join cannot say "no links";
   // it has not been observed. The same holds for the plugin's last-known
   // snapshot. Keep the Board honest instead of showing false zero links.
-  const labelsUnavailable = sessions?.state.labelsComplete === false;
+  const labelsUnavailable = sessions !== undefined && sessions.state.labelsComplete !== true;
   const taskOf = (item: BoardItem): SessionTaskFilter | null => item.kind === "task"
     ? (item.node.jira || item.node.kontor_id ? { jira: item.node.jira, kontorId: item.node.kontor_id, label: item.node.jira ?? item.node.kontor_id ?? item.node.id } : null)
     : item.kind === "jira" ? { jira: item.record.key, kontorId: null, label: item.record.key } : null;
   const links = new Map<string, TaskLink[]>();
   const teams = new Map<string, TaskTeamRead>();
-  if (sessions && !labelsUnavailable) for (const item of items) {
+  // Team declarations are source facts; session links need labels. Read the
+  // teams even when labels are unknown, so the control guard below is the one
+  // place that decides whether a session join can be drawn.
+  if (sessions) for (const item of items) {
     const task = taskOf(item);
     if (!task) continue;
-    links.set(item.id, taskSessions(sessions.state.entries, task));
+    if (!labelsUnavailable) links.set(item.id, taskSessions(sessions.state.entries, task));
     if (taskTeams) teams.set(item.id, taskTeams(task));
   }
   const linkedTasks = [...links.values()].filter((value) => value.length > 0).length;
