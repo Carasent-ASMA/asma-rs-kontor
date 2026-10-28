@@ -4,61 +4,28 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { attachSummary, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type Capability, type SummaryPin, type SummaryRevision } from "../shared/session-navigator";
+import { attachSummary, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type Capability, type SummaryPin, type SummaryRevision, type SummaryHistoryBoundary } from "../shared/session-navigator";
+import { stockSummaryGenerator } from "./stock-summary-generator";
 import { readConfig } from "./config";
 import { attachStateRoot, createSummaryAttachService } from "./session-summary-attach";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 
-/** Exact gap when the host does not advertise compact summary generation. */
-export const SUMMARY_MODEL_API_GAP =
-  "This host does not advertise compact session-summary generation (agentCompactSummary); Kontor cannot save a model-generated revision through the SDK on this connection.";
-
-const PLUGIN_STATE_STORE_LIMIT =
-  "Saved revisions persist under the Kontor plugin host-backed state root (plugin-state/kontor/session-summaries-v1); this plugin is the sole writer for summary revisions on this host.";
-
+export const SUMMARY_MODEL_API_GAP = "This connection does not expose the stock agent creation and history APIs required for summary generation.";
 export const SUMMARY_LIMITS_WITH_GENERATION = [
-  "Each revision is model-generated through the host SDK compact-summary route with task, decisions, current state and next step sections.",
-  PLUGIN_STATE_STORE_LIMIT,
+  "Generation runs in a separate read-only Codex session. It never prompts the source or destination; other providers are explicitly unsupported.",
+  "Only a captured tail of up to 48 history items / 24,000 message characters is summarized; its epoch, sequence boundary and input hash are saved.",
+  "Immutable revisions live in Kontor-owned plugin state. A single plugin worker is the writer; multi-process writers are not qualified.",
+  "Clipboard write uses the stock client API. Paste to verify provides explicit readback; write success alone is not readback proof.",
 ];
-
 const sectionsSchema = summaryRevisionSchema.shape.sections;
-
-export type CompactSummaryPayload = {
-  sections: z.infer<typeof sectionsSchema>;
-  cutoff: string;
-};
-
-export type SessionSummaryGenerator = {
-  generate(agentId: string): Promise<CompactSummaryPayload>;
-};
-
-export function paseoCompactSummaryHostFeature(paseo: PaseoApi): boolean {
-  const host = paseo as PaseoApi & {
-    supportsHostFeature?(feature: "agentCompactSummary"): boolean;
-  };
-  return typeof host.supportsHostFeature === "function"
-    ? host.supportsHostFeature("agentCompactSummary")
-    : false;
+export interface CompactSummaryPayload { sections: z.infer<typeof sectionsSchema>; cutoff: string; historyBoundary?: SummaryHistoryBoundary }
+export interface SessionSummaryGenerator { generate(agentId: string): Promise<CompactSummaryPayload> }
+export function paseoSummaryGenerator(paseo: PaseoApi, root = summaryStateRoot()): SessionSummaryGenerator | undefined {
+  return stockSummaryGenerator(paseo, root);
 }
-
-/** Host SDK route when the connected host advertises and implements agents.generateCompactSummary. */
-export function paseoSummaryGenerator(paseo: PaseoApi): SessionSummaryGenerator | undefined {
-  if (!paseoCompactSummaryHostFeature(paseo)) return undefined;
-  const host = paseo as {
-    agents?: typeof paseo.agents & {
-      generateCompactSummary?(agentId: string): Promise<CompactSummaryPayload>;
-    };
-  };
-  if (typeof host.agents?.generateCompactSummary !== "function") return undefined;
-  const generate = host.agents.generateCompactSummary.bind(host.agents);
-  return { generate: (agentId: string) => generate(agentId) };
-}
-
 export function summariesInstalledCapability(paseo: PaseoApi): Capability {
-  if (!paseoCompactSummaryHostFeature(paseo)) return { supported: false, reason: SUMMARY_MODEL_API_GAP };
-  if (!paseoSummaryGenerator(paseo)) return { supported: false, reason: SUMMARY_MODEL_API_GAP };
-  return { supported: true, limits: SUMMARY_LIMITS_WITH_GENERATION };
+  return paseoSummaryGenerator(paseo) ? { supported: true, limits: SUMMARY_LIMITS_WITH_GENERATION } : { supported: false, reason: SUMMARY_MODEL_API_GAP };
 }
 
 const storeSchema = z.object({
@@ -112,32 +79,26 @@ function contentKey(text: string, cutoff: string) {
   return createHash("sha256").update(JSON.stringify([text, cutoff])).digest("hex");
 }
 
-function assertSupported(paseo: PaseoApi): SessionSummaryGenerator {
-  const generator = paseoSummaryGenerator(paseo);
-  if (!generator) throw new Error(SUMMARY_MODEL_API_GAP);
-  return generator;
-}
-
-export function createSessionSummaryService(paseo: PaseoApi, root: string, generator: SessionSummaryGenerator = assertSupported(paseo)) {
+export function createSessionSummaryService(paseo: PaseoApi, root: string, generator: SessionSummaryGenerator | undefined = paseoSummaryGenerator(paseo, root)) {
   async function exact(agentId: string): Promise<Agent | null> {
     const found = await paseo.agents.ref(agentId).refresh();
     return found?.agent.id === agentId ? found.agent : null;
   }
 
-  async function persistRevision(agent: Agent, agentId: string, sections: SummaryRevision["sections"], cutoff: string, savedAt: string, text: string, key: string): Promise<SummaryRevision> {
+  async function persistRevision(agent: Agent, agentId: string, sections: SummaryRevision["sections"], cutoff: string, savedAt: string, text: string, key: string, historyBoundary?: SummaryHistoryBoundary): Promise<SummaryRevision> {
     return withSourceStoreLock(root, agentId, async () => {
       const existing = await readStore(root, agentId);
       if (existing) {
         const latest = existing.revisions[String(existing.latestRevision)];
-        if (latest && contentKey(latest.text, latest.cutoff) === key) return latest;
+        if (latest && contentKey(latest.text, latest.cutoff) === key && JSON.stringify(latest.historyBoundary) === JSON.stringify(historyBoundary)) return latest;
         const revision = existing.latestRevision + 1;
-        const next: SummaryRevision = { summaryId: existing.summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text };
+        const next: SummaryRevision = { summaryId: existing.summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text, ...(historyBoundary ? { historyBoundary } : {}) };
         const store: SummaryStore = { ...existing, sourceTitle: agent.title ?? agentId, latestRevision: revision, revisions: { ...existing.revisions, [String(revision)]: next } };
         await writeStore(root, agentId, store);
         return next;
       }
       const summaryId = randomUUID(), revision = 1;
-      const created: SummaryRevision = { summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text };
+      const created: SummaryRevision = { summaryId, revision, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, cutoff, savedAt, sections, text, ...(historyBoundary ? { historyBoundary } : {}) };
       await writeStore(root, agentId, { summaryId, sourceAgentId: agentId, sourceTitle: agent.title ?? agentId, latestRevision: revision, revisions: { "1": created } });
       return created;
     });
@@ -146,13 +107,14 @@ export function createSessionSummaryService(paseo: PaseoApi, root: string, gener
   async function save(agentId: string): Promise<SummaryRevision> {
     const agent = await exact(agentId);
     if (!agent) throw new Error("This session is not on this host, so no summary was saved.");
+    if (!generator) throw new Error(SUMMARY_MODEL_API_GAP);
     const generated = await generator.generate(agentId);
     const sections = sectionsSchema.parse(generated.sections);
     const cutoff = generated.cutoff.trim();
     if (!cutoff) throw new Error("The host returned no summary cutoff timestamp.");
     const savedAt = new Date().toISOString();
     const text = formatSummaryText(sections);
-    return persistRevision(agent, agentId, sections, cutoff, savedAt, text, contentKey(text, cutoff));
+    return persistRevision(agent, agentId, sections, cutoff, savedAt, text, contentKey(text, cutoff), generated.historyBoundary);
   }
 
   async function latest(agentIds: string[]): Promise<Record<string, SummaryRevision | null>> {
@@ -190,11 +152,9 @@ export function contributeSessionSummaries(server: PluginServerContext) {
   const root = summaryStateRoot();
   server.handle(saveSummary, (input, { paseo }) => sessionSummaryService(paseo, root).save(input.agentId));
   server.handle(readSummary, (input, { paseo }) => {
-    assertSupported(paseo);
     return readPinnedSummary(root, input);
   });
   server.handle(latestSummaries, (input, { paseo }) => {
-    assertSupported(paseo);
     return sessionSummaryService(paseo, root).latest(input.agentIds);
   });
   server.handle(attachSummary, (input, { paseo }) => summaryAttachService(paseo, root, attachStateRoot()).attach(input));

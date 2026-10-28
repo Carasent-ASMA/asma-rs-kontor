@@ -52,6 +52,7 @@ async function harness(patch: Partial<Agent> = {}) {
   const paseo = {
     supportsHostFeature: (_feature: string) => true,
     agents: {
+      create: async () => { throw new Error("not used by legacy attach fixture"); },
       ref: (id: string) => ({ refresh: async () => agents[id] ? { agent: agents[id], project: null } : null }),
       generateCompactSummary: async (_agentId: string) => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }),
       attachSummaryDraft: async (id: string, draft: Draft): Promise<unknown> => {
@@ -67,7 +68,7 @@ async function harness(patch: Partial<Agent> = {}) {
       },
     },
   };
-  const revision = await createSessionSummaryService(paseo as never, summaryRoot).save(SOURCE.id);
+  const revision = await createSessionSummaryService(paseo as never, summaryRoot, { generate: paseo.agents.generateCompactSummary }).save(SOURCE.id);
   const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: DEST.id };
   const service = () => createSummaryAttachService(paseo as never, summaryRoot, attachRoot);
   return { paseo, revision, pin, summaryRoot, attachRoot, service, drafts, calls, agents };
@@ -99,7 +100,7 @@ describe("one-shot atomic saved-revision attachment", () => {
   it("attaches the exact saved revision once, with no prompt or source modification", async () => {
     const h = await harness();
     h.paseo.agents.generateCompactSummary = async () => ({ sections: { ...SECTIONS, nextStep: "Newer next step" }, cutoff: "2026-10-25T11:00:00Z" });
-    const newer = await createSessionSummaryService(h.paseo as never, h.summaryRoot).save(SOURCE.id);
+    const newer = await createSessionSummaryService(h.paseo as never, h.summaryRoot, { generate: h.paseo.agents.generateCompactSummary }).save(SOURCE.id);
     expect(newer.revision).toBe(2);
     expect(await h.service().attach(h.pin)).toMatchObject({ state: "drafted", ...h.pin });
     expect(h.calls).toEqual([{ id: DEST.id, draft: { summaryId: h.revision.summaryId, revision: 1, text: h.revision.text, sourceAgentId: SOURCE.id } }]);

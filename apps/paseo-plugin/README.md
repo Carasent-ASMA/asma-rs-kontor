@@ -5,6 +5,53 @@ the KR-11 foundation of the Kontor relaunch plan (ASMA-8507): the decided
 binding hooks plus the `before("workspace.create")` placement guard. The
 navigator reads Paseo directly and works without `kontord`.
 
+## Saved session summaries on stock Paseo
+
+Summarize & copy uses stock Paseo 0.12 agent creation, timeline and finish APIs.
+It reads a bounded tail of up to 48 source history items and 24,000 message
+characters, then runs a separate, visible read-only Codex summary session. It
+never prompts the source or a destination. A working source must finish first;
+other providers remain explicitly unsupported. Provider execution and installed
+client behavior still need release-owner readback.
+
+Kontor saves immutable revisions in its own plugin state. Each new revision
+records the exact source ID, captured history epoch/sequence range and input
+hash. A changed source epoch creates a new revision rather than rewriting the
+old pin. Generation intent and worker identity are saved before dispatch. A
+retry reads the same uncertain worker; it does not send another prompt. A
+confirmed provider/parse failure permits an explicit new attempt. These files
+have one plugin worker as writer; multiple workers sharing a root are not
+qualified.
+
+Copy rereads the exact saved pin. Copy again uses that revision without
+regeneration. A failed read or clipboard write keeps the saved revision visible.
+Stock `copyText` confirms the write, not readback: paste into the sheet's
+verification field to compare with the saved text. This does not read the
+clipboard automatically.
+
+### R29 destination-side selection design
+
+R28 does not depend on draft attachment. Stock Paseo exposes an attachment
+source and picker, but no public remote composer insertion/CAS API, active
+composer destination in its search RPC, or selection receipt. The current
+remote-attach control therefore remains unavailable on stock Paseo.
+
+The separate R29 UX is **Prepare for [destination] → open that destination →
+Attach → Kontor saved summary → select the exact revision**. The pending record
+would name the intended destination and immutable pin; the native picker adds
+it only after the user's destination-side selection. Preparation, search,
+clipboard success and user-reported confirmation must never be labelled
+“Attached/verified”. Query filtering cannot prove per-target authorization.
+Native selection toggles a duplicate item off, so pending-intent deduplication
+cannot be presented as remote exactly-once insertion. Keep pending intents
+until explicit cancellation or qualified evidence; never replace/clear a
+remote draft or substitute a message send. This R29 route is a design, not an
+implemented or installed attachment path in this change.
+
+All three workflow/orchestration choices remain distinct: `kontor/kontor`,
+`kontor/paseo`, and `free/paseo`. Free is a workflow choice. Summary and attachment
+actions do not silently switch these choices; `free/kontor` is not another mode.
+
 ## Sessions navigator
 
 The plugin adds the **Kontor** screen, one sidebar entry, one global Command

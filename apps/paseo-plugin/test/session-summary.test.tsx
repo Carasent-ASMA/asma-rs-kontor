@@ -37,7 +37,7 @@ const SUMMARY: SummaryRevision = { summaryId: "00000000-0000-4000-8000-000000000
 
 beforeEach(() => {
   harness.fresh();
-  host.rpc = { "sessions.summary-save": vi.fn(async () => SUMMARY), "sessions.summary-attach": vi.fn() };
+  host.rpc = { "sessions.summary-save": vi.fn(async () => SUMMARY), "sessions.summary-read": vi.fn(async () => SUMMARY), "sessions.summary-attach": vi.fn() };
   host.copyText = vi.fn(async () => {});
 });
 
@@ -55,6 +55,7 @@ describe("SummarySheet", () => {
     expect(banner(s.render())).toBe("Saving a summary of Route review…");
     await settle();
     expect(banner(s.render())).toBe("Saved r3 · Copying…");
+    await settle();
     expect(host.copyText).toHaveBeenCalledExactlyOnceWith("Fictional summary");
     await settle();
     expect(banner(s.render())).toBe("Saved r3 · Copying…");
@@ -70,7 +71,7 @@ describe("SummarySheet", () => {
     const s = sheet();
     s.render(); await settle(); s.render(); await settle();
     const tree = s.render();
-    expect(banner(tree)).toBe("Saved r3 · Not copied: the clipboard refused it (permission denied). Use Copy again, or select the text below.");
+    expect(banner(tree)).toBe("Saved r3 · Not copied: permission denied. Use Copy again, or select the text below.");
     expect(text(tree)).toContain("Fictional task");
     expect(text(tree)).not.toContain("Copied to clipboard");
     host.copyText = vi.fn(async () => {});
@@ -110,6 +111,59 @@ describe("SummarySheet", () => {
     expect(button(tree, "summary-attach")!.props).toMatchObject({ accessibilityLabel: `Attach to another seat…. ${reason}`, disabled: true, tabIndex: 0 });
     expect(text(tree)).toContain(reason);
   });
+  it("rereads the exact pin before every copy and never regenerates on Copy again", async () => {
+    const s = sheet(); s.render(); await settle(); s.render(); await settle();
+    expect(host.rpc["sessions.summary-read"]).toHaveBeenCalledExactlyOnceWith({ summaryId: SUMMARY.summaryId, revision: 3 });
+    press(button(s.render(), "summary-copy-again")); await settle(); s.render();
+    expect(host.rpc["sessions.summary-read"]).toHaveBeenCalledTimes(2);
+    expect(host.rpc["sessions.summary-save"]).toHaveBeenCalledTimes(1);
+    expect(host.copyText.mock.calls).toEqual([[SUMMARY.text], [SUMMARY.text]]);
+  });
+
+  it("preserves the saved revision when its exact read fails and lets Copy again recover", async () => {
+    host.rpc["sessions.summary-read"] = vi.fn(async () => ({ ...SUMMARY, revision: 4 }));
+    const s = sheet(); s.render(); await settle(); s.render(); await settle();
+    expect(banner(s.render())).toContain("saved revision readback did not match");
+    expect(host.copyText).not.toHaveBeenCalled();
+    host.rpc["sessions.summary-read"] = vi.fn(async () => SUMMARY);
+    press(button(s.render(), "summary-copy-again")); await settle();
+    expect(banner(s.render())).toContain("Copied to clipboard");
+    expect(host.rpc["sessions.summary-save"]).toHaveBeenCalledTimes(1);
+  });
+
+  it("never copies a save response for a different source", async () => {
+    host.rpc["sessions.summary-save"] = vi.fn(async () => ({ ...SUMMARY, sourceAgentId: "another-source" }));
+    const s = sheet(); s.render(); await settle();
+    expect(banner(s.render())).toContain("belongs to another source");
+    expect(host.rpc["sessions.summary-read"]).not.toHaveBeenCalled();
+    expect(host.copyText).not.toHaveBeenCalled();
+  });
+
+  it("compares explicitly pasted text with the saved revision without claiming automatic clipboard readback", async () => {
+    const s = sheet(); s.render(); await settle(); s.render(); await settle();
+    let tree = s.render();
+    expect(text(tree)).toContain("Clipboard readback is not automatic");
+    const paste = (value: string) => (tree.find(node => node.props.testID === "summary-paste-verification")!.props.onChangeText as (text: string) => void)(value);
+    paste("different text"); tree = s.render();
+    expect(text(tree)).toContain("does not match this saved revision");
+    paste(SUMMARY.text); tree = s.render();
+    expect(text(tree)).toContain("Pasted text matches saved r3.");
+    expect(host.copyText).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a late stored read after the selected source changes", async () => {
+    let finishRead!: (revision: SummaryRevision) => void;
+    host.rpc["sessions.summary-read"] = vi.fn(() => new Promise<SummaryRevision>(resolve => { finishRead = resolve; }));
+    let source = SOURCE;
+    const render = () => walk(harness.current.render(() => SummarySheet({ source, colors: COLORS, attachUnavailable: "Not supported", onAttach: vi.fn(), onClose: vi.fn() })));
+    render(); await settle(); render(); await settle();
+    source = sessionEntry("other-source");
+    host.rpc["sessions.summary-save"] = vi.fn(() => new Promise<SummaryRevision>(() => {}));
+    render(); finishRead(SUMMARY); await settle();
+    expect(host.copyText).not.toHaveBeenCalled();
+    expect(banner(render())).toContain("Saving a summary");
+  });
+
 });
 
 describe("AttachSheet", () => {
