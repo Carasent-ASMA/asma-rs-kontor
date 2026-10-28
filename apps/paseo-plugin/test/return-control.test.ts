@@ -26,7 +26,6 @@ import {
   contributeReturnControl,
   RETURN_CONTROL_ID,
   RETURN_CONTROL_LABEL,
-  RETURN_CONTROL_TITLE,
 } from "../client/return-control";
 import type {
   AgentDirectoryPage,
@@ -326,7 +325,7 @@ describe("Kontor composer controls share one host directory", () => {
       workspaceId: "wks-0",
       agentId: "s-0",
       button: {
-        title: `${RETURN_CONTROL_TITLE} · Last known: Idle`,
+        title: "Session s-0 · Last known: Idle",
         icon: expect.any(Function),
         label: RETURN_CONTROL_LABEL,
         behavior: { kind: "popover" },
@@ -407,6 +406,7 @@ describe("Kontor composer controls share one host directory", () => {
       agent: {
         ...rows[0]!.agent,
         id: "agent-b",
+        title: "Session agent-b",
         workspaceId: "wks-b",
       },
     } as PaseoAgentUpdate);
@@ -417,11 +417,12 @@ describe("Kontor composer controls share one host directory", () => {
       agent: {
         ...rows[0]!.agent,
         id: "agent-b",
+        title: "Session agent-b",
         workspaceId: "wks-b",
         status: "closed",
       },
     } as PaseoAgentUpdate);
-    expect(controls.pillFor("agent-b")?.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Closed`);
+    expect(controls.pillFor("agent-b")?.contribution.button.title).toBe("Session agent-b · Closed");
 
     host.emitUpdate({
       kind: "upsert",
@@ -465,17 +466,17 @@ describe("Kontor composer controls share one host directory", () => {
     for (const { expected, ...patch } of states) {
       host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent, ...patch } } as PaseoAgentUpdate);
       expect(controls.pillFor("agent-a")).toBe(a);
-      expect(a.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · ${expected}`);
+      expect(a.contribution.button.title).toBe(`Session agent-a · ${expected}`);
       expect(a.contribution.button.behavior).toBe(behavior);
       expect(a.contribution.button.label).toBe("Kontor");
     }
     // This is why the directory is used instead of a snapshot lacking pendingPermissions.
     host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent,
       status: "running", pendingPermissions: [{ id: "permission-a", provider: "codex", name: "Read", kind: "tool" }] } } as PaseoAgentUpdate);
-    expect(a.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Needs input`);
+    expect(a.contribution.button.title).toBe("Session agent-a · Needs input");
     expect(a.registration.update).toHaveBeenCalled();
     expect(b.registration.update).not.toHaveBeenCalled();
-    expect(b.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Running`);
+    expect(b.contribution.button.title).toBe("Session agent-b · Running");
     expect(a.registration.remove).not.toHaveBeenCalled();
     expect(controls.addComposerPill).toHaveBeenCalledTimes(2);
     expect(host.calls).toHaveLength(reads);
@@ -494,18 +495,38 @@ describe("Kontor composer controls share one host directory", () => {
     const reads = host.calls.length;
     pill.registration.update.mockClear();
     host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent, title: "Renamed" } } as PaseoAgentUpdate);
-    expect(pill.registration.update).not.toHaveBeenCalled();
+    expect(pill.registration.update).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ title: "Renamed · Running" }));
+    host.setRows([{ ...rows[0]!, agent: { ...rows[0]!.agent, title: "Renamed" } }]);
     expect(pill.contribution.button.icon).toBe(icon);
     startHostDirectory("host-a", "offline");
-    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Last known: Running`);
+    expect(pill.contribution.button.title).toBe("Renamed · Last known: Running");
     expect(pill.contribution.button.icon).not.toBe(icon);
     expect(host.calls).toHaveLength(reads);
     startHostDirectory("host-a", "online");
     await settle();
-    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Running`);
+    expect(pill.contribution.button.title).toBe("Renamed · Running");
     expect(pill.contribution.button.icon).toBe(icon);
     expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
     expect(host.subscribes).toHaveLength(2);
+    stop();
+  });
+
+  it("uses the exact full title and untitled fallback without changing the session or its popover", async () => {
+    const rows = [agentPage("agent-a", { title: "   " })];
+    const host = fakeHost("host-a", rows);
+    const controls = fakeControls();
+    const stop = contributeReturnControl(controls.client, "sessions");
+    startHostDirectory("host-a");
+    await settle();
+    const pill = controls.pillFor("agent-a")!;
+    const behavior = pill.contribution.button.behavior;
+    expect(pill.contribution.button.title).toBe("Untitled session · Idle");
+    const title = "A very long current session title ".repeat(30);
+    host.emitUpdate({ kind: "upsert", agent: { ...rows[0]!.agent, title } } as PaseoAgentUpdate);
+    expect(pill.contribution.button.title).toBe(`${title.trim()} · Idle`);
+    expect(pill.contribution.button.behavior).toBe(behavior);
+    expect(rows[0]!.agent.title).toBe("   ");
+    expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
     stop();
   });
 
@@ -522,9 +543,9 @@ describe("Kontor composer controls share one host directory", () => {
     pill.registration.update.mockImplementationOnce(() => { throw new Error("presentation refused"); });
     const update = { kind: "upsert", agent: { ...rows[0]!.agent, status: "error" } } as PaseoAgentUpdate;
     host.emitUpdate(update);
-    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Idle`);
+    expect(pill.contribution.button.title).toBe("Session agent-a · Idle");
     host.emitUpdate(update);
-    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Error`);
+    expect(pill.contribution.button.title).toBe("Session agent-a · Error");
     expect(pill.registration.remove).not.toHaveBeenCalled();
     expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
     expect(host.calls).toHaveLength(reads);
@@ -532,8 +553,8 @@ describe("Kontor composer controls share one host directory", () => {
   });
 
   it("does not borrow a matching native ID from another host while its own host is offline", async () => {
-    const own = fakeHost("host-a", [agentPage("same-id", { status: "running" })]);
-    const other = fakeHost("host-b", [agentPage("same-id", { status: "error" })]);
+    const own = fakeHost("host-a", [agentPage("same-id", { status: "running", title: "Own session" })]);
+    const other = fakeHost("host-b", [agentPage("same-id", { status: "error", title: "Other host session" })]);
     const controls = fakeControls();
     const stop = contributeReturnControl(controls.client, "sessions");
     startHostDirectory("host-a");
@@ -545,7 +566,7 @@ describe("Kontor composer controls share one host directory", () => {
     await settle();
     expect(other.subscribes).toHaveLength(1);
     expect(controls.pillFor("same-id")).toBe(pill);
-    expect(pill.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Last known: Running`);
+    expect(pill.contribution.button.title).toBe("Own session · Last known: Running");
     expect(controls.addComposerPill).toHaveBeenCalledTimes(1);
     expect(own.calls).toHaveLength(reads);
     stop();
@@ -717,7 +738,7 @@ describe("Kontor composer controls share one host directory", () => {
     expect(controls.pillFor("live")).toBeDefined();
     expect(controls.pillFor("no-workspace")).toBeUndefined();
     expect(controls.pillFor("empty-workspace")).toBeUndefined();
-    expect(controls.pillFor("closed")?.contribution.button.title).toBe(`${RETURN_CONTROL_TITLE} · Closed`);
+    expect(controls.pillFor("closed")?.contribution.button.title).toBe("Session closed · Closed");
     expect(controls.pillFor("archived")).toBeUndefined();
     stop();
   });

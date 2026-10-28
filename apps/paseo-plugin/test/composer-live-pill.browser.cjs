@@ -71,21 +71,21 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
       const context=await browser.newContext({viewport:{width,height:844},reducedMotion:'reduce'});const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(String(error)));
       try{
         await page.goto(server.resolvedUrls.local[0]);const a=page.getByTestId('pill-a'),b=page.getByTestId('pill-b');
-        await page.getByRole('button',{name:'Start or switch session · Idle',exact:true}).waitFor();
+        await page.getByRole('button',{name:'Synthetic a · Idle',exact:true}).waitFor();
         const baseline=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));
         await page.getByRole('textbox',{name:'Chat draft'}).fill('Preserve this draft');
         // Running uses Kontor's existing blue appearance ink even when the host's CTA accent is green.
         const transitions=[['running','Running','rgb(156, 191, 255)',{}],['running','Needs input','rgb(192, 150, 100)',{pendingPermissions:[{id:'permission-a',provider:'codex',name:'Read',kind:'tool'}]}],['error','Error','rgb(216, 132, 123)',{}],['idle','Attention','rgb(108, 177, 123)',{requiresAttention:true,attentionReason:'finished'}],['idle','Idle','rgb(161, 165, 164)',{}],['initializing','Starting','rgb(161, 165, 164)',{}],['closed','Closed','rgb(161, 165, 164)',{}]];
         const measurements=[];
-        for(const [status,label,ink,extra]of transitions){await page.evaluate(({status,extra})=>window.fixture.emit('a',{status,...extra}),{status,extra});await waitForATitle(page,'Start or switch session · '+label);assert.deepEqual(await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>[node.dataset.icon,getComputedStyle(node).color])),[['Building2',ink]]);assert.equal(await b.getAttribute('aria-label'),'Start or switch session · Running');
+        for(const [status,label,ink,extra]of transitions){await page.evaluate(({status,extra})=>window.fixture.emit('a',{status,...extra}),{status,extra});await waitForATitle(page,'Synthetic a · '+label);assert.deepEqual(await a.locator('[data-icon]').evaluateAll(nodes=>nodes.map(node=>[node.dataset.icon,getComputedStyle(node).color])),[['Building2',ink]]);assert.equal(await b.getAttribute('aria-label'),'Synthetic b · Running');
           await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));measurements.push({label,ms:await page.evaluate(()=>window.fixture.paints.at(-1)?.eventToPaintOpportunityMs)});
         }
-        await page.evaluate(()=>window.fixture.emit('a',{status:'running'}));await waitForATitle(page,'Start or switch session · Running');
+        await page.evaluate(()=>window.fixture.emit('a',{status:'running'}));await waitForATitle(page,'Synthetic a · Running');
         const beforeOffline=await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color);
-        await page.evaluate(()=>window.fixture.offline());await waitForATitle(page,'Start or switch session · Last known: Running');
+        await page.evaluate(()=>window.fixture.offline());await waitForATitle(page,'Synthetic a · Last known: Running');
         assert.equal(await a.locator('[data-icon]').evaluate(node=>getComputedStyle(node).color),'rgb(161, 165, 164)');assert.notEqual(beforeOffline,'rgb(161, 165, 164)');
         const offline=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));assert.deepEqual(offline,baseline);
-        await page.evaluate(()=>window.fixture.online());await waitForATitle(page,'Start or switch session · Running');
+        await page.evaluate(()=>window.fixture.online());await waitForATitle(page,'Synthetic a · Running');
         const reconnected=await page.evaluate(()=>({reads:window.fixture.reads,adds:window.fixture.adds,subscriptions:window.fixture.subscriptions}));assert.equal(reconnected.adds,2);assert.equal(reconnected.subscriptions,2);
         await a.click();await page.getByRole('button',{name:'Open Kontor',exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.fixture.opens),[{screenId:'sessions'}]);assert.equal(await page.evaluate(()=>window.fixture.closes),1);
         assert.equal(await page.getByRole('textbox',{name:'Chat draft'}).inputValue(),'Preserve this draft');assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
@@ -107,8 +107,8 @@ const report = { scope: 'Synthetic Chromium / React Native Web host wrapper. Act
           await page.emulateMedia({reducedMotion:'reduce'});await tone.waitFor({state:'detached'});
           assert.equal(await pulse.evaluate(node=>getComputedStyle(node).transform),'matrix(1, 0, 0, 1, 0, 0)');
           await page.emulateMedia({reducedMotion:'no-preference'});await tone.waitFor();
-          await page.evaluate(()=>window.fixture.emit('a',{status:'idle'}));await waitForATitle(page,'Start or switch session · Idle');await pulse.waitFor({state:'detached'});
-          await page.evaluate(()=>window.fixture.emit('a',{status:'running'}));await waitForATitle(page,'Start or switch session · Running');await tone.waitFor();
+          await page.evaluate(()=>window.fixture.emit('a',{status:'idle'}));await waitForATitle(page,'Synthetic a · Idle');await pulse.waitFor({state:'detached'});
+          await page.evaluate(()=>window.fixture.emit('a',{status:'running'}));await waitForATitle(page,'Synthetic a · Running');await tone.waitFor();
           await page.evaluate(()=>window.fixture.hide(true));
           await tone.waitFor({state:'detached',timeout:5000});
           await page.evaluate(()=>window.fixture.hide(false));await tone.waitFor();

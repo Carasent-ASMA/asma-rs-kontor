@@ -717,7 +717,7 @@ describe("Start or switch popover from the composer pill", () => {
     const render = () => { model.cursor = 0; model.effect = 0; tree = elements(StartSwitchPopover(all)); return tree; };
     render();
     const search = (value: string) => { (byTestId(tree, "kontor-switch-search")!.props.onChangeText as (value: string) => void)(value); render(); };
-    return { render, search, openScreen, close, get tree() { return tree; } };
+    return { render, search, openScreen, close, props: all, get tree() { return tree; } };
   }
   const navigation = () => ({ openAgent: vi.fn(), openWorkspace: vi.fn() }) as unknown as SessionNavigation & { openAgent: ReturnType<typeof vi.fn> };
   const handedKey = (p: ReturnType<typeof pop>, call = 0) => (p.openScreen.mock.calls[call]![0] as { params: { target: string } }).params.target;
@@ -728,7 +728,7 @@ describe("Start or switch popover from the composer pill", () => {
     expect(model.rpc["sessions.create-options"]).toHaveBeenCalledWith({ workspaceId: "wks-adam" });
     expect(p.tree.some((node) => node.type === AnchoredMenu)).toBe(false);
     expect(action(p.tree, "Close")).toBeUndefined();
-    expect(text(p.tree)).toContain("Start or switch session\nThis host");
+    expect(text(p.tree)).toContain("Untitled session\nThis host");
     // The compact host sheet shows the title itself, so the body keeps only its scope there.
     const sheet = text(pop({ compact: true }).tree);
     expect(sheet).not.toContain("Start or switch session"); expect(sheet).toContain("This host");
@@ -739,6 +739,39 @@ describe("Start or switch popover from the composer pill", () => {
     expect(p.tree.filter((node) => node.type === "ScrollView")).toEqual([]);
     expect(byTestId(p.tree, "kontor-switch-search")?.props.autoFocus).toBe(true);
     expect(byTestId(pop({ compact: true }).tree, "kontor-switch-search")?.props.autoFocus).toBe(false);
+  });
+
+  it("follows the actual composer session and rename without using searched or previewed rows", () => {
+    const p = pop({ entries: [sessionEntry("agent-a", { title: "Current A", workspaceId: "wks-adam" }), sessionEntry("agent-b", { title: "Current B", workspaceId: "wks-adam" })] });
+    const heading = () => byTestId(p.tree, "kontor-switch-heading")!.props;
+    Object.assign(p.props, { agentId: "agent-a" }); p.render();
+    expect(heading().children).toBe("Current A");
+    p.search("Current B");
+    expect(heading().children).toBe("Current A");
+    Object.assign(p.props, { agentId: "agent-b" }); p.render();
+    expect(heading().children).toBe("Current B");
+    model.directory = directory([sessionEntry("agent-a", { title: "Current A", workspaceId: "wks-adam" }), sessionEntry("agent-b", { title: "Renamed B", workspaceId: "wks-adam" })]); p.render();
+    expect(heading().children).toBe("Renamed B");
+    Object.assign(p.props, { agentId: "not-loaded" }); p.render();
+    expect(heading().children).toBe("Untitled session");
+    Object.assign(p.props, { context: "draft" }); p.render();
+    expect(heading().children).toBe("Start or switch session");
+    expect(p.openScreen).not.toHaveBeenCalled();
+  });
+
+  it("keeps the complete long title accessible while ellipsizing beside actions, and rejects another workspace", () => {
+    const title = "Long current session title ".repeat(30).trim();
+    const p = pop({ entries: [sessionEntry("agent-current", { title, workspaceId: "wks-adam" })] });
+    const heading = byTestId(p.tree, "kontor-switch-heading")!;
+    expect(heading.props).toMatchObject({ children: title, accessibilityLabel: title, accessibilityRole: "header", numberOfLines: 1, ellipsizeMode: "tail", style: expect.objectContaining({ flexShrink: 1 }) });
+    Object.assign(p.props, { workspaceId: "another-workspace" }); p.render();
+    expect(byTestId(p.tree, "kontor-switch-heading")!.props.children).toBe("Untitled session");
+    Object.assign(p.props, { host: { id: "host-b", label: "Host B" } });
+    model.directory = directory([sessionEntry("agent-current", { title: "Other host title", workspaceId: "another-workspace" })]); p.render();
+    expect(model.directoryArgs.at(-1)).toMatchObject({ hostId: "host-b" });
+    expect(byTestId(p.tree, "kontor-switch-heading")!.props.children).toBe("Other host title");
+    model.directory = directory([]); p.render();
+    expect(byTestId(p.tree, "kontor-switch-heading")!.props.children).toBe("Untitled session");
   });
 
   it("draws the same Last visited rows and coverage note as the Kontor screen's sheet", () => {
