@@ -56,6 +56,7 @@ import {StartSwitchPopover} from ${client('start-switch-sheet.tsx')};
 import {openHandOff} from ${client('session-actions.ts')};
 import {configureRecentStorage,readRecent,recordVisit} from ${client('recent-sessions.ts')};
 import {useSessionDirectory,startHostDirectory} from ${client('use-session-directory.ts')};
+import {contributeReturnControl} from ${client('return-control.ts')};
 import {switchViewPatch} from ${client('session-state-shortcuts.ts')};
 import {readSessionView,patchSessionView} from ${client('session-view-store.ts')};
 import {filterDirectoryEntries} from ${client('session-view.ts')};
@@ -63,7 +64,7 @@ import {providerBlockedView} from ${client('provider-blocked-filter.ts')};
 document.body.style.margin='0';
 const query=new URLSearchParams(location.search), dark=query.get('theme')==='dark', compact=innerWidth<700;
 const colors={surface0:dark?'#15171c':'#fff',surface1:dark?'#1f222a':'#f5f6f8',surface2:dark?'#2e333e':'#e6ebf2',foreground:dark?'#ecedf0':'#20242c',foregroundMuted:dark?'#a8adb7':'#5e6570',border:dark?'#414754':'#c7cdd7',accent:dark?'#9cbfff':'#245bba',accentForeground:dark?'#15171c':'#fff',statusSuccess:'#168047',statusWarning:'#a76b0a',statusDanger:'#b02222'};
-const HOST='fixture-a', TITLE='Start or switch session';
+const HOST='fixture-a';
 const reviews=new Map();
 const values=new Map(); configureRecentStorage({read:key=>values.get(key),write:(key,value)=>values.set(key,value)});
 const page=(id,title,archivedAt=null)=>({agent:{id,title,status:'idle',provider:'fixture',cwd:'/fixture',workspaceId:'wks-adam',model:null,labels:{},createdAt:'2026-10-22T09:00:00.000Z',updatedAt:'2026-10-22T10:00:00.000Z',archivedAt,pendingPermissions:[],requiresAttention:false,attentionReason:null,attentionTimestamp:null},project:null});
@@ -101,6 +102,9 @@ window.fixture={archiveMode:'confirmed',hostStatus:'online',hostListeners:new Se
   throw new Error('Unexpected RPC in isolated fixture: '+name);
  }};
 window.fixture.setHost=status=>{window.fixture.hostStatus=status;for(const listener of window.fixture.hostListeners)listener()};
+const pills=new Map();let notifyPills=()=>{};
+contributeReturnControl({addComposerPill:item=>{pills.set(item.agentId,item);notifyPills();return {update:patch=>{Object.assign(item.button,patch);notifyPills();},remove:()=>{pills.delete(item.agentId);notifyPills();}};},openScreen:()=>{throw new Error('Unexpected pill hand-off');}},'kontor');
+window.fixture.rename=(id,title)=>{const item=rows.find(row=>row.agent.id===id);item.agent={...item.agent,title};for(const observer of window.fixture.observers)observer.update({type:'agent_update',payload:{kind:'upsert',agent:item.agent,project:null}});};
 startHostDirectory(HOST,'online');
 const navigation={openAgent:input=>{window.fixture.opens.push(input);},openWorkspace:()=>{throw new Error('Unexpected workspace navigation');}};
 /** Stand-in for the Kontor screen's hand-off effect: the same call, keyed on the same param. */
@@ -111,13 +115,16 @@ function KontorStandIn({params}){const directory=useSessionDirectory({hostId:HOS
  const matching=view.status==='provider_blocked'?providerBlockedView({state:directory.state,includeArchived:false,candidates:directory.state.entries,reads:new Map(),freshness:'Live',blocked:null}).sessions:filterDirectoryEntries(directory.state.entries,view);
  return <View><Text testID="fixture-status-filter" style={{color:colors.foreground}}>{view.status}</Text><Text testID="fixture-status-ids" style={{color:colors.foreground}}>{matching.map(entry=>entry.id).join(',')}</Text><Text testID="fixture-screen" style={{color:colors.foreground,margin:16}}>Kontor {params.target?'with a request':'without a request'}</Text></View>;}
 function App(){const pill=useRef(null);const [open,setOpen]=useState(false),[route,setRoute]=useState(null),[mount,setMount]=useState(0);
+ const [current,setCurrent]=useState({context:'agent',agentId:'dup-1',workspaceId:'wks-adam'});const [,redraw]=useState(0);notifyPills=()=>redraw(value=>value+1);
+ window.fixture.select=(id,workspaceId='wks-adam')=>setCurrent(id?{context:'agent',agentId:id,workspaceId}:{context:'draft',workspaceId});
+ const active=pills.get(current.agentId);const TITLE=current.context==='agent'?(active?.workspaceId===current.workspaceId?active.button.title:'Untitled session'):'Start or switch session';
  const dismiss=()=>{setOpen(false);setTimeout(()=>pill.current?.focus?.(),0);};
  window.fixture.show=index=>setRoute(window.fixture.screens[index]);window.fixture.remount=()=>setMount(value=>value+1);window.fixture.release=dismiss;
  // Synthetic host: Escape closes the popover at the window's bubble phase and focus returns to the pill.
  useEffect(()=>{if(!open)return;const key=event=>{if(event.key==='Escape')dismiss();};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);},[open]);
  const openScreen=input=>{if(window.fixture.failOpenScreen)throw new Error('Fixture could not open Kontor.');window.fixture.screens.push(input);if(!window.fixture.holdArrival)setRoute(input);};
  const close=()=>{window.fixture.closes++;if(!window.fixture.holdClose)dismiss();};
- const content=<StartSwitchPopover host={{id:HOST,label:'Fixture host'}} theme={{colors}} layout={{compact,platform:'web'}} context="agent" workspaceId="wks-adam" agentId="dup-1" close={close} openScreen={openScreen} screenId="kontor"/>;
+ const content=<StartSwitchPopover host={{id:HOST,label:'Fixture host'}} theme={{colors}} layout={{compact,platform:'web'}} {...current} close={close} openScreen={openScreen} screenId="kontor"/>;
  const frame={borderWidth:1,borderColor:colors.border,backgroundColor:colors.surface1,overflow:'hidden'};
  return <View style={{height:innerHeight,width:innerWidth,backgroundColor:colors.surface0}}>
   {route?<StrictMode key={mount}><KontorStandIn params={route.params??{}}/></StrictMode>:<Text style={{color:colors.foreground,margin:16}}>Composer</Text>}
@@ -127,7 +134,7 @@ function App(){const pill=useRef(null);const [open,setOpen]=useState(false),[rou
   {open&&compact?<>
    <Pressable testID="host-backdrop" accessibilityLabel="Dismiss" onPress={dismiss} style={{position:'absolute',inset:0,backgroundColor:'rgba(0,0,0,0.35)'}}/>
    <View testID="host-popover" role="dialog" aria-label={TITLE} style={{...frame,position:'absolute',left:0,right:0,bottom:0,maxHeight:Math.round(innerHeight*0.85),borderTopLeftRadius:14,borderTopRightRadius:14}}>
-    <Text role="heading" style={{color:colors.foreground,fontSize:15,fontWeight:'600',padding:12,paddingBottom:4}}>{TITLE}</Text>
+    <Text testID="host-heading" role="heading" accessibilityLabel={TITLE} numberOfLines={1} style={{color:colors.foreground,fontSize:15,fontWeight:'600',padding:12,paddingBottom:4,minWidth:0,flexShrink:1}}>{TITLE}</Text>
     <ScrollView testID="host-scroller" style={{flexGrow:0}} contentContainerStyle={{padding:8,paddingBottom:24}}>{content}</ScrollView></View></>:null}
  </View>;}
 createRoot(document.getElementById('root')).render(<App/>);
@@ -186,7 +193,7 @@ async function run(name, test) {
 }
 (async () => {
   const vite = await import(consoleDeps.resolve('vite'));
-  server = await vite.createServer({ root: fixture, configFile: false, define: { __DEV__: 'false', 'process.env.NODE_ENV': '"development"' },
+  server = await vite.createServer({ root: fixture, configFile: false, define: { global: 'globalThis', __DEV__: 'false', 'process.env.NODE_ENV': '"development"' },
     server: { host: '127.0.0.1', port: 0, fs: { allow: [fixture, plugin, native.split(path.sep + '.pnpm' + path.sep)[0]] } },
     resolve: { alias: [
       { find: /^react$/, replacement: react }, { find: /^react\/(.*)$/, replacement: react + '/$1' },
@@ -199,6 +206,36 @@ async function run(name, test) {
   });
   await server.listen(); browser = await chromium.launch({ headless: true }); report.browser = browser.version();
   try {
+    for(const width of [320,390,1440]) for(const theme of ['light','dark']) await run(`current-session-heading-${width}-${theme}`,async()=>{
+      const {page,context}=await pageFor(width,theme);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+      const title=page.getByTestId(width<700?'host-heading':'kontor-switch-heading');
+      try{
+        await expect(title).toHaveText(width<700?'Route review · Running':'Route review');
+        const reads=await page.evaluate(()=>window.fixture.inventoryCalls.length);
+        await page.evaluate(()=>window.fixture.rename('dup-2','Second session'));
+        await expect(title).toHaveText(width<700?'Route review · Running':'Route review');
+        await page.evaluate(()=>window.fixture.select('dup-2'));
+        await expect(title).toHaveText(width<700?'Second session · Needs input':'Second session');
+        const long='Current session with a very long readable title '.repeat(20).trim();
+        await page.evaluate(long=>window.fixture.rename('dup-2',long),long);
+        await expect(title).toHaveText(long+(width<700?' · Needs input':''));
+        assert.equal(await title.getAttribute('aria-label'),long+(width<700?' · Needs input':''),'full accessible title');
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'long title cannot widen the page');
+        const titleBox=await title.boundingBox(),actionBox=await page.getByRole('button',{name:'New lead',exact:true}).boundingBox();
+        assert.ok(titleBox.x>=0&&titleBox.x+titleBox.width<=width+1);assert.ok(actionBox.x>=0&&actionBox.x+actionBox.width<=width+1);
+        if(width>=700)assert.ok(titleBox.x+titleBox.width<=actionBox.x+1,'title cannot overlap New lead');
+        await page.screenshot({path:path.join(output,`current-session-heading-${width}-${theme}.png`)});
+        await page.evaluate(()=>window.fixture.select('not-loaded'));
+        await expect(title).toHaveText('Untitled session');
+        await page.evaluate(()=>window.fixture.select('dup-1','another-workspace'));
+        await expect(title).toHaveText('Untitled session');
+        await page.evaluate(()=>window.fixture.select(null));
+        await expect(title).toHaveText('Start or switch session');
+        assert.equal(await page.evaluate(()=>window.fixture.inventoryCalls.length),reads,'title/switch adds no inventory requests');
+        assert.deepEqual(await page.evaluate(()=>({opens:window.fixture.opens.length,draft:window.fixture.draft,pending:window.fixture.pendingQuestion})),{opens:0,draft:'unfinished chat draft',pending:'pending-permission'});
+        assert.deepEqual(errors,[]);return {titleBox,actionBox,reads,errors,scope:'actual contribution and body; synthetic stock-shaped host chrome; no phone/AT proof'};
+      }finally{await context.close();}
+    });
     for(const width of [320,390,1440]) await run(`archive-menu-${width}`,async()=>{
       const {page,context}=await pageFor(width,'light');const errors=[];page.on('pageerror',error=>errors.push(error.message));
       const count=async name=>page.evaluate(name=>window.fixture.calls.filter(call=>call.name===name).length,name);
@@ -299,7 +336,7 @@ async function run(name, test) {
         await page.getByTestId('host-scroller').evaluate(node => node.scrollTo(0, 0));
         await page.screenshot({ path: path.join(output, `${width}-${theme}-popover.png`) });
         // The body names itself once; in the compact host sheet, which carries the same title, it must not repeat it.
-        assert.equal(await page.getByText('Start or switch session', { exact: true }).count(), 1, 'one Start or switch session title');
+        assert.equal(await page.getByRole('heading', { name: /^Route review(?: · Running)?$/ }).count(), 1, 'one current session title');
         return { frame, scroller, controlHeights: sizes };
       } finally { await context.close(); }
     });
