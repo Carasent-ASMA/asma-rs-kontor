@@ -46,12 +46,12 @@ fn placement() -> PlanningPairMembers {
         vec![
             member(
                 PlanningPairSlot::SeatA,
-                route("codex-work", "gpt-6.1-sol"),
+                route("codex-b", "gpt-6.1-sol"),
                 "openai",
             ),
             member(
                 PlanningPairSlot::SeatB,
-                route("claude-work", "claude-opus-5"),
+                route("claude-b", "claude-opus-5"),
                 "anthropic",
             ),
         ],
@@ -123,7 +123,7 @@ fn seat() -> StoredConsultationSeat {
         committee_role: None,
         logical_role: RoleKey::parse("sa").expect("a role"),
         seat_binding_id: SeatBindingId::parse(&id("a3")).expect("a member seat"),
-        model_rung: route("claude-work", "claude-opus-5"),
+        model_rung: route("claude-b", "claude-opus-5").into(),
         occupancy_generation: 2,
         native_identity: None,
         provider_session_id: None,
@@ -249,7 +249,7 @@ fn a_member_is_held_to_its_frozen_run_pin_and_placement_in_order() {
     other_hash.definition_hash = ContentHash::of(b"another document");
     for other in [other_profile, other_version, other_hash] {
         let mut rerouted = seat();
-        rerouted.model_rung = route("codex-work", "gpt-6.1-sol");
+        rerouted.model_rung = route("codex-b", "gpt-6.1-sol").into();
         assert_eq!(
             refusal_of(&run(), &other, &rerouted),
             Some(ContextRefusal::DocumentPinDiffers),
@@ -258,7 +258,7 @@ fn a_member_is_held_to_its_frozen_run_pin_and_placement_in_order() {
     }
 
     let mut rerouted = seat();
-    rerouted.model_rung = route("claude-work", "claude-opus-4.8");
+    rerouted.model_rung = route("claude-b", "claude-opus-4.8").into();
     rerouted.occupancy_generation = 0;
     assert_eq!(
         refusal_of(&run(), &pin(), &rerouted),
@@ -360,7 +360,7 @@ fn the_context_is_built_from_exactly_the_facts_read() {
     );
     assert_eq!(context.topology_node_id, node().id);
     assert_eq!(context.cwd, cwd());
-    assert_eq!(context.route, seat.model_rung);
+    assert_eq!(context.route, seat.model_rung.canonical_rung());
     assert_eq!(context.vendor, "anthropic");
     assert_eq!(&context.placement_hash, placement().placement_hash());
     assert_eq!(context.requested_fleet_provenance, provenance());
@@ -449,7 +449,7 @@ fn the_frozen_hash_is_the_baseline_document_over_every_field() {
     assert_eq!(frozen, baseline_hash(&context));
     assert_eq!(
         frozen.as_str(),
-        "4a6fcad2a061f25b45a069af834943fa9350016a1e11072cd5d93c9c3c07ce34",
+        "8cb43058edd4551cd1c34c3f209b44774b7bd81a06b2d13ef9bd5cd0241a2aea",
         "the golden of the fixed fixtures"
     );
 

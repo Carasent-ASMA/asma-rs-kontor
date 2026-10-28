@@ -98,6 +98,8 @@ mod hosted_directory;
 #[path = "contract/paseo_0_11_2.rs"]
 mod paseo_0_11_2;
 
+#[path = "contract/host_routes.rs"]
+mod host_routes;
 #[path = "contract/seat_profiles.rs"]
 mod seat_profiles;
 
@@ -4454,6 +4456,7 @@ async fn freshness_idle_and_finished_agents_stay_resumable_seats() {
     let observed = plane
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:20:00Z"),
         })
@@ -4472,6 +4475,7 @@ async fn freshness_idle_and_finished_agents_stay_resumable_seats() {
     let resumed = plane
         .adapter
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:21:00Z"),
         })
@@ -4495,6 +4499,7 @@ async fn freshness_a_stopped_agent_is_reloaded_and_keeps_its_identity() {
     let observed = plane
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:20:00Z"),
         })
@@ -4520,6 +4525,7 @@ async fn freshness_a_stopped_agent_is_reloaded_and_keeps_its_identity() {
     plane
         .adapter
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:22:00Z"),
         })
@@ -4588,6 +4594,7 @@ async fn continuity_an_archived_binding_restores_for_terminal_inspection() {
     let observed = restarted
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -4663,6 +4670,7 @@ async fn continuity_an_archived_binding_restores_after_its_workspace_is_retired(
     let observed = restarted
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -4728,6 +4736,7 @@ async fn continuity_a_live_seat_whose_workspace_owner_is_gone_restores_readback_
     let observed = restarted
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -4750,6 +4759,7 @@ async fn continuity_an_observation_states_whether_the_seat_can_be_driven() {
     let placed = plane
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -4766,6 +4776,7 @@ async fn continuity_an_observation_states_whether_the_seat_can_be_driven() {
     let readback = restarted
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:32:00Z"),
         })
@@ -4958,6 +4969,7 @@ async fn freshness_a_retired_session_cannot_be_resumed() {
     let refused = plane
         .adapter
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding,
             requested_at: at("2026-08-10T09:40:00Z"),
         })
@@ -7441,6 +7453,7 @@ async fn with_permission() -> (Plane, RuntimeBindingSnapshot) {
     plane
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: outcome.snapshot.clone(),
             requested_at: at("2026-08-10T09:45:00Z"),
         })
@@ -7534,6 +7547,7 @@ async fn committee_permission_is_bound_to_the_exact_run_seat_and_native() {
     let refused = plane
         .adapter
         .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+            resolved_route: None,
             run_id,
             seat_binding_id: wrong_seat,
             identity: identity.clone(),
@@ -7547,6 +7561,7 @@ async fn committee_permission_is_bound_to_the_exact_run_seat_and_native() {
     let inspection = plane
         .adapter
         .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+            resolved_route: None,
             run_id,
             seat_binding_id,
             identity: identity.clone(),
@@ -7560,6 +7575,7 @@ async fn committee_permission_is_bound_to_the_exact_run_seat_and_native() {
     let response = plane
         .adapter
         .respond_consultation_permission(&ConsultationPermissionResponseRequest {
+            resolved_route: None,
             run_id,
             seat_binding_id,
             identity,
@@ -7605,6 +7621,7 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
             .answering_rpc("fetch_agents_request", archived_list);
         let plane = Plane::fresh(recorded);
         let request = ConsultationSeatRetireRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: NativeRuntimeIdentity {
                 runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
@@ -7663,6 +7680,7 @@ async fn an_opencode_alias_consultation_retires_with_its_fallback_marker() {
         .answering_rpc("fetch_agent_request", archived);
     let plane = Plane::fresh(recorded);
     let request = ConsultationSeatRetireRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
@@ -7871,6 +7889,7 @@ async fn permission_a_resolution_paseo_reports_is_never_answered_a_second_time()
     plane
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:46:00Z"),
         })
@@ -7913,6 +7932,7 @@ async fn permission_a_resolution_paseo_reports_is_never_answered_a_second_time()
     restarted
         .adapter
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:47:00Z"),
         })
@@ -7965,6 +7985,7 @@ async fn placement_a_moved_session_is_driven_no_further() {
         let refused = plane
             .adapter
             .resume(&ResumeRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T09:20:00Z"),
             })
@@ -8732,6 +8753,7 @@ async fn transport_a_wrong_request_correlation_fails_closed() {
         let refused = plane
             .adapter
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T10:00:00Z"),
             })
@@ -10278,6 +10300,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         correlation: inspection.correlation,
     };
     let mut launch = HostedSeatLaunchRequest {
+        resolved_route: None,
         seat_binding_id,
         role_slot_id: slot("lsa"),
         display_name: name("LSA · ASMA-7744"),
@@ -10333,8 +10356,8 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
 async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
     for (provider, model, mode) in [
         ("codex", "gpt-5.6-sol", "full-access"),
-        ("codex-personal", "gpt-5.6-sol", "full-access"),
-        ("codex-work", "gpt-5.6-sol", "full-access"),
+        ("codex-a", "gpt-5.6-sol", "full-access"),
+        ("codex-b", "gpt-5.6-sol", "full-access"),
         ("opencode", "deepseek/deepseek-flash", "build"),
     ] {
         for enabled in [true, false] {
@@ -10388,6 +10411,7 @@ async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
                 .unwrap()
                 .snapshot;
             let request = HostedSeatLaunchRequest {
+                resolved_route: None,
                 seat_binding_id,
                 role_slot_id: slot("lsa"),
                 display_name: name("LSA"),
@@ -10513,6 +10537,7 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
         let outcome = plane
             .adapter
             .launch_hosted_seat(&HostedSeatLaunchRequest {
+                resolved_route: None,
                 seat_binding_id,
                 role_slot_id: slot("lsa"),
                 display_name: name("LSA · ASMA-7744"),
@@ -10605,6 +10630,7 @@ async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
     let outcome = plane
         .adapter
         .launch_hosted_seat(&HostedSeatLaunchRequest {
+            resolved_route: None,
             seat_binding_id,
             role_slot_id: slot("lsa"),
             display_name: name("LSA · ASMA-7744"),
@@ -10662,6 +10688,7 @@ async fn an_oversized_hosted_history_is_reconciled_through_smaller_reads_without
     let outcome = plane
         .adapter
         .message_hosted_seat(&HostedSeatMessageRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: NativeRuntimeIdentity {
                 runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -10705,6 +10732,7 @@ async fn a_fresh_adapter_reconciles_a_hosted_wake_from_canonical_history() {
     let outcome = plane
         .adapter
         .message_hosted_seat(&HostedSeatMessageRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: NativeRuntimeIdentity {
                 runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -10792,6 +10820,7 @@ async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
         .snapshot;
 
     let mut request = HostedSeatLaunchRequest {
+        resolved_route: None,
         seat_binding_id,
         role_slot_id: slot("lsa"),
         display_name: name("LSA · ASMA-7744"),
@@ -10925,6 +10954,7 @@ async fn an_existing_session_claim_preserves_identity_and_releases_duplicate_tit
         .await
         .expect("the epic project is prepared");
     let request = HostedSeatClaimRequest {
+        resolved_route: None,
         seat_binding_id,
         role_slot_id: slot("lsa"),
         display_name: name(canonical_title),
@@ -11021,6 +11051,7 @@ async fn a_sibling_workspace_title_does_not_block_an_exact_hosted_seat_claim() {
     let preview = plane
         .adapter
         .preview_hosted_seat_claim(&HostedSeatClaimRequest {
+            resolved_route: None,
             seat_binding_id,
             role_slot_id: slot("swe"),
             display_name: name(canonical_title),
@@ -11067,6 +11098,7 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
             .answering_rpc("fetch_agent_request", after);
         let plane = Plane::fresh(recorded);
         let request = HostedSeatRetireRequest {
+            resolved_route: None,
             placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
                 workspace_native_id: external(WORKSPACE_ID),
                 canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
@@ -11132,6 +11164,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
         .answering_rpc("fetch_agents_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        resolved_route: None,
         placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
@@ -11177,6 +11210,7 @@ async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retireme
         let mut before = v(AGENT);
         before["agent"]["labels"] = serde_json::json!({"kontor.seat_binding_id": seat_binding_id.to_string(), "kontor.hosted_seat": "true"});
         let mut request = HostedSeatRetireRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: NativeRuntimeIdentity {
                 runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
@@ -11248,6 +11282,7 @@ async fn hosted_seat_inspection_reports_an_exact_hidden_archive_without_mutation
         .answering_rpc("fetch_agents_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatInspectRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -11280,6 +11315,7 @@ async fn hosted_seat_inspection_reports_a_missing_exact_native_without_mutation(
         .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
     let plane = Plane::fresh(recorded);
     let request = HostedSeatInspectRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
@@ -11324,6 +11360,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
         .answering_rpc("fetch_agent_request", archived);
     let plane = Plane::fresh(recorded);
     let request = HostedSeatRetireRequest {
+        resolved_route: None,
         placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
@@ -11352,6 +11389,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
 
 fn hosted_retire_request(seat_binding_id: SeatBindingId) -> HostedSeatRetireRequest {
     HostedSeatRetireRequest {
+        resolved_route: None,
         placement: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
@@ -11517,6 +11555,7 @@ async fn a_paseo_0_8_archive_readback_is_not_retirement_evidence() {
             .answering_rpc("fetch_agent_request", consultation),
     );
     let request = ConsultationSeatRetireRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
@@ -11546,6 +11585,7 @@ async fn an_acknowledged_consultation_archive_that_reads_back_working_is_refused
     let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
     let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
     let request = ConsultationSeatRetireRequest {
+        resolved_route: None,
         seat_binding_id,
         identity: NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
@@ -13917,6 +13957,7 @@ async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
     let refused = plane
         .adapter
         .launch_hosted_seat(&HostedSeatLaunchRequest {
+            resolved_route: None,
             seat_binding_id: SeatBindingId::generate(),
             role_slot_id: slot("lsa"),
             display_name: name("LSA"),
@@ -13981,6 +14022,7 @@ async fn a_hosted_claim_refuses_a_moved_claimant_with_a_valid_ecp() {
             .await
             .expect("the valid epic project");
         let request = HostedSeatClaimRequest {
+            resolved_route: None,
             seat_binding_id: SeatBindingId::generate(),
             role_slot_id: slot("lsa"),
             display_name: name("LSA"),
@@ -14694,6 +14736,7 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
         // What Paseo 0.12 persists once an archive closed the runtime.
         agent["status"] = serde_json::json!("closed");
         let mut request = HostedSeatRetireRequest {
+            resolved_route: None,
             seat_binding_id,
             identity: NativeRuntimeIdentity {
                 runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
@@ -14883,7 +14926,7 @@ fn fleet_provenance() -> kontor_runtime::FleetLaunchProvenance {
         sub_step: 1,
         vendor: "openai".to_owned(),
         eligibility: Some(kontor_runtime::LaunchEligibility {
-            unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+            unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
             excluded_vendors: BTreeSet::new(),
         }),
     }
@@ -14960,6 +15003,7 @@ async fn hosted_leadership_writes_and_reads_back_its_fleet_provenance() {
             .unwrap()
             .snapshot;
         let request = HostedSeatLaunchRequest {
+            resolved_route: None,
             seat_binding_id,
             role_slot_id: slot("lsa"),
             display_name: name("LSA"),
@@ -15199,6 +15243,7 @@ fn member_request(
         requested_fleet_provenance: requested.clone(),
     };
     kontor_runtime::adapter::ConsultationLaunchRequest {
+        resolved_route: None,
         run_id: ConsultationRunId::PlanningPair(run_id),
         seat_binding_id,
         role_slot_id: slot("seat-a"),
@@ -15281,7 +15326,7 @@ async fn every_real_planning_pair_member_route_is_refused_before_any_effect() {
             MemberSurfaceGap::RestrictionUnacknowledged,
         ),
         (
-            "claude-work",
+            "claude-b",
             "claude-opus-5",
             MemberSurfaceGap::RestrictionUnacknowledged,
         ),
@@ -15291,7 +15336,7 @@ async fn every_real_planning_pair_member_route_is_refused_before_any_effect() {
             MemberSurfaceGap::ClosedToolsUnavailable,
         ),
         (
-            "codex-work",
+            "codex-b",
             "gpt-5.6-sol",
             MemberSurfaceGap::ClosedToolsUnavailable,
         ),
@@ -15437,7 +15482,7 @@ async fn every_real_route_reads_as_a_route_refusal_in_the_readiness_seam() {
         ),
         (
             (
-                "codex-work",
+                "codex-b",
                 "gpt-5.6-sol",
                 "openai",
                 "closed_tools_unavailable",
@@ -15446,7 +15491,7 @@ async fn every_real_route_reads_as_a_route_refusal_in_the_readiness_seam() {
         ),
         (
             ("cursor", "grok-4.7", "xai", "read_only_unenforced"),
-            ("claude-work", "claude-opus-5", "anthropic"),
+            ("claude-b", "claude-opus-5", "anthropic"),
         ),
         (
             (
@@ -15831,6 +15876,7 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
             .expect("the consultation container is prepared")
             .snapshot;
         let request = kontor_runtime::adapter::ConsultationLaunchRequest {
+            resolved_route: None,
             run_id,
             seat_binding_id,
             role_slot_id: slot("reviewer-a"),
@@ -15881,6 +15927,27 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
     }
 }
 
+/// Synthetic exact allowance for a positive runtime contract; never a profile-only grant.
+fn consultation_permission_policy(provider: &str, rung: &ModelRung) -> kontor_fleet::FleetSnapshot {
+    let efforts: Vec<_> = rung
+        .effort
+        .map(|effort| effort.as_str())
+        .into_iter()
+        .collect();
+    let model = rung.effort.map_or_else(
+        || "review".to_owned(),
+        |effort| format!("review@{}", effort.as_str()),
+    );
+    let document = serde_json::json!({
+        "schema_version":2,
+        "domains":{"review":{"provider":provider,"accounts":[rung.provider.0]}},
+        "models":{"review":{"domain":"review","id":rung.model.0,"vendor":"example","efforts":efforts,"permission_eligible":true}},
+        "chains":{"review":[[model]]},"bindings":{},
+        "consultation_permissions":[{"account":rung.provider.0,"model":"review","effort":rung.effort.map(|effort| effort.as_str()),"mode":"plan"}],
+    });
+    kontor_fleet::FleetSnapshot::parse_policy(&document.to_string()).unwrap()
+}
+
 /// A consultation on a per-service OpenCode alias is launched as OpenCode:
 /// it carries the operator-accepted fallback marker with the route provenance
 /// hash and no read-only marker. Its retire check reads exactly that pair
@@ -15889,7 +15956,18 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
 /// and retirement disagree.
 #[tokio::test]
 async fn an_opencode_alias_consultation_launches_with_its_fallback_marker() {
-    let requested = fleet_provenance();
+    let rung = ModelRung {
+        provider: ProviderRef("opencode-zai".to_owned()),
+        model: ModelRef("zai-coding-plan/glm-5.3".to_owned()),
+        effort: None,
+    };
+    let policy = consultation_permission_policy("opencode", &rung);
+    let mut requested = fleet_provenance();
+    requested.policy_hash = policy.hash().clone();
+    let mut provenance = kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+        policy.hash().clone(),
+    );
+    provenance.fleet_permissions = Some(policy.consultation_permissions());
     let seat_binding_id = SeatBindingId::generate();
     let run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
     let mut agent = v(AGENT);
@@ -15933,6 +16011,7 @@ async fn an_opencode_alias_consultation_launches_with_its_fallback_marker() {
         .expect("the consultation container is prepared")
         .snapshot;
     let request = kontor_runtime::adapter::ConsultationLaunchRequest {
+        resolved_route: None,
         run_id,
         seat_binding_id,
         role_slot_id: slot("reviewer-a"),
@@ -15949,9 +16028,7 @@ async fn an_opencode_alias_consultation_launches_with_its_fallback_marker() {
             model: ModelRef("zai-coding-plan/glm-5.3".to_owned()),
             effort: None,
         },
-        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
-            requested.policy_hash.clone(),
-        ),
+        route_provenance: provenance,
         fleet_provenance: Some(requested.clone()),
         context_policy: standard_context_policy(),
         requested_at: at("2026-08-16T09:10:00Z"),
@@ -16014,6 +16091,7 @@ fn desk_seat_launch(
     project: NativeRuntimeIdentity,
 ) -> HostedSeatLaunchRequest {
     HostedSeatLaunchRequest {
+        resolved_route: None,
         seat_binding_id,
         role_slot_id: slot("general"),
         display_name: name("LSA • GENERAL"),
@@ -16131,6 +16209,7 @@ async fn an_epic_desk_adam_launches_in_the_desk_project_and_names_no_epic() {
         .answering_rpc("fetch_agent_request", agent);
     let (plane, container) = desk_plane(recorded).await;
     let request = HostedSeatLaunchRequest {
+        resolved_route: None,
         role_slot_id: slot("lsa"),
         display_name: name(title),
         prompt: text(
@@ -16216,6 +16295,7 @@ async fn a_desk_adam_claim_resolves_the_desk_project_and_names_no_epic() {
         .answering_rpc("fetch_agents_request", listing(&claimant_after));
     let (plane, _) = desk_plane(recorded).await;
     let request = HostedSeatClaimRequest {
+        resolved_route: None,
         seat_binding_id,
         role_slot_id: slot("lsa"),
         display_name: name(title),
@@ -16234,6 +16314,7 @@ async fn a_desk_adam_claim_resolves_the_desk_project_and_names_no_epic() {
     let through_the_epic = plane
         .adapter
         .preview_hosted_seat_claim(&HostedSeatClaimRequest {
+            resolved_route: None,
             scope: HostedSeatScope::Epic(epic_execution_scope()),
             ..request.clone()
         })

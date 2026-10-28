@@ -98,7 +98,7 @@ use kontor_core::repository::{
     TopologyContainerRecoveryDisposition,
 };
 use kontor_core::spec::{
-    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
+    CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, NodeProjectionCapability,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
     ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, SeatAutonomy,
     Shareability, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
@@ -154,7 +154,9 @@ mod durable_seats;
 mod pr_reviews;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
-use crate::graph::{Applied, IdempotencyBinding};
+use crate::graph::{
+    Applied, IdempotencyBinding, ProviderMarkerCompletion, RecordedIdempotencyBinding,
+};
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -1725,6 +1727,136 @@ pub(crate) fn target_project(target: &AggregateRef) -> Option<ProjectId> {
     }
 }
 
+pub(crate) fn pin_mini_project_team_definition_in(
+    transaction: &Transaction<'_>,
+    snapshot: &MiniProjectTeamDefinitionSnapshot,
+) -> RepositoryResult<()> {
+    let owns_mini_project = transaction
+        .query_row(
+            "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+            params![
+                snapshot.project_id.to_string(),
+                snapshot.mini_project_id.to_string()
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(backend)?
+        .is_some();
+    if !owns_mini_project {
+        return Err(RepositoryError::NotFound {
+            subject: "mini project",
+        });
+    }
+    team_definition_in(transaction, snapshot.project_id, &snapshot.definition)?;
+    if snapshot.operational_domain_bundle_hash.is_some() {
+        let migrating: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_definition_migration_intents
+                 WHERE project_id = ?1 AND mini_project_id = ?2 AND state IN ('recorded', 'applying'))",
+                params![snapshot.project_id.to_string(), snapshot.mini_project_id.to_string()],
+                |row| row.get(0),
+            ).map_err(backend)?;
+        if migrating {
+            return Err(conflict(
+                "mini project team definition",
+                "operational_domain_migration_in_flight",
+            ));
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO mini_project_team_definition_snapshots
+                     (mini_project_id, project_id, definition_id, version, canonical_hash,
+                      pinned_at, operational_domain_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                snapshot.mini_project_id.to_string(),
+                snapshot.project_id.to_string(),
+                snapshot.definition.definition_id.to_string(),
+                version_column(snapshot.definition.version),
+                snapshot.definition.canonical_hash.as_str(),
+                text(snapshot.pinned_at),
+                snapshot
+                    .operational_domain_bundle_hash
+                    .as_ref()
+                    .map(ContentHash::as_str),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+pub(crate) fn pin_mini_project_topology_in(
+    transaction: &Transaction<'_>,
+    snapshot: &MiniProjectTopologySnapshot,
+) -> RepositoryResult<()> {
+    let owns_mini_project = transaction
+        .query_row(
+            "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
+            params![
+                snapshot.project_id.to_string(),
+                snapshot.mini_project_id.to_string()
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(backend)?
+        .is_some();
+    if !owns_mini_project {
+        return Err(RepositoryError::NotFound {
+            subject: "mini project",
+        });
+    }
+    topology_spec_in(transaction, snapshot.project_id, &snapshot.topology)?;
+    transaction
+        .execute(
+            "INSERT INTO mini_project_topology_snapshots
+                     (mini_project_id, project_id, spec_id, version, canonical_hash, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                snapshot.mini_project_id.to_string(),
+                snapshot.project_id.to_string(),
+                snapshot.topology.spec_id.to_string(),
+                version_column(snapshot.topology.version),
+                snapshot.topology.canonical_hash.as_str(),
+                text(snapshot.pinned_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+pub(crate) fn put_epic_roster_in(
+    transaction: &Transaction<'_>,
+    roster: &StoredEpicRoster,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO epic_rosters
+                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
+                      quick_session_id, revision, pinned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
+                     core_team_version = excluded.core_team_version,
+                     catalog_hash = excluded.catalog_hash,
+                     seats = excluded.seats,
+                     revision = epic_rosters.revision + 1,
+                     pinned_at = excluded.pinned_at",
+            params![
+                roster.project_id.to_string(),
+                roster.mini_project_id.to_string(),
+                version_column(roster.core_team_version),
+                roster.catalog_hash.as_str(),
+                roster.seats.to_string(),
+                roster.quick_session_id.map(|id| id.to_string()),
+                i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
+                text(roster.pinned_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
 impl SqliteStore {
     /// Open one short transaction.
     ///
@@ -2576,6 +2708,36 @@ const TOPOLOGY_SPEC_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
 /// A published role catalog is project configuration on the same footing.
 const ROLE_CATALOG_TIER: ShareabilityTier = ShareabilityTier::ProjectKnowledge;
 
+fn insert_role_catalog(
+    transaction: &rusqlite::Transaction<'_>,
+    catalog: &RoleCatalogRevision,
+    shareability: &Shareability,
+    published_at: Timestamp,
+) -> RepositoryResult<ContentHash> {
+    let document = catalog.canonicalize()?;
+    shareability.validate_for(ROLE_CATALOG_TIER)?;
+    transaction
+        .execute(
+            "INSERT INTO role_catalog_revisions
+                     (catalog_id, version, name, definition, definition_hash, published_at,
+                      shareability_class, shareability_classifier, shareability_provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                catalog.catalog_id.to_string(),
+                version_column(catalog.version),
+                catalog.name.as_str(),
+                document.json(),
+                document.hash().as_str(),
+                text(published_at),
+                shareability.class.as_str(),
+                shareability.classifier.identity().map(ExternalName::as_str),
+                shareability.provenance.as_str(),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(document.hash().clone())
+}
+
 /// Rebuild one stamp from its three stored columns.
 ///
 /// The pairing is re-proved on the way out as well as on the way in, so a row
@@ -3083,8 +3245,65 @@ impl SqliteStore {
     pub fn publish_core_team_revision(
         &self,
         revision: &StoredCoreTeamRevision,
+        catalog: &RoleCatalogRevision,
     ) -> RepositoryResult<()> {
+        let document = catalog.canonicalize()?;
+        if document.hash() != &revision.catalog_hash {
+            return Err(RepositoryError::Conflict {
+                subject: "core team catalog",
+                rule: "role_purpose_catalog_hash_mismatch",
+            });
+        }
+        let resolved = kontor_teams::CoreTeamRevision {
+            version: revision.version,
+            catalog_hash: revision.catalog_hash.clone(),
+            seats: serde_json::from_value(revision.seats.clone()).map_err(|_| {
+                RepositoryError::Conflict {
+                    subject: "core team purposes",
+                    rule: "invalid resolved seats",
+                }
+            })?,
+        };
+        for purpose in kontor_teams::CoreTeamSeatPurpose::ALL {
+            resolved.seat_for_purpose(*purpose)?;
+        }
+        for seat in &resolved.seats {
+            if seat.role.catalog_id != catalog.catalog_id
+                || seat.role.catalog_revision != catalog.version
+                || catalog.role(&seat.role.role_code).is_none_or(|role| {
+                    role.lifecycle != kontor_core::spec::CodeLifecycle::Current
+                        || role.standard_title != seat.role.standard_title
+                })
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team purposes",
+                    rule: "role_purpose_catalog_role_mismatch",
+                });
+            }
+        }
         let transaction = self.begin()?;
+        let held: Option<String> = transaction.query_row(
+            "SELECT definition_hash FROM role_catalog_revisions WHERE catalog_id = ?1 AND version = ?2",
+            params![catalog.catalog_id.to_string(), version_column(catalog.version)], |row| row.get(0),
+        ).optional().map_err(backend)?;
+        match held {
+            Some(hash) if hash != document.hash().as_str() => {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team catalog",
+                    rule: "role_purpose_catalog_hash_mismatch",
+                });
+            }
+            Some(_) => {}
+            None => {
+                insert_role_catalog(
+                    &transaction,
+                    catalog,
+                    &Shareability::default_for(ROLE_CATALOG_TIER)?,
+                    revision.published_at,
+                )?;
+            }
+        }
+
         let current: Option<i64> = transaction
             .query_row(
                 "SELECT MAX(version) FROM core_team_revisions WHERE project_id = ?1",
@@ -4122,6 +4341,17 @@ impl SqliteStore {
                 rule: "a native readback is required before binding",
             })?;
         let transaction = self.begin()?;
+        let frozen = self
+            .get_consultation_seat_by_binding(project_id, seat.seat_binding_id)?
+            .ok_or_else(|| conflict("consultation seat", "the frozen launch intent is absent"))?;
+        if frozen.model_rung != seat.model_rung
+            || frozen.occupancy_generation != seat.occupancy_generation
+        {
+            return Err(conflict(
+                "consultation seat",
+                "host_route_substitution_refused",
+            ));
+        }
         let existing: Option<(String, String, i64, String)> = transaction
             .query_row(
                 "SELECT runtime_kind, host, generation, native_id
@@ -4369,6 +4599,8 @@ impl SqliteStore {
         let recovery_reason = request.recovery_reason.as_str();
         let recovery_profile = &request.recovery_profile;
         let selected_model_rung = &request.selected_model_rung;
+        selected_model_rung.validate()?;
+        predecessor.model_rung.validate()?;
         let prepared_at = request.prepared_at;
         let predecessor_identity =
             predecessor
@@ -4410,26 +4642,32 @@ impl SqliteStore {
             }
         })?;
         let transaction = self.begin()?;
-        let active: Option<(String, i64)> = transaction
+        let active: Option<(String, i64, String)> = transaction
             .query_row(
-                "SELECT native_id, occupancy_generation FROM consultation_seats
+                "SELECT native_id, occupancy_generation, model_rung FROM consultation_seats
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3",
                 params![
                     project_id.to_string(),
                     predecessor.run_id.as_text(),
                     predecessor.role_slot_id.as_str(),
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
         if active
             .as_ref()
-            .map(|(native, generation)| (native.as_str(), u64::try_from(*generation).ok()))
+            .map(|(native, generation, _)| (native.as_str(), u64::try_from(*generation).ok()))
             != Some((
                 predecessor_identity.native_id.as_str(),
                 Some(predecessor.occupancy_generation),
             ))
+            || active.as_ref().is_none_or(|(_, _, model)| {
+                serde_json::from_str::<kontor_core::launch_route::StoredLaunchRoute>(model)
+                    .ok()
+                    .as_ref()
+                    != Some(&predecessor.model_rung)
+            })
         {
             return Err(RepositoryError::Conflict {
                 subject: "consultation recovery attempt",
@@ -4543,6 +4781,14 @@ impl SqliteStore {
         attempt: &StoredConsultationRecoveryAttempt,
         successor: &StoredConsultationSeat,
     ) -> RepositoryResult<()> {
+        if successor.model_rung != attempt.selected_model_rung
+            || successor.occupancy_generation != attempt.successor_occupancy_generation
+        {
+            return Err(conflict(
+                "consultation recovery attempt",
+                "host_route_substitution_refused",
+            ));
+        }
         let identity = successor
             .native_identity
             .as_ref()
@@ -4639,7 +4885,7 @@ impl SqliteStore {
         run_id: ConsultationRunId,
         role_slot_id: &RoleSlotId,
         successor_generation: u64,
-    ) -> RepositoryResult<Option<(kontor_core::spec::ModelRung, ContentHash)>> {
+    ) -> RepositoryResult<Option<(kontor_core::launch_route::StoredLaunchRoute, ContentHash)>> {
         let generation = i64::try_from(successor_generation).map_err(|_| {
             conflict(
                 "materialization reroute",
@@ -4680,7 +4926,7 @@ impl SqliteStore {
         run_id: ConsultationRunId,
         role_slot_id: &RoleSlotId,
         successor_occupancy_generation: u64,
-    ) -> RepositoryResult<Option<(kontor_core::spec::ModelRung, ContentHash)>> {
+    ) -> RepositoryResult<Option<(kontor_core::launch_route::StoredLaunchRoute, ContentHash)>> {
         let generation = i64::try_from(successor_occupancy_generation).map_err(|_| {
             conflict(
                 "consultation seat recovery",
@@ -4916,6 +5162,8 @@ impl SqliteStore {
         &self,
         request: &NewConsultationMaterializationReroute,
     ) -> RepositoryResult<StoredConsultationMaterializationReroute> {
+        request.predecessor.model_rung.validate()?;
+        request.successor_model_rung.validate()?;
         if request.reason != "permission_mode_unsupported" {
             return Err(conflict(
                 "materialization reroute",
@@ -4926,7 +5174,13 @@ impl SqliteStore {
             request.project_id,
             &request.request_intent_hash,
         )? {
-            if existing.idempotency_key != request.idempotency_key {
+            if existing.idempotency_key != request.idempotency_key
+                || existing.predecessor_model_rung != request.predecessor.model_rung
+                || existing.successor_model_rung != request.successor_model_rung
+                || existing.recovery_profile_hash != *request.recovery_profile.hash()
+                || existing.predecessor_occupancy_generation
+                    != request.predecessor.occupancy_generation
+            {
                 return Err(conflict(
                     "materialization reroute",
                     "the committed reroute belongs to another idempotency key",
@@ -4972,7 +5226,12 @@ impl SqliteStore {
                     request.headroom_observation.id.to_string(),
                     request.project_id.to_string(),
                     request.headroom_observation.account_profile_id.to_string(),
-                    request.successor_model_rung.provider.0.as_str(),
+                    request
+                        .successor_model_rung
+                        .canonical_rung()
+                        .provider
+                        .0
+                        .as_str(),
                 ],
                 |row| {
                     read_provider_usage_observation(row)
@@ -5233,24 +5492,32 @@ impl SqliteStore {
             }
         })?;
         let transaction = self.begin()?;
-        let active_native: Option<String> = transaction
+        let active: Option<(String, String, i64)> = transaction
             .query_row(
-                "SELECT native_id FROM consultation_seats
+                "SELECT native_id, model_rung, occupancy_generation FROM consultation_seats
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3",
                 params![
                     project_id.to_string(),
                     predecessor.run_id.as_text(),
                     predecessor.role_slot_id.as_str(),
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
-        if active_native.as_deref() == Some(successor_identity.native_id.as_str()) {
+        if active.as_ref().is_some_and(|(native, model, generation)| {
+            native == successor_identity.native_id.as_str()
+                && model == &successor_model
+                && u64::try_from(*generation).ok() == Some(successor.occupancy_generation)
+        }) {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if active_native.as_deref() != Some(predecessor_identity.native_id.as_str()) {
+        if !active.as_ref().is_some_and(|(native, model, generation)| {
+            native == predecessor_identity.native_id.as_str()
+                && model == &predecessor_model
+                && u64::try_from(*generation).ok() == Some(successor.occupancy_generation)
+        }) {
             return Err(RepositoryError::Conflict {
                 subject: "consultation seat recovery",
                 rule: "the active native predecessor differs from the recovery request",
@@ -5312,7 +5579,7 @@ impl SqliteStore {
                      generation = ?8, native_id = ?9,
                      provider_session_id = ?10, observed_at = ?11
                  WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
-                   AND native_id = ?12 AND occupancy_generation = ?5",
+                   AND native_id = ?12 AND occupancy_generation = ?5 AND model_rung = ?13",
                 params![
                     project_id.to_string(),
                     successor.run_id.as_text(),
@@ -5335,6 +5602,7 @@ impl SqliteStore {
                         .map(ExternalId::as_str),
                     text(successor_observed_at),
                     predecessor_identity.native_id.as_str(),
+                    predecessor_model,
                 ],
             )
             .map_err(backend)?;
@@ -5696,6 +5964,38 @@ impl SqliteStore {
         Ok(Some(snapshot))
     }
 
+    /// Commit a new launch and its optional persona together. An existing
+    /// intent keeps its exact persona (including none), even after a restart.
+    ///
+    /// # Errors
+    /// Refuses conflicting launch identity, invalid persona bytes, or storage
+    /// failure. Both new rows roll back together on refusal.
+    pub fn prepare_hosted_seat_launch_persona(
+        &self,
+        intent: &StoredHostedSeatLaunchIntent,
+        persona: Option<&kontor_core::spec::RolePersonaSnapshot>,
+    ) -> RepositoryResult<Option<kontor_core::spec::RolePersonaSnapshot>> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        let applied = self.prepare_hosted_seat_launch_intent(intent)?;
+        if applied == Applied::Created
+            && let Some(persona) = persona
+        {
+            self.record_hosted_seat_role_persona(
+                intent.project_id,
+                intent.seat_binding_id,
+                intent.occupancy_generation,
+                persona,
+            )?;
+        }
+        let frozen = self.get_hosted_seat_role_persona(
+            intent.project_id,
+            intent.seat_binding_id,
+            intent.occupancy_generation,
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(frozen)
+    }
+
     /// Record what one hosted-seat launch resolved, before the native call.
     ///
     /// Idempotent for the same decision and refusing for a different one. A
@@ -5709,6 +6009,9 @@ impl SqliteStore {
         &self,
         intent: &StoredHostedSeatLaunchIntent,
     ) -> RepositoryResult<Applied> {
+        if let kontor_core::launch_route::StoredLaunchRoute::Resolved(_) = &intent.model_rung {
+            intent.model_rung.validate()?;
+        }
         let generation =
             i64::try_from(intent.occupancy_generation).map_err(|_| RepositoryError::Backend {
                 detail: "a hosted-seat launch intent generation is invalid".to_owned(),
@@ -5923,6 +6226,33 @@ impl SqliteStore {
             .transpose()
     }
 
+    /// Exact private CAS values from the immutable supersession ledger.
+    pub fn hosted_seat_launch_intent_supersession_routes(
+        &self,
+        key: &kontor_core::id::IdempotencyKey,
+    ) -> RepositoryResult<
+        Option<(
+            kontor_core::launch_route::StoredLaunchRoute,
+            kontor_core::launch_route::StoredLaunchRoute,
+        )>,
+    > {
+        let row: Option<(String, String)> = self.connection.query_row(
+            "SELECT superseded_model_rung, replacement_model_rung FROM hosted_seat_launch_intent_supersessions WHERE idempotency_key = ?1",
+            params![key.as_str()], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(backend)?;
+        row.map(|(expected, replacement)| {
+            Ok((
+                serde_json::from_str(&expected).map_err(|_| RepositoryError::Backend {
+                    detail: "host_route_snapshot_invalid".to_owned(),
+                })?,
+                serde_json::from_str(&replacement).map_err(|_| RepositoryError::Backend {
+                    detail: "host_route_snapshot_invalid".to_owned(),
+                })?,
+            ))
+        })
+        .transpose()
+    }
+
     /// Reconcile one prepared intent against the native its launch produced.
     ///
     /// Repeating this after a crash with the same native is unchanged. Naming a
@@ -5932,6 +6262,11 @@ impl SqliteStore {
         &self,
         request: &HostedSeatLaunchIntentSupersession,
     ) -> RepositoryResult<Applied> {
+        if let kontor_core::launch_route::StoredLaunchRoute::Resolved(_) =
+            &request.replacement_model_rung
+        {
+            request.replacement_model_rung.validate()?;
+        }
         let project = request.project_id.to_string();
         let binding = request.seat_binding_id.to_string();
         let generation =
@@ -6211,6 +6546,7 @@ impl SqliteStore {
         occupancy_generation: u64,
         observed_native_id: &ExternalId,
         installed_at: Timestamp,
+        expected_route: &kontor_core::launch_route::StoredLaunchRoute,
     ) -> RepositoryResult<Applied> {
         let Some(existing) =
             self.get_hosted_seat_launch_intent(project_id, seat_binding_id, occupancy_generation)?
@@ -6219,6 +6555,12 @@ impl SqliteStore {
                 subject: "hosted seat launch intent",
             });
         };
+        if &existing.model_rung != expected_route {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent",
+                rule: "the frozen launch route changed before installation",
+            });
+        }
         if existing.state == HostedSeatLaunchIntentState::Installed {
             if existing.observed_native_id.as_ref() == Some(observed_native_id) {
                 return Ok(Applied::Unchanged);
@@ -6232,21 +6574,37 @@ impl SqliteStore {
             i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
                 detail: "a hosted-seat launch intent generation is invalid".to_owned(),
             })?;
-        self.connection
+        let changed = self
+            .connection
             .execute(
                 "UPDATE hosted_topology_seat_launch_intents
                     SET state = 'installed', observed_native_id = ?4, installed_at = ?5
                   WHERE project_id = ?1 AND seat_binding_id = ?2
-                    AND occupancy_generation = ?3",
+                    AND occupancy_generation = ?3
+                    AND state = 'prepared' AND observed_native_id IS NULL
+                    AND installed_at IS NULL AND model_rung = ?6 AND prepared_at = ?7",
                 params![
                     project_id.to_string(),
                     seat_binding_id.to_string(),
                     generation,
                     observed_native_id.as_str(),
                     text(installed_at),
+                    serde_json::to_string(expected_route).map_err(|_| {
+                        RepositoryError::Conflict {
+                            subject: "hosted seat launch intent",
+                            rule: "the frozen route is invalid",
+                        }
+                    })?,
+                    text(existing.prepared_at),
                 ],
             )
             .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent",
+                rule: "the prepared launch intent changed before installation",
+            });
+        }
         Ok(Applied::Updated)
     }
 
@@ -6578,34 +6936,52 @@ impl SqliteStore {
         // say whether the seat holds *this* native or a later one wearing the
         // same name; the runtime generation is what tells them apart
         // (ASMA-8187 P1).
-        let active: Option<(String, i64, String, String)> = transaction
+        let active: Option<(String, i64, String, String, String)> = transaction
             .query_row(
-                "SELECT native_id, generation, runtime_kind, host
+                "SELECT native_id, generation, runtime_kind, host, model_rung
                    FROM hosted_topology_seats
                   WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
                     predecessor.project_id.to_string(),
                     predecessor.seat_binding_id.to_string(),
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
             .map_err(backend)?;
         let names = |identity: &NativeRuntimeIdentity| {
             active
                 .as_ref()
-                .is_some_and(|(native, generation, kind, host)| {
+                .is_some_and(|(native, generation, kind, host, _)| {
                     native == identity.native_id.as_str()
                         && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
                         && kind == identity.runtime_kind.as_str()
                         && host == identity.host.as_str()
                 })
         };
-        if names(&successor.native_identity) {
+        let matches_model = |seat: &StoredHostedTopologySeat| -> RepositoryResult<bool> {
+            let expected =
+                serde_json::to_string(&seat.model_rung).map_err(|_| RepositoryError::Conflict {
+                    subject: "hosted topology seat route",
+                    rule: "the route is invalid",
+                })?;
+            Ok(active
+                .as_ref()
+                .is_some_and(|(_, _, _, _, model)| model == &expected))
+        };
+        if names(&successor.native_identity) && matches_model(successor)? {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if !names(&predecessor.native_identity) {
+        if !names(&predecessor.native_identity) || !matches_model(predecessor)? {
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
@@ -8281,30 +8657,7 @@ impl SqliteStore {
     /// Returns a backend error.
     pub fn put_epic_roster(&self, roster: &StoredEpicRoster) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO epic_rosters
-                     (project_id, mini_project_id, core_team_version, catalog_hash, seats,
-                      quick_session_id, revision, pinned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT (project_id, mini_project_id) DO UPDATE SET
-                     core_team_version = excluded.core_team_version,
-                     catalog_hash = excluded.catalog_hash,
-                     seats = excluded.seats,
-                     revision = epic_rosters.revision + 1,
-                     pinned_at = excluded.pinned_at",
-                params![
-                    roster.project_id.to_string(),
-                    roster.mini_project_id.to_string(),
-                    version_column(roster.core_team_version),
-                    roster.catalog_hash.as_str(),
-                    roster.seats.to_string(),
-                    roster.quick_session_id.map(|id| id.to_string()),
-                    i64::try_from(roster.revision.get()).unwrap_or(i64::MAX),
-                    text(roster.pinned_at),
-                ],
-            )
-            .map_err(backend)?;
+        put_epic_roster_in(&transaction, roster)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -10995,39 +11348,7 @@ impl TopologyRepository for SqliteStore {
         snapshot: &MiniProjectTopologySnapshot,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        let owns_mini_project = transaction
-            .query_row(
-                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
-                params![
-                    snapshot.project_id.to_string(),
-                    snapshot.mini_project_id.to_string()
-                ],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(backend)?
-            .is_some();
-        if !owns_mini_project {
-            return Err(RepositoryError::NotFound {
-                subject: "mini project",
-            });
-        }
-        topology_spec_in(&transaction, snapshot.project_id, &snapshot.topology)?;
-        transaction
-            .execute(
-                "INSERT INTO mini_project_topology_snapshots
-                     (mini_project_id, project_id, spec_id, version, canonical_hash, pinned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    snapshot.mini_project_id.to_string(),
-                    snapshot.project_id.to_string(),
-                    snapshot.topology.spec_id.to_string(),
-                    version_column(snapshot.topology.version),
-                    snapshot.topology.canonical_hash.as_str(),
-                    text(snapshot.pinned_at),
-                ],
-            )
-            .map_err(backend)?;
+        pin_mini_project_topology_in(&transaction, snapshot)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -11120,30 +11441,10 @@ impl TopologyRepository for SqliteStore {
         shareability: &Shareability,
         published_at: Timestamp,
     ) -> RepositoryResult<ContentHash> {
-        let document = catalog.canonicalize()?;
-        shareability.validate_for(ROLE_CATALOG_TIER)?;
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO role_catalog_revisions
-                     (catalog_id, version, name, definition, definition_hash, published_at,
-                      shareability_class, shareability_classifier, shareability_provenance)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    catalog.catalog_id.to_string(),
-                    version_column(catalog.version),
-                    catalog.name.as_str(),
-                    document.json(),
-                    document.hash().as_str(),
-                    text(published_at),
-                    shareability.class.as_str(),
-                    shareability.classifier.identity().map(ExternalName::as_str),
-                    shareability.provenance.as_str(),
-                ],
-            )
-            .map_err(backend)?;
+        let hash = insert_role_catalog(&transaction, catalog, shareability, published_at)?;
         transaction.commit().map_err(backend)?;
-        Ok(document.hash().clone())
+        Ok(hash)
     }
 
     fn get_role_catalog_shareability(
@@ -11694,6 +11995,38 @@ impl TopologyRepository for SqliteStore {
         request: &NewNativeContainerBinding,
     ) -> RepositoryResult<NativeContainerBinding> {
         let transaction = self.begin()?;
+        if let Some(pin) =
+            self.consultation_placement(request.project_id, request.topology_node_id)?
+        {
+            if request.readback.is_none() {
+                return Err(conflict(
+                    "consultation placement",
+                    "consultation.native_readback_incomplete",
+                ));
+            }
+            self.guard_consultation_placement(request.project_id, request.topology_node_id)?;
+            let value: serde_json::Value = from_json(pin.intent.json())?;
+            if pin.readback.is_none()
+                || value["container_binding_id"].as_str()
+                    != Some(request.container_binding_id.as_str())
+                || request.canonical_cwd.as_ref().map(ExternalName::as_str)
+                    != value["checkout"]["destination"].as_str()
+            {
+                return Err(conflict(
+                    "consultation placement",
+                    "consultation.native_readback_requires_checkout",
+                ));
+            }
+            self.guard_consultation_destination(
+                request.project_id,
+                request.topology_node_id,
+                request
+                    .canonical_cwd
+                    .as_ref()
+                    .expect("the destination was checked")
+                    .as_str(),
+            )?;
+        }
         let readback = request.readback.as_ref();
         let parent = readback.and_then(|readback| readback.native_parent.as_ref());
         let owning_project: Option<String> = transaction
@@ -13540,6 +13873,205 @@ impl SqliteStore {
         transaction.commit().map_err(backend)?;
         Ok(applied)
     }
+
+    /// The realm-scoped operation one key is bound to, if it has ever been used.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn realm_idempotency_binding(
+        &self,
+        key: &str,
+    ) -> RepositoryResult<Option<RecordedIdempotencyBinding>> {
+        self.connection
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| {
+                    Ok(RecordedIdempotencyBinding {
+                        operation: row.get(0)?,
+                        fingerprint: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    /// Record that the provider-marker correction claimed under `key` has
+    /// finished, naming the revision it left and the answer it reported.
+    ///
+    /// A binding alone cannot tell a retry whether the effect it names already
+    /// happened: the document is the only other witness, and an operator may
+    /// restore the marker for a later outage. This row is the durable witness,
+    /// so a completed key answers a replay instead of removing that restored
+    /// marker a second time. Its host key and before/after sets let the replay
+    /// answer without the document, even after the addressed setting or the
+    /// file has been removed. Completion is recorded only for a key already
+    /// bound to this operation; it is never a claim of its own.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when no provider-marker claim
+    /// exists for the key, and backend failures otherwise.
+    pub fn record_provider_marker_completion(
+        &self,
+        key: &str,
+        written_revision: &ContentHash,
+        host_key: &ExternalName,
+        before: &BTreeSet<String>,
+        after: &BTreeSet<String>,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT operation FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if owner.as_deref() != Some("clear_provider_marker") {
+            return Err(conflict(
+                "idempotency key",
+                "no provider-marker claim exists for this key",
+            ));
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT INTO provider_marker_completions
+                     (idempotency_key, written_revision, host_key,
+                      before_providers, after_providers, completed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+                params![
+                    key,
+                    written_revision.as_str(),
+                    host_key.as_str(),
+                    to_json(before)?,
+                    to_json(after)?,
+                    text(completed_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(if inserted == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// One completed provider-marker correction, if the key has completed.
+    ///
+    /// # Errors
+    /// Backend failures and a stored row this build cannot parse.
+    pub fn provider_marker_completion(
+        &self,
+        key: &str,
+    ) -> RepositoryResult<Option<ProviderMarkerCompletion>> {
+        let stored: Option<(String, String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT written_revision, host_key, before_providers, after_providers
+                 FROM provider_marker_completions
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        stored
+            .map(|(revision, host_key, before, after)| {
+                Ok(ProviderMarkerCompletion {
+                    written_revision: ContentHash::parse(&revision).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "a provider-marker completion no longer matches its digest"
+                                .to_owned(),
+                        }
+                    })?,
+                    host_key: ExternalName::parse(&host_key).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "a provider-marker completion no longer names its host key"
+                                .to_owned(),
+                        }
+                    })?,
+                    before: from_json(&before)?,
+                    after: from_json(&after)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Record that the provider-marker correction claimed under `key` is about
+    /// to replace the settings document.
+    ///
+    /// The phase separates "the write never started" from "the write started
+    /// and its completion was lost". A retry may finish the first state, but
+    /// when the marker is present in the second it cannot tell a write that
+    /// never landed from a marker an operator restored for a new outage, so it
+    /// must ask for a fresh preview and key instead of writing again. The phase
+    /// is only recorded for a key already bound to this operation.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when no provider-marker claim
+    /// exists for the key, and backend failures otherwise.
+    pub fn record_provider_marker_write_start(
+        &self,
+        key: &str,
+        started_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT operation FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if owner.as_deref() != Some("clear_provider_marker") {
+            return Err(conflict(
+                "idempotency key",
+                "no provider-marker claim exists for this key",
+            ));
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT INTO provider_marker_write_starts (idempotency_key, started_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+                params![key, text(started_at)],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(if inserted == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// Whether the correction claimed under `key` started replacing the
+    /// settings document.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn provider_marker_write_started(&self, key: &str) -> RepositoryResult<bool> {
+        let exists: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM provider_marker_write_starts
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(exists.is_some())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -13820,6 +14352,42 @@ impl SqliteStore {
         Ok(installed)
     }
 
+    /// Read every installed mapping, validating its immutable digest.
+    pub fn installed_ticket_field_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<TicketFieldSpec>> {
+        let mut statement = self.connection.prepare("SELECT definition, definition_hash FROM ticket_field_specs WHERE project_id = ?1 ORDER BY connector, external_project, issue_type, version").map_err(backend)?;
+        let rows = statement
+            .query_map([project_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        rows.map(|row| {
+            let (json, hash) = row.map_err(backend)?;
+            stored_document(&json, &hash)
+        })
+        .collect()
+    }
+
+    /// Read every installed workflow, validating its immutable digest.
+    pub fn installed_external_workflow_specs(
+        &self,
+        project_id: ProjectId,
+    ) -> RepositoryResult<Vec<ExternalWorkflowSpec>> {
+        let mut statement = self.connection.prepare("SELECT definition, definition_hash FROM external_workflow_specs WHERE project_id = ?1 ORDER BY connector, external_project, issue_type, version").map_err(backend)?;
+        let rows = statement
+            .query_map([project_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        rows.map(|row| {
+            let (json, hash) = row.map_err(backend)?;
+            stored_document(&json, &hash)
+        })
+        .collect()
+    }
+
     /// Install one workflow revision and record its Admin authority atomically.
     ///
     /// The command payload retains the original resulting project revision, so
@@ -13829,6 +14397,24 @@ impl SqliteStore {
         project_id: ProjectId,
         expected_revision: AggregateRevision,
         spec: &ExternalWorkflowSpec,
+        envelope: &ReceiptEnvelope<NewCommandIntent>,
+    ) -> RepositoryResult<(
+        ContentHash,
+        AggregateRevision,
+        crate::graph::Applied,
+        CommandReceipt,
+    )> {
+        self.install_tracker_specs_with_intent(project_id, expected_revision, spec, None, envelope)
+    }
+
+    /// Install the workflow and its selected field mapping in the same receipt transaction.
+    /// Existing revision identities are immutable; authoring never overwrites them.
+    pub fn install_tracker_specs_with_intent(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        spec: &ExternalWorkflowSpec,
+        fields: Option<&TicketFieldSpec>,
         envelope: &ReceiptEnvelope<NewCommandIntent>,
     ) -> RepositoryResult<(
         ContentHash,
@@ -13853,13 +14439,71 @@ impl SqliteStore {
             return Ok((hash, revision, crate::graph::Applied::Unchanged, existing));
         }
 
-        let (hash, revision, applied) = install_external_workflow_spec_in_transaction(
+        let (hash, mut revision, mut applied) = install_external_workflow_spec_in_transaction(
             &transaction,
             project_id,
             expected_revision,
             spec,
             intent.created_at,
         )?;
+        if let Some(fields) = fields {
+            if fields.connector != spec.connector
+                || fields.project != spec.project
+                || fields.issue_type != spec.issue_type
+            {
+                return Err(conflict(
+                    "tracker field specification",
+                    "the mapping does not match the workflow selector",
+                ));
+            }
+            let document = fields.canonicalize()?;
+            let intent_value: serde_json::Value = from_json(intent.intent.json())?;
+            if intent_value["field_definition_hash"].as_str() != Some(document.hash().as_str()) {
+                return Err(conflict(
+                    "tracker field specification",
+                    "the command does not bind the field mapping hash",
+                ));
+            }
+            let existing: Option<(String, String)> = transaction.query_row(
+                "SELECT definition, definition_hash FROM ticket_field_specs WHERE project_id = ?1 AND connector = ?2 AND external_project = ?3 AND issue_type = ?4 AND version = ?5",
+                params![project_id.to_string(), fields.connector.as_str(), fields.project.as_str(), fields.issue_type.as_str(), version_column(fields.version)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(backend)?;
+            if let Some((json, hash)) = existing {
+                if stored_document::<TicketFieldSpec>(&json, &hash)? != *fields {
+                    return Err(conflict(
+                        "tracker field specification",
+                        "the installed immutable revision has different canonical bytes",
+                    ));
+                }
+            } else {
+                transaction.execute(
+                    "INSERT INTO ticket_field_specs (project_id, connector, external_project, issue_type, version, definition, definition_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![project_id.to_string(), fields.connector.as_str(), fields.project.as_str(), fields.issue_type.as_str(), version_column(fields.version), document.json(), document.hash().as_str(), text(intent.created_at)],
+                ).map_err(backend)?;
+                if applied == crate::graph::Applied::Unchanged {
+                    let next = revision.next()?;
+                    let changed = transaction
+                        .execute(
+                            "UPDATE projects SET revision = ?1 WHERE id = ?2 AND revision = ?3",
+                            params![
+                                revision_column(next)?,
+                                project_id.to_string(),
+                                revision_column(revision)?
+                            ],
+                        )
+                        .map_err(backend)?;
+                    if changed != 1 {
+                        return Err(conflict(
+                            "project",
+                            "the project moved during tracker field installation",
+                        ));
+                    }
+                    revision = next;
+                    applied = crate::graph::Applied::Created;
+                }
+            }
+        }
         let mut recorded = intent.clone();
         recorded.payload = workflow_install_result_payload(&intent.intent, revision, applied)?;
         let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;
@@ -15012,18 +15656,7 @@ fn record_atomic_local_result(
     request: &NewLocalCommand,
     payload: &CanonicalDocument,
 ) -> RepositoryResult<CommandReceipt> {
-    if crate::commands::intent::insert_local_command(transaction, request)?.is_some() {
-        return Err(conflict(
-            "command receipt",
-            "the idempotency key appeared during one atomic local change",
-        ));
-    }
-    transaction.execute(
-        "INSERT INTO local_command_results (project_id, receipt_id, payload, payload_hash, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![request.project_id.to_string(), request.receipt_id.to_string(),
-            payload.json(), payload.hash().as_str(), text(request.created_at)],
-    ).map_err(backend)?;
+    record_pending_local_result(transaction, request, payload)?;
     let evidence = ExternalId::parse(payload.hash().as_str())?;
     crate::commands::receipts::append_transition(
         transaction,
@@ -15049,10 +15682,42 @@ fn record_atomic_local_result(
     )
 }
 
+/// Freeze the local result while follow-up effects remain unconfirmed.
+pub(crate) fn record_pending_local_result(
+    transaction: &Transaction<'_>,
+    request: &NewLocalCommand,
+    payload: &CanonicalDocument,
+) -> RepositoryResult<()> {
+    if crate::commands::intent::insert_local_command(transaction, request)?.is_some() {
+        return Err(conflict(
+            "command receipt",
+            "the idempotency key appeared during one atomic local change",
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO local_command_results (project_id, receipt_id, payload, payload_hash, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![request.project_id.to_string(), request.receipt_id.to_string(),
+            payload.json(), payload.hash().as_str(), text(request.created_at)],
+    ).map_err(backend)?;
+    transaction
+        .execute(
+            "UPDATE command_receipts SET result_ref = ?3
+         WHERE project_id = ?1 AND id = ?2 AND state = 'intent_persisted'",
+            params![
+                request.project_id.to_string(),
+                request.receipt_id.to_string(),
+                payload.hash().as_str()
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
 /// Existing atomic results remain readable from their historical outbox. A
 /// present local result always wins, including when its hash is corrupt: the
 /// parser must refuse that corruption rather than fall back to older bytes.
-fn local_or_legacy_command_result(
+pub(crate) fn local_or_legacy_command_result(
     connection: &Connection,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<Option<(String, String)>> {
@@ -15576,6 +16241,32 @@ impl SqliteStore {
                 existing.id,
             )?;
             return Ok((evidence, existing, crate::graph::Applied::Unchanged));
+        }
+        if let Some(pin) = self.consultation_placement(
+            recovery.expected.project_id,
+            recovery.expected.topology_node_id,
+        )? {
+            self.guard_consultation_placement(
+                recovery.expected.project_id,
+                recovery.expected.topology_node_id,
+            )?;
+            let value: serde_json::Value = from_json(pin.intent.json())?;
+            if pin.readback.is_none()
+                || recovery.replacement.readback.is_none()
+                || value["container_binding_id"].as_str()
+                    != Some(recovery.replacement.container_binding_id.as_str())
+                || value["checkout"]["destination"].as_str()
+                    != recovery
+                        .replacement
+                        .canonical_cwd
+                        .as_ref()
+                        .map(ExternalName::as_str)
+            {
+                return Err(conflict(
+                    "consultation placement",
+                    "consultation.recovery_binding_mismatch",
+                ));
+            }
         }
         if recovery.replacement.project_id != recovery.expected.project_id
             || recovery.replacement.topology_node_id != recovery.expected.topology_node_id
@@ -18615,7 +19306,7 @@ const SUCCESSION_ATTEMPT_COLUMNS: &str = "id, project_id, task_id, team_run_id, 
 #[serde(deny_unknown_fields)]
 struct StoredSuccessionModelRung {
     schema_version: u32,
-    model_rung: ModelRung,
+    model_rung: kontor_core::launch_route::StoredLaunchRoute,
 }
 
 struct StoredSuccessionQuotaEvidence {
@@ -18631,7 +19322,9 @@ struct StoredSuccessionQuotaEvidence {
     resets_at: Option<String>,
 }
 
-fn succession_model_rung_document(model_rung: &ModelRung) -> RepositoryResult<CanonicalDocument> {
+fn succession_model_rung_document(
+    model_rung: &kontor_core::launch_route::StoredLaunchRoute,
+) -> RepositoryResult<CanonicalDocument> {
     model_rung.validate()?;
     Ok(CanonicalDocument::from_serializable(
         &StoredSuccessionModelRung {
@@ -24310,56 +25003,14 @@ impl TeamDefinitionRepository for SqliteStore {
     fn set_project_team_definition_default(
         &self,
         selection: &ProjectTeamDefinitionDefault,
+        expected_operational_domain_bundle_hash: Option<&ContentHash>,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        team_definition_in(&transaction, selection.project_id, &selection.definition)?;
-        // Compare-and-swap. The apply binds the selection its preview saw, in
-        // the same transaction that writes, so a bootstrap that observed "no
-        // default" cannot silently overwrite an explicit selection made between
-        // its read and its write.
-        let current: Option<(String, i64, String)> = transaction
-            .query_row(
-                "SELECT definition_id, version, canonical_hash
-                 FROM project_team_definition_defaults WHERE project_id = ?1",
-                params![selection.project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let current = current
-            .map(|(definition_id, version, hash)| {
-                Ok::<_, RepositoryError>(TeamDefinitionSnapshot {
-                    definition_id: TeamDefinitionId::parse(&definition_id)?,
-                    version: read_version(version)?,
-                    canonical_hash: ContentHash::parse(&hash)?,
-                })
-            })
-            .transpose()?;
-        if current.as_ref() != selection.expected.as_ref() {
-            return Err(conflict(
-                "project team definition default",
-                "the selection changed since the preview it was applied from",
-            ));
-        }
-        transaction
-            .execute(
-                "INSERT INTO project_team_definition_defaults
-                     (project_id, definition_id, version, canonical_hash, selected_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(project_id) DO UPDATE SET
-                     definition_id = excluded.definition_id,
-                     version = excluded.version,
-                     canonical_hash = excluded.canonical_hash,
-                     selected_at = excluded.selected_at",
-                params![
-                    selection.project_id.to_string(),
-                    selection.definition.definition_id.to_string(),
-                    version_column(selection.definition.version),
-                    selection.definition.canonical_hash.as_str(),
-                    text(selection.selected_at),
-                ],
-            )
-            .map_err(backend)?;
+        set_project_team_definition_default_in(
+            &transaction,
+            selection,
+            expected_operational_domain_bundle_hash,
+        )?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -24368,18 +25019,18 @@ impl TeamDefinitionRepository for SqliteStore {
         &self,
         project_id: ProjectId,
     ) -> RepositoryResult<Option<ProjectTeamDefinitionDefault>> {
-        let found: Option<(String, i64, String, String)> = self
+        let found: Option<(String, i64, String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT definition_id, version, canonical_hash, selected_at
+                "SELECT definition_id, version, canonical_hash, selected_at, operational_domain_bundle_hash
                  FROM project_team_definition_defaults WHERE project_id = ?1",
                 params![project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .map_err(backend)?;
         found
-            .map(|(definition_id, version, hash, selected_at)| {
+            .map(|(definition_id, version, hash, selected_at, domain)| {
                 let definition = TeamDefinitionSnapshot {
                     definition_id: TeamDefinitionId::parse(&definition_id)?,
                     version: read_version(version)?,
@@ -24392,6 +25043,10 @@ impl TeamDefinitionRepository for SqliteStore {
                     // exactly what it saw.
                     expected: Some(definition.clone()),
                     definition,
+                    operational_domain_bundle_hash: domain
+                        .as_deref()
+                        .map(ContentHash::parse)
+                        .transpose()?,
                     selected_at: read_timestamp(&selected_at)?,
                 })
             })
@@ -24403,40 +25058,7 @@ impl TeamDefinitionRepository for SqliteStore {
         snapshot: &MiniProjectTeamDefinitionSnapshot,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        let owns_mini_project = transaction
-            .query_row(
-                "SELECT 1 FROM mini_projects WHERE project_id = ?1 AND id = ?2",
-                params![
-                    snapshot.project_id.to_string(),
-                    snapshot.mini_project_id.to_string()
-                ],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(backend)?
-            .is_some();
-        if !owns_mini_project {
-            return Err(RepositoryError::NotFound {
-                subject: "mini project",
-            });
-        }
-        team_definition_in(&transaction, snapshot.project_id, &snapshot.definition)?;
-        transaction
-            .execute(
-                "INSERT INTO mini_project_team_definition_snapshots
-                     (mini_project_id, project_id, definition_id, version, canonical_hash,
-                      pinned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    snapshot.mini_project_id.to_string(),
-                    snapshot.project_id.to_string(),
-                    snapshot.definition.definition_id.to_string(),
-                    version_column(snapshot.definition.version),
-                    snapshot.definition.canonical_hash.as_str(),
-                    text(snapshot.pinned_at),
-                ],
-            )
-            .map_err(backend)?;
+        pin_mini_project_team_definition_in(&transaction, snapshot)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -24446,22 +25068,26 @@ impl TeamDefinitionRepository for SqliteStore {
         project_id: ProjectId,
         mini_project_id: MiniProjectId,
     ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {
-        let found: Option<(String, i64, String, String)> = self
+        let found: Option<(String, i64, String, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT definition_id, version, canonical_hash, pinned_at
+                "SELECT definition_id, version, canonical_hash, pinned_at, operational_domain_bundle_hash
                  FROM mini_project_team_definition_snapshots
                  WHERE project_id = ?1 AND mini_project_id = ?2",
                 params![project_id.to_string(), mini_project_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .map_err(backend)?;
         found
-            .map(|(definition_id, version, hash, pinned_at)| {
+            .map(|(definition_id, version, hash, pinned_at, domain)| {
                 Ok(MiniProjectTeamDefinitionSnapshot {
                     project_id,
                     mini_project_id,
+                    operational_domain_bundle_hash: domain
+                        .as_deref()
+                        .map(ContentHash::parse)
+                        .transpose()?,
                     definition: TeamDefinitionSnapshot {
                         definition_id: TeamDefinitionId::parse(&definition_id)?,
                         version: read_version(version)?,
@@ -24933,6 +25559,17 @@ impl TeamDefinitionRepository for SqliteStore {
         // migration of something else.
         let current =
             self.get_mini_project_team_definition(migration.project_id, migration.mini_project_id)?;
+        // The existing intent records definition retitles, not domain changes.
+        // It must not reinterpret a domain-pinned epic without that identity.
+        if current
+            .as_ref()
+            .is_some_and(|pin| pin.operational_domain_bundle_hash.is_some())
+        {
+            return Err(conflict(
+                "team definition migration",
+                "operational_domain_upgrade_unsupported",
+            ));
+        }
         if current.as_ref().map(|pin| &pin.definition) != migration.from.as_ref() {
             return Err(conflict(
                 "team definition migration",
@@ -25236,6 +25873,15 @@ impl TeamDefinitionRepository for SqliteStore {
         // And the epic must still be where the intent left it. Anything else
         // moved the pin behind this migration's back.
         let current = self.get_mini_project_team_definition(project_id, stored.mini_project_id)?;
+        if current
+            .as_ref()
+            .is_some_and(|pin| pin.operational_domain_bundle_hash.is_some())
+        {
+            return Err(conflict(
+                "team definition migration",
+                "operational_domain_upgrade_unsupported",
+            ));
+        }
         if current.as_ref().map(|pin| &pin.definition) != stored.from.as_ref() {
             return Err(conflict(
                 "team definition migration",
@@ -25824,5 +26470,204 @@ impl SqliteStore {
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(changed)
+    }
+}
+
+fn set_project_team_definition_default_in(
+    transaction: &Transaction<'_>,
+    selection: &ProjectTeamDefinitionDefault,
+    expected_operational_domain_bundle_hash: Option<&ContentHash>,
+) -> RepositoryResult<()> {
+    team_definition_in(transaction, selection.project_id, &selection.definition)?;
+    // Compare-and-swap. The apply binds the selection its preview saw, in
+    // the same transaction that writes, so a bootstrap that observed "no
+    // default" cannot silently overwrite an explicit selection made between
+    // its read and its write.
+    let current: Option<(String, i64, String, Option<String>)> = transaction
+        .query_row(
+            "SELECT definition_id, version, canonical_hash, operational_domain_bundle_hash
+                 FROM project_team_definition_defaults WHERE project_id = ?1",
+            params![selection.project_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let current_domain = current.as_ref().and_then(|row| row.3.as_deref());
+    if current_domain != expected_operational_domain_bundle_hash.map(ContentHash::as_str) {
+        return Err(conflict(
+            "project team definition default",
+            "operational_domain_selection_moved",
+        ));
+    }
+    let current = current
+        .map(|(definition_id, version, hash, _)| {
+            Ok::<_, RepositoryError>(TeamDefinitionSnapshot {
+                definition_id: TeamDefinitionId::parse(&definition_id)?,
+                version: read_version(version)?,
+                canonical_hash: ContentHash::parse(&hash)?,
+            })
+        })
+        .transpose()?;
+    if current.as_ref() != selection.expected.as_ref() {
+        return Err(conflict(
+            "project team definition default",
+            "the selection changed since the preview it was applied from",
+        ));
+    }
+    transaction
+            .execute(
+                "INSERT INTO project_team_definition_defaults
+                     (project_id, definition_id, version, canonical_hash, selected_at, operational_domain_bundle_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                     definition_id = excluded.definition_id,
+                     version = excluded.version,
+                     canonical_hash = excluded.canonical_hash,
+                     selected_at = excluded.selected_at,
+                     operational_domain_bundle_hash = excluded.operational_domain_bundle_hash",
+                params![
+                    selection.project_id.to_string(),
+                    selection.definition.definition_id.to_string(),
+                    version_column(selection.definition.version),
+                    selection.definition.canonical_hash.as_str(),
+                    text(selection.selected_at),
+                    selection.operational_domain_bundle_hash.as_ref().map(ContentHash::as_str),
+                ],
+            )
+            .map_err(backend)?;
+    Ok(())
+}
+
+impl SqliteStore {
+    /// Select a domain-bound project default and retain its exact result atomically.
+    ///
+    /// # Errors
+    /// Stale project, roster, definition or domain context rolls back the receipt and selection.
+    pub fn select_project_team_definition(
+        &self,
+        selection: &ProjectTeamDefinitionDefault,
+        expected_domain: Option<&ContentHash>,
+        expected_roster: Option<&ContentHash>,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<CommandReceipt> {
+        let intent = envelope.peek(self.realm_id())?;
+        let transaction = self.begin()?;
+        ensure_atomic_local_intent_matches(
+            intent,
+            selection.project_id,
+            CommandKind::SelectProjectTeamDefinition,
+            &AggregateRef::Project {
+                project_id: selection.project_id,
+            },
+            intent.target_revision,
+        )?;
+        if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
+            ensure_atomic_local_replay(&existing, intent)?;
+            self.project_team_definition_selection_result(&existing)?;
+            return Ok(existing);
+        }
+        let revision: i64 = transaction
+            .query_row(
+                "SELECT revision FROM projects WHERE id = ?1",
+                params![selection.project_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        revision_of(revision)?.expect("project", intent.target_revision)?;
+        let roster = self
+            .get_current_core_team(selection.project_id)?
+            .map(|stored| {
+                let revision = kontor_teams::CoreTeamRevision {
+                    version: stored.version,
+                    catalog_hash: stored.catalog_hash,
+                    seats: serde_json::from_value(stored.seats).map_err(|_| {
+                        conflict("core team", "operational_domain_roster_unreadable")
+                    })?,
+                };
+                revision
+                    .canonicalize()
+                    .map(|document| document.hash().clone())
+                    .map_err(RepositoryError::from)
+            })
+            .transpose()?;
+        if roster.as_ref() != expected_roster {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_roster_moved",
+            ));
+        }
+        if selection.operational_domain_bundle_hash.is_none() {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_unpinned",
+            ));
+        }
+        set_project_team_definition_default_in(&transaction, selection, expected_domain)?;
+        let mut value: serde_json::Value = intent.intent.deserialize()?;
+        value["result"] =
+            serde_json::json!({"intent_hash": intent.intent.hash(), "selection": selection});
+        let payload = CanonicalDocument::from_value(&value)?;
+        let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
+        transaction.commit().map_err(backend)?;
+        Ok(receipt)
+    }
+
+    /// Exact original selection for replay, including after later defaults change.
+    ///
+    /// # Errors
+    /// Legacy receipts without a frozen result, tampering or cross-project results refuse.
+    pub fn project_team_definition_selection_result(
+        &self,
+        receipt: &CommandReceipt,
+    ) -> RepositoryResult<ProjectTeamDefinitionDefault> {
+        let (json, hash) =
+            local_or_legacy_command_result(&self.connection, receipt)?.ok_or_else(|| {
+                conflict(
+                    "project team definition default",
+                    "operational_domain_selection_result_unavailable",
+                )
+            })?;
+        #[derive(serde::Deserialize)]
+        struct ResultPayload {
+            intent_hash: ContentHash,
+            selection: ProjectTeamDefinitionDefault,
+        }
+        let mut value: serde_json::Value = stored_payload(&json, &hash)?.deserialize()?;
+        let result = value
+            .as_object_mut()
+            .and_then(|object| object.remove("result"))
+            .ok_or_else(|| {
+                conflict(
+                    "project team definition default",
+                    "operational_domain_selection_result_mismatch",
+                )
+            })?;
+        if CanonicalDocument::from_value(&value)?.hash() != receipt.intent.hash() {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_selection_result_mismatch",
+            ));
+        }
+        let payload: ResultPayload = serde_json::from_value(result).map_err(|_| {
+            conflict(
+                "project team definition default",
+                "operational_domain_selection_result_mismatch",
+            )
+        })?;
+        if payload.intent_hash != *receipt.intent.hash()
+            || payload.selection.project_id != receipt.project_id
+            || receipt.kind != CommandKind::SelectProjectTeamDefinition
+            || receipt.target
+                != (AggregateRef::Project {
+                    project_id: receipt.project_id,
+                })
+            || payload.selection.operational_domain_bundle_hash.is_none()
+        {
+            return Err(conflict(
+                "project team definition default",
+                "operational_domain_selection_result_mismatch",
+            ));
+        }
+        Ok(payload.selection)
     }
 }

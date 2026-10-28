@@ -42,6 +42,56 @@ Kontor YAML; a harness-owned file is a generated projection instead.
 - The same selected YAML source serves Paseo-direct and `kontord`-governed work.
   Setting up the direct option does not require `kontord`.
 
+### Daemon startup
+
+```sh
+kontor-daemon --state-root <realm-state-root> --config-dir <config-folder>
+```
+
+Serving requires an explicit selection. The daemon reports the canonical
+absolute folder and project key; relative references in the entry file resolve
+from that folder, including when its name contains spaces. Startup validates
+YAML sources and refuses legacy editable sources in the state root with a
+migration instruction before claiming the realm. It never chooses a legacy
+source as a fallback. Recovery operations on snapshots and exports still work
+without authoring configuration. `install-jira-credential` uses the selected
+folder and keeps the credential address scoped to the state root and realm.
+
+The first loader slice reads these bootstrap sources:
+
+| Selected-folder source | Contents |
+| --- | --- |
+| `host.yml` → `runtime.planes` | Existing runtime settings document (`schema_version: 4` or `5`, `runtimes` list), nested under a schema-1 host document |
+| `host.yml` → `checkouts` | Optional explicit root/exact-module task Git sources; validated before startup and frozen in durable placement intents before Git effects |
+| `tracker/connectors.yml` | Schema-1 connector bindings (`projects` list); separate from `project.tracker.spec`, the tracker specification entry |
+| `forge/github-app.yml` | Schema-1 GitHub App settings, with the private key kept outside the repository |
+| `orchestration/memory.yml` | Optional memory transport settings |
+| `orchestration/succession.yml` | Schema-1 succession runtime selection |
+| `paseo-supervision.yml`, `attention.yml`, `quota-signals.yml` | Optional validated watchdog, attention and refusal-classification settings |
+
+An omitted runtime planes document composes an empty registry. This nesting
+preserves the existing runtime field contract during migration; logical account
+slots and route binding remain separate host settings. The runtime fields below
+are the legacy document reference, not a second editable JSON source.
+
+Fleet authoring comes from the entry's `fleet` reference. Published history,
+activation records, credentials and the database stay under the state root.
+Existing activations and run pins remain authoritative: editing the selected
+fleet file or publishing a candidate does not activate it. Embedded callers
+that explicitly supply a runtime registry retain their existing composition
+seam; the executable uses selected-folder startup.
+
+Project identity is available from the resolved entry at startup. Publication
+uses the activated project policy described below; per-realm tracker/team
+installation remains a subsequent loader slice.
+Clean-start acceptance uses an empty state root and the explicitly selected
+YAML folder; startup does not repopulate work from plans or tracker epics.
+Generic snapshot and recovery capabilities remain available independently.
+
+Ship the complete config-folder work together in one release after the relaunch
+release has been deployed with readback. Loader checkpoints remain draft work
+until clean empty-state startup, project isolation and admission are qualified.
+
 ### Layout and references
 
 ```text
@@ -57,17 +107,18 @@ Kontor YAML; a harness-owned file is a generated projection instead.
   tracker/*.yml                     tracker connection, field/workflow specs and credential references
   packs/*.yml                       team and profile overlay, committee presets and role prompts
   forge/github-app.example.yml      committed GitHub App placeholder
+  attention.yml                     optional attention policy
+  attention.env                     placeholder sample for <state-root>/.env; never loaded here
   quota-signals.yml                 optional vendor refusal wording
-  paseo-supervision.yml             sample for <state-root>/supervision.yml, not a project key
+  paseo-supervision.yml             optional daemon watchdog policy, not a project key
   host.example.yml                  committed host schema example
   host.yml                          this machine only; git-ignored
 ```
 
 `project.supervision` follows plan §1.1 and names
 `orchestration/tpm-supervision.yml`, the autonomous TPM cadence profile. The
-Paseo watchdog policy is a different file: the daemon reads
-`<state-root>/supervision.yml`; `paseo-supervision.yml` here is only the sample
-copied to that state-root path. It is not a key in `project:`.
+Paseo watchdog policy is a different file: configured daemon startup reads
+`paseo-supervision.yml` from the selected folder. It is not a key in `project:`.
 
 A path is not one class. The schema distinguishes these, and each class has
 its own base and validation:
@@ -78,7 +129,7 @@ its own base and validation:
 | Project resource path | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.decision_authorities.decision_records_root` | a declared `project.resource_roots` entry | The first segment is a root key; the root maps to a repository in `project.forge.repositories`, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused. Never resolved from, or checked for containment inside, the config folder. |
 | Desk history path | `project.pr_desk.history_root` | `host.paths.data_root` | Relative only and contained; absolute paths and `..` segments are refused. The learning log is `<resolved root>/learning.log`, resolved by `PR_DESK_DIR`, then `host.paths.pr_desk`, then `<data_root>/<history_root>`. |
 | Host path | `host.paths.*`, `host.binaries.*`, `host.project_cli.*` | this machine's filesystem | Absolute or `PATH`-resolved host state. Not a config reference. |
-| Convention | `project.worktree_layout` | the project's checkout convention | A pattern with `<key-slug>` and `<module>`, not a path to resolve. |
+| Convention | `project.worktree_layout`, `project.consultation_layout` | the project's placement patterns | Task pattern uses `<key-slug>`/`<module>`; consultation pattern uses `<key-slug>`/`<node>` under the same managed root. |
 | Credential reference | `credential`, `project.tracker.credential_alias` | the deployment's secret store | A non-secret reference such as `keychain:<service>/<account>`; never a value. |
 
 `project.resource_roots` names each checkout the project resources live in, so
@@ -88,6 +139,18 @@ one project can span several repositories. ASMA, for example, declares
 `documentation_roots: [modules/_docs, kontor/docs]`. A path whose root is not
 declared, whose root is not one of the project's forge repositories, or that is
 absolute or contains `..` is refused by name rather than guessed.
+
+Selected-folder startup validates these resource paths without probing for them
+inside the config folder. Paths use exact relative segments: empty, `.` and
+`..` segments, backslashes, drive/URI prefixes, wildcards and unresolved
+placeholders refuse by field and source. A resource directory may retain one
+trailing slash. Repository entries must be valid, unique owner/name values;
+each resource root must refer to one of them.
+
+The worktree convention must start with a literal managed placement root and
+contain exactly one whole `<key-slug>` segment and one whole `<module>`
+segment. Unknown or repeated placeholders, absolute paths and traversal refuse
+at startup. Validation creates no worktree and changes no existing claim.
 
 An external config folder therefore cannot capture a project's documentation,
 gap ledger, glossary or worktree paths: those resolve from the project roots the
@@ -116,6 +179,75 @@ projection with a recorded YAML source and content hash, not a second editable
 source. Credential values remain in the deployment's secret store; YAML holds
 credential references such as `keychain:<service>/<account>`.
 
+### Project publication authority
+
+`project.branch.types` narrows the shared `kontor-core` branch vocabulary. It
+must be nonempty and contain no duplicates. The supported anchored branch
+template is `^(type|type)/<KEY>-<number>-<slug>$`, with the declared types in
+order; `<KEY>` may instead be the exact `project.key`. The commit template is
+`^<KEY>-<number> <summary>$`, with the same literal-key option. Unknown types,
+unresolved placeholders, arbitrary regexes and another project's literal key
+refuse by field name and selected source. These templates do not replace
+canonical branch parsing or confirmed task/epic binding.
+
+Branch rules resolve into the existing publication policy's immutable bundle.
+Authoring edits and unactivated publications do not change publication
+judgement. Older bundles without branch rules retain the shared grammar;
+selected-folder startup requires the authored branch settings. The commit
+template is validated and pinned here; publication's head SHA does not attest
+to a commit message. Commit-message consumers must observe that message before
+claiming it satisfies the template.
+
+The optional pair below configures publication for one existing Kontor Project
+in this realm. `project_id` is its explicit internal UUIDv7, distinct from the
+public tracker key. Loading this folder never creates a Project.
+
+```yaml
+project:
+  project_id: "00000000-0000-7000-8000-000000000001" # synthetic example
+  forge:
+    repositories: [example-org/root, example-org/worker]
+    base_branch: main
+  publication:
+    root_repository: example-org/root
+    module_repositories:
+      "components/worker": example-org/worker
+```
+
+Omitting both `project_id` and `publication` supports direct-only startup with
+an empty store and grants no publication authority. If either is present, both
+are required, including `root_repository` and `module_repositories`. An empty
+module map is valid for a root-only project. Invalid or partial policy is
+refused by field name at startup and bundle preview. Repository values must be
+exact validated entries in `project.forge.repositories`; membership in that
+list alone grants no access. Duplicate or invalid ModuleKeys, wildcards and
+unlisted repositories are refused.
+
+Module keys match durable `Task.module` values exactly. They are independent
+of `resource_roots`, checkout paths and names. A confirmed task binding admits
+the root and only its own mapped module repository. A confirmed epic binding
+admits the root and the union for its own stored tasks. An unmapped module adds
+nothing. The base is exactly `project.forge.base_branch`, with no fallback.
+
+The existing orchestration preview → publish → activate path resolves this
+policy into its immutable manifest, alongside the exact YAML source hashes.
+Publication reads that verified activated artifact. Editing authoring files,
+publishing without activation or restarting does not replace authority. An
+absent policy, invalid active artifact, missing realm Project, mismatched
+requested ProjectId, unconfirmed or ambiguous binding or unauthorized
+repository fails closed. Fleet placement retains its existing last-valid and
+run-pin rules; publication never widens access through a raw YAML fallback.
+
+Any internal `project_id` declared by the selected tracker spec, connector or
+GitHub App must agree with this policy. Those integrations constrain authority;
+none can supply or override it. A tracker spec without an internal ID is valid.
+Policy revision 5 decisions carry `source_bundle_hash` when an activated policy
+was read. New accepted receipts require that provenance; older receipts remain
+unchanged and do not gain invented hashes. An idempotency key cannot replay an
+old acceptance after the governing policy or durable binding changes. The App
+poller rejudges unchanged PR heads too and binds its report key to the observed
+publication, subject and governing decision.
+
 ### `host.yml`
 
 `host.example.yml` is committed beside the neutral example. The real `host.yml`
@@ -129,11 +261,83 @@ It is a bootstrap input, never an activated policy.
 | `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; optional `pr_desk`, an absolute desk history root that overrides `project.pr_desk.history_root`; absolute paths on this machine. |
 | `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
 | `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
+| `checkouts` | mapping | Optional task Git sources: required `root` record and `modules` mapping. Each record requires `repository`, `path`, `base_ref`; see below. These are sources, separate from destination layout. |
 | `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
 | `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential, serves, efforts?, qualification?}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value; `serves` maps each canonical fleet model to the model id this route launches (`route_model_id`); a cross-provider route, or a route with a different launch id, also states `qualification`. |
 | `routes` | mapping | Fleet domain → ordered logical slots this host enables. A slot omitted here is unavailable on this host. |
 | `keychain` | mapping | `service_prefix` for credential references. |
 | `launchd` | mapping | Service labels for the daemon and desk. |
+
+**Task checkout sources.** `host.checkouts.root` identifies the existing source
+whose canonical checkout root equals the durable `Project.root_path`.
+`host.checkouts.modules` uses exact canonical `Task.module` keys, including all
+relative path segments. An exact record selects its source; `{}` is valid.
+Without an exact record, the root supplies objects only for a normal tracked
+place at the resolved base commit, with no gitlink, symlink or nested repository
+boundary. A missing, new or inconclusive place requires an exact record, which
+may explicitly choose the root repository. Resource-root aliases, publication
+module mappings, repository names and origins never select a source.
+
+Each record's `repository` must be an exact validated
+`project.forge.repositories` member. This constrains source identity and grants
+no publication permission. Its `path` must be an absolute canonical existing
+working-checkout root; discovering a parent repository from a subdirectory is
+refused. `base_ref` is exactly `refs/heads/<project.forge.base_branch>` or
+`refs/remotes/<configured-remote>/<project.forge.base_branch>`, resolving to a
+commit. There is no default-branch search, fetch, clone or implicit remote task
+branch fallback. Configuration loading only validates and reads Git.
+
+Task destinations keep the existing contract: `project.worktree_layout`
+renders the full durable module and the confirmed tracker key. Root-only tasks
+require an explicit validated durable worktree and use the root source; no
+module or destination is invented. Deterministic claim correction still needs
+a module. An authored ticket link is not confirmation: an undeclared module
+task stays unplaced until native materialization reads its confirmed durable
+tracker binding. Its first derived claim and source intent commit together.
+Existing destinations must be exact checkout roots with the selected
+source's Git common directory, a confirmed branch and durable task ownership.
+Containment and cross-task/consultation collision guards apply.
+
+Before the first Git effect, a durable placement intent freezes the source
+record, canonical common directory, exact base ref, resolved commit, branch and
+claim. A pending retry uses that intent. A confirmed placement only verifies
+its existing destination; it never recreates a missing running binding.
+Host edits require restart for new placements and cannot switch an existing
+pin. Guarded claim correction freezes the replacement source with the claim
+atomically. Omitting `host.checkouts` permits empty/direct-only startup and
+disables managed task source selection without a legacy fallback.
+
+`project.consultation_layout` is an optional relative pattern such as
+`consultations/<key-slug>/<node>`. Its root is the durable project root joined
+with the literal prefix of the pinned `worktree_layout`: for
+`managed/trees/<key-slug>/<module>`, a consultation belongs under
+`<project root>/managed/trees/consultations/<epic-key-slug>/<node>`.
+Both placeholders must appear exactly once as whole path segments. Absolute,
+empty, dot/traversal, unknown and repeated components refuse by field name.
+The key is the confirmed canonical epic key; the node is the durable
+TopologyNodeId belonging to that epic/project. No task module is substituted.
+
+The existing bundle manifest pins the layout, managed-root pattern, base
+branch and shared branch rules together. Each epic uses its frozen bundle;
+activation or YAML edits do not relocate existing placements. Omission keeps
+empty/direct startup possible and refuses new consultation placement by name.
+
+Before Git or runtime effects, the existing topology node freezes a canonical
+intent with its project/epic/key/node, bundle and layout, explicit
+`host.checkouts.root` declaration, common directory, resolved base commit,
+branch, exact destination and native binding ID. The existing checkout engine
+prepares that source and records correlated Git readback before a native
+binding can commit. A pending retry uses those exact bytes; a confirmed
+placement verifies its existing checkout and refuses a missing destination.
+There is no source search, clone/fetch, new registry or request-time YAML read.
+
+Legacy consultations retain their durably bound path and native identity only
+when their exact Git root, common directory, branch and ownership still agree.
+They are not backfilled or re-rendered. A directory or branch without a durable
+intent/binding is refused, including legacy `consultation-<node>` candidates.
+Recovery retains the same placement proof; containment alone grants nothing.
+The API retains its existing native binding/readback and receipt contracts;
+source/layout intents are internal generated evidence, not authored inputs.
 
 **Route join (Q-04).** The fleet owns the canonical policy; the host owns the
 working route. They meet on two keys: the logical slot and the canonical model.
@@ -210,6 +414,13 @@ the host bootstrap file. Each record binds `route`, `harness`, the symbolic
 `harness`, `model`, `canonical_model_id`, `canonical_vendor`,
 `route_model_id`, `efforts` in declared order, comma-separated, and `revision`.
 Activation time is not part of that hash.
+The bundle manifest carries only `qualification: {source, source_hash}` and the
+same hash in `sources`. The existing `FleetActivation.activated_at`, linked by
+`source_bundle_hash`, supplies activation time; preview and publication keep the
+same manifest identity. Exact qualification and orchestration source bytes are
+retained by the bundle publisher. The runtime matrix is read from that pinned
+orchestration artifact; missing or tampered artifacts refuse without consulting
+the current selected folder.
 A host reference is exactly `<route>@<revision>`; the resolver splits once,
 compares both parts exactly, requires the activation record's `source_hash` to
 match the file bytes and `activated_at` to be present, verifies the record hash,
@@ -225,13 +436,12 @@ record is separate from the fleet, so a new qualified route does not require a
 fleet policy edit.
 
 **Successor and migration contract.** The current `schema_version: 2` parser
-still validates `domains.accounts` with the provider-prefix rule and has no
-host-route layer. That is a current parser constraint, not the Q-04 contract.
-WP-08 adopts this successor contract without changing the daemon before KR-14:
-existing `accounts` values are read as logical slots; each legacy native alias
-is mapped to a host route with the provider and harness that served it; active
-run snapshots are preserved; and a host route change never requires a fleet
-policy edit.
+still validates `domains.accounts` with the provider-prefix rule. That remains
+a parser constraint. Governed native placement joins the admitted logical slot
+to the activated bundle's runtime matrix and qualifications, then freezes its
+host route before a launch or retirement effect. Native readback, retries and
+restart recovery use that saved binding. A host route edit affects new
+placements without rewriting an active run's snapshot or the fleet policy.
 
 The bundle base also changes. The current reader resolves selectors from
 `<config folder>/orchestration/` and requires the manifest names `fleet.yml` and
@@ -242,6 +452,19 @@ name `fleet.yml` to `orchestration/fleet.yml` and `teams/core-team.yml` to
 `orchestration/teams/core-team.yml`, compares the resolved bytes by content
 hash, preserves active pins and refuses a conflicting old and new source. No
 manifest reader changes before KR-14.
+
+The Paseo transport announces only its existing protocol number and capabilities,
+with no client application version. Readiness still checks the actual server
+version against the supported 0.8.0 floor and verifies each required capability;
+this cleanup does not qualify a new server release or advance KR-14.
+
+Schema 143 renames the activation authority to `epic_activations` and its command
+kind to `activate_epic` through the existing ordered migration transaction. It
+retains receipt IDs, canonical intent bytes/digests, frozen pins and activation
+rows; only the typed command kind and table name change. A retry compares all
+operation arguments and reuses the frozen receipt intent. Older binaries must
+refuse the newer schema; rollback requires a compatible binary, never a forced
+schema-version downgrade. The historical migration CHECK lists remain frozen.
 
 For ASMA, the selected folder is `asma-modules/config/`. Its successor
 references are `fleet: orchestration/fleet.yml`,
@@ -284,6 +507,32 @@ The snapshot records the working route (`route_provider`, `route_harness`,
 (`canonical_model`, `canonical_effort`, `canonical_vendor`). `route_model_id`
 is the id the working route actually launches; it may differ from
 `canonical_model`. It is authoritative for that run.
+The private carrier has `schema_version: 1` and is stored in existing launch
+route columns as `{schema_version: 1, resolved_route: {...}}`. Canonical seat
+bindings and public provenance remain canonical. Historical bare model rungs
+remain readable without rewriting them or inventing host/policy pins. An
+invalid envelope cannot be interpreted as a legacy rung. Under a selected
+config, historical bare rungs do not authorize new launches or permission
+effects. A policy-bound freeze requires its exact source bundle pin; an unbound
+placement may freeze against one activated bundle before effects.
+
+Hosted launches and governed claims retain it in their generation's launch
+intent before changing native state. Claims verify the observed native route
+against that snapshot and keep the canonical route in the seat row. Consultation
+initial launches use `consultation_seats.model_rung`; recovery and reroute use
+their existing private route columns. Delivery launches retain the binding with
+the existing fleet decision; replacement command intents and quota succession
+intents freeze it before retiring a predecessor. Replay and compare-and-swap
+compare the complete stored binding, including private route identity.
+Consultation contexts, receipts, seat policy and public provenance project only
+canonical routes. The working provider determines the native permission mode;
+any required permission grant remains bound to the exact logical slot.
+
+`host_route_hash` is SHA-256 of compact UTF-8 JSON with keys in exactly this
+order: `host_sha256`, `domain`, `slots`. `host_sha256` hashes the exact `host.yml`
+bytes; `slots` is the domain's exact ordered slot list. Native aliases remain
+private launch data and are absent from public route projections and errors.
+
 Editing `host.yml` or the fleet policy never rewrites an active run's snapshot:
 it is read from the run's launch intent and receipt, not re-resolved from the
 current files. A daemon restart
@@ -319,7 +568,7 @@ and ASMA's concrete values are the test case in
 | `forge` | mapping | `kind`, `organization`, `repositories`, `base_branch`. |
 | `runtime` | mapping | `matrix` of `{name, harness, provider}` launch combinations. |
 | `cli` | mapping | `command` and `verbs` for text and checks that must not hard-code one tool; `host.project_cli.<command>` binds the executable. |
-| `team_pack` | path | Folder-relative team/profile overlay. |
+| `team_pack` | path | Folder-relative YAML manifest selecting profile/team, operational-domain and committee candidates; see the selected-pack contract below. |
 | `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
 | `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
 | `pr_desk` | mapping | `command` (the desk invocation line), `settings` (folder-relative `orchestration/pr-desk.yml`), `history_root` (relative to `host.paths.data_root`); see the PR desk contract below. |
@@ -329,10 +578,11 @@ and ASMA's concrete values are the test case in
 | `attention_channel` | string | Where typed attention is raised. |
 | `glossary` | path | Project glossary. |
 | `worktree_layout` | string | Checkout convention, with `<key-slug>` and `<module>` placeholders. |
+| `consultation_layout` | optional string | Relative consultation pattern with exactly one whole `<key-slug>` and `<node>` segment, under the managed-root prefix of `worktree_layout`. |
 | `check_runs` | list | Required check-run names. |
 | `capacity` | mapping | `max_delivery_seats`, `max_parallel_tasks`, `start_admission`; see the capacity rules below. |
 | `time_zone` | IANA zone | Project default. |
-| `holiday_countries` | list | ISO country codes for the holiday import. |
+| `holiday_countries` | list | Required, nonempty uppercase two-letter ISO country codes available to holiday import. Imports refuse countries outside this selection; Nager has no compiled country default. The provider validates its own support. |
 | `currency` | string | ISO 4217 code for budgets and costs. |
 
 `max_parallel_tasks` and `start_admission` are the Paseo-direct placement
@@ -341,6 +591,128 @@ less than or equal to `max_parallel_tasks`. `max_delivery_seats` is an
 owner-set project value scoped per team run (ASMA 2); the placement rule does
 not supply it, it is not a global team-run ceiling, and kontord has no such
 field.
+
+### Selected team, profile, domain and committee authoring
+
+`project.team_pack` names a schema-version-1 manifest. Its required keys are
+`profile_pack`, `operational_domain` and `committee_presets`, each a contained,
+existing YAML reference relative to the selected folder root. The owning typed
+parsers validate the complete documents and exact revision references; logical
+roles used by teams and committees must have operational delivery bindings.
+Manifest additions are refused rather than ignored. The four raw source hashes
+are captured at startup, without publishing, activating or creating a Project.
+Pack sources are regular files owned by the selected folder's owner, without
+group/world write permission and at most 1 MiB each. Parsing and hashing use
+the same captured UTF-8 bytes. The domain source must validate its delivery
+kinds, unique logical-role bindings, current catalog roles, sparse prompts and
+exact Team Definition/topology references.
+
+Only selected and explicitly registered profiles/teams are advertised on the
+selected-folder surface. Omission in an empty/direct-only daemon setup has no
+compiled profile or preset fallback. Selection supplies candidates for existing
+preview/apply paths, not permission to rewrite an installed revision. Selected
+teams use registered-input authority, so the compiled-seed reconciliation path
+cannot overwrite them. Committee candidates require explicit preview/apply;
+catalog reads and restart retain installed bytes and do not publish edits.
+The neutral example has generic roles, no accounts, no clinical scenarios and
+no project prompt. Worker model routes come from activated fleet bindings.
+
+New Core Team resolution uses the selected operational domain and its exact
+catalog snapshot. The existing delivery keys `architecture_closer_code`,
+`process_closer_code` and `control_role_code` derive read-only resolved seat
+`purposes`: `architecture_closer`, `process_closer`, `control`, in that fixed
+order without duplicates. They are not authored seat fields or caller privileges.
+Exact `RoleCode` equality assigns them; labels, ordering and `ad_hoc_allowed`
+grant nothing. Each purpose has one required owner, architecture and process
+remain separate, and process plus control can occupy the same seat.
+Missing, ambiguous or non-current role selectors refuse by their delivery field
+name; lead and program role codes have no compiled fallback.
+
+Published and epic-pinned rosters retain these markers with their exact
+catalog/version/role/slot bindings. Later delivery edits, restart or publication
+of another Core Team cannot reinterpret a frozen roster. Legacy rows without
+`purposes` remain readable and serialize without the empty field; they grant no
+purpose authority. A dependent operation refuses `role_purpose_unpinned` until
+an independently authorized operator explicitly previews/applies a tagged Core
+Team revision and explicitly upgrades the epic roster. Startup and reads never
+backfill markers. Selected-folder epic bootstrap requires a published Core Team.
+
+Project and epic Team Definition selection records have an optional
+`operational_domain_bundle_hash`, pointing to the existing canonical bundle
+manifest rather than changing definition/topology identity. Schema 139 adds the
+nullable columns to the existing tables without filling historical rows. A
+project selection compares the expected domain hash alongside the expected
+definition; an epic pin remains immutable when the project default changes.
+Absent fields deserialize as no pin and stay omitted on serialization.
+
+The existing definition-retitle migration intent does not bind domain context.
+It refuses `operational_domain_upgrade_unsupported` for a domain-pinned epic;
+an in-flight retitle also prevents first attaching a domain pin. Historical
+retitle intents and reads retain their existing behavior. Generic exports use
+generation 18 to preserve these fields; older generation/claimed database
+combinations cannot discard or invent them. Historical unpinned record hashes
+remain unchanged. This does not create or restore an installation backup.
+
+Explicit project Team Definition selection requires a verified activated domain
+bundle. The published definition and topology must be exact members of that
+domain. A stored catalog under the same identity must agree; an existing Core
+Team must retain its frozen purposes under that same catalog and delivery.
+Preview binds the current and proposed domain bundle hashes and exact roster,
+including when the definition is unchanged. Prompt-only or delivery-only edits
+therefore require publication, activation and a new selection preview. Apply
+compares the project, roster and selection again and commits the selection and
+its exact command result atomically. Schema 140 extends the existing exact-intent
+local-result ledger to this command; it adds no table or pointer. Replay reads
+that original result even if
+the project default or activation later changes; it never re-selects current
+YAML. Historical receipts without a frozen result refuse
+`operational_domain_selection_result_unavailable` instead of inventing one.
+
+Epic preview and apply require an explicit project domain selection and published
+Core Team with frozen purposes. They verify the immutable bundle, exact published
+Team Definition/topology/catalog and roster agreement. New creation copies the
+domain hash, definition, topology and exact roster in the same transaction as the
+graph and its creation intent/result/receipt. Schema 141 admits epic creation to
+the existing exact-intent local-result ledger; no new table, pointer or backfill
+is introduced. A changed selection or roster between resolution and commit
+refuses and rolls back all of these writes. The receipt remains
+`intent_persisted` while kickoff holds, origin fencing or governance are
+unconfirmed. The existing success hook confirms it only after the application
+returns successfully; a retry resumes the original frozen creation context.
+
+Preview and apply return `operational_domain_bundle_hash`. A client can send it
+as `expected_operational_domain_bundle_hash` to bind apply to that preview;
+a different target refuses `operational_domain_epic_target_moved`. Omission
+selects the explicitly configured project domain at apply time. The creation
+intent and graph digest bind the resolved domain even when the client omits the
+precondition. An existing epic uses its frozen pin, independently of later
+activation, selection, YAML edits or restart. Receipt replay verifies its original
+result and pin; it does not resolve today's selection. Historical receipt readback
+remains available without granting new domain effects. An unpinned existing epic
+cannot acquire domain authority by reapplying it: `operational_domain_unpinned`.
+
+Epic runtime placement, control-role checks, consultation kind selection and
+admission resolve the epic's persisted domain bundle. Every resolution verifies
+the immutable artifact hash and its published Team Definition, topology, catalog
+and frozen roster. Current YAML, project defaults and later activation cannot
+reinterpret that epic. Missing pins refuse `operational_domain_unpinned`; missing
+or changed artifact bytes refuse before domain-dependent effects. Recorded
+roster, occupancy and persona history remains readable without granting effects.
+
+A new epic seat launch records its persona (including an absent prompt) atomically
+with its existing launch intent. Recovery reuses that exact stored persona;
+it never fills a missing historical persona from current config. Roster upgrade
+validates the proposed roster against the epic's domain before changing the pin,
+and its preview hash includes the domain identity when present.
+
+Project Quick sessions, project Desk Adams and PR-review seat persona selection
+retain their existing behavior in this checkpoint. Quick promotion has no eligible
+frozen domain snapshot: promotion can retain its intent but epic materialization
+refuses `operational_domain_unpinned`, with no native launch or handoff. A retry
+cannot acquire authority from today's project selection. Qualifying those project
+consumers needs a separate snapshot/recovery contract. Native consultation
+placement remains a later WP-08 checkpoint; selecting its pinned kind does not
+change its placement contract.
 
 ### The PR desk contract
 
@@ -422,7 +794,7 @@ recorded as such instead of being migrated.
 | `config/orchestration/pr-desk.yml` (ASMA) | human-edited desk decision file; `pr_desk.py` reads `desk`, `skip_repositories` and `durable_seats` | Keep it as the project's `project.pr_desk.settings` file. Add the six policy keys (`poll_start_budget`, `active_pr_policy`, `ready_silence_days`, `draft_silence_days`, `fix_round_limit`, `revise_round_limit`) beside `schema_version`; extra project-owned keys are allowed beside the required seven. | Its `desk.desk_folder` key retires in favour of `project.pr_desk.history_root` plus `host.paths.pr_desk`. ASMA's host sets `host.paths.pr_desk` to the current desk folder so the learning log stays in place. `PR_DESK_DIR` stays the explicit top-precedence host override. The live desk path stays in `host.yml`, never in this public tree. | WP-10 |
 | `crates/kontor-teams/fixtures/mvp-team-pack.json` | human-edited seed compiled by `kontor-teams/src/spec.rs` | YAML team pack in the selected folder; neutral default in the pack. | Back up, convert, compare resolved teams and slots, update the reader, remove the bundled editable copy. A native JSON projection is generated only if a runtime still reads it. | WP-08 |
 | `crates/kontor-profiles/fixtures/mvp-profile-pack.json`, `operational-domain.json`, `consultation-presets.json` | human-edited seeds compiled by `kontor-profiles/src/seeds.rs` | YAML profile/domain/preset packs in the selected folder. | Same conversion and equivalence check; ASMA's overlay moves to its folder, the neutral default stays neutral. | WP-08 |
-| `crates/kontor-jira/fixtures/*.json` | human-edited ASMA tracker fixtures compiled by `kontor-jira/src/jira.rs` | YAML tracker specs installed per Realm from the selected folder. | Move ASMA's compiled tracker fixtures, install the specs per Realm, keep active pins, remove the compiled ASMA catalog. | WP-08 |
+| `crates/kontor-jira/tests/fixtures/*.json` | Test-only historical tracker documents; no deployment compiles them. | ASMA's six authored specs move to its selected `tracker/*.yml`; neutral folders declare their own specs or none. | Selected catalogs offer candidates; explicit Admin installation atomically publishes field/workflow hashes per realm/project. Installed bytes keep their immutable pins. | WP-08 |
 | `crates/kontor-mcp/seats/*.json` | human-edited MCP seat configurations; external clients, `crates/kontor-mcp/tests/seats.rs` and `seats/README.md` | YAML seat profiles in `packs/`, rendered to the native seat files. | Generate the three native JSON files from YAML with source provenance; do not add a second authority model. | WP-08, WP-10 |
 | `plugin-config/kontor/floor.json` | operator-owned server file; Paseo plugin server start (KN-04 / ASMA-8551) | **Proposal:** YAML source `orchestration/plugin-floor.yml`; generated projection at `<PASEO_HOME>/plugin-config/kontor/floor.json`. | See the KN-04 proposal below. The decision's value table, read-once/reload-only behaviour and doubt-leaves-floor-on rule are unchanged. | WP-05, WP-08, KN-04 successor |
 | `opencode.json`, `.github/mcp.json` | harness-native files (ASMA) | Generated projections from YAML. | Q-03: no handwritten JSON exception; render deterministically and record the YAML source. | WP-11 |
@@ -486,7 +858,7 @@ not change the plugin or its decision.
 | `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (see below) | `schema_version: 1`; absent: template routing. Not read while `fleet-activation.json` exists |
 | `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash — and, for an aligned (schema_version 2) activation, which orchestration bundle and Core Team roster. Written only by activation; while it exists, `fleet.yml` is not read (see below) | `schema_version` 1 or 2; absent: unmigrated `fleet.yml` behaviour |
 | `<state-root>/fleet-status.json`, `fleet-history/`, `fleet-decisions/` | Generated: the last `fleet.yml` load result, accepted and published policy copies by hash, and per-placement decision and launch-provenance logs (see below) | Generated |
-| `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash (see below) | Generated by bundle publication |
+| `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash; `orchestration-history/domains/` retains exact domain YAML bytes (see below) | Generated by bundle publication |
 | `<state-root>/jira.json` | Jira connectors keyed by Kontor project id: endpoint, project key, credential alias, the confirmed epic keys automatic reconciliation may touch, and extra create fields (see below) | `schema_version: 1`; absent: Jira is not configured. Present but invalid refuses the start |
 | OS keychain service `kontor-jira:<realm-id>:<sha256 of the canonical state root>` | The Jira `email`/`api_token` for each alias `jira.json` names, written only by `kontor-daemon install-jira-credential` (see below) | Absent: Jira calls for that alias fail as an `unavailable` credential refusal |
 | `<state-root>/config/github-app.json` | Optional GitHub App gateway for publication identity; its PEM key lives outside every repository (see below) | `schema_version: 1`; absent: no forge check is posted. Present but invalid refuses the start |
@@ -576,6 +948,46 @@ block hash. Downstream roles cite that same binding. Replays load historical
 canonical bytes with hash verification before retrieving again; approval,
 tombstone, task edits and projection changes do not replace the selection.
 An explicit purge returns the accepted typed refusal and preserves the binding.
+
+## Provider-unavailability markers (`runtimes.json`)
+
+`unavailable_providers` on a runtime setting is an operational outage marker:
+launch admission refuses that provider until the entry is gone. The daemon
+composes the set once, at start, so an outage that lifts leaves a marker that no
+restart removes by itself. The supported correction is the
+`kontor_provider_marker_preview` / `kontor_provider_marker_apply` pair
+(`/v1/provider-markers:preview` and `:apply`), naming the runtime family key that
+holds the marker and the provider to remove.
+
+- **Preview** is effect-free. It reads the document, reports the exact `before`
+  and `after` provider sets, the document `revision`, and the effects: whether
+  the correction would rewrite the document, and whether the *running* daemon
+  still holds the marker (a start is required before the document governs new
+  launches).
+- **Apply** takes the preview's `revision` and `preview_hash` and edits only the
+  addressed setting's marker array. Every other member — including fields this
+  build does not know and the sensitive `host_target` — is preserved, and the
+  file keeps its permissions. A document that changed since the preview is a
+  `revision_conflict`. Apply holds `<state-root>/runtimes.json.lock` across
+  every writer's read, comparison and rename, so two corrections cannot
+  overwrite each other. A manual edit cannot take that lock: edit
+  `runtimes.json` by hand only with the daemon stopped.
+- **Idempotent replay.** The key is judged before the revision and claimed
+  durably before the document is written: a retry of a completed correction
+  answers `replayed` without a second write — even when an operator restored
+  the marker after the first success — a retry whose first attempt never
+  started the write finishes the correction at the revision it read, a
+  correction of an already-absent marker answers `already_cleared`, and a key
+  reused for anything else is an `idempotency_conflict`. An attempt that
+  started writing but never recorded completion is not repeated while the
+  marker still stands, because it cannot tell a write that never landed from a
+  marker restored for a new outage; its retry is a `revision_conflict` asking
+  for a fresh preview and key. An unknown family is `not_found`; a malformed
+  document or a non-regular settings file is a typed refusal and is never
+  rewritten. Completion is durable state, not a guess from the current bytes.
+
+The correction edits one configuration member. It retires, replaces or relaunches
+nothing, and no seat, run or topology node changes.
 
 ## Jira-derived backlog and topology names
 
@@ -778,17 +1190,46 @@ Selection is exact and fail-closed:
   type, frozen work-profile id and frozen work-profile revision;
 - epic reconciliation selects the generic epic policy and reads only epic
   completion plus child-task evidence;
-- the selected bundled workflow must have an identical installed immutable
-  revision in the project before any Jira write;
+- the workflow and field mapping must be installed immutable revisions in
+  the same realm/project before any Jira write;
 - task identity comes from the canonical task-to-Jira ledger, while epic
   identity comes from its confirmed epic binding; display item codes and
   native names are never reverse-parsed into Jira keys.
+
+The selected `project.tracker.spec` is a YAML catalog manifest. It declares
+`schema_version: 1`, `kind: jira`, the matching public `project_key`, and an
+explicit list of typed YAML references:
+
+```yaml
+specs:
+  - {kind: ticket_fields, path: tracker/fields.yml}
+  - {kind: external_workflow, path: tracker/workflow.yml}
+```
+
+Each referenced document uses the existing `TicketFieldSpec` or
+`ExternalWorkflowSpec` schema. References resolve inside the selected folder;
+JSON, traversal, missing files, invalid documents, duplicate revision selectors
+and conflicting external-project identities refuse startup by source. The
+external project key is declared by those documents, never derived from the
+public tracker key or an internal ProjectId. `specs: []` (or an omitted tracker
+spec selection) offers no specs; no ASMA catalog is compiled or inherited.
+Catalog loading creates no Project and installs no policy.
+
+Installation binds the exact workflow hash and its one matching field mapping
+hash in the existing Admin command and project revision transaction. Read both
+catalogs back with `installed: true`. Existing identities cannot be overwritten;
+a conflicting edit requires a new revision. Reconciliation reads the installed,
+hash-verified bytes, including after restart or removal from the authoring
+catalog. An uninstalled YAML edit never replaces governing policy. More than
+one installed workflow for the same entity/frozen profile, or more than one
+matching field revision, refuses as ambiguous; there is no latest-version guess.
+Native connector bindings remain separate in `tracker/connectors.yml`.
 
 Install each required workflow revision through
 `connectors/{connector}/workflow-specs:install` (or the matching Kontor MCP
 tool), using a fresh project revision and a stable idempotency key. A project
 with high-stakes tasks and a Jira epic normally needs both the high-stakes task
-revision and the generic epic revision installed. Read the workflow catalog
+revision and the generic epic revision installed. Read the catalogs
 back and require `installed: true` for each exact selected revision.
 
 Every external transition is derived from a fresh issue observation and the
@@ -861,7 +1302,7 @@ durable-recovery backstop described below, not a replacement event bus.
 ## Attention channel
 
 Copy [`config/examples/attention.yml`](../config/examples/attention.yml) to
-`<state-root>/attention.yml` only when this Realm should emit attention alerts.
+`<config-folder>/attention.yml` only when this Realm should emit attention alerts.
 An absent file means Kontor emits nothing; there is no default destination.
 
 The document mirrors the supervision policy's shape and rules:
@@ -888,7 +1329,10 @@ The document mirrors the supervision policy's shape and rules:
 The Workflows URL and the mention list are secrets an operator edits more often
 than the policy. They may live in an optional `<state-root>/.env` instead;
 [`config/examples/attention.env`](../config/examples/attention.env) is the
-placeholder sample.
+placeholder sample. This is a separate secret input; policy stays in the selected
+YAML folder. The daemon reads the secret file only at `<state-root>/.env`; it does
+not search the selected folder, the working directory or its parents. The sample
+`attention.env` is never loaded as configuration.
 
 | Key | Overrides | Value |
 | --- | --- | --- |
@@ -1381,8 +1825,8 @@ its policy. The bundle is authored in `config/orchestration/`:
 `orchestration.yml` (`schema_version: 1`, `fleet: fleet.yml`,
 `core_team: teams/core-team.yml`) selects the policy and the explicit Core Team
 source. `teams/core-team.yml` pins one role catalog by `catalog_id`, `version`
-and `content_hash`, and declares every seat in order — the mandatory LSA and
-TPM included — with its `role_slot_id`, `role_code`, `presence` and
+and `content_hash`, and declares every seat in order — including the selected
+domain's required purpose owners — with its `role_slot_id`, `role_code`, `presence` and
 `ad_hoc_allowed`. The publisher resolves it through the Core Team resolver, and
 the canonical revision bytes it produces define the `core_team_revision_hash`
 every `leadership/<hash>/<slot>` binding names.
@@ -1394,7 +1838,7 @@ alike, carry a bundle from proposal to activation:
 | --- | --- |
 | `kontor_fleet_bundle_propose` | An initial `orchestration.yml` and `teams/core-team.yml` holding only the mandatory roles, with the exact catalog revision (id, version, content hash) they pin. Writes and activates nothing; nothing reads the proposal until it is published and activated. |
 | `kontor_fleet_bundle_preview` | Resolves the exact `orchestration`, `fleet` and `core_team` bytes against the realm catalog revision the Core Team source pins, and returns the manifest publication would write and the preview hash, which binds those bytes and that catalog revision. Writes nothing. |
-| `kontor_fleet_bundle_publish` | Resolves the same bytes again, requires that preview hash, and writes and verifies the immutable policy, roster and manifest. **Selects nothing.** |
+| `kontor_fleet_bundle_publish` | Resolves the same bytes again, requires that preview hash, and writes and verifies the immutable policy, roster, selected domain artifact and manifest. **Selects nothing.** |
 | `kontor_fleet_bundle_activate` | Names `source_bundle_hash` and `expected_active` — the standing record's `policy_hash`, plus its `source_bundle_hash` when it is a v2 record, omitted entirely only when no record stands — verifies every artifact, and replaces the one pointer atomically. |
 | `kontor_fleet_bundle_get` | The record as a bundle: `activation_schema_version` 1 or 2, the record, and the manifest a v2 record names. |
 
@@ -1408,7 +1852,25 @@ Publication writes three immutable artifacts: the policy under
 under `orchestration-history/<source-bundle-hash>.json` recording the resolver,
 the hash of each source file, the policy hash and schema, the role-catalog pin
 and the roster hash. Activation verifies every artifact first and then replaces
-the one pointer:
+the one pointer. A selected pack adds `operational_domain: {source, source_hash}`
+to the manifest, with an identical `sources[source]` entry. `source` is the
+selected-folder-relative YAML reference; readers use the content address
+`orchestration-history/domains/<source_hash>.yml`. The existing publisher stores
+the exact captured bytes and verifies their typed domain, catalog and frozen
+roster purposes before exposing the manifest. Format-only, prompt-only and
+delivery-only edits change source/bundle identity and the publication preview.
+This immutable artifact is generated publication output, not editable authoring
+or a rollback backup. It creates no Project and activates nothing.
+
+Every bundle read and activation verifies the artifact's file guards, exact
+byte hash and cross-references. Missing/tampered artifacts refuse by name;
+republishing an existing manifest cannot repair it from current YAML. Historical
+manifests without the optional descriptor retain their original canonical bytes
+and remain readable. A domain-dependent reader refuses
+`operational_domain_unpinned`; it never infers a domain from the catalog,
+compiled data or the current selected folder. There is no second active pointer.
+
+The activation record remains:
 
 ```json
 {
@@ -1422,23 +1884,34 @@ the one pointer:
 ```
 
 Readers verify the pointer, then the manifest (which must agree with it), then
-exactly the policy and roster it names, and that the roster was resolved against
+exactly the policy, roster and optional domain artifact it names, and that the roster was resolved against
 the catalog the manifest pins. Under an aligned activation a governed leadership
 launch consumes only the selected roster: an epic whose pinned revision is not
 those exact bytes keeps its pin, is never retargeted, and its leadership launch
 is refused. A schema_version 1 record keeps its exact shape and behaviour and
 selects no roster.
 
+Core Team preview/apply hashes bind the complete resolved roster, including
+its exact ordered seat metadata and purposes, in addition to version, catalog,
+selected raw pack source hashes and effects. The apply intent names that
+authorization hash. The exact catalog and resolved seats publish atomically;
+unknown or non-current roles and conflicting immutable catalog bytes refuse.
+Promotion binds the complete frozen roster; an explicit roster upgrade binds
+both the exact source and target rosters and the epic-side revision. An effects
+summary alone cannot authorize replacing metadata under the same version and
+catalog. A stale preview refuses before publication or effects.
+
 A project's Core Team can be published from a published bundle through the
 existing `kontor_core_team_preview` and `kontor_core_team_apply`: name
 `source_bundle_hash` instead of `seats` (exactly one of the two). Both steps
-re-verify the bundle's immutable artifacts, derive the seats from its roster
-through the same resolver, and require the result to be the bundle's roster
-byte for byte — the bundle must be authored at the project's next Core Team
+re-verify the bundle's immutable artifacts and publish its frozen resolved
+roster byte for byte, including purposes. They never rederive purposes from a
+later delivery edit. The bundle must be authored at the project's next Core Team
 version against the catalog the realm holds, or the preview refuses. The apply
 names the bundle in its intent, receipt and outcome. Nothing else changes: no
 epic pin or running seat is retargeted, and an explicit-seat request is
-unchanged.
+unchanged. Bundle manifests also pin the four selected pack sources used during
+resolution; an unactivated authoring edit cannot replace those immutable bytes.
 
 #### Direct-mode resolution without a daemon
 
@@ -1810,8 +2283,17 @@ file is a human-edited source. It migrates to `forge/github-app.yml`, with the
 PEM path as a reference; the JSON file then becomes a generated projection with
 provenance.
 
-`check_name` defaults to `asma/publication-identity` and `poll_seconds` to 60
-(at least 1). An optional `api_base` (default `https://api.github.com`) points
+For selected-folder startup, `project.check_runs` must contain exactly one
+`publication-identity` name, either unprefixed or ending in
+`/publication-identity`. The gateway uses that exact name. The optional App
+`check_name` may repeat it; a different name, a missing project identity check,
+or multiple matching entries refuses `forge/github-app.yml` before key access.
+An absent App document remains valid and does not require an identity check.
+The explicit embedded native reader retains its legacy default; selected YAML
+never inherits that default.
+
+`poll_seconds` defaults to 60 (at least 1).
+An optional `api_base` (default `https://api.github.com`) points
 the gateway at another GitHub API host. `repositories` must list at least one
 `owner/name`.
 
@@ -1879,3 +2361,80 @@ because it also proves that key against Kontor's confirmed Jira binding.
 
 Changing a prompt, duration, template or specification changes configuration.
 Changing a safety invariant requires an architectural decision and code review.
+
+### Fleet-origin consultation permission policy
+
+A schema-version-2 fleet policy may declare `consultation_permissions` as an
+ordered list of exact `{account, model, effort, mode}` records. `account` is an
+exact member of the model's domain, `model` is its symbolic `models` key,
+`effort` is one declared supported effort (explicit `null` only for a model
+without efforts), and `mode` is exactly `plan`. Each record applies only to a
+Cursor or OpenCode consultation route with a known vendor. Its model must
+explicitly declare `permission_eligible: true`; the optional boolean defaults to
+false, including automatic selectors such as `auto-smart`. Eligibility alone
+grants no permission. A permission-bearing historical policy without this field
+refuses validation; policies without permissions remain readable. These exact
+bytes, including eligibility, participate in the existing policy hash.
+Unknown, partial,
+wildcard and duplicate records fail fleet validation; omission grants no
+fleet-origin exception. This is behavioral risk acceptance, not filesystem
+containment, and does not relax other admission or readback gates.
+
+The existing fleet preview/publish/activate path governs these bytes. Admission
+freezes its existing fleet policy hash in the consultation context. Launch and
+retry verify the immutable `fleet-history/<policy-hash>.yml` artifact and match
+that exact hash, account, native model id and effort. Current authoring,
+unactivated publications, later activations and restart cannot add permissions
+to a frozen run. Missing or tampered artifacts refuse; they are never repaired
+from authoring. No new table, active pointer or editable projection is added.
+Ordinary Claude and Codex modes are unchanged.
+
+Recovery profiles keep their own canonical evidence hash and route source.
+New native replacement and native-less materialization recovery also freeze
+`consultation_permission_policy: {source: fleet_configuration, policy_hash: ...}`
+in the existing canonical profile document before effects. This is the exact
+verified activated policy used to prepare that recovery, independently of
+whether a fleet chain selected its route. It is not an API permission knob.
+Cursor/OpenCode effects require an exact allowance in that immutable artifact.
+Pending recovery reads the recorded policy, never current authoring or activation;
+restart, later activation and a matching current fleet route cannot replace it.
+A conflicting route-policy hash, malformed source, absent/tampered artifact or
+missing allowance refuses before native retirement or launch.
+
+Historical profile-only rows remain readable and existing committed receipts
+remain replayable without new effects. Their profile hash, constraint policy hash
+or incidental fleet match is not a permission pin. They receive no backfill and
+cannot grant a new Cursor/OpenCode launch or replacement; missing permission
+metadata refuses as `consultation_permission_unpinned`. Ordinary provider modes,
+recovery fencing, whole-Committee constraints and settlement rules remain intact.
+
+Fleet-selected provider-outage recovery freezes `consultation_route_source:
+fleet_configuration` together with its existing `fleet_provenance` in the same
+canonical recovery document before native retirement. Retry and later generation
+readback use that document's policy hash. A mere fleet match does not relabel a
+credential-propagation or explicit profile recovery. Historical documents lacking
+this marker remain profile-only; no marker or policy hash is backfilled.
+
+### Fleet model catalog and route recognition
+
+`/v1/catalog` projects the exact verified selected fleet snapshot. Each row is
+keyed by a declared account and native model id and reports the symbolic model,
+normalized provider family, vendor, efforts, vision, calibration and permission
+eligibility with its policy hash. It invents no defaults, context limits,
+pricing or account labels. Missing selection refuses as `fleet_catalog_unpinned`;
+unactivated authoring does not replace the selected catalog.
+
+Governed route validation uses only that snapshot's exact account/model/effort
+membership. Known provider normalization is shared with the runtime, including
+Cursor account suffixes; normalization alone grants no account or route. Unknown
+providers refuse, duplicate native ids within a domain are invalid, and ambiguous
+account/native-model matches across domains cannot resolve or appear in the
+catalog. Fleet domain support remains Claude, Codex, Cursor and OpenCode.
+
+Compiled-only bootstrap, pre-policy draft validation, historical Committee
+successor selection and existing project Desk/PR consumers retain their compiled
+catalog. Frozen recovery may use compiled compatibility only for the exact route
+already persisted in its profile; fleet metadata comes from its immutable pinned
+policy, never current policy. Neither mode widens governed selection. Core
+`ModelRung::validate` still independently denies DeepSeek V4 Pro; moving that
+remaining exclusion into policy is outside this capability checkpoint.

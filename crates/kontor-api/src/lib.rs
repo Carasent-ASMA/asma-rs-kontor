@@ -622,6 +622,17 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/fleet/bundle:propose",
                 post(applications::propose_fleet_bundle),
             )
+            // One runtime setting's provider-unavailability marker. The
+            // correction edits `<state-root>/runtimes.json` under
+            // compare-and-swap; it never reaches a seat, a run or a topology.
+            .route(
+                "/v1/provider-markers:preview",
+                post(applications::preview_provider_marker),
+            )
+            .route(
+                "/v1/provider-markers:apply",
+                post(applications::apply_provider_marker),
+            )
             .route(
                 "/v1/projects/{project_id}/capacity",
                 get(applications::project_capacity),

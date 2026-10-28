@@ -95,6 +95,19 @@ async function sessionsQuery(page) {
   return (await page.getByTestId("sessions-mobile-search-trigger").getAttribute("aria-label")).match(/^Search sessions(?:, current search: (.*))?$/)?.[1] ?? "";
 }
 const inside = (inner, outer) => inner.x >= outer.x - 1 && inner.y >= outer.y - 1 && inner.x + inner.width <= outer.x + outer.width + 1 && inner.y + inner.height <= outer.y + outer.height + 1;
+/** A Model & settings row, after pressing more until the list shows it. */
+async function modelRow(page, row) {
+  const more = page.getByTestId("kontor-model-more");
+  while (!await row.count() && await more.count()) await more.click();
+  return row;
+}
+/** The vertical scrollers that can scroll inside Model & settings and around it; one page means one at most, never the list or settings. */
+const pickerScrollers = page => page.getByTestId("kontor-model-picker").evaluate(picker => {
+  const scrolls = node => ["auto", "scroll"].includes(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1;
+  const around = [];
+  for (let node = picker.parentElement; node; node = node.parentElement) if (scrolls(node)) around.push(node.dataset.testid ?? node.tagName);
+  return { inside: [...picker.querySelectorAll("div")].filter(scrolls).map(node => node.dataset.testid ?? "unnamed"), around };
+});
 // The captured Codex route's six levels, which keep one row on a 320-point screen.
 const CODEX_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 async function codexLevelsOneRow(page, label) {
@@ -515,11 +528,11 @@ try {
     assert.equal(await page.getByTestId("kontor-new-lead-model-tag").innerText(), "Codex default", "R11: Use applies the Codex default");
     await page.getByTestId("kontor-new-lead-model").click();
     await page.getByTestId("kontor-model-picker").waitFor();
-    await page.getByTestId("kontor-model-row-codex/gpt-6-astra").click();
+    await (await modelRow(page, page.getByTestId("kontor-model-row-codex/gpt-6-astra"))).click();
     await page.getByRole("radiogroup", { name: "Effort" }).getByRole("radio", { name: /^high$/i }).click();
     await page.getByRole("radio", { name: "Fast", exact: true }).click();
     if (!await checked("switch", "Plan")) await page.getByRole("switch", { name: "Plan", exact: true }).click();
-    await page.getByTestId("kontor-model-row-codex/gpt-6.1-sol").click();
+    await (await modelRow(page, page.getByTestId("kontor-model-row-codex/gpt-6.1-sol"))).click();
     await page.waitForTimeout(300);
     assert.deepEqual([await page.getByRole("radiogroup", { name: "Effort" }).getByRole("radio", { name: /^high$/i }).getAttribute("aria-checked"), await checked("radio", "Fast"), await checked("switch", "Plan")], ["true", true, true], "R3: GPT-6.1 Sol keeps High, Fast and Plan");
     await page.screenshot({ path: join(values.output, `${width}-${theme}-picker-kept-settings.png`) });
@@ -529,7 +542,7 @@ try {
     assert.match(await page.getByTestId("kontor-model-changed").innerText(), /does not offer Speed Fast, Plan on, so they are not applied\./, "R3: what the new model lacks is said");
     await page.screenshot({ path: join(values.output, `${width}-${theme}-picker-dropped-settings.png`) });
     await page.getByTestId("kontor-model-vendor-openai").click();
-    await page.getByTestId("kontor-model-row-codex/gpt-6-astra").click();
+    await (await modelRow(page, page.getByTestId("kontor-model-row-codex/gpt-6-astra"))).click();
     await page.waitForTimeout(300);
     if (!await checked("radio", "Fast")) await page.getByRole("radio", { name: "Fast", exact: true }).click();
     if (!await checked("switch", "Plan")) await page.getByRole("switch", { name: "Plan", exact: true }).click();
@@ -685,13 +698,13 @@ try {
     await page.getByTestId("kontor-model-picker").waitFor();
     const effort = () => page.getByRole("radiogroup", { name: "Effort", exact: true });
     const levels = async () => await effort().count() ? effort().getByRole("radio").evaluateAll(radios => radios.map(radio => `${radio.getAttribute("aria-label")}${radio.getAttribute("aria-checked") === "true" ? " ✓" : ""}`)) : null;
-    const row = name => page.getByRole("radio", { name, exact: true });
+    const row = name => modelRow(page, page.getByRole("radio", { name, exact: true }));
     const changed = async () => await page.getByTestId("kontor-model-changed").count() ? page.getByTestId("kontor-model-changed").innerText() : null;
     // Nothing conditional sits between the Selected group and the list: the list moves only by the group, whose level row wraps
     // where a route's levels do not fit one row; the explanation is below the list.
     const spans = [];
     const choose = async name => {
-      await row(name).click();
+      await (await row(name)).click();
       const [group, list] = await Promise.all([page.getByTestId("kontor-model-chosen").boundingBox(), page.getByTestId("kontor-model-list").boundingBox()]);
       spans.push({ name: name.split(",")[0] + name.slice(name.lastIndexOf(",")), group: Math.round(group.height), gap: Math.round(list.y - group.y - group.height) });
     };
@@ -802,7 +815,15 @@ try {
     await page.getByTestId("kontor-switch-new-lead").click();
     await reach("kontor-new-lsa-create", "new-lead");
     await page.getByRole("button", { name: "Choose source session", exact: true }).click();
-    await reach("kontor-lead-source-use", "source");
+    // Choose source keeps the host's surface still: only its rows scroll, and its search, Cancel and Use show without scrolling.
+    await page.getByTestId("kontor-lead-source-picker").waitFor();
+    await page.waitForTimeout(300);
+    for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) assert(inside(await page.getByTestId(id).boundingBox(), await surface.boundingBox()), `${label}: ${id} shows without scrolling`);
+    assert(await page.getByTestId("kontor-lead-source-picker").evaluate(picker => {
+      for (let node = picker.parentElement; node; node = node.parentElement) if (["auto", "scroll"].includes(getComputedStyle(node).overflowY)) return node.scrollHeight <= node.clientHeight + 1;
+      return true;
+    }), `${label}: the host's surface has nothing to scroll under Choose source`);
+    await page.screenshot({ path: join(values.output, `${label}-composer-source.png`) });
     await page.keyboard.press("Escape");
     await surface.waitFor({ state: "detached" });
     await pill.click();
@@ -835,6 +856,15 @@ try {
     const finish = async (current, key, name, within) => {
       rows[key] = await codexLevelsOneRow(current, `${label} ${name}`);
       await current.screenshot({ path: join(values.output, `${label}-codex-levels-${key}.png`) });
+      // One page scroll: more is a 44-point target and reveals the browsed vendor's every model; Use stays in reach after.
+      const more = current.getByTestId("kontor-model-more");
+      if (await more.count()) { const target = await more.boundingBox(); assert(target.width >= 44 && target.height >= 44, `${label} ${name}: more is 44 by 44`); }
+      while (await more.count()) await more.click();
+      const listed = Number((await current.locator('[data-testid^="kontor-model-vendor-"][aria-selected="true"]').getAttribute("aria-label")).match(/, (\d+) models?/)[1]);
+      assert.equal(await current.locator('[data-testid^="kontor-model-row-"]').count(), listed, `${label} ${name}: every model is reachable`);
+      const scroll = await pickerScrollers(current);
+      assert(scroll.inside.every(id => id === "kontor-model-scroll") && scroll.inside.length + scroll.around.length <= 1, `${label} ${name}: one vertical scroll: ${JSON.stringify(scroll)}`);
+      rows[`${key}Scroll`] = scroll;
       await reach(current, "kontor-model-use", within);
       await current.getByRole("button", { name: "Cancel model choice", exact: true }).click();
       await current.getByTestId("kontor-model-picker").waitFor({ state: "detached" });
@@ -869,7 +899,7 @@ try {
       await takeover.getByRole("dialog", { name: "Session actions", exact: true }).getByTestId("session-action-takeover-option").click();
       await takeover.getByTestId("kontor-model-picker").waitFor();
       await takeover.getByTestId("kontor-model-vendor-openai").click();
-      await takeover.getByTestId("kontor-model-row-codex/gpt-6-astra").click();
+      await (await modelRow(takeover, takeover.getByTestId("kontor-model-row-codex/gpt-6-astra"))).click();
       await takeover.getByTestId("kontor-model-problem").waitFor();
       await takeover.waitForTimeout(300);
       const problem = await takeover.getByTestId("kontor-model-problem").boundingBox();

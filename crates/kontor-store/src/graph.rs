@@ -27,6 +27,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod domain;
+pub use domain::{EpicApplyCommand, EpicDomainBinding};
+
 use kontor_core::DomainError;
 use kontor_core::authority::{AuthoritySubject, SubjectAuthority};
 use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
@@ -252,6 +255,8 @@ pub struct TaskWorktreeCorrection<'a> {
     pub branch: &'a ExternalName,
     /// Digest of the exact preview this command applies.
     pub preview_hash: &'a ContentHash,
+    /// Optional selected-source intent frozen atomically with the new claim.
+    pub checkout: Option<&'a crate::checkouts::TaskCheckoutPlacement>,
 }
 
 /// Immutable before/after evidence for one worktree-claim correction.
@@ -4035,6 +4040,37 @@ pub struct IdempotencyBinding {
     pub bound_at: Timestamp,
 }
 
+/// One realm-scoped binding as the table reads it back.
+///
+/// The stored spelling rather than [`IdempotencyBinding`]: an operation read
+/// from a row is text, and a caller comparing it against the operation it is
+/// performing does so without pretending the row can carry a `&'static str`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedIdempotencyBinding {
+    /// The realm-scoped operation the key was first used for.
+    pub operation: String,
+    /// The digest of the canonical document that operation was.
+    pub fingerprint: String,
+}
+
+/// One completed provider-marker correction, as its durable row reads it.
+///
+/// A completed key is answered from this row rather than from the settings
+/// document, so it carries the exact answer the successful apply reported: the
+/// host key and the before/after provider sets. That keeps a replay truthful
+/// even after the addressed setting, or the whole document, has been removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderMarkerCompletion {
+    /// The revision the correction left in the settings document.
+    pub written_revision: ContentHash,
+    /// The non-secret host key the addressed setting was bound under.
+    pub host_key: ExternalName,
+    /// The setting's unavailable providers before the correction.
+    pub before: BTreeSet<String>,
+    /// The setting's unavailable providers after the correction.
+    pub after: BTreeSet<String>,
+}
+
 /// One pack row read inside an open transaction.
 fn read_pack_row(
     transaction: &Transaction<'_>,
@@ -4264,6 +4300,18 @@ impl SqliteStore {
             )
             .map_err(backend)?;
 
+        if let Some(pin) = request.checkout {
+            if pin.project_id != project_id
+                || pin.task_id != request.task_id
+                || &pin.worktree != request.replacement
+            {
+                return Err(conflict(
+                    "task worktree correction",
+                    "checkout.intent_claim_mismatch",
+                ));
+            }
+            crate::checkouts::insert(&transaction, pin, request.command.created_at)?;
+        }
         let correction = StoredTaskWorktreeCorrection {
             receipt_id: request.command.receipt_id,
             project_id,

@@ -27,12 +27,17 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod consultation_checkouts;
 mod desk_adams;
+mod domain_context;
 mod durable_seats;
+mod launch_routes;
 mod memory_projection;
 mod open_questions;
 mod planning_pair;
 mod pr_reviews;
+#[cfg(test)]
+mod task_checkout_tests;
 pub use memory_projection::ProjectionQualifier;
 #[doc(hidden)]
 pub use planning_pair::PlanningPairReceiptHold;
@@ -67,7 +72,9 @@ use kontor_api::applications::{
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
     CapacityRefreshRequest, ContainerReadbackDto, MutationReceiptDto, NativeContainerParentDto,
-    ObservedBindingDto, ProjectCapacityDto, PublishTriggerRequest, RecordProviderQuotaRequest,
+    ObservedBindingDto, ProjectCapacityDto, ProviderMarkerApplyRequest, ProviderMarkerDto,
+    ProviderMarkerEffectDto, ProviderMarkerOutcomeDto, ProviderMarkerPreviewDto,
+    ProviderMarkerPreviewRequest, PublishTriggerRequest, RecordProviderQuotaRequest,
     ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
@@ -334,10 +341,7 @@ use kontor_store::{
     TurnDispatch, UnconfirmedAdmission,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
-use kontor_teams::{
-    CoreTeamRevision, CoreTeamSeat, CoreTeamSeatSelection, MANDATORY_LEAD_ROLE,
-    MANDATORY_PROGRAM_ROLE,
-};
+use kontor_teams::{CoreTeamRevision, CoreTeamSeat, CoreTeamSeatPurpose, CoreTeamSeatSelection};
 
 use crate::succession::{
     GovernedSuccessionSummarizer, SuccessionHandoffRequest, SuccessionRedactionPolicy,
@@ -399,6 +403,7 @@ fn re_review_remediation_identity<'a>(
 #[derive(Clone)]
 struct FrozenCommitteeRoute {
     model_rung: ModelRung,
+    launch_route: Option<kontor_core::launch_route::StoredLaunchRoute>,
     source: &'static str,
     rank: u32,
     profile_hash: ContentHash,
@@ -421,11 +426,17 @@ fn consultation_route_provenance(
             ConsultationRouteProvenance::operator_accepted_initial_recovery_profile(evidence_hash),
         ),
         "materialization_recovery_profile" => Ok(ConsultationRouteProvenance {
+            fleet_permissions: None,
+            permission_policy_hash: None,
+            legacy_recovery: false,
             source: ConsultationRouteSource::MaterializationRecoveryProfile,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
         }),
         "seat_recovery_profile" => Ok(ConsultationRouteProvenance {
+            fleet_permissions: None,
+            permission_policy_hash: None,
+            legacy_recovery: false,
             source: ConsultationRouteSource::SeatRecoveryProfile,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
@@ -437,6 +448,168 @@ fn consultation_route_provenance(
             "consultation route provenance",
             "the frozen route source is not recognized by this build",
         )),
+    }
+}
+
+impl Services {
+    fn parse_pinned_model_route(
+        &self,
+        route: &RuntimeModelRouteRequest,
+    ) -> kontor_core::DomainResult<ModelRung> {
+        let snapshot = self.fleet_policy()?;
+        parse_catalogued_model_route(route, CatalogAuthority::PinnedFleet(snapshot.as_deref()))
+    }
+
+    fn frozen_consultation_catalog(
+        &self,
+        run: &StoredConsultationRun,
+        seat: &StoredConsultationSeat,
+    ) -> Result<Option<crate::fleet::FleetSnapshot>, ApiError> {
+        let provenance = self.committee_seat_route_provenance(run, seat)?;
+        let public_hash = provenance.permission_policy_hash.as_ref().or_else(|| {
+            provenance
+                .is_fleet_configuration()
+                .then_some(&provenance.evidence_hash)
+        });
+        let private_hash = seat.model_rung.frozen().map(|route| &route.policy_hash);
+        if public_hash
+            .zip(private_hash)
+            .is_some_and(|(public, private)| public != private)
+        {
+            return Err(self.deny(ApiErrorCode::StaleBinding, "host_route_policy_mismatch"));
+        }
+        let hash = private_hash.or(public_hash);
+        hash.map(|hash| self.fleet.verify_published(hash))
+            .transpose()
+            .map_err(|error| self.refuse_fleet_policy(&error))
+    }
+
+    fn qualify_consultation_permissions(
+        &self,
+        mut provenance: ConsultationRouteProvenance,
+        rung: &ModelRung,
+    ) -> Result<ConsultationRouteProvenance, ApiError> {
+        if let Some(hash) = &provenance.permission_policy_hash {
+            provenance.fleet_permissions = Some(
+                self.fleet
+                    .consultation_permissions(hash)
+                    .map_err(|error| self.refuse_fleet_policy(&error))?,
+            );
+        }
+        if matches!(provider_family(&rung.provider.0), "cursor" | "opencode") {
+            if !provenance.is_fleet_configuration()
+                && !(provenance.legacy_recovery && provenance.is_operator_accepted_recovery())
+            {
+                return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_unpinned: new consultation requires fleet-origin permission"));
+            }
+            let hash = provenance.permission_policy_hash.as_ref().ok_or_else(|| self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "consultation_permission_unpinned: the frozen recovery profile has no permission policy hash"))?;
+            if provenance.is_fleet_configuration() && hash != &provenance.evidence_hash {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_mismatch: fleet route and permission policy disagree",
+                ));
+            }
+            provenance.fleet_permissions = Some(
+                self.fleet
+                    .consultation_permissions(hash)
+                    .map_err(|error| self.refuse_fleet_policy(&error))?,
+            );
+            if !provenance
+                .fleet_permissions
+                .as_ref()
+                .is_some_and(|permissions| permissions.permits(hash, rung))
+            {
+                return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_unproven: the frozen fleet policy grants no exact plan allowance"));
+            }
+        }
+        Ok(provenance)
+    }
+}
+
+/// Permission identity is independent of route selection and profile evidence.
+/// Missing metadata is historical evidence, never an implied current-policy grant.
+fn frozen_recovery_permission_hash(
+    profile: &serde_json::Value,
+) -> kontor_core::DomainResult<Option<ContentHash>> {
+    let Some(pin) = profile.get("consultation_permission_policy") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        kontor_core::DomainError::invalid(
+            "consultation_permission_policy",
+            "expected exact fleet_configuration source and policy_hash",
+        )
+    };
+    let object = pin.as_object().ok_or_else(invalid)?;
+    if object.len() != 2
+        || pin.get("source").and_then(serde_json::Value::as_str) != Some("fleet_configuration")
+    {
+        return Err(invalid());
+    }
+    let hash = pin
+        .get("policy_hash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(invalid)?;
+    ContentHash::parse(hash).map(Some)
+}
+
+fn freeze_recovery_permission_policy(
+    profile: &mut serde_json::Value,
+    fleet: Option<&crate::fleet::FleetSnapshot>,
+) {
+    if let Some(fleet) = fleet {
+        profile["consultation_permission_policy"] = serde_json::json!({
+            "source": "fleet_configuration", "policy_hash": fleet.hash(),
+        });
+    }
+}
+
+impl Services {
+    fn recovery_route_provenance(
+        &self,
+        source: &str,
+        profile: &CanonicalDocument,
+    ) -> Result<ConsultationRouteProvenance, ApiError> {
+        let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the frozen recovery profile is unreadable",
+            )
+        })?;
+        let mut provenance = if let Some(route_source) = value.get("consultation_route_source") {
+            if route_source.as_str() != Some("fleet_configuration") {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_unpinned: the frozen recovery source is unsupported",
+                ));
+            }
+            let fleet = self.frozen_fleet_provenance(Some(&value))?.ok_or_else(|| self.deny(
+                ApiErrorCode::PlacementBlocked, "consultation_permission_unpinned: the frozen recovery source has no policy hash"))?;
+            ConsultationRouteProvenance::fleet_configuration(fleet.policy_hash)
+        } else {
+            consultation_route_provenance(source, profile.hash().clone())
+                .map_err(|error| self.refuse_domain(&error))?
+        };
+        if let Some(hash) =
+            frozen_recovery_permission_hash(&value).map_err(|error| self.refuse_domain(&error))?
+        {
+            if (provenance.is_fleet_configuration() && provenance.evidence_hash != hash)
+                || self
+                    .frozen_fleet_provenance(Some(&value))?
+                    .is_some_and(|fleet| fleet.policy_hash != hash)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_mismatch: frozen route and permission policy disagree",
+                ));
+            }
+            provenance.permission_policy_hash = Some(hash);
+        }
+        Ok(provenance.for_legacy_recovery())
     }
 }
 
@@ -517,6 +690,7 @@ struct PreparedWorktreeClaimCorrection {
     module: ModuleKey,
     branch: ExternalName,
     preview_hash: ContentHash,
+    checkout: Option<kontor_runtime::checkout::TaskCheckout>,
 }
 
 /// The complete, externally observed plan one reconcile response names.
@@ -740,6 +914,7 @@ struct CoreTeamRoutePlan {
     predecessor: StoredHostedTopologySeat,
     successor: Option<StoredHostedTopologySeat>,
     desired: ModelRung,
+    launch_route: kontor_core::launch_route::StoredLaunchRoute,
     /// The activated policy's authority for `desired`, when a policy binds
     /// this leadership seat.
     leadership: Option<LeadershipRoute>,
@@ -1028,6 +1203,9 @@ struct CoreTeamSeatClaimPlan {
     predecessor: Option<StoredHostedTopologySeat>,
     runtime_request: HostedSeatClaimRequest,
     runtime_preview: HostedSeatClaimPreview,
+    launch_route: Option<kontor_core::launch_route::StoredLaunchRoute>,
+    occupancy_generation: u64,
+    leadership: Option<LeadershipRoute>,
     preview_hash: ContentHash,
 }
 
@@ -1073,7 +1251,8 @@ const SEAT_ATTACH_SECONDS: i64 = 600;
 pub struct Services {
     realm_id: kontor_core::id::RealmId,
     state: Mutex<Option<ApiState>>,
-    pack: ProfilePackSpec,
+    pack: Option<ProfilePackSpec>,
+    presets: Option<kontor_profiles::pack::ConsultationPresetPack>,
     /// The Operational topology vocabulary and delivery binding this build
     /// ships.
     ///
@@ -1081,8 +1260,8 @@ pub struct Services {
     /// build carries, so admission reads *which* kinds and role codes delivery
     /// uses rather than knowing them.
     domain: OperationalDomainPack,
-    /// The connector specifications this build ships, parsed on first use.
-    connectors: OnceLock<SpecCatalog>,
+    /// The selected realm catalog; immutable for this process.
+    connectors: SpecCatalog,
     /// Native Jira connectors from strict operator configuration.
     jira: JiraConnectors,
     /// How many simultaneous runs this Realm admits, from its configuration.
@@ -1099,6 +1278,12 @@ pub struct Services {
     usage_poller: crate::usage::UsagePoller,
     /// The GitHub App gateway for publication checks and merges, when configured.
     github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
+    /// Bootstrap integration IDs may refuse a mismatched activated policy, never grant access.
+    publication_consumers: Vec<ProjectId>,
+    /// Frozen selected project/host inputs. None is the portable embedding seam.
+    selected_config: Option<crate::config_folder::ConfigFolder>,
+    /// Serializes freezing and proving task Git checkout intents in this realm.
+    checkout_guard: tokio::sync::Mutex<()>,
     /// Serializes explicit provider probes so concurrent first use of one
     /// global idempotency key cannot contact the vendor twice.
     provider_probe_guard: tokio::sync::Mutex<()>,
@@ -1156,6 +1341,42 @@ pub struct Services {
     /// Realm keeps its typed degraded handoff and nothing is launched
     /// implicitly.
     succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
+    /// The realm's state root, where `runtimes.json` lives.
+    ///
+    /// Held here because the provider-marker correction is a write to that
+    /// operator-owned document, and nothing below this layer may know a path.
+    state_root: PathBuf,
+    /// Serializes provider-marker corrections so a plan can never race the write
+    /// that commits it, and two corrections cannot interleave their CAS checks.
+    provider_marker_guard: tokio::sync::Mutex<()>,
+    /// A black-box test's hold between a provider-marker apply's replay
+    /// pre-check and its durable claim. Absent in every composed daemon unless
+    /// a test installs one.
+    provider_marker_bind_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
+}
+
+/// The realm-scoped operation a provider-marker correction binds its key to.
+///
+/// The spelling is also the `CHECK` value migration 0137 widened
+/// `realm_idempotency_bindings` with, and the two must change together.
+const PROVIDER_MARKER_OPERATION: &str = "clear_provider_marker";
+
+/// What one marker correction effects, in a stable order.
+///
+/// `restart_required` is a fact about the *running* daemon, not about the
+/// document: the fleet is composed at start, so a held marker survives a file
+/// edit until the next start. Reporting it for an unchanged document is
+/// deliberate — an operator who cleared the file by hand and never restarted is
+/// exactly who needs to know.
+fn provider_marker_effects(changed: bool, restart_required: bool) -> Vec<ProviderMarkerEffectDto> {
+    let mut effects = Vec::new();
+    if changed {
+        effects.push(ProviderMarkerEffectDto::MarkerRemoved);
+    }
+    if restart_required {
+        effects.push(ProviderMarkerEffectDto::RestartRequired);
+    }
+    effects
 }
 
 struct CompletionCommit<'a> {
@@ -1178,7 +1399,10 @@ impl std::fmt::Debug for Services {
                     .unwrap_or_else(PoisonError::into_inner)
                     .is_some(),
             )
-            .field("pack", &self.pack.pack_id.as_str())
+            .field(
+                "pack",
+                &self.pack.as_ref().map(|pack| pack.pack_id.as_str()),
+            )
             .field("capacity", &self.capacity)
             .finish_non_exhaustive()
     }
@@ -1205,20 +1429,38 @@ impl Services {
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
         jira: JiraConnectors,
+        state_root: PathBuf,
         runtime_roots: PathBuf,
         usage_poller: crate::usage::UsagePoller,
         quota_signals: Vec<kontor_accounts::QuotaSignal>,
         github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
         fleet: Arc<crate::fleet::FleetSource>,
         succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
+        publication_consumers: Vec<ProjectId>,
+        selected_config: Option<crate::config_folder::ConfigFolder>,
+        connectors: SpecCatalog,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
+        let (pack, presets) = match selected_config.as_ref() {
+            Some(folder) => (
+                folder.realm_pack.as_ref().map(|pack| pack.profiles.clone()),
+                folder.realm_pack.as_ref().map(|pack| pack.presets.clone()),
+            ),
+            None => (
+                Some(kontor_profiles::seeds::bundled_pack()?),
+                Some(kontor_profiles::seeds::bundled_consultation_presets()?),
+            ),
+        };
         Ok(Arc::new(Self {
             realm_id,
             github,
+            publication_consumers,
+            selected_config,
+            checkout_guard: tokio::sync::Mutex::new(()),
             state: Mutex::new(None),
-            pack: kontor_profiles::seeds::bundled_pack()?,
+            pack,
+            presets,
             domain: kontor_profiles::bundled_operational_domain()?,
-            connectors: OnceLock::new(),
+            connectors,
             jira,
             capacity,
             runtime_roots,
@@ -1236,6 +1478,9 @@ impl Services {
             memory_cognee: OnceLock::new(),
             attention: std::sync::Mutex::new(None),
             succession_summarizer,
+            state_root,
+            provider_marker_guard: tokio::sync::Mutex::new(()),
+            provider_marker_bind_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -1600,7 +1845,8 @@ impl Services {
             .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
             .map_err(|error| self.refuse(&error))?;
         let has_declared_execution_scope = stored.is_some();
-        if stored.is_none()
+        if self.selected_config.is_none()
+            && stored.is_none()
             && let Some(configured) = adapter.configured_execution_scope(epic_id, task_id)
         {
             return Ok(configured);
@@ -1658,6 +1904,7 @@ impl Services {
                     "the task has no declared canonical worktree",
                 )
             })?;
+        let claim = worktree.clone();
         let worktree =
             WorkspaceRoot::parse(worktree.as_str()).map_err(|error| self.refuse_domain(&error))?;
         let mut jira = state
@@ -1687,7 +1934,7 @@ impl Services {
                 "the task has no durable short code; preview and apply an explicit epic task mapping before materialization or retitle",
             ));
         }
-        Ok(ExecutionScope::for_task(
+        let mut scope = ExecutionScope::for_task(
             epic,
             TaskScope {
                 task_id,
@@ -1695,7 +1942,23 @@ impl Services {
                 external_issue_key,
                 worktree,
             },
-        ))
+        );
+        if self.selected_config.is_none() {
+            return Ok(scope);
+        }
+        let pin = state
+            .with_store(|store| store.task_checkout_placement(project_id, task_id, &claim))
+            .map_err(|error| self.refuse(&error))?;
+        let checkout: Option<kontor_runtime::checkout::TaskCheckout> = pin
+            .map(|pin| serde_json::from_str(pin.intent.json()))
+            .transpose()
+            .map_err(|_| self.deny(ApiErrorCode::PlacementBlocked, "checkout.intent_invalid"))?;
+        if let Some(snapshot) = &checkout {
+            scope.task.as_mut().expect("a task scope").worktree =
+                WorkspaceRoot::parse(&snapshot.destination)
+                    .map_err(|error| self.refuse_domain(&error))?;
+        }
+        Ok(scope.with_task_checkout(checkout))
     }
 
     /// Recover the runtime identity of an imported epic that predates the typed
@@ -1833,6 +2096,13 @@ impl Services {
 
     /// Turn a domain refusal into the one the caller is owed.
     fn refuse_domain(&self, error: &kontor_core::DomainError) -> ApiError {
+        if let kontor_core::DomainError::MissingEvidence {
+            subject: "ResolvedRoute",
+            rule,
+        } = error
+        {
+            return self.deny(ApiErrorCode::PlacementBlocked, rule);
+        }
         if let kontor_core::DomainError::MissingEvidence {
             subject: "ProviderHeadroom",
             rule,
@@ -2379,7 +2649,7 @@ impl Services {
         let registered = state
             .with_store(SqliteStore::list_profile_packs)
             .map_err(|error| self.refuse(&error))?;
-        let mut packs = vec![self.pack.clone()];
+        let mut packs: Vec<_> = self.pack.iter().cloned().collect();
         for pack in &registered {
             // A stored pack is re-parsed and re-validated rather than trusted.
             // It was validated when it was registered, but the rules that
@@ -2421,7 +2691,12 @@ impl Services {
         at: Timestamp,
     ) -> Result<(ResolvedProfileBundle, TeamTemplateSource), ApiError> {
         let (pack, category) = self.owning_pack(category)?;
-        let source = if self.pack.category(&category).is_some() {
+        let source = if self.selected_config.is_none()
+            && self
+                .pack
+                .as_ref()
+                .is_some_and(|pack| pack.category(&category).is_some())
+        {
             TeamTemplateSource::Bundled
         } else {
             TeamTemplateSource::Registered
@@ -2595,6 +2870,28 @@ impl Services {
         // The tracker identity every managed worktree in this epic must carry
         // and, for a task that declares no placement, may be derived from.
         let (epic_key, epic_title) = self.epic_branch_identity(project_id, request)?;
+        let mut retained = BTreeSet::new();
+        if self.selected_config.is_some() {
+            retained = self
+                .state()?
+                .with_store(|store| {
+                    let Some(epic) = store
+                        .list_mini_projects(project_id)?
+                        .into_iter()
+                        .find(|epic| epic.name == request.name)
+                    else {
+                        return Ok::<_, RepositoryError>(BTreeSet::new());
+                    };
+                    let mut titles = BTreeSet::new();
+                    for task in store.list_epic_tasks(project_id, epic.id)? {
+                        if store.task_worktree(project_id, task.id)?.is_some() {
+                            titles.insert(task.title.as_str().to_owned());
+                        }
+                    }
+                    Ok(titles)
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         let mut tasks = Vec::with_capacity(request.tasks.len());
         for task in &request.tasks {
             let module = task
@@ -2639,14 +2936,20 @@ impl Services {
                 .transpose()?
                 .transpose()
                 .map_err(|error| self.refuse_domain(&error))?;
-            let (worktree, derived_worktree) = self.place_task_branch(
-                project.root_path.as_str(),
-                epic_key.as_ref(),
-                &epic_title,
-                &task.title,
-                &links,
-                worktree,
-            )?;
+            let (worktree, derived_worktree) =
+                if worktree.is_none() && retained.contains(task.title.as_str()) {
+                    (None, None)
+                } else {
+                    self.place_task_branch(
+                        project.root_path.as_str(),
+                        epic_key.as_ref(),
+                        &epic_title,
+                        &task.title,
+                        &links,
+                        worktree,
+                        module.as_ref(),
+                    )?
+                };
             let imported_state = match task.import_state {
                 EpicImportStateDto::Ready => ImportedTaskState::Ready,
                 EpicImportStateDto::Completed => ImportedTaskState::Completed,
@@ -2842,6 +3145,10 @@ impl Services {
             )
         })?;
         self.sealed(AppliedEpicDto {
+            operational_domain_bundle_hash: state
+                .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+                .and_then(|pin| pin.operational_domain_bundle_hash),
             realm_id: state.realm_id(),
             project_id,
             epic_id,
@@ -3809,23 +4116,9 @@ impl Services {
             })
     }
 
-    /// The connector specifications this build ships.
-    ///
-    /// ponytail: parsed once per process and held, because the bundled data is
-    /// compiled into the binary and cannot change while it runs. A deployment
-    /// that later loads specifications of its own would replace this with the
-    /// same loader reading its directory — not with a second catalogue.
-    fn connector_catalog(&self) -> Result<&SpecCatalog, ApiError> {
-        if let Some(catalog) = self.connectors.get() {
-            return Ok(catalog);
-        }
-        let catalog = SpecCatalog::bundled().map_err(|_| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "this build's bundled connector specifications did not load",
-            )
-        })?;
-        Ok(self.connectors.get_or_init(|| catalog))
+    /// The validated catalog selected for this realm, never a global fallback.
+    fn connector_catalog(&self) -> &SpecCatalog {
+        &self.connectors
     }
 
     /// Resolve the ticket-link shorthand to the catalogue's canonical key.
@@ -4059,10 +4352,48 @@ impl Services {
         })
     }
 
-    /// Select one exact bundled field mapping and installed workflow policy.
+    /// Activated tracker policy is the realm's immutable installed revisions.
+    /// A restart or an uninstalled YAML edit cannot replace these bytes.
+    fn installed_connector_catalog(&self, project_id: ProjectId) -> Result<SpecCatalog, ApiError> {
+        let state = self.state()?;
+        let (fields, workflows) = state
+            .with_store(|store| {
+                Ok::<_, kontor_core::repository::RepositoryError>((
+                    store.installed_ticket_field_specs(project_id)?,
+                    store.installed_external_workflow_specs(project_id)?,
+                ))
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let mut catalog = SpecCatalog::empty();
+        for spec in fields {
+            let document = spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?;
+            catalog.load_field_spec(document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "installed tracker field specification is invalid",
+                )
+            })?;
+        }
+        for spec in workflows {
+            let document = spec
+                .canonicalize()
+                .map_err(|error| self.refuse_domain(&error))?;
+            catalog.load_workflow_spec(document.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "installed tracker workflow specification is invalid",
+                )
+            })?;
+        }
+        Ok(catalog)
+    }
+
+    /// Select one exact installed field mapping and workflow policy.
     ///
     /// Entity kind and frozen work-profile revision are both selection keys.
-    /// Falling back to the first bundled specification is forbidden: that was
+    /// Falling back to the first specification is forbidden: that was
     /// the divergence that made high-stakes tickets silently use `code@1`.
     fn jira_specs_for(
         &self,
@@ -4070,14 +4401,19 @@ impl Services {
         issue_type: &str,
         work_profile: Option<PinnedProfile>,
     ) -> Result<(CompiledFieldSpec, CompiledWorkflowSpec), ApiError> {
-        let catalog = self.connector_catalog()?;
+        let installed;
+        let catalog = if self.selected_config.is_some() {
+            installed = self.installed_connector_catalog(project_id)?;
+            &installed
+        } else {
+            self.connector_catalog()
+        };
         let workflows: Vec<&CompiledWorkflowSpec> = catalog
             .workflow_specs()
             .iter()
             .filter(|compiled| {
                 let spec = compiled.spec();
                 spec.connector.as_str() == "connector.jira"
-                    && spec.project.as_str() == "asma"
                     && spec.issue_type.as_str() == issue_type
                     && spec.work_profile.as_ref()
                         == work_profile.as_ref().map(|profile| &profile.key)
@@ -4088,7 +4424,7 @@ impl Services {
         if workflows.len() != 1 {
             return Err(self.deny(
                 ApiErrorCode::UnsupportedCapability,
-                "this build does not contain exactly one Jira workflow specification for the entity kind and frozen profile",
+                "the selected catalog does not contain exactly one Jira workflow specification for the entity kind and frozen profile",
             ));
         }
         let external = workflows[0].clone();
@@ -4105,7 +4441,7 @@ impl Services {
         if fields.len() != 1 {
             return Err(self.deny(
                 ApiErrorCode::UnsupportedCapability,
-                "this build does not contain exactly one Jira field specification for the selected entity kind",
+                "the selected catalog does not contain exactly one Jira field specification for the selected entity kind",
             ));
         }
         let field = fields[0].clone();
@@ -4129,7 +4465,7 @@ impl Services {
         if &installed != external.spec() {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the installed Jira workflow revision differs from the bundled immutable specification",
+                "the installed Jira workflow revision differs from the selected immutable specification",
             ));
         }
         Ok((field.clone(), external.clone()))
@@ -5961,6 +6297,8 @@ impl Services {
         // dispatch row untouched for reconciliation or explicit replacement.
         if adapter
             .resume(&kontor_runtime::request::ResumeRequest {
+                resolved_route: self
+                    .delivery_private_route(project_id, (request.binding.clone()).agent_run_id())?,
                 binding: request.binding.clone(),
                 requested_at: now,
             })
@@ -6028,6 +6366,164 @@ impl Services {
         }
     }
 
+    /// Freeze the selected source and first confirmed claim before native preflight.
+    fn freeze_task_checkout(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<
+        (
+            kontor_store::checkouts::TaskCheckoutPlacement,
+            kontor_runtime::checkout::TaskCheckout,
+        ),
+        ApiError,
+    > {
+        let folder = self.selected_config.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "host.checkouts.not_configured",
+            )
+        })?;
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let project = self.project_row(project_id)?;
+        let key = state
+            .with_store(|store| store.confirmed_jira_task_key(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|key| TrackerKey::from_external(&key).ok())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "checkout.binding_unconfirmed_or_ambiguous",
+                )
+            })?;
+        let claim = match state
+            .with_store(|store| store.task_worktree(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(claim) => claim,
+            None => {
+                let module = task.module.as_ref().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "worktree_module_missing: root-only task requires an explicit worktree",
+                    )
+                })?;
+                crate::task_checkouts::derived_claim(
+                    folder,
+                    project.root_path.as_str(),
+                    module,
+                    &key,
+                )
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?
+            }
+        };
+        let mut confirmed = vec![key];
+        if let Some(epic_id) = task.mini_project_id
+            && let Some(key) = self.epic_tracker_key(project_id, epic_id)?
+            && !confirmed.contains(&key)
+        {
+            confirmed.push(key);
+        }
+        let existing = state
+            .with_store(|store| store.task_checkout_placement(project_id, task_id, &claim))
+            .map_err(|error| self.refuse(&error))?;
+        let (pin, snapshot) = if let Some(pin) = existing {
+            let snapshot: kontor_runtime::checkout::TaskCheckout =
+                serde_json::from_str(pin.intent.json()).map_err(|_| {
+                    self.deny(ApiErrorCode::PlacementBlocked, "checkout.intent_invalid")
+                })?;
+            (pin, snapshot)
+        } else {
+            let snapshot = crate::task_checkouts::plan(folder, &project, &task, &claim, &confirmed)
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?;
+            let pin = kontor_store::checkouts::TaskCheckoutPlacement {
+                project_id,
+                task_id,
+                worktree: claim.clone(),
+                destination: ExternalName::parse(&snapshot.destination)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                task_revision: task.revision,
+                module: task.module.clone(),
+                intent: CanonicalDocument::from_serializable(&snapshot)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                readback: None,
+            };
+            let pin = state
+                .with_store(|store| store.freeze_task_checkout(&pin, kontor_api::now()))
+                .map_err(|error| self.refuse(&error))?;
+            (pin, snapshot)
+        };
+        if snapshot.claim != claim.as_str()
+            || snapshot.destination != pin.destination.as_str()
+            || snapshot.project_root != project.root_path.as_str()
+            || snapshot.module != task.module
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "checkout.stale_claim_or_intent",
+            ));
+        }
+        BranchName::parse(&snapshot.branch)
+            .and_then(|branch| branch.ensure_bound_to(&confirmed))
+            .map_err(|reason| self.deny(ApiErrorCode::PlacementBlocked, reason.rule()))?;
+        for (other_project, other_task, other_claim) in state
+            .with_store(|store| store.checkout_claims())
+            .map_err(|error| self.refuse(&error))?
+        {
+            if other_project == project_id && other_task == task_id {
+                continue;
+            }
+            let other = kontor_runtime::checkout::destination(other_claim.as_str())
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?;
+            if other == snapshot.destination {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "checkout.destination_ownership_conflict",
+                ));
+            }
+        }
+        state
+            .with_store(|store| store.guard_task_checkout(&pin))
+            .map_err(|error| self.refuse(&error))?;
+        Ok((pin, snapshot))
+    }
+
+    /// Execute the frozen intent only after identity/topology preflight, then confirm Git.
+    async fn prepare_task_checkout(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<(), ApiError> {
+        if self.selected_config.is_none() {
+            return Ok(());
+        }
+        let _checkout = self.checkout_guard.lock().await;
+        let state = self.state()?;
+        let (pin, snapshot) = self.freeze_task_checkout(project_id, task_id)?;
+        let frozen = snapshot.clone();
+        let confirmed_before = pin.readback.is_some();
+        let observed = tokio::task::spawn_blocking(move || {
+            if confirmed_before {
+                kontor_runtime::checkout::verify(&frozen)?;
+            } else {
+                kontor_runtime::checkout::prepare(&frozen)?;
+            }
+            kontor_runtime::checkout::readback(&frozen)
+        })
+        .await
+        .map_err(|_| self.deny(ApiErrorCode::Unavailable, "checkout.worker_incomplete"))?
+        .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))?;
+        let readback = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1, "intent_hash": pin.intent.hash(), "observed": observed,
+        }))
+        .map_err(|error| self.refuse_domain(&error))?;
+        state
+            .with_store(|store| store.confirm_task_checkout(&pin, &readback))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
     /// The root a task's workspace is prepared at.
     ///
     /// It is read from the task's declared worktree and from nowhere else.
@@ -6085,9 +6581,8 @@ impl Services {
 
     /// Derive and validate the sole supported replacement for one task claim.
     ///
-    /// The target is not accepted as an arbitrary path. It must be exactly the
-    /// ASMA catalog-module layout derived from the stored project root, the
-    /// task's confirmed Jira key and the basename of its stored module key.
+    /// Selected folders render the exact durable module through their layout.
+    /// The portable embedding retains its historical catalog correction shape.
     fn prepare_worktree_claim_correction(
         &self,
         project_id: ProjectId,
@@ -6135,15 +6630,13 @@ impl Services {
         let module = task.module.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "the task has no catalog module from which a deterministic worktree can be derived",
+                if self.selected_config.is_some() {
+                    "worktree_module_missing: deterministic correction requires Task.module"
+                } else {
+                    "the task has no catalog module from which a deterministic worktree can be derived"
+                },
             )
         })?;
-        let module_directory = module
-            .as_str()
-            .rsplit('/')
-            .next()
-            .filter(|segment| !segment.is_empty())
-            .expect("ModuleKey validation leaves one non-empty final segment");
         let jira = state
             .with_store(|store| store.confirmed_jira_task_key(project_id, task_id))
             .map_err(|error| self.refuse(&error))?
@@ -6155,26 +6648,38 @@ impl Services {
             })?;
         let tracker = TrackerKey::from_external(&jira)
             .map_err(|refusal| self.deny(ApiErrorCode::PlacementBlocked, refusal.rule()))?;
-        let expected_slug = tracker.as_str().to_ascii_lowercase();
-        let expected_target = ExternalName::parse(&format!(
-            "{}/{MANAGED_WORKTREES_DIR}/{}/{}",
-            project_root.as_str().trim_end_matches('/'),
-            expected_slug,
-            module_directory,
-        ))
-        .map_err(|error| self.refuse_domain(&error))?;
+        let expected_target = if let Some(folder) = &self.selected_config {
+            let (target, _) = crate::project_paths::render_layout(
+                &folder.project.worktree_layout,
+                project_root.as_str(),
+                &tracker,
+                &module,
+            )
+            .map_err(|reason| self.deny(ApiErrorCode::PlacementBlocked, reason))?;
+            ExternalName::parse(&target).map_err(|error| self.refuse_domain(&error))?
+        } else {
+            let module_directory = module
+                .as_str()
+                .rsplit('/')
+                .next()
+                .expect("a canonical module segment");
+            let expected_slug = tracker.as_str().to_ascii_lowercase();
+            let target = ExternalName::parse(&format!(
+                "{}/{MANAGED_WORKTREES_DIR}/{expected_slug}/{module_directory}",
+                project_root.as_str().trim_end_matches('/')
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            if managed_catalog_worktree_parts(project_root.as_str(), target.as_str())
+                != Some((expected_slug.as_str(), module_directory))
+            {
+                return Err(self.deny(ApiErrorCode::InvalidRequest, "worktree_target_invalid: the replacement does not encode one task slug and one catalog module"));
+            }
+            target
+        };
         if new_root.as_str() != expected_target.as_str() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
-                "worktree_target_invalid: the replacement is not the task's deterministic ASMA catalog-module path",
-            ));
-        }
-        let expected_parts =
-            managed_catalog_worktree_parts(project_root.as_str(), expected_target.as_str());
-        if expected_parts != Some((expected_slug.as_str(), module_directory)) {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "worktree_target_invalid: the replacement does not encode one task slug and one catalog module",
+                "worktree_target_invalid: the replacement is not the task's deterministic worktree path",
             ));
         }
         if state
@@ -6188,25 +6693,42 @@ impl Services {
             ));
         }
 
-        let branch = ExternalName::parse(
-            BranchName::derive(BranchType::Feat, &tracker, task.title.as_str()).as_str(),
-        )
+        let checkout = self
+            .selected_config
+            .as_ref()
+            .map(|folder| {
+                crate::task_checkouts::plan(
+                    folder,
+                    &project,
+                    &task,
+                    &expected_target,
+                    std::slice::from_ref(&tracker),
+                )
+                .map_err(|error| self.deny(ApiErrorCode::PlacementBlocked, error.0))
+            })
+            .transpose()?;
+        let branch = ExternalName::parse(&checkout.as_ref().map_or_else(
+            || BranchName::derive(BranchType::Feat, &tracker, task.title.as_str()).to_string(),
+            |snapshot| snapshot.branch.clone(),
+        ))
         .map_err(|error| self.refuse_domain(&error))?;
-        let preview_hash = self
-            .intent(&serde_json::json!({
-                "schema_version": 1,
-                "operation": "correct_task_worktree",
-                "project_id": project_id.to_string(),
-                "task_id": task_id.to_string(),
-                "task_revision": task.revision.get(),
-                "old_worktree": old_worktree.as_str(),
-                "new_worktree": expected_target.as_str(),
-                "jira_key": tracker.as_str(),
-                "module": module.as_str(),
-                "branch": branch.as_str(),
-            }))?
-            .hash()
-            .clone();
+        let mut preview = serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_task_worktree",
+            "project_id": project_id.to_string(),
+            "task_id": task_id.to_string(),
+            "task_revision": task.revision.get(),
+            "old_worktree": old_worktree.as_str(),
+            "new_worktree": expected_target.as_str(),
+            "jira_key": tracker.as_str(),
+            "module": module.as_str(),
+            "branch": branch.as_str(),
+        });
+        if let Some(snapshot) = &checkout {
+            preview["checkout"] = serde_json::to_value(snapshot)
+                .map_err(|_| self.deny(ApiErrorCode::InvalidRequest, "checkout.intent_invalid"))?;
+        }
+        let preview_hash = self.intent(&preview)?.hash().clone();
         Ok(PreparedWorktreeClaimCorrection {
             task_revision: task.revision,
             old_worktree: old_worktree.clone(),
@@ -6214,6 +6736,7 @@ impl Services {
             module,
             branch,
             preview_hash,
+            checkout,
         })
     }
 
@@ -6724,6 +7247,45 @@ impl Services {
         Ok(Some(existing))
     }
 
+    fn epic_activation_intent(
+        &self,
+        key: &IdempotencyKey,
+        target: &AggregateRef,
+        expected: CanonicalDocument,
+    ) -> Result<CanonicalDocument, ApiError> {
+        let Some(saved) = self
+            .state()?
+            .with_store(|store| store.get_receipt_by_key(key))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(expected);
+        };
+        let mut document: serde_json::Value = saved
+            .intent
+            .deserialize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The typed migrated kind is authority; the historical operation label
+        // remains inside its original bytes/digest. All arguments must still match.
+        if saved.kind != CommandKind::ActivateEpic
+            || &saved.target != target
+            || !document["operation"].is_string()
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "epic activation intent differs",
+            ));
+        }
+        document["operation"] = "activate_epic".into();
+        let normalized = self.intent(&document)?;
+        if normalized != expected {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "epic activation intent differs",
+            ));
+        }
+        Ok(saved.intent)
+    }
+
     fn intent(&self, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
         CanonicalDocument::from_value(value).map_err(|error| self.refuse_domain(&error))
     }
@@ -6773,7 +7335,7 @@ impl Services {
                 })
             })
             .collect();
-        let document = self.intent(&serde_json::json!({
+        let mut value = serde_json::json!({
             "schema_version": 1,
             "epic_id": epic.epic_id.to_string(),
             "revision": epic.revision.get(),
@@ -6783,7 +7345,11 @@ impl Services {
                 .as_ref()
                 .map(|team| serde_json::json!([team.id.as_str(), team.version.get()])),
             "tasks": tasks,
-        }))?;
+        });
+        if let Some(domain) = &epic.operational_domain_bundle_hash {
+            value["operational_domain_bundle_hash"] = serde_json::json!(domain);
+        }
+        let document = self.intent(&value)?;
         Ok(document.hash().as_str().to_owned())
     }
 
@@ -6962,6 +7528,8 @@ impl Services {
         observation: &ControlPlaneObservation,
         now: Timestamp,
     ) -> Result<(kontor_core::state::RunProjection, CanonicalDocument), ApiError> {
+        let canonical_observation = self.canonical_delivery_observation(project_id, observation)?;
+        let observation = &canonical_observation;
         let state = self.state()?;
         let run = state
             .with_store(|store| store.get_agent_run(project_id, agent_run_id))
@@ -7234,6 +7802,7 @@ impl Services {
         runtime: &RuntimeAdmissionEvidence,
     ) -> Result<PlacementAdmission, ApiError> {
         let state = self.state()?;
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let jira = state.with_store(|store| {
             Ok::<_, RepositoryError>((
                 store.confirmed_jira_epic_key(project_id, epic_id)?,
@@ -7334,11 +7903,11 @@ impl Services {
         // desk's own pin.
         let desk_led = definition.desk_leadership.as_ref();
         let control_kind =
-            desk_led.map_or(&self.domain.delivery.control_kind, |led| &led.epic_kind);
+            desk_led.map_or(&context.domain.delivery.control_kind, |led| &led.epic_kind);
         let (Some(esw), Some(ecp), Some(tsw)) = (
-            exact(&self.domain.delivery.epic_kind, None),
+            exact(&context.domain.delivery.epic_kind, None),
             exact(control_kind, None),
-            exact(&self.domain.delivery.task_kind, Some(task_id)),
+            exact(&context.domain.delivery.task_kind, Some(task_id)),
         ) else {
             return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
         };
@@ -7439,6 +8008,7 @@ impl Services {
             "team_definition_id": pin.definition.definition_id.to_string(),
             "team_definition_version": pin.definition.version.get(),
             "team_definition_hash": pin.definition.canonical_hash.as_str(),
+            "operational_domain_bundle_hash": context.bundle_hash,
             "worktree": canonical_worktree.as_str(),
             "containers": readbacks,
         });
@@ -7599,7 +8169,7 @@ impl Services {
         {
             return Ok(published);
         }
-        self.domain
+        self.purpose_source()?
             .role_catalogs
             .iter()
             .find(|catalog| catalog.catalog_id == catalog_id && catalog.version == version)
@@ -7623,7 +8193,25 @@ impl Services {
         &self,
         role_code: &RoleCode,
     ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
-        let Some(prompt) = self.domain.role_prompt(role_code) else {
+        self.freeze_domain_persona(&self.domain, role_code)
+    }
+
+    fn freeze_epic_role_persona(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        role_code: &RoleCode,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
+        self.freeze_domain_persona(&context.domain, role_code)
+    }
+
+    fn freeze_domain_persona(
+        &self,
+        domain: &OperationalDomainPack,
+        role_code: &RoleCode,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let Some(prompt) = domain.role_prompt(role_code) else {
             return Ok(None);
         };
         kontor_core::spec::RolePersonaSnapshot::freeze(
@@ -7639,12 +8227,16 @@ impl Services {
 
     /// The catalog revision this build publishes.
     fn published_catalog(&self) -> Result<RoleCatalogRevision, ApiError> {
-        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "this build ships no role catalog",
-            )
-        })?;
+        let catalog = self
+            .purpose_source()?
+            .role_catalogs
+            .first()
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "this build ships no role catalog",
+                )
+            })?;
         self.catalog_revision(catalog.catalog_id, catalog.version)
     }
 
@@ -7852,6 +8444,76 @@ impl Services {
             .transpose()
     }
 
+    /// Only new resolution consults selected authoring. Stored roster purposes never do.
+    fn purpose_source(&self) -> Result<&OperationalDomainPack, ApiError> {
+        match self.selected_config.as_ref() {
+            None => Ok(&self.domain),
+            Some(folder) => folder
+                .realm_pack
+                .as_ref()
+                .map(|pack| &pack.domain)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "project.team_pack.operational_domain is not configured",
+                    )
+                }),
+        }
+    }
+
+    fn frozen_purpose(
+        &self,
+        roster: &CoreTeamRevision,
+        purpose: CoreTeamSeatPurpose,
+    ) -> Result<CoreTeamSeat, ApiError> {
+        let seat = roster
+            .seat_for_purpose(purpose)
+            .map_err(|error| match error {
+                kontor_core::DomainError::MissingAuthority { .. } => {
+                    self.deny(ApiErrorCode::RoleSlotUnbound, "role_purpose_unpinned")
+                }
+                _ => self.refuse_domain(&error),
+            })?;
+        let catalog = self.catalog_revision(seat.role.catalog_id, seat.role.catalog_revision)?;
+        if catalog
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?
+            .hash()
+            != &roster.catalog_hash
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "role_purpose_catalog_hash_mismatch",
+            ));
+        }
+        if catalog
+            .role(&seat.role.role_code)
+            .is_none_or(|role| role.lifecycle != kontor_core::spec::CodeLifecycle::Current)
+        {
+            return Err(self.deny(
+                ApiErrorCode::RoleSlotUnbound,
+                "role_purpose_catalog_role_mismatch",
+            ));
+        }
+        Ok(seat.clone())
+    }
+
+    fn purpose_binding_matches(binding: &SeatBinding, owner: &CoreTeamSeat) -> bool {
+        binding.role_slot_id == owner.role_slot_id
+            && binding.role.catalog_id == owner.role.catalog_id
+            && binding.role.catalog_revision == owner.role.catalog_revision
+            && binding.role.role_code == owner.role.role_code
+    }
+
+    fn epic_purpose(
+        &self,
+        project: ProjectId,
+        epic: MiniProjectId,
+        purpose: CoreTeamSeatPurpose,
+    ) -> Result<CoreTeamSeat, ApiError> {
+        self.frozen_purpose(&self.frozen_roster(project, epic)?.revision, purpose)
+    }
+
     /// Resolve one caller's selections into the next immutable revision.
     ///
     /// Every selection is resolved against the exact catalog revision it names,
@@ -7860,9 +8522,10 @@ impl Services {
     /// which one it was resolved against.
     fn resolve_core_team(
         &self,
-        project_id: ProjectId,
+        _project_id: ProjectId,
         seats: &[CoreTeamSeatSelectionDto],
         current: Option<&CoreTeamRevision>,
+        bundle: Option<&CanonicalDocument>,
     ) -> Result<CoreTeamRevision, ApiError> {
         let first = seats
             .first()
@@ -7884,6 +8547,51 @@ impl Services {
         let catalog_id =
             RoleCatalogId::parse(&first.id).map_err(|error| self.refuse_domain(&error))?;
         let catalog = self.catalog_revision(catalog_id, first.version)?;
+        if let Some(bundle) = bundle {
+            #[derive(serde::Deserialize)]
+            struct Envelope {
+                value: CoreTeamRevision,
+            }
+            let revision = bundle
+                .deserialize::<Envelope>()
+                .map_err(|error| self.refuse_domain(&error))?
+                .value;
+            let next = current
+                .map_or(Ok(SpecVersion::FIRST), |current| current.version.next())
+                .map_err(|error| self.refuse_domain(&error))?;
+            if revision.version != next {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the bundle's Core Team revision is not the revision this project would publish next",
+                ));
+            }
+            if &revision.catalog_hash
+                != catalog
+                    .canonicalize()
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .hash()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "role_purpose_source_catalog_hash_mismatch",
+                ));
+            }
+            for purpose in CoreTeamSeatPurpose::ALL {
+                self.frozen_purpose(&revision, *purpose)?;
+            }
+            return Ok(revision);
+        }
+        let domain = self.purpose_source()?;
+        if !domain
+            .role_catalogs
+            .iter()
+            .any(|candidate| candidate == &catalog)
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "role_purpose_source_catalog_mismatch",
+            ));
+        }
         let selections: Vec<CoreTeamSeatSelection> = seats
             .iter()
             .map(|seat| CoreTeamSeatSelection {
@@ -7896,9 +8604,13 @@ impl Services {
         let version = current
             .map_or(Ok(SpecVersion::FIRST), |current| current.version.next())
             .map_err(|error| self.refuse_domain(&error))?;
-        let _ = project_id;
-        CoreTeamRevision::resolve(version, &catalog, &selections)
-            .map_err(|error| self.refuse_domain(&error))
+        CoreTeamRevision::resolve(
+            version,
+            &catalog,
+            &selections,
+            domain.delivery.purpose_roles(),
+        )
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     // -- Quick sessions ------------------------------------------------------
@@ -8066,6 +8778,9 @@ impl Services {
                 "this project has published no Core Team revision",
             )
         })?;
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&current, *purpose)?;
+        }
         Ok((
             session,
             FrozenRoster {
@@ -8119,24 +8834,24 @@ impl Services {
             })
     }
 
-    /// The roster a new epic freezes.
-    ///
-    /// The project's published Core Team when it has one, and otherwise the two
-    /// mandatory roles alone: [`CoreTeamRevision::resolve`] inserts `LSA` and
-    /// `TPM` into every revision it resolves, so resolving no selections at all
-    /// against the catalog this build ships yields exactly the smallest roster
-    /// that satisfies the guarantee.
-    ///
-    /// Refusing instead would make publishing a Core Team a precondition for
-    /// having an epic at all. Nothing else in the contract imposes that, and the
-    /// realm that prompted this — two epics, eighteen tasks done, no governed
-    /// architecture lead — is what happens when the structure is optional.
+    /// Freeze the published Core Team for a new epic. Selected-folder work
+    /// requires explicit publication; an untagged stored roster grants no purpose.
     fn epic_bootstrap_roster(&self, project_id: ProjectId) -> Result<FrozenRoster, ApiError> {
-        let revision = match self.stored_core_team(project_id)? {
-            Some(published) => published,
-            None => CoreTeamRevision::resolve(SpecVersion::FIRST, &self.published_catalog()?, &[])
+        let revision =
+            match self.stored_core_team(project_id)? {
+                Some(published) => published,
+                None if self.selected_config.is_some() => return Err(self.deny(
+                    ApiErrorCode::RoleSlotUnbound,
+                    "role_purpose_unpinned: explicitly publish a Core Team before epic bootstrap",
+                )),
+                None => CoreTeamRevision::resolve(
+                    SpecVersion::FIRST,
+                    &self.published_catalog()?,
+                    &[],
+                    self.purpose_source()?.delivery.purpose_roles(),
+                )
                 .map_err(|error| self.refuse_domain(&error))?,
-        };
+            };
         Ok(FrozenRoster {
             revision,
             revision_of_epic: AggregateRevision::INITIAL,
@@ -8158,16 +8873,9 @@ impl Services {
     /// does, and doing it as a side effect of re-applying an epic would restaff
     /// a running one behind its operator's back.
     fn govern_epic(&self, project_id: ProjectId, epic_id: MiniProjectId) -> Result<(), ApiError> {
+        self.runtime_domain(project_id, Some(epic_id))?;
         let now = kontor_api::now();
-        let roster = match self.optional_frozen_roster(project_id, epic_id)? {
-            Some(frozen) => frozen,
-            None => {
-                let roster = self.epic_bootstrap_roster(project_id)?;
-                self.refuse_desk_led_roster_for(project_id, epic_id, &roster)?;
-                self.freeze_roster(project_id, epic_id, &roster, None, now)?;
-                roster
-            }
-        };
+        let roster = self.frozen_roster(project_id, epic_id)?;
         let control = self.ensure_scope_chain(
             project_id,
             &self.resolve_scope(
@@ -8205,19 +8913,9 @@ impl Services {
         project_id: ProjectId,
         epic_id: MiniProjectId,
     ) -> Result<EpicControlPlaneDto, ApiError> {
-        let scope = self.resolve_scope(
-            project_id,
-            &SemanticTopologyTargetDto::EpicControl { epic_id },
-        )?;
-        let nodes = self.scope_nodes(project_id, &scope)?;
-        // Matched on the scope's kind, never "the first node this epic has":
-        // an epic owns its ESW as well as its ECP, and the ESW holds none of
-        // the control-plane seats.
-        let Some(control) = scope
-            .kind
-            .as_ref()
-            .and_then(|kind| nodes.iter().find(|node| &node.kind == kind))
-        else {
+        // A projection reports recorded bindings without reinterpreting legacy
+        // rows or requiring a domain artifact for already-frozen evidence.
+        let Some(control) = self.recorded_core_team_node(project_id, epic_id)? else {
             return Ok(EpicControlPlaneDto {
                 materialized: false,
                 declared_seats: 0,
@@ -8230,7 +8928,7 @@ impl Services {
         };
         let state = self.state()?;
         // A desk Adam subject is placed once its desk's workspace is.
-        let host = self.session_container_node(control)?;
+        let host = self.session_container_node(&control)?;
         let materialized = state
             .with_store(|store| store.get_topology_node_container(project_id, host.id))
             .map_err(|error| self.refuse(&error))?
@@ -8549,7 +9247,11 @@ impl Services {
         if self.optional_frozen_roster(project_id, epic_id)?.is_none() {
             return Ok(RosterGovernance::RosterUnfrozen);
         }
-        for role_code in [MANDATORY_PROGRAM_ROLE, MANDATORY_LEAD_ROLE] {
+        for role_code in [
+            CoreTeamSeatPurpose::ProcessCloser,
+            CoreTeamSeatPurpose::ArchitectureCloser,
+            CoreTeamSeatPurpose::Control,
+        ] {
             match self.epic_control_seat(project_id, epic_id, role_code) {
                 Ok(_) => {}
                 Err(error)
@@ -8613,6 +9315,9 @@ impl Services {
                 "this project has not published that Core Team revision as its current one",
             ));
         }
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&current, *purpose)?;
+        }
         Ok(current)
     }
 
@@ -8669,6 +9374,9 @@ impl Services {
         roster: &FrozenRoster,
         now: Timestamp,
     ) -> Result<Vec<(CoreTeamSeat, SeatBindingId)>, ApiError> {
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&roster.revision, *purpose)?;
+        }
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let held = state
@@ -8687,6 +9395,11 @@ impl Services {
             if let Some(existing) = held.iter().find(|binding| {
                 binding.role_slot_id == seat.role_slot_id && binding.is_non_terminal()
             }) {
+                if !Self::purpose_binding_matches(existing, seat) {
+                    return Err(
+                        self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch")
+                    );
+                }
                 seats.push((seat.clone(), existing.id));
                 continue;
             }
@@ -8769,6 +9482,11 @@ impl Services {
         // saying so is more useful than silently succeeding.
         let inspected_at = match adapter
             .inspect_hosted_seat(&HostedSeatInspectRequest {
+                resolved_route: self.hosted_private_route(
+                    project_id,
+                    seat_binding_id,
+                    occupancy_generation,
+                )?,
                 seat_binding_id,
                 identity: existing.native_identity.clone(),
                 model_rung: existing.model_rung.clone(),
@@ -8806,7 +9524,9 @@ impl Services {
             })
             .map_err(|error| self.refuse(&error))?
         {
-            if intent.model_rung != existing.model_rung || intent.autonomy != existing.autonomy {
+            if intent.model_rung.canonical_rung() != existing.model_rung
+                || intent.autonomy != existing.autonomy
+            {
                 return Err(self.deny(
                     ApiErrorCode::StaleBinding,
                     "the launch intent's frozen route or autonomy disagrees with the bound occupancy",
@@ -8832,6 +9552,7 @@ impl Services {
                                 occupancy_generation,
                                 &existing.native_identity.native_id,
                                 kontor_api::now(),
+                                &intent.model_rung,
                             )
                         })
                         .map_err(|error| self.refuse(&error))?;
@@ -8905,6 +9626,7 @@ impl Services {
         self.preview_hash(&serde_json::json!({
             "schema_version": 1,
             "operation": "promotion_preview",
+            "roster": &roster.revision,
             "source": session.id.to_string(),
             "source_revision": session.revision.get(),
             "core_team_version": roster.revision.version.get(),
@@ -8923,9 +9645,11 @@ impl Services {
         target: &CoreTeamRevision,
         effects: &[TopologyUpgradeEffectDto],
     ) -> Result<ContentHash, ApiError> {
-        self.preview_hash(&serde_json::json!({
+        let mut document = serde_json::json!({
             "schema_version": 1,
             "operation": "epic_roster_upgrade_preview",
+            "source_roster": &current.revision,
+            "target_roster": target,
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
             "bootstrap": bootstrap,
@@ -8934,7 +9658,16 @@ impl Services {
             "target_version": target.version.get(),
             "catalog": target.catalog_hash.as_str(),
             "effects": effect_digest(effects),
-        }))
+        });
+        if let Some(hash) = self
+            .state()?
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+            .and_then(|pin| pin.operational_domain_bundle_hash)
+        {
+            document["operational_domain_bundle_hash"] = serde_json::json!(hash);
+        }
+        self.preview_hash(&document)
     }
 
     /// Find the published revision one roster preview was computed against.
@@ -8984,7 +9717,6 @@ impl Services {
         // frozen roster content and does not participate in the instant the
         // durable reads below have to share.
         let mut seats = self.core_team_seat_dtos(&roster.revision)?;
-        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let role_codes: Vec<_> = seats
             .iter()
             .map(|seat| seat.role.role_code.clone())
@@ -9000,10 +9732,12 @@ impl Services {
                     (Vec<CapturedCoreTeamSeat>, kontor_core::id::EventCursor),
                     RepositoryError,
                 > {
-                    let control = store
-                        .list_topology_nodes(project_id, Some(epic_id))?
-                        .into_iter()
-                        .find(|node| node.kind == control_kind);
+                    let control = Self::recorded_core_team_node_in(
+                        store,
+                        project_id,
+                        epic_id,
+                        &roster.revision,
+                    )?;
                     let held = match &control {
                         Some(node) => store.list_seat_bindings(project_id, node.id)?,
                         None => Vec::new(),
@@ -9261,7 +9995,7 @@ impl Services {
                     HostedSeatLaunchIntentState::Installed => IntentState::Installed,
                 },
                 observed_native_id: row.observed_native_id,
-                route: catalog_route(&row.model_rung),
+                route: catalog_route(&row.model_rung.canonical_rung()),
             })
             .collect::<Vec<_>>();
         tpm_lineage::resolve(
@@ -9464,6 +10198,8 @@ impl Services {
                 )
             })?;
         if !recorded.effects.launch_intent_installed {
+            // The committed predecessor history fences this generation against
+            // supersession; the readback above already proves its exact occupant.
             state
                 .with_store(|store| {
                     store.install_hosted_seat_launch_intent(
@@ -9472,6 +10208,16 @@ impl Services {
                         recorded.successor_occupancy_generation,
                         &successor_native_id,
                         active.observed_at,
+                        &store
+                            .get_hosted_seat_launch_intent(
+                                project_id,
+                                recorded.seat_binding_id,
+                                recorded.successor_occupancy_generation,
+                            )?
+                            .ok_or(RepositoryError::NotFound {
+                                subject: "hosted seat launch intent",
+                            })?
+                            .model_rung,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -9716,15 +10462,87 @@ impl Services {
                     "the logical Core Team seat has no exact native session to reroute",
                 )
             })?;
-        let desired = parse_runtime_model_route(
-            &request.desired_model_route,
-            self.fleet.current().as_deref(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
-        // Asked before anything is adopted, retired or probed: a leadership
-        // seat the activated policy binds may only move to a route its chain
-        // offers, and the answer is part of what the preview hash pins.
-        let leadership = self.leadership_route(&roster.revision, &frozen_seat, &desired)?;
+        let active_generation = state
+            .with_store(|store| {
+                store.hosted_topology_seat_occupancy_generation(project_id, binding.id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the hosted seat has no occupancy generation",
+                )
+            })?;
+        let successor_generation = if active.native_identity.native_id == request.expected_native_id
+        {
+            active_generation.checked_add(1).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the occupancy generation is exhausted",
+                )
+            })?
+        } else {
+            active_generation
+        };
+        let saved_intent = state
+            .with_store(|store| {
+                store.get_hosted_seat_launch_intent(project_id, binding.id, successor_generation)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let desired = if let Some(intent) = &saved_intent {
+            let requested = parse_model_route(&request.desired_model_route)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if intent.model_rung.canonical_rung() != requested {
+                return Err(self.deny(ApiErrorCode::StaleBinding, "host_route_binding_mismatch"));
+            }
+            requested
+        } else {
+            self.parse_pinned_model_route(&request.desired_model_route)
+                .map_err(|error| self.refuse_domain(&error))?
+        };
+        let leadership = if saved_intent.is_some() {
+            self.frozen_leadership_route(
+                &roster.revision,
+                &frozen_seat,
+                binding.id,
+                successor_generation,
+                &desired,
+            )?
+        } else {
+            self.leadership_route(&roster.revision, &frozen_seat, &desired)?
+        };
+        let adapter = state
+            .runtimes()
+            .get(&active.native_identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the hosted-seat runtime is not configured in this daemon",
+                )
+            })?;
+        if self.selected_config.is_none() && !adapter.provider_available(&desired.provider.0) {
+            return Err(ApiError::from_runtime(
+                state.realm_id(),
+                &RuntimeError::ProviderUnavailable {
+                    provider: desired.provider.0.clone(),
+                },
+            ));
+        }
+        let launch_route = if let Some(intent) = saved_intent {
+            intent.model_rung
+        } else {
+            self.freeze_launch_route(
+                adapter.as_ref(),
+                &desired,
+                leadership
+                    .as_ref()
+                    .map(|placed| &placed.provenance.policy_hash),
+                leadership
+                    .as_ref()
+                    .and_then(|placed| placed.source_bundle_hash.as_ref()),
+                kontor_api::now(),
+            )?
+        };
         let (predecessor, successor) = if active.native_identity.native_id
             == request.expected_native_id
             && active.native_identity.generation == request.expected_generation
@@ -9793,6 +10611,11 @@ impl Services {
                 })?;
             let live = match adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
+                    resolved_route: self.hosted_private_route_for_native(
+                        project_id,
+                        binding.id,
+                        &predecessor.native_identity,
+                    )?,
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
                     model_rung: predecessor.model_rung.clone(),
@@ -9863,27 +10686,13 @@ impl Services {
         };
         let stale_native_recovery =
             predecessor.model_rung == desired && (successor.is_some() || !native_is_live);
-        let runtime_kind = self.node_runtime_kind()?;
-        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the runtime selected for Core Team placement is not configured",
-            )
-        })?;
-        if !adapter.provider_available(desired.provider.0.as_str()) {
-            return Err(ApiError::from_runtime(
-                state.realm_id(),
-                &RuntimeError::ProviderUnavailable {
-                    provider: desired.provider.0.clone(),
-                },
-            ));
-        }
         let mut preview_document = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_route_correction",
             "project": project_id.to_string(),
             "epic": epic_id.to_string(),
             "epic_revision": epic.revision.get(),
+            "operational_domain_bundle_hash": self.runtime_domain(project_id, Some(epic_id))?.bundle_hash,
             "seat_binding": binding.id.to_string(),
             "predecessor": {
                 "runtime_kind": predecessor.native_identity.runtime_kind.as_str(),
@@ -9908,6 +10717,15 @@ impl Services {
                 },
             },
         });
+        if let Some(route) = launch_route.frozen() {
+            let mut identity = serde_json::to_value(route)
+                .map_err(|_| self.deny(ApiErrorCode::Unavailable, "host_route_snapshot_invalid"))?;
+            identity
+                .as_object_mut()
+                .expect("route object")
+                .remove("resolved_at");
+            preview_document["private_launch_route"] = identity;
+        }
         if request.takeover {
             // Pinned in place of the liveness answer. A takeover replaces the
             // predecessor whether or not it is still live, so a replay that
@@ -9936,6 +10754,7 @@ impl Services {
             predecessor,
             successor,
             desired,
+            launch_route,
             leadership,
             stale_native_recovery,
             takeover: request.takeover,
@@ -10096,7 +10915,100 @@ impl Services {
             &binding.role.role_code,
             Some(&binding.role_slot_id),
         )?;
+        let history = state
+            .with_store(|store| {
+                store.list_hosted_topology_seat_history_native_ids(project_id, binding.id)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let occupancy_generation = u64::try_from(history.len())
+            .unwrap_or(u64::MAX)
+            .checked_add(
+                if active
+                    .as_ref()
+                    .is_some_and(|row| row.native_identity.native_id != request.claimant_native_id)
+                {
+                    2
+                } else {
+                    1
+                },
+            )
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the occupancy generation is exhausted",
+                )
+            })?;
+        let (launch_route, leadership) = if self.selected_config.is_some() {
+            let saved = state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        binding.id,
+                        occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if let Some(saved) = saved {
+                if saved.model_rung.frozen().is_none() {
+                    return Err(
+                        self.deny(ApiErrorCode::PlacementBlocked, "host_route_legacy_unproven")
+                    );
+                }
+                if saved
+                    .observed_native_id
+                    .as_ref()
+                    .is_some_and(|id| id != &request.claimant_native_id)
+                {
+                    return Err(
+                        self.deny(ApiErrorCode::StaleBinding, "host_route_binding_mismatch")
+                    );
+                }
+                (Some(saved.model_rung), None)
+            } else {
+                let seat = roster
+                    .revision
+                    .seats
+                    .iter()
+                    .find(|seat| seat.role_slot_id == binding.role_slot_id)
+                    .ok_or_else(|| {
+                        self.deny(ApiErrorCode::PlacementBlocked, "host_route_source_unpinned")
+                    })?;
+                let leadership = if let Some(active) = &active {
+                    self.leadership_route(&roster.revision, seat, &active.model_rung)?
+                } else {
+                    Some(self.leadership_choice(
+                        &roster.revision,
+                        seat,
+                        kontor_fleet::Eligibility::default(),
+                    )?)
+                };
+                let canonical = active
+                    .as_ref()
+                    .map(|row| &row.model_rung)
+                    .or_else(|| leadership.as_ref().map(|route| &route.route.rung))
+                    .ok_or_else(|| {
+                        self.deny(ApiErrorCode::PlacementBlocked, "host_route_source_unpinned")
+                    })?;
+                let route = self.freeze_launch_route(
+                    adapter.as_ref(),
+                    canonical,
+                    leadership
+                        .as_ref()
+                        .map(|route| &route.provenance.policy_hash),
+                    leadership
+                        .as_ref()
+                        .and_then(|route| route.source_bundle_hash.as_ref()),
+                    kontor_api::now(),
+                )?;
+                (Some(route), leadership)
+            }
+        } else {
+            (None, None)
+        };
         let runtime_request = HostedSeatClaimRequest {
+            resolved_route: launch_route
+                .as_ref()
+                .and_then(|route| route.frozen().cloned()),
             seat_binding_id: binding.id,
             role_slot_id: binding.role_slot_id.clone(),
             display_name,
@@ -10135,7 +11047,7 @@ impl Services {
                 "the already-active claimant changed runtime identity or model route",
             ));
         }
-        let preview_hash = self.preview_hash(&serde_json::json!({
+        let mut preview_document = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_seat_claim",
             "project": project_id.to_string(),
@@ -10170,7 +11082,17 @@ impl Services {
                 "native_id": conflict.native_id.as_str(),
                 "released_title": conflict.released_title.as_str(),
             })).collect::<Vec<_>>(),
-        }))?;
+        });
+        if let Some(route) = launch_route.as_ref().and_then(|route| route.frozen()) {
+            let mut identity = serde_json::to_value(route)
+                .map_err(|_| self.deny(ApiErrorCode::Unavailable, "host_route_snapshot_invalid"))?;
+            identity
+                .as_object_mut()
+                .expect("route object")
+                .remove("resolved_at");
+            preview_document["private_launch_route"] = identity;
+        }
+        let preview_hash = self.preview_hash(&preview_document)?;
         Ok(CoreTeamSeatClaimPlan {
             epic,
             roster,
@@ -10179,6 +11101,9 @@ impl Services {
             predecessor,
             runtime_request,
             runtime_preview,
+            launch_route,
+            occupancy_generation,
+            leadership,
             preview_hash,
         })
     }
@@ -10281,6 +11206,9 @@ impl Services {
         let mut digest = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_preview",
+            "purpose_sources": self.selected_config.as_ref().and_then(|folder| folder.realm_pack.as_ref()).map(|pack| &pack.sources),
+            // Effects are a summary; only the resolved roster binds every seat fact.
+            "roster": proposed,
             "project": project_id.to_string(),
             // The revision this would become and the exact catalog it resolved
             // against are both in the digest: the same seats resolved against a
@@ -10299,8 +11227,7 @@ impl Services {
                 .collect::<Vec<_>>(),
         });
         // A bundle-sourced preview names its bundle, so its hash authorizes
-        // only a bundle-sourced apply; an explicit-seat preview hash is
-        // unchanged.
+        // only a bundle-sourced apply, in addition to its exact resolved roster.
         if let Some(bundle) = source_bundle_hash {
             digest["source_bundle_hash"] = serde_json::json!(bundle.as_str());
         }
@@ -10340,6 +11267,7 @@ impl Services {
                     },
                     presence: seat.presence,
                     ad_hoc_allowed: seat.ad_hoc_allowed,
+                    purposes: seat.purposes.clone(),
                     seat_binding_id: None,
                     native_seat: None,
                     role_persona: None,
@@ -10502,91 +11430,6 @@ impl Services {
         ))
     }
 
-    fn project_team_definition_selection(
-        &self,
-        project_id: ProjectId,
-        target: &TeamDefinitionRefDto,
-    ) -> Result<
-        (
-            Option<TeamDefinitionSnapshot>,
-            TeamDefinitionSnapshot,
-            ContentHash,
-        ),
-        ApiError,
-    > {
-        let state = self.state()?;
-        self.project_row(project_id)?;
-        let current = state
-            .with_store(|store| store.get_project_team_definition_default(project_id))
-            .map_err(|error| self.refuse(&error))?
-            .map(|selection| selection.definition);
-        let definition = state
-            .with_store(|store| store.get_team_definition(project_id, target.id, target.version))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "the target Team Definition is not published in this project",
-                )
-            })?;
-        let selected = TeamDefinitionSnapshot::from_revision(&definition)
-            .map_err(|error| self.refuse_domain(&error))?;
-        if current.as_ref() == Some(&selected) {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "the project already selects that Team Definition revision",
-            ));
-        }
-        let current_value = current.as_ref().map(|snapshot| {
-            serde_json::json!({
-                "id": snapshot.definition_id.to_string(),
-                "version": snapshot.version.get(),
-                "hash": snapshot.canonical_hash.as_str(),
-            })
-        });
-        let hash = self.preview_hash(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "project_team_definition_selection_preview",
-            "project": project_id.to_string(),
-            "current": current_value,
-            "target": {
-                "id": selected.definition_id.to_string(),
-                "version": selected.version.get(),
-                "hash": selected.canonical_hash.as_str(),
-            },
-        }))?;
-        Ok((current, selected, hash))
-    }
-
-    fn target_of_project_team_definition_preview(
-        &self,
-        project_id: ProjectId,
-        preview_hash: &ContentHash,
-    ) -> Result<(Option<TeamDefinitionSnapshot>, TeamDefinitionSnapshot), ApiError> {
-        let state = self.state()?;
-        for candidate in state
-            .with_store(|store| store.list_team_definitions(project_id))
-            .map_err(|error| self.refuse(&error))?
-        {
-            let reference = TeamDefinitionRefDto {
-                id: candidate.definition_id,
-                version: candidate.version,
-            };
-            let Ok((current, target, hash)) =
-                self.project_team_definition_selection(project_id, &reference)
-            else {
-                continue;
-            };
-            if &hash == preview_hash {
-                return Ok((current, target));
-            }
-        }
-        Err(self.deny(
-            ApiErrorCode::RevisionConflict,
-            "no published Team Definition still produces this selection preview",
-        ))
-    }
-
     // -----------------------------------------------------------------------
     // Consultation profile catalogs
     // -----------------------------------------------------------------------
@@ -10622,13 +11465,15 @@ impl Services {
         family: ConsultationFamily,
     ) -> Result<Vec<StoredConsultationProfileRevision>, ApiError> {
         let state = self.state()?;
-        if family == ConsultationFamily::Committee {
+        if family == ConsultationFamily::Committee && self.selected_config.is_none() {
             let published = state
                 .with_store(|store| store.list_consultation_profile_revisions(project_id, family))
                 .map_err(|error| self.refuse(&error))?;
-            let presets = kontor_profiles::seeds::bundled_consultation_presets()
-                .map_err(|error| self.refuse_domain(&error))?;
-            for template in presets.committee_templates {
+            for template in self
+                .presets
+                .iter()
+                .flat_map(|pack| &pack.committee_templates)
+            {
                 let id = template.template_id.to_string();
                 if published.iter().any(|revision| {
                     revision.profile_id == id && revision.version == template.version
@@ -10851,7 +11696,6 @@ impl Services {
         project_id: ProjectId,
         target: &SemanticTopologyTargetDto,
     ) -> Result<TopologyScope, ApiError> {
-        let delivery = &self.domain.delivery;
         Ok(match target {
             SemanticTopologyTargetDto::ProjectRoot => TopologyScope {
                 node_id: None,
@@ -10863,7 +11707,7 @@ impl Services {
             },
             SemanticTopologyTargetDto::QuickSession { quick_session_id } => TopologyScope {
                 node_id: None,
-                kind: Some(delivery.quick_kind.clone()),
+                kind: Some(self.domain.delivery.quick_kind.clone()),
                 epic_id: None,
                 task_id: None,
                 desk_key: None,
@@ -10871,7 +11715,12 @@ impl Services {
             },
             SemanticTopologyTargetDto::Epic { epic_id } => TopologyScope {
                 node_id: None,
-                kind: Some(delivery.epic_kind.clone()),
+                kind: Some(
+                    self.runtime_domain(project_id, Some(*epic_id))?
+                        .domain
+                        .delivery
+                        .epic_kind,
+                ),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
                 desk_key: None,
@@ -10889,7 +11738,12 @@ impl Services {
                 let task = self.task_row(project_id, *task_id)?;
                 TopologyScope {
                     node_id: None,
-                    kind: Some(delivery.task_kind.clone()),
+                    kind: Some(
+                        self.runtime_domain(project_id, task.mini_project_id)?
+                            .domain
+                            .delivery
+                            .task_kind,
+                    ),
                     epic_id: Some(task.mini_project_id.ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::PlacementBlocked,
@@ -10906,7 +11760,12 @@ impl Services {
                     self.consultation_run(project_id, ConsultationRunId::Advisor(*advisor_run_id))?;
                 TopologyScope {
                     node_id: Some(run.topology_node_id),
-                    kind: Some(delivery.advisor_kind.clone()),
+                    kind: Some(
+                        self.runtime_domain(project_id, Some(run.mini_project_id))?
+                            .domain
+                            .delivery
+                            .advisor_kind,
+                    ),
                     epic_id: Some(run.mini_project_id),
                     task_id: None,
                     desk_key: None,
@@ -10920,7 +11779,12 @@ impl Services {
                 )?;
                 TopologyScope {
                     node_id: Some(run.topology_node_id),
-                    kind: Some(delivery.committee_kind.clone()),
+                    kind: Some(
+                        self.runtime_domain(project_id, Some(run.mini_project_id))?
+                            .domain
+                            .delivery
+                            .committee_kind,
+                    ),
                     epic_id: Some(run.mini_project_id),
                     task_id: None,
                     desk_key: None,
@@ -10954,10 +11818,24 @@ impl Services {
         if let Some(desk_key) = scope.desk_key.as_ref() {
             return self.ensure_desk(project_id, desk_key);
         }
+        if let Some(epic) = scope.epic_id
+            && scope.kind.as_ref() == Some(&self.epic_control_kind(project_id, epic)?)
+        {
+            self.epic_purpose(project_id, epic, CoreTeamSeatPurpose::Control)?;
+        }
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
-        let spec = self.pinned_spec(project_id)?;
+        let context = scope
+            .epic_id
+            .map(|epic| self.runtime_domain(project_id, Some(epic)))
+            .transpose()?;
+        let (topology, spec) = match &context {
+            Some(context) => (context.topology.clone(), self.domain_topology(context)?),
+            None => (
+                self.project_topology(project_id)?,
+                self.pinned_spec(project_id)?,
+            ),
+        };
         let now = kontor_api::now();
 
         if let Some(node_id) = scope.node_id {
@@ -11016,6 +11894,7 @@ impl Services {
             );
         };
 
+        let context = context.expect("an epic scope verified its domain before placement");
         let scoped = state
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?;
@@ -11029,19 +11908,19 @@ impl Services {
         let epic = self.ensure_node(
             scoped
                 .iter()
-                .find(|node| node.kind == self.domain.delivery.epic_kind),
+                .find(|node| node.kind == context.domain.delivery.epic_kind),
             NewSessionTopologyNode {
                 id: TopologyNodeId::generate(),
                 project_id,
                 mini_project_id: Some(epic_id),
                 topology: topology.clone(),
-                kind: self.domain.delivery.epic_kind.clone(),
+                kind: context.domain.delivery.epic_kind.clone(),
                 parent_id: Some(root.id),
                 task_id: None,
                 created_at: now,
             },
         )?;
-        if kind == self.domain.delivery.epic_kind {
+        if kind == context.domain.delivery.epic_kind {
             return Ok(epic);
         }
         // A desk-led epic's leadership is a subject below its desk's workspace,
@@ -11050,7 +11929,7 @@ impl Services {
             if kind == led.leadership.epic_kind {
                 return self.ensure_epic_subject(project_id, epic_id, &led, &topology);
             }
-            if kind == self.domain.delivery.control_kind {
+            if kind == context.domain.delivery.control_kind {
                 return Err(self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "a desk-led epic has no control plane of its own",
@@ -11453,6 +12332,7 @@ impl Services {
             None => state
                 .with_store(|store| {
                     store.pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+                        operational_domain_bundle_hash: None,
                         project_id,
                         mini_project_id: epic_id,
                         definition: definition.clone(),
@@ -11674,7 +12554,25 @@ impl Services {
         let mut cwd = old_cwd.clone();
         let mut task_proof = serde_json::Value::Null;
         let mut predecessors = Vec::new();
-        if let Some(task_id) = node.task_id {
+        let consultation = self.consultation_checkout(node.project_id, node.id)?;
+        let is_consultation = consultation.is_some()
+            || self
+                .state()?
+                .with_store(|s| s.get_consultation_run_by_topology_node(node.project_id, node.id))
+                .map_err(|e| self.refuse(&e))?
+                .is_some();
+        if is_consultation {
+            let root = self.consultation_root(node.project_id, node.id)?;
+            if root.as_str() != old_cwd.as_str() {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation.recovery_binding_mismatch",
+                ));
+            }
+            self.prepare_consultation_checkout(node.project_id, node.id)
+                .await?;
+        }
+        if !is_consultation && let Some(task_id) = node.task_id {
             let state = self.state()?;
             let task = self.task_row(node.project_id, task_id)?;
             let claim = state
@@ -11754,11 +12652,15 @@ impl Services {
                 }
             }
         }
-        let proof = self.preview_hash(&serde_json::json!({
+        let mut proof = serde_json::json!({
             "schema_version":1,
             "node":node,"old_binding":expected,"task":task_proof,
             "canonical_cwd":cwd,"archived_predecessors":predecessors,
-        }))?;
+        });
+        if let Some(pin) = consultation {
+            proof["consultation"] = serde_json::json!(pin);
+        }
+        let proof = self.preview_hash(&proof)?;
         Ok((cwd, proof))
     }
 
@@ -11813,7 +12715,16 @@ impl Services {
             stale_identity: expected.identity.clone(),
             bound_project_native_id: parent_native_id.clone(),
             canonical_cwd: canonical_root,
-            task_container: recovery_node.task_id.is_some(),
+            task_container: recovery_node.task_id.is_some()
+                || self
+                    .consultation_checkout(project_id, topology_node_id)?
+                    .is_some()
+                || state
+                    .with_store(|s| {
+                        s.get_consultation_run_by_topology_node(project_id, topology_node_id)
+                    })
+                    .map_err(|e| self.refuse(&e))?
+                    .is_some(),
             expected_title: retitle.desired_title,
             requested_at: kontor_api::now(),
         };
@@ -13369,6 +14280,11 @@ impl Services {
             if act == SeatAct::Retire && !replayed {
                 let retired = adapter
                     .retire_hosted_seat(&HostedSeatRetireRequest {
+                        resolved_route: self.hosted_private_route_for_native(
+                            project_id,
+                            seat_binding_id,
+                            &hosted.native_identity,
+                        )?,
                         placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
                             workspace_native_id: container
                                 .as_ref()
@@ -13416,6 +14332,11 @@ impl Services {
             }
             let inspection = adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
+                    resolved_route: self.hosted_private_route_for_native(
+                        project_id,
+                        seat_binding_id,
+                        &hosted.native_identity,
+                    )?,
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
                     model_rung: hosted.model_rung.clone(),
@@ -13555,20 +14476,31 @@ impl Services {
         &self,
         seat: &kontor_core::state::SeatBinding,
     ) -> Result<TopologySeatDto, ApiError> {
-        let segment = self
-            .domain
-            .role_catalogs
-            .iter()
-            .find(|catalog| {
-                catalog.catalog_id == seat.role.catalog_id
-                    && catalog.version == seat.role.catalog_revision
-            })
-            .and_then(|catalog| {
-                catalog
-                    .roles
-                    .iter()
-                    .find(|entry| entry.role_code == seat.role.role_code)
-            })
+        let epic_scoped = self
+            .state()?
+            .with_store(|store| store.get_topology_node(seat.project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some_and(|node| node.mini_project_id.is_some());
+        let catalog = if epic_scoped {
+            self.catalog_revision(seat.role.catalog_id, seat.role.catalog_revision)?
+        } else {
+            self.domain
+                .role_catalogs
+                .iter()
+                .find(|catalog| {
+                    catalog.catalog_id == seat.role.catalog_id
+                        && catalog.version == seat.role.catalog_revision
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the catalog revision this seat is pinned to is not in this build",
+                    )
+                })?
+        };
+        let segment = catalog
+            .role(&seat.role.role_code)
             .map(|entry| entry.segment)
             .ok_or_else(|| {
                 self.deny(
@@ -14186,6 +15118,8 @@ impl Services {
         &self,
         project_id: ProjectId,
         rungs: &[ModelRung],
+        fleet: Option<&kontor_fleet::FleetSnapshot>,
+        source_bundle_hash: Option<&ContentHash>,
         now: Timestamp,
         missing: &'static str,
     ) -> Result<ModelRung, ApiError> {
@@ -14202,7 +15136,25 @@ impl Services {
         })?;
         let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
-        let effective_rungs = consultation_account_rungs(rungs, &accounts);
+        let effective_rungs: Vec<_> = consultation_account_rungs(rungs, &accounts)
+            .into_iter()
+            .filter(|rung| model_route_is_catalogued(rung, CatalogAuthority::PinnedFleet(fleet)))
+            .collect();
+        let mut supported = Vec::new();
+        for rung in effective_rungs {
+            match self.freeze_launch_route(
+                adapter.as_ref(),
+                &rung,
+                fleet.map(|policy| policy.hash()),
+                source_bundle_hash,
+                now,
+            ) {
+                Ok(_) => supported.push(rung),
+                Err(error) if error.code == ApiErrorCode::PlacementBlocked => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let effective_rungs = supported;
         let placement = resolve_chain_placement(
             adapter.as_ref(),
             &effective_rungs,
@@ -14242,6 +15194,8 @@ impl Services {
         &self,
         project_id: ProjectId,
         resolution: &kontor_fleet::FleetResolution,
+        fleet: &kontor_fleet::FleetSnapshot,
+        source_bundle_hash: Option<&ContentHash>,
         now: Timestamp,
         missing: &'static str,
     ) -> Result<
@@ -14265,6 +15219,10 @@ impl Services {
         })?;
         let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
+        let ordered = self
+            .host_ordered_resolution(fleet, resolution, source_bundle_hash, now)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let resolution = &ordered;
         let mut qualified = resolution.clone();
         qualified.routes = resolution
             .routes
@@ -14382,11 +15340,19 @@ impl Services {
             let routes = profile
                 .ordered_routes
                 .iter()
-                .map(|route| parse_runtime_model_route(route, fleet.as_deref()))
+                .map(|route| {
+                    parse_catalogued_model_route(
+                        route,
+                        CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                    )
+                })
                 .collect::<kontor_core::DomainResult<Vec<_>>>()
                 .map_err(|error| self.refuse_domain(&error))?;
             for route in &routes {
-                if !model_route_is_catalogued(route, fleet.as_deref()) {
+                if !model_route_is_catalogued(
+                    route,
+                    CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                ) {
                     return Err(self.deny(
                         ApiErrorCode::InvalidRequest,
                         "an initial Committee recovery route is absent from the governed model catalog",
@@ -14422,6 +15388,18 @@ impl Services {
                     ))
                     .map(|resolution| (fleet, resolution))
             });
+            let fleet_routes = fleet_routes
+                .map(|(fleet, resolution)| {
+                    self.host_ordered_resolution(
+                        fleet,
+                        &resolution,
+                        source_bundle_hash.as_ref(),
+                        now,
+                    )
+                    .map(|resolution| (fleet, resolution))
+                })
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?;
             fleet_routed.push(
                 fleet_routes
                     .as_ref()
@@ -14469,18 +15447,48 @@ impl Services {
             }
             let mut supported = Vec::new();
             for candidate in &effective {
+                if !model_route_is_catalogued(
+                    &candidate.model_rung,
+                    CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                ) {
+                    continue;
+                }
                 let provenance = candidate
                     .provenance()
                     .map_err(|error| self.refuse_domain(&error))?;
-                match adapter.validate_consultation_model_rung(&candidate.model_rung, &provenance) {
-                    Ok(()) => supported.push(candidate.clone()),
+                let provenance = match self
+                    .qualify_consultation_permissions(provenance, &candidate.model_rung)
+                {
+                    Ok(provenance) => provenance,
+                    Err(error) if error.code == ApiErrorCode::PlacementBlocked => continue,
+                    Err(error) => return Err(error),
+                };
+                let mut frozen = candidate.clone();
+                let route = match self.freeze_launch_route(
+                    adapter.as_ref(),
+                    &frozen.model_rung,
+                    fleet.as_deref().map(|fleet| fleet.hash()),
+                    source_bundle_hash.as_ref(),
+                    now,
+                ) {
+                    Ok(route) => route,
+                    Err(error) if error.code == ApiErrorCode::PlacementBlocked => continue,
+                    Err(error) => return Err(error),
+                };
+                match adapter.validate_consultation_launch_route(
+                    &frozen.model_rung,
+                    &provenance,
+                    route.frozen(),
+                ) {
+                    Ok(()) => {
+                        frozen.launch_route = Some(route);
+                        supported.push(frozen);
+                    }
                     Err(
                         RuntimeError::PermissionModeUnsupported { .. }
                         | RuntimeError::UnsupportedCapability { .. },
                     ) => {}
-                    Err(error) => {
-                        return Err(ApiError::from_runtime(state.realm_id(), &error));
-                    }
+                    Err(error) => return Err(ApiError::from_runtime(state.realm_id(), &error)),
                 }
             }
             let rungs: Vec<ModelRung> = supported
@@ -14556,12 +15564,13 @@ impl Services {
         caller: &kontor_core::state::SeatBinding,
     ) -> Result<StoredConsultationRun, ApiError> {
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
+        let domain_context = self.runtime_domain(project_id, Some(epic_id))?;
+        let topology = domain_context.topology.clone();
         let epic_node = self.ensure_scope_chain(
             project_id,
             &TopologyScope {
                 node_id: None,
-                kind: Some(self.domain.delivery.epic_kind.clone()),
+                kind: Some(domain_context.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
                 desk_key: None,
@@ -14639,10 +15648,12 @@ impl Services {
         // records the explicit eligibility its route was chosen under; a
         // template-routed admission keeps its exact shape.
         let (model_rung, eligibility, fleet_provenance) = match fleet_routes.as_ref() {
-            Some((_, resolution)) => {
+            Some((fleet, resolution)) => {
                 let (rung, eligibility, route) = self.freeze_fleet_consultation_rung(
                     project_id,
                     resolution,
+                    fleet,
+                    source_bundle_hash.as_ref(),
                     now,
                     "the Advisor profile has no model route",
                 )?;
@@ -14658,6 +15669,8 @@ impl Services {
                 self.freeze_consultation_model_rung(
                     project_id,
                     &profile.models.rungs,
+                    fleet.as_deref(),
+                    source_bundle_hash.as_ref(),
                     now,
                     "the Advisor profile has no model route",
                 )?,
@@ -14734,13 +15747,13 @@ impl Services {
             project_id,
             mini_project_id: Some(epic_id),
             topology,
-            kind: self.domain.delivery.advisor_kind.clone(),
+            kind: domain_context.domain.delivery.advisor_kind.clone(),
             parent_id: Some(epic_node.id),
             task_id: request.task_id,
             created_at: now,
         };
         let configured = definition
-            .container(&self.domain.delivery.advisor_kind)
+            .container(&domain_context.domain.delivery.advisor_kind)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -14757,11 +15770,27 @@ impl Services {
         let deadline = now
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
             .unwrap_or(now);
-        if let Some(adapter) = state.runtimes().get(&self.node_runtime_kind()?) {
-            adapter
-                .validate_consultation_model_rung(&model_rung, &route_provenance)
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        }
+        let adapter = state
+            .runtimes()
+            .get(&self.node_runtime_kind()?)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "consultation admission requires its runtime adapter",
+                )
+            })?;
+        let launch_route = self.freeze_launch_route(
+            adapter.as_ref(),
+            &model_rung,
+            fleet.as_deref().map(|policy| policy.hash()),
+            source_bundle_hash.as_ref(),
+            now,
+        )?;
+        let permission =
+            self.qualify_consultation_permissions(route_provenance.clone(), &model_rung)?;
+        adapter
+            .validate_consultation_launch_route(&model_rung, &permission, launch_route.frozen())
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let mut seats = Vec::with_capacity(configured.slots.len());
         let mut bindings = Vec::with_capacity(configured.slots.len());
         for slot in &configured.slots {
@@ -14778,7 +15807,7 @@ impl Services {
                 committee_role: None,
                 logical_role: logical_role.clone(),
                 seat_binding_id,
-                model_rung: model_rung.clone(),
+                model_rung: launch_route.clone(),
                 occupancy_generation: 1,
                 native_identity: None,
                 provider_session_id: None,
@@ -14789,7 +15818,7 @@ impl Services {
                 project_id,
                 topology_node_id: node_id,
                 role_slot_id: slot.slot_id.clone(),
-                role: self.catalog_role_for_code(role_code)?,
+                role: self.role_in_catalog(&domain_context.catalog, role_code)?,
                 task_id: request.task_id,
                 team_run_id: None,
                 attach_deadline: deadline,
@@ -14854,6 +15883,39 @@ impl Services {
             })
     }
 
+    fn recovered_consultation_fleet_provenance(
+        &self,
+        run: &StoredConsultationRun,
+        seat: &StoredConsultationSeat,
+    ) -> Result<Option<kontor_runtime::FleetLaunchProvenance>, ApiError> {
+        let profile = self
+            .state()?
+            .with_store(|store| store.get_consultation_generation_profile(run.project_id, seat))
+            .map_err(|error| self.refuse(&error))?;
+        let Some((profile, _)) = profile else {
+            return Ok(None);
+        };
+        let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the frozen consultation generation profile is unreadable",
+            )
+        })?;
+        match value.get("consultation_route_source") {
+            None => return Ok(None), // Historical profile-only recovery: no implicit policy pin.
+            Some(source) if source.as_str() == Some("fleet_configuration") => {}
+            Some(_) => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "consultation_permission_unpinned: the frozen recovery source is unsupported",
+                ));
+            }
+        }
+        self.frozen_fleet_provenance(Some(&value))?.ok_or_else(|| {
+            self.deny(ApiErrorCode::PlacementBlocked, "consultation_permission_unpinned: the frozen recovery source has no policy hash")
+        }).map(Some)
+    }
+
     /// The fleet launch provenance one Committee seat's launch requests: its
     /// admission's, while the seat still holds the admitted route. A rerouted
     /// seat's route was not the policy's choice and requests none.
@@ -14879,7 +15941,7 @@ impl Services {
                 })
             })
         else {
-            return Ok(None);
+            return self.recovered_consultation_fleet_provenance(run, seat);
         };
         let admitted = admission
             .get("model_route")
@@ -14888,11 +15950,11 @@ impl Services {
                 serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
                     .ok()
             })
-            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
-            .transpose()
-            .map_err(|error| self.refuse_domain(&error))?;
-        if admitted.as_ref() != Some(&seat.model_rung) {
-            return Ok(None);
+            .is_some_and(|route| {
+                frozen_runtime_route_matches(&route, &seat.model_rung.canonical_rung())
+            });
+        if !admitted {
+            return self.recovered_consultation_fleet_provenance(run, seat);
         }
         self.frozen_fleet_provenance(Some(admission))
     }
@@ -14905,7 +15967,6 @@ impl Services {
     ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -14922,8 +15983,26 @@ impl Services {
                 "the runtime selected for Advisor placement is not configured",
             )
         })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let pending_seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        for seat in pending_seats
+            .iter()
+            .filter(|seat| seat.native_identity.is_none())
+        {
+            let provenance = self.qualify_consultation_permissions(
+                self.advisor_route_provenance(run)?.for_legacy_recovery(),
+                &seat.model_rung.canonical_rung(),
+            )?;
+            adapter
+                .validate_consultation_launch_route(
+                    &seat.model_rung.canonical_rung(),
+                    &provenance,
+                    self.consultation_effect_route(&seat.model_rung)?,
+                )
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -14933,6 +16012,7 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
+        let scope = self.consultation_scope(run.project_id, node.id, scope)?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -14944,6 +16024,8 @@ impl Services {
             kontor_api::now(),
         )
         .map_err(|error| self.refuse_domain(&error))?;
+
+        // Refresh after awaited native preparation; preflight is not a dispatch snapshot.
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -14957,10 +16039,17 @@ impl Services {
             if seat.native_identity.is_some() {
                 continue;
             }
-            let route_provenance = self.advisor_route_provenance(run)?;
+            let route_provenance = self.qualify_consultation_permissions(
+                self.advisor_route_provenance(run)?.for_legacy_recovery(),
+                &seat.model_rung.canonical_rung(),
+            )?;
             let fleet_provenance = self.frozen_fleet_provenance(run.context.get("admission"))?;
             adapter
-                .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
+                .validate_consultation_launch_route(
+                    &seat.model_rung.canonical_rung(),
+                    &route_provenance,
+                    self.consultation_effect_route(&seat.model_rung)?,
+                )
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let seat_credential = state
                 .credentials()
@@ -14999,6 +16088,7 @@ impl Services {
             )?;
             let outcome = adapter
                 .launch_consultation(&ConsultationLaunchRequest {
+                    resolved_route: self.consultation_effect_route(&seat.model_rung)?.cloned(),
                     scope: scope.clone(),
                     run_id: run.id,
                     seat_binding_id: seat.seat_binding_id,
@@ -15008,7 +16098,7 @@ impl Services {
                     cwd: cwd.clone(),
                     prompt,
                     credential: ConsultationCredential::new(seat_credential),
-                    model_rung: seat.model_rung.clone(),
+                    model_rung: seat.model_rung.canonical_rung(),
                     route_provenance,
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
@@ -15133,7 +16223,7 @@ impl Services {
                     committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
-                    model_route: runtime_model_route_dto(&seat.model_rung),
+                    model_route: runtime_model_route_dto(&seat.model_rung.canonical_rung()),
                     observed_binding: seat.native_identity.map(|identity| ObservedBindingDto {
                         runtime_kind: identity.runtime_kind,
                         native_id: identity.native_id,
@@ -15170,12 +16260,13 @@ impl Services {
             re_review_evidence,
         } = invocation;
         let state = self.state()?;
-        let topology = self.project_topology(project_id)?;
+        let domain_context = self.runtime_domain(project_id, Some(epic_id))?;
+        let topology = domain_context.topology.clone();
         let epic_node = self.ensure_scope_chain(
             project_id,
             &TopologyScope {
                 node_id: None,
-                kind: Some(self.domain.delivery.epic_kind.clone()),
+                kind: Some(domain_context.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
                 desk_key: None,
@@ -15325,7 +16416,7 @@ impl Services {
             project_id,
             mini_project_id: Some(epic_id),
             topology,
-            kind: self.domain.delivery.committee_kind.clone(),
+            kind: domain_context.domain.delivery.committee_kind.clone(),
             parent_id: Some(epic_node.id),
             task_id: request.task_id,
             created_at: now,
@@ -15336,7 +16427,7 @@ impl Services {
         let mut stored_seats = Vec::with_capacity(template.slots.len());
         let mut bindings = Vec::with_capacity(template.slots.len());
         for (slot, frozen) in template.slots.iter().zip(frozen_model_rungs) {
-            let code = self
+            let code = domain_context
                 .domain
                 .delivery
                 .role_code(&slot.logical_role)
@@ -15353,7 +16444,12 @@ impl Services {
                 committee_role: Some(slot.role),
                 logical_role: slot.logical_role.clone(),
                 seat_binding_id,
-                model_rung: frozen.model_rung,
+                model_rung: frozen.launch_route.ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "host_route_snapshot_missing",
+                    )
+                })?,
                 occupancy_generation: 1,
                 native_identity: None,
                 provider_session_id: None,
@@ -15364,7 +16460,7 @@ impl Services {
                 project_id,
                 topology_node_id: node_id,
                 role_slot_id: slot.id.clone(),
-                role: self.catalog_role_for_code(code)?,
+                role: self.role_in_catalog(&domain_context.catalog, code)?,
                 task_id: request.task_id,
                 team_run_id: None,
                 attach_deadline: deadline,
@@ -15385,6 +16481,52 @@ impl Services {
         run: &StoredConsultationRun,
         seat: &StoredConsultationSeat,
     ) -> Result<ConsultationRouteProvenance, ApiError> {
+        if let Some((profile, _)) = self
+            .state()?
+            .with_store(|store| store.get_consultation_generation_profile(run.project_id, seat))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|(_, state)| state == "installed")
+        {
+            let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen recovery profile is unreadable",
+                )
+            })?;
+            let source = if value.get("ordered_routes").is_some() {
+                "materialization_recovery_profile"
+            } else {
+                "seat_recovery_profile"
+            };
+            let route = self
+                .state()?
+                .with_store(|store| {
+                    if source == "materialization_recovery_profile" {
+                        store.get_consultation_materialization_route_provenance(
+                            run.project_id,
+                            run.id,
+                            &seat.role_slot_id,
+                            seat.occupancy_generation,
+                        )
+                    } else {
+                        store.get_consultation_recovery_route_provenance(
+                            run.project_id,
+                            run.id,
+                            &seat.role_slot_id,
+                            seat.occupancy_generation,
+                        )
+                    }
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if !route.is_some_and(|(rung, hash)| rung == seat.model_rung && hash == *profile.hash())
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen recovery profile does not bind the exact active route",
+                ));
+            }
+            return self.recovery_route_provenance(source, &profile);
+        }
         let admission = run
             .context
             .get("admission")
@@ -15406,7 +16548,11 @@ impl Services {
             // else still needs durable reroute provenance below.
             let (_, template) = self.committee_template(run)?;
             if template.slots.iter().any(|slot| {
-                slot.id == seat.role_slot_id && slot.models.rungs.contains(&seat.model_rung)
+                slot.id == seat.role_slot_id
+                    && slot
+                        .models
+                        .rungs
+                        .contains(&seat.model_rung.canonical_rung())
             }) {
                 return Ok(ConsultationRouteProvenance::template(
                     run.definition_hash.clone(),
@@ -15426,16 +16572,13 @@ impl Services {
                 serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
                     .ok()
             })
-            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
-            .transpose()
-            .map_err(|error| self.refuse_domain(&error))?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::Unavailable,
                     "the frozen Committee admission route is unreadable",
                 )
             })?;
-        if admitted_route == seat.model_rung {
+        if frozen_runtime_route_matches(&admitted_route, &seat.model_rung.canonical_rung()) {
             let source = admission
                 .get("source")
                 .and_then(serde_json::Value::as_str)
@@ -15461,42 +16604,10 @@ impl Services {
                 .map_err(|error| self.refuse_domain(&error));
         }
 
-        let materialization_reroute = self
-            .state()?
-            .with_store(|store| {
-                store.get_consultation_materialization_route_provenance(
-                    run.project_id,
-                    run.id,
-                    &seat.role_slot_id,
-                    seat.occupancy_generation,
-                )
-            })
-            .map_err(|error| self.refuse(&error))?
-            .filter(|(rung, _)| rung == &seat.model_rung);
-        if let Some((_, profile_hash)) = materialization_reroute {
-            return consultation_route_provenance("materialization_recovery_profile", profile_hash)
-                .map_err(|error| self.refuse_domain(&error));
-        }
-        let recovery = self
-            .state()?
-            .with_store(|store| {
-                store.get_consultation_recovery_route_provenance(
-                    run.project_id,
-                    run.id,
-                    &seat.role_slot_id,
-                    seat.occupancy_generation,
-                )
-            })
-            .map_err(|error| self.refuse(&error))?
-            .filter(|(rung, _)| rung == &seat.model_rung)
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the active Committee route has no immutable admission or reroute provenance",
-                )
-            })?;
-        consultation_route_provenance("seat_recovery_profile", recovery.1)
-            .map_err(|error| self.refuse_domain(&error))
+        Err(self.deny(
+            ApiErrorCode::PlacementBlocked,
+            "the active Committee route has no immutable admission or reroute provenance",
+        ))
     }
 
     /// Evaluate one formal Committee snapshot. Unaffected seats, including a
@@ -15563,7 +16674,7 @@ impl Services {
                 && profile
                     .as_ref()
                     .and_then(|(profile, _)| recovery_profile_value_candidate(profile))
-                    .is_some_and(|candidate| candidate.rung == seat.model_rung);
+                    .is_some_and(|candidate| candidate.rung == seat.model_rung.canonical_rung());
             if profile
                 .as_ref()
                 .is_some_and(|(_, state)| state != "installed")
@@ -15631,6 +16742,8 @@ impl Services {
     ) -> Result<kontor_fleet::AllocationCandidate, ApiError> {
         self.committee_seat_route_provenance(run, seat)?;
         if let Some(profile) = profile {
+            let pinned_policy = self.frozen_consultation_catalog(run, seat)?;
+            let fleet = pinned_policy.as_ref();
             let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -15645,7 +16758,7 @@ impl Services {
                             "the frozen recovery constraint candidate is unreadable",
                         )
                     })?;
-                if candidate.rung == seat.model_rung {
+                if candidate.rung == seat.model_rung.canonical_rung() {
                     return Ok(candidate);
                 }
                 return Err(self.deny(
@@ -15668,9 +16781,18 @@ impl Services {
                                 "the frozen accepted recovery route is unreadable",
                             )
                         })?;
-                    let rung = parse_runtime_model_route(&route, fleet)
-                        .map_err(|error| self.refuse_domain(&error))?;
-                    if rung == seat.model_rung {
+                    if !frozen_runtime_route_matches(&route, &seat.model_rung.canonical_rung()) {
+                        continue;
+                    }
+                    let rung = parse_catalogued_model_route(
+                        &route,
+                        CatalogAuthority::FrozenRecovery {
+                            snapshot: fleet,
+                            route: &seat.model_rung.canonical_rung(),
+                        },
+                    )
+                    .map_err(|error| self.refuse_domain(&error))?;
+                    if rung == seat.model_rung.canonical_rung() {
                         let vendor = fleet
                             .and_then(|fleet| fleet.vendor_of(&rung))
                             .map(ToOwned::to_owned);
@@ -15696,7 +16818,8 @@ impl Services {
                 })
             })
             .filter(|route| {
-                route["model_route"] == serde_json::json!(runtime_model_route_dto(&seat.model_rung))
+                route["model_route"]
+                    == serde_json::json!(runtime_model_route_dto(&seat.model_rung.canonical_rung()))
             });
         let provenance = self.committee_seat_fleet_provenance(run, seat)?;
         let (step, sub_step, vendor) = if let Some(provenance) = provenance {
@@ -15737,7 +16860,7 @@ impl Services {
                         slot.models
                             .rungs
                             .iter()
-                            .position(|rung| rung == &seat.model_rung)
+                            .position(|rung| rung == &seat.model_rung.canonical_rung())
                     })
                     .and_then(|index| u16::try_from(index + 1).ok())
                     .unwrap_or(0),
@@ -15747,12 +16870,12 @@ impl Services {
                 rank,
                 1,
                 fleet
-                    .and_then(|fleet| fleet.vendor_of(&seat.model_rung))
+                    .and_then(|fleet| fleet.vendor_of(&seat.model_rung.canonical_rung()))
                     .map(ToOwned::to_owned),
             )
         };
         Ok(kontor_fleet::AllocationCandidate {
-            rung: seat.model_rung.clone(),
+            rung: seat.model_rung.canonical_rung(),
             step,
             sub_step,
             independence: vendor.clone(),
@@ -15771,13 +16894,18 @@ impl Services {
     ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
         if run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID {
-            let fleet = self
-                .fleet_policy()
-                .map_err(|error| self.refuse_domain(&error))?;
-            self.formal_committee_placement(run, template, None, fleet.as_deref(), false)?;
+            let seats = self
+                .state()?
+                .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+                .map_err(|error| self.refuse(&error))?;
+            let fleet = seats
+                .first()
+                .map(|seat| self.frozen_consultation_catalog(run, seat))
+                .transpose()?
+                .flatten();
+            self.formal_committee_placement(run, template, None, fleet.as_ref(), false)?;
         }
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -15794,8 +16922,27 @@ impl Services {
                 "the runtime selected for Committee placement is not configured",
             )
         })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let pending_seats = state
+            .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
+            .map_err(|error| self.refuse(&error))?;
+        for seat in pending_seats.iter().filter(|seat| {
+            seat.native_identity.is_none()
+                && (include_judge || seat.committee_role != Some(CommitteeRole::Judge))
+        }) {
+            let provenance = self.qualify_consultation_permissions(
+                self.committee_seat_route_provenance(run, seat)?
+                    .for_legacy_recovery(),
+                &seat.model_rung.canonical_rung(),
+            )?;
+            adapter
+                .validate_consultation_launch_route(
+                    &seat.model_rung.canonical_rung(),
+                    &provenance,
+                    self.consultation_effect_route(&seat.model_rung)?,
+                )
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        }
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -15805,6 +16952,7 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
+        let scope = self.consultation_scope(run.project_id, node.id, scope)?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -15847,6 +16995,8 @@ impl Services {
                 )
             })?
             .unwrap_or_else(|| "not applicable".to_owned());
+
+        // Refresh after awaited native preparation; preflight is not a dispatch snapshot.
         let mut seats = state
             .with_store(|store| store.list_consultation_seats(run.project_id, run.id))
             .map_err(|error| self.refuse(&error))?;
@@ -15866,10 +17016,18 @@ impl Services {
             {
                 continue;
             }
-            let route_provenance = self.committee_seat_route_provenance(run, seat)?;
+            let route_provenance = self.qualify_consultation_permissions(
+                self.committee_seat_route_provenance(run, seat)?
+                    .for_legacy_recovery(),
+                &seat.model_rung.canonical_rung(),
+            )?;
             let fleet_provenance = self.committee_seat_fleet_provenance(run, seat)?;
             adapter
-                .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
+                .validate_consultation_launch_route(
+                    &seat.model_rung.canonical_rung(),
+                    &route_provenance,
+                    self.consultation_effect_route(&seat.model_rung)?,
+                )
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let evidence = if slot.role == CommitteeRole::Judge {
                 serde_json::to_string(
@@ -15894,7 +17052,10 @@ impl Services {
                     seat.seat_binding_id,
                     seat.occupancy_generation,
                 );
-            let authority = if provider_family(&seat.model_rung.provider.0) == "opencode" {
+            let authority = if seat.model_rung.frozen().map_or_else(
+                || provider_family(&seat.model_rung.canonical_rung().provider.0) == "opencode",
+                |route| route.route_provider == "opencode",
+            ) {
                 "Operator-authorized behavioral fallback Committee seat. The runtime does not \
                  assert filesystem containment; you must inspect only and must not mutate code,"
             } else {
@@ -15939,6 +17100,7 @@ impl Services {
             )?;
             let outcome = adapter
                 .launch_consultation(&ConsultationLaunchRequest {
+                    resolved_route: self.consultation_effect_route(&seat.model_rung)?.cloned(),
                     scope: scope.clone(),
                     run_id: run.id,
                     seat_binding_id: seat.seat_binding_id,
@@ -15948,7 +17110,7 @@ impl Services {
                     cwd: cwd.clone(),
                     prompt,
                     credential: ConsultationCredential::new(seat_credential),
-                    model_rung: seat.model_rung.clone(),
+                    model_rung: seat.model_rung.canonical_rung(),
                     route_provenance,
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
@@ -15996,10 +17158,11 @@ impl Services {
         run: &StoredConsultationRun,
         template: &CommitteeTemplateSpec,
         predecessor: &StoredConsultationSeat,
-        model_rung: ModelRung,
+        launch_route: kontor_core::launch_route::StoredLaunchRoute,
         route_provenance: ConsultationRouteProvenance,
         fleet_provenance: Option<kontor_runtime::FleetLaunchProvenance>,
     ) -> Result<StoredConsultationSeat, ApiError> {
+        let model_rung = launch_route.canonical_rung();
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let slot = template
@@ -16012,7 +17175,6 @@ impl Services {
                     "the consultation seat is absent from its pinned Committee template",
                 )
             })?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -16029,8 +17191,7 @@ impl Services {
                 "the runtime selected for Committee recovery is not configured",
             )
         })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
             .await?;
@@ -16040,6 +17201,7 @@ impl Services {
             node.task_id,
             adapter.as_ref(),
         )?;
+        let scope = self.consultation_scope(run.project_id, node.id, scope)?;
         let capabilities = adapter
             .discover_capabilities()
             .await
@@ -16079,10 +17241,21 @@ impl Services {
         } else {
             "[]".to_owned()
         };
+        let route_provenance = self.qualify_consultation_permissions(
+            route_provenance.for_legacy_recovery(),
+            &model_rung,
+        )?;
         adapter
-            .validate_consultation_model_rung(&model_rung, &route_provenance)
+            .validate_consultation_launch_route(
+                &model_rung,
+                &route_provenance,
+                self.consultation_effect_route(&launch_route)?,
+            )
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let authority = if provider_family(&model_rung.provider.0) == "opencode" {
+        let authority = if launch_route.frozen().map_or_else(
+            || provider_family(&model_rung.provider.0) == "opencode",
+            |route| route.route_provider == "opencode",
+        ) {
             "Operator-authorized behavioral fallback Committee seat. The runtime does not assert \
              filesystem containment; you must inspect only and must not mutate code,"
         } else {
@@ -16125,6 +17298,7 @@ impl Services {
         let requested_at = kontor_api::now();
         let outcome = adapter
             .launch_consultation(&ConsultationLaunchRequest {
+                resolved_route: self.consultation_effect_route(&launch_route)?.cloned(),
                 scope,
                 run_id: run.id,
                 seat_binding_id: predecessor.seat_binding_id,
@@ -16158,7 +17332,7 @@ impl Services {
             &outcome.fleet_provenance,
         );
         let mut successor = predecessor.clone();
-        successor.model_rung = model_rung;
+        successor.model_rung = launch_route;
         successor.native_identity = Some(outcome.identity);
         successor.provider_session_id = outcome.provider_session_id;
         successor.observed_at = Some(outcome.observed_at);
@@ -16195,7 +17369,7 @@ impl Services {
             seat_binding_id: successor.seat_binding_id,
             predecessor_native_id,
             successor_native_id,
-            active_model_route: runtime_model_route_dto(&successor.model_rung),
+            active_model_route: runtime_model_route_dto(&successor.model_rung.canonical_rung()),
             receipt,
         })
     }
@@ -16277,7 +17451,7 @@ impl Services {
                     committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
-                    model_route: runtime_model_route_dto(&seat.model_rung),
+                    model_route: runtime_model_route_dto(&seat.model_rung.canonical_rung()),
                     observed_binding: seat.native_identity.map(|identity| ObservedBindingDto {
                         runtime_kind: identity.runtime_kind,
                         native_id: identity.native_id,
@@ -17055,7 +18229,7 @@ fn account_for_explicit_provider_alias(
 ///
 /// Paseo selects an account through the provider alias itself. A template's
 /// generic `claude` rung therefore cannot participate in the account-before-
-/// rung walk whose candidates are `claude-work` and `claude-personal`; this
+/// rung walk whose candidates are `claude-b` and `claude-a`; this
 /// expansion preserves the declared model/effort while making those governed
 /// choices explicit and deterministic. Already-qualified routes remain exact.
 ///
@@ -17119,6 +18293,7 @@ fn committee_route_candidates(
                 .any(|existing: &FrozenCommitteeRoute| existing.model_rung == model_rung)
             {
                 candidates.push(FrozenCommitteeRoute {
+                    launch_route: None,
                     model_rung,
                     source,
                     rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
@@ -17356,36 +18531,54 @@ fn formal_committee_replacement_candidates(
         .collect()
 }
 
-/// Whether one route is exposed by the governed Teams model catalog or by the
-/// live fleet configuration.
-///
-/// A route is catalogued when the compiled list accepts it or the current
-/// `fleet.yml` snapshot lists its account alias, model and effort. Explicit
-/// routes — initial-admission recovery profiles, the bridge's named-route
-/// moves, Committee seat recovery — pass through this same predicate, so a
-/// fleet-only model such as Opus 5.5 is nameable without a rebuild.
-/// `/v1/catalog` still advertises only the compiled list (DEF-004).
-pub(crate) fn model_route_is_catalogued(
-    rung: &ModelRung,
-    fleet: Option<&crate::fleet::FleetSnapshot>,
-) -> bool {
-    compiled_route_is_catalogued(rung) || fleet.is_some_and(|fleet| fleet.lists(rung))
+/// The source that may recognize a route. Recognition never supplies placement authority.
+#[derive(Clone, Copy)]
+pub(crate) enum CatalogAuthority<'a> {
+    /// Historical/bootstrap consumers with no fleet policy context.
+    CompiledOnly,
+    /// Exact selected/activated snapshot; absence never falls back.
+    PinnedFleet(Option<&'a crate::fleet::FleetSnapshot>),
+    /// Compatibility only for this exact already-persisted historical route.
+    FrozenRecovery {
+        snapshot: Option<&'a crate::fleet::FleetSnapshot>,
+        route: &'a ModelRung,
+    },
+}
+
+pub(crate) fn model_route_is_catalogued(rung: &ModelRung, authority: CatalogAuthority<'_>) -> bool {
+    match authority {
+        CatalogAuthority::CompiledOnly => compiled_route_is_catalogued(rung),
+        CatalogAuthority::PinnedFleet(snapshot) => {
+            snapshot.is_some_and(|snapshot| snapshot.lists(rung))
+        }
+        CatalogAuthority::FrozenRecovery { snapshot, route } => {
+            rung == route
+                && (snapshot.is_some_and(|snapshot| snapshot.lists(rung))
+                    || compiled_route_is_catalogued(rung))
+        }
+    }
 }
 
 /// Whether the compiled model list accepts one route, ignoring the live fleet.
 fn compiled_route_is_catalogued(rung: &ModelRung) -> bool {
     let effort = rung.effort.map(EffortLevel::as_str);
     let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));
-    match (rung.provider.0.as_str(), rung.model.0.as_str()) {
-        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-sol" | "gpt-5.6-terra") => {
+    // Family recognition grants no account: selected placements require exact
+    // fleet/host membership and the existing account eligibility checks.
+    let provider = match provider_family(&rung.provider.0) {
+        family @ ("codex" | "claude") => family,
+        _ => rung.provider.0.as_str(),
+    };
+    match (provider, rung.model.0.as_str()) {
+        ("codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultra"])
         }
-        ("claude" | "claude-work" | "claude-personal", "claude-opus-5") => {
+        ("claude", "claude-opus-5") => {
             effort_is(&["off", "low", "medium", "high", "xhigh", "max", "ultracode"])
         }
         // Historical frozen routes remain admissible during recovery. Only the
         // current catalog below advertises the replacement release.
-        ("claude" | "claude-work" | "claude-personal", "claude-fable-5" | "claude-fable-5-1") => {
+        ("claude", "claude-fable-5" | "claude-fable-5-1") => {
             effort_is(&["low", "medium", "high", "xhigh", "max", "ultracode"])
         }
         ("opencode", "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash") => {
@@ -17396,9 +18589,7 @@ fn compiled_route_is_catalogued(rung: &ModelRung) -> bool {
         // Recognition only: whether a route is *reachable* still depends on
         // account headroom, role eligibility, provider availability and
         // template authority, which remain the separate gates they already are.
-        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-luna") => {
-            effort_is(&["low", "medium", "high", "xhigh", "max"])
-        }
+        ("codex", "gpt-5.6-luna") => effort_is(&["low", "medium", "high", "xhigh", "max"]),
         ("cursor", "auto-smart") => effort_is(&["low", "medium", "high", "xhigh"]),
         // Operator exception 2026-09-23: Codex's model through the Cursor
         // plan, for audit and review while Codex accounts are exhausted.
@@ -17785,10 +18976,44 @@ fn freeze_seat_model_rung(
     })
 }
 
+// Stored admission is compared to its frozen seat, never reinterpreted by today's catalog.
+fn frozen_runtime_route_matches(route: &RuntimeModelRouteRequest, rung: &ModelRung) -> bool {
+    route.provider == rung.provider.0
+        && route.model == rung.model.0
+        && route.effort.as_deref() == rung.effort.map(EffortLevel::as_str)
+}
+
+/// Legacy/bootstrap adapter retained for byte-identical protected project consumers.
+/// The supplied current fleet is deliberately not an authority for these operations.
 fn parse_runtime_model_route(
     route: &RuntimeModelRouteRequest,
-    fleet: Option<&crate::fleet::FleetSnapshot>,
+    _legacy_fleet: Option<&crate::fleet::FleetSnapshot>,
 ) -> kontor_core::DomainResult<ModelRung> {
+    parse_catalogued_model_route(route, CatalogAuthority::CompiledOnly)
+}
+
+fn parse_catalogued_model_route(
+    route: &RuntimeModelRouteRequest,
+    authority: CatalogAuthority<'_>,
+) -> kontor_core::DomainResult<ModelRung> {
+    let rung = parse_model_route(route)?;
+    if matches!(authority, CatalogAuthority::PinnedFleet(None)) {
+        return Err(kontor_core::DomainError::MissingEvidence {
+            subject: "model_catalog",
+            rule: "fleet_catalog_unpinned: an exact fleet snapshot is required",
+        });
+    }
+    if !model_route_is_catalogued(&rung, authority) {
+        return Err(kontor_core::DomainError::invalid(
+            "RuntimeModelRouteRequest",
+            "the model route is not in the governed catalog",
+        ));
+    }
+    Ok(rung)
+}
+
+/// Parse a compare-and-swap witness; this supplies no route authorization.
+fn parse_model_route(route: &RuntimeModelRouteRequest) -> kontor_core::DomainResult<ModelRung> {
     if route.provider.trim().is_empty() || route.model.trim().is_empty() {
         return Err(kontor_core::DomainError::invalid(
             "RuntimeModelRouteRequest",
@@ -17802,12 +19027,6 @@ fn parse_runtime_model_route(
         effort,
     };
     rung.validate()?;
-    if !model_route_is_catalogued(&rung, fleet) {
-        return Err(kontor_core::DomainError::invalid(
-            "RuntimeModelRouteRequest",
-            "the model route is not in the governed catalog",
-        ));
-    }
     Ok(rung)
 }
 
@@ -17875,6 +19094,37 @@ fn fleet_bundle_manifest_dto(
             content_hash: manifest.role_catalog.content_hash.clone(),
         },
         core_team_revision_hash: manifest.core_team_revision_hash.clone(),
+        operational_domain: manifest.operational_domain.as_ref().map(|pin| {
+            kontor_api::applications::OperationalDomainPinDto {
+                source: pin.source.clone(),
+                source_hash: pin.source_hash.clone(),
+            }
+        }),
+        publication_policy: manifest.publication_policy.as_ref().map(|policy| {
+            kontor_api::applications::FleetPublicationPolicyDto {
+                project_id: policy.project_id,
+                repositories: policy
+                    .repositories
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                root_repository: policy.root_repository.to_string(),
+                module_repositories: policy
+                    .module_repositories
+                    .iter()
+                    .map(|(module, repository)| (module.to_string(), repository.to_string()))
+                    .collect(),
+                base_branch: policy.base_branch.to_string(),
+                branch_rules: policy.branch_rules.as_ref().map(|rules| {
+                    kontor_api::applications::FleetProjectBranchRulesDto {
+                        project_key: rules.project_key.clone(),
+                        types: rules.types.iter().map(ToString::to_string).collect(),
+                        pattern: rules.pattern.clone(),
+                        commit_pattern: rules.commit_pattern.clone(),
+                    }
+                }),
+            }
+        }),
     }
 }
 
@@ -17928,7 +19178,7 @@ fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::Domain
                 model: ModelRef(model.to_owned()),
                 effort,
             };
-            if !model_route_is_catalogued(&rung, None) {
+            if !model_route_is_catalogued(&rung, CatalogAuthority::CompiledOnly) {
                 return Err(kontor_core::DomainError::invalid(
                     "TeamDraftRequest",
                     "a model rung must use a route in the governed catalog",
@@ -18493,7 +19743,8 @@ fn core_team_effects(
             )?,
             Some(existing)
                 if existing.presence != seat.presence
-                    || existing.ad_hoc_allowed != seat.ad_hoc_allowed =>
+                    || existing.ad_hoc_allowed != seat.ad_hoc_allowed
+                    || existing.purposes != seat.purposes =>
             {
                 push(
                     slot,
@@ -19235,9 +20486,9 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<SeatBindingId, ApiError> {
-        self.live_control_seats(project_id, epic_id, role_code)?
+        self.live_control_seats(project_id, epic_id, purpose)?
             .first()
             .copied()
             .ok_or_else(|| {
@@ -19257,8 +20508,9 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<Vec<SeatBindingId>, ApiError> {
+        let expected = self.epic_purpose(project_id, epic_id, purpose)?;
         let scope = self.resolve_scope(
             project_id,
             &SemanticTopologyTargetDto::EpicControl { epic_id },
@@ -19285,7 +20537,10 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .into_iter()
             .filter(|seat| {
-                seat.role.role_code.as_str() == role_code
+                seat.role_slot_id == expected.role_slot_id
+                    && seat.role.catalog_id == expected.role.catalog_id
+                    && seat.role.catalog_revision == expected.role.catalog_revision
+                    && seat.role.role_code == expected.role.role_code
                     && seat.lifecycle != TopologyLifecycle::Retired
             })
             .map(|seat| seat.id)
@@ -19308,10 +20563,10 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
     ) -> Result<SeatBindingId, ApiError> {
         match self
-            .live_control_seats(project_id, epic_id, role_code)?
+            .live_control_seats(project_id, epic_id, purpose)?
             .as_slice()
         {
             [only] => Ok(*only),
@@ -19346,11 +20601,11 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        role_code: &str,
+        purpose: CoreTeamSeatPurpose,
         seat_binding_id: SeatBindingId,
         occupancy_generation: u64,
     ) -> Result<RemediationAuthority, ApiError> {
-        let current = self.epic_control_seat(project_id, epic_id, role_code)?;
+        let current = self.epic_control_seat(project_id, epic_id, purpose)?;
         if current != seat_binding_id {
             return Err(self.deny(
                 ApiErrorCode::Forbidden,
@@ -19610,7 +20865,8 @@ impl Services {
         now: Timestamp,
     ) -> Result<(StoredEpicCompletion, CompiledCompletion), ApiError> {
         let compiled = self.builtin_completion()?;
-        let tpm = self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
+        let tpm =
+            self.epic_control_seat(project_id, epic_id, CoreTeamSeatPurpose::ProcessCloser)?;
         let requirements = self.epic_ticket_requirements(project_id, epic_id)?;
         if requirements.is_empty() {
             return Err(self.deny(
@@ -20115,10 +21371,9 @@ impl Services {
                     |spec| {
                         spec.validate().is_ok()
                             && spec.slots.iter().all(|slot| {
-                                slot.models
-                                    .rungs
-                                    .iter()
-                                    .all(|rung| model_route_is_catalogued(rung, None))
+                                slot.models.rungs.iter().all(|rung| {
+                                    model_route_is_catalogued(rung, CatalogAuthority::CompiledOnly)
+                                })
                             })
                     },
                 )
@@ -20316,7 +21571,7 @@ impl Services {
                 let live = self.sole_live_control_seat(
                     stored.project_id,
                     stored.mini_project_id,
-                    MANDATORY_PROGRAM_ROLE,
+                    CoreTeamSeatPurpose::ProcessCloser,
                 )?;
                 if live != *seat_binding_id {
                     forward.tpm_seat_id = live;
@@ -20485,6 +21740,11 @@ impl Services {
         };
         let outcome = adapter
             .message_hosted_seat(&HostedSeatMessageRequest {
+                resolved_route: self.hosted_message_route(
+                    delivery.wake.project_id,
+                    delivery.wake.seat_binding_id,
+                    &delivery.native_identity,
+                )?,
                 seat_binding_id: delivery.wake.seat_binding_id,
                 identity: delivery.native_identity.clone(),
                 message_id,
@@ -21137,6 +22397,10 @@ impl Services {
         }
         let observation = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: kontor_api::now(),
             })
@@ -21376,6 +22640,10 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let observation = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: now,
             })
@@ -21737,6 +23005,10 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let observation = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: now,
             })
@@ -21812,8 +23084,9 @@ impl Services {
                     "the Committee epic has no pinned Team Definition",
                 )
             })?;
+        let context = self.runtime_domain(project_id, Some(run.mini_project_id))?;
         let container = definition
-            .container(&self.domain.delivery.committee_kind)
+            .container(&context.domain.delivery.committee_kind)
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -21974,6 +23247,309 @@ impl Services {
             retitle,
             adapter,
         })
+    }
+}
+
+impl Services {
+    // -- The provider-availability marker's own helpers -----------------------
+    //
+    // They sit beside the trait implementation rather than inside it because
+    // they are decisions this composition root makes for itself, not operations
+    // the public contract declares.
+
+    /// Answer a replay of a key already bound to this exact correction.
+    ///
+    /// A marker that is already gone is the durable effect this key names, so
+    /// nothing is written. That state is also completed here: a first attempt
+    /// whose write landed but whose completion insert failed leaves a claimed
+    /// key with the marker gone, and without this row a later operator restore
+    /// of the marker would make the key look unfinished and remove the marker a
+    /// new outage left. A completed key is answered the same way even when
+    /// the operator has restored the marker for a later outage: completion is
+    /// durable state, not a guess from the current bytes, so the restored
+    /// marker survives its replay. A marker that still stands at the revision
+    /// the first attempt read and whose key never completed means the process
+    /// died or the write failed before the document moved: the same request
+    /// carries enough state to finish that correction now, and the retry must
+    /// not be refused over the revision its own first attempt read. Anything
+    /// else is a conflict for the caller to read rather than a second write to
+    /// perform.
+    fn replayed_provider_marker(
+        &self,
+        state: &ApiState,
+        key: &IdempotencyKey,
+        family: &RuntimeKindKey,
+        request: &ProviderMarkerApplyRequest,
+    ) -> Result<ProviderMarkerDto, ApiError> {
+        let changed_since = || {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the runtime settings document changed after this key's correction",
+            )
+            .advising("read the marker again with the preview and apply with a fresh key")
+        };
+        let restart_required =
+            !self.running_daemon_answers_available(state, family, &request.provider);
+        // A completed key is answered from its durable row before the document
+        // is read, so removing the addressed setting or the whole file after a
+        // successful correction cannot turn its retry into a revision conflict.
+        if let Some(completion) = state
+            .with_store(|store| store.provider_marker_completion(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: completion.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: completion.before.into_iter().collect(),
+                after: completion.after.into_iter().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision: completion.written_revision,
+            });
+        }
+        let path = crate::runtimes::path_in(&self.state_root);
+        let bytes = crate::provider_marker::read(&path)
+            .map_err(|error| self.provider_marker_error(error))?
+            .ok_or_else(changed_since)?;
+        let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
+            .map_err(|_| changed_since())?;
+        let revision = ContentHash::of(&bytes);
+        if !plan.before.contains(&request.provider) {
+            // A first attempt whose rename landed but whose directory flush did
+            // not is recovered here. Make the rename durable before completion
+            // says this key's effect finished, or a power cut could bring the
+            // marked document back under a completed key.
+            crate::provider_marker::sync_parent_directory(&path)
+                .map_err(|error| self.provider_marker_error(error))?;
+            state
+                .with_store(|store| {
+                    store.record_provider_marker_completion(
+                        key.as_str(),
+                        &revision,
+                        &plan.host_key,
+                        &plan.before,
+                        &plan.after,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: plan.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: plan.before.iter().cloned().collect(),
+                after: plan.after.iter().cloned().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision,
+            });
+        }
+        // A first attempt that started writing but never recorded completion is
+        // not repeated while the marker still stands: the operator may have
+        // restored it for a new outage after that write landed, and the
+        // document alone cannot tell the two states apart.
+        if state
+            .with_store(|store| store.provider_marker_write_started(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "a previous attempt started writing this correction and did not complete it",
+                )
+                .advising(
+                    "read the marker again with the preview and apply with a fresh key; a restored marker may belong to a new outage",
+                ));
+        }
+        if revision != request.expected_revision {
+            return Err(changed_since());
+        }
+        let updated = plan.updated.ok_or_else(changed_since)?;
+        // The recovering write starts like a first one does, so a completion
+        // lost after this rename cannot let a later retry clear a marker the
+        // operator restored for a new outage.
+        state
+            .with_store(|store| {
+                store.record_provider_marker_write_start(key.as_str(), kontor_api::now())
+            })
+            .map_err(|error| self.refuse(&error))?;
+        crate::provider_marker::write(&path, &bytes, &updated)
+            .map_err(|error| self.provider_marker_error(error))?;
+        let written = ContentHash::of(&updated);
+        state
+            .with_store(|store| {
+                store.record_provider_marker_completion(
+                    key.as_str(),
+                    &written,
+                    &plan.host_key,
+                    &plan.before,
+                    &plan.after,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(ProviderMarkerDto {
+            realm_id: state.realm_id(),
+            runtime_family: family.to_string(),
+            host_key: plan.host_key,
+            provider: request.provider.clone(),
+            outcome: ProviderMarkerOutcomeDto::Cleared,
+            before: plan.before.iter().cloned().collect(),
+            after: plan.after.iter().cloned().collect(),
+            changed: true,
+            effects: provider_marker_effects(true, restart_required),
+            revision: written,
+        })
+    }
+
+    /// Resolve the runtime family key that names one configured setting.
+    fn provider_marker_family(&self, text: &str) -> Result<RuntimeKindKey, ApiError> {
+        RuntimeKindKey::parse(text).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Whether the running daemon currently answers "available" for this exact
+    /// family and provider.
+    ///
+    /// A family this process was never composed with cannot answer at all,
+    /// which is the same consumer-visible fact as a held marker: a start is
+    /// needed before the document governs any launch.
+    fn running_daemon_answers_available(
+        &self,
+        state: &ApiState,
+        family: &RuntimeKindKey,
+        provider: &str,
+    ) -> bool {
+        state
+            .runtimes()
+            .get(family)
+            .is_some_and(|adapter| adapter.provider_available(provider))
+    }
+
+    /// The one hash a preview answers with and an apply recomputes.
+    fn provider_marker_preview_hash(
+        &self,
+        family: &RuntimeKindKey,
+        provider: &str,
+        revision: &ContentHash,
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "provider_marker_preview",
+            "runtime_family": family.as_str(),
+            "provider": provider,
+            "revision": revision.as_str(),
+        }))
+    }
+
+    /// Refuse a document-level marker failure without echoing any of it.
+    fn provider_marker_error(&self, error: crate::provider_marker::MarkerError) -> ApiError {
+        use crate::provider_marker::MarkerError;
+        match error {
+            MarkerError::UnknownFamily => self.deny(
+                ApiErrorCode::NotFound,
+                "no configured runtime setting declares that family",
+            ),
+            MarkerError::DuplicateFamily => self.deny(
+                ApiErrorCode::InvalidRequest,
+                "more than one configured runtime setting declares that family",
+            ),
+            MarkerError::NotRewritable => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document is not a regular file this realm may rewrite",
+                )
+                .advising(
+                    "replace the symlink with the settings file itself, then preview again and apply with a fresh key",
+                ),
+            MarkerError::Busy => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "another writer holds the runtime settings lock",
+                )
+                .advising(
+                    "wait for that writer to finish, then preview again and apply with a fresh key",
+                ),
+            MarkerError::Changed => self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the runtime settings document changed during the correction",
+                )
+                .advising(
+                    "read the marker again with the preview and apply with a fresh key",
+                ),
+            MarkerError::WriteFailed => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be written",
+                )
+                .advising(
+                    "check the state root's free disk space and permissions, then preview again and apply with a fresh key",
+                ),
+            MarkerError::Unreadable => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be read",
+                )
+                .advising("check the state root's permissions and free disk space, then retry"),
+            MarkerError::Malformed => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be read as a fleet description",
+                )
+                .advising("repair the runtime settings document, then retry"),
+        }
+    }
+
+    /// Name a competing claim by another operation as what it is.
+    ///
+    /// The replay pre-check and the durable claim are separate store calls, so
+    /// another operation can bind the key between them. The generic mapping
+    /// would call that a revision conflict and tell the caller to re-read and
+    /// retry, which can never succeed for a key that is permanently bound.
+    fn provider_marker_bind_error(&self, error: &RepositoryError) -> ApiError {
+        if matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "idempotency key",
+                ..
+            }
+        ) {
+            return self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key was already used for a different operation",
+            );
+        }
+        self.refuse(error)
+    }
+
+    /// Hold every provider-marker apply between its replay pre-check and its
+    /// durable claim, for a black-box test that must let another operation bind
+    /// the same key in that window.
+    #[doc(hidden)]
+    pub fn hold_provider_marker_bind(&self) -> PlanningPairReceiptHold {
+        let hold = PlanningPairReceiptHold::default();
+        *self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hold.clone());
+        hold
+    }
+
+    /// Wait at an installed bind hold; with none installed, return at once.
+    async fn provider_marker_bind_hold_point(&self) {
+        let hold = self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hold) = hold {
+            hold.pass().await;
+        }
     }
 }
 
@@ -22180,31 +23756,7 @@ impl ApplicationOperations for Services {
     ) -> Result<PublicationDecisionDto, ApiError> {
         self.project_row(project_id)?;
         let judged = self.judge_publication(project_id, request)?;
-        let now = kontor_api::now();
-        let new = NewPublicationAttestation {
-            id: PublicationAttestationId::generate(),
-            project_id,
-            mini_project_id: judged.resolved.as_ref().map(|resolved| resolved.epic_id),
-            task_id: judged
-                .resolved
-                .as_ref()
-                .and_then(|resolved| resolved.task_id),
-            repository: request.repository.clone(),
-            base_branch: request.base_branch.clone(),
-            head_branch: judged.head_branch,
-            head_sha: judged.head_sha,
-            pull_request: request.pull_request,
-            title: request.title.clone(),
-            decision: judged.decision,
-            idempotency_key: key.clone(),
-            recorded_at: now,
-        };
-        let record = self
-            .state()?
-            .with_store(|store| store.record_publication_attestation(&new))
-            .map_err(|error| self.refuse(&error))?;
-        let replayed = record.is_replay();
-        Ok(self.stored_publication_dto(record.attestation().clone(), replayed))
+        self.record_judged_publication(key, project_id, request, judged)
     }
 
     async fn merge_publication(
@@ -22219,7 +23771,7 @@ impl ApplicationOperations for Services {
         let gateway = self.github.as_ref().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::UnsupportedCapability,
-                "no GitHub App is configured for publication merges; install it and write config/github-app.json",
+                "no GitHub App is configured for publication merges; configure forge/github-app.yml in the selected config folder",
             )
         })?;
         if !gateway.governs(request.repository.as_str()) {
@@ -22319,6 +23871,14 @@ impl ApplicationOperations for Services {
             state.signals().appended();
         }
         Ok(())
+    }
+
+    fn session_launch_route(
+        &self,
+        project_id: ProjectId,
+        agent_run_id: AgentRunId,
+    ) -> Result<Option<kontor_core::launch_route::ResolvedRoute>, ApiError> {
+        self.delivery_private_route(project_id, agent_run_id)
     }
 
     fn persist_session_observation(
@@ -22508,8 +24068,13 @@ impl ApplicationOperations for Services {
                         .map(|slot| slot.id.as_role_key().as_str().to_owned())
                         .collect(),
                     definition_hash: revision.definition.hash().as_str().to_owned(),
-                    source: if pack_index == 0 {
-                        "bundled".to_owned()
+                    source: if pack_index == 0 && self.pack.is_some() {
+                        if self.selected_config.is_some() {
+                            "selected"
+                        } else {
+                            "bundled"
+                        }
+                        .to_owned()
                     } else {
                         "registered".to_owned()
                     },
@@ -22523,200 +24088,30 @@ impl ApplicationOperations for Services {
 
     fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError> {
         let state = self.state()?;
-        // ASMA-8237: exact provider-native routes and thinking options read from
-        // Paseo on 2026-09-19. Catalog presence does not attest account headroom
-        // or authorize a route for a role; those remain separate admission checks.
-        let watchdog_provenance = serde_json::json!({
-            "state": "live",
-            "reviewRef": "ASMA-8237",
-            "citation": "Paseo list_models: codex, cursor and opencode",
-            "observedAt": "2026-09-19"
-        });
-        let provenance = serde_json::json!({
-            "state": "live",
-            "reviewRef": "KON-MVP-25-GATE-2026-08-14-02",
-            "citation": "kontord /v1/catalog realm discovery projection",
-            "observedAt": "2026-08-14"
-        });
-        let unverified = serde_json::json!({
-            "state": "fixture/needs-verification",
-            "reviewRef": null,
-            "citation": null,
-            "observedAt": null
-        });
-        let providers = vec![
-            serde_json::json!({
-                "id": "codex", "label": "Codex",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": false
-            }),
-            // One provider alias per Codex login. The alias is the account
-            // selector on this runtime — `--provider codex-work` launches in
-            // that account's own credential home — so a route can only be
-            // described and validated against an account if the alias is a
-            // provider row here. `reachedVia` stays null: unlike a vendor
-            // served through another provider, each alias is itself enabled in
-            // the runtime. Pooling is definitional for an alias: it is one
-            // account, and every route on it draws one allowance.
-            serde_json::json!({
-                "id": "codex-work", "label": "Codex · Work (Carasent)",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "codex-personal", "label": "Codex · Personal",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "claude", "label": "Claude",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "claude-work", "label": "Claude · Work",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "claude-personal", "label": "Claude · Personal",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-            serde_json::json!({
-                "id": "opencode", "label": "OpenCode",
-                "basis": { "value": "provider_account", "provenance": provenance },
-                "reachedVia": null, "pooledUsage": false
-            }),
-            serde_json::json!({
-                "id": "cursor", "label": "Cursor",
-                "basis": { "value": "plan_allowance", "provenance": unverified },
-                "reachedVia": null, "pooledUsage": true
-            }),
-        ];
-        let mut models = vec![
-            serde_json::json!({
-                "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "provider": "codex",
-                "isDefault": true,
-                "contextWindow": { "value": null, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "provider": "codex",
-                "isDefault": false,
-                "contextWindow": { "value": null, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "claude-opus-5", "label": "Claude Opus 5", "provider": "claude",
-                "isDefault": true,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["off", "low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": "claude",
-                "isDefault": false,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-            serde_json::json!({
-                "id": "deepseek/deepseek-flash", "label": "DeepSeek V4.1 Flash", "provider": "opencode",
-                "isDefault": true,
-                "contextWindow": { "value": null, "provenance": provenance },
-                "efforts": { "value": ["low", "high", "max"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }),
-        ];
-        for provider in ["codex", "codex-work", "codex-personal"] {
-            models.push(serde_json::json!({
-                "id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "provider": provider,
-                "isDefault": false,
-                "contextWindow": { "value": null, "provenance": unverified },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max"], "provenance": watchdog_provenance },
-                "pricing": [], "degradedLane": false
-            }));
-        }
-        for (provider, id, label, efforts) in [
-            (
-                "cursor",
-                "auto-smart",
-                "Cursor Auto",
-                vec!["low", "medium", "high", "xhigh"],
-            ),
-            (
-                "opencode",
-                "openrouter/z-ai/glm-5.3-flash",
-                "GLM 5.3 Flash",
-                vec!["low", "high", "max"],
-            ),
-            (
-                "opencode",
-                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-                "Nemotron 3 Ultra Free",
-                vec!["medium", "high"],
-            ),
-        ] {
-            models.push(serde_json::json!({
-                "id": id, "label": label, "provider": provider,
-                "isDefault": provider == "cursor",
-                "contextWindow": { "value": null, "provenance": unverified },
-                "efforts": { "value": efforts, "provenance": watchdog_provenance },
-                "pricing": [], "degradedLane": false
-            }));
-        }
-        models.push(serde_json::json!({
-            "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol via Cursor", "provider": "cursor",
-            "isDefault": false,
-            "contextWindow": { "value": null, "provenance": unverified },
-            "efforts": {
-                "value": ["low", "medium", "high", "xhigh", "max"],
-                "provenance": {
-                    "state": "live",
-                    "reviewRef": "operator-exception-2026-09-23",
-                    "citation": "Paseo list_models: cursor",
-                    "observedAt": "2026-09-23"
-                }
-            },
-            "pricing": [], "degradedLane": false
-        }));
-        // Each Codex account alias serves the same routes as the family
-        // provider: the alias changes the credential home, never the model.
-        for alias in ["codex-work", "codex-personal"] {
-            for (id, label, default) in [
-                ("gpt-5.6-sol", "GPT-5.6 Sol", true),
-                ("gpt-5.6-terra", "GPT-5.6 Terra", false),
-            ] {
-                models.push(serde_json::json!({
-                    "id": id, "label": label, "provider": alias,
-                    "isDefault": default,
-                    "contextWindow": { "value": null, "provenance": provenance },
-                    "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultra"], "provenance": provenance },
-                    "pricing": [], "degradedLane": false
-                }));
-            }
-        }
-        // Claude account aliases select credential homes in exactly the same
-        // way and expose the family catalog unchanged.
-        for alias in ["claude-work", "claude-personal"] {
-            models.push(serde_json::json!({
-                "id": "claude-opus-5", "label": "Claude Opus 5", "provider": alias,
-                "isDefault": true,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["off", "low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }));
-            models.push(serde_json::json!({
-                "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": alias,
-                "isDefault": false,
-                "contextWindow": { "value": 1000000, "provenance": provenance },
-                "efforts": { "value": ["low", "medium", "high", "xhigh", "max", "ultracode"], "provenance": provenance },
-                "pricing": [], "degradedLane": false
-            }));
-        }
+        let policy = self.fleet_policy().map_err(|error| self.refuse_domain(&error))?
+            .ok_or_else(|| self.deny(ApiErrorCode::PlacementBlocked,
+                "fleet_catalog_unpinned: the model catalog requires an exact selected fleet snapshot"))?;
+        let entries = policy.model_catalog();
+        let declared = serde_json::json!({"state":"configured","policyHash":policy.hash()});
+        let unknown = serde_json::json!({"state":"unknown","policyHash":policy.hash()});
+        let accounts: BTreeSet<_> = entries.iter().map(|entry| entry.account.clone()).collect();
+        let providers = accounts
+            .into_iter()
+            .map(|account| {
+                serde_json::json!({
+                    "id":account,"label":account,"basis":{"value":"unknown","provenance":unknown},
+                    "reachedVia":null,"pooledUsage":false,
+                })
+            })
+            .collect();
+        let models = entries.iter().map(|entry| serde_json::json!({
+            "id":entry.id,"label":entry.id,"provider":entry.account,"providerFamily":entry.provider,
+            "modelKey":entry.model,"vendor":entry.vendor,"isDefault":false,
+            "contextWindow":{"value":null,"provenance":unknown},
+            "efforts":{"value":entry.efforts,"provenance":declared},
+            "vision":entry.vision,"calibrated":entry.calibrated,"permissionEligible":entry.permission_eligible,
+            "pricing":[],"degradedLane":false,"policyHash":policy.hash(),
+        })).collect();
         let cursor = state
             .with_store(SqliteStore::teams_projection)
             .map_err(|error| self.refuse(&error))?
@@ -24136,6 +25531,7 @@ impl ApplicationOperations for Services {
                 "this scope has no epic for a materialization receipt to name",
             )
         })?;
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let replayed = self
             .replayed(
                 key,
@@ -24153,6 +25549,29 @@ impl ApplicationOperations for Services {
         // `ensure_task_node` is store-only and idempotent: the runtime remains
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
+            if self.selected_config.is_some()
+                && scope.kind.as_ref() == Some(&context.domain.delivery.task_kind)
+            {
+                let confirmed = state
+                    .with_store(|store| {
+                        let Some(claim) = store.task_worktree(project_id, task_id)? else {
+                            return Ok(false);
+                        };
+                        Ok::<_, kontor_core::repository::RepositoryError>(
+                            store
+                                .task_checkout_placement(project_id, task_id, &claim)?
+                                .is_some_and(|pin| pin.readback.is_some()),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                if !confirmed {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "checkout.confirmed_placement_missing",
+                    ));
+                }
+                self.prepare_task_checkout(project_id, task_id).await?;
+            }
             let leaf = self.ensure_task_node(project_id, task_id)?;
             // A replay repairs seats, and a seat repair is a write, so it earns
             // the same prerequisite the first pass does: the container those
@@ -24183,7 +25602,7 @@ impl ApplicationOperations for Services {
             // effects and can be repaired through `epics:preview/apply`.
             if let Some(epic_id) = scope.epic_id {
                 let requires_item_code = if let Some(kind) = scope.kind.as_ref() {
-                    self.pinned_spec(project_id)?
+                    self.domain_topology(&context)?
                         .node_kinds
                         .iter()
                         .find(|declared| &declared.kind == kind)
@@ -24202,6 +25621,12 @@ impl ApplicationOperations for Services {
                             "the node's configured runtime family is unavailable",
                         )
                     })?;
+                    if self.selected_config.is_some()
+                        && scope.kind.as_ref() == Some(&context.domain.delivery.task_kind)
+                        && let Some(task_id) = scope.task_id
+                    {
+                        self.freeze_task_checkout(project_id, task_id)?;
+                    }
                     let execution_scope =
                         self.execution_scope(project_id, epic_id, scope.task_id, adapter.as_ref())?;
                     if requires_item_code {
@@ -24227,7 +25652,7 @@ impl ApplicationOperations for Services {
             if let Some(task_id) = scope.task_id {
                 self.reconcile_ticket_delivery_seats(project_id, &leaf, task_id)?;
             }
-            let spec = self.pinned_spec(project_id)?;
+            let spec = self.domain_topology(&context)?;
             let declared = spec
                 .node_kinds
                 .iter()
@@ -24248,26 +25673,31 @@ impl ApplicationOperations for Services {
                         "the node's configured runtime family is unavailable",
                     )
                 })?;
-                adapter
-                    .prepare_plane()
-                    .await
-                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                if leaf.kind == context.domain.delivery.task_kind {
+                    let task_id = leaf.task_id.ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "checkout.task_identity_missing",
+                        )
+                    })?;
+                    self.prepare_task_checkout(project_id, task_id).await?;
+                }
                 let cwd = if matches!(
                     leaf.kind.as_str(),
-                    kind if kind == self.domain.delivery.advisor_kind.as_str()
-                        || kind == self.domain.delivery.committee_kind.as_str()
+                    kind if kind == context.domain.delivery.advisor_kind.as_str()
+                        || kind == context.domain.delivery.committee_kind.as_str()
                 ) {
-                    self.consultation_root(
-                        project.root_path.as_str(),
-                        self.epic_tracker_key(project_id, epic_id)?.as_ref(),
-                        leaf.id,
-                    )?
+                    self.consultation_root(project_id, leaf.id)?
                 } else {
                     match leaf.task_id {
                         Some(task_id) => self.task_root(project_id, task_id)?,
                         None => self.runtime_root(project_id, leaf.mini_project_id)?,
                     }
                 };
+                adapter
+                    .prepare_plane()
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
                 self.ensure_container(project_id, &leaf, &cwd, adapter.as_ref())
                     .await?;
             }
@@ -24282,20 +25712,27 @@ impl ApplicationOperations for Services {
             // persistent control seat: Advisor and Committee containers are
             // already populated from their pinned consultation definitions,
             // so adding the ECP control slot there invents an undeclared seat.
-            if leaf.kind == self.domain.delivery.control_kind
+            if leaf.kind == context.domain.delivery.control_kind
                 && declared
                     .projection_capabilities
                     .contains(&NodeProjectionCapability::SessionHost)
             {
-                let slot = self.control_slot()?;
+                let owner = self.epic_purpose(project_id, epic_id, CoreTeamSeatPurpose::Control)?;
+                let slot = owner.role_slot_id.clone();
                 let held = state
                     .with_store(|store| store.list_seat_bindings(project_id, leaf.id))
                     .map_err(|error| self.refuse(&error))?
                     .into_iter()
-                    .any(|binding| binding.role_slot_id == slot && binding.is_non_terminal());
-                if !held {
-                    let role =
-                        self.catalog_role_for_code(&self.domain.delivery.control_role_code)?;
+                    .find(|binding| binding.role_slot_id == slot && binding.is_non_terminal());
+                if let Some(binding) = &held
+                    && !Self::purpose_binding_matches(binding, &owner)
+                {
+                    return Err(
+                        self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch")
+                    );
+                }
+                if held.is_none() {
+                    let role = owner.role;
                     let now = kontor_api::now();
                     let deadline = now
                         .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
@@ -24420,14 +25857,21 @@ impl ApplicationOperations for Services {
         request: &ProjectTeamDefinitionSelectionPreviewRequest,
     ) -> Result<ProjectTeamDefinitionSelectionPreviewDto, ApiError> {
         let state = self.state()?;
-        let (current, target, preview_hash) =
+        let selection =
             self.project_team_definition_selection(project_id, &request.target_definition)?;
         Ok(ProjectTeamDefinitionSelectionPreviewDto {
             realm_id: state.realm_id(),
             project_id,
-            current_definition: current.as_ref().map(Self::pinned_team_definition_dto),
-            target_definition: Self::pinned_team_definition_dto(&target),
-            preview_hash,
+            current_definition: selection
+                .current
+                .as_ref()
+                .map(|held| Self::pinned_team_definition_dto(&held.definition)),
+            target_definition: Self::pinned_team_definition_dto(&selection.target.definition),
+            current_operational_domain_bundle_hash: selection
+                .current
+                .and_then(|held| held.operational_domain_bundle_hash),
+            target_operational_domain_bundle_hash: selection.target.operational_domain_bundle_hash,
+            preview_hash: selection.preview_hash,
             snapshot_cursor: self.cursor()?,
         })
     }
@@ -24804,22 +26248,24 @@ impl ApplicationOperations for Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let activation_intent = self.intent(&serde_json::json!({
             "schema_version": 1,
-            "operation": "activate_asma_epic",
+            "operation": "activate_epic",
             "project_id": project_id.to_string(),
             "epic_id": epic_id.to_string(),
             "materialization_receipt_id": receipt_id.to_string(),
         }))?;
+        let activation_intent =
+            self.epic_activation_intent(&activation_key, &target, activation_intent)?;
         let activation_receipt_id = self.record(
             &activation_key,
             project_id,
-            CommandKind::ActivateAsmaEpic,
+            CommandKind::ActivateEpic,
             target,
             prepared.epic.revision,
             &activation_intent,
         )?;
         state
             .with_store(|store| {
-                store.activate_asma_epic(
+                store.activate_epic(
                     project_id,
                     epic_id,
                     activation_receipt_id,
@@ -24896,7 +26342,7 @@ impl ApplicationOperations for Services {
             receipt_id: receipt_id.to_string(),
             activation_receipt_id: activation_receipt_id.to_string(),
             activated: state
-                .with_store(|store| store.asma_epic_is_active(project_id, epic_id))
+                .with_store(|store| store.epic_is_active(project_id, epic_id))
                 .map_err(|error| self.refuse(&error))?,
         })
     }
@@ -24970,7 +26416,7 @@ impl ApplicationOperations for Services {
         request: &ProjectTeamDefinitionSelectionApplyRequest,
     ) -> Result<AppliedProjectTeamDefinitionSelectionDto, ApiError> {
         let state = self.state()?;
-        let project = self.project_at(project_id, request.expected_revision)?;
+        self.project_row(project_id)?;
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "project_team_definition_selection_apply",
@@ -24978,49 +26424,75 @@ impl ApplicationOperations for Services {
             "preview": request.preview_hash.as_str(),
         }))?;
         let aggregate = AggregateRef::Project { project_id };
-        let replayed = self.replayed(key, &intent, Some(&aggregate))?.is_some();
-        if !replayed {
-            let (expected, selected) =
+        let replayed = self.replayed(key, &intent, Some(&aggregate))?;
+        if replayed
+            .as_ref()
+            .is_some_and(|receipt| receipt.target_revision != request.expected_revision)
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key names another expected project revision",
+            ));
+        }
+        let was_replayed = replayed.is_some();
+        let receipt = if let Some(receipt) = replayed {
+            receipt
+        } else {
+            self.project_at(project_id, request.expected_revision)?;
+            let selection =
                 self.target_of_project_team_definition_preview(project_id, &request.preview_hash)?;
-            state
-                .with_store(|store| {
-                    store.set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-                        project_id,
-                        expected,
-                        definition: selected,
-                        selected_at: kontor_api::now(),
+            let bundle = selection
+                .target
+                .operational_domain_bundle_hash
+                .as_ref()
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            self.fleet
+                .with_active_domain_bundle(bundle, || {
+                    state.with_store(|store| {
+                        store.select_project_team_definition(
+                            &selection.target,
+                            selection
+                                .current
+                                .as_ref()
+                                .and_then(|held| held.operational_domain_bundle_hash.as_ref()),
+                            selection.roster_hash.as_ref(),
+                            &ReceiptEnvelope::new(
+                                state.realm_id(),
+                                NewLocalCommand {
+                                    project_id,
+                                    receipt_id: CommandReceiptId::generate(),
+                                    idempotency_key: key.clone(),
+                                    kind: CommandKind::SelectProjectTeamDefinition,
+                                    target: aggregate,
+                                    target_revision: request.expected_revision,
+                                    intent,
+                                    created_at: kontor_api::now(),
+                                },
+                            ),
+                        )
                     })
                 })
-                .map_err(|error| self.refuse(&error))?;
-        }
-        let receipt_id = self.record(
-            key,
-            project_id,
-            CommandKind::SelectProjectTeamDefinition,
-            aggregate,
-            project.revision,
-            &intent,
-        )?;
+                .map_err(|error| self.refuse_fleet_policy(&error))?
+                .map_err(|error| self.refuse(&error))?
+        };
         let selected = state
-            .with_store(|store| store.get_project_team_definition_default(project_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the selected project Team Definition could not be read back",
-                )
-            })?;
+            .with_store(|store| store.project_team_definition_selection_result(&receipt))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
         Ok(AppliedProjectTeamDefinitionSelectionDto {
             selected_definition: Self::pinned_team_definition_dto(&selected.definition),
+            operational_domain_bundle_hash: selected.operational_domain_bundle_hash,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
-                receipt_id: receipt_id.to_string(),
-                applied: if replayed {
+                receipt_id: receipt.id.to_string(),
+                applied: if was_replayed {
                     AppliedDto::Unchanged
                 } else {
                     AppliedDto::Updated
                 },
-                revision: project.revision,
+                revision: receipt.target_revision,
                 snapshot_cursor: self.cursor()?,
             },
         })
@@ -26981,13 +28453,220 @@ impl ApplicationOperations for Services {
             realm_id: state.realm_id(),
             orchestration: crate::orchestration::propose_orchestration()
                 .map_err(|error| self.refuse_fleet_policy(&error))?,
-            core_team: crate::orchestration::propose_core_team(&catalog)
+            core_team: crate::orchestration::propose_core_team(&catalog, self.purpose_source()?)
                 .map_err(|error| self.refuse_fleet_policy(&error))?,
             role_catalog: FleetRoleCatalogPinDto {
                 catalog_id: catalog.catalog_id,
                 version: catalog.version,
                 content_hash,
             },
+        })
+    }
+
+    // -- The provider-availability marker -------------------------------------
+    //
+    // A runtime host that was taken out during an outage keeps refusing that
+    // provider until a human deletes the entry from `runtimes.json`, and the
+    // daemon composes the set once, at start. This pair is the supported way to
+    // do that deletion: a preview that names the exact document revision, and
+    // an apply that removes one member under compare-and-swap. It edits the
+    // operator-owned file and nothing else — no seat is retired, replaced or
+    // relaunched, because no runtime operation is reachable from here.
+
+    fn preview_provider_marker(
+        &self,
+        request: &ProviderMarkerPreviewRequest,
+    ) -> Result<ProviderMarkerPreviewDto, ApiError> {
+        let state = self.state()?;
+        let family = self.provider_marker_family(&request.runtime_family)?;
+        kontor_core::id::validate_open_key("provider", &request.provider)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let path = crate::runtimes::path_in(&self.state_root);
+        let bytes = crate::provider_marker::read(&path)
+            .map_err(|error| self.provider_marker_error(error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this realm has no runtime settings document",
+                )
+            })?;
+        let revision = ContentHash::of(&bytes);
+        let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
+            .map_err(|error| self.provider_marker_error(error))?;
+        let changed = plan.updated.is_some();
+        let restart_required =
+            !self.running_daemon_answers_available(&state, &family, &request.provider);
+        Ok(ProviderMarkerPreviewDto {
+            realm_id: state.realm_id(),
+            runtime_family: family.to_string(),
+            host_key: plan.host_key,
+            provider: request.provider.clone(),
+            before: plan.before.iter().cloned().collect(),
+            after: plan.after.iter().cloned().collect(),
+            changed,
+            effects: provider_marker_effects(changed, restart_required),
+            preview_hash: self.provider_marker_preview_hash(
+                &family,
+                &request.provider,
+                &revision,
+            )?,
+            revision,
+        })
+    }
+
+    async fn apply_provider_marker(
+        &self,
+        key: &IdempotencyKey,
+        request: &ProviderMarkerApplyRequest,
+    ) -> Result<ProviderMarkerDto, ApiError> {
+        // One correction at a time: the document read, the compare-and-swap and
+        // the write are one critical section, so two applies cannot both see a
+        // matching revision and then overwrite each other's work.
+        let _guard = self.provider_marker_guard.lock().await;
+        let state = self.state()?;
+        let family = self.provider_marker_family(&request.runtime_family)?;
+        kontor_core::id::validate_open_key("provider", &request.provider)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "provider_marker_apply",
+            "runtime_family": family.as_str(),
+            "provider": request.provider,
+            "expected_revision": request.expected_revision.as_str(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        // The key is judged before the revision, exactly like every other keyed
+        // realm write: a retry presents the revision it read *before* its first
+        // write, which as a bare compare-and-swap would look stale and be
+        // refused for having succeeded.
+        if let Some(bound) = state
+            .with_store(|store| store.realm_idempotency_binding(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if bound.operation != PROVIDER_MARKER_OPERATION
+                || bound.fingerprint != intent.hash().as_str()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
+            return self.replayed_provider_marker(&state, key, &family, request);
+        }
+        // A black-box test can line another operation's claim up between the
+        // pre-check above and the durable claim below, which is the race the
+        // bind's own conflict translation exists for. No composed daemon
+        // installs a hold here.
+        self.provider_marker_bind_hold_point().await;
+
+        let path = crate::runtimes::path_in(&self.state_root);
+        let bytes = crate::provider_marker::read(&path)
+            .map_err(|error| self.provider_marker_error(error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this realm has no runtime settings document",
+                )
+            })?;
+        let revision = ContentHash::of(&bytes);
+        if revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the runtime settings document moved since the preview",
+                )
+                .advising(
+                    "read the marker again with the preview and apply the revision it reports",
+                ));
+        }
+        // The plan is computed before the preview hash is judged so an unknown
+        // family or an ambiguous document is refused as what it is, rather than
+        // as a hash mismatch the caller cannot act on.
+        let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
+            .map_err(|error| self.provider_marker_error(error))?;
+        let expected_preview =
+            self.provider_marker_preview_hash(&family, &request.provider, &revision)?;
+        if expected_preview != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the supplied preview hash does not describe this correction at that revision",
+            ));
+        }
+        let restart_required =
+            !self.running_daemon_answers_available(&state, &family, &request.provider);
+        // The durable claim comes before the write: the binding is the fence
+        // that makes this document change happen under this operation's key, so
+        // a different operation cannot bind the same key between the check and
+        // the correction. The request was validated first, so a refusal does not
+        // claim a key the caller would then have to replace.
+        let binding = IdempotencyBinding {
+            key: key.as_str().to_owned(),
+            operation: PROVIDER_MARKER_OPERATION,
+            fingerprint: intent.hash().clone(),
+            bound_at: kontor_api::now(),
+        };
+        let applied = state
+            .with_store(|store| store.bind_realm_operation(&binding))
+            .map_err(|error| self.provider_marker_bind_error(&error))?;
+        if applied == Applied::Unchanged {
+            // A concurrent attempt with this exact request claimed the key
+            // between the replay check and the claim; answer from what it left.
+            return self.replayed_provider_marker(&state, key, &family, request);
+        }
+        let (outcome, changed, revision_after) = match plan.updated {
+            Some(updated) => {
+                // Record that the write is starting before the document moves,
+                // so a completion lost after the rename can never make a later
+                // retry remove a marker an operator restored for a new outage.
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_write_start(key.as_str(), kontor_api::now())
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                crate::provider_marker::write(&path, &bytes, &updated)
+                    .map_err(|error| self.provider_marker_error(error))?;
+                let written = ContentHash::of(&updated);
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_completion(
+                            key.as_str(),
+                            &written,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                (ProviderMarkerOutcomeDto::Cleared, true, written)
+            }
+            None => {
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_completion(
+                            key.as_str(),
+                            &revision,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                (ProviderMarkerOutcomeDto::AlreadyCleared, false, revision)
+            }
+        };
+        Ok(ProviderMarkerDto {
+            realm_id: state.realm_id(),
+            runtime_family: family.to_string(),
+            host_key: plan.host_key,
+            provider: request.provider.clone(),
+            outcome,
+            before: plan.before.iter().cloned().collect(),
+            after: plan.after.iter().cloned().collect(),
+            changed,
+            effects: provider_marker_effects(changed, restart_required),
+            revision: revision_after,
         })
     }
 
@@ -27332,7 +29011,7 @@ impl ApplicationOperations for Services {
         seat_binding_id: SeatBindingId,
     ) -> Result<HostedSeatOccupancyChainDto, ApiError> {
         let state = self.state()?;
-        let control_kind = self.epic_control_kind(project_id, epic_id)?;
+        let roster = self.frozen_roster(project_id, epic_id)?;
 
         // One acquisition for the whole chain.
         //
@@ -27351,10 +29030,8 @@ impl ApplicationOperations for Services {
         // directly. Mapping into DTOs is pure and happens after the release.
         let captured = state
             .with_store(|store| -> Result<CapturedOccupancyChain, RepositoryError> {
-                let Some(control) = store
-                    .list_topology_nodes(project_id, Some(epic_id))?
-                    .into_iter()
-                    .find(|node| node.kind == control_kind)
+                let Some(control) =
+                    Self::recorded_core_team_node_in(store, project_id, epic_id, &roster.revision)?
                 else {
                     return Ok(CapturedOccupancyChain::NoControlPlane);
                 };
@@ -27463,7 +29140,8 @@ impl ApplicationOperations for Services {
             request.seats.as_deref(),
             request.source_bundle_hash.as_ref(),
         )?;
-        let proposed = self.resolve_core_team(project_id, &seats, stored.as_ref())?;
+        let proposed =
+            self.resolve_core_team(project_id, &seats, stored.as_ref(), bundle_roster.as_ref())?;
         self.confirm_bundle_roster(&proposed, bundle_roster.as_ref())?;
         let effects = core_team_effects(stored.as_ref(), &proposed)
             .map_err(|error| self.refuse_domain(&error))?;
@@ -27529,7 +29207,12 @@ impl ApplicationOperations for Services {
                 request.seats.as_deref(),
                 request.source_bundle_hash.as_ref(),
             )?;
-            let proposed = self.resolve_core_team(project_id, &seats, stored.as_ref())?;
+            let proposed = self.resolve_core_team(
+                project_id,
+                &seats,
+                stored.as_ref(),
+                bundle_roster.as_ref(),
+            )?;
             self.confirm_bundle_roster(&proposed, bundle_roster.as_ref())?;
             let effects = core_team_effects(stored.as_ref(), &proposed)
                 .map_err(|error| self.refuse_domain(&error))?;
@@ -27551,15 +29234,24 @@ impl ApplicationOperations for Services {
                     "the resolved Core Team could not be canonicalized",
                 )
             })?;
+            let first = proposed
+                .seats
+                .first()
+                .ok_or_else(|| self.deny(ApiErrorCode::InvalidRequest, "role_purpose_unpinned"))?;
+            let catalog =
+                self.catalog_revision(first.role.catalog_id, first.role.catalog_revision)?;
             state
                 .with_store(|store| {
-                    store.publish_core_team_revision(&StoredCoreTeamRevision {
-                        project_id,
-                        version: proposed.version,
-                        catalog_hash: proposed.catalog_hash.clone(),
-                        seats,
-                        published_at: kontor_api::now(),
-                    })
+                    store.publish_core_team_revision(
+                        &StoredCoreTeamRevision {
+                            project_id,
+                            version: proposed.version,
+                            catalog_hash: proposed.catalog_hash.clone(),
+                            seats,
+                            published_at: kontor_api::now(),
+                        },
+                        &catalog,
+                    )
                 })
                 .map_err(|error| self.refuse(&error))?;
         }
@@ -27639,11 +29331,34 @@ impl ApplicationOperations for Services {
                     "a native Core Team route names no materialized role in the frozen roster",
                 ));
             };
+            if let Some((rung, placed)) =
+                self.frozen_materialized_route(project_id, epic_id, &roster.revision, frozen_seat)?
+            {
+                if let Some(requested) = &route.model_route {
+                    let requested =
+                        parse_model_route(requested).map_err(|error| self.refuse_domain(&error))?;
+                    if requested != rung {
+                        return Err(
+                            self.deny(ApiErrorCode::StaleBinding, "host_route_binding_mismatch")
+                        );
+                    }
+                } else if route.eligibility.is_none() {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "a native Core Team route names exactly one of model_route and eligibility",
+                    ));
+                }
+                if let Some(placed) = placed {
+                    leadership.insert(role_code.clone(), placed);
+                }
+                routes.insert(role_code.clone(), rung);
+                continue;
+            }
             match (&route.model_route, &route.eligibility) {
                 (Some(model_route), None) => {
-                    let model_rung =
-                        parse_runtime_model_route(model_route, self.fleet.current().as_deref())
-                            .map_err(|error| self.refuse_domain(&error))?;
+                    let model_rung = self
+                        .parse_pinned_model_route(model_route)
+                        .map_err(|error| self.refuse_domain(&error))?;
                     if let Some(placed) =
                         self.leadership_route(&roster.revision, frozen_seat, &model_rung)?
                     {
@@ -27781,7 +29496,9 @@ impl ApplicationOperations for Services {
                 let Some(model_rung) = routes.get(seat.role.role_code.as_str()) else {
                     continue;
                 };
-                if !adapter.provider_available(model_rung.provider.0.as_str()) {
+                if self.selected_config.is_none()
+                    && !adapter.provider_available(model_rung.provider.0.as_str())
+                {
                     return Err(ApiError::from_runtime(
                         state.realm_id(),
                         &RuntimeError::ProviderUnavailable {
@@ -27867,37 +29584,35 @@ impl ApplicationOperations for Services {
                 // Recorded before the effect, so the window between a created
                 // native and its persisted occupancy is never empty. This is
                 // idempotent for the same decision and refuses a different one.
-                state
-                    .with_store(|store| {
-                        store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
-                            project_id,
-                            seat_binding_id,
-                            occupancy_generation: FIRST_HOSTED_OCCUPANCY,
-                            autonomy,
-                            model_rung: model_rung.clone(),
-                            state: HostedSeatLaunchIntentState::Prepared,
-                            observed_native_id: None,
-                            prepared_at: kontor_api::now(),
-                            installed_at: None,
-                        })
-                    })
-                    .map_err(|error| self.refuse(&error))?;
-                // Frozen before the native call for the same reason the intent is:
-                // a launch whose acknowledgement is lost must still leave behind
-                // which persona it was going to deliver.
-                let role_persona = self.freeze_role_persona(&seat.role.role_code)?;
-                if let Some(persona) = role_persona.as_ref() {
-                    state
-                        .with_store(|store| {
-                            store.record_hosted_seat_role_persona(
-                                project_id,
-                                seat_binding_id,
-                                FIRST_HOSTED_OCCUPANCY,
-                                persona,
-                            )
-                        })
-                        .map_err(|error| self.refuse(&error))?;
-                }
+                let launch_route = self.hosted_launch_route(
+                    project_id,
+                    seat_binding_id,
+                    FIRST_HOSTED_OCCUPANCY,
+                    adapter.as_ref(),
+                    model_rung,
+                    leadership
+                        .get(seat.role.role_code.as_str())
+                        .map(|route| &route.provenance.policy_hash),
+                    leadership
+                        .get(seat.role.role_code.as_str())
+                        .and_then(|route| route.source_bundle_hash.as_ref()),
+                    kontor_api::now(),
+                )?;
+                let role_persona = self.prepare_epic_seat_launch(
+                    epic_id,
+                    &seat.role.role_code,
+                    &StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id,
+                        occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                        autonomy,
+                        model_rung: launch_route.clone(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    },
+                )?;
                 let launch_provenance = leadership
                     .get(seat.role.role_code.as_str())
                     .map(LeadershipRoute::launch_provenance);
@@ -27913,6 +29628,7 @@ impl ApplicationOperations for Services {
                 }
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
+                        resolved_route: launch_route.frozen().cloned(),
                         seat_binding_id,
                         role_slot_id: seat.role_slot_id.clone(),
                         display_name,
@@ -27964,6 +29680,7 @@ impl ApplicationOperations for Services {
                             FIRST_HOSTED_OCCUPANCY,
                             &hosted.native_identity.native_id,
                             hosted.observed_at,
+                            &launch_route,
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;
@@ -28126,33 +29843,54 @@ impl ApplicationOperations for Services {
                 "the SeatBinding is not one of this epic's frozen Core Team roles",
             ));
         };
-        let superseded = parse_runtime_model_route(
-            &request.expected_model_route,
-            self.fleet.current().as_deref(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
-        let replacement = parse_runtime_model_route(
-            &request.desired_model_route,
-            self.fleet.current().as_deref(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
+        // This is the inert intent's CAS witness, never a requested launch.
+        // The store proves the exact old route; only the replacement needs catalog authority.
+        let superseded = parse_model_route(&request.expected_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let saved_routes = state
+            .with_store(|store| store.hosted_seat_launch_intent_supersession_routes(key))
+            .map_err(|error| self.refuse(&error))?;
+        if provider_family(&request.desired_model_route.provider).eq_ignore_ascii_case("opencode") {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the replacement route must be a different, non-OpenCode approved route",
+            ));
+        }
+        let requested_replacement = parse_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
         // Never attempted, by contract rather than by configuration. The wedge
         // this repair exists for is an OpenCode route nothing can launch, and a
         // replacement that reached for it again would recreate the wedge under
         // a new prepared_at.
-        if provider_family(&replacement.provider.0).eq_ignore_ascii_case("opencode")
-            || superseded.provider.0 == replacement.provider.0
-                && superseded.model.0 == replacement.model.0
-                && superseded.effort == replacement.effort
+        if provider_family(&requested_replacement.provider.0).eq_ignore_ascii_case("opencode")
+            || superseded.provider.0 == requested_replacement.provider.0
+                && superseded.model.0 == requested_replacement.model.0
+                && superseded.effort == requested_replacement.effort
         {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "the replacement route must be a different, non-OpenCode approved route",
             ));
         }
+        let replacement = if let Some((old, new)) = &saved_routes {
+            if old.canonical_rung() != superseded || new.canonical_rung() != requested_replacement {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the supersession key already records a different command",
+                ));
+            }
+            new.canonical_rung()
+        } else {
+            self.parse_pinned_model_route(&request.desired_model_route)
+                .map_err(|error| self.refuse_domain(&error))?
+        };
         // The replacement is the route this seat's next launch will take, so a
         // seat the activated policy binds may only be repointed onto its chain.
-        let leadership = self.leadership_route(&roster.revision, &frozen_seat, &replacement)?;
+        let leadership = if saved_routes.is_some() {
+            None
+        } else {
+            self.leadership_route(&roster.revision, &frozen_seat, &replacement)?
+        };
         // Catalog-approved, proved the same way every other governed launch
         // proves it: the runtime offers the provider and exactly one enabled
         // account may select it.
@@ -28163,15 +29901,52 @@ impl ApplicationOperations for Services {
                 "the runtime selected for Core Team placement is not configured",
             )
         })?;
-        if !adapter.provider_available(replacement.provider.0.as_str()) {
-            return Err(ApiError::from_runtime(
-                state.realm_id(),
-                &RuntimeError::ProviderUnavailable {
-                    provider: replacement.provider.0.clone(),
-                },
-            ));
-        }
-        self.approved_route_account(project_id, &replacement)?;
+        let (expected_launch_route, replacement_launch_route) = if let Some(routes) = saved_routes {
+            routes
+        } else {
+            if self.selected_config.is_none()
+                && !adapter.provider_available(&replacement.provider.0)
+            {
+                return Err(ApiError::from_runtime(
+                    state.realm_id(),
+                    &RuntimeError::ProviderUnavailable {
+                        provider: replacement.provider.0.clone(),
+                    },
+                ));
+            }
+            self.approved_route_account(project_id, &replacement)?;
+            let expected = state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        request.seat_binding_id,
+                        request.occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the prepared launch intent is gone",
+                    )
+                })?
+                .model_rung;
+            if expected.canonical_rung() != superseded {
+                return Err(self.deny(ApiErrorCode::StaleBinding, "host_route_binding_mismatch"));
+            }
+            let replacement = self.freeze_launch_route(
+                adapter.as_ref(),
+                &replacement,
+                leadership
+                    .as_ref()
+                    .map(|placed| &placed.provenance.policy_hash),
+                leadership
+                    .as_ref()
+                    .and_then(|placed| placed.source_bundle_hash.as_ref()),
+                kontor_api::now(),
+            )?;
+            (expected, replacement)
+        };
 
         let prepared_at = kontor_core::id::parse_utc_timestamp(&request.expected_prepared_at)
             .map_err(|error| self.refuse_domain(&error))?;
@@ -28187,6 +29962,10 @@ impl ApplicationOperations for Services {
             "superseded_prepared_at": prepared_at.to_string(),
             "replacement": replacement,
         });
+        if expected_launch_route.frozen().is_some() || replacement_launch_route.frozen().is_some() {
+            intent_body["private_expected"] = serde_json::json!(expected_launch_route);
+            intent_body["private_replacement"] = serde_json::json!(replacement_launch_route);
+        }
         let predecessor_fence = match (
             &request.expected_predecessor_native_id,
             request.expected_predecessor_generation,
@@ -28276,6 +30055,11 @@ impl ApplicationOperations for Services {
             let proof = predecessor_adapter
                 .prove_archived_hosted_seat(
                     &HostedSeatRetireRequest {
+                        resolved_route: self.hosted_private_route_for_native(
+                            project_id,
+                            binding.id,
+                            &predecessor.native_identity,
+                        )?,
                         seat_binding_id: binding.id,
                         identity: predecessor.native_identity.clone(),
                         model_rung: predecessor.model_rung.clone(),
@@ -28337,9 +30121,9 @@ impl ApplicationOperations for Services {
                     expected_seat_binding_revision: request.expected_seat_binding_revision,
                     occupancy_generation: request.occupancy_generation,
                     archived_predecessor,
-                    expected_model_rung: superseded.clone(),
+                    expected_model_rung: expected_launch_route.clone(),
                     expected_prepared_at: prepared_at,
-                    replacement_model_rung: replacement.clone(),
+                    replacement_model_rung: replacement_launch_route.clone(),
                     recorded_at: kontor_api::now(),
                 })
             })
@@ -28512,6 +30296,51 @@ impl ApplicationOperations for Services {
                         "the Core Team succession claim disappeared after it was taken",
                     )
                 })?;
+            let successor_occupancy_generation = claimed.successor_occupancy_generation;
+            // A successor is a new generation, so the plane default is the
+            // right source — but only the *first* time this runs. If a previous
+            // attempt already resolved it and lost its acknowledgement, that
+            // decision is what the native out there was created under, and the
+            // replay has to converge on it rather than resolve again.
+            let successor_autonomy = match state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+            {
+                Some(intent) => intent.autonomy,
+                None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+            };
+            let launch_route = plan.launch_route.clone();
+            let role_persona = self.prepare_epic_seat_launch(
+                epic_id,
+                &plan.binding.role.role_code,
+                &StoredHostedSeatLaunchIntent {
+                    project_id,
+                    seat_binding_id: plan.binding.id,
+                    occupancy_generation: successor_occupancy_generation,
+                    autonomy: successor_autonomy,
+                    model_rung: launch_route.clone(),
+                    state: HostedSeatLaunchIntentState::Prepared,
+                    observed_native_id: None,
+                    prepared_at: kontor_api::now(),
+                    installed_at: None,
+                },
+            )?;
+            if let Some(placed) = plan.leadership.as_ref() {
+                self.record_leadership_decision(
+                    "core_team_route_correction",
+                    project_id,
+                    epic_id,
+                    plan.binding.id,
+                    successor_occupancy_generation,
+                    placed,
+                )?;
+            }
             // The same closed classification the plan used, re-asked here
             // because the answer may have changed since it was previewed. A
             // predecessor the runtime proves gone has nothing left to archive,
@@ -28567,6 +30396,11 @@ impl ApplicationOperations for Services {
             };
             let (retired_at, retirement_reason) = match adapter
                 .retire_hosted_seat(&HostedSeatRetireRequest {
+                    resolved_route: self.hosted_private_route_for_native(
+                        project_id,
+                        plan.binding.id,
+                        &plan.predecessor.native_identity,
+                    )?,
                     placement: Some(placement),
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
@@ -28635,74 +30469,14 @@ impl ApplicationOperations for Services {
                 plan.binding.id,
             ))
             .map_err(|error| self.refuse_domain(&error))?;
-            let successor_occupancy_generation = claimed.successor_occupancy_generation;
             let fenced_predecessor_native_ids = state
                 .with_store(|store| {
                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
                 })
                 .map_err(|error| self.refuse(&error))?;
-            // A successor is a new generation, so the plane default is the
-            // right source — but only the *first* time this runs. If a previous
-            // attempt already resolved it and lost its acknowledgement, that
-            // decision is what the native out there was created under, and the
-            // replay has to converge on it rather than resolve again.
-            let successor_autonomy = match state
-                .with_store(|store| {
-                    store.get_hosted_seat_launch_intent(
-                        project_id,
-                        plan.binding.id,
-                        successor_occupancy_generation,
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?
-            {
-                Some(intent) => intent.autonomy,
-                None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
-            };
-            state
-                .with_store(|store| {
-                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
-                        project_id,
-                        seat_binding_id: plan.binding.id,
-                        occupancy_generation: successor_occupancy_generation,
-                        autonomy: successor_autonomy,
-                        model_rung: plan.desired.clone(),
-                        state: HostedSeatLaunchIntentState::Prepared,
-                        observed_native_id: None,
-                        prepared_at: kontor_api::now(),
-                        installed_at: None,
-                    })
-                })
-                .map_err(|error| self.refuse(&error))?;
-            // A successor is its own occupancy, so it freezes its own persona.
-            // Reading the predecessor's would report a persona this native was
-            // never created under, which is the exact confusion a per-seat
-            // record would permit.
-            let role_persona = self.freeze_role_persona(&plan.binding.role.role_code)?;
-            if let Some(persona) = role_persona.as_ref() {
-                state
-                    .with_store(|store| {
-                        store.record_hosted_seat_role_persona(
-                            project_id,
-                            plan.binding.id,
-                            successor_occupancy_generation,
-                            persona,
-                        )
-                    })
-                    .map_err(|error| self.refuse(&error))?;
-            }
-            if let Some(placed) = plan.leadership.as_ref() {
-                self.record_leadership_decision(
-                    "core_team_route_correction",
-                    project_id,
-                    epic_id,
-                    plan.binding.id,
-                    successor_occupancy_generation,
-                    placed,
-                )?;
-            }
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
+                    resolved_route: launch_route.frozen().cloned(),
                     seat_binding_id: plan.binding.id,
                     role_slot_id: plan.binding.role_slot_id.clone(),
                     display_name,
@@ -28831,6 +30605,7 @@ impl ApplicationOperations for Services {
                         successor_occupancy_generation,
                         &successor.native_identity.native_id,
                         successor.observed_at,
+                        &plan.launch_route,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -28988,6 +30763,33 @@ impl ApplicationOperations for Services {
         let mut runtime_request = plan.runtime_request.clone();
         runtime_request.expected_claimant_provider_session_id =
             plan.runtime_preview.provider_session_id.clone();
+        if let Some(route) = &plan.launch_route {
+            state
+                .with_store(|store| {
+                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id: plan.binding.id,
+                        occupancy_generation: plan.occupancy_generation,
+                        model_rung: route.clone(),
+                        autonomy: SeatAutonomy::standard(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if let Some(leadership) = &plan.leadership {
+                self.record_leadership_decision(
+                    "claim_core_team_seat",
+                    project_id,
+                    epic_id,
+                    plan.binding.id,
+                    plan.occupancy_generation,
+                    leadership,
+                )?;
+            }
+        }
         let runtime_outcome = adapter
             .claim_hosted_seat(&runtime_request)
             .await
@@ -29033,6 +30835,20 @@ impl ApplicationOperations for Services {
             _ => state
                 .with_store(|store| store.bind_hosted_topology_seat(&successor))
                 .map_err(|error| self.refuse(&error))?,
+        }
+        if let Some(route) = &plan.launch_route {
+            state
+                .with_store(|store| {
+                    store.install_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        plan.occupancy_generation,
+                        &successor.native_identity.native_id,
+                        successor.observed_at,
+                        route,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
         }
         state
             .with_store(|store| {
@@ -29134,6 +30950,11 @@ impl ApplicationOperations for Services {
         let body = BoundedText::parse(&request.body).map_err(|error| self.refuse_domain(&error))?;
         let outcome = adapter
             .message_hosted_seat(&HostedSeatMessageRequest {
+                resolved_route: self.hosted_message_route(
+                    project_id,
+                    seat_binding_id,
+                    &hosted.native_identity,
+                )?,
                 seat_binding_id,
                 identity: hosted.native_identity.clone(),
                 message_id,
@@ -29459,6 +31280,10 @@ impl ApplicationOperations for Services {
             }
         };
 
+        // Legacy resume is readable, but cannot dispatch an unpinned purpose.
+        for purpose in CoreTeamSeatPurpose::ALL {
+            self.frozen_purpose(&roster.revision, *purpose)?;
+        }
         let epic_id = match &existing {
             Some(promotion) => promotion.mini_project_id,
             None => {
@@ -29562,10 +31387,14 @@ impl ApplicationOperations for Services {
         // The roster was frozen with the promotion row above, so the seats and
         // the record of what they were created from cannot disagree, and a
         // resumed apply finds both.
+        let architecture =
+            self.frozen_purpose(&roster.revision, CoreTeamSeatPurpose::ArchitectureCloser)?;
         let seats = self.materialize_roster_seats(project_id, &control, &roster, now)?;
         let lsa = seats
             .iter()
-            .find(|(seat, _)| seat.role.role_code.as_str() == MANDATORY_LEAD_ROLE)
+            .find(|(seat, _)| {
+                seat.role_slot_id == architecture.role_slot_id && seat.role == architecture.role
+            })
             .map(|(_, id)| *id)
             .ok_or_else(|| {
                 self.deny(
@@ -29702,6 +31531,18 @@ impl ApplicationOperations for Services {
             // their next try is refused with "the epic's roster moved since the
             // caller previewed it" — naming an edit that was theirs. Re-reading
             // the epic and previewing again clears it.
+            let pin = state
+                .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(ApiErrorCode::InvalidRequest, "operational_domain_unpinned")
+                })?;
+            self.domain_for_definition(
+                project_id,
+                &pin.definition,
+                pin.operational_domain_bundle_hash.as_ref(),
+                Some(&target.revision),
+            )?;
             self.refuse_desk_led_roster_for(project_id, epic_id, &target)?;
             self.freeze_roster(project_id, epic_id, &target, target.quick_session_id, now)?;
             let control = self.ensure_scope_chain(
@@ -30568,6 +32409,7 @@ impl ApplicationOperations for Services {
             })?;
         let inspection = adapter
             .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                resolved_route: seat.model_rung.frozen().cloned(),
                 run_id: run.id,
                 seat_binding_id,
                 identity: identity.clone(),
@@ -30701,6 +32543,7 @@ impl ApplicationOperations for Services {
             })?;
         let inspection = adapter
             .inspect_consultation_permissions(&ConsultationPermissionInspectRequest {
+                resolved_route: self.consultation_effect_route(&seat.model_rung)?.cloned(),
                 run_id: run.id,
                 seat_binding_id,
                 identity: identity.clone(),
@@ -30724,6 +32567,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse(&error))?;
         let acknowledged = adapter
             .respond_consultation_permission(&ConsultationPermissionResponseRequest {
+                resolved_route: self.consultation_effect_route(&seat.model_rung)?.cloned(),
                 run_id: run.id,
                 seat_binding_id,
                 identity,
@@ -30906,13 +32750,55 @@ impl ApplicationOperations for Services {
         })?;
         // One snapshot for the whole recovery: an edit between the candidate
         // list and the provenance would record a policy the file never held.
-        let placement = self
-            .fleet_placement()
-            .map_err(|error| self.refuse_domain(&error))?;
-        let source_bundle_hash = placement
-            .as_ref()
-            .and_then(|placement| placement.source_bundle_hash.clone());
-        let fleet = placement.map(|placement| placement.policy);
+        let (source_bundle_hash, fleet) = if let Some(attempt) = &pending_attempt {
+            let value = &attempt.recovery_profile;
+            let launch = self.frozen_fleet_provenance(Some(value))?;
+            let constraint_hash = value
+                .get("constraint_policy_hash")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "the frozen recovery constraint policy hash is unreadable",
+                            )
+                        })
+                        .and_then(|hash| {
+                            ContentHash::parse(hash).map_err(|error| self.refuse_domain(&error))
+                        })
+                })
+                .transpose()?;
+            let hash = frozen_recovery_permission_hash(value)
+                .map_err(|error| self.refuse_domain(&error))?
+                .or_else(|| launch.as_ref().map(|launch| launch.policy_hash.clone()))
+                .or(constraint_hash);
+            let policy = hash
+                .as_ref()
+                .map(|hash| self.fleet.verify_published(hash))
+                .transpose()
+                .map_err(|error| self.refuse_fleet_policy(&error))?
+                .map(Arc::new);
+            (launch.and_then(|launch| launch.source_bundle_hash), policy)
+        } else if request.reason == ConsultationSeatRecoveryReasonDto::CredentialPropagation {
+            let provenance = self.committee_seat_fleet_provenance(&run, &predecessor)?;
+            (
+                provenance.and_then(|route| route.source_bundle_hash),
+                self.frozen_consultation_catalog(&run, &predecessor)?
+                    .map(Arc::new),
+            )
+        } else {
+            let placement = self
+                .fleet_placement()
+                .map_err(|error| self.refuse_domain(&error))?;
+            (
+                placement
+                    .as_ref()
+                    .and_then(|placement| placement.source_bundle_hash.clone()),
+                placement.map(|placement| placement.policy),
+            )
+        };
         let fleet_routes = fleet.as_deref().and_then(|fleet| {
             fleet
                 .resolve(&crate::fleet::committee_key(
@@ -30930,6 +32816,7 @@ impl ApplicationOperations for Services {
         let mut chosen_route: Option<kontor_runtime::FleetLaunchProvenance> = None;
         let formal = run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID;
         let mut constraint_candidate = None;
+        let mut candidate_launch_routes = Vec::new();
         let (desired_rung, recovery_profile, pending_attempt) = if let Some(attempt) =
             pending_attempt
         {
@@ -30943,11 +32830,15 @@ impl ApplicationOperations for Services {
             }
             let profile = self.intent(&attempt.recovery_profile)?;
             chosen_route = self.frozen_fleet_provenance(Some(&attempt.recovery_profile))?;
-            (attempt.selected_model_rung.clone(), profile, Some(attempt))
+            (
+                attempt.selected_model_rung.canonical_rung(),
+                profile,
+                Some(attempt),
+            )
         } else {
             let effective_rungs = match request.reason {
                 ConsultationSeatRecoveryReasonDto::CredentialPropagation => {
-                    vec![predecessor.model_rung.clone()]
+                    vec![predecessor.model_rung.canonical_rung()]
                 }
                 ConsultationSeatRecoveryReasonDto::ProviderUnavailable => {
                     let mut rungs = if request.recovery_profile.is_empty() {
@@ -30968,10 +32859,7 @@ impl ApplicationOperations for Services {
                             .recovery_profile
                             .iter()
                             .map(|route| {
-                                let rung = parse_runtime_model_route(
-                                    route,
-                                    fleet.as_deref(),
-                                )?;
+                                let rung = parse_catalogued_model_route(route, CatalogAuthority::PinnedFleet(fleet.as_deref()))?;
                                 if provider_family(&rung.provider.0) == rung.provider.0.as_str() {
                                     return Err(kontor_core::DomainError::invalid(
                                         "RecoverConsultationSeatRequest",
@@ -30996,15 +32884,50 @@ impl ApplicationOperations for Services {
                                 seat.role_slot_id != predecessor.role_slot_id
                                     && seat.committee_role == Some(CommitteeRole::Reviewer)
                             })
-                            .map(|seat| provider_family(&seat.model_rung.provider.0).to_owned())
+                            .map(|seat| {
+                                provider_family(&seat.model_rung.canonical_rung().provider.0)
+                                    .to_owned()
+                            })
                             .collect();
                         rungs.retain(|rung| {
                             !occupied_families.contains(provider_family(&rung.provider.0))
                         });
                     }
+                    rungs.retain(|rung| {
+                        model_route_is_catalogued(
+                            rung,
+                            CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                        )
+                    });
                     rungs
                 }
             };
+            let effective_rungs =
+                if request.reason == ConsultationSeatRecoveryReasonDto::CredentialPropagation {
+                    candidate_launch_routes.push((
+                        predecessor.model_rung.canonical_rung(),
+                        predecessor.model_rung.clone(),
+                    ));
+                    effective_rungs
+                } else {
+                    let mut supported = Vec::new();
+                    for rung in effective_rungs {
+                        let route = match self.freeze_launch_route(
+                            adapter.as_ref(),
+                            &rung,
+                            fleet.as_deref().map(|policy| policy.hash()),
+                            source_bundle_hash.as_ref(),
+                            kontor_api::now(),
+                        ) {
+                            Ok(route) => route,
+                            Err(error) if error.code == ApiErrorCode::PlacementBlocked => continue,
+                            Err(error) => return Err(error),
+                        };
+                        candidate_launch_routes.push((rung.clone(), route));
+                        supported.push(rung);
+                    }
+                    supported
+                };
             if effective_rungs.is_empty() {
                 return Err(self.deny(
                     ApiErrorCode::PlacementBlocked,
@@ -31057,6 +32980,9 @@ impl ApplicationOperations for Services {
                                 &frozen,
                                 fleet.as_deref(),
                             )
+                            .into_iter()
+                            .filter(|candidate| effective_rungs.contains(&candidate.rung))
+                            .collect()
                         } else {
                             formal_committee_replacement_candidates(
                                 &run.profile_id,
@@ -31097,7 +33023,7 @@ impl ApplicationOperations for Services {
                 constraint_candidate = Some(selected.clone());
                 selected.rung
             } else if request.reason == ConsultationSeatRecoveryReasonDto::CredentialPropagation {
-                predecessor.model_rung.clone()
+                predecessor.model_rung.canonical_rung()
             } else {
                 let quota_states = self.admission_quota_states(project_id)?;
                 let accounts = self.eligible_accounts(project_id)?;
@@ -31174,11 +33100,19 @@ impl ApplicationOperations for Services {
             if let Some(provenance) = &chosen_route {
                 recovery_profile["fleet_provenance"] = serde_json::json!(provenance);
             }
+            if chosen_route.is_some()
+                && request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
+                && request.recovery_profile.is_empty()
+            {
+                recovery_profile["consultation_route_source"] =
+                    serde_json::json!("fleet_configuration");
+            }
+            freeze_recovery_permission_policy(&mut recovery_profile, fleet.as_deref());
             let recovery_profile = self.intent(&recovery_profile)?;
             (desired_rung, recovery_profile, None)
         };
         if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
-            && desired_rung == predecessor.model_rung
+            && desired_rung == predecessor.model_rung.canonical_rung()
         {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -31207,33 +33141,57 @@ impl ApplicationOperations for Services {
             )?;
         }
         let successor_fleet_provenance = chosen_route;
-        let successor_route_provenance = match fleet_routes.as_ref() {
-            Some((fleet, _))
-                if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
-                    && request.recovery_profile.is_empty() =>
-            {
-                ConsultationRouteProvenance::fleet_configuration(fleet.hash().clone())
-            }
-            _ => consultation_route_provenance(
-                "seat_recovery_profile",
-                recovery_profile.hash().clone(),
-            )
-            .map_err(|error| self.refuse_domain(&error))?,
-        };
+        let successor_route_provenance =
+            self.recovery_route_provenance("seat_recovery_profile", &recovery_profile)?;
         // Validate the exact successor policy before fencing the logical seat or
         // touching its native predecessor. In particular, a same-rung
         // credential-propagation retry must not turn an already-running
         // operator-accepted OpenCode filler into a prepared recovery attempt
         // when SeatRecoveryProfile is not an accepted source for that route.
+        let successor_route_provenance = self.qualify_consultation_permissions(
+            successor_route_provenance.for_legacy_recovery(),
+            &desired_rung,
+        )?;
+        let desired_launch_route = if let Some(attempt) = &pending_attempt {
+            attempt.selected_model_rung.clone()
+        } else {
+            candidate_launch_routes
+                .iter()
+                .find(|(rung, _)| rung == &desired_rung)
+                .map(|(_, route)| route.clone())
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "host_route_snapshot_missing",
+                    )
+                })?
+        };
+        let recovery_profile =
+            if desired_launch_route.frozen().is_some() && pending_attempt.is_none() {
+                let mut value: serde_json::Value = recovery_profile
+                    .deserialize()
+                    .map_err(|error| self.refuse_domain(&error))?;
+                value["private_launch_route"] = serde_json::json!(desired_launch_route);
+                self.intent(&value)?
+            } else {
+                recovery_profile
+            };
         adapter
-            .validate_consultation_model_rung(&desired_rung, &successor_route_provenance)
+            .validate_consultation_launch_route(
+                &desired_rung,
+                &successor_route_provenance,
+                self.consultation_effect_route(&desired_launch_route)?,
+            )
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let mut provenance_basis = predecessor.clone();
         if let Some(attempt) = &pending_attempt {
             provenance_basis.occupancy_generation = attempt.predecessor_occupancy_generation;
         }
-        let predecessor_route_provenance =
-            self.committee_seat_route_provenance(&run, &provenance_basis)?;
+        let predecessor_route_provenance = self.qualify_consultation_permissions(
+            self.committee_seat_route_provenance(&run, &provenance_basis)?
+                .for_legacy_recovery(),
+            &provenance_basis.model_rung.canonical_rung(),
+        )?;
         let attempt = if let Some(attempt) = pending_attempt {
             attempt
         } else {
@@ -31246,7 +33204,7 @@ impl ApplicationOperations for Services {
                         recovery_reason: request.reason.as_str().to_owned(),
                         request_intent_hash: intent.hash().clone(),
                         recovery_profile: recovery_profile.clone(),
-                        selected_model_rung: desired_rung.clone(),
+                        selected_model_rung: desired_launch_route.clone(),
                         prepared_at: kontor_api::now(),
                     })
                 })
@@ -31261,9 +33219,10 @@ impl ApplicationOperations for Services {
         predecessor.occupancy_generation = attempt.predecessor_occupancy_generation;
         let retired = adapter
             .retire_consultation_seat(&ConsultationSeatRetireRequest {
+                resolved_route: predecessor.model_rung.frozen().cloned(),
                 seat_binding_id,
                 identity: predecessor_identity,
-                model_rung: predecessor.model_rung.clone(),
+                model_rung: predecessor.model_rung.canonical_rung(),
                 route_provenance: predecessor_route_provenance,
                 requested_at: kontor_api::now(),
             })
@@ -31281,7 +33240,7 @@ impl ApplicationOperations for Services {
                 &run,
                 &template,
                 &successor_basis,
-                desired_rung,
+                desired_launch_route,
                 successor_route_provenance,
                 successor_fleet_provenance,
             )
@@ -31407,9 +33366,11 @@ impl ApplicationOperations for Services {
                     predecessor_occupancy_generation: lineage.predecessor_occupancy_generation,
                     active_occupancy_generation: lineage.successor_occupancy_generation,
                     predecessor_model_route: runtime_model_route_dto(
-                        &lineage.predecessor_model_rung,
+                        &lineage.predecessor_model_rung.canonical_rung(),
                     ),
-                    active_model_route: runtime_model_route_dto(&lineage.successor_model_rung),
+                    active_model_route: runtime_model_route_dto(
+                        &lineage.successor_model_rung.canonical_rung(),
+                    ),
                     headroom_account_profile_id: lineage.headroom_account_profile_id,
                     headroom_observation_id: lineage.headroom_observation_id,
                     headroom_evidence_hash: lineage.headroom_evidence_hash.clone(),
@@ -31485,14 +33446,24 @@ impl ApplicationOperations for Services {
                     "the Committee has no such logical consultation seat",
                 )
             })?;
-        let fleet = self
-            .fleet_policy()
+        let placement = self
+            .fleet_placement()
             .map_err(|error| self.refuse_domain(&error))?;
-        let expected_rung =
-            parse_runtime_model_route(&request.expected_model_route, fleet.as_deref())
-                .map_err(|error| self.refuse_domain(&error))?;
+        let source_bundle_hash = placement
+            .as_ref()
+            .and_then(|source| source.source_bundle_hash.clone());
+        let fleet = placement.map(|source| source.policy);
+        let frozen_policy = self.frozen_consultation_catalog(&run, &seat)?;
+        let expected_rung = parse_catalogued_model_route(
+            &request.expected_model_route,
+            CatalogAuthority::FrozenRecovery {
+                snapshot: frozen_policy.as_ref(),
+                route: &seat.model_rung.canonical_rung(),
+            },
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         if seat.occupancy_generation != request.expected_occupancy_generation
-            || seat.model_rung != expected_rung
+            || seat.model_rung.canonical_rung() != expected_rung
         {
             return Err(self.deny(
                 ApiErrorCode::StaleBinding,
@@ -31570,32 +33541,61 @@ impl ApplicationOperations for Services {
                     && candidate.committee_role == Some(CommitteeRole::Reviewer)
             })
             .filter_map(|candidate| {
-                crate::fleet::independence_key(&candidate.model_rung, fleet.as_deref())
+                crate::fleet::independence_key(
+                    &candidate.model_rung.canonical_rung(),
+                    fleet.as_deref(),
+                )
             })
             .collect();
-        let mut recovery_profile_document = self.intent(&serde_json::json!({
+        let mut recovery_profile_value = serde_json::json!({
             "schema_version": 1, "ordered_routes": request.recovery_profile,
-        }))?;
-        let recovery_provenance = consultation_route_provenance(
+        });
+        freeze_recovery_permission_policy(&mut recovery_profile_value, fleet.as_deref());
+        let mut recovery_profile_document = self.intent(&recovery_profile_value)?;
+        let recovery_provenance = self.recovery_route_provenance(
             "materialization_recovery_profile",
-            recovery_profile_document.hash().clone(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
+            &recovery_profile_document,
+        )?;
         let formal = run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID;
+        let mut candidate_launch_routes = Vec::new();
         let mut proposal_rungs = Vec::new();
         let mut candidates = Vec::new();
         for route in &request.recovery_profile {
-            let rung = parse_runtime_model_route(route, fleet.as_deref())
-                .map_err(|error| self.refuse_domain(&error))?;
+            let rung = parse_catalogued_model_route(
+                route,
+                CatalogAuthority::PinnedFleet(fleet.as_deref()),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
             if provider_family(&rung.provider.0) == rung.provider.0.as_str()
-                || !model_route_is_catalogued(&rung, fleet.as_deref())
+                || !model_route_is_catalogued(
+                    &rung,
+                    CatalogAuthority::PinnedFleet(fleet.as_deref()),
+                )
             {
                 return Err(self.deny(ApiErrorCode::InvalidRequest,
                     "a materialization recovery profile must name exact catalogued governed aliases"));
             }
+            let recovery_provenance =
+                self.qualify_consultation_permissions(recovery_provenance.clone(), &rung)?;
+            let launch_route = match self.freeze_launch_route(
+                adapter.as_ref(),
+                &rung,
+                fleet.as_deref().map(|policy| policy.hash()),
+                source_bundle_hash.as_ref(),
+                kontor_api::now(),
+            ) {
+                Ok(route) => route,
+                Err(error) if error.code == ApiErrorCode::PlacementBlocked => continue,
+                Err(error) => return Err(error),
+            };
             adapter
-                .validate_consultation_model_rung(&rung, &recovery_provenance)
+                .validate_consultation_launch_route(
+                    &rung,
+                    &recovery_provenance,
+                    launch_route.frozen(),
+                )
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            candidate_launch_routes.push((rung.clone(), launch_route));
             proposal_rungs.push(rung.clone());
             let violates_diversity = !formal
                 && template.diversity
@@ -31697,10 +33697,10 @@ impl ApplicationOperations for Services {
                 .find(|slot| slot.slot_id == seat.role_slot_id.as_str())
                 .and_then(|slot| slot.selected.clone())
                 .expect("a complete allocation selected the target");
-            recovery_profile_document = self.intent(&serde_json::json!({
-                "schema_version": 1, "ordered_routes": request.recovery_profile,
-                "constraint_candidate": candidate, "constraint_policy_hash": fleet.as_ref().map(|fleet| fleet.hash()),
-            }))?;
+            recovery_profile_value["constraint_candidate"] = serde_json::json!(candidate);
+            recovery_profile_value["constraint_policy_hash"] =
+                serde_json::json!(fleet.as_ref().map(|fleet| fleet.hash()));
+            recovery_profile_document = self.intent(&recovery_profile_value)?;
             candidate.rung
         } else {
             resolve_recovery_placement(
@@ -31742,6 +33742,20 @@ impl ApplicationOperations for Services {
                     "the provider-report freshness boundary could not be represented",
                 )
             })?;
+        let selected = candidate_launch_routes
+            .iter()
+            .find(|(rung, _)| rung == &selected)
+            .map(|(_, route)| route.clone())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "host_route_snapshot_missing",
+                )
+            })?;
+        if selected.frozen().is_some() {
+            recovery_profile_value["private_launch_route"] = serde_json::json!(selected);
+            recovery_profile_document = self.intent(&recovery_profile_value)?;
+        }
         let lineage = state
             .with_store(|store| {
                 store.reroute_unmaterialized_consultation_seat(
@@ -32328,7 +34342,89 @@ impl ApplicationOperations for Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        reader: Option<kontor_api::auth::ScopedSeatSubject>,
     ) -> Result<CompletionStateDto, ApiError> {
+        if let Some(reader) = reader {
+            let state = self.state()?;
+            let seat = state
+                .with_store(|store| store.get_seat_binding(project_id, reader.seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Forbidden,
+                        "the completion reader is not a seat in this project",
+                    )
+                })?;
+            if seat.lifecycle != TopologyLifecycle::Active || seat.released_at.is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "only active epic architecture and process closer seats may read completion through a scoped credential",
+                ));
+            }
+            // Membership before staffing: a seat of another epic must never
+            // reach that epic's control-plane lookup, while a reader of this
+            // epic keeps the true refusal when its own staffing is unreadable.
+            let node = state
+                .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Forbidden,
+                        "the completion reader has no owning topology",
+                    )
+                })?;
+            if node.mini_project_id != Some(epic_id) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the completion reader must be an active seat of this exact epic",
+                ));
+            }
+            let reader_purpose = |purpose| {
+                self.epic_purpose(project_id, epic_id, purpose)
+                    .map_err(|error| {
+                        if error.rule == "operational_domain_definition_mismatch" {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "the completion reader's frozen leadership definition is unreadable",
+                            )
+                        } else {
+                            error
+                        }
+                    })
+            };
+            let architecture = reader_purpose(CoreTeamSeatPurpose::ArchitectureCloser)?;
+            let purpose = if Self::purpose_binding_matches(&seat, &architecture) {
+                CoreTeamSeatPurpose::ArchitectureCloser
+            } else {
+                let process = reader_purpose(CoreTeamSeatPurpose::ProcessCloser)?;
+                if !Self::purpose_binding_matches(&seat, &process) {
+                    return Err(self.deny(
+                        ApiErrorCode::Forbidden,
+                        "only active epic architecture and process closer seats may read completion through a scoped credential",
+                    ));
+                }
+                CoreTeamSeatPurpose::ProcessCloser
+            };
+            // Use the same occupancy fence as remediation writes. A scoped read
+            // grants no general Observer authority.
+            self.require_completion_authority(
+                project_id,
+                epic_id,
+                purpose,
+                reader.seat_binding_id,
+                reader.occupancy_generation,
+            )
+            .map_err(|error| {
+                if error.rule == "operational_domain_definition_mismatch" {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the completion reader's frozen leadership definition is unreadable",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        }
         self.epic_row(project_id, epic_id)?;
         let stored = self.require_completion(project_id, epic_id)?;
         let compiled = self.pinned_completion(&stored)?;
@@ -32519,6 +34615,32 @@ impl ApplicationOperations for Services {
         request: &RemediateCompletionRequest,
     ) -> Result<CompletionOutcomeDto, ApiError> {
         let state = self.state()?;
+        // Membership before lookup: a seat of another epic must not learn
+        // whether this epic has a completion run, nor how it is staffed.
+        let seat = state
+            .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the remediation authority is not a seat in this project",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the remediation authority has no owning topology",
+                )
+            })?;
+        if node.mini_project_id != Some(epic_id) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the remediation authority must be an active seat of this exact epic",
+            ));
+        }
         let epic = self.epic_row(project_id, epic_id)?;
         let now = kontor_api::now();
         let stored = self.require_completion(project_id, epic_id)?;
@@ -32531,8 +34653,8 @@ impl ApplicationOperations for Services {
             project_id,
             epic_id,
             match &request.action {
-                RemediationActionDto::LsaProposal { .. } => MANDATORY_LEAD_ROLE,
-                RemediationActionDto::TpmRoute { .. } => MANDATORY_PROGRAM_ROLE,
+                RemediationActionDto::LsaProposal { .. } => CoreTeamSeatPurpose::ArchitectureCloser,
+                RemediationActionDto::TpmRoute { .. } => CoreTeamSeatPurpose::ProcessCloser,
             },
             seat_binding_id,
             seat_occupancy_generation,
@@ -32704,7 +34826,7 @@ impl ApplicationOperations for Services {
                 let lsa_actor = self.require_completion_authority(
                     project_id,
                     epic_id,
-                    MANDATORY_LEAD_ROLE,
+                    CoreTeamSeatPurpose::ArchitectureCloser,
                     proposal.lsa_seat_binding_id,
                     proposal.lsa_occupancy_generation,
                 )?;
@@ -32784,8 +34906,11 @@ impl ApplicationOperations for Services {
                         "this completion is not waiting for that bounded or needs_human remediation route",
                     ));
                 };
-                let live_tpm =
-                    self.epic_control_seat(project_id, epic_id, MANDATORY_PROGRAM_ROLE)?;
+                let live_tpm = self.epic_control_seat(
+                    project_id,
+                    epic_id,
+                    CoreTeamSeatPurpose::ProcessCloser,
+                )?;
                 if current.tpm_seat_id != live_tpm || actor.seat_binding_id != live_tpm {
                     return Err(self.deny(
                         ApiErrorCode::StaleBinding,
@@ -33202,14 +35327,69 @@ impl ApplicationOperations for Services {
                 .expect("an epic intent is an object")
                 .insert("desk_adam_origin".to_owned(), origin_intent);
         }
+        if let Some(expected) = &request.expected_operational_domain_bundle_hash {
+            intent_document["expected_operational_domain_bundle_hash"] =
+                serde_json::json!(expected);
+        }
+        // Preserve old request bytes; only new receipts carry resolved context.
+        let prior = state
+            .with_store(|store| store.get_receipt_by_key(key))
+            .map_err(|error| self.refuse(&error))?;
+        let replay_binding: Option<kontor_store::EpicDomainBinding> = prior
+            .as_ref()
+            .map(|receipt| receipt.intent.deserialize::<serde_json::Value>())
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?
+            .and_then(|value| value.get("domain_binding").cloned())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "operational_domain_creation_intent_unreadable",
+                )
+            })?;
+        if let Some(binding) = &replay_binding {
+            intent_document["domain_binding"] = serde_json::json!(binding);
+            intent_document["project_id"] = serde_json::json!(project_id);
+            intent_document["expected_project_revision"] =
+                serde_json::json!(request.expected_revision);
+        }
         let intent = self.intent(&intent_document)?;
-        if let Some(receipt) = self.replayed(key, &intent, None)? {
+        if let Some(receipt) = prior {
+            if receipt.intent.hash() != intent.hash() {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
             let AggregateRef::MiniProject { mini_project_id } = receipt.target else {
                 return Err(self.deny(
                     ApiErrorCode::IdempotencyConflict,
                     "the idempotency key was already used for a different operation",
                 ));
             };
+            if receipt.project_id != project_id || receipt.kind != CommandKind::ApplyEpicGraph {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "epic creation receipt target mismatch",
+                ));
+            }
+            if let Some(binding) = &replay_binding {
+                let result = state
+                    .with_store(|store| store.epic_domain_creation_result(&receipt))
+                    .map_err(|error| self.refuse(&error))?;
+                if &result != binding {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "operational_domain_creation_result_mismatch",
+                    ));
+                }
+                self.verify_epic_domain_replay(project_id, mini_project_id, binding)?;
+            } else {
+                // Historical readback remains available; it grants no new domain effects.
+                return self.applied_epic_replay(project_id, mini_project_id);
+            }
             let epic = self.epic_row(project_id, mini_project_id)?;
             let initial_hold = match &request.initial_hold {
                 Some(hold) => Some(
@@ -33222,6 +35402,25 @@ impl ApplicationOperations for Services {
                 self.bind_desk_adam_origin(project_id, mini_project_id, origin)
                     .await?;
             }
+            state
+                .with_store(|store| -> Result<(), RepositoryError> {
+                    if store
+                        .get_adaptive_admission_state(project_id, mini_project_id)?
+                        .is_none()
+                    {
+                        let seed = AdaptivePosition::initial(self.capacity.adaptive);
+                        store.create_adaptive_admission_state(&NewAdaptiveAdmissionState {
+                            project_id,
+                            mini_project_id,
+                            current_window: seed.current_window,
+                            clean_observation_streak: seed.clean_observation_streak,
+                            last_observation_id: seed.last_observation_id,
+                            created_at: now,
+                        })?;
+                    }
+                    Ok(())
+                })
+                .map_err(|error| self.refuse(&error))?;
             // Also on replay. Governance is installed only after a requested
             // hold has converged, so recovery preserves the admission barrier.
             self.govern_epic(project_id, mini_project_id)?;
@@ -33229,6 +35428,25 @@ impl ApplicationOperations for Services {
             replay.initial_hold = initial_hold;
             return Ok(replay);
         }
+
+        let (domain_binding, domain_selection) = self.epic_domain_binding(
+            project_id,
+            &request.name,
+            request.expected_operational_domain_bundle_hash.as_ref(),
+        )?;
+        intent_document["domain_binding"] = serde_json::json!(domain_binding);
+        intent_document["project_id"] = serde_json::json!(project_id);
+        intent_document["expected_project_revision"] = serde_json::json!(request.expected_revision);
+        let intent = self.intent(&intent_document)?;
+        let creation = ReceiptEnvelope::new(
+            state.realm_id(),
+            kontor_store::EpicApplyCommand {
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                expected_revision: request.expected_revision,
+                intent: intent.clone(),
+            },
+        );
 
         let PreparedEpic {
             bundle,
@@ -33251,18 +35469,22 @@ impl ApplicationOperations for Services {
         if request.initial_hold.is_some() {
             let preview = state
                 .with_store(|store| {
-                    store.preview_epic(&EpicApplication {
-                        project_id,
-                        name: request.name.clone(),
-                        epic_backlog_code: epic_backlog_code.as_ref(),
-                        execution_scope: execution_scope.as_ref(),
-                        tasks: &tasks,
-                        profile: &bundle.profile,
-                        definition: &bundle.profile.definition,
-                        team: bundle.team.as_ref(),
-                        team_source,
-                        applied_at: now,
-                    })
+                    store.preview_epic_with_domain(
+                        &EpicApplication {
+                            project_id,
+                            name: request.name.clone(),
+                            epic_backlog_code: epic_backlog_code.as_ref(),
+                            execution_scope: execution_scope.as_ref(),
+                            tasks: &tasks,
+                            profile: &bundle.profile,
+                            definition: &bundle.profile.definition,
+                            team: bundle.team.as_ref(),
+                            team_source,
+                            applied_at: now,
+                        },
+                        &domain_binding,
+                        domain_selection.as_ref(),
+                    )
                 })
                 .map_err(|error| self.refuse(&error))?;
             if preview.applied != Applied::Created
@@ -33300,19 +35522,27 @@ impl ApplicationOperations for Services {
         // a claim releases that hold, takes the lifecycle lock, and retries the
         // write under it; that retry sees every claim the wait made durable.
         let seed = AdaptivePosition::initial(self.capacity.adaptive);
-        let write = |store: &SqliteStore| -> Result<AppliedEpic, RepositoryError> {
-            let applied = store.apply_epic(&EpicApplication {
-                project_id,
-                name: request.name.clone(),
-                epic_backlog_code: epic_backlog_code.as_ref(),
-                execution_scope: execution_scope.as_ref(),
-                tasks: &tasks,
-                profile: &bundle.profile,
-                definition: &bundle.profile.definition,
-                team: bundle.team.as_ref(),
-                team_source,
-                applied_at: now,
-            })?;
+        let write = |store: &SqliteStore| -> Result<Option<AppliedEpic>, RepositoryError> {
+            let Some(applied) = store.apply_epic_with_domain(
+                &EpicApplication {
+                    project_id,
+                    name: request.name.clone(),
+                    epic_backlog_code: epic_backlog_code.as_ref(),
+                    execution_scope: execution_scope.as_ref(),
+                    tasks: &tasks,
+                    profile: &bundle.profile,
+                    definition: &bundle.profile.definition,
+                    team: bundle.team.as_ref(),
+                    team_source,
+                    applied_at: now,
+                },
+                &domain_binding,
+                domain_selection.as_ref(),
+                &creation,
+            )?
+            else {
+                return Ok(None);
+            };
             // Seeded once, when the epic first exists. Applying the same
             // epic again is idempotent and must stay that way — and it must
             // not reset a position later observations have already moved.
@@ -33329,7 +35559,7 @@ impl ApplicationOperations for Services {
                     created_at: now,
                 })?;
             }
-            Ok(applied)
+            Ok(Some(applied))
         };
         let applied = state
             .with_store(|store| {
@@ -33347,6 +35577,12 @@ impl ApplicationOperations for Services {
                     .with_store(write)
                     .map_err(|error| self.refuse(&error))?
             }
+        };
+
+        let Some(applied) = applied else {
+            // The store observed the winning call. Resume its exact intent after
+            // releasing both store and native lifecycle locks.
+            return self.apply_epic(key, project_id, request).await;
         };
 
         // Before governance can remove the scheduler's ungoverned barrier,
@@ -33391,25 +35627,11 @@ impl ApplicationOperations for Services {
         // crash boundary.
         self.govern_epic(project_id, applied.mini_project_id)?;
 
-        // The receipt is recorded *after* the graph, because the goal it targets
-        // has to exist for the target reference to resolve. It is what makes the
-        // apply attributable, and what makes a reused key with different bytes a
-        // conflict rather than a second epic.
-        self.record(
-            key,
-            project_id,
-            CommandKind::ApplyEpicGraph,
-            AggregateRef::MiniProject {
-                mini_project_id: applied.mini_project_id,
-            },
-            applied.revision,
-            &intent,
-        )?;
-
         // Digested from what was *stored*, not from what resolved it. The
         // resolved bundle's own digest covers `resolved_at`, so returning it here
         // made an unchanged reapply look like drift on every replay.
         self.sealed(AppliedEpicDto {
+            operational_domain_bundle_hash: Some(domain_binding.operational_domain_bundle_hash),
             realm_id: state.realm_id(),
             project_id,
             epic_id: applied.mini_project_id,
@@ -33472,6 +35694,11 @@ impl ApplicationOperations for Services {
     ) -> Result<PreviewEpicDto, ApiError> {
         let state = self.state()?;
         let now = kontor_api::now();
+        let (domain_binding, domain_selection) = self.epic_domain_binding(
+            project_id,
+            &request.name,
+            request.expected_operational_domain_bundle_hash.as_ref(),
+        )?;
         let PreparedEpic {
             bundle,
             effective_team,
@@ -33489,18 +35716,22 @@ impl ApplicationOperations for Services {
         )?;
         let preview = state
             .with_store(|store| {
-                store.preview_epic(&EpicApplication {
-                    project_id,
-                    name: request.name.clone(),
-                    epic_backlog_code: epic_backlog_code.as_ref(),
-                    execution_scope: execution_scope.as_ref(),
-                    tasks: &tasks,
-                    profile: &bundle.profile,
-                    definition: &bundle.profile.definition,
-                    team: bundle.team.as_ref(),
-                    team_source,
-                    applied_at: now,
-                })
+                store.preview_epic_with_domain(
+                    &EpicApplication {
+                        project_id,
+                        name: request.name.clone(),
+                        epic_backlog_code: epic_backlog_code.as_ref(),
+                        execution_scope: execution_scope.as_ref(),
+                        tasks: &tasks,
+                        profile: &bundle.profile,
+                        definition: &bundle.profile.definition,
+                        team: bundle.team.as_ref(),
+                        team_source,
+                        applied_at: now,
+                    },
+                    &domain_binding,
+                    domain_selection.as_ref(),
+                )
             })
             .map_err(|error| self.refuse(&error))?;
 
@@ -33512,6 +35743,7 @@ impl ApplicationOperations for Services {
         }
 
         Ok(PreviewEpicDto {
+            operational_domain_bundle_hash: Some(domain_binding.operational_domain_bundle_hash),
             realm_id: state.realm_id(),
             project_id,
             epic_id: (preview.applied != Applied::Created).then_some(preview.mini_project_id),
@@ -34734,7 +36966,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
+            .map(|route| self.parse_pinned_model_route(route))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         // As with exact admission recovery, the scheduling receipt witnesses
@@ -36117,6 +38349,24 @@ impl ApplicationOperations for Services {
             intent,
             created_at: now,
         };
+        let checkout = prepared
+            .checkout
+            .as_ref()
+            .map(|snapshot| {
+                Ok::<_, ApiError>(kontor_store::checkouts::TaskCheckoutPlacement {
+                    project_id,
+                    task_id,
+                    worktree: prepared.new_worktree.clone(),
+                    destination: ExternalName::parse(&snapshot.destination)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    task_revision: prepared.task_revision,
+                    module: Some(prepared.module.clone()),
+                    intent: CanonicalDocument::from_serializable(snapshot)
+                        .map_err(|error| self.refuse_domain(&error))?,
+                    readback: None,
+                })
+            })
+            .transpose()?;
         let correction = TaskWorktreeCorrection {
             command: &command,
             task_id,
@@ -36125,6 +38375,7 @@ impl ApplicationOperations for Services {
             module: &prepared.module,
             branch: &prepared.branch,
             preview_hash: &prepared.preview_hash,
+            checkout: checkout.as_ref(),
         };
         let (stored, applied) = state
             .with_store(|store| store.apply_task_worktree_correction(&correction))
@@ -37549,10 +39800,20 @@ impl ApplicationOperations for Services {
         // Validate an operator-selected route before recording the command or
         // creating a successor row. A malformed recovery request must remain a
         // side-effect-free refusal that can be corrected under a new key.
+        let frozen_replacement = self.replacement_launch_intent(project_id, key)?;
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
+            .map(|route| match &frozen_replacement {
+                Some((frozen, _, _)) => parse_catalogued_model_route(
+                    route,
+                    CatalogAuthority::FrozenRecovery {
+                        snapshot: None,
+                        route: &frozen.canonical_rung(),
+                    },
+                ),
+                None => self.parse_pinned_model_route(route),
+            })
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         if let (Some(evidence), Some(route)) = (
@@ -37581,8 +39842,11 @@ impl ApplicationOperations for Services {
         // retirement or any native call. A Wait/NeedsHuman answer is a
         // side-effect-free deferral, never permission to archive first and
         // discover afterwards that nowhere can accept the work.
-        let quota_successor_route = if request.quota_exhausted.is_some()
+        let quota_successor_route = if let Some((route, account, _)) = &frozen_replacement {
+            Some((route.canonical_rung(), *account, None))
+        } else if request.quota_exhausted.is_some()
             || explicit_model_route.is_some()
+            || self.selected_config.is_some()
         {
             let quota_states = self.admission_quota_states(project_id)?;
             let eligible = self.eligible_accounts(project_id)?;
@@ -37649,6 +39913,63 @@ impl ApplicationOperations for Services {
             None
         };
 
+        let replacement_route = if let Some((route, _, _)) = &frozen_replacement {
+            Some(route.clone())
+        } else if self.selected_config.is_some() {
+            let (rung, _, metadata) = quota_successor_route.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "host_route_snapshot_missing",
+                )
+            })?;
+            {
+                let bound = metadata
+                    .as_ref()
+                    .and_then(|(declared, _)| declared.fleet.as_ref());
+                let placement = if bound.is_none() {
+                    self.fleet_placement()
+                        .map_err(|error| self.refuse_domain(&error))?
+                } else {
+                    None
+                };
+                Some(
+                    self.freeze_launch_route(
+                        adapter.as_ref(),
+                        rung,
+                        bound
+                            .map(|source| source.snapshot.hash())
+                            .or_else(|| placement.as_ref().map(|source| source.policy.hash())),
+                        bound
+                            .and_then(|source| source.source_bundle_hash.as_ref())
+                            .or_else(|| {
+                                placement
+                                    .as_ref()
+                                    .and_then(|source| source.source_bundle_hash.as_ref())
+                            }),
+                        now,
+                    )?,
+                )
+            }
+        } else {
+            None
+        };
+        let replacement_decision = if let Some((_, _, decision)) = &frozen_replacement {
+            decision.clone()
+        } else if let Some((rung, account, Some((declared, eligibility)))) = &quota_successor_route
+        {
+            self.fleet_decision(
+                declared,
+                eligibility.as_ref(),
+                predecessor.team_run_id,
+                predecessor.id,
+                &role_slot,
+                rung,
+                *account,
+                now,
+            )?
+        } else {
+            None
+        };
         let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "replace_seat",
@@ -37692,6 +40013,21 @@ impl ApplicationOperations for Services {
                 "model": route.model,
                 "effort": route.effort,
             });
+        }
+        if replacement_route
+            .as_ref()
+            .is_some_and(|route| route.frozen().is_some())
+            && let Some(decision) = &replacement_decision
+        {
+            intent_document["fleet_decision"] = serde_json::json!(decision);
+        }
+        if let Some(route) = &replacement_route {
+            intent_document["launch_route"] = serde_json::json!(route);
+            intent_document["successor_account_profile_id"] = serde_json::json!(
+                quota_successor_route
+                    .as_ref()
+                    .and_then(|(_, account, _)| *account)
+            );
         }
         let intent = self.intent(&intent_document)?;
         let target = AggregateRef::TeamRun {
@@ -37925,36 +40261,62 @@ impl ApplicationOperations for Services {
         };
         // Explicit routes were resolved before recording a successor. An
         // operator-selected alias is placement authority, never quota evidence.
-        let (model_rung, routed_account, fleet_declared) = match quota_successor_route {
-            Some(preplanned) => preplanned,
-            None => {
-                let declared = self
-                    .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
-                    .map_err(|error| self.refuse_domain(&error))?
-                    .ok_or_else(|| {
-                        self.refuse_domain(&kontor_core::DomainError::invalid(
-                            "TeamRunSnapshot",
-                            "the role slot has no model route",
-                        ))
-                    })?;
-                let (rung, routed_account, eligibility) =
-                    freeze_declared_rung(adapter.as_ref(), &declared, &outlook)
-                        .map_err(|error| self.refuse_domain(&error))?;
-                (rung, routed_account, Some((declared, eligibility)))
+        let (model_rung, routed_account, fleet_declared) = if let Some((rung, account)) =
+            self.frozen_delivery_choice(predecessor.team_run_id, successor_agent_run_id)?
+        {
+            (rung, account, None)
+        } else {
+            match quota_successor_route {
+                Some(preplanned) => preplanned,
+                None => {
+                    let declared = self
+                        .declared_delivery_rungs(
+                            predecessor.team_run_id,
+                            &team.snapshot,
+                            &role_slot,
+                        )
+                        .map_err(|error| self.refuse_domain(&error))?
+                        .ok_or_else(|| {
+                            self.refuse_domain(&kontor_core::DomainError::invalid(
+                                "TeamRunSnapshot",
+                                "the role slot has no model route",
+                            ))
+                        })?;
+                    let (rung, routed_account, eligibility) =
+                        freeze_declared_rung(adapter.as_ref(), &declared, &outlook)
+                            .map_err(|error| self.refuse_domain(&error))?;
+                    (rung, routed_account, Some((declared, eligibility)))
+                }
             }
         };
-        if let Some((declared, eligibility)) = fleet_declared.as_ref() {
-            self.record_fleet_decision(
-                declared,
-                eligibility.as_ref(),
-                predecessor.team_run_id,
-                successor_agent_run_id,
-                &role_slot,
-                &model_rung,
-                routed_account,
-                now,
-            )?;
-        }
+        let launch_route = self.delivery_launch_route(
+            predecessor.team_run_id,
+            successor_agent_run_id,
+            &role_slot,
+            adapter.as_ref(),
+            &model_rung,
+            routed_account,
+            now,
+            replacement_route.as_ref(),
+            fleet_declared
+                .as_ref()
+                .map(|(declared, eligibility)| {
+                    self.fleet_decision(
+                        declared,
+                        eligibility.as_ref(),
+                        predecessor.team_run_id,
+                        successor_agent_run_id,
+                        &role_slot,
+                        &model_rung,
+                        routed_account,
+                        now,
+                    )
+                })
+                .transpose()?
+                .flatten()
+                .or_else(|| replacement_decision.clone()),
+        )?;
+
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -37964,6 +40326,7 @@ impl ApplicationOperations for Services {
             &model_rung,
         );
         let launch = SlotLaunch {
+            resolved_route: launch_route.frozen().cloned(),
             display_name: self.delivery_seat_name(
                 project_id,
                 task_id,
@@ -38440,6 +40803,10 @@ impl ApplicationOperations for Services {
         // is a description of the past whatever it says.
         let observation = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: now,
             })
@@ -38573,11 +40940,11 @@ impl ApplicationOperations for Services {
 
         // The seeds win every category they advertise. Registration widens the
         // catalogue; it never redefines what an already-frozen epic pinned.
-        if let Some(shadowed) = parsed
-            .manifest
-            .iter()
-            .find(|entry| self.pack.category(&entry.category).is_some())
-        {
+        if let Some(shadowed) = parsed.manifest.iter().find(|entry| {
+            self.pack
+                .as_ref()
+                .is_some_and(|pack| pack.category(&entry.category).is_some())
+        }) {
             let _ = shadowed;
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
@@ -38659,7 +41026,16 @@ impl ApplicationOperations for Services {
         let registered = state
             .with_store(SqliteStore::list_profile_packs)
             .map_err(|error| self.refuse(&error))?;
-        let mut packs = vec![pack_dto(&self.pack, "bundled", None, AppliedDto::Unchanged)];
+        let source = if self.selected_config.is_some() {
+            "selected"
+        } else {
+            "bundled"
+        };
+        let mut packs: Vec<_> = self
+            .pack
+            .iter()
+            .map(|pack| pack_dto(pack, source, None, AppliedDto::Unchanged))
+            .collect();
         for pack in &registered {
             let parsed = parse_pack(&pack.document).map_err(|error| self.refuse_domain(&error))?;
             packs.push(pack_dto(
@@ -39100,9 +41476,10 @@ impl ApplicationOperations for Services {
         connector: &str,
     ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
         let state = self.state()?;
+        self.project_row(project_id)?;
         let connector =
             ConnectorKey::parse(connector).map_err(|error| self.refuse_domain(&error))?;
-        let catalog = self.connector_catalog()?;
+        let catalog = self.connector_catalog();
         let mut specs = Vec::new();
         for compiled in catalog.field_specs() {
             let spec = compiled.spec();
@@ -39119,7 +41496,7 @@ impl ApplicationOperations for Services {
             let installed = state
                 .with_store(|store| store.get_ticket_field_spec(&selector))
                 .map_err(|error| self.refuse(&error))?
-                .is_some();
+                .is_some_and(|installed| installed == *spec);
             specs.push(ConnectorSpecDto {
                 connector: spec.connector.as_str().to_owned(),
                 external_project: spec.project.as_str().to_owned(),
@@ -39143,8 +41520,9 @@ impl ApplicationOperations for Services {
         connector: &str,
     ) -> Result<Vec<ConnectorSpecDto>, ApiError> {
         let state = self.state()?;
+        self.project_row(project_id)?;
         let connector = self.canonical_connector(connector)?;
-        let catalog = self.connector_catalog()?;
+        let catalog = self.connector_catalog();
         let mut specs = Vec::new();
         for compiled in catalog.workflow_specs() {
             let spec = compiled.spec();
@@ -39164,7 +41542,7 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?
-                .is_some();
+                .is_some_and(|installed| installed == *spec);
             specs.push(ConnectorSpecDto {
                 connector: spec.connector.as_str().to_owned(),
                 external_project: spec.project.as_str().to_owned(),
@@ -39197,7 +41575,7 @@ impl ApplicationOperations for Services {
         let issue_type = kontor_core::id::ExternalIssueTypeKey::parse(&request.issue_type)
             .map_err(|error| self.refuse_domain(&error))?;
         let matches: Vec<&CompiledWorkflowSpec> = self
-            .connector_catalog()?
+            .connector_catalog()
             .workflow_specs()
             .iter()
             .filter(|compiled| {
@@ -39213,17 +41591,36 @@ impl ApplicationOperations for Services {
             [] => {
                 return Err(self.deny(
                     ApiErrorCode::NotFound,
-                    "this build ships no external-workflow specification for that exact selector",
+                    "the selected catalog has no external-workflow specification for that exact selector",
                 ));
             }
             _ => {
                 return Err(self.deny(
                     ApiErrorCode::RevisionConflict,
-                    "the shipped external-workflow selector is ambiguous",
+                    "the selected external-workflow selector is ambiguous",
                 ));
             }
         };
-        let intent = self.intent(&serde_json::json!({
+        let fields = if self.selected_config.is_some() {
+            let matches: Vec<_> = self
+                .connectors
+                .field_specs()
+                .iter()
+                .filter(|field| {
+                    let field = field.spec();
+                    field.connector == connector
+                        && field.project == external_project
+                        && field.issue_type == issue_type
+                })
+                .collect();
+            match matches.as_slice() {
+                [field] => Some(*field),
+                _ => return Err(self.deny(ApiErrorCode::InvalidRequest, "install requires exactly one selected tracker field specification for the workflow")),
+            }
+        } else {
+            None
+        };
+        let mut intent_value = serde_json::json!({
             "schema_version": 1,
             "operation": "install_workflow_spec",
             "project_id": project_id.to_string(),
@@ -39233,7 +41630,11 @@ impl ApplicationOperations for Services {
             "version": request.version.get(),
             "definition_hash": compiled.hash().as_str(),
             "expected_revision": request.expected_revision.get(),
-        }))?;
+        });
+        if let Some(fields) = fields {
+            intent_value["field_definition_hash"] = serde_json::json!(fields.hash().as_str());
+        }
+        let intent = self.intent(&intent_value)?;
         let target = AggregateRef::Project { project_id };
         let replayed = self.replayed(key, &intent, Some(&target))?;
         let (receipt_id, applied, revision) = if let Some(receipt) = replayed {
@@ -39293,10 +41694,11 @@ impl ApplicationOperations for Services {
             );
             let (_, revision, applied, receipt) = state
                 .with_store(|store| {
-                    store.install_external_workflow_spec_with_intent(
+                    store.install_tracker_specs_with_intent(
                         project_id,
                         request.expected_revision,
                         compiled.spec(),
+                        fields.map(CompiledFieldSpec::spec),
                         &command,
                     )
                 })
@@ -40012,6 +42414,10 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let observation = adapter
                 .inspect(&kontor_runtime::request::InspectRequest {
+                    resolved_route: self.delivery_private_route(
+                        project_id,
+                        (issued.snapshot().clone()).agent_run_id(),
+                    )?,
                     binding: issued.snapshot().clone(),
                     requested_at: now,
                 })
@@ -40142,7 +42548,8 @@ impl Services {
             now,
         };
         let (placement, fleet_declared) = if let Some(route) = requested_route {
-            let route = parse_runtime_model_route(route, self.fleet.current().as_deref())
+            let route = self
+                .parse_pinned_model_route(route)
                 .map_err(|error| self.refuse_domain(&error))?;
             (
                 resolve_chain_placement(
@@ -40183,7 +42590,31 @@ impl Services {
                         now,
                     )?;
                 }
-                (Some(rung), Some(account), None)
+                let bound = fleet_declared
+                    .as_ref()
+                    .and_then(|(declared, _)| declared.fleet.as_ref());
+                let placement = if bound.is_none() {
+                    self.fleet_placement()
+                        .map_err(|error| self.refuse_domain(&error))?
+                } else {
+                    None
+                };
+                let route = self.freeze_launch_route(
+                    adapter.as_ref(),
+                    &rung,
+                    bound
+                        .map(|source| source.snapshot.hash())
+                        .or_else(|| placement.as_ref().map(|source| source.policy.hash())),
+                    bound
+                        .and_then(|source| source.source_bundle_hash.as_ref())
+                        .or_else(|| {
+                            placement
+                                .as_ref()
+                                .and_then(|source| source.source_bundle_hash.as_ref())
+                        }),
+                    now,
+                )?;
+                (Some(route), Some(account), None)
             }
             kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
             kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
@@ -40539,6 +42970,10 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let observation = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: now,
             })
@@ -40685,7 +43120,29 @@ impl Services {
                     Some(account),
                     now,
                 )?;
-                (Some(rung), Some(account), None)
+                let bound = declared.fleet.as_ref();
+                let placement = if bound.is_none() {
+                    self.fleet_placement()
+                        .map_err(|error| self.refuse_domain(&error))?
+                } else {
+                    None
+                };
+                let route = self.freeze_launch_route(
+                    adapter.as_ref(),
+                    &rung,
+                    bound
+                        .map(|source| source.snapshot.hash())
+                        .or_else(|| placement.as_ref().map(|source| source.policy.hash())),
+                    bound
+                        .and_then(|source| source.source_bundle_hash.as_ref())
+                        .or_else(|| {
+                            placement
+                                .as_ref()
+                                .and_then(|source| source.source_bundle_hash.as_ref())
+                        }),
+                    now,
+                )?;
+                (Some(route), Some(account), None)
             }
             kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
             kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
@@ -40974,7 +43431,7 @@ impl Services {
                     "the planned succession has no frozen successor account",
                 )
             })?;
-        let model_rung = attempt
+        let launch_route = attempt
             .request
             .successor_model_rung
             .clone()
@@ -40984,6 +43441,7 @@ impl Services {
                     "the planned succession has no frozen successor route",
                 )
             })?;
+        let model_rung = launch_route.canonical_rung();
         let adapter = state
             .runtimes()
             .get(&attempt.request.predecessor_native_identity.runtime_kind)
@@ -41038,6 +43496,25 @@ impl Services {
                 .map_err(|error| self.refuse(&error))?;
         }
         self.ensure_launch_intent(project_id, successor_agent_run_id)?;
+        let launch_route = self.delivery_launch_route(
+            attempt.request.team_run_id,
+            successor_agent_run_id,
+            &role_slot,
+            adapter.as_ref(),
+            &model_rung,
+            Some(successor_account),
+            now,
+            Some(&launch_route),
+            self.fleet
+                .decision_for(
+                    &attempt.request.team_run_id.to_string(),
+                    &attempt.request.predecessor_agent_run_id.to_string(),
+                )
+                .filter(|row| {
+                    row.provider == model_rung.provider.0 && row.model == model_rung.model.0
+                }),
+        )?;
+
         state
             .with_store(|store| {
                 store.pin_agent_run_account(project_id, successor_agent_run_id, successor_account)
@@ -41078,6 +43555,7 @@ impl Services {
             &model_rung,
         );
         let launch = SlotLaunch {
+            resolved_route: launch_route.frozen().cloned(),
             display_name: self.delivery_seat_name(
                 project_id,
                 attempt.request.task_id,
@@ -41204,6 +43682,10 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let mut observation = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: now,
             })
@@ -41215,6 +43697,10 @@ impl Services {
         {
             adapter
                 .resume(&kontor_runtime::request::ResumeRequest {
+                    resolved_route: self.delivery_private_route(
+                        project_id,
+                        (issued.snapshot().clone()).agent_run_id(),
+                    )?,
                     binding: issued.snapshot().clone(),
                     requested_at: kontor_api::now(),
                 })
@@ -41222,6 +43708,10 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             observation = adapter
                 .inspect(&kontor_runtime::request::InspectRequest {
+                    resolved_route: self.delivery_private_route(
+                        project_id,
+                        (issued.snapshot().clone()).agent_run_id(),
+                    )?,
                     binding: issued.snapshot().clone(),
                     requested_at: kontor_api::now(),
                 })
@@ -41560,6 +44050,10 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let liveness = adapter
             .inspect(&kontor_runtime::request::InspectRequest {
+                resolved_route: self.delivery_private_route(
+                    project_id,
+                    (issued.snapshot().clone()).agent_run_id(),
+                )?,
                 binding: issued.snapshot().clone(),
                 requested_at: now,
             })
@@ -41638,6 +44132,10 @@ impl Services {
             // a process it both reports missing and cannot resume is unusable.
             if adapter
                 .resume(&kontor_runtime::request::ResumeRequest {
+                    resolved_route: self.delivery_private_route(
+                        project_id,
+                        (issued.snapshot().clone()).agent_run_id(),
+                    )?,
                     binding: issued.snapshot().clone(),
                     requested_at: now,
                 })
@@ -41894,6 +44392,12 @@ impl Services {
             && let Some(resolution) = placement.policy.resolve(&key)
         {
             let fleet = placement.policy;
+            let resolution = self.host_ordered_resolution(
+                &fleet,
+                &resolution,
+                placement.source_bundle_hash.as_ref(),
+                kontor_api::now(),
+            )?;
             if resolution.routes.is_empty() {
                 return Err(kontor_core::DomainError::MissingEvidence {
                     subject: "FleetConfiguration",
@@ -42091,6 +44595,14 @@ impl Services {
                 )
                 .about("FleetConfiguration"));
         }
+        let resolution = self
+            .host_ordered_resolution(
+                &placement.policy,
+                &resolution,
+                placement.source_bundle_hash.as_ref(),
+                kontor_api::now(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
         Ok(Some(LeadershipBinding {
             key,
             resolution,
@@ -42240,15 +44752,70 @@ impl Services {
         let pin = crate::orchestration::catalog_pin_of(core_team)
             .map_err(|error| self.refuse_fleet_policy(&error))?;
         let catalog = self.catalog_revision(pin.catalog_id, pin.version)?;
-        let resolved = crate::orchestration::resolve_bundle(
+        let mut resolved = crate::orchestration::resolve_bundle(
             &crate::orchestration::BundleSources {
                 orchestration,
                 fleet,
                 core_team,
             },
             &catalog,
+            self.purpose_source()?,
         )
         .map_err(|error| self.refuse_fleet_policy(&error))?;
+        if let Some(pack) = self
+            .selected_config
+            .as_ref()
+            .and_then(|folder| folder.realm_pack.as_ref())
+        {
+            resolved.manifest.sources.extend(pack.sources.clone());
+            resolved.manifest.operational_domain =
+                Some(kontor_fleet_activation::OperationalDomainPin {
+                    source: pack.domain_source.clone(),
+                    source_hash: ContentHash::of(pack.domain_yaml.as_bytes()),
+                });
+            kontor_fleet_activation::domain::validate_domain(
+                &resolved.manifest,
+                &resolved.roster,
+                &pack.domain_yaml,
+            )
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+            resolved.operational_domain = Some(pack.domain_yaml.clone());
+        }
+        if let Some(text) = self
+            .selected_config
+            .as_ref()
+            .and_then(|folder| folder.qualification_source.as_ref())
+        {
+            let source = kontor_fleet_activation::routes::QUALIFICATION_SOURCE;
+            let source_hash = ContentHash::of(text.as_bytes());
+            resolved
+                .manifest
+                .sources
+                .insert(source.into(), source_hash.clone());
+            resolved.manifest.qualification =
+                Some(kontor_fleet_activation::routes::QualificationPin {
+                    source: source.into(),
+                    source_hash,
+                });
+            kontor_fleet_activation::routes::validate_qualifications(
+                &resolved.manifest,
+                &resolved.policy,
+                text,
+            )
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+            resolved.qualification_source = Some(text.clone());
+        }
+        if resolved
+            .manifest
+            .publication_policy
+            .as_ref()
+            .is_some_and(|policy| !self.publication_consumers_match(policy.project_id))
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "publication_consumer_mismatch: project.project_id conflicts with an integration project_id",
+            ));
+        }
         let manifest = resolved
             .manifest
             .canonicalize()
@@ -42381,8 +44948,40 @@ impl Services {
         account: Option<AccountProfileId>,
         now: kontor_core::id::Timestamp,
     ) -> Result<(), ApiError> {
+        if let Some(decision) = self.fleet_decision(
+            declared,
+            eligibility,
+            team_run_id,
+            agent_run_id,
+            slot,
+            rung,
+            account,
+            now,
+        )? {
+            self.fleet.record_decision(&decision).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the fleet placement decision could not be recorded",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fleet_decision(
+        &self,
+        declared: &crate::fleet::DeclaredRungs,
+        eligibility: Option<&kontor_fleet::Eligibility>,
+        team_run_id: TeamRunId,
+        agent_run_id: AgentRunId,
+        slot: &RoleSlotId,
+        rung: &ModelRung,
+        account: Option<AccountProfileId>,
+        now: kontor_core::id::Timestamp,
+    ) -> Result<Option<crate::fleet::FleetDecision>, ApiError> {
         let Some(bound) = declared.fleet.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         let (snapshot, binding_key) = (&bound.snapshot, &bound.binding_key);
         let Some(route) = bound.resolution.route_for(rung).cloned() else {
@@ -42392,6 +44991,7 @@ impl Services {
             ));
         };
         let decision = crate::fleet::FleetDecision {
+            launch_route: None,
             team_run_id: team_run_id.to_string(),
             agent_run_id: agent_run_id.to_string(),
             binding_key: binding_key.clone(),
@@ -42412,12 +45012,7 @@ impl Services {
             decided_at: now.to_string(),
             eligibility: eligibility.cloned(),
         };
-        self.fleet.record_decision(&decision).map_err(|_| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the fleet placement decision could not be recorded",
-            )
-        })
+        Ok(Some(decision))
     }
 
     /// Re-enter the admission path at one immutable launch address.
@@ -42647,8 +45242,24 @@ impl Services {
             .collect();
         let team_snapshot = TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION)
             .with_context_policy(
-                self.pack
-                    .context_policy_for(&workflow.snapshot.definition, &seeded_roles),
+                self.packs()?
+                    .iter()
+                    .find(|pack| {
+                        pack.profile(
+                            &workflow.snapshot.definition.id,
+                            workflow.snapshot.definition.version,
+                        )
+                        .is_some()
+                    })
+                    .map_or_else(
+                        || kontor_core::spec::TeamContextPolicySeed {
+                            work_profile: workflow.snapshot.definition.context_window,
+                            role_seeds: Vec::new(),
+                        },
+                        |pack| {
+                            pack.context_policy_for(&workflow.snapshot.definition, &seeded_roles)
+                        },
+                    ),
             )
             .map_err(|error| self.refuse_domain(&error))?;
 
@@ -42736,40 +45347,64 @@ impl Services {
                 applied: AppliedDto::Unchanged,
             }
         } else {
-            let declared = self
-                .declared_delivery_rungs(team_run_id, &team_snapshot, &slot)
-                .map_err(|error| self.refuse_domain(&error))?
-                .ok_or_else(|| {
-                    self.refuse_domain(&kontor_core::DomainError::invalid(
-                        "TeamRunSnapshot",
-                        "the role slot has no model route",
-                    ))
-                })?;
-            let quota_states = self.admission_quota_states(project_id)?;
-            let (model_rung, routed_account, eligibility) = freeze_declared_rung(
-                adapter.as_ref(),
-                &declared,
-                &QuotaOutlook {
-                    states: &quota_states,
-                    account: admitted.account_profile_id,
-                    accounts: &self.eligible_accounts(project_id)?,
-                    headroom: self.headroom_policy(),
-                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                    now,
-                },
-            )
-            .map_err(|error| self.refuse_domain(&error))?;
-            let launch_account = admitted.account_profile_id.or(routed_account);
-            self.record_fleet_decision(
-                &declared,
-                eligibility.as_ref(),
+            let (model_rung, launch_account, fleet_declared) = if let Some((rung, account)) =
+                self.frozen_delivery_choice(team_run_id, agent_run_id)?
+            {
+                (rung, account, None)
+            } else {
+                let declared = self
+                    .declared_delivery_rungs(team_run_id, &team_snapshot, &slot)
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .ok_or_else(|| {
+                        self.refuse_domain(&kontor_core::DomainError::invalid(
+                            "TeamRunSnapshot",
+                            "the role slot has no model route",
+                        ))
+                    })?;
+                let quota_states = self.admission_quota_states(project_id)?;
+                let (model_rung, routed_account, eligibility) = freeze_declared_rung(
+                    adapter.as_ref(),
+                    &declared,
+                    &QuotaOutlook {
+                        states: &quota_states,
+                        account: admitted.account_profile_id,
+                        accounts: &self.eligible_accounts(project_id)?,
+                        headroom: self.headroom_policy(),
+                        freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                        now,
+                    },
+                )
+                .map_err(|error| self.refuse_domain(&error))?;
+                let launch_account = admitted.account_profile_id.or(routed_account);
+                (model_rung, launch_account, Some((declared, eligibility)))
+            };
+            let launch_route = self.delivery_launch_route(
                 team_run_id,
                 agent_run_id,
                 &slot,
+                adapter.as_ref(),
                 &model_rung,
                 launch_account,
                 now,
+                None,
+                fleet_declared
+                    .as_ref()
+                    .map(|(declared, eligibility)| {
+                        self.fleet_decision(
+                            declared,
+                            eligibility.as_ref(),
+                            team_run_id,
+                            agent_run_id,
+                            &slot,
+                            &model_rung,
+                            launch_account,
+                            now,
+                        )
+                    })
+                    .transpose()?
+                    .flatten(),
             )?;
+
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -42839,7 +45474,8 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let request = authority
                 .into_request(parts)
-                .with_fleet_provenance(fleet_provenance);
+                .with_fleet_provenance(fleet_provenance)
+                .with_resolved_route(launch_route.frozen().cloned());
             let outcome = adapter
                 .launch(&request)
                 .await
@@ -43176,12 +45812,16 @@ impl Services {
         let now = kontor_api::now();
         state
             .with_store(|store| {
-                store.set_project_team_definition_default(&ProjectTeamDefinitionDefault {
-                    project_id,
-                    expected: None,
-                    definition: snapshot.clone(),
-                    selected_at: now,
-                })
+                store.set_project_team_definition_default(
+                    &ProjectTeamDefinitionDefault {
+                        operational_domain_bundle_hash: None,
+                        project_id,
+                        expected: None,
+                        definition: snapshot.clone(),
+                        selected_at: now,
+                    },
+                    None,
+                )
             })
             .map_err(|error| self.refuse(&error))?;
         Ok((snapshot, definition))
@@ -43464,7 +46104,17 @@ impl Services {
                     .map_err(|error| self.refuse_domain(&error))?;
                 let slots: Vec<RoleSlotId> =
                     team.slots.iter().map(|slot| slot.id.clone()).collect();
-                self.preflight_delivery_slots_against(definition, &node.kind, &slots)?;
+                self.preflight_delivery_slots_against(
+                    definition,
+                    &node.kind,
+                    &slots,
+                    self.domain.role_catalogs.first().ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "this build ships no role catalog",
+                        )
+                    })?,
+                )?;
             }
         }
         Ok(())
@@ -43794,7 +46444,8 @@ impl Services {
                 )
             })?;
         self.ensure_no_team_definition_migration(project_id, epic_id)?;
-        let topology = self.project_topology(project_id)?;
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
+        let topology = context.topology.clone();
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, topology.spec_id, topology.version)
@@ -43862,13 +46513,13 @@ impl Services {
         let epic = self.ensure_node(
             scoped
                 .iter()
-                .find(|node| node.kind == self.domain.delivery.epic_kind),
+                .find(|node| node.kind == context.domain.delivery.epic_kind),
             NewSessionTopologyNode {
                 id: TopologyNodeId::generate(),
                 project_id,
                 mini_project_id: Some(epic_id),
                 topology: topology.clone(),
-                kind: self.domain.delivery.epic_kind.clone(),
+                kind: context.domain.delivery.epic_kind.clone(),
                 parent_id: Some(root.id),
                 task_id: None,
                 created_at: now,
@@ -43884,13 +46535,13 @@ impl Services {
             self.ensure_node(
                 scoped
                     .iter()
-                    .find(|node| node.kind == self.domain.delivery.control_kind),
+                    .find(|node| node.kind == context.domain.delivery.control_kind),
                 NewSessionTopologyNode {
                     id: TopologyNodeId::generate(),
                     project_id,
                     mini_project_id: Some(epic_id),
                     topology: topology.clone(),
-                    kind: self.domain.delivery.control_kind.clone(),
+                    kind: context.domain.delivery.control_kind.clone(),
                     parent_id: Some(epic.id),
                     task_id: None,
                     created_at: now,
@@ -43913,7 +46564,7 @@ impl Services {
                 project_id,
                 mini_project_id: Some(epic_id),
                 topology,
-                kind: self.domain.delivery.task_kind.clone(),
+                kind: context.domain.delivery.task_kind.clone(),
                 parent_id: Some(epic.id),
                 task_id: Some(task_id),
                 created_at: now,
@@ -44012,16 +46663,20 @@ impl Services {
                 "this epic has no control plane for its delivery seats to belong to",
             ));
         };
-        let slot = self.control_slot()?;
+        let owner = self.epic_purpose(project_id, epic_id, CoreTeamSeatPurpose::Control)?;
+        let slot = owner.role_slot_id.clone();
         if let Some(held) = state
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
             .find(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
         {
+            if !Self::purpose_binding_matches(&held, &owner) {
+                return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch"));
+            }
             return Ok(Some(held.id));
         }
-        let role = self.catalog_role_for_code(&self.domain.delivery.control_role_code)?;
+        let role = owner.role;
         let now = kontor_api::now();
         let deadline = now
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
@@ -44195,14 +46850,23 @@ impl Services {
             // closing it is not the moment to build one.
             return Ok(());
         };
-        let slot = self.control_slot()?;
-        let now = kontor_api::now();
-        for binding in state
+        let owner = self.epic_purpose(project_id, epic_id, CoreTeamSeatPurpose::Control)?;
+        let bindings: Vec<_> = state
             .with_store(|store| store.list_seat_bindings(project_id, control.id))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .filter(|binding| binding.role_slot_id == slot && binding.is_non_terminal())
+            .filter(|binding| {
+                binding.role_slot_id == owner.role_slot_id && binding.is_non_terminal()
+            })
+            .collect();
+        if bindings
+            .iter()
+            .any(|binding| !Self::purpose_binding_matches(binding, &owner))
         {
+            return Err(self.deny(ApiErrorCode::RoleSlotUnbound, "role_slot_binding_mismatch"));
+        }
+        let now = kontor_api::now();
+        for binding in bindings {
             state
                 .with_store(|store| {
                     store.observe_seat_binding(
@@ -44218,12 +46882,6 @@ impl Services {
                 .map_err(|error| self.refuse(&error))?;
         }
         Ok(())
-    }
-
-    /// The role slot an epic's control seat occupies.
-    fn control_slot(&self) -> Result<RoleSlotId, ApiError> {
-        let code = self.domain.delivery.control_role_code.as_str();
-        RoleSlotId::parse(&code.to_ascii_lowercase()).map_err(|error| self.refuse_domain(&error))
     }
 
     /// Return the node already there, or create the requested one.
@@ -44344,6 +47002,7 @@ impl Services {
         epic_id: MiniProjectId,
         task_id: TaskId,
     ) -> Result<Option<bool>, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let state = self.state()?;
         // A task with no active workflow is not a candidate at all. `None`
         // says there is no candidate to include in the runtime-evidence
@@ -44377,7 +47036,7 @@ impl Services {
         match self.preflight_delivery_slots_for(
             project_id,
             Some(epic_id),
-            &self.domain.delivery.task_kind,
+            &context.domain.delivery.task_kind,
             &slots,
         ) {
             Ok(()) => Ok(Some(true)),
@@ -44403,7 +47062,12 @@ impl Services {
         slots: &[RoleSlotId],
     ) -> Result<(), ApiError> {
         let definition = self.governing_team_definition_for(project_id, epic_id)?;
-        self.preflight_delivery_slots_against(&definition, kind, slots)
+        self.preflight_delivery_slots_against(
+            &definition,
+            kind,
+            slots,
+            &self.runtime_domain(project_id, epic_id)?.catalog,
+        )
     }
 
     /// Apply the delivery-slot preflight to one exact immutable definition.
@@ -44415,6 +47079,7 @@ impl Services {
         definition: &TeamDefinitionSpec,
         kind: &TopologyKindKey,
         slots: &[RoleSlotId],
+        catalog: &kontor_core::spec::RoleCatalogRevision,
     ) -> Result<(), ApiError> {
         let mut rendered = BTreeSet::new();
         for slot in slots {
@@ -44443,7 +47108,7 @@ impl Services {
             // And the registered code has to be one the catalog actually
             // declares. Proving it here means a repair that writes several
             // seats cannot get half way and then fail on the last one.
-            self.catalog_role_for_code(code)?;
+            self.role_in_catalog(catalog, code)?;
         }
         Ok(())
     }
@@ -44530,7 +47195,8 @@ impl Services {
                 "this delivery slot is registered as a display label and has no role code",
             ));
         };
-        self.catalog_role_for_code(code)
+        let context = self.runtime_domain(node.project_id, node.mini_project_id)?;
+        self.role_in_catalog(&context.catalog, code)
     }
 
     /// The Team Definition that governs one node's seats.
@@ -44612,12 +47278,28 @@ impl Services {
         &self,
         code: &kontor_core::id::RoleCode,
     ) -> Result<CatalogRoleRef, ApiError> {
-        let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
+        self.domain_catalog_role(&self.domain, code)
+    }
+
+    fn domain_catalog_role(
+        &self,
+        domain: &OperationalDomainPack,
+        code: &RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
+        let catalog = domain.role_catalogs.first().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
                 "this build ships no role catalog",
             )
         })?;
+        self.role_in_catalog(catalog, code)
+    }
+
+    fn role_in_catalog(
+        &self,
+        catalog: &kontor_core::spec::RoleCatalogRevision,
+        code: &RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
         // A code the catalog does not declare *is* a refusal rather than a gap:
         // the seeded data contradicts itself, and a seat placed under it would
         // be recorded against a role no revision defines.
@@ -44662,6 +47344,14 @@ impl Services {
             ),
             ContainerSubject::Desk { definition, .. } => (None, Some(definition)),
         };
+        let scope = scope
+            .map(|scope| self.consultation_scope(project_id, node.id, scope))
+            .transpose()?;
+        if self.consultation_checkout(project_id, node.id)?.is_some() {
+            self.consultation_root(project_id, node.id)?;
+            self.prepare_consultation_checkout(project_id, node.id)
+                .await?;
+        }
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
@@ -44881,6 +47571,15 @@ impl Services {
         // else. A desk has no execution scope at all: its runtime request
         // carries none, and its names and kinds come from the desk's own pin.
         let subject = self.container_subject(node)?;
+        let task_kind = match &subject {
+            ContainerSubject::Epic(epic) => Some(
+                self.runtime_domain(project_id, Some(*epic))?
+                    .domain
+                    .delivery
+                    .task_kind,
+            ),
+            ContainerSubject::Desk { .. } => None,
+        };
         let epic_scope = match subject {
             ContainerSubject::Epic(epic_id) => {
                 Some(self.execution_scope(project_id, epic_id, None, adapter)?)
@@ -44955,16 +47654,21 @@ impl Services {
             }
         }
 
+        self.prepare_consultation_checkout(project_id, node.id)
+            .await?;
         let mut parent: Option<ContainerBinding> = None;
         let mut prepared = None;
         for level in &lineage {
-            let level_scope = match (&subject, level.task_id) {
+            let mut level_scope = match (&subject, level.task_id) {
                 (ContainerSubject::Epic(epic_id), Some(task_id)) => {
                     Some(self.execution_scope(project_id, *epic_id, Some(task_id), adapter)?)
                 }
                 (ContainerSubject::Epic(_), None) => epic_scope.clone(),
                 (ContainerSubject::Desk { .. }, _) => None,
             };
+            if task_kind.as_ref() != Some(&level.kind) {
+                level_scope = level_scope.map(ExecutionScope::without_task_checkout);
+            }
             let capabilities = if let Some(definition) = team_definition.as_ref() {
                 definition
                     .container(&level.kind)
@@ -44987,11 +47691,17 @@ impl Services {
             let bound = state
                 .with_store(|store| store.get_topology_node_container(project_id, level.id))
                 .map_err(|error| self.refuse(&error))?;
-            let container_binding_id = bound
+            let frozen_consultation = self.consultation_checkout(project_id, level.id)?;
+            let container_binding_id = frozen_consultation
                 .as_ref()
-                .map(|binding| ContainerBindingId::parse(binding.container_binding_id.as_str()))
+                .map(|pin| ContainerBindingId::parse(&pin.container_binding_id))
                 .transpose()
-                .map_err(|error| self.refuse_domain(&error))?
+                .map_err(|e| self.refuse_domain(&e))?
+                .or(bound
+                    .as_ref()
+                    .map(|binding| ContainerBindingId::parse(binding.container_binding_id.as_str()))
+                    .transpose()
+                    .map_err(|error| self.refuse_domain(&error))?)
                 .unwrap_or_else(ContainerBindingId::generate);
             let bound_native_id = bound
                 .as_ref()
@@ -45022,6 +47732,8 @@ impl Services {
                         // Anything else below a desk (a PR review room) takes
                         // the directory its caller names, as a leaf does.
                         Some(self.desk_root(desk)?)
+                    } else if leaf && self.consultation_checkout(project_id, level.id)?.is_some() {
+                        Some(cwd.clone())
                     } else if level.task_id.is_some() {
                         let worktree = level_scope
                             .as_ref()
@@ -45054,6 +47766,9 @@ impl Services {
                     }
                 }
             };
+            if leaf && let Some(scope) = level_scope.take() {
+                level_scope = Some(self.consultation_scope(project_id, level.id, scope)?);
+            }
             let request = ContainerRequest {
                 container_binding_id,
                 topology_node_id: level.id,
@@ -45199,67 +47914,6 @@ impl Services {
         WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
     }
 
-    /// The directory one consultation's container works in.
-    ///
-    /// A consultation leaf takes the cwd its caller names, and naming the project
-    /// root put every Advisor and Committee of a project on one directory. The
-    /// runtime admits at most one workspace per canonical path, so the second
-    /// consultation an epic ever ran was refused `several Paseo workspaces claim
-    /// this canonical container path` — and an epic that had hosted two was
-    /// refused before it could spawn a single reviewer.
-    ///
-    /// Keyed by the topology node rather than the run: the node is the durable
-    /// identity a re-materialization of the same consultation resolves to, so a
-    /// retry adopts the worktree it already made instead of stranding one per
-    /// attempt.
-    ///
-    /// Under the project's `.worktrees/` deliberately, and not beside the ECP in
-    /// `runtime-roots/`. A consultation seat is verified as a ticket role, which
-    /// refuses "a root or plain local workspace", and the runtime only provisions
-    /// a managed git worktree for a path under `.worktrees/` — anywhere else it
-    /// assumes an externally provisioned root and leaves a plain directory the
-    /// check then rejects. The ECP may sit in `runtime-roots/` because it is a
-    /// session host rather than a ticket role.
-    ///
-    /// The branch that checkout carries is the deterministic one the ASMA CLI
-    /// would derive — `chore/<EPIC-KEY>-consultation-<node id>` — so a
-    /// consultation is never published as a keyless `consultation-<uuid>`
-    /// (ASMA-8101). A consultation that already has its pre-ASMA-8101 checkout
-    /// keeps it: the node is the durable identity, and moving a live
-    /// consultation's tree would strand the one it made.
-    fn consultation_root(
-        &self,
-        project_root: &str,
-        epic_key: Option<&TrackerKey>,
-        node_id: TopologyNodeId,
-    ) -> Result<WorkspaceRoot, ApiError> {
-        let mut legacy = PathBuf::from(project_root);
-        legacy.push(MANAGED_WORKTREES_DIR);
-        legacy.push(format!("consultation-{node_id}"));
-        let root = if legacy.exists() {
-            legacy
-                .to_str()
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the consultation worktree path is not valid UTF-8",
-                    )
-                })?
-                .to_owned()
-        } else {
-            let key = epic_key.ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    BranchRefusal::BindingUnconfirmed.rule(),
-                )
-            })?;
-            let branch =
-                BranchName::derive(BranchType::Chore, key, &format!("consultation {node_id}"));
-            managed_worktree_path(project_root, &branch)
-        };
-        WorkspaceRoot::parse(&root).map_err(|error| self.refuse_domain(&error))
-    }
-
     /// The confirmed tracker key an epic's branches carry: the declared
     /// execution scope's key when it is canonical, else the Jira epic binding
     /// the connector confirmed, else nothing. Never an internal id or a display
@@ -45362,16 +48016,11 @@ impl Services {
     /// and the keys this task may carry, or derive the deterministic placement
     /// for a task that declares none (ASMA-8101).
     ///
-    /// A declared path outside `<project root>/.worktrees/` implies no branch
-    /// and is left to its runtime. A declared managed path must encode a
-    /// canonical branch; when a key is known here it must also be bound to the
-    /// task's link or the epic, and when none is known yet the binding is
-    /// proven at preparation, where the confirmed scope exists.
-    ///
-    /// Derivation prefers the task's own linked key — a task worktree is the
-    /// unit of parallel isolation, and the scheduler admits one claimant per
-    /// tree — and falls back to the epic key. Publication to the default branch
-    /// still happens from the epic branch through the ASMA CLI.
+    /// Selected tasks keep explicit durable claims or render the configured
+    /// layout from their full module and canonical tracker binding. Reapplication
+    /// preserves existing placement. The embedding's legacy branch convention
+    /// remains below for callers without a selected folder.
+    #[allow(clippy::too_many_arguments)]
     fn place_task_branch(
         &self,
         project_root: &str,
@@ -45380,7 +48029,22 @@ impl Services {
         task_title: &ExternalName,
         links: &[EpicTicketLink],
         declared: Option<ExternalName>,
+        module: Option<&ModuleKey>,
     ) -> Result<(Option<ExternalName>, Option<ExternalName>), ApiError> {
+        if self.selected_config.is_some() {
+            if let Some(worktree) = declared {
+                return Ok((Some(worktree), None));
+            }
+            if module.is_none() {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "worktree_module_missing: root-only task requires an explicit worktree",
+                ));
+            }
+            // Authoring links are requests, not confirmed identity. Render and
+            // atomically freeze the claim only at the confirmed native boundary.
+            return Ok((None, None));
+        }
         let task_key = links
             .iter()
             .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
@@ -45586,9 +48250,10 @@ impl Services {
         topic: &ExternalName,
         re_review: Option<&CommitteeReReviewProvenance>,
     ) -> Result<ContentHash, ApiError> {
+        let context = self.runtime_domain(project_id, Some(epic_id))?;
         let kind = match family {
-            ConsultationFamily::Advisor => &self.domain.delivery.advisor_kind,
-            ConsultationFamily::Committee => &self.domain.delivery.committee_kind,
+            ConsultationFamily::Advisor => &context.domain.delivery.advisor_kind,
+            ConsultationFamily::Committee => &context.domain.delivery.committee_kind,
             // A planning pair's container kind is never the domain's: its own
             // published document names it explicitly, and only the planning
             // pair invocation path passes it.
@@ -46366,53 +49031,71 @@ impl Services {
         // The caller supplies the runtime's prepared container snapshot. Initial
         // seating prepares it once for all slots; bounded seat fill re-attests
         // the existing native container before reaching this shared path.
-        let (model_rung, account_profile_id, fleet_declared) =
-            if let Some((rung, account)) = route_override {
-                // The named route's account selects its provider alias; the
-                // admission's account belongs to the frozen chain it replaces.
-                (rung.clone(), Some(*account), None)
-            } else {
-                let declared = self
-                    .declared_delivery_rungs(team_run_id, &team_snapshot, slot)
-                    .map_err(|error| self.refuse_domain(&error))?
-                    .ok_or_else(|| {
-                        self.refuse_domain(&kontor_core::DomainError::invalid(
-                            "TeamRunSnapshot",
-                            "the role slot has no model route",
-                        ))
-                    })?;
-                let quota_states = self.admission_quota_states(project_id)?;
-                let (rung, routed_account, eligibility) = freeze_declared_rung(
-                    adapter.as_ref(),
-                    &declared,
-                    &QuotaOutlook {
-                        states: &quota_states,
-                        account: admitted.account_profile_id,
-                        accounts: &self.eligible_accounts(project_id)?,
-                        headroom: self.headroom_policy(),
-                        freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+        let (model_rung, account_profile_id, fleet_declared) = if let Some((rung, account)) =
+            self.frozen_delivery_choice(team_run_id, agent_run_id)?
+        {
+            (rung, account, None)
+        } else if let Some((rung, account)) = route_override {
+            // The named route's account selects its provider alias; the
+            // admission's account belongs to the frozen chain it replaces.
+            (rung.clone(), Some(*account), None)
+        } else {
+            let declared = self
+                .declared_delivery_rungs(team_run_id, &team_snapshot, slot)
+                .map_err(|error| self.refuse_domain(&error))?
+                .ok_or_else(|| {
+                    self.refuse_domain(&kontor_core::DomainError::invalid(
+                        "TeamRunSnapshot",
+                        "the role slot has no model route",
+                    ))
+                })?;
+            let quota_states = self.admission_quota_states(project_id)?;
+            let (rung, routed_account, eligibility) = freeze_declared_rung(
+                adapter.as_ref(),
+                &declared,
+                &QuotaOutlook {
+                    states: &quota_states,
+                    account: admitted.account_profile_id,
+                    accounts: &self.eligible_accounts(project_id)?,
+                    headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    now,
+                },
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+            (
+                rung,
+                admitted.account_profile_id.or(routed_account),
+                Some((declared, eligibility)),
+            )
+        };
+        let launch_route = self.delivery_launch_route(
+            team_run_id,
+            agent_run_id,
+            slot,
+            adapter.as_ref(),
+            &model_rung,
+            account_profile_id,
+            now,
+            None,
+            fleet_declared
+                .as_ref()
+                .map(|(declared, eligibility)| {
+                    self.fleet_decision(
+                        declared,
+                        eligibility.as_ref(),
+                        team_run_id,
+                        agent_run_id,
+                        slot,
+                        &model_rung,
+                        account_profile_id,
                         now,
-                    },
-                )
-                .map_err(|error| self.refuse_domain(&error))?;
-                (
-                    rung,
-                    admitted.account_profile_id.or(routed_account),
-                    Some((declared, eligibility)),
-                )
-            };
-        if let Some((declared, eligibility)) = fleet_declared.as_ref() {
-            self.record_fleet_decision(
-                declared,
-                eligibility.as_ref(),
-                team_run_id,
-                agent_run_id,
-                slot,
-                &model_rung,
-                account_profile_id,
-                now,
-            )?;
-        }
+                    )
+                })
+                .transpose()?
+                .flatten(),
+        )?;
+
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
@@ -46471,7 +49154,8 @@ impl Services {
             }
             None => authority.into_request(parts),
         }
-        .with_fleet_provenance(fleet_provenance);
+        .with_fleet_provenance(fleet_provenance)
+        .with_resolved_route(launch_route.frozen().cloned());
         let outcome = adapter
             .launch(&request)
             .await
@@ -47255,51 +49939,6 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 // Publication identity (ASMA-8101)
 // ---------------------------------------------------------------------------
 
-/// The only branch a publication may target. Both governed repositories use it
-/// and the plan records the assumption; a per-project default is a later field.
-const PUBLICATION_DEFAULT_BRANCH: &str = "master";
-/// The one Kontor project the governed ASMA forge mapping belongs to.
-///
-/// The durable ProjectId is the boundary, not the project's root path. A path
-/// is machine-specific and a checkout can be moved or cloned elsewhere, while
-/// the id is the same fact in every replica of this realm. Authorization
-/// belongs to *this* project: no other project inherits these forge roots, by
-/// holding a confirmed tracker key or by sitting at a familiar path.
-const PUBLICATION_GOVERNED_PROJECT: &str = "01a0064a-e056-7603-9968-ef64fdaacb75";
-
-/// Whether the repository mapping below governs this project.
-///
-/// A constant that failed to parse authorizes nothing rather than everything:
-/// the comparison is against a parsed id, never against text a request carried.
-fn is_governed_publication_project(project_id: ProjectId) -> bool {
-    ProjectId::parse(PUBLICATION_GOVERNED_PROJECT).is_ok_and(|governed| governed == project_id)
-}
-
-/// The superproject repository that project's publications may target.
-///
-/// A task's own module may add one more repository, but the root always stays
-/// authorized: a module's code change and the superproject documentation that
-/// accompanies it are one unit of work published to two governed roots.
-const PUBLICATION_ROOT_REPOSITORY: &str = "Carasent-ASMA/asma-modules";
-
-/// The modules of that project that are themselves governed repositories.
-///
-/// Membership is a durable property of the module, not a caller claim and not
-/// the GitHub App's optional configuration: the App may be absent entirely and
-/// a publication must still be judged. A module missing here authorizes only
-/// the root, which is the fail-closed answer rather than a wildcard.
-const PUBLICATION_MODULE_REPOSITORIES: &[(&str, &str)] =
-    &[("_tools/asma-rs-kontor", "Carasent-ASMA/asma-rs-kontor")];
-
-/// The repository a module is governed as, when it is one of them.
-fn publication_module_repository(module: Option<&ModuleKey>) -> Option<&'static str> {
-    let module = module?;
-    PUBLICATION_MODULE_REPOSITORIES
-        .iter()
-        .find(|(key, _)| *key == module.as_str())
-        .map(|(_, repository)| *repository)
-}
-
 /// The binding a publication's branch key resolved to.
 struct ResolvedPublicationBinding {
     epic_id: MiniProjectId,
@@ -47316,31 +49955,33 @@ struct JudgedPublication {
 }
 
 impl Services {
-    /// The repositories one binding may publish to: the governed root, plus
-    /// whatever the bound module adds. Never widened by the request.
-    ///
-    /// A project the mapping does not govern authorizes nothing at all. That is
-    /// deliberate: an unknown project has no forge mapping to apply, and
-    /// refusing every repository is the only answer that cannot lend one
-    /// project's roots to another.
-    fn authorized_repositories(
+    /// Integration bindings constrain an activated policy but never supply authority.
+    fn publication_consumers_match(&self, project_id: ProjectId) -> bool {
+        self.publication_consumers
+            .iter()
+            .all(|id| *id == project_id)
+            && self
+                .jira
+                .configured_project_ids()
+                .all(|id| id == project_id)
+            && self
+                .github
+                .as_ref()
+                .is_none_or(|gateway| gateway.config().project_id == project_id)
+    }
+
+    fn authorized_repositories<'a>(
         &self,
-        project_id: ProjectId,
-        module_repositories: &[&'static str],
+        policy: &kontor_core::publication::PublicationPolicy,
+        modules: impl IntoIterator<Item = &'a ModuleKey>,
     ) -> Result<Vec<ExternalName>, ApiError> {
-        if !is_governed_publication_project(project_id) {
-            return Ok(Vec::new());
-        }
-        let mut names = Vec::with_capacity(module_repositories.len() + 1);
-        for text in
-            std::iter::once(PUBLICATION_ROOT_REPOSITORY).chain(module_repositories.iter().copied())
-        {
-            let name = ExternalName::parse(text).map_err(|error| self.refuse_domain(&error))?;
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-        Ok(names)
+        policy
+            .authorized_repositories(modules)
+            .iter()
+            .map(|repository| {
+                ExternalName::parse(repository.as_str()).map_err(|error| self.refuse_domain(&error))
+            })
+            .collect()
     }
 
     /// The epic or task whose confirmed tracker key is `key`, with every key a
@@ -47349,14 +49990,31 @@ impl Services {
     /// Only an epic with a confirmed key can bind: a task in an epic Kontor
     /// holds no key for is not a confirmed publication identity, because the
     /// epic branch is the publication default and would have nothing to be.
+    /// Shared repository binding lookup. Without matching activated authority,
+    /// readers receive no authorized bindings; no consumer keeps its own mapping.
     fn resolve_publication_binding(
         &self,
         project_id: ProjectId,
         key: &TrackerKey,
     ) -> Result<Vec<ResolvedPublicationBinding>, ApiError> {
+        self.project_row(project_id)?;
+        let Ok(Some((_, policy))) = self.fleet.publication_policy() else {
+            return Ok(Vec::new());
+        };
+        if policy.project_id != project_id || !self.publication_consumers_match(project_id) {
+            return Ok(Vec::new());
+        }
+        self.resolve_publication_binding_from_policy(project_id, key, &policy)
+    }
+
+    fn resolve_publication_binding_from_policy(
+        &self,
+        project_id: ProjectId,
+        key: &TrackerKey,
+        policy: &kontor_core::publication::PublicationPolicy,
+    ) -> Result<Vec<ResolvedPublicationBinding>, ApiError> {
         let state = self.state()?;
-        let default_branch = ExternalName::parse(PUBLICATION_DEFAULT_BRANCH)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let default_branch = &policy.base_branch;
         let epics = state
             .with_store(|store| store.list_mini_projects(project_id))
             .map_err(|error| self.refuse(&error))?;
@@ -47369,17 +50027,16 @@ impl Services {
                 .with_store(|store| store.list_epic_tasks(project_id, epic.id))
                 .map_err(|error| self.refuse(&error))?;
             let mut child_keys = Vec::with_capacity(tasks.len());
-            let mut epic_module_repositories: Vec<&'static str> = Vec::new();
+            let mut epic_modules: Vec<ModuleKey> = Vec::new();
             let mut matched_tasks = Vec::new();
             for task in tasks {
                 let links = state
                     .with_store(|store| store.list_task_ticket_links(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?;
-                let task_repository = publication_module_repository(task.module.as_ref());
-                if let Some(repository) = task_repository
-                    && !epic_module_repositories.contains(&repository)
+                if let Some(module) = task.module.as_ref()
+                    && !epic_modules.contains(module)
                 {
-                    epic_module_repositories.push(repository);
+                    epic_modules.push(module.clone());
                 }
                 for task_key in links
                     .iter()
@@ -47387,7 +50044,7 @@ impl Services {
                     .filter_map(|link| TrackerKey::from_external(&link.external_issue_key).ok())
                 {
                     if task_key == *key {
-                        matched_tasks.push((task.id, task_key.clone(), task_repository));
+                        matched_tasks.push((task.id, task_key.clone(), task.module.clone()));
                     }
                     child_keys.push(task_key);
                 }
@@ -47395,8 +50052,7 @@ impl Services {
             if epic_key == *key {
                 // An epic branch may publish into the root and into every module
                 // its own tasks own, and nothing else.
-                let repositories =
-                    self.authorized_repositories(project_id, &epic_module_repositories)?;
+                let repositories = self.authorized_repositories(policy, &epic_modules)?;
                 resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: None,
@@ -47409,11 +50065,10 @@ impl Services {
                     },
                 });
             }
-            for (task_id, task_key, task_repository) in matched_tasks {
+            for (task_id, task_key, task_module) in matched_tasks {
                 // A task branch is narrower than its epic: only the root and the
                 // task's own module, never a sibling module's repository.
-                let repositories =
-                    self.authorized_repositories(project_id, task_repository.as_slice())?;
+                let repositories = self.authorized_repositories(policy, task_module.iter())?;
                 resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: Some(task_id),
@@ -47430,6 +50085,58 @@ impl Services {
         Ok(resolved)
     }
 
+    fn record_judged_publication(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+        judged: JudgedPublication,
+    ) -> Result<PublicationDecisionDto, ApiError> {
+        let now = kontor_api::now();
+        let new = NewPublicationAttestation {
+            id: PublicationAttestationId::generate(),
+            project_id,
+            mini_project_id: judged.resolved.as_ref().map(|resolved| resolved.epic_id),
+            task_id: judged
+                .resolved
+                .as_ref()
+                .and_then(|resolved| resolved.task_id),
+            repository: request.repository.clone(),
+            base_branch: request.base_branch.clone(),
+            head_branch: judged.head_branch,
+            head_sha: judged.head_sha,
+            pull_request: request.pull_request,
+            title: request.title.clone(),
+            decision: judged.decision,
+            idempotency_key: key.clone(),
+            recorded_at: now,
+        };
+        let record = self
+            .state()?
+            .with_store(|store| store.record_publication_attestation(&new))
+            .map_err(|error| self.refuse(&error))?;
+        let replayed = record.is_replay();
+        Ok(self.stored_publication_dto(record.attestation().clone(), replayed))
+    }
+
+    /// The poller keys and records exactly the same frozen judgement it reports.
+    pub(crate) fn attest_publication_check(
+        &self,
+        project_id: ProjectId,
+        request: &PublicationIdentityRequest,
+    ) -> Result<(IdempotencyKey, PublicationDecisionDto), ApiError> {
+        self.project_row(project_id)?;
+        let judged = self.judge_publication(project_id, request)?;
+        let key = crate::github_publication::policy_check_key(
+            request,
+            &judged.decision,
+            judged.resolved.as_ref().map(|binding| binding.epic_id),
+            judged.resolved.as_ref().and_then(|binding| binding.task_id),
+        );
+        let decision = self.record_judged_publication(&key, project_id, request, judged)?;
+        Ok((key, decision))
+    }
+
     /// Judge one observed publication. A malformed commit is a malformed
     /// request; everything else is a decision, refused or accepted.
     fn judge_publication(
@@ -47437,6 +50144,8 @@ impl Services {
         project_id: ProjectId,
         request: &PublicationIdentityRequest,
     ) -> Result<JudgedPublication, ApiError> {
+        use kontor_core::publication::PublicationRefusal;
+
         let head_sha = CommitSha::parse(&request.head_sha).map_err(|_| {
             self.deny(
                 ApiErrorCode::InvalidRequest,
@@ -47444,28 +50153,67 @@ impl Services {
             )
         })?;
         let head_branch = request.head_branch.clone();
-        let (decision, resolved) = match BranchName::parse(head_branch.as_str()) {
-            Err(refusal) => (PublicationDecision::refused_branch(refusal), None),
-            Ok(branch) => match branch.key().cloned() {
-                None => (PublicationDecision::unconfirmed(), None),
-                Some(key) => match self.resolve_publication_binding(project_id, &key)? {
-                    resolved if resolved.is_empty() => (PublicationDecision::unconfirmed(), None),
-                    mut resolved if resolved.len() == 1 => {
-                        let resolved = resolved.pop().expect("one resolved publication binding");
-                        let identity = PublicationIdentity {
-                            repository: request.repository.clone(),
-                            base_branch: request.base_branch.clone(),
-                            head_branch: branch,
-                            head_sha: head_sha.clone(),
-                            pull_request: request.pull_request,
-                            title: request.title.clone(),
-                        };
-                        (evaluate(&identity, &resolved.binding), Some(resolved))
-                    }
-                    _ => (PublicationDecision::ambiguous(), None),
-                },
-            },
+        let refused = |decision| JudgedPublication {
+            head_branch: head_branch.clone(),
+            head_sha: head_sha.clone(),
+            decision,
+            resolved: None,
         };
+        let branch = match BranchName::parse(head_branch.as_str()) {
+            Ok(branch) => branch,
+            Err(reason) => return Ok(refused(PublicationDecision::refused_branch(reason))),
+        };
+        let Some(key) = branch.key() else {
+            return Ok(refused(PublicationDecision::unconfirmed()));
+        };
+        let (source_hash, policy) = match self.fleet.publication_policy() {
+            Ok(Some(policy)) => policy,
+            Ok(None) => {
+                return Ok(refused(PublicationDecision::refused(
+                    PublicationRefusal::PolicyUnconfigured,
+                )));
+            }
+            Err(_) => {
+                return Ok(refused(PublicationDecision::refused(
+                    PublicationRefusal::PolicyInvalid,
+                )));
+            }
+        };
+        let (mut decision, resolved) = if policy.project_id != project_id {
+            (
+                PublicationDecision::refused(PublicationRefusal::ProjectMismatch),
+                None,
+            )
+        } else if !self.publication_consumers_match(project_id) {
+            (
+                PublicationDecision::refused(PublicationRefusal::ConsumerMismatch),
+                None,
+            )
+        } else if let Some(reason) = policy
+            .branch_rules
+            .as_ref()
+            .and_then(|rules| rules.ensure_branch(&branch).err())
+        {
+            (PublicationDecision::refused_branch(reason), None)
+        } else {
+            match self.resolve_publication_binding_from_policy(project_id, key, &policy)? {
+                resolved if resolved.is_empty() => (PublicationDecision::unconfirmed(), None),
+                mut resolved if resolved.len() == 1 => {
+                    let resolved = resolved.pop().expect("one resolved publication binding");
+                    let identity = PublicationIdentity {
+                        repository: request.repository.clone(),
+                        base_branch: request.base_branch.clone(),
+                        head_branch: branch,
+                        head_sha: head_sha.clone(),
+                        pull_request: request.pull_request,
+                        title: request.title.clone(),
+                    };
+                    (evaluate(&identity, &resolved.binding), Some(resolved))
+                }
+                _ => (PublicationDecision::ambiguous(), None),
+            }
+        };
+        decision.source_bundle_hash = Some(source_hash);
         Ok(JudgedPublication {
             head_branch,
             head_sha,
@@ -47507,6 +50255,7 @@ impl Services {
             accepted: decision.accepted,
             reasons: decision.reasons,
             policy_revision: decision.policy_revision,
+            source_bundle_hash: decision.source_bundle_hash,
             evaluated_at,
         }
     }
@@ -47560,6 +50309,30 @@ impl Services {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/config.rs"]
+mod config_fixture;
+
+#[cfg(test)]
+#[path = "applications/realm_spec_tests.rs"]
+mod realm_spec_tests;
+
+#[cfg(test)]
+#[path = "applications/realm_pack_tests.rs"]
+mod realm_pack_tests;
+
+#[cfg(test)]
+#[path = "applications/roster_hash_tests.rs"]
+mod roster_hash_tests;
+
+#[cfg(test)]
+#[path = "applications/role_purpose_tests.rs"]
+mod role_purpose_tests;
+
+#[cfg(test)]
+#[path = "applications/domain_bundle_tests.rs"]
+mod domain_bundle_tests;
+
+#[cfg(test)]
 mod tests {
 
     #[tokio::test(start_paused = true)]
@@ -47573,12 +50346,16 @@ mod tests {
                 kontor_core::id::RealmId::generate(),
             )
             .expect("no connectors"),
+            directory.path().to_path_buf(),
             directory.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
             None,
             std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
+            Vec::new(),
+            None,
+            kontor_jira::jira::SpecCatalog::empty(),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -47634,12 +50411,16 @@ mod tests {
                 kontor_core::id::RealmId::generate(),
             )
             .expect("no connectors"),
+            directory.path().to_path_buf(),
             directory.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
             None,
             std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
+            Vec::new(),
+            None,
+            kontor_jira::jira::SpecCatalog::empty(),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -47708,13 +50489,14 @@ mod tests {
         assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
     }
     use super::{
-        AdmissionScanKey, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook,
+        AdmissionScanKey, CatalogAuthority, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook,
         RuntimeModelRouteRequest, Services, account_for_explicit_provider_alias,
         allocate_committee, committee_route_candidates, consultation_account_rungs,
         counts_towards_completion, eligible_roots, ensure_unambiguous_generic_consultation_routes,
         freeze_hosted_seat_autonomy, freeze_seat_autonomy, kickoff_is_ready,
-        parse_runtime_model_route, re_review_remediation_identity, render_legacy_container_name,
-        scan_reached_the_end, scan_resume_point, seat_block, slot_prompt,
+        parse_catalogued_model_route, parse_runtime_model_route, re_review_remediation_identity,
+        render_legacy_container_name, scan_reached_the_end, scan_resume_point, seat_block,
+        slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -47793,6 +50575,7 @@ mod tests {
 
     fn committee_route(provider: &str, model: &str) -> FrozenCommitteeRoute {
         FrozenCommitteeRoute {
+            launch_route: None,
             model_rung: ModelRung {
                 provider: ProviderRef(provider.to_owned()),
                 model: ModelRef(model.to_owned()),
@@ -47857,6 +50640,7 @@ mod tests {
         effort: Option<EffortLevel>,
     ) -> FrozenCommitteeRoute {
         FrozenCommitteeRoute {
+            launch_route: None,
             model_rung: ModelRung {
                 provider: ProviderRef(provider.to_owned()),
                 model: ModelRef(model.to_owned()),
@@ -47960,27 +50744,27 @@ mod tests {
         let template = generic_committee_template();
         let candidates = vec![
             vec![
-                committee_route("codex-work", "gpt-5.6-sol"),
+                committee_route("codex-b", "gpt-5.6-sol"),
                 committee_route("opencode", "deepseek/deepseek-v4-flash"),
             ],
-            vec![committee_route("codex-personal", "gpt-5.6-sol")],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("codex-a", "gpt-5.6-sol")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
         ];
 
         let selected =
             allocated(&template, &candidates, None).expect("a diverse whole allocation exists");
         assert_eq!(selected[0].model_rung.provider.0, "opencode");
-        assert_eq!(selected[1].model_rung.provider.0, "codex-personal");
-        assert_eq!(selected[2].model_rung.provider.0, "codex-work");
+        assert_eq!(selected[1].model_rung.provider.0, "codex-a");
+        assert_eq!(selected[2].model_rung.provider.0, "codex-b");
     }
 
     #[test]
     fn whole_committee_allocation_is_deterministic_and_fails_without_diversity() {
         let template = generic_committee_template();
         let primary = vec![
-            vec![committee_route("claude-work", "claude-opus-5")],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
-            vec![committee_route("claude-personal", "claude-opus-5")],
+            vec![committee_route("claude-b", "claude-opus-5")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
+            vec![committee_route("claude-a", "claude-opus-5")],
         ];
         let first =
             allocated(&template, &primary, None).expect("the ordinary primaries are diverse");
@@ -47996,12 +50780,12 @@ mod tests {
                 .map(|route| &route.model_rung)
                 .collect::<Vec<_>>()
         );
-        assert_eq!(first[0].model_rung.provider.0, "claude-work");
+        assert_eq!(first[0].model_rung.provider.0, "claude-b");
 
         let colliding = vec![
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
-            vec![committee_route("codex-personal", "gpt-5.6-sol")],
-            vec![committee_route("claude-work", "claude-opus-5")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
+            vec![committee_route("codex-a", "gpt-5.6-sol")],
+            vec![committee_route("claude-b", "claude-opus-5")],
         ];
         assert!(allocated(&template, &colliding, None).is_none());
     }
@@ -48015,17 +50799,17 @@ mod tests {
         let template = generic_committee_template();
         let candidates = vec![
             vec![
-                committee_route("claude-work", "claude-opus-5"),
-                committee_route("codex-work", "gpt-5.6-sol"),
+                committee_route("claude-b", "claude-opus-5"),
+                committee_route("codex-b", "gpt-5.6-sol"),
             ],
             vec![
-                committee_route("codex-personal", "gpt-5.6-sol"),
-                committee_route("claude-personal", "claude-opus-5"),
+                committee_route("codex-a", "gpt-5.6-sol"),
+                committee_route("claude-a", "claude-opus-5"),
             ],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
         ];
         let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
-        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
+        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-b".to_owned()]);
         let allocation = allocate_committee(&template, &candidates, &eligibility, None);
         assert_eq!(allocation.chosen(), Some(vec![1, 1, 0]));
         assert_eq!(
@@ -48035,7 +50819,7 @@ mod tests {
         assert_eq!(allocation.slots[0].eligibility, eligibility[0]);
 
         // Nothing left for one slot blocks every slot.
-        eligibility[2].unavailable_accounts = BTreeSet::from(["codex-work".to_owned()]);
+        eligibility[2].unavailable_accounts = BTreeSet::from(["codex-b".to_owned()]);
         let blocked = allocate_committee(&template, &candidates, &eligibility, None);
         assert_eq!(
             blocked.blocked,
@@ -48064,8 +50848,8 @@ mod tests {
         .expect("the fixture fleet parses");
         let candidates = vec![
             vec![committee_route("cursor", "auto-smart")],
-            vec![committee_route("claude-work", "claude-opus-5")],
-            vec![committee_route("codex-work", "gpt-5.6-sol")],
+            vec![committee_route("claude-b", "claude-opus-5")],
+            vec![committee_route("codex-b", "gpt-5.6-sol")],
         ];
         assert!(
             allocated(&template, &candidates, Some(&fleet)).is_none(),
@@ -48083,19 +50867,19 @@ mod tests {
         let bound = bound_routes(&fleet, "reviewer-a");
         let opus = bound
             .iter()
-            .find(|route| route.model_rung.provider.0 == "claude-work")
+            .find(|route| route.model_rung.provider.0 == "claude-b")
             .unwrap()
             .model_rung
             .clone();
         let sol = bound
             .iter()
-            .find(|route| route.model_rung.provider.0 == "codex-work")
+            .find(|route| route.model_rung.provider.0 == "codex-b")
             .unwrap()
             .model_rung
             .clone();
         let personal_sol = bound
             .iter()
-            .find(|route| route.model_rung.provider.0 == "codex-personal")
+            .find(|route| route.model_rung.provider.0 == "codex-a")
             .unwrap()
             .model_rung
             .clone();
@@ -48150,7 +50934,7 @@ mod tests {
     fn shaped_formal_policy() -> String {
         format!(
             "schema_version: 2\n\
-             domains:\n  claude: {{ provider: claude, accounts: [claude-work, claude-personal] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
+             domains:\n  claude: {{ provider: claude, accounts: [claude-b, claude-a] }}\n  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
              unavailable:\n  domains: [deepseek]\n  accounts: []\n\
              models:\n  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}\n  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n  sol: {{ domain: codex, id: gpt-6.1-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [xhigh], vision: true, calibrated: true }}\n  deepseek-flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek, efforts: [max], vision: false, calibrated: false }}\n\
              chains:\n  review-a:\n    - [sol@xhigh]\n    - [deepseek-flash@max]\n    - [opus-5.5@xhigh, opus-5@xhigh]\n  review-b:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n  consult-claude-first:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n    - [grok-4.6@xhigh]\n\
@@ -48197,7 +50981,7 @@ mod tests {
             .into_iter()
             .map(|slot| bound_routes(&fleet, slot))
             .collect();
-        for unavailable in [&[][..], &["codex-work", "codex-personal"][..]] {
+        for unavailable in [&[][..], &["codex-b", "codex-a"][..]] {
             let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
             eligibility[2].unavailable_accounts = unavailable
                 .iter()
@@ -48235,9 +51019,9 @@ mod tests {
                 assert_eq!(
                     seated(&governed),
                     [
-                        owned("codex-work", "gpt-6.1-sol", 1),
-                        owned("claude-work", "claude-opus-5", 1),
-                        owned("codex-work", "gpt-6.1-sol", 2),
+                        owned("codex-b", "gpt-6.1-sol", 1),
+                        owned("claude-b", "claude-opus-5", 1),
+                        owned("codex-b", "gpt-6.1-sol", 2),
                     ]
                 );
                 let judge = &governed.slots[2].considered;
@@ -48301,7 +51085,7 @@ mod tests {
             );
         }
 
-        let listing = policy_snapshot(&listing_policy("claude-work, claude-personal", "codex", ""));
+        let listing = policy_snapshot(&listing_policy("claude-b, claude-a", "codex", ""));
         let capped = allocate_committee(&template, &declared, &eligibility, Some(&listing));
         assert_eq!(capped.blocked, Some(AllocationFailure::VendorCapExceeded));
         assert!(capped.slots.iter().all(|slot| slot.selected.is_none()
@@ -48317,16 +51101,16 @@ mod tests {
             .into_iter()
             .map(|(provider, ..)| provider)
             .collect();
-        assert_eq!(providers, ["claude-work", "codex", "claude-work"]);
+        assert_eq!(providers, ["claude-b", "codex", "claude-b"]);
 
         // An alias the policy does not list names no maker, however it is spelled.
-        let work_only = policy_snapshot(&listing_policy("claude-work", "codex", ""));
+        let work_only = policy_snapshot(&listing_policy("claude-b", "codex", ""));
         let partial = allocate_committee(&template, &declared, &eligibility, Some(&work_only));
         assert_eq!(partial.blocked, Some(AllocationFailure::VendorCapExceeded));
         assert_eq!(
             exclusions(&partial, 2)[1],
             Some(AllocationExclusion::VendorUnknown),
-            "claude-personal is not in the policy's Claude domain"
+            "claude-a is not in the policy's Claude domain"
         );
     }
 
@@ -48339,11 +51123,11 @@ mod tests {
     fn a_formal_recovery_route_keeps_its_own_ordinal_after_the_template() {
         use kontor_fleet::AllocationExclusion;
         let fleet = policy_snapshot(&listing_policy(
-            "claude-work, claude-personal",
-            "codex-work, codex-personal",
+            "claude-b, claude-a",
+            "codex-b, codex-a",
             "",
         ));
-        let accounts = ["codex-work", "codex-personal"].map(|alias| EligibleAccount {
+        let accounts = ["codex-b", "codex-a"].map(|alias| EligibleAccount {
             account_profile_id: AccountProfileId::generate(),
             selectable_providers: BTreeSet::from([alias.to_owned()]),
         });
@@ -48352,7 +51136,7 @@ mod tests {
             vec![sourced_route(
                 "template",
                 1,
-                "claude-work",
+                "claude-b",
                 "claude-opus-5",
                 Some(EffortLevel::Xhigh),
             )],
@@ -48367,21 +51151,21 @@ mod tests {
                 sourced_route(
                     "template",
                     1,
-                    "claude-work",
+                    "claude-b",
                     "claude-opus-5",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "template",
                     2,
-                    "claude-personal",
+                    "claude-a",
                     "claude-opus-5",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "initial_recovery_profile",
                     1,
-                    "codex-work",
+                    "codex-b",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
@@ -48389,7 +51173,7 @@ mod tests {
                 sourced_route(
                     "initial_recovery_profile",
                     3,
-                    "codex-personal",
+                    "codex-a",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
@@ -48399,7 +51183,7 @@ mod tests {
         let allocation = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
         assert_eq!(
             seated(&allocation)[2],
-            ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 1)
+            ("codex-b".to_owned(), "gpt-5.6-sol".to_owned(), 1)
         );
         assert_eq!(
             exclusions(&allocation, 2),
@@ -48419,8 +51203,8 @@ mod tests {
         assert_eq!(expanded, [(1, 1), (1, 2)], "an account is not a rung");
 
         // The template's rung-2 route is preferred over the recovery's rung 1.
-        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
-        eligibility[2].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
+        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-b".to_owned()]);
+        eligibility[2].unavailable_accounts = BTreeSet::from(["claude-b".to_owned()]);
         let mut candidates = candidates;
         candidates[0].push(sourced_route(
             "initial_recovery_profile",
@@ -48432,7 +51216,7 @@ mod tests {
         let preferred = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
         assert_eq!(
             seated(&preferred)[2],
-            ("claude-personal".to_owned(), "claude-opus-5".to_owned(), 2)
+            ("claude-a".to_owned(), "claude-opus-5".to_owned(), 2)
         );
     }
 
@@ -48446,8 +51230,8 @@ mod tests {
     fn a_formal_recovery_route_cannot_relabel_or_broaden_a_bound_chain() {
         use kontor_fleet::{AllocationExclusion, AllocationFailure};
         let fleet = policy_snapshot(&listing_policy(
-            "claude-work, claude-personal",
-            "codex-work, codex-personal",
+            "claude-b, claude-a",
+            "codex-b, codex-a",
             &format!("  {FORMAL_KEY}/reviewer-b: opus-sol-grok\n"),
         ));
         let template = formal_committee_template();
@@ -48461,7 +51245,7 @@ mod tests {
                 "grok-4.7",
                 Some(EffortLevel::Xhigh),
             ),
-            // Claims the chain's first place, which `claude-work` Opus holds.
+            // Claims the chain's first place, which `claude-b` Opus holds.
             sourced_route(
                 "fleet_configuration",
                 1,
@@ -48482,37 +51266,31 @@ mod tests {
             vec![sourced_route(
                 "template",
                 1,
-                "claude-work",
+                "claude-b",
                 "claude-opus-5",
                 Some(EffortLevel::Xhigh),
             )],
             reviewer_b,
             vec![
-                sourced_route(
-                    "fleet_configuration",
-                    1,
-                    "codex-personal",
-                    "gpt-5.6-sol",
-                    None,
-                ),
+                sourced_route("fleet_configuration", 1, "codex-a", "gpt-5.6-sol", None),
                 sourced_route(
                     "seat_recovery_profile",
                     1,
-                    "codex-personal",
+                    "codex-a",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "template",
                     0,
-                    "codex-personal",
+                    "codex-a",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
                 sourced_route(
                     "template",
                     1,
-                    "codex-work",
+                    "codex-b",
                     "gpt-5.6-sol",
                     Some(EffortLevel::High),
                 ),
@@ -48520,7 +51298,7 @@ mod tests {
         ];
         let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
         eligibility[1].unavailable_accounts =
-            BTreeSet::from(["codex-work".to_owned(), "codex-personal".to_owned()]);
+            BTreeSet::from(["codex-b".to_owned(), "codex-a".to_owned()]);
         let blocked = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
         assert_eq!(
             blocked.blocked,
@@ -48575,9 +51353,9 @@ mod tests {
         assert_eq!(
             seated(&allocation),
             [
-                ("claude-work".to_owned(), "claude-opus-5".to_owned(), 1),
-                ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 2),
-                ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 1),
+                ("claude-b".to_owned(), "claude-opus-5".to_owned(), 1),
+                ("codex-b".to_owned(), "gpt-5.6-sol".to_owned(), 2),
+                ("codex-b".to_owned(), "gpt-5.6-sol".to_owned(), 1),
             ]
         );
         assert_eq!(
@@ -48614,10 +51392,10 @@ mod tests {
     fn an_explicit_recovery_alias_resolves_one_account_and_refuses_ambiguity() {
         let first = AccountProfileId::generate();
         let second = AccountProfileId::generate();
-        let route = committee_route("codex-personal", "gpt-5.6-sol").model_rung;
+        let route = committee_route("codex-a", "gpt-5.6-sol").model_rung;
         let exact = [EligibleAccount {
             account_profile_id: first,
-            selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+            selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
         }];
         assert_eq!(
             account_for_explicit_provider_alias(&route, &exact).expect("one exact owner"),
@@ -48626,18 +51404,18 @@ mod tests {
 
         let missing = [EligibleAccount {
             account_profile_id: first,
-            selectable_providers: BTreeSet::from(["codex-work".to_owned()]),
+            selectable_providers: BTreeSet::from(["codex-b".to_owned()]),
         }];
         assert!(account_for_explicit_provider_alias(&route, &missing).is_err());
 
         let ambiguous = [
             EligibleAccount {
                 account_profile_id: first,
-                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
             },
             EligibleAccount {
                 account_profile_id: second,
-                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
             },
         ];
         assert!(account_for_explicit_provider_alias(&route, &ambiguous).is_err());
@@ -48651,7 +51429,7 @@ mod tests {
         let selected = AccountProfileId::generate();
         let accounts = [EligibleAccount {
             account_profile_id: selected,
-            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
         }];
         let outlook = QuotaOutlook {
             states: &[],
@@ -48670,7 +51448,7 @@ mod tests {
             .expect("the selected account has a governed default route");
 
         assert_eq!(frozen.len(), 1);
-        assert_eq!(frozen[0].provider.0, "claude-work");
+        assert_eq!(frozen[0].provider.0, "claude-b");
         assert_eq!(frozen[0].model.0, "claude-opus-5");
         assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
     }
@@ -48685,11 +51463,11 @@ mod tests {
         let accounts = [
             EligibleAccount {
                 account_profile_id: selected,
-                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["codex-a".to_owned()]),
             },
             EligibleAccount {
                 account_profile_id: other,
-                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+                selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
             },
         ];
         let now = Timestamp::from_second(1000).unwrap();
@@ -48701,7 +51479,7 @@ mod tests {
         let current = ProviderQuotaState {
             project_id: kontor_core::id::ProjectId::generate(),
             account_profile_id: selected,
-            provider: "codex-personal".to_owned(),
+            provider: "codex-a".to_owned(),
             state: ProviderQuotaKind::Available,
             resets_at: None,
             windows: Vec::new(),
@@ -48738,7 +51516,7 @@ mod tests {
         assert!(
             matches!(resolve(std::slice::from_ref(&current), std::slice::from_ref(&route)),
             Placement::Admit { account, rung } if account == selected
-                && rung.provider.0 == "codex-personal" && rung.model == route.model
+                && rung.provider.0 == "codex-a" && rung.model == route.model
                 && rung.effort == route.effort),
             "a generic frozen route must reach its fresh exact governed account alias"
         );
@@ -48767,7 +51545,7 @@ mod tests {
             Placement::Admit { .. }
         ));
         let mut explicit = route.clone();
-        explicit.provider = ProviderRef("codex-work".to_owned());
+        explicit.provider = ProviderRef("codex-b".to_owned());
         assert!(
             !matches!(
                 resolve(std::slice::from_ref(&current), &[explicit]),
@@ -48777,7 +51555,7 @@ mod tests {
         );
         let mut foreign = current;
         foreign.account_profile_id = other;
-        foreign.provider = "claude-work".to_owned();
+        foreign.provider = "claude-b".to_owned();
         assert!(
             !matches!(resolve(&[foreign], &[route]), Placement::Admit { .. }),
             "an unpinned generic route never gains a cross-provider fallback"
@@ -48789,7 +51567,7 @@ mod tests {
         let selected = AccountProfileId::generate();
         let accounts = [EligibleAccount {
             account_profile_id: selected,
-            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
         }];
         let outlook = QuotaOutlook {
             states: &[],
@@ -48836,7 +51614,7 @@ mod tests {
         let state = ProviderQuotaState {
             project_id: kontor_core::id::ProjectId::generate(),
             account_profile_id: AccountProfileId::generate(),
-            provider: "claude-work".to_owned(),
+            provider: "claude-b".to_owned(),
             state: ProviderQuotaKind::Available,
             resets_at: None,
             windows: Vec::new(),
@@ -48876,7 +51654,7 @@ mod tests {
             match mismatch {
                 0 => wrong.project_id = kontor_core::id::ProjectId::generate(),
                 1 => wrong.account_profile_id = AccountProfileId::generate(),
-                2 => wrong.provider = "claude-personal".to_owned(),
+                2 => wrong.provider = "claude-a".to_owned(),
                 3 => wrong.evidence_hash = ContentHash::of(b"different report"),
                 4 => wrong.state = ProviderQuotaKind::Unknown,
                 _ => wrong.resets_at = Some(now),
@@ -48902,12 +51680,12 @@ mod tests {
             EligibleAccount {
                 account_profile_id: AccountProfileId::parse("0193f000-0000-7000-8000-000000000001")
                     .expect("an account id"),
-                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+                selectable_providers: BTreeSet::from(["claude-b".to_owned()]),
             },
             EligibleAccount {
                 account_profile_id: AccountProfileId::parse("0193f000-0000-7000-8000-000000000002")
                     .expect("an account id"),
-                selectable_providers: BTreeSet::from(["claude-personal".to_owned()]),
+                selectable_providers: BTreeSet::from(["claude-a".to_owned()]),
             },
         ];
         let generic = ModelRung {
@@ -48918,14 +51696,14 @@ mod tests {
         let expanded = consultation_account_rungs(&[generic], &accounts);
 
         assert_eq!(expanded.len(), 2);
-        assert_eq!(expanded[0].provider.0, "claude-work");
-        assert_eq!(expanded[1].provider.0, "claude-personal");
+        assert_eq!(expanded[0].provider.0, "claude-b");
+        assert_eq!(expanded[1].provider.0, "claude-a");
         assert!(expanded.iter().all(|route| {
             route.model.0 == "claude-opus-5" && route.effort == Some(EffortLevel::Xhigh)
         }));
 
         let explicit = ModelRung {
-            provider: ProviderRef("claude-work".to_owned()),
+            provider: ProviderRef("claude-b".to_owned()),
             model: ModelRef("claude-opus-5".to_owned()),
             effort: Some(EffortLevel::High),
         };
@@ -48945,8 +51723,8 @@ mod tests {
             selectable_providers: BTreeSet::from([provider.to_owned()]),
         };
         let accounts = [
-            account("0193f000-0000-7000-8000-000000000001", "claude-work"),
-            account("0193f000-0000-7000-8000-000000000002", "claude-personal"),
+            account("0193f000-0000-7000-8000-000000000001", "claude-b"),
+            account("0193f000-0000-7000-8000-000000000002", "claude-a"),
             account("0193f000-0000-7000-8000-000000000003", "claude"),
         ];
         let generic = ModelRung {
@@ -48959,7 +51737,7 @@ mod tests {
             .iter()
             .map(|route| route.provider.0.as_str())
             .collect();
-        assert_eq!(providers, ["claude", "claude-work", "claude-personal"]);
+        assert_eq!(providers, ["claude", "claude-b", "claude-a"]);
         assert!(ensure_unambiguous_generic_consultation_routes(&expanded, &accounts).is_ok());
 
         // A generic codex account is not a pool. Without the Claude-family
@@ -48972,14 +51750,14 @@ mod tests {
         };
         let codex_accounts = [
             account("0193f000-0000-7000-8000-000000000004", "codex"),
-            account("0193f000-0000-7000-8000-000000000005", "codex-work"),
+            account("0193f000-0000-7000-8000-000000000005", "codex-b"),
         ];
         let expanded = consultation_account_rungs(std::slice::from_ref(&codex), &codex_accounts);
         let providers: Vec<&str> = expanded
             .iter()
             .map(|route| route.provider.0.as_str())
             .collect();
-        assert_eq!(providers, ["codex-work"]);
+        assert_eq!(providers, ["codex-b"]);
     }
 
     /// ASMA-8237: a model the runtime does not list is refused when it is
@@ -49046,7 +51824,7 @@ mod tests {
         let snapshot =
             crate::fleet::FleetSnapshot::parse(document).expect("the shipped example parses");
         assert_eq!(
-            parse_runtime_model_route(&request, Some(&snapshot)),
+            parse_catalogued_model_route(&request, CatalogAuthority::PinnedFleet(Some(&snapshot))),
             Ok(ModelRung {
                 provider: ProviderRef("claude-a".to_owned()),
                 model: ModelRef("claude-opus-5-5".to_owned()),
@@ -49054,6 +51832,31 @@ mod tests {
             }),
             "a fleet-listed route is nameable while the snapshot lists it"
         );
+    }
+
+    #[test]
+    fn account_names_do_not_supply_compiled_placement_authority() {
+        use super::model_route_is_catalogued;
+
+        let policy = policy_snapshot(
+            "schema_version: 2\ndomains:\n  codex: { provider: codex, accounts: [codex-synthetic] }\nmodels:\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high], vision: true, calibrated: true }\nchains:\n  primary:\n    - [sol@high]\nbindings: {}\n",
+        );
+        for alias in ["codex-synthetic", "codex-unregistered"] {
+            let rung = committee_route(alias, "gpt-5.6-sol").model_rung;
+            assert!(model_route_is_catalogued(
+                &rung,
+                CatalogAuthority::CompiledOnly
+            ));
+            assert_eq!(
+                model_route_is_catalogued(&rung, CatalogAuthority::PinnedFleet(Some(&policy))),
+                alias == "codex-synthetic",
+            );
+            assert!(!model_route_is_catalogued(
+                &rung,
+                CatalogAuthority::PinnedFleet(None)
+            ));
+            assert!(account_for_explicit_provider_alias(&rung, &[]).is_err());
+        }
     }
 
     /// ASMA-8280: the ASMA-8255 operator exception — Codex's model through the
@@ -49088,7 +51891,7 @@ mod tests {
                 admitted,
                 "{effort:?}"
             );
-            for alias in ["cursor-work", "cursor-personal"] {
+            for alias in ["cursor-b", "cursor-a"] {
                 assert!(!super::compiled_route_is_catalogued(&route(
                     alias,
                     "gpt-5.6-sol",
@@ -49099,7 +51902,8 @@ mod tests {
 
         // An activated schema_version 2 policy binding a delivery seat, a
         // reviewer and a leadership slot on Cursor lists what it lists and no
-        // more: every route off its own list keeps its compiled answer.
+        // more: compiled-only consumers retain their historical answer, while
+        // governed consumers require exact membership in the selected policy.
         let leadership = format!("leadership/{}/lsa", ContentHash::of(b"pinned roster"));
         let policy = crate::fleet::FleetSnapshot::parse_policy(&format!(
             "\
@@ -49119,10 +51923,14 @@ bindings:
         ))
         .expect("the policy parses");
         for effort in efforts {
-            for alias in ["cursor", "cursor-work", "cursor-personal"] {
+            for alias in ["cursor", "cursor-b", "cursor-a"] {
                 let rung = route(alias, "gpt-5.6-sol", effort);
+                assert!(!super::model_route_is_catalogued(
+                    &rung,
+                    super::CatalogAuthority::PinnedFleet(Some(&policy))
+                ));
                 assert_eq!(
-                    super::model_route_is_catalogued(&rung, Some(&policy)),
+                    super::model_route_is_catalogued(&rung, super::CatalogAuthority::CompiledOnly),
                     super::compiled_route_is_catalogued(&rung),
                     "{alias} {effort:?}"
                 );
@@ -49198,7 +52006,7 @@ bindings:
         }
         // Each Codex account alias reaches Luna: the alias changes the
         // credential home, never the model.
-        for provider in ["codex", "codex-work", "codex-personal"] {
+        for provider in ["codex", "codex-b", "codex-a"] {
             assert!(
                 parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max"), None).is_ok(),
                 "{provider} reaches Luna at its ceiling"
@@ -49611,9 +52419,28 @@ mod coherence {
         }
         let control = control.expect("the control plane exists");
 
-        let revision =
-            kontor_teams::operational::CoreTeamRevision::resolve(catalog.version, &catalog, &[])
-                .expect("the mandatory roster resolves");
+        let revision = kontor_teams::operational::CoreTeamRevision::resolve(
+            catalog.version,
+            &catalog,
+            &[],
+            kontor_profiles::bundled_operational_domain()
+                .unwrap()
+                .delivery
+                .purpose_roles(),
+        )
+        .expect("the mandatory roster resolves");
+        store
+            .put_epic_roster(&StoredEpicRoster {
+                project_id,
+                mini_project_id: epic_id,
+                core_team_version: revision.version,
+                catalog_hash: revision.catalog_hash.clone(),
+                seats: serde_json::to_value(&revision.seats).unwrap(),
+                quick_session_id: None,
+                revision: AggregateRevision::INITIAL,
+                pinned_at: created_at,
+            })
+            .expect("historical roster is frozen");
         let lead = revision
             .seats
             .iter()
@@ -49673,12 +52500,16 @@ mod coherence {
             crate::DEFAULT_CAPACITY,
             kontor_jira::JiraConnectors::read(home.path(), kontor_core::id::RealmId::generate())
                 .expect("no connectors"),
+            home.path().to_path_buf(),
             home.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(home.path()),
             Vec::new(),
             None,
             std::sync::Arc::new(crate::fleet::FleetSource::at(home.path())),
             std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
+            Vec::new(),
+            None,
+            kontor_jira::jira::SpecCatalog::empty(),
         )
         .expect("services compose");
         let state = kontor_api::state::ApiState::new(kontor_api::state::ApiParts {
@@ -50038,3 +52869,18 @@ mod coherence {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "applications/domain_selection_tests.rs"]
+mod domain_selection_tests;
+
+#[cfg(test)]
+#[path = "applications/epic_domain_tests.rs"]
+mod epic_domain_tests;
+
+#[cfg(test)]
+mod domain_runtime_tests;
+
+#[cfg(test)]
+#[path = "applications/activation_names_tests.rs"]
+mod activation_names_tests;

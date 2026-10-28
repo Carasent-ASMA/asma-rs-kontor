@@ -267,6 +267,7 @@ pub async fn adapter_contract(
     );
 
     let resume = ResumeRequest {
+        resolved_route: None,
         binding: launched.snapshot.clone(),
         requested_at: at("2026-08-10T09:01:00Z"),
     };

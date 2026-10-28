@@ -66,7 +66,7 @@ fn fixture() -> Fixture {
         committee_role: None,
         logical_role: RoleKey::parse("planning_pair_member").expect("a role"),
         seat_binding_id: context.seat_binding_id,
-        model_rung: context.route.clone(),
+        model_rung: context.route.clone().into(),
         occupancy_generation: context.occupancy_generation,
         native_identity: Some(identity("native-member-b")),
         provider_session_id: Some(session("provider-1")),

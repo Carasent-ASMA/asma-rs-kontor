@@ -23,6 +23,22 @@ use kontor_runtime::timeline::SessionEventKind;
 /// The environment variable that turns these assertions into a regeneration.
 const UPDATE: &str = "KONTOR_UPDATE_CONTRACT";
 
+#[test]
+fn private_host_route_carriers_are_absent_from_the_public_contract() {
+    let contract = std::fs::read_to_string(contract_path("openapi.json")).unwrap();
+    for private in [
+        "ResolvedRoute",
+        "StoredLaunchRoute",
+        "native_alias",
+        "host_route_hash",
+    ] {
+        assert!(
+            !contract.contains(private),
+            "private launch data leaked into the public contract: {private}"
+        );
+    }
+}
+
 /// Where the generated contract document is committed.
 fn contract_path(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

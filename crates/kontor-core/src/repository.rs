@@ -510,7 +510,7 @@ pub struct StoredConsultationSeat {
     /// Exact persistent topology seat.
     pub seat_binding_id: SeatBindingId,
     /// Exact selected provider/model/effort rung.
-    pub model_rung: crate::spec::ModelRung,
+    pub model_rung: crate::launch_route::StoredLaunchRoute,
     /// Monotonic native-filler occupancy generation. A scoped credential is
     /// valid only while this exact generation remains active.
     pub occupancy_generation: u64,
@@ -670,7 +670,7 @@ pub struct StoredConsultationRecoveryAttempt {
     /// Digest of the canonical recovery profile.
     pub recovery_profile_hash: ContentHash,
     /// First admissible route selected from the profile.
-    pub selected_model_rung: crate::spec::ModelRung,
+    pub selected_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Forward-only saga state.
     pub state: String,
     /// Exact observed successor, once launched/adopted.
@@ -703,7 +703,7 @@ pub struct NewConsultationRecoveryAttempt {
     /// Canonical ordered recovery profile.
     pub recovery_profile: CanonicalDocument,
     /// First admissible route selected from that profile.
-    pub selected_model_rung: crate::spec::ModelRung,
+    pub selected_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Preparation instant.
     pub prepared_at: Timestamp,
 }
@@ -724,9 +724,9 @@ pub struct StoredConsultationMaterializationReroute {
     /// New active credential generation.
     pub successor_occupancy_generation: u64,
     /// Route that failed before native launch.
-    pub predecessor_model_rung: crate::spec::ModelRung,
+    pub predecessor_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Exact governed replacement route.
-    pub successor_model_rung: crate::spec::ModelRung,
+    pub successor_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Typed recovery reason.
     pub reason: String,
     /// Canonical ordered recovery policy.
@@ -761,7 +761,7 @@ pub struct NewConsultationMaterializationReroute {
     /// Committee revision read by the caller.
     pub expected_revision: AggregateRevision,
     /// Selected governed successor route.
-    pub successor_model_rung: crate::spec::ModelRung,
+    pub successor_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Typed recovery reason.
     pub reason: String,
     /// Canonical ordered recovery policy.
@@ -1165,12 +1165,12 @@ pub struct HostedSeatLaunchIntentSupersession {
     /// Absent for the original never-bound recovery path.
     pub archived_predecessor: Option<StoredHostedTopologySeat>,
     /// The exact inert route being superseded. Compared verbatim.
-    pub expected_model_rung: crate::spec::ModelRung,
+    pub expected_model_rung: crate::launch_route::StoredLaunchRoute,
     /// The exact instant the inert intent was prepared. Compared verbatim, so a
     /// re-prepared intent carrying the same route is still a different intent.
     pub expected_prepared_at: Timestamp,
     /// The catalog-approved route that replaces it.
-    pub replacement_model_rung: crate::spec::ModelRung,
+    pub replacement_model_rung: crate::launch_route::StoredLaunchRoute,
     /// Commit instant.
     pub recorded_at: Timestamp,
 }
@@ -1187,7 +1187,7 @@ pub struct StoredHostedSeatLaunchIntent {
     /// Exact authority resolved before the native call. Immutable once written.
     pub autonomy: SeatAutonomy,
     /// Frozen route the same launch asked for.
-    pub model_rung: crate::spec::ModelRung,
+    pub model_rung: crate::launch_route::StoredLaunchRoute,
     /// Whether the native has been reconciled against this intent.
     pub state: HostedSeatLaunchIntentState,
     /// The native the launch produced, once observed.
@@ -4304,6 +4304,9 @@ pub struct ProjectTeamDefinitionDefault {
     pub expected: Option<TeamDefinitionSnapshot>,
     /// Exact published revision and hash.
     pub definition: TeamDefinitionSnapshot,
+    /// Existing immutable bundle identity that supplies this selection's domain context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// Selection instant.
     pub selected_at: Timestamp,
 }
@@ -4317,6 +4320,9 @@ pub struct MiniProjectTeamDefinitionSnapshot {
     pub mini_project_id: MiniProjectId,
     /// Exact published revision and hash.
     pub definition: TeamDefinitionSnapshot,
+    /// Domain context frozen with the epic, never inferred from a later project default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain_bundle_hash: Option<ContentHash>,
     /// Pinning instant.
     pub pinned_at: Timestamp,
 }
@@ -4777,12 +4783,15 @@ pub trait TeamDefinitionRepository {
     ///
     /// Existing epic pins are immutable under this call; moving one is the
     /// separate migration authority below.
+    /// `expected_operational_domain_bundle_hash` is the context read with
+    /// `selection.expected`; definition equality alone is not a complete CAS.
     ///
     /// # Errors
     /// Refuses a missing or hash-mismatched revision.
     fn set_project_team_definition_default(
         &self,
         selection: &ProjectTeamDefinitionDefault,
+        expected_operational_domain_bundle_hash: Option<&ContentHash>,
     ) -> RepositoryResult<()>;
 
     /// Read the selected project default.

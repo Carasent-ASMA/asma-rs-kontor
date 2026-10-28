@@ -1,0 +1,35 @@
+# Synthetic activated-policy fixture, shared by parser and runtime tests.
+schema_version: 2
+domains:
+  cursor:
+    provider: cursor
+    accounts: [cursor, cursor-secondary]
+  open:
+    provider: opencode
+    accounts: [opencode, opencode-secondary]
+models:
+  cursor-review:
+    domain: cursor
+    permission_eligible: true
+    id: review-model
+    vendor: example
+    efforts: [high, xhigh]
+  open-review:
+    domain: open
+    permission_eligible: true
+    id: example/review
+    vendor: alternate
+    efforts: [max]
+  open-default:
+    domain: open
+    permission_eligible: true
+    id: example/default
+    vendor: alternate
+chains:
+  review:
+    - [cursor-review@xhigh]
+bindings: {}
+consultation_permissions:
+  - {account: cursor, model: cursor-review, effort: xhigh, mode: plan}
+  - {account: opencode, model: open-review, effort: max, mode: plan}
+  - {account: opencode-secondary, model: open-default, effort: null, mode: plan}

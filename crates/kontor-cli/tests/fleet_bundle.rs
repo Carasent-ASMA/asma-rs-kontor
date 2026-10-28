@@ -33,7 +33,7 @@ fn kontor(
 fn policy(roster: &str) -> String {
     format!(
         "schema_version: 2\n\
-         domains:\n  codex: {{ provider: codex, accounts: [codex-work] }}\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex-b] }}\n\
          models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n\
          chains:\n  lead:\n    - [sol@xhigh]\n\
          bindings:\n  leadership/{roster}/lsa: lead\n  leadership/{roster}/tpm: lead\n"
@@ -180,9 +180,6 @@ async fn a_bundle_is_proposed_published_and_activated_through_the_generated_cli(
         resolved["body"]["provenance"]["policy_hash"],
         activated["body"]["activation"]["policy_hash"]
     );
-    assert_eq!(
-        resolved["body"]["selected"]["rung"]["provider"],
-        "codex-work"
-    );
+    assert_eq!(resolved["body"]["selected"]["rung"]["provider"], "codex-b");
     server.abort();
 }

@@ -4,7 +4,7 @@ import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { getPaseoClient, useRpc } from "@getpaseo/plugin/client";
 import { newRequestId } from "./request-id";
 import { checkCreate, executeCreate, featureValuesProblem, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, TOPIC_MAX,
-  type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue } from "../shared/session-create";
+  type CreateFeature, type CreateOptions, type CreateOutcome, type CreateProvider, type CreateRole, type CreateScope, type CreateStart, type FeatureValues, type JiraIssue } from "../shared/session-create";
 import type { NewLeadDefault } from "../shared/organization";
 import type { SummaryRevision } from "../shared/session-navigator";
 import { Action, COARSE_POINTER, Copy, IconButton, type Colors } from "./page-controls";
@@ -18,7 +18,7 @@ import { SourceSessionPicker } from "./source-session-picker";
 import { readSource, sourceState, type SourceChoice } from "./source-picker";
 import { focusControl } from "./mobile-filters";
 import { useOrganizationSettings } from "./use-organization-settings";
-import { Choices, Disclosure, featureLabels, ModelPicker, useCreateFeatures, type PickedModel } from "./model-picker";
+import { Choices, Disclosure, featureLabels, featureValue, ModelPicker, useCreateFeatures, type PickedModel } from "./model-picker";
 import { DenseSessionRow } from "./dense-session-row";
 import { useClock } from "./session-time";
 import { CODEX, codexDefault, leadDefault, type LeadModel } from "./new-lead-defaults";
@@ -38,6 +38,8 @@ export type CreateDraft = { readonly topic: string; readonly role?: CreateRole; 
   readonly featureValues?: FeatureValues };
 
 const AD_HOC = "ad-hoc" as const, FROM_JIRA = "from-jira" as const;
+/** The listed Speed setting and its Fast value: the model button marks Fast in its corner and never names a speed. */
+const SPEED = "service_tier", FAST = "priority";
 /** The selected role's full name, under the role switch (board B1). */
 const ROLE_NAMES: Record<CreateRole, string> = { LSA: "Lead Software Architect", TPM: "Technical Program Manager" };
 /** "DESK • PR REVIEW" is PR REVIEW under the Desk label; another project name stays whole. */
@@ -133,7 +135,7 @@ function leadName(providers: readonly CreateProvider[], choice: LeadModel | null
   return model ? `${model.label}${effort ? ` · ${effort.label}` : ""}` : null;
 }
 
-export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel, sources, opened, header, initialSource = null }: {
+export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpen, isActive = () => true, onOpenCreated, onCancel, sources, opened, header, initialSource = null, hostScrolls = false, pickerHeight }: {
   hostId: string; colors: Colors; compact: boolean; options: CreateOptionsState; onRefresh: (scope?: CreateScope) => void; canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult; onCancel: () => void;
   /** A sheet close invalidates pending continuations immediately, before React's unmount cleanup. */
@@ -142,10 +144,14 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   sources?: readonly DirectoryEntry[];
   /** When this device last opened each session from Kontor, for the source rows. */
   opened?: ReadonlyMap<string, number>;
+  /** Inside the host's popover, which scrolls an unbounded body: the height issue/source pickers keep so its actions stay in view, given its title's line. */
+  pickerHeight?: (line: number) => number;
   /** The surface's own heading: the model chip then stands at its right, pinned above the form. Pickers bring their own. */
   header?: React.ReactNode;
   /** A source chosen before the form opened, such as Attach summary's New lead, with its saved revision pinned. */
   initialSource?: LeadSource | null;
+  /** The surface around the form scrolls already (the composer's popover or sheet), so Model & settings adds no scroller. */
+  hostScrolls?: boolean;
 }) {
   const execute = useRpc(executeCreate), check = useRpc(checkCreate);
   const settings = useOrganizationSettings();
@@ -247,6 +253,11 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const saved = settings.state.status === "ready" ? settings.state.values.newLeadDefault ?? null : null;
   const choice = ready ? resolveDraft(ready, draft, saved) : null;
   const features = useCreateFeatures(choice?.desk?.projectId ?? null, choice?.model ? choice.provider?.id ?? null : null, choice?.model?.id ?? null);
+  // The settings last read for this model keep naming its chosen Speed and Plan while a role or desk change reads them
+  // again, or leaves no desk to read them for; Create and its hint still wait for the fresh read. A failed read names none.
+  const modelKey = choice?.model ? JSON.stringify([choice.provider?.id, choice.model.id]) : null;
+  const lastListed = useRef<{ model: string; features: readonly CreateFeature[] } | null>(null);
+  if (features && modelKey) lastListed.current = { model: modelKey, features: features.problem ? [] : features.features };
   const providerLabel = choice?.provider?.label ?? "This provider";
   if (phase.kind === "busy") return wrap(<View accessibilityLiveRegion="polite" aria-live="polite"><Copy colors={colors}>{phase.label} Nothing is reported until the host answers.</Copy></View>);
   if (phase.kind === "result") return outcomeView(phase.outcome, providerLabel);
@@ -324,7 +335,10 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const same = (lead: LeadModel | null) => !!lead && !!choice.model && lead.provider === choice.provider?.id && lead.model === choice.model.id && lead.effort === (choice.effort?.id ?? null);
   const tag = same(choice.codex) ? "Codex default" : choice.lead.saved && same(choice.lead.choice) ? "New-lead default" : !choice.codex ? "Codex default unknown" : null;
   // Only listed settings are named; an unreadable list names none rather than guessing.
-  const shown = featureLabels(features && !features.problem ? features.features : [], choice.featureValues);
+  const listedSettings = lastListed.current?.model === modelKey ? lastListed.current.features : [];
+  const shown = featureLabels(listedSettings.filter((feature) => feature.id !== SPEED), choice.featureValues);
+  const speed = listedSettings.find((feature) => feature.id === SPEED);
+  const fast = speed?.type === "select" && featureValue(speed, choice.featureValues) === FAST && speed.options.some((option) => option.id === FAST);
   const chipDetail = [choice.effort?.label, ...shown.selects].filter(Boolean).join(" · ");
   const settingsLine = [choice.mode ? `${choice.mode.label}${choice.mode.dangerous ? " ⚠" : ""}` : null, ...shown.toggles,
     choice.provider ? routeLabel(choice.provider.id, choice.provider.label) : null].filter(Boolean).join(" | ");
@@ -342,13 +356,13 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     set({ issueKey: issue.key, picked: issue, jiraTopic: draft.issueKey === issue.key ? draft.jiraTopic : undefined, ...(desk ? { projectId: desk.projectId } : {}) });
     if (desk) refresh({ projectId: desk.projectId, issueQuery: issue.key });
   };
-  if (picker === "jira") return <JiraIssuePicker colors={colors} desks={ready.desks} scope={scopeOf(draft)} initialQuery={draft.issueQuery ?? ""} selected={choice.issue?.key ?? null}
+  if (picker === "jira") return <JiraIssuePicker height={pickerHeight} colors={colors} desks={ready.desks} scope={scopeOf(draft)} initialQuery={draft.issueQuery ?? ""} selected={choice.issue?.key ?? null}
     onBack={closePicker} onSelect={(issue, issueQuery) => { pick(issue); setDraft((previous) => ({ ...previous, issueQuery })); closePicker(); }} />;
-  if (picker === "source") return sources ? <LeadSourcePicker colors={colors} compact={compact} sources={sources} opened={opened} selected={source?.hostId === hostId ? source.entry.id : null} onCancel={closePicker}
+  if (picker === "source") return sources ? <LeadSourcePicker colors={colors} compact={compact} sources={sources} opened={opened} height={pickerHeight} selected={source?.hostId === hostId ? source.entry.id : null} onCancel={closePicker}
     onUse={(next) => { setSource({ hostId, entry: next.entry, contextProblem: null, summary: next.summary }); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />
     : <SourceSessionPicker hostId={hostId} colors={colors} selected={source?.hostId === hostId ? source.entry.id : null}
       onBack={closePicker} onSelect={(next) => { setSource(next); setSourceProblem(null); set({ sourceAgentId: next.entry.id }); closePicker(); }} />;
-  if (picker === "model") return <ModelPicker colors={colors} compact={compact} providers={ready.providers} projectId={choice.desk?.projectId ?? null} codex={choice.codex}
+  if (picker === "model") return <ModelPicker colors={colors} compact={compact} hostScrolls={hostScrolls} providers={ready.providers} projectId={choice.desk?.projectId ?? null} codex={choice.codex}
     value={choice.provider && choice.model ? { provider: choice.provider.id, model: choice.model.id, effort: choice.effort?.id ?? null, modeId: choice.mode?.id ?? null, featureValues: choice.featureValues } : null}
     onCancel={closePicker} onUse={(next: PickedModel) => { set({ provider: next.provider, model: next.model, effort: next.effort, modeId: next.modeId, featureValues: next.featureValues }); closePicker(); }}
     defaults={settings.state.status === "ready" ? { name: defaultName,
@@ -357,13 +371,15 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       reset: () => saveDefault(null, "The new-lead default was not reset.") } : undefined} />;
   const chip = <View style={{ alignSelf: header === undefined ? "flex-end" : "auto", alignItems: "flex-end", gap: 2, flexShrink: 1, maxWidth: "62%" }}>
     <Pressable ref={lastPicker.current === "model" ? pickerReturn : undefined} testID="kontor-new-lead-model" accessibilityRole="button" onPress={() => setPicker("model")}
-      accessibilityLabel={`Model: ${choice.model ? `${choice.model.label}, ${choice.model.id}` : "none chosen"}${chipDetail ? `, ${chipDetail}` : ""}${tag ? `, ${tag}` : ""}. Change model`}
-      style={{ maxWidth: "100%", minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }}>
+      accessibilityLabel={`Model: ${choice.model ? `${choice.model.label}, ${choice.model.id}` : "none chosen"}${chipDetail ? `, ${chipDetail}` : ""}${fast ? ", Fast" : ""}${tag ? `, ${tag}` : ""}. Change model`}
+      style={{ maxWidth: "100%", minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 8, paddingRight: 16, paddingVertical: 4, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }}>
       <VendorMark vendor={modelVendor(choice.model?.id ?? null)} colors={colors} size={18} />
       <View style={{ flexShrink: 1 }}>
         <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{choice.model ? modelAlias(choice.model.id) : "Choose model"} ▾</Text>
         {chipDetail ? <Text numberOfLines={1} style={muted}>{chipDetail}</Text> : null}
       </View>
+      {/* The corner is reserved in either speed, so marking Fast never resizes the button. */}
+      {fast ? <View testID="kontor-new-lead-model-fast" aria-hidden style={{ position: "absolute", top: 3, right: 3 }}><Icon name="Zap" size={10} color={colors.foreground} /></View> : null}
     </Pressable>
     {tag ? <Text testID="kontor-new-lead-model-tag" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{tag}</Text> : null}
   </View>;

@@ -101,7 +101,7 @@ impl PlanningPairReceiptHold {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    async fn pass(&self) {
+    pub(super) async fn pass(&self) {
         self.lock().waiting += 1;
         std::future::poll_fn(|context| {
             let mut state = self.lock();
@@ -903,7 +903,6 @@ impl Services {
         slot: PlanningPairSlot,
     ) -> Result<kontor_runtime::planning_pair::PlanningPairLaunchContext, ApiError> {
         let state = self.state()?;
-        let project = self.project_row(run.project_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
             .map_err(|error| self.refuse(&error))?
@@ -913,8 +912,7 @@ impl Services {
                     "the planning pair's frozen topology node is missing",
                 )
             })?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
+        let cwd = self.consultation_root(run.project_id, node.id)?;
         let catalog = self.epic_role_catalog(run.project_id, run.mini_project_id)?;
         let member = pair
             .spec

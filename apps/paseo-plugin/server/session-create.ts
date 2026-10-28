@@ -7,9 +7,10 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorkspace, PaseoWorkspaceCreateOptions, PaseoWorkspaceListOptions, PaseoWorkspaceListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { UNSUPPORTED } from "../shared/session-navigator";
+import { summaryPinSchema, UNSUPPORTED } from "../shared/session-navigator";
 import { readConfig } from "./config";
 import { canonicalLeadProblem } from "./session-canonical";
+import { readPinnedSummary, summaryStateRoot } from "./session-summaries";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
@@ -192,7 +193,7 @@ export type SeatCreateSpec = {
   bootstrap: string | null;
 };
 export type SeatCreateOutcome = CreateOutcome;
-export type SeatCreatePlan = { spec: SeatCreateSpec } | { refused: string; requestId: string; title: string };
+export type SeatCreatePlan = { spec: SeatCreateSpec; sourceSummary: z.infer<typeof summaryPinSchema> | null } | { refused: string; requestId: string; title: string };
 export type SeatCreateBuilder = () => Promise<SeatCreatePlan>;
 export type SeatCreate = (requestId: string, build: SeatCreateBuilder) => Promise<SeatCreateOutcome>;
 
@@ -375,6 +376,45 @@ export async function sourceSummary(client: { agents: { ref(id: string): Pick<Ag
   return null;
 }
 
+/** Tail read used to prove bootstrap delivery; a match outside this window stays unverified. */
+export const BOOTSTRAP_TIMELINE_TAIL_LIMIT = 20;
+
+const HANDOFF_BOOTSTRAP_MARKER = "Handoff summary from the source session";
+
+export type BootstrapDeliveryProof =
+  | { state: "proven" }
+  | { state: "missing" }
+  | { state: "unreadable" }
+  | { state: "tail_bounded"; limit: number };
+
+/** Host-timeline proof that the exact bootstrap prompt was delivered within the tail window. */
+export async function proveBootstrapDeliveredOnTimeline(client: { agents: { ref(id: string): Pick<AgentHandle, "timeline"> } }, agentId: string, bootstrap: string): Promise<BootstrapDeliveryProof> {
+  try {
+    const page = await client.agents.ref(agentId).timeline.refetch({ limit: BOOTSTRAP_TIMELINE_TAIL_LIMIT, direction: "tail" });
+    if (page && "error" in page && page.error) return { state: "unreadable" };
+    if (page?.entries.some((entry) => entry.item.type === "user_message" && entry.item.text === bootstrap)) return { state: "proven" };
+    const pageInfo = page && "pageInfo" in page ? page.pageInfo as { hasMore?: boolean } | undefined : undefined;
+    if (page && (page.entries.length >= BOOTSTRAP_TIMELINE_TAIL_LIMIT || pageInfo?.hasMore)) return { state: "tail_bounded", limit: BOOTSTRAP_TIMELINE_TAIL_LIMIT };
+    return { state: "missing" };
+  } catch { return { state: "unreadable" }; }
+}
+
+export function bootstrapRequiresDeliveryProof(request: CreateRecord["request"]): boolean {
+  if (summaryPinSchema.safeParse(request.sourceSummary).success) return true;
+  const bootstrap = typeof request.bootstrapPrompt === "string" ? request.bootstrapPrompt : null;
+  return !!bootstrap?.includes(HANDOFF_BOOTSTRAP_MARKER);
+}
+
+export const SUMMARY_DELIVERY_NOT_VERIFIED = "Summary delivery is not verified on the host timeline.";
+
+function bootstrapDeliveryMessage(proof: BootstrapDeliveryProof): string {
+  if (proof.state === "tail_bounded") {
+    return `${SUMMARY_DELIVERY_NOT_VERIFIED} The bootstrap was not found in the last ${proof.limit} timeline entries read from the tail. Check again or reconcile on the host.`;
+  }
+  if (proof.state === "unreadable") return `${SUMMARY_DELIVERY_NOT_VERIFIED} The bootstrap timeline could not be read. Check again.`;
+  return `${SUMMARY_DELIVERY_NOT_VERIFIED} Do not treat the summary as attached; Check again after the host shows the bootstrap.`;
+}
+
 class WorkspaceCreateError extends Error {
   constructor(message: string, readonly mayExist: boolean) { super(message); }
 }
@@ -412,7 +452,7 @@ export function serial<T>(step: () => Promise<T>): Promise<T> {
  * Host-local durable intents: a request is written before its dispatch, and its outcome after. An unsettled
  * request blocks the next creation until a Check settles it; nothing is ever re-dispatched.
  */
-export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch) {
+export function createSessionCreateService(client: CreateClient, root: string, switchFile: string, answerMs = CREATE_ANSWER_MS, jira: JiraSearch = asmaJiraSearch, summaryRoot = summaryStateRoot()) {
   const path = (requestId: string) => join(root, `${requestId}.json`);
   async function readRecord(requestId: string): Promise<CreateRecord | null> {
     try { return recordSchema.parse(JSON.parse(await readFile(path(requestId), "utf8"))); }
@@ -455,9 +495,42 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     catch (error) { return outcome(record, "unknown", agentId, `The host replied that it created this session, but reading it back failed: ${errorText(error)}. Check reads it again.`); }
     if (!found || found.agent.id !== agentId) return outcome(record, "unknown", agentId, "The host replied that it created this session, but an exact read returned no such session. Check reads it again.");
     const differences = readbackDifferences(found.agent, record.request);
+    const pin = summaryPinSchema.safeParse(record.request.sourceSummary);
+    const needsDelivery = bootstrapRequiresDeliveryProof(record.request);
+    const bootstrap = typeof record.request.bootstrapPrompt === "string" ? record.request.bootstrapPrompt : null;
+    if (needsDelivery) {
+      if (!bootstrap) {
+        return outcome(record, "unknown", agentId, `Created: the request expected a bootstrap summary but none was recorded. ${SUMMARY_DELIVERY_NOT_VERIFIED} Check again.`, differences);
+      }
+      const proof = await proveBootstrapDeliveredOnTimeline(client, agentId, bootstrap);
+      if (proof.state !== "proven") {
+        const lead = differences.length
+          ? "Created with differences: the host's readback does not match every requested field."
+          : "Created: the host session matches the request configuration.";
+        const state = differences.length ? "differences" as const : "unknown" as const;
+        return outcome(record, state, agentId, `${lead} ${bootstrapDeliveryMessage(proof)}`, differences);
+      }
+      if (pin.success) {
+        try {
+          const revision = await readPinnedSummary(summaryRoot, pin.data);
+          if (!bootstrap.includes(revision.text)) {
+            return outcome(record, "unknown", agentId, `Created: the host timeline shows a bootstrap message, but not the exact saved summary r${revision.revision} text. ${SUMMARY_DELIVERY_NOT_VERIFIED} Check again.`, differences);
+          }
+          if (differences.length) return outcome(record, "differences", agentId, "Created with differences: the host's readback does not match every requested field.", differences);
+          return outcome(record, "verified", agentId, `Created and verified: saved summary r${revision.revision} of ${revision.sourceAgentId} is in the delivered bootstrap before the first task.`);
+        } catch {
+          return outcome(record, "unknown", agentId, `Created: the bootstrap was delivered but saved summary r${pin.data.revision} is no longer stored on this host. ${SUMMARY_DELIVERY_NOT_VERIFIED} Check again.`, differences);
+        }
+      }
+      if (differences.length) return outcome(record, "differences", agentId, "Created with differences: the host's readback does not match every requested field.", differences);
+      return outcome(record, "verified", agentId, "Created and verified: the handoff summary is in the delivered bootstrap before the first task.");
+    }
+    const message = differences.length
+      ? "Created with differences: the host's readback does not match every requested field."
+      : "Created and verified: the host's readback matches the request.";
     return differences.length
-      ? outcome(record, "differences", agentId, "Created with differences: the host's readback does not match every requested field.", differences)
-      : outcome(record, "verified", agentId, "Created and verified: the host's readback matches the request.");
+      ? outcome(record, "differences", agentId, message, differences)
+      : outcome(record, "verified", agentId, message);
   }
 
   async function options(scope: CreateScope = {}): Promise<CreateOptions> {
@@ -548,7 +621,9 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     let { workspaceId } = checked;
     const record: CreateRecord = { request: { requestId, title: spec.title, cwd, workspaceId: workspaceId ?? spec.anchorWorkspaceId,
       labels: spec.labels, provider: spec.provider, model: spec.model, effort: spec.effort, modeId: spec.modeId,
-      ...(spec.featureValues && Object.keys(spec.featureValues).length ? { featureValues: spec.featureValues } : {}), at: new Date().toISOString() }, outcome: null };
+      ...(spec.featureValues && Object.keys(spec.featureValues).length ? { featureValues: spec.featureValues } : {}),
+      ...(plan.sourceSummary ? { sourceSummary: plan.sourceSummary } : {}),
+      ...(spec.bootstrap ? { bootstrapPrompt: spec.bootstrap } : {}), at: new Date().toISOString() }, outcome: null };
     try { await writeRecord(record); } catch (error) {
       // Not dispatched; a partial intent is removed so it does not block, and stays blocking if it cannot be.
       await rm(path(requestId), { force: true }).catch(() => {});
@@ -621,8 +696,19 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       if (canonical) return refusal(canonical, title);
     }
     let source: string | null = null;
-    if (input.sourceSummary) return refusal(UNSUPPORTED.summaries.reason, title);
-    if (input.sourceAgentId?.trim()) {
+    let pinned: z.infer<typeof summaryPinSchema> | null = null;
+    if (input.sourceSummary) {
+      const pin = summaryPinSchema.parse(input.sourceSummary);
+      pinned = pin;
+      try {
+        const revision = await readPinnedSummary(summaryRoot, pin);
+        const named = input.sourceAgentId?.trim() || null;
+        if (named && named !== revision.sourceAgentId) return refusal(`Saved summary r${pin.revision} belongs to ${revision.sourceAgentId}, not ${named}; nothing was created.`, title);
+        source = revision.text;
+      } catch {
+        return refusal(`No saved summary ${pin.summaryId} r${pin.revision} is stored on this host; nothing was created.`, title);
+      }
+    } else if (input.sourceAgentId?.trim()) {
       try { source = await sourceSummary(client, input.sourceAgentId.trim()); }
       catch (error) { return refusal(`The source session could not be read: ${errorText(error)}.`, title); }
       if (!source) return refusal(`The source session ${input.sourceAgentId.trim()} has no handoff summary to read.`, title);
@@ -632,7 +718,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const persona = personaPrompt(personaKind, { desk: desk.project, workspace: workspaceName, workspaceId: workspaceId ?? "id assigned at creation", topic, title, key });
     const labels: Record<string, string> = { role: input.role, [TITLE_AUTO_LABEL]: title, persona: personaVersion(personaKind, supported), [CREATE_REQUEST_LABEL]: input.requestId,
       ...(key && desk.kind === "adam" ? { epic: key } : key && desk.kind === "tickets" ? { ticket: key } : {}) };
-    return { spec: {
+    return { sourceSummary: pinned, spec: {
       requestId: input.requestId, title, labels, provider: input.provider, model: input.model, effort: input.effort, modeId: input.modeId, featureValues: input.featureValues,
       workspaceId, anchorWorkspaceId: desk.anchorWorkspaceId, workspaceName, cwd: desk.cwd,
       createWorkspace: workspaceId ? null : () => createLeadWorkspace(client, desk, workspaceName),
@@ -646,7 +732,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     } };
   }
 
-  /** Settles an unknown outcome from the host: an exact read, or the request's label. Never dispatches. */
+  /** Settles an unknown outcome from the host: an exact read, or the request's label. Never dispatches. `differences` and `verified` are terminal; only `unknown` is re-read. */
   function check(requestId: string): Promise<CreateOutcome> {
     return serial(async () => {
       const record = await readRecord(requestId);

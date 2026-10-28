@@ -135,8 +135,8 @@ closed_enum! {
         PublishTicketDescription => "publish_ticket_description",
         /// Publish one epic's Jira description and confirm it by readback.
         PublishEpicDescription => "publish_epic_description",
-        /// Activate ASMA policy after every Jira binding is confirmed.
-        ActivateAsmaEpic => "activate_asma_epic",
+        /// Activate epic policy after every Jira binding is confirmed.
+        ActivateEpic => "activate_epic",
         /// Settle a run against what its runtime currently reports.
         ///
         /// It carries no desired state and no outcome: settling is the act of
@@ -597,7 +597,7 @@ impl CommandKind {
             | Self::StartScheduledWork
             | Self::MaterializeJira
             | Self::PublishEpicDescription
-            | Self::ActivateAsmaEpic => {
+            | Self::ActivateEpic => {
                 witness(matches!(target, A::MiniProject))
             }
             Self::TransitionTask

@@ -56,7 +56,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput",
 vi.mock("../client/mobile-filters", () => ({ focusControl: model.focusControl }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (args: object) => { model.directoryArgs.push(args); return { state: model.directory, refresh: () => {} }; } }));
 
-import { createAvailability, StartSwitchPopover, StartSwitchSheet, switchList, switchRows } from "../client/start-switch-sheet";
+import { createAvailability, popoverBodyHeight, StartSwitchPopover, StartSwitchSheet, switchList, switchRows } from "../client/start-switch-sheet";
 import { NewLsaForm } from "../client/new-lsa-form";
 import { DenseSessionRow } from "../client/dense-session-row";
 import { OrganizationRowView } from "../client/organization-row";
@@ -552,7 +552,7 @@ describe("Start or switch sheet", () => {
     choose(s, "kontor-switch-new-lead");
     expect(s.tree[0]!.props.label).toBe("New lead");
     const form = s.tree.find((node) => node.type === NewLsaForm)!;
-    expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true, hostId: "host-a" });
+    expect(form.props).toMatchObject({ options: { status: "ready", options: OPTIONS }, canOpen: true, hostId: "host-a", hostScrolls: false, pickerHeight: undefined });
     expect(form.props.onOpenCreated).toBeDefined();
     (form.props.onCancel as () => void)(); s.render();
     expect(byTestId(s.tree, "kontor-switch-list")).toBeDefined();
@@ -817,7 +817,8 @@ describe("Start or switch popover from the composer pill", () => {
     await settle(); p.render();
     press(byTestId(p.tree, "kontor-switch-new-lead")); p.render();
     const form = p.tree.find((node) => node.type === NewLsaForm)!;
-    expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" } });
+    // The host's popover or sheet scrolls, so Model & settings adds no scroller of its own.
+    expect(form.props).toMatchObject({ hostId: "host-a", canOpen: true, options: { status: "ready" }, hostScrolls: true });
     expect(text(p.tree)).toContain("New lead");
     expect(action(p.tree, "Close")).toBeUndefined();
     const onOpenCreated = form.props.onOpenCreated as (outcome: CreateOutcome) => OpenSessionResult;
@@ -828,6 +829,21 @@ describe("Start or switch popover from the composer pill", () => {
     expect(onOpenCreated(outcome("verified"))).toEqual({ ok: false, reason: "navigation", message: "router busy" });
     expect(p.close).toHaveBeenCalledTimes(1);
     expect(model.toast.error).not.toHaveBeenCalled();
+  });
+
+  it("sizes Choose source to the host surface's body, so the host never scrolls its actions away", async () => {
+    // The window is 390 by 844: the wide surface shows at most 440 of it, the compact sheet 80% less its chrome and a
+    // title row whose line is the picker's own title line as drawn.
+    for (const [compact, height] of [[false, () => 416], [true, (line: number) => Math.floor(844 * 0.8 - 70 - line)]] as const) {
+      model.unmount(); model.slots = []; model.deps = []; model.stores = {};
+      const p = pop({ compact });
+      await settle(); p.render();
+      press(byTestId(p.tree, "kontor-switch-new-lead")); p.render();
+      const given = p.tree.find((node) => node.type === NewLsaForm)?.props.pickerHeight as (line: number) => number;
+      for (const line of [17, 34]) expect(given(line)).toBe(height(line));
+    }
+    expect([popoverBodyHeight(900, false, 34), popoverBodyHeight(400, false, 17), popoverBodyHeight(10, false, 17)]).toEqual([416, 360, 0]);
+    expect([popoverBodyHeight(400, true, 17), popoverBodyHeight(400, true, 34), popoverBodyHeight(320, true, 17), popoverBodyHeight(60, true, 34)]).toEqual([233, 216, 169, 0]);
   });
 
   it("marks the session the composer pill belongs to", () => {

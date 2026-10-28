@@ -107,7 +107,9 @@ pub(super) async fn prove_completion_authority(
                 assert_eq!(answer.status, 403, "{}", answer.body);
                 assert_eq!(answer.json()["code"], "forbidden");
                 assert!(
-                    answer.body.contains("authenticated seat is not"),
+                    answer
+                        .body
+                        .contains("must be an active seat of this exact epic"),
                     "{}",
                     answer.body
                 );
@@ -171,7 +173,7 @@ async fn several_carriers_refuse_origin_binding_without_fencing_or_graph_writes(
             "{}",
             refused.body
         );
-        assert!(!receipt_recorded(&realm, "qualification-bind"));
+        assert_epic_creation_pending(&realm, "qualification-bind");
         assert!(!bound_from(&realm, origin));
         assert!(hosted(&realm, lsa).is_none());
         assert_eq!(ad_hoc_launch_intent(&realm, lsa), intent);

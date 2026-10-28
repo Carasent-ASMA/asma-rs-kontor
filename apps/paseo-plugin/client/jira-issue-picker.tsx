@@ -17,8 +17,9 @@ export function jiraPickerRows(issues: readonly JiraIssue[], query = ""): JiraIs
   return exact ? [...issues.filter((issue) => issue.key === key)] : [...issues];
 }
 
-export function JiraIssuePicker({ colors, scope, desks, initialQuery, selected, onSelect, onBack }: {
+export function JiraIssuePicker({ colors, scope, desks, initialQuery, selected, height, onSelect, onBack }: {
   colors: Colors; scope: CreateScope; desks: CreateOptions["desks"]; initialQuery: string; selected: string | null;
+  height?: (line: number) => number;
   onSelect: (issue: JiraIssue, query: string) => void; onBack: () => void;
 }) {
   const read = useRpc(readCreateOptions);
@@ -41,7 +42,7 @@ export function JiraIssuePicker({ colors, scope, desks, initialQuery, selected, 
     const issue = current?.issues.find((entry) => entry.key === key);
     if (issue && !busy && !issueDesk(desks, issue).problem) onSelect(issue, query);
   };
-  return <SearchPicker name="kontor-jira-picker" label="Choose a Jira issue" placeholder="ASMA key or title words" query={query}
+  return <SearchPicker height={height} name="kontor-jira-picker" label="Choose a Jira issue" placeholder="ASMA key or title words" query={query}
     onQuery={(value) => { setBusy(true); setQuery(value); }} onSearch={() => { setBusy(true); setRevision((value) => value + 1); }}
     selected={selected} busy={busy || !current} error={current?.error}
     message={issues.length ? `${issues.length} results. Choose an issue; its type decides the desk.` : "No open ASMA issue matches."}

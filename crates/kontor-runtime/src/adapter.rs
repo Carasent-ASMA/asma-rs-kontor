@@ -344,7 +344,7 @@ pub enum ConsultationRouteSource {
     MaterializationRecoveryProfile,
     /// Route selected while replacing an already-materialized native filler.
     SeatRecoveryProfile,
-    /// Route listed by the live `fleet.yml` read at placement time.
+    /// Route selected by fleet policy, whose hash admission freezes.
     FleetConfiguration,
 }
 
@@ -380,9 +380,23 @@ pub struct ConsultationRouteProvenance {
     pub evidence_hash: ContentHash,
     /// Operator disposition when this is a fallback rather than template data.
     pub fallback_disposition: Option<ConsultationFallbackDisposition>,
+    /// Exact permission policy, separate from a recovery profile's evidence hash.
+    pub permission_policy_hash: Option<ContentHash>,
+    /// Validated permissions from immutable history at `permission_policy_hash`.
+    /// This is an internal projection, never caller-authored API input.
+    pub fleet_permissions: Option<kontor_fleet::ConsultationPermissions>,
+    /// Only restoration or explicit recovery of an already durable run may set
+    /// this. A profile-only historical row grants no permission exception.
+    pub legacy_recovery: bool,
 }
 
 impl ConsultationRouteProvenance {
+    /// Mark provenance reconstructed for an existing durable consultation.
+    #[must_use]
+    pub fn for_legacy_recovery(mut self) -> Self {
+        self.legacy_recovery = true;
+        self
+    }
     /// Provenance for a published profile/template route.
     #[must_use]
     pub fn template(evidence_hash: ContentHash) -> Self {
@@ -390,6 +404,9 @@ impl ConsultationRouteProvenance {
             source: ConsultationRouteSource::Template,
             evidence_hash,
             fallback_disposition: None,
+            fleet_permissions: None,
+            permission_policy_hash: None,
+            legacy_recovery: false,
         }
     }
 
@@ -400,6 +417,9 @@ impl ConsultationRouteProvenance {
             source: ConsultationRouteSource::InitialRecoveryProfile,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+            fleet_permissions: None,
+            permission_policy_hash: None,
+            legacy_recovery: false,
         }
     }
 
@@ -407,9 +427,12 @@ impl ConsultationRouteProvenance {
     #[must_use]
     pub fn fleet_configuration(evidence_hash: ContentHash) -> Self {
         Self {
+            permission_policy_hash: Some(evidence_hash.clone()),
             source: ConsultationRouteSource::FleetConfiguration,
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+            fleet_permissions: None,
+            legacy_recovery: false,
         }
     }
 
@@ -469,6 +492,8 @@ pub struct ConsultationLaunchRequest {
     pub credential: ScopedSeatCredential,
     /// Exact provider/model/effort route.
     pub model_rung: ModelRung,
+    /// Exact private launch binding, read from the owning intent rather than current host data.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Immutable policy and disposition that selected the route.
     pub route_provenance: ConsultationRouteProvenance,
     /// The fleet policy's authority for this route, when the activated policy
@@ -541,6 +566,8 @@ pub struct ConsultationSeatRetireRequest {
     pub identity: NativeRuntimeIdentity,
     /// Exact route that predecessor must still report.
     pub model_rung: ModelRung,
+    /// Exact private launch binding, read from the owning intent rather than current host data.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Immutable policy and disposition that selected that route.
     pub route_provenance: ConsultationRouteProvenance,
     /// Audited retirement instant.
@@ -598,6 +625,8 @@ pub struct HostedSeatLaunchRequest {
     pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
+    /// Exact private launch binding, read from the owning intent rather than current host data.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// The activated fleet policy's authority for `model_rung`, when a policy
     /// binds this leadership seat (ASMA-8280 G-3).
     pub fleet_provenance: Option<FleetLaunchProvenance>,
@@ -620,6 +649,8 @@ pub struct HostedSeatLaunchRequest {
 /// Idempotently address an existing persistent leadership seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedSeatMessageRequest {
+    /// Exact private launch authority, when the seat was host-routed.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Exact persistent SeatBinding.
     pub seat_binding_id: SeatBindingId,
     /// Exact native identity frozen at launch/recovery.
@@ -672,6 +703,8 @@ pub struct HostedSeatInspectRequest {
     pub identity: NativeRuntimeIdentity,
     /// Persisted route that a live native must still report.
     pub model_rung: ModelRung,
+    /// Exact private launch binding, read from the owning intent rather than current host data.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Autonomy the live native must still report, resolved exactly as the
     /// launch resolved it.
     ///
@@ -704,6 +737,8 @@ pub struct HostedSeatRetireRequest {
     pub identity: NativeRuntimeIdentity,
     /// Exact route that predecessor must still report.
     pub model_rung: ModelRung,
+    /// Exact private launch binding, read from the owning intent rather than current host data.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Exact autonomy that predecessor must still report.
     pub autonomy: SeatAutonomy,
     /// Audited retirement instant.
@@ -750,6 +785,8 @@ pub struct HostedSeatClaimPredecessor {
 /// persistent Core Team SeatBinding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedSeatClaimRequest {
+    /// Frozen private authority for a governed adoption.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Logical identity that remains unchanged.
     pub seat_binding_id: SeatBindingId,
     /// Stable Core Team role slot.
@@ -872,6 +909,8 @@ pub struct PersistentSeatInspection {
 /// One idempotently addressed follow-up to an existing consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationMessageRequest {
+    /// Exact private launch authority, when the seat was host-routed.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Owning consultation, for runtime label verification.
     pub run_id: ConsultationRunId,
     /// Exact persistent seat.
@@ -889,6 +928,8 @@ pub struct ConsultationMessageRequest {
 /// Inspect the permission requests currently open on one exact consultation seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationPermissionInspectRequest {
+    /// Exact private launch authority, when the seat was host-routed.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Owning consultation, verified against the runtime label.
     pub run_id: ConsultationRunId,
     /// Persistent logical seat.
@@ -913,6 +954,8 @@ pub struct ConsultationPermissionInspection {
 /// Answer one permission request on an exact consultation native filler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsultationPermissionResponseRequest {
+    /// Exact private launch authority, when the seat was host-routed.
+    pub resolved_route: Option<kontor_core::launch_route::ResolvedRoute>,
     /// Owning consultation, verified against the runtime label.
     pub run_id: ConsultationRunId,
     /// Persistent logical seat.
@@ -996,6 +1039,16 @@ pub struct PermissionAck {
 /// One agent runtime, reduced to what Kontor is willing to depend on.
 #[async_trait]
 pub trait RuntimeAdapter: Send + Sync {
+    /// Prove this adapter can consume the private binding without remapping it.
+    fn validate_launch_route(
+        &self,
+        _route: &kontor_core::launch_route::ResolvedRoute,
+    ) -> RuntimeResult<()> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::Launch,
+        })
+    }
+
     /// Prove, without a native effect, that a route has an explicitly pinned
     /// consultation permission mode in this runtime.
     fn validate_consultation_model_rung(
@@ -1006,6 +1059,19 @@ pub trait RuntimeAdapter: Send + Sync {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
         })
+    }
+
+    /// Check the logical permission grant and the frozen native surface before effects.
+    fn validate_consultation_launch_route(
+        &self,
+        rung: &ModelRung,
+        provenance: &ConsultationRouteProvenance,
+        route: Option<&kontor_core::launch_route::ResolvedRoute>,
+    ) -> RuntimeResult<()> {
+        if let Some(route) = route {
+            self.validate_launch_route(route)?;
+        }
+        self.validate_consultation_model_rung(rung, provenance)
     }
 
     /// Prove, without a native effect, that this runtime composes the closed

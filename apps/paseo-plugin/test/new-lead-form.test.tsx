@@ -37,7 +37,7 @@ vi.mock("../client/mobile-filters", () => ({ focusControl: () => {} }));
 vi.mock("../client/source-picker", async (original) => ({ ...await original<typeof import("../client/source-picker")>(), readSource: (...args: unknown[]) => model.readSource(...args) }));
 
 import { NewLsaForm, resolveDraft } from "../client/new-lsa-form";
-import { ModelPicker, modelListHeight, type PickedModel } from "../client/model-picker";
+import { MODEL_BATCH, ModelPicker, type PickedModel } from "../client/model-picker";
 import { LeadSourcePicker } from "../client/new-lead-source";
 import { Action } from "../client/page-controls";
 import { sessionEntry } from "./session-fixtures";
@@ -153,9 +153,12 @@ describe("New lead form", () => {
     const f = mount(NewLsaForm, formProps());
     await settle(); f.render();
     const chip = byTestId(f.tree, "kontor-new-lead-model")!;
-    expect(text(elements(chip.props.children as ReactNode))).toBe("A6 ▾\nXHigh · Normal");
+    expect(text(elements(chip.props.children as ReactNode))).toBe("A6 ▾\nXHigh");
     expect(byTestId(f.tree, "kontor-new-lead-model-tag")?.props.children).toBe("Codex default");
-    expect(chip.props.accessibilityLabel).toBe("Model: GPT-6 Astra, gpt-6-astra, XHigh · Normal, Codex default. Change model");
+    expect(chip.props.accessibilityLabel).toBe("Model: GPT-6 Astra, gpt-6-astra, XHigh, Codex default. Change model");
+    // Normal speed is neither named nor marked; the corner stays reserved.
+    expect(byTestId(f.tree, "kontor-new-lead-model-fast")).toBeUndefined();
+    expect(chip.props.style).toMatchObject({ paddingLeft: 8, paddingRight: 16 });
     expect(byTestId(f.tree, "kontor-new-lead-settings")?.props.children).toBe("Default permissions | Plan off | via Codex");
     expect(footer(f.tree, "kontor-new-lsa-create")).toEqual(["Cancel", "kontor-new-lsa-create"]);
     expect(text(f.tree)).toContain("Create lead");
@@ -247,11 +250,52 @@ describe("New lead form", () => {
     (picker.props.onUse as (choice: PickedModel) => void)({ provider: "codex", model: "gpt-6-astra", effort: "xhigh", modeId: "auto", featureValues: { service_tier: "priority", plan_mode: true } });
     f.render(); await settle(); f.render();
     (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
-    expect(text(elements(byTestId(f.tree, "kontor-new-lead-model")!.props.children as ReactNode))).toContain("XHigh · Fast");
+    const chip = byTestId(f.tree, "kontor-new-lead-model")!;
+    expect(text(elements(chip.props.children as ReactNode))).toBe("A6 ▾\nXHigh");
+    expect(chip.props.accessibilityLabel).toBe("Model: GPT-6 Astra, gpt-6-astra, XHigh, Fast, Codex default. Change model");
+    expect(chip.props.style).toMatchObject({ paddingLeft: 8, paddingRight: 16 });
+    expect(elements(byTestId(f.tree, "kontor-new-lead-model-fast")!.props.children as ReactNode)[0]!.props).toMatchObject({ name: "Zap", size: 10 });
     expect(byTestId(f.tree, "kontor-new-lead-settings")?.props.children).toBe("Default permissions | Plan on | via Codex");
     press(byTestId(f.tree, "kontor-new-lsa-create"));
     expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", model: "gpt-6-astra", effort: "xhigh", modeId: "auto", featureValues: { service_tier: "priority", plan_mode: true } }));
     expect(model.settings.save).not.toHaveBeenCalled();
+  });
+
+  it("keeps the chosen model, effort, Fast and Plan through LSA → TPM → LSA, while no desk is left to read settings for", async () => {
+    const f = mount(NewLsaForm, formProps());
+    press(byTestId(f.tree, "kontor-new-lead-model")); f.render();
+    (f.tree[0]!.props.onUse as (choice: PickedModel) => void)({ provider: "codex", model: "gpt-6-astra", effort: "high", modeId: "auto", featureValues: { service_tier: "priority", plan_mode: true } });
+    f.render(); await settle(); f.render();
+    const summary = () => [text(elements(byTestId(f.tree, "kontor-new-lead-model")!.props.children as ReactNode)), !!byTestId(f.tree, "kontor-new-lead-model-fast"), byTestId(f.tree, "kontor-new-lead-settings")?.props.children];
+    const chosen = ["A6 ▾\nHigh", true, "Default permissions | Plan on | via Codex"];
+    expect(summary()).toEqual(chosen);
+    // TPM starts From Jira; without an issue there is no desk, so the settings are not read, and Create stays refused.
+    press(byLabel(f.tree, "TPM, Technical Program Manager")); f.render(); await settle(); f.render();
+    expect(summary()).toEqual(chosen);
+    press(byTestId(f.tree, "kontor-new-lsa-create"));
+    expect(model.rpc["sessions.create"]).not.toHaveBeenCalled();
+    press(byLabel(f.tree, "LSA, Lead Software Architect")); f.render(); await settle(); f.render();
+    expect(summary()).toEqual(chosen);
+    press(byLabel(f.tree, "Ad hoc")); f.render(); await settle(); f.render();
+    expect(summary()).toEqual(chosen);
+    (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
+    press(byTestId(f.tree, "kontor-new-lsa-create"));
+    expect(model.rpc["sessions.create"]).toHaveBeenCalledWith(expect.objectContaining({ role: "LSA", start: "ad-hoc", provider: "codex", model: "gpt-6-astra", effort: "high",
+      featureValues: { service_tier: "priority", plan_mode: true } }));
+  });
+
+  it("marks Fast only once this model's listed Speed offers it, never while unread or where the model does not list it", async () => {
+    model.settings = ready({ provider: "codex", model: "gpt-6-astra", effort: "xhigh", featureValues: { service_tier: "priority" } });
+    const f = mount(NewLsaForm, formProps());
+    expect(byTestId(f.tree, "kontor-new-lead-model-fast")).toBeUndefined();
+    await settle(); f.render();
+    expect(byTestId(f.tree, "kontor-new-lead-model-fast")).toBeDefined();
+    press(byTestId(f.tree, "kontor-new-lead-model")); f.render();
+    (f.tree[0]!.props.onUse as (choice: PickedModel) => void)({ provider: "claude", model: "claude-opus-5-5", effort: "max", modeId: "default", featureValues: { service_tier: "priority" } });
+    f.render(); await settle(); f.render();
+    expect(byTestId(f.tree, "kontor-new-lead-model-fast")).toBeUndefined();
+    (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
+    expect(text(f.tree)).toContain("Setting service_tier is not offered for this model.");
   });
 
   it("sends no feature values when none were chosen", () => {
@@ -297,6 +341,7 @@ describe("New lead form", () => {
     const f = mount(NewLsaForm, formProps({ sources: [source] }));
     press(f.tree.find((node) => node.type === Action && node.props.label === "Choose source session")); f.render();
     expect(f.tree[0]!.type).toBe(LeadSourcePicker);
+    expect(f.tree[0]!.props.height).toBeUndefined();
     (f.tree[0]!.props.onUse as (choice: { entry: typeof source; summary: null }) => void)({ entry: source, summary: null }); f.render();
     (byTestId(f.tree, "kontor-new-lsa-topic")!.props.onChangeText as (value: string) => void)("Route review"); f.render();
     expect(text(f.tree)).not.toContain("Source summary is attached");
@@ -335,36 +380,71 @@ describe("Model & settings", () => {
     expect(rows(p)).toEqual(order);
   });
 
-  it("ends a long list on a row's lower edge and says it scrolls; a short list keeps its height", () => {
-    const rows = (count: number) => ({ rows: Array.from({ length: count }) });
-    // One heading (17), then rows of 52 with 2 between: 71, 125, 179, 233; a fifth would end at 287, past the bound.
-    expect(modelListHeight([rows(57)], 52)).toEqual({ height: 233, scrolls: true });
-    // A second provider adds its gap and heading first: 63, 109, then 8+17 and rows to 180, 226; the next would end at 272.
-    expect(modelListHeight([rows(2), rows(9)], 44)).toEqual({ height: 226, scrolls: true });
-    // Rows that all fit still get their whole height, so the column never squeezes the list through a row.
-    expect(modelListHeight([rows(2), rows(1)], 52)).toEqual({ height: 204, scrolls: false });
-    // Auto leads: its row and the gap come first, 52 + 8 + 17, then rows to 131, 185, 239.
-    expect(modelListHeight([rows(57)], 52, 264, 52)).toEqual({ height: 239, scrolls: true });
-    const p = mount(ModelPicker, pickerProps({ providers: [{ ...OPTIONS.providers[1]!, models: Array.from({ length: 9 }, (_, index) => ({ id: `gpt-6.${index}-sol`, label: `Sol ${index}`, efforts: [], defaultEffort: null })) }] }));
-    expect(byTestId(p.tree, "kontor-model-list")?.props.style).toMatchObject({ flexShrink: 0, height: 233 });
-    expect(byTestId(p.tree, "kontor-model-more")?.props.children).toBe("9 models · scroll the list for more");
-    const short = mount(ModelPicker, pickerProps({ providers: [{ ...OPTIONS.providers[1]!, models: OPTIONS.providers[1]!.models.slice(0, 2) }] }));
-    expect(byTestId(short.tree, "kontor-model-list")?.props.style).toMatchObject({ flexShrink: 0, height: 125 });
-    expect(byTestId(short.tree, "kontor-model-more")).toBeUndefined();
+  it("lists a short batch of whole rows; more adds the next batch below them and chooses nothing", async () => {
+    const many = { ...CODEX, models: Array.from({ length: 15 }, (_, index) => ({ id: `gpt-6-m${index}`, label: `Model ${index}`, efforts: EFFORTS, defaultEffort: "high" })) };
+    const onUse = vi.fn();
+    const p = mount(ModelPicker, pickerProps({ providers: [many], value: { provider: "codex", model: "gpt-6-m0", effort: "high", modeId: "auto", featureValues: {} }, onUse }));
+    await settle(); p.render();
+    const listed = () => p.tree.filter((node) => String(node.props.testID ?? "").startsWith("kontor-model-row-")).map((node) => String(node.props.testID).replace("kontor-model-row-codex/gpt-6-", ""));
+    const more = () => byTestId(p.tree, "kontor-model-more");
+    expect(MODEL_BATCH).toBe(6);
+    expect(listed()).toEqual(["m0", "m1", "m2", "m3", "m4", "m5"]);
+    expect(more()?.props).toMatchObject({ accessibilityRole: "button", accessibilityLabel: "Show 6 more models, 9 not shown" });
+    expect((more()!.props.style as (state: { pressed: boolean }) => object)({ pressed: false })).toMatchObject({ minWidth: 44, minHeight: 44 });
+    expect(text(elements(more()!.props.children as ReactNode))).toBe("more");
+    // A row of the next batch is chosen with Fast; more and a search move no shown row and keep the choice and its settings.
+    press(more()); p.render();
+    expect(listed()).toEqual(["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11"]);
+    press(byTestId(p.tree, "kontor-model-row-codex/gpt-6-m8")); p.render(); await settle(); p.render();
+    press(byLabel(p.tree, "Fast")); p.render();
+    press(more()); p.render();
+    expect(listed()).toHaveLength(15);
+    expect(more()).toBeUndefined();
+    (byTestId(p.tree, "kontor-model-search")!.props.onChangeText as (value: string) => void)("Model 1"); p.render();
+    expect(listed()).toEqual(["m1", "m10", "m11", "m12", "m13", "m14"]);
+    expect(text(elements(byTestId(p.tree, "kontor-model-selected")!.props.children as ReactNode))).toMatch(/^Model 8\n/);
+    expect(byLabel(p.tree, "Fast")?.props["aria-checked"]).toBe(true);
+    press(byTestId(p.tree, "kontor-model-use"));
+    expect(onUse).toHaveBeenCalledExactlyOnceWith({ provider: "codex", model: "gpt-6-m8", effort: "high", modeId: "auto", featureValues: { service_tier: "priority" } });
   });
 
-  it("gives up whole rows while the settings are cramped, and never takes them back at the same window height", () => {
-    const p = mount(ModelPicker, pickerProps({ providers: [{ ...OPTIONS.providers[1]!, models: Array.from({ length: 9 }, (_, index) => ({ id: `gpt-6.${index}-sol`, label: `Sol ${index}`, efforts: [], defaultEffort: null })) }] }));
-    const height = () => (byTestId(p.tree, "kontor-model-list")!.props.style as { height: number }).height;
-    const settings = () => byTestId(p.tree, "kontor-model-settings")!.props as { onLayout(event: { nativeEvent: { layout: { height: number } } }): void; onContentSizeChange(width: number, height: number): void };
-    // Settings with little content that all shows are not cramped, however short.
-    settings().onContentSizeChange(390, 60); settings().onLayout({ nativeEvent: { layout: { height: 60 } } }); p.render();
-    expect(height()).toBe(233);
-    // Cramped to 40 of the 88 they need: the list drops 48 to the next row edge below, 179.
-    settings().onContentSizeChange(390, 300); settings().onLayout({ nativeEvent: { layout: { height: 40 } } }); p.render();
-    expect(height()).toBe(179);
-    settings().onLayout({ nativeEvent: { layout: { height: 300 } } }); p.render();
-    expect(height()).toBe(179);
+  it("searches every row, shown or not, and starts again from the first batch on another search or vendor", () => {
+    const many = { ...CODEX, models: Array.from({ length: 15 }, (_, index) => ({ id: `gpt-6-m${index}`, label: `Model ${index}`, efforts: EFFORTS, defaultEffort: "high" })) };
+    const p = mount(ModelPicker, pickerProps({ providers: [many, CLAUDE], value: null }));
+    const listed = () => p.tree.filter((node) => String(node.props.testID ?? "").startsWith("kontor-model-row-")).length;
+    const search = (query: string) => { (byTestId(p.tree, "kontor-model-search")!.props.onChangeText as (value: string) => void)(query); p.render(); };
+    expect(byTestId(p.tree, "kontor-model-row-codex/gpt-6-m13")).toBeUndefined();
+    search("m13");
+    expect(byTestId(p.tree, "kontor-model-row-codex/gpt-6-m13")).toBeDefined();
+    expect(byTestId(p.tree, "kontor-model-more")).toBeUndefined();
+    search("Model");
+    expect([listed(), byTestId(p.tree, "kontor-model-more")?.props.accessibilityLabel]).toEqual([6, "Show 6 more matching models, 9 not shown"]);
+    press(byTestId(p.tree, "kontor-model-more")); p.render();
+    expect(listed()).toBe(12);
+    search("Mod");
+    expect(listed()).toBe(6);
+    search("");
+    press(byTestId(p.tree, "kontor-model-more")); p.render();
+    expect(listed()).toBe(12);
+    press(byTestId(p.tree, "kontor-model-vendor-anthropic")); p.render();
+    expect(listed()).toBe(1);
+    press(byTestId(p.tree, "kontor-model-vendor-openai")); p.render();
+    expect(listed()).toBe(6);
+  });
+
+  it("scrolls as one page: its own scroller, or none where the surface scrolls; the list and settings never scroll on their own", () => {
+    const vertical = (tree: Element[]) => tree.filter((node) => node.type === "ScrollView" && !node.props.horizontal).map((node) => node.props.testID);
+    const own = mount(ModelPicker, pickerProps());
+    expect(vertical(own.tree)).toEqual(["kontor-model-scroll"]);
+    const inScroll = elements(byTestId(own.tree, "kontor-model-scroll")!.props.children as ReactNode);
+    for (const id of ["kontor-model-chosen", "kontor-model-list", "kontor-model-settings"]) expect(byTestId(inScroll, id)?.type).toBe("View");
+    // The footer stays below the scroller, so Use and Cancel are always in reach.
+    expect(byTestId(inScroll, "kontor-model-use")).toBeUndefined();
+    expect(byTestId(own.tree, "kontor-model-use")).toBeDefined();
+    model.slots = [];
+    const hosted = mount(ModelPicker, pickerProps({ hostScrolls: true }));
+    expect(vertical(hosted.tree)).toEqual([]);
+    expect(byTestId(hosted.tree, "kontor-model-list")?.type).toBe("View");
   });
 
   it("shows every effort level first and open, with no visible Effort label; Permissions stays one line until opened, with Speed and Plan inline (board B2)", async () => {
@@ -589,17 +669,17 @@ describe("Model & settings", () => {
     expect(byLabel(p.tree, "Default permissions")?.props["aria-checked"]).toBe(true);
   });
 
-  it("bounds a large catalog's list so the chosen model's settings follow it, not inside it", async () => {
+  it("sets the Selected group above the list and the chosen model's settings after it, on the one page", async () => {
     const many = { ...CODEX, models: Array.from({ length: 60 }, (_, index) => ({ id: `gpt-6-m${index}`, label: `Model ${index}`, efforts: EFFORTS, defaultEffort: "high" })) };
     const p = mount(ModelPicker, pickerProps({ providers: [many], value: null }));
-    press(byTestId(p.tree, "kontor-model-row-codex/gpt-6-m57")); p.render(); await settle(); p.render();
-    const root = p.tree[0]!, children = [root.props.children].flat(Infinity) as Element[];
+    press(byTestId(p.tree, "kontor-model-row-codex/gpt-6-m3")); p.render(); await settle(); p.render();
+    const children = [(byTestId(p.tree, "kontor-model-scroll")!.props.children as Element).props.children].flat(Infinity) as Element[];
     const list = byTestId(p.tree, "kontor-model-list")!, settings = byTestId(p.tree, "kontor-model-settings")!;
-    expect((list.props.style as { height?: number }).height).toBeGreaterThan(0);
     expect(children.indexOf(list)).toBeGreaterThan(-1);
     expect(children.indexOf(settings)).toBeGreaterThan(children.indexOf(list));
     const inList = elements(list.props.children as ReactNode), inSettings = elements(settings.props.children as ReactNode);
-    expect(inList.filter((node) => node.props.accessibilityRole === "radio")).toHaveLength(60);
+    expect(inList.filter((node) => node.props.accessibilityRole === "radio")).toHaveLength(MODEL_BATCH);
+    expect(byTestId(inList, "kontor-model-more")?.props.accessibilityLabel).toBe("Show 6 more models, 54 not shown");
     // The levels stand above the list, in one Selected group with the chosen model; the other settings follow the list.
     const chosen = byTestId(p.tree, "kontor-model-chosen")!, inChosen = elements(chosen.props.children as ReactNode);
     expect(chosen.props).toMatchObject({ role: "group", accessibilityLabel: "Selected model" });
@@ -610,7 +690,7 @@ describe("Model & settings", () => {
       expect(inSettings.some((node) => node.props.accessibilityLabel === label)).toBe(true);
     }
     expect(inSettings.some((node) => node.props.accessibilityRole === "switch" && node.props.accessibilityLabel === "Plan")).toBe(true);
-    expect(byTestId(inList, "kontor-model-row-codex/gpt-6-m57")?.props["aria-checked"]).toBe(true);
+    expect(byTestId(inList, "kontor-model-row-codex/gpt-6-m3")?.props["aria-checked"]).toBe(true);
   });
 });
 
@@ -631,6 +711,133 @@ describe("Choose source", () => {
     expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
     press(byTestId(p.tree, "kontor-lead-source-use"));
     expect(onUse).toHaveBeenCalledExactlyOnceWith({ entry: sources[0], summary: null });
+  });
+
+  /** Lays the parts that stay put out as drawn: one title line, the subtitle, the search and the actions. */
+  const draw = (p: { tree: Element[]; render: () => void }, sizes: { line: number; about: number; search: number; actions: number }) => {
+    const lay = (node: Element | undefined, height: number) => (node!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 300, height } } });
+    lay(p.tree.find((node) => node.props.accessibilityRole === "header"), sizes.line);
+    lay(p.tree.find((node) => node.type === "Text" && node.props.onLayout && node.props.accessibilityRole !== "header"), sizes.about);
+    lay(byTestId(p.tree, "kontor-lead-source-search"), sizes.search);
+    lay(p.tree.find((node) => node.type === "View" && node.props.onLayout && byTestId(elements(node.props.children as ReactNode), "kontor-lead-source-use")), sizes.actions);
+    p.render();
+  };
+  const DRAWN = { line: 17, about: 17, search: 44, actions: 51 };
+
+  it("keeps a given height, as in the host's popover: only the rows and a long summary scroll, the actions never", async () => {
+    const height = vi.fn(() => 300);
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height });
+    draw(p, DRAWN);
+    // The host's own title is a line of the same 14-point text, so the height follows the title's line as drawn.
+    expect(height).toHaveBeenLastCalledWith(17);
+    press(byTestId(p.tree, "kontor-lead-source-agent-src")); p.render(); await settle(); p.render();
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ height: 300, gap: 8, paddingVertical: 6 });
+    expect(text(p.tree)).toContain("Bring context from another session");
+    const [list, summary, ...more] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(more).toEqual([]);
+    expect(list!.props).toMatchObject({ testID: "kontor-lead-source-list", style: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 } });
+    // 300 less spacing, title, subtitle, search and actions leaves 135 for the rows and a summary: it takes up to half.
+    expect(summary!.props.style).toMatchObject({ flexGrow: 0, flexShrink: 1, maxHeight: 63 });
+    expect(byTestId(elements(summary!.props.children as ReactNode), "kontor-lead-source-summary")).toBeDefined();
+    for (const scroll of [list!, summary!]) for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) expect(byTestId(elements(scroll.props.children as ReactNode), id)).toBeUndefined();
+    expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
+  });
+
+  it("tightens where the rows would keep less than a row beside a two-line summary: the summary opens under its row", async () => {
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height: () => 170 });
+    draw(p, DRAWN);
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ height: 170, gap: 4, paddingVertical: 0 });
+    expect(text(p.tree)).not.toContain("Bring context from another session");
+    press(byTestId(p.tree, "kontor-lead-source-agent-src")); p.render(); await settle(); p.render();
+    // One scroll holds the rows and, under the picked one, its summary; search and actions stay outside it.
+    const [list, ...more] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(more).toEqual([]);
+    const picked = elements(list!.props.children as ReactNode).find((node) => node.type === "View" && node.props.onLayout && byTestId(elements(node.props.children as ReactNode), "kontor-lead-source-agent-src"))!;
+    expect(byTestId(elements(picked.props.children as ReactNode), "kontor-lead-source-summary")).toBeDefined();
+    for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) expect(byTestId(elements(list!.props.children as ReactNode), id)).toBeUndefined();
+    expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
+    // A search that hides the picked row keeps its summary in the same scroll, after the rows it found: they keep the room.
+    (byTestId(p.tree, "kontor-lead-source-search")!.props.onChangeText as (value: string) => void)("Billing"); p.render();
+    const [found, ...boxes] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(boxes).toEqual([]);
+    const [group, after, ...rest] = [found!.props.children].flat().filter(Boolean) as Element[];
+    expect(group!.props.role).toBe("radiogroup");
+    expect(byTestId(elements(group!.props.children as ReactNode), "kontor-lead-source-agent-other")).toBeDefined();
+    expect(byTestId(elements(group!.props.children as ReactNode), "kontor-lead-source-summary")).toBeUndefined();
+    expect(byTestId(elements(after!.props.children as ReactNode), "kontor-lead-source-summary")).toBeDefined();
+    expect(rest).toEqual([]);
+  });
+
+  it("scrolls its title with the rows where even tight they would keep less than a row: search and actions stay", async () => {
+    const titled = (nodes: Element[]) => nodes.filter((node) => node.props.accessibilityRole === "header");
+    // 168 less the tight spacing, title, search and actions leaves the rows a row's 44; one less scrolls the title.
+    let height = 168;
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height: () => height });
+    draw(p, DRAWN);
+    expect(titled(elements(byTestId(p.tree, "kontor-lead-source-list")!.props.children as ReactNode))).toEqual([]);
+    height = 167; p.render();
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ height: 167, gap: 4, paddingVertical: 0 });
+    const [list, ...more] = p.tree.filter((node) => node.type === "ScrollView");
+    expect(more).toEqual([]);
+    const [title, ...again] = titled(elements(list!.props.children as ReactNode));
+    expect(again).toEqual([]);
+    expect(text([title!])).toBe("Choose source session");
+    expect(title!.props.onLayout).toBeUndefined();
+    // An unseen copy keeps the title's place above the search, hidden from assistive technology, and still measures its line.
+    const copy = p.tree.find((node) => node.type === "View" && node.props["aria-hidden"] === true)!;
+    expect(copy.props).toMatchObject({ accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants", pointerEvents: "none", style: { position: "absolute", opacity: 0 } });
+    const [measured, ...others] = titled(elements(copy.props.children as ReactNode));
+    expect(others).toEqual([]);
+    expect(measured!.props.onLayout).toBeInstanceOf(Function);
+    expect(titled(p.tree).filter((node) => node !== title && node !== measured)).toEqual([]);
+    for (const id of ["kontor-lead-source-search", "kontor-lead-source-use"]) expect(byTestId(elements(list!.props.children as ReactNode), id)).toBeUndefined();
+    expect(footer(p.tree, "kontor-lead-source-use")).toEqual(["Cancel", "kontor-lead-source-use"]);
+    // The picked row stays in view below the title: its place counts from the rows' own place in the scroll.
+    const scrollTo = vi.fn();
+    (list!.props.ref as { current: unknown }).current = { scrollTo };
+    const group = p.tree.find((node) => node.props.role === "radiogroup")!;
+    (group.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 21, width: 300, height: 91 } } });
+    press(byTestId(p.tree, "kontor-lead-source-agent-other")); p.render(); await settle(); p.render();
+    (p.tree.find((node) => node.type === "View" && [node.props.children].flat().some((child) => (child as Element | null)?.props?.testID === "kontor-lead-source-agent-other"))!
+      .props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 46, width: 300, height: 45 } } });
+    (byTestId(p.tree, "kontor-lead-source-list")!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 30 } } });
+    expect(scrollTo).toHaveBeenLastCalledWith({ y: 67, animated: false });
+  });
+
+  it("keeps the picked row in the rows' view when the summary takes room from them or opens under it", async () => {
+    const p = mount(LeadSourcePicker, { ...sourceProps(), height: () => 300 });
+    const scrollTo = vi.fn();
+    (byTestId(p.tree, "kontor-lead-source-list")!.props.ref as { current: unknown }).current = { scrollTo };
+    const place = (id: string, y: number) => (p.tree.find((node) => node.type === "View" && [node.props.children].flat().some((child) => (child as Element | null)?.props?.testID === `kontor-lead-source-${id}`))!
+      .props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y, width: 300, height: 45 } } });
+    const room = (height: number) => (byTestId(p.tree, "kontor-lead-source-list")!.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 300, height } } });
+    place("agent-src", 0); place("agent-other", 46);
+    room(91); expect(scrollTo).not.toHaveBeenCalled();
+    press(byTestId(p.tree, "kontor-lead-source-agent-other")); p.render(); await settle(); p.render();
+    room(91); expect(scrollTo).not.toHaveBeenCalled();
+    room(60); expect(scrollTo).toHaveBeenLastCalledWith({ y: 31, animated: false });
+    (byTestId(p.tree, "kontor-lead-source-list")!.props.onScroll as (event: unknown) => void)({ nativeEvent: { contentOffset: { x: 0, y: 80 } } });
+    room(60); expect(scrollTo).toHaveBeenLastCalledWith({ y: 46, animated: false });
+    room(30); expect(scrollTo).toHaveBeenLastCalledWith({ y: 46, animated: false });
+    // The picked row's own height changes as its summary opens under it.
+    place("agent-src", 0); expect(scrollTo).toHaveBeenCalledTimes(3);
+    place("agent-other", 46); expect(scrollTo).toHaveBeenCalledTimes(4);
+    // A search that hides the picked row leaves the rows it found where they are.
+    (byTestId(p.tree, "kontor-lead-source-search")!.props.onChangeText as (value: string) => void)("Route"); p.render();
+    room(30); expect(scrollTo).toHaveBeenCalledTimes(4);
+  });
+
+  it("leaves its bounds to the surface around it without a height, as in the Kontor screen's sheet", () => {
+    const p = mount(LeadSourcePicker, sourceProps());
+    expect(byTestId(p.tree, "kontor-lead-source-picker")?.props.style).toMatchObject({ flexShrink: 1, minHeight: 0, height: undefined });
+    expect(byTestId(p.tree, "kontor-lead-source-list")?.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
+  });
+
+  it("hands the host popover's height to Choose source", () => {
+    const pickerHeight = (line: number) => 433 - line;
+    const f = mount(NewLsaForm, formProps({ sources, pickerHeight }));
+    press(f.tree.find((node) => node.type === Action && node.props.label === "Choose source session")); f.render();
+    expect(f.tree[0]).toMatchObject({ type: LeadSourcePicker, props: { height: pickerHeight } });
   });
 
   it("saves a first revision on Use when the session has none, and pins it", async () => {

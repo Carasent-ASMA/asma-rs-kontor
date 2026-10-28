@@ -262,11 +262,12 @@ class TreeTests(unittest.TestCase):
             ["docs/a.md:2", public_tree.CODE_ACCOUNT_ALIAS],
         )
 
-    def test_every_exempt_file_still_names_an_alias(self) -> None:
+    def test_every_exempt_file_is_alias_free_pending_hold_owner_removal(self) -> None:
+        self.assertEqual(len(public_tree.ALIAS_CODE_EXEMPTION), 51)
         for path in sorted(public_tree.ALIAS_CODE_EXEMPTION):
             with self.subTest(path=path):
                 content = (REPO_ROOT / path).read_bytes()
-                self.assertIsNotNone(public_tree._ACCOUNT_ALIAS_RE.search(content))
+                self.assertIsNone(public_tree._ACCOUNT_ALIAS_RE.search(content))
 
     def test_the_repository_tree_passes(self) -> None:
         scanned, refusals = public_tree.tree_refusals(REPO_ROOT)

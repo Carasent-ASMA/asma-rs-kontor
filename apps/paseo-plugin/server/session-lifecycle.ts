@@ -16,6 +16,7 @@ import {
   routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, takeoverAdapter, takeoverPinnedMatches,
   type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute,
 } from "./session-takeover";
+import { asTakeoverClient, readInstalledNavigatorCapabilities } from "./session-navigator";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
@@ -623,7 +624,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
 
 // ASMA-8641 Take over, native/direct adapter. One operation per confirmed review: it shares this root and the per-ID
 // intent fence with Archive, retires the predecessor, and creates its one successor through the #500 core.
-type TakeoverClient = {
+export type TakeoverClient = {
   agents: { list: LifecycleClient["agents"]["list"]; ref(id: string): Pick<ReturnType<PaseoApi["agents"]["ref"]>, "refresh" | "archive" | "send" | "timeline"> };
   workspaces: { ref(id: string): Pick<ReturnType<PaseoApi["workspaces"]["ref"]>, "refresh"> };
   /** Optional bounded wake read; without it, empty child inventory does not imply wakes clear. */
@@ -658,7 +659,7 @@ type Pinned = {
   predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
   route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: TakeoverContinuity; spec: SeatCreateSpec;
 };
-const TAKEOVER_LIMITS = [
+export const TAKEOVER_LIMITS = [
   "Archive and creation are two host calls; no host primitive makes them one step.",
   "Schedules and heartbeats are not readable through the plugin API unless the host exposes schedules.forAgent; without a qualified wake-continuity receipt, retirement is blocked.",
   "The successor's first message is the handoff summary, not the whole conversation.",
@@ -695,7 +696,7 @@ async function readDirectWakeState(client: TakeoverClient, agentId: string): Pro
   try {
     const page = await client.schedules.forAgent(agentId);
     if (!Array.isArray(page?.entries)) return "unknown";
-    return page.entries.length ? "preserved" : "clear";
+    return page.entries.length ? "unknown" : "clear";
   } catch {
     return "unknown";
   }
@@ -871,8 +872,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     } catch (error) { return answer("unknown", `Its continuity receipt could not be read: ${errorText(error)}. Nothing is retired.`); }
     if (continuity.surface === "governed") return answer("refused", GOVERNED_ELSEWHERE);
     if (continuity.surface !== "direct") return answer("unknown", "Its continuity source cannot confirm direct ownership. Nothing is retired.");
-    if (continuity.agentId !== agentId || continuity.requestId !== requestId || !freshContinuity(continuity) || continuity.wakes === "unknown")
-      return answer("unknown", "Its wake-continuity receipt is stale, unknown or names another session or successor request. Nothing is retired.");
+    if (continuity.agentId !== agentId || continuity.requestId !== requestId || !freshContinuity(continuity) || continuity.wakes !== "clear")
+      return answer("unknown", "Its wake-continuity receipt is stale, not clear, or names another session or successor request. Nothing is retired.");
     if (direct.basis === "orchestrated" ? continuity.owner?.agentId !== direct.owner || continuity.owner.revision !== ownerRevision : continuity.owner !== null)
       return answer("refused", "Its continuity receipt does not confirm its current owner and binding revision. Nothing is retired.");
     const carried = Object.fromEntries(CARRIED_LABELS.flatMap((key) => labels[key] === undefined ? [] : [[key, labels[key]!]]));
@@ -1048,7 +1049,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         return outcome(record, "uncertain", "create", "Retired, but this session's fence changed, so no successor was created. Check reads the outcome.", named, "check");
       const expiredBeforeCreate = effectValidityProblem(spec);
       if (expiredBeforeCreate) return finish(outcome(record, "partial", "create", expiredBeforeCreate, named, "none"));
-      const created = await deps.create.createSeat(spec.requestId, async () => ({ spec }));
+      const created = await deps.create.createSeat(spec.requestId, async () => ({ spec, sourceSummary: null }));
       const stopped = await afterCreate(record, spec, created);
       if (stopped) return finish(stopped);
       const id = created.agentId!, verified = { ...named, agentId: id };
@@ -1127,12 +1128,19 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(probeSessionAvailability, (input, { paseo }) => createLifecycleService(paseo, root).probe(input.agentIds));
   server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
   server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
-  const takeover = (paseo: PaseoApi) => createTakeoverService(paseo, root, {
-    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), promotionRoot: createStateRoot(), operatorFleetDiscovery: readOperatorFleetDiscovery,
-    evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
-    continuity: (agentId, requestId) => readTakeoverContinuity(paseo, root, agentId, requestId),
-  });
+  const takeover = (paseo: PaseoApi) => {
+    const client = asTakeoverClient(paseo);
+    return createTakeoverService(client, root, {
+      config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), promotionRoot: createStateRoot(), operatorFleetDiscovery: readOperatorFleetDiscovery,
+      evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
+      continuity: (agentId, requestId) => readTakeoverContinuity(client, root, agentId, requestId),
+    });
+  };
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));
-  server.handle(applyTakeover, (input, { paseo }) => takeover(paseo).apply(input));
+  server.handle(applyTakeover, (input, { paseo }) => {
+    const capability = readInstalledNavigatorCapabilities(paseo).takeover;
+    if (!capability.supported) throw new Error(capability.reason);
+    return takeover(paseo).apply(input);
+  });
   server.handle(checkTakeover, (input, { paseo }) => takeover(paseo).check(input.reviewId));
 }

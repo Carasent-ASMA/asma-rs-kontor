@@ -1,3 +1,4 @@
+// R33_ONLY=1 selects the bounded Jira regression matrix; default retains the existing picker checks.
 // Synthetic shared New session picker proof. No live host, creation or lifecycle effects.
 // Supply RENDERER_PACKAGE_JSON, PLAYWRIGHT_MODULE and external EVIDENCE_DIR.
 const assert = require('node:assert/strict');
@@ -15,6 +16,7 @@ const renderer = createRequire(path.resolve(rendererManifest));
 const output = path.resolve(evidenceDirectory);
 assert.ok(!output.startsWith(plugin + path.sep));
 const { chromium, expect } = require(process.env.PLAYWRIGHT_MODULE || consoleDeps.resolve('@playwright/test'));
+const r33 = process.env.R33_ONLY === '1';
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'kontor-picker-browser-'));
 fs.mkdirSync(output, { recursive: true });
 const rootOf = (resolver, name) => path.dirname(resolver.resolve(name + '/package.json'));
@@ -41,7 +43,7 @@ export const useToast=()=>({error:message=>{throw new Error(message);},show:()=>
 export const Icon=({name,size=16,color})=><span aria-hidden="true" data-icon={name} style={{display:'inline-block',width:size,height:size,color}}>◇</span>;
 `);
 fs.writeFileSync(path.join(fixture, 'main.tsx'), `import React,{useRef,useState} from 'react';
-import {createRoot} from 'react-dom/client';import {Pressable,Text,View} from 'react-native';
+import {createRoot} from 'react-dom/client';import {Pressable,ScrollView,Text,View} from 'react-native';
 import {Host} from './sdk-client';
 import {StartSwitchSheet,StartSwitchPopover} from ${JSON.stringify(path.join(plugin, 'client/start-switch-sheet.tsx'))};
 import {configureRecentStorage} from ${JSON.stringify(path.join(plugin, 'client/recent-sessions.ts'))};
@@ -54,16 +56,20 @@ const saved=new Map();configureRecentStorage({read:key=>saved.get(key),write:(ke
 const sid=i=>'00000000-0000-4000-8000-'+String(i).padStart(12,'0');
 const sessions=Array.from({length:70},(_,i)=>({agent:{id:sid(i+1),title:'Human context '+(i+1)+' with a long readable session name',status:i%3===0?'error':'closed',archivedAt:i>=50?'2026-10-20':null,createdAt:new Date(1000000*(i+1)).toISOString(),updatedAt:new Date(1000000*(70-i)).toISOString(),provider:'fixture',cwd:'/fixture',labels:{}},project:null}));
 const issues=Array.from({length:90},(_,i)=>({id:'jira-'+(900-i),key:'ASMA-'+(900-i),created:new Date(1000*(900-i)).toISOString(),summary:(i===89?'Outside initial window':'Long readable issue title '+i)+' for the shared picker and keyboard layout',epic:i%2===0,type:i%2===0?'Epic':i%3===0?'Bug':'Task',status:'In Development',statusCategory:'In Progress',open:true,parent:null}));
+if(${r33})issues.push({id:'synthetic-8562',key:'ASMA-8562',created:'2026-10-28',summary:'Synthetic epic for bounded mobile selection',epic:true,type:'Epic',status:'In Development',statusCategory:'In Progress',open:true,parent:null});
 const issueClassMatches=(row,issueClass)=>issueClass==='epic'?row.epic:issueClass==='non-epic'?!row.epic:true;
 const desks=[{projectId:'adam',project:'DESK • ADAM',desk:'ADAM',kind:'adam',cwd:'/fixture/adam',lead:{ADHOC:'adhoc',LSA:'lsa',TPM:'tpm'}},{projectId:'tickets',project:'DESK • TICKETS',desk:'TICKETS',kind:'tickets',cwd:'/fixture/tickets',lead:{ADHOC:'adhoc-t',LSA:'lsa-t',TPM:'tpm-t'}},{projectId:'pr-review',project:'DESK • PR REVIEW',desk:'PR REVIEW',kind:'pr-review',cwd:'/fixture/pr',lead:{ADHOC:null,LSA:'pr-lsa',TPM:'pr-tpm'}}];
 window.fixture={calls:[],mode:'normal',sourceTitle:null,client:host=>({agents:{list:async input=>{window.fixture.calls.push({name:'agents.list',host,input});const offset=input.page.cursor?35:0;return {entries:sessions.slice(offset,offset+35),pageInfo:{hasMore:offset===0,nextCursor:offset===0?'page2':null}};},ref:id=>({refresh:async()=>{window.fixture.calls.push({name:'agent.refresh',id,host});if(window.fixture.mode==='transport')throw new Error('Fixture transport timeout');if(window.fixture.mode==='absent')return null;const entry=sessions.find(row=>row.agent.id===id);return entry?{...entry,agent:{...entry.agent,title:window.fixture.sourceTitle||entry.agent.title}}:null;},timeline:{refetch:async()=>{if(window.fixture.mode==='context-error')throw new Error('Fixture timeline unavailable');return {entries:window.fixture.mode==='no-message'?[]:[{item:{type:'assistant_message',text:'Last assistant message fixture'}}]};}}})}}),
 rpc:async(name,input,host)=>{window.fixture.calls.push({name,input,host});if(name==='sessions.create-options'){const query=(input.issueKey||'').toLowerCase();if(query==='slow')await new Promise(resolve=>{window.fixture.releaseSlow=resolve;});if(query==='transport')throw new Error('Fixture Jira transport');const issueClass=input.issueClass||'eligible';const matches=issues.filter(issue=>issueClassMatches(issue,issueClass)&&(!query||issue.summary.toLowerCase().includes(query)||issue.key.toLowerCase()===query));return {enabled:true,disabledReason:null,pending:null,notes:[],catalogProjectId:input.projectId||'adam',issues:input.start==='from-jira'?matches.slice(0,50):[],jiraProblem:null,desks,profile:null,providers:[{id:'fixture',label:'Fixture provider',available:true,note:null,persona:'supported',status:'ready',models:[{id:'fixture',label:'Fixture model',efforts:[],defaultEffort:null}],defaultModel:'fixture',modes:[],defaultMode:null}]};}
 if(name==='sessions.create-features')return {features:[],problem:null};
 if(name==='sessions.navigator-capabilities'){const no={supported:false,reason:'Not offered by this fixture host.'};return {usageTotals:no,summaries:no,draftAttach:no,takeover:no,takeoverBulk:no,takeoverRoute:no};}
-if(name==='sessions.create')return {requestId:input.requestId,state:'verified',title:'Fixture create',agentId:'fixture-created',workspaceId:'lsa',message:'Fixture only',differences:[],persona:'supported',checkedAt:new Date().toISOString()};throw new Error('Unexpected RPC '+name);}};
+if(name==='sessions.create' && ${r33})throw new Error('R33 forbids creation');if(name==='sessions.create')return {requestId:input.requestId,state:'verified',title:'Fixture create',agentId:'fixture-created',workspaceId:'lsa',message:'Fixture only',differences:[],persona:'supported',checkedAt:new Date().toISOString()};throw new Error('Unexpected RPC '+name);}};
+// Source-derived host contract: MenuSheetSurface is dynamic <=80% window, with an outer
+// BottomSheetScrollView; PluginPopoverContent supplies 12px padding. Native gestures/keyboard remain a release gate.
+function BoundedHost({children}){return ${r33}?<View testID="bounded-host" style={{position:'absolute',bottom:0,width:'100%',maxWidth:420,maxHeight:innerHeight*.8,backgroundColor:colors.surface0}}><View style={{height:46,justifyContent:'center'}}><Text style={{color:colors.foreground}}>Start or switch session</Text></View><ScrollView testID="host-body" keyboardShouldPersistTaps="handled" style={{flexGrow:0}} contentContainerStyle={{paddingBottom:4}}><View style={{padding:12,gap:8}}>{children}</View></ScrollView></View>:<View style={{width:'100%',maxWidth:520,alignSelf:'center',maxHeight:innerHeight-40}}>{children}</View>;}
 function App(){const root=useRef(null),anchor=useRef(null);const [open,setOpen]=useState(true);return <Host.Provider value="fixture-a"><View ref={root} style={{height:innerHeight,width:innerWidth,backgroundColor:colors.surface0}}>
 <Pressable ref={anchor} accessibilityRole="button" accessibilityLabel="Start or switch" style={{margin:16,minHeight:44}}><Text style={{color:colors.foreground}}>Start or switch</Text></Pressable>
-{open?(mode==='composer'?<View style={{width:'100%',maxWidth:520,alignSelf:'center',maxHeight:innerHeight-40}}><StartSwitchPopover host={{id:'fixture-a'}} theme={{colors}} layout={{compact:innerWidth<700}} workspaceId="adhoc" close={()=>setOpen(false)} openScreen={()=>{}} screenId="kontor"/></View>:<StartSwitchSheet anchor={anchor} root={root} rootSize={{width:innerWidth,height:innerHeight}} compact={innerWidth<700} colors={colors} hostId="fixture-a" hostStatus="online" directory={{entries:sessions.map(row=>toDirectoryEntry(row)),status:'ready',live:true,inventoryComplete:true,lastUpdatedAt:Date.now(),error:null,staleReason:null,pages:1,includeArchived:false}} canOpen onClose={()=>setOpen(false)} onOpen={()=>{}} onOpenCreated={()=>({ok:true})} onShowView={()=>{}}/>):null}
+{open?(mode==='composer'?<BoundedHost><StartSwitchPopover host={{id:'fixture-a'}} theme={{colors}} layout={{compact:innerWidth<700}} workspaceId="adhoc" close={()=>setOpen(false)} openScreen={()=>{}} screenId="kontor"/></BoundedHost>:<StartSwitchSheet anchor={anchor} root={root} rootSize={{width:innerWidth,height:innerHeight}} compact={innerWidth<700} colors={colors} hostId="fixture-a" hostStatus="online" directory={{entries:sessions.map(row=>toDirectoryEntry(row)),status:'ready',live:true,inventoryComplete:true,lastUpdatedAt:Date.now(),error:null,staleReason:null,pages:1,includeArchived:false}} canOpen onClose={()=>setOpen(false)} onOpen={()=>{}} onOpenCreated={()=>({ok:true})} onShowView={()=>{}}/>):null}
 </View></Host.Provider>;}createRoot(document.getElementById('root')).render(<App/>);
 `);
 const report = { cases: [], synthetic: true, nativePhoneAndAT: 'unverified', backendNewestEligible50: 'UNRESOLVED: fixture does not qualify the installed backend', actualJiraIcons: 'UNRESOLVED: contract has type names only', prReviewFromJiraBrowse: 'synthetic loopback only' };
@@ -108,6 +114,66 @@ async function bounds(page, width, height, name) {
     resolve: { alias: [ { find: /^react$/, replacement: react }, { find: /^react\/(.*)$/, replacement: react + '/$1' }, { find: /^react-dom$/, replacement: dom }, { find: /^react-dom\/(.*)$/, replacement: dom + '/$1' }, { find: /^react-native$/, replacement: path.join(fixture, 'native.ts') }, { find: /^react-native-web$/, replacement: path.join(native, 'dist/index.js') }, { find: /^@getpaseo\/plugin$/, replacement: sdk.resolve('@getpaseo/plugin') }, { find: /^@getpaseo\/plugin\/client$/, replacement: path.join(fixture, 'sdk-client.ts') }, { find: /^@getpaseo\/plugin\/client\/react-native$/, replacement: path.join(fixture, 'sdk-native.tsx') } ] },
   });
   await server.listen(); browser = await chromium.launch({ headless: true });
+  if (r33) for (const width of [320,390]) for (const height of [480,844]) for (const enlarged of [false,true]) await run(`${width}-${height}-${enlarged?'large':'normal'}-bounded-host-jira`, async () => {
+    const {page,context}=await start(width,'composer',height);
+    try {
+      await fromJira(page);
+      if(enlarged)await page.addStyleTag({content:'[data-testid=kontor-jira-picker] [dir=auto], [data-testid=kontor-jira-picker] input {font-size:22px!important;line-height:30px!important}'});
+      const search=page.getByRole('combobox',{name:'Choose a Jira issue'});
+      const scroll=page.getByTestId('kontor-jira-picker-scroll');
+      const first=page.getByRole('option').first();
+      const reachable=async node=>{
+        await node.scrollIntoViewIfNeeded();
+        await expect(node).toBeVisible();
+        assert.ok(await node.evaluate(el=>{const b=el.getBoundingClientRect();return b.height>0 && document.elementsFromPoint(b.x+b.width/2,b.y+Math.min(b.height/2,22)).some(hit=>el===hit||el.contains(hit));}),'row/control must be hit-testable inside the source-derived bounded host scroll');
+      };
+      await expect(page.getByRole('option')).toHaveCount(50);
+      const before=await scroll.evaluate(el=>({height:el.clientHeight,content:el.scrollHeight}));
+      report.cases.push({name:`${width}-${height}-${enlarged}-geometry`,...before});
+      await page.screenshot({path:path.join(output,`${width}-${height}-${enlarged}-many.png`)});
+      await reachable(first);
+      // Start far down, then refilter: no stale search/filter offset may hide the first result.
+      await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});
+      for(const filter of ['Epics','Tickets','All']){
+        await page.getByRole('button',{name:filter,exact:true}).click();
+        await expect(page.getByText(/results. Choose an issue/)).toBeVisible();
+        await expect.poll(()=>scroll.evaluate(el=>el.scrollTop)).toBe(0);
+        await reachable(first);
+      }
+      await search.fill('ASMA-899');
+      for(const filter of ['Tickets','All']){await page.getByRole('button',{name:filter,exact:true}).click();await expect(page.getByRole('option')).toHaveCount(1);await reachable(first);}
+      await page.getByRole('button',{name:'Epics',exact:true}).click();await expect(page.getByRole('option')).toHaveCount(0);
+      await search.fill('ASMA-8562');
+      await page.getByRole('button',{name:'Epics',exact:true}).click();
+      await expect(page.getByRole('option')).toHaveCount(1);
+      await reachable(first);
+      await page.getByRole('button',{name:'Tickets',exact:true}).click();
+      await expect(page.getByRole('option')).toHaveCount(0);
+      await expect(page.getByText('No open ASMA issue matches.')).toBeVisible();
+      for(const filter of ['All','Epics']){await page.getByRole('button',{name:filter,exact:true}).click();await expect(page.getByRole('option')).toHaveCount(1);await reachable(first);}
+      await page.setViewportSize({width,height:height===480?844:480});await search.focus();await reachable(first);
+      await page.setViewportSize({width,height});
+      for(const label of ['Back from choose a jira issue','Search choose a jira issue'])await reachable(page.getByRole('button',{name:label,exact:true}));
+      await page.screenshot({path:path.join(output,`${width}-${height}-${enlarged}-epic.png`)});
+      await page.getByRole('button',{name:'Search choose a jira issue',exact:true}).click();
+      await expect(page.getByRole('option')).toHaveCount(1);await reachable(first);
+      await first.click();
+      await expect(page.getByRole('textbox',{name:/^Title topic after/})).toHaveValue('Synthetic epic for bounded mobile selection');
+      await page.getByRole('button',{name:'Change Jira issue'}).click();
+      await search.fill('nothing matches');
+      await expect(page.getByText('No open ASMA issue matches.')).toBeVisible();
+      await expect(page.getByRole('option')).toHaveCount(0);
+      await page.getByRole('button',{name:'Back from choose a jira issue'}).click();
+      await page.getByRole('button',{name:'Choose source session'}).click();
+      const use=page.getByTestId('kontor-lead-source-use');
+      await reachable(use);
+      const sourceScroll=page.getByTestId('kontor-lead-source-list'), pinned=await use.boundingBox();
+      await sourceScroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});
+      assert.deepEqual(await use.boundingBox(),pinned,'source footer stays pinned while source rows scroll');
+      assert.equal(await page.evaluate(()=>window.fixture.calls.some(c=>c.name==='sessions.create')),false);
+    } finally{await context.close();}
+  });
+  if (!r33) {
   for (const width of [320, 390, 1440]) for (const mode of ['screen', 'composer']) await run(width + '-' + mode + '-picker-layout-and-selection', async () => {
     const { page, context } = await start(width, mode);
     try {
@@ -270,6 +336,7 @@ async function bounds(page, width, height, name) {
       assert.equal(calls.length, 1); assert.equal(calls[0].input.sourceAgentId, sid(23));
     } finally { await context.close(); }
   });
+  }
 })().catch(error => { report.error = String(error.stack); }).finally(async () => {
   if (browser) await browser.close(); if (server) await server.close(); fs.rmSync(fixture, { recursive: true, force: true });
   fs.writeFileSync(path.join(output, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n');

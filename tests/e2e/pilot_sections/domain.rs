@@ -2229,7 +2229,17 @@ impl JiraExchange for NeverJira {
 /// Panics when a checked-in specification does not load, which is a build-time
 /// defect in the data rather than a finding about the tree.
 fn catalog() -> SpecCatalog {
-    let mut catalog = SpecCatalog::bundled().expect("the bundled specifications load");
+    let mut catalog = SpecCatalog::empty();
+    catalog
+        .load_field_spec(include_str!(
+            "../../../crates/kontor-jira/tests/fixtures/ticket-fields-asma.json"
+        ))
+        .expect("explicit field fixture");
+    catalog
+        .load_workflow_spec(include_str!(
+            "../../../crates/kontor-jira/tests/fixtures/external-workflow-asma.json"
+        ))
+        .expect("explicit workflow fixture");
     catalog
         .load_workflow_spec(ALTERNATE_WORKFLOW)
         .expect("the alternate workflow fixture loads");
@@ -2249,8 +2259,13 @@ fn catalog() -> SpecCatalog {
 /// # Panics
 /// Panics when the bundled data does not load or select.
 fn asma_field_spec() -> CompiledFieldSpec {
-    SpecCatalog::bundled()
-        .expect("the bundled specifications load")
+    let mut catalog = SpecCatalog::empty();
+    catalog
+        .load_field_spec(include_str!(
+            "../../../crates/kontor-jira/tests/fixtures/ticket-fields-asma.json"
+        ))
+        .expect("explicit field fixture");
+    catalog
         .select_field_spec(&asma_field_key())
         .expect("the bundled field specification is selectable")
         .clone()

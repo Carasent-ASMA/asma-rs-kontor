@@ -416,6 +416,7 @@ async fn grade_c_terminal_report_is_not_terminal_evidence() {
     let observed = team
         .fake
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:06:00Z"),
         })
@@ -476,6 +477,7 @@ async fn grade_b_terminal_requires_fresh_inspect() {
     let inspected = team
         .fake
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:06:00Z"),
         })
@@ -1005,6 +1007,7 @@ async fn all_typed_operations_preserve_kontor_identity() {
     let resumed = team
         .fake
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:01:00Z"),
         })
@@ -1029,6 +1032,7 @@ async fn all_typed_operations_preserve_kontor_identity() {
     let inspected = team
         .fake
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:03:00Z"),
         })
@@ -1235,6 +1239,7 @@ async fn observation_separates_contact_from_run_state() {
     let binding = team.role(AgentRunId::generate()).await;
     team.fake
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:01:00Z"),
         })
@@ -1244,6 +1249,7 @@ async fn observation_separates_contact_from_run_state() {
     let reachable = team
         .fake
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:02:00Z"),
         })
@@ -1485,6 +1491,7 @@ async fn adopt_refuses_a_second_session_for_one_run() {
     assert_eq!(
         team.fake
             .resume(&ResumeRequest {
+                resolved_route: None,
                 binding: bound,
                 requested_at: at("2026-08-10T09:15:02Z"),
             })
@@ -1496,6 +1503,7 @@ async fn adopt_refuses_a_second_session_for_one_run() {
     );
     team.fake
         .resume(&ResumeRequest {
+            resolved_route: None,
             binding: readopted.snapshot,
             requested_at: at("2026-08-10T09:15:03Z"),
         })
@@ -1517,6 +1525,7 @@ async fn restart_generation_invalidates_stale_binding() {
     assert_eq!(
         team.fake
             .resume(&ResumeRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T09:20:00Z"),
             })
@@ -2217,6 +2226,7 @@ async fn cancel_ack_is_not_terminal_until_observed() {
     let still_running = team
         .fake
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:06:00Z"),
         })
@@ -2268,6 +2278,7 @@ async fn stream_close_without_terminal_remains_unconfirmed() {
     let inspected = team
         .fake
         .inspect(&InspectRequest {
+            resolved_route: None,
             binding: binding.clone(),
             requested_at: at("2026-08-10T09:09:00Z"),
         })
@@ -2343,6 +2354,7 @@ async fn a_scripted_transport_failure_refuses_every_operation() {
     assert_eq!(
         team.fake
             .resume(&ResumeRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T09:01:00Z"),
             })
@@ -2371,6 +2383,7 @@ async fn a_scripted_transport_failure_refuses_every_operation() {
     assert_eq!(
         team.fake
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: binding.clone(),
                 requested_at: at("2026-08-10T09:06:00Z"),
             })
@@ -2550,6 +2563,7 @@ async fn a_step_pinned_to_one_request_is_not_spent_on_another() {
     assert_eq!(
         team.fake
             .inspect(&InspectRequest {
+                resolved_route: None,
                 binding: theirs,
                 requested_at: at("2026-08-10T09:06:00Z"),
             })

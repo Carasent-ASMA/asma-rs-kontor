@@ -610,6 +610,7 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
         .reserve(&world.slot, parts.agent_run)
         .expect("a vacant seat reserves");
     let launch = SlotLaunch {
+        resolved_route: None,
         display_name: kontor_core::id::ExternalName::parse("Implement • KON-19")
             .expect("display name"),
         task_id: world.task,

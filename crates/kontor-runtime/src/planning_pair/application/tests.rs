@@ -114,7 +114,7 @@ fn pair_state(run: &StoredConsultationRun, bound: bool) -> PairState {
         committee_role: None,
         logical_role: kontor_core::id::RoleKey::parse("planning_pair_member").expect("a role"),
         seat_binding_id: SeatBindingId::parse(&id(tail)).expect("a seat"),
-        model_rung: members().members()[0].route.clone(),
+        model_rung: members().members()[0].route.clone().into(),
         occupancy_generation: 1,
         native_identity: bound.then(|| NativeRuntimeIdentity {
             runtime_kind: kontor_core::id::RuntimeKindKey::parse("fake.runtime").expect("a kind"),

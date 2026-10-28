@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useHosts, useRpc, type PluginButtonContentProps, type PluginHostSummary, type PluginOpenScreenInput } from "@getpaseo/plugin/client";
 import { organizationPresentation, DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
@@ -201,6 +201,17 @@ type StartSwitchProps = {
 };
 
 /**
+ * The height a body may take in the host's composer popover before the host's own scroll moves it, after Paseo's
+ * PluginPopoverSurface: the wide surface is at most 440 and the window less 16; the compact sheet at most 80% of the
+ * window, less its borders, handle and a title row of one `line`, the height one line of the body's own 14-point title
+ * takes as drawn, so it follows the text size wherever that comes from. Both pad the body by 12. The host's safe-area
+ * and keyboard insets are its own; plugins cannot read them.
+ */
+export function popoverBodyHeight(window: number, compact: boolean, line: number): number {
+  return Math.max(0, Math.floor((compact ? window * 0.8 - 46 - line : Math.min(440, window - 16)) - 24));
+}
+
+/**
  * One body for switching and starting, drawn by the Kontor screen's sheet and by the composer pill's popover: the
  * state strip, search and layout over this host's sessions, plus New lead as a header action when the host allows it.
  * Rows open only through `onOpen`, so each surface keeps its own single open path and its refusals.
@@ -260,6 +271,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const layout = chronological ? "flat" : presentation.layout;
   const unavailable = createAvailability(create.state);
   const tall = compact || COARSE_POINTER;
+  const window = useWindowDimensions();
   const dismiss = () => { creation.current.open = false; onClose(); };
   const showView = (membership: SwitchView["membership"] = "sessions") => onShowView({ status: membership === "archived" ? "all" : status, query: query.trim(), membership });
   // Provider blocked is answered by exact-ID refusal reads, which only Kontor's Sessions makes.
@@ -366,9 +378,10 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   </>;
   const list = { testID: "kontor-switch-list", role: "list", accessibilityLabel: `${quickFilterLabel(status)} sessions${query.trim() ? ` matching ${query.trim()}` : ""}` } as const;
   const body = mode === "new"
-    ? <NewLsaForm key={lead.key} initialSource={lead.source} hostId={hostId} colors={colors} compact={compact} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
+    ? <NewLsaForm key={lead.key} initialSource={lead.source} hostId={hostId} colors={colors} compact={compact} hostScrolls={popover} options={create.state} onRefresh={create.refresh} canOpen={canOpen}
       isActive={() => scope === creation.current && scope.open && scope.hostId === hostId}
       onOpenCreated={onOpenCreated} onCancel={leaveNew} sources={entries.filter((entry) => matchesMembership(entry, "sessions"))} opened={opened}
+      pickerHeight={popover ? (line) => popoverBodyHeight(window.height, compact, line) : undefined}
       header={<><IconButton label="Back to sessions" icon="ChevronLeft" colors={colors} onPress={leaveNew} />{heading}</>} />
     // The host's popover already scrolls; a second vertical scroller inside it would fight it on touch.
     : popover ? <View {...list}>{items}</View>

@@ -218,7 +218,7 @@ pub(super) fn freeze<O: InvokeOwner>(
             committee_role: None,
             logical_role: logical_role.clone(),
             seat_binding_id,
-            model_rung: member.route.clone(),
+            model_rung: member.route.clone().into(),
             occupancy_generation: 1,
             native_identity: None,
             provider_session_id: None,

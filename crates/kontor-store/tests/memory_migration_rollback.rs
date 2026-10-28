@@ -1,4 +1,6 @@
 //! ASMA-8159 F4: real ordered migration rollback on a disposable v119 ledger.
+mod support;
+
 use kontor_core::id::{CanonicalDocument, ContentHash, ExternalName, ProjectId, Timestamp};
 use kontor_core::repository::{NewProject, ProjectRepository};
 use kontor_store::memory::MemoryProvenance;
@@ -93,6 +95,27 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
         .unwrap();
     drop(store);
     let connection = Connection::open(&database).unwrap();
+    support::rewind_activation_name(&connection);
+    let later_pins:i64=connection.query_row("SELECT (SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL) + (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL) + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",[],|row|row.get(0)).unwrap();
+    assert_eq!(
+        later_pins, 0,
+        "historical fixture must not erase domain or consultation evidence"
+    );
+    connection.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback; ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash; ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
+    // Remove the current-only v137 column before replaying the historical chain.
+    let checkout_rows: i64 = connection
+        .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        checkout_rows, 0,
+        "historical fixture must not erase checkout evidence"
+    );
+    connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .unwrap();
     // This fixture starts at today's schema; its v119 stamp must not
     // retain the later additive attention table or erase attention evidence.
     let attention_rows: i64 = connection
@@ -110,7 +133,7 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.
-    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks; DROP TABLE provider_marker_write_starts; DROP TABLE provider_marker_completions;").unwrap();
     // A synthetic name collision fails inside unmodified 0123, after four
     // CREATE TABLE statements. Only this deliberate fixture trigger is removed.
     connection.execute_batch("CREATE TRIGGER memory_projection_snapshots_no_update BEFORE UPDATE ON memory_revisions BEGIN SELECT 1; END;").unwrap();

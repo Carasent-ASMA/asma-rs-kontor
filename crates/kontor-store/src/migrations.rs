@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 136;
+pub const SCHEMA_VERSION: i64 = 145;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -240,7 +240,7 @@ const MIGRATIONS: &[&str] = &[
     // moving one immutable epic pin.
     include_str!("../migrations/0056_project_topology_selection.sql"),
     // Schema v57. Durable native Jira materialization, exact readback bindings,
-    // and ASMA activation after the whole epic is confirmed.
+    // and epic activation after the whole epic is confirmed.
     include_str!("../migrations/0057_jira_materialization.sql"),
     // Schema v58. Idempotent project-scoped legacy backlog import receipt.
     include_str!("../migrations/0058_backlog_import_command.sql"),
@@ -470,6 +470,31 @@ const MIGRATIONS: &[&str] = &[
     // themselves; and an overdue review raises one typed attention record
     // (ASMA-8517 / REQ-008).
     include_str!("../migrations/0136_hold_terms_and_attention.sql"),
+    // Schema v137. Widen the realm-scoped idempotency operations by exactly one
+    // for the provider-marker correction, so a replay of a completed correction
+    // is answered before the revision CAS instead of writing the file again
+    // (ASMA-7968 / GAP-D).
+    include_str!("../migrations/0137_realm_idempotency_provider_marker.sql"),
+    // Schema v138. Durable completion for a provider-marker correction, so a
+    // replay of a completed key never removes a marker the operator restored
+    // for a later outage (ASMA-7968).
+    include_str!("../migrations/0138_provider_marker_completions.sql"),
+    // Schema v139. Pin publication judgements to their activated authorization bundle.
+    include_str!("../migrations/0139_publication_policy_provenance.sql"),
+    // Schema v140. Immutable task checkout intents and correlated Git readback.
+    include_str!("../migrations/0140_task_checkout_placements.sql"),
+    // Schema v141. Domain context on existing project selections and epic snapshots;
+    // no backfill.
+    include_str!("../migrations/0141_operational_domain_pins.sql"),
+    // Schema v142. Admit domain selection to the existing exact local-result ledger.
+    include_str!("../migrations/0142_domain_selection_results.sql"),
+    // Schema v143. Admit epic creation to the existing exact local-result ledger.
+    include_str!("../migrations/0143_epic_domain_results.sql"),
+    // Schema v144. Pin consultation checkout intent and correlated Git readback.
+    include_str!("../migrations/0144_consultation_checkout_intents.sql"),
+    // Schema v145. Rename the activation authority and command kind, preserving every
+    // frozen document.
+    include_str!("../migrations/0145_neutral_epic_activation.sql"),
 ];
 
 const _: () = assert!(
@@ -848,7 +873,7 @@ fn canonicalize_operational_topology_v47(
                 prior.as_str(),
                 expected.as_str(),
                 migrated_at,
-                "ASMA-7967 typed native-name templates",
+                "typed native-name templates",
             ],
         )?;
     }
@@ -1037,6 +1062,66 @@ fn verify_applied(connection: &Connection) -> Result<(), StoreError> {
 #[cfg(test)]
 mod release_integration_tests {
     use super::*;
+
+    #[test]
+    fn released_136_attestations_keep_their_original_decision_without_invented_provenance() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kontor.db");
+        let connection = Connection::open(&path).unwrap();
+        for migration in &MIGRATIONS[..136] {
+            connection.execute_batch(migration).unwrap();
+        }
+        let realm = RealmMetadata::create(RealmId::generate(), Timestamp::now());
+        connection.execute(
+            "INSERT INTO realm_metadata (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, ?2, ?3, NULL)",
+            rusqlite::params![realm.realm_id.to_string(), i64::from(realm.schema_version.get()), realm.created_at.to_string()],
+        ).unwrap();
+        let project = kontor_core::id::ProjectId::generate();
+        let attestation = kontor_core::id::PublicationAttestationId::generate();
+        connection.execute(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES (?1, 'Synthetic publication', '/tmp/publication-136', 1, '2026-10-01T00:00:00Z')",
+            [project.to_string()],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO publication_attestations
+             (id, project_id, repository, base_branch, head_branch, head_sha, accepted, reasons, policy_revision, idempotency_key, recorded_at)
+             VALUES (?1, ?2, 'example-org/root', 'main', 'feat/EXM-1-work', ?3, 1, '[]', 4, 'released-136', '2026-10-01T00:00:00Z')",
+            rusqlite::params![attestation.to_string(), project.to_string(), "a".repeat(40)],
+        ).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 136);
+        drop(connection);
+        let store = crate::SqliteStore::open(&path).unwrap();
+        assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
+        let record = store
+            .get_publication_attestation(project, attestation)
+            .unwrap()
+            .unwrap();
+        assert!(record.decision.accepted);
+        assert_eq!(record.decision.policy_revision, 4);
+        assert_eq!(record.decision.source_bundle_hash, None);
+        let connection = Connection::open(path).unwrap();
+        assert!(
+            connection
+                .execute(
+                    "UPDATE publication_attestations SET source_bundle_hash = ?1 WHERE id = ?2",
+                    rusqlite::params![
+                        ContentHash::of(b"invented provenance").as_str(),
+                        attestation.to_string()
+                    ],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "DELETE FROM publication_attestations WHERE id = ?1",
+                    [attestation.to_string()]
+                )
+                .is_err()
+        );
+    }
 
     /// Exercise a real released schema before applying the appended generations.
     #[test]
@@ -1387,7 +1472,7 @@ mod release_integration_tests {
                 [],
                 |row| row.get(0),
             )
-            .expect("the released binding survives both rebuilds");
+            .expect("the released binding survives every rebuild");
         assert_eq!(
             fingerprint,
             ContentHash::of(b"released-124-binding").as_str()
@@ -1494,5 +1579,170 @@ mod release_integration_tests {
 
     fn refused(connection: &Connection, sql: &str) -> bool {
         connection.execute(sql, []).is_err()
+    }
+}
+
+#[cfg(test)]
+mod neutral_activation_tests {
+    use super::*;
+    use kontor_core::id::{CommandReceiptId, MiniProjectId, ProjectId};
+
+    fn previous_database(path: &std::path::Path) -> Connection {
+        let connection = Connection::open(path).unwrap();
+        for migration in &MIGRATIONS[..144] {
+            connection.execute_batch(migration).unwrap();
+        }
+        let realm = RealmMetadata::create(RealmId::generate(), Timestamp::now());
+        connection.execute("INSERT INTO realm_metadata (singleton,realm_id,schema_version,created_at) VALUES (1,?1,1,?2)", params![realm.realm_id.to_string(),realm.created_at.to_string()]).unwrap();
+        let project = ProjectId::generate().to_string();
+        let epic = MiniProjectId::generate().to_string();
+        let at = "2026-01-01T00:00:00Z";
+        connection.execute("INSERT INTO projects(id,name,root_path,revision,created_at) VALUES (?1,'Example','/example',1,?2)",params![project,at]).unwrap();
+        connection.execute("INSERT INTO mini_projects(id,project_id,name,revision,created_at) VALUES (?1,?2,'Example epic',1,?3)",params![epic,project,at]).unwrap();
+        for (index, kind) in ["activate_asma_epic", "materialize_jira"]
+            .into_iter()
+            .enumerate()
+        {
+            let receipt = CommandReceiptId::generate().to_string();
+            let intent = CanonicalDocument::from_value(&serde_json::json!({"schema_version":1,"operation":kind,"policy_hash":ContentHash::of(b"frozen policy")})).unwrap();
+            let target =
+                serde_json::json!({"kind":"mini_project","mini_project_id":epic}).to_string();
+            connection.execute("INSERT INTO command_receipts(id,project_id,idempotency_key,kind,target,target_revision,intent,intent_hash,state,correlation,result_ref,attempts,created_at,updated_at,execution_mode) VALUES (?1,?2,?3,?4,?5,1,?6,?7,'confirmed','correlation','evidence',2,?8,?8,'local')",params![receipt,project,format!("activation-{index}"),kind,target,intent.json(),intent.hash().as_str(),at]).unwrap();
+            if index == 0 {
+                connection.execute("INSERT INTO asma_epic_activations(project_id,epic_id,receipt_id,activated_at) VALUES (?1,?2,?3,?4)",params![project,epic,receipt,at]).unwrap();
+            }
+        }
+        connection
+    }
+
+    fn rows(connection: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+            .unwrap();
+        let width = statement.column_count();
+        statement
+            .query_map([], |row| (0..width).map(|index| row.get(index)).collect())
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn neutral_activation_rename_preserves_every_row_pin_and_receipt_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("previous.db");
+        let connection = previous_database(&path);
+        let tables: Vec<String> = connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+        let before: Vec<_> = tables
+            .iter()
+            .map(|table| (table.clone(), rows(&connection, table)))
+            .collect();
+        drop(connection);
+        let store = crate::SqliteStore::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 145);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        for (table, mut expected) in before {
+            let renamed = if table == "asma_epic_activations" {
+                "epic_activations"
+            } else {
+                &table
+            };
+            if table == "command_receipts" {
+                for row in &mut expected {
+                    if row[3] == rusqlite::types::Value::Text("activate_asma_epic".into()) {
+                        row[3] = rusqlite::types::Value::Text("activate_epic".into());
+                    }
+                }
+            }
+            assert_eq!(rows(&connection, renamed), expected, "{table}");
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='asma_epic_activations'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert!(
+            connection
+                .execute("UPDATE command_receipts SET intent='{}'", [])
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute("DELETE FROM command_receipts", [])
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute("UPDATE command_receipts SET kind='activate_asma_epic'", [])
+                .is_err()
+        );
+        assert!(
+            !connection
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+        assert_eq!(
+            connection
+                .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert!(kontor_core::receipt::CommandKind::parse("activate_asma_epic").is_err());
+        assert_eq!(
+            kontor_core::receipt::CommandKind::parse("activate_epic").unwrap(),
+            kontor_core::receipt::CommandKind::ActivateEpic
+        );
+        connection.pragma_update(None, "user_version", 146).unwrap();
+        drop(connection);
+        assert!(matches!(
+            crate::SqliteStore::open(&path),
+            Err(StoreError::DatabaseTooNew {
+                found: 146,
+                expected: 145
+            })
+        ));
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 146);
+    }
+
+    #[test]
+    fn neutral_activation_rename_failure_rolls_back_without_parallel_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("conflict.db");
+        let connection = previous_database(&path);
+        connection
+            .execute("CREATE TABLE epic_activations(conflict TEXT)", [])
+            .unwrap();
+        let receipts = rows(&connection, "command_receipts");
+        let activations = rows(&connection, "asma_epic_activations");
+        drop(connection);
+        assert!(crate::SqliteStore::open(&path).is_err());
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 144);
+        assert_eq!(rows(&connection, "command_receipts"), receipts);
+        assert_eq!(rows(&connection, "asma_epic_activations"), activations);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='command_receipts_v145'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert!(
+            connection
+                .execute("DELETE FROM command_receipts", [])
+                .is_err()
+        );
     }
 }

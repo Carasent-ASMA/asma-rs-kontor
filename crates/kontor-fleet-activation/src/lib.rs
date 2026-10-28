@@ -35,6 +35,10 @@ use kontor_fleet::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod domain;
+pub mod routes;
+pub use domain::OperationalDomainPin;
+
 /// The generated record naming the activated fleet policy.
 pub const FLEET_ACTIVATION_FILE: &str = "fleet-activation.json";
 
@@ -324,6 +328,18 @@ pub struct BundleManifest {
     pub role_catalog: RoleCatalogPin,
     /// The published canonical Core Team revision.
     pub core_team_revision_hash: ContentHash,
+    /// Optional project publication authority, pinned by this manifest's hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_policy: Option<kontor_core::publication::PublicationPolicy>,
+    /// Optional consultation placement, resolved from the same selected project entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consultation_layout: Option<kontor_core::placement::ConsultationLayout>,
+    /// Exact selected domain source retained as an immutable artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_domain: Option<OperationalDomainPin>,
+    /// Optional exact qualification source; activation time is in FleetActivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<routes::QualificationPin>,
 }
 
 impl BundleManifest {
@@ -332,7 +348,22 @@ impl BundleManifest {
     /// # Errors
     /// M-09 when the manifest names another format or cannot be canonical.
     pub fn canonicalize(&self) -> Result<CanonicalDocument, FleetError> {
-        if self.schema_version != MANIFEST_SCHEMA_VERSION {
+        if let Some(pin) = &self.qualification {
+            pin.validate(self)?;
+        }
+        if let Some(domain) = &self.operational_domain {
+            domain.validate(self)?;
+        }
+        if self.schema_version != MANIFEST_SCHEMA_VERSION
+            || self
+                .publication_policy
+                .as_ref()
+                .is_some_and(|policy| policy.validate().is_err())
+            || self
+                .consultation_layout
+                .as_ref()
+                .is_some_and(|layout| layout.validate().is_err())
+        {
             return Err(invalid(M09));
         }
         CanonicalDocument::from_serializable(self).map_err(|_| invalid(M09))
@@ -437,7 +468,22 @@ pub fn verify_manifest(
     )?;
     let document = CanonicalDocument::from_stored(&text, hash).map_err(|_| invalid(M08))?;
     let manifest: BundleManifest = document.deserialize().map_err(|_| invalid(M09))?;
-    if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
+    if let Some(pin) = &manifest.qualification {
+        pin.validate(&manifest)?;
+    }
+    if let Some(domain) = &manifest.operational_domain {
+        domain.validate(&manifest)?;
+    }
+    if manifest.schema_version != MANIFEST_SCHEMA_VERSION
+        || manifest
+            .publication_policy
+            .as_ref()
+            .is_some_and(|policy| policy.validate().is_err())
+        || manifest
+            .consultation_layout
+            .as_ref()
+            .is_some_and(|layout| layout.validate().is_err())
+    {
         return Err(invalid(M09));
     }
     Ok(manifest)
@@ -547,6 +593,19 @@ fn verify_contents(
         });
     if !agrees {
         return Err(invalid(M10));
+    }
+    if manifest.operational_domain.is_some() {
+        domain::read_domain(state_root, manifest, &roster)?;
+    }
+    if let Some(pin) = &manifest.qualification {
+        routes::validate_qualifications(
+            manifest,
+            &policy,
+            &routes::read_source(state_root, &pin.source_hash)?,
+        )?;
+    }
+    if manifest.sources.contains_key(routes::PROJECT_SOURCE) {
+        routes::read_matrix(state_root, manifest)?;
     }
     Ok((policy, roster))
 }

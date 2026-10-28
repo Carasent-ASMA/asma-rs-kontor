@@ -119,6 +119,36 @@ describe("search picker highlight", () => {
   });
 });
 
+describe("bounded search picker", () => {
+  const props = { name: "bounded", label: "Pick", placeholder: "Find", query: "", rows: [{ id: "a", title: "A", detail: "Epic" }], selected: null, busy: false, message: "1 result", colors,
+    height: () => 300, filters: "Filters", onQuery: vi.fn(), onRetry: vi.fn(), onSelect: vi.fn(), onBack: vi.fn() };
+  it("keeps one drawn result available when enlarged controls exceed the host budget", () => {
+    const draw = () => render(() => SearchPicker(props));
+    const layout = (height: number) => ({ nativeEvent: { layout: { height, y: 0 } } });
+    const tree = draw(), children = tree.props.children;
+    children[0].props.onLayout(layout(30)); children[1].props.onLayout(layout(60));
+    children[2].props.onLayout(layout(60)); children[3].props.onLayout(layout(90));
+    children[5].props.onLayout(layout(67));
+    children[4].props.children.props.children[0].props.onLayout(layout(110));
+    const bounded = draw();
+    expect(bounded.props.style.height).toBeGreaterThanOrEqual(30 + 60 + 60 + 90 + 67 + 110);
+    expect(bounded.props.style.flexShrink).toBe(0);
+    // The host budget still bounds the ordinary picker.
+    const ordinary = render(() => SearchPicker({ ...props, height: () => 900 }));
+    expect(ordinary.props.style.height).toBe(900);
+  });
+  it("resets a scrolled list for changed filter results without resetting it on equivalent rerenders", () => {
+    const draw = (rows = props.rows) => render(() => SearchPicker({ ...props, rows }));
+    const scrollTo = vi.fn();
+    draw().props.children[4].props.ref.current = { scrollTo };
+    draw([{ id: "b", title: "B", detail: "Ticket" }]);
+    expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: false });
+    scrollTo.mockClear();
+    draw([{ id: "b", title: "New metadata", detail: "Ticket" }]);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+});
+
 describe("Jira picker", () => {
   it("keeps backend rows intact except exact-key postfilter and maps only explicit type names to host glyphs", () => {
     const rows = Array.from({ length: 100 }, (_, i) => issue(`ASMA-${100 - i}`, i % 2 === 0));

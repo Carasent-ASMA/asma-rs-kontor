@@ -970,7 +970,9 @@ async fn a_new_epic_apply_does_not_wait_for_a_container_recovery_in_flight() {
 /// held at its create, and writes only after the recovery's result is durable.
 #[tokio::test]
 async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
-    let world = World::open_empty_with_a_plane().await;
+    let world = World::open_empty_with_a_plane()
+        .await
+        .with_historical_epics();
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let created = Call::post(
         "/v1/projects:ensure",
@@ -1051,6 +1053,39 @@ async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
         .expect("the imported task exists")
         .id;
     confirm_test_epic_identity(&world, &project_text, &epic.id.to_string());
+    // Imported work has no roster authority until an explicit admin upgrade.
+    publish_core_team(
+        &world,
+        &project_text,
+        serde_json::json!([seat("LSA", "required", true)]),
+    )
+    .await;
+    let roster_preview = Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/roster:upgrade-preview",
+            epic.id
+        ),
+        &serde_json::json!({"target":{"id":"core-team","version":current_core_team_revision(&world, &project_text) - 1}}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(roster_preview.status, 200, "{}", roster_preview.body);
+    let roster_upgrade = Call::post(
+        format!("/v1/projects/{project}/epics/{}/roster:upgrade-apply", epic.id),
+        &serde_json::json!({"preview_hash":roster_preview.json()["preview_hash"],"expected_revision":1}),
+    ).signed_as(&world, "admin").with_key("backlog-import-race-roster").send(&world).await;
+    assert_eq!(roster_upgrade.status, 400, "{}", roster_upgrade.body);
+    assert!(roster_upgrade.body.contains("operational_domain_unpinned"));
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_epic_roster(project, epic.id))
+            .unwrap()
+            .is_none()
+    );
+    harness::legacy_epic::install_geometry(&world, project, epic.id);
     let revision = world
         .daemon
         .state()

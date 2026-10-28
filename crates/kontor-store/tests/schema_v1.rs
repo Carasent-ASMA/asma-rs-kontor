@@ -13,6 +13,8 @@
 //! * turning an append-only table into an updatable one, or letting direct SQL
 //!   reopen a terminal run.
 
+mod support;
+
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -128,7 +130,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "intake_created_work",
     "intake_decisions",
     "intake_receipts",
-    "asma_epic_activations",
+    "epic_activations",
     "jira_epic_bindings",
     "jira_links",
     "jira_epic_rename_authorizations",
@@ -177,6 +179,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_subject_authority",
     "project_team_definition_defaults",
     "project_topology_defaults",
+    "provider_marker_completions",
+    "provider_marker_write_starts",
     "provider_quota_states",
     "provider_quota_windows",
     "provider_quota_observation_provenance",
@@ -232,6 +236,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_short_codes",
     "task_worktree_corrections",
     "task_worktrees",
+    "task_checkout_placements",
     "tasks",
     "team_command_replays",
     "team_definitions",
@@ -815,7 +820,21 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // (ASMA-8453). v135 adds the typed operational-gap ledger (ASMA-8514).
     // v136 makes every hold state its terms and gives an overdue review one
     // typed attention record (ASMA-8517 / REQ-008).
-    assert_eq!(SCHEMA_VERSION, 136);
+    // v137 widens the realm-scoped idempotency operations by exactly one for
+    // the provider-marker correction, preserving every existing binding and
+    // both permanence triggers across the table rebuild (ASMA-7968). v138
+    // records durable completion for that correction so a replay never writes
+    // a marker the operator restored for a later outage.
+    // v139 retains the activated publication policy's immutable source hash.
+    // v140 freezes task checkout intents and their first Git readback.
+    // v141 adds nullable domain context to existing selection/epic wrappers,
+    // without backfill.
+    // v142 admits domain selection to the existing exact local-result ledger.
+    // v143 admits epic creation to the existing exact local-result ledger.
+    // v144 pins consultation checkout intent and correlated Git readback.
+    // v145 renames the activation authority and command kind while preserving
+    // every frozen document.
+    assert_eq!(SCHEMA_VERSION, 145);
 }
 
 #[test]
@@ -1478,7 +1497,7 @@ fn v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent() {
             "INSERT INTO provider_usage_observations
                  (id, project_id, account_profile_id, provider, evidence_hash, state,
                   resets_at, windows, observed_at, idempotency_key, intent_hash)
-             VALUES (?1, ?2, ?3, 'claude-work', ?4, 'available', NULL, '[]', ?5,
+             VALUES (?1, ?2, ?3, 'claude-b', ?4, 'available', NULL, '[]', ?5,
                      'probe-key', ?6)",
             rusqlite::params![
                 "0193f000-0000-7000-8000-000000000003",
@@ -1537,7 +1556,7 @@ fn v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_aut
                 "0193f000-0000-7000-8000-000000000002",
                 "0193f000-0000-7000-8000-000000000003",
                 r#"{"provider":"opencode","model":"deepseek/deepseek-v4-flash","effort":"max"}"#,
-                r#"{"provider":"claude-work","model":"claude-opus-5","effort":"xhigh"}"#,
+                r#"{"provider":"claude-b","model":"claude-opus-5","effort":"xhigh"}"#,
                 r#"{"schema_version":1,"ordered_routes":[]}"#,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -6473,6 +6492,8 @@ fn v126_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
                 .expect("a timestamp"),
         };
     for operation in [
+        "register_profile_pack",
+        "apply_capacity_configuration",
         "publish_fleet_policy",
         "activate_fleet_policy",
         "publish_fleet_bundle",
@@ -6521,6 +6542,77 @@ fn v126_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
         "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
          WHERE idempotency_key = 'activate_fleet_bundle-key'",
         "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'publish_fleet_bundle-key'",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "a binding is permanent: {statement}"
+        );
+    }
+}
+
+/// v137: the provider-marker correction binds its key realm-wide, once; every
+/// earlier operation stays admitted, every earlier binding survives the
+/// rebuild and both permanence triggers are recreated with the table
+/// (ASMA-7968).
+#[test]
+fn v137_provider_marker_keys_bind_once_and_every_binding_stays_bound() {
+    let directory = temp();
+    let store = open(&directory);
+    let binding =
+        |key: &str, operation: &'static str, fingerprint: &[u8]| kontor_store::IdempotencyBinding {
+            key: key.to_owned(),
+            operation,
+            fingerprint: kontor_core::id::ContentHash::of(fingerprint),
+            bound_at: kontor_core::id::parse_utc_timestamp("2026-10-17T12:00:00Z")
+                .expect("a timestamp"),
+        };
+    for operation in [
+        "register_profile_pack",
+        "apply_capacity_configuration",
+        "publish_fleet_policy",
+        "activate_fleet_policy",
+        "publish_fleet_bundle",
+        "activate_fleet_bundle",
+        "clear_provider_marker",
+    ] {
+        let key = format!("{operation}-key");
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("a first use binds"),
+            kontor_store::Applied::Created
+        );
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("an exact replay is answered"),
+            kontor_store::Applied::Unchanged
+        );
+    }
+    assert!(
+        store
+            .bind_realm_operation(&binding(
+                "clear_provider_marker-key",
+                "activate_fleet_bundle",
+                b"one"
+            ))
+            .is_err(),
+        "one key cannot name a second operation"
+    );
+    drop(store);
+
+    let connection = raw(&directory);
+    let unknown = connection.execute(
+        "INSERT INTO realm_idempotency_bindings (idempotency_key, operation, fingerprint, bound_at)
+         VALUES ('unknown', 'restore_provider_marker', ?1, '2026-10-17T12:00:00Z')",
+        [kontor_core::id::ContentHash::of(b"x").as_str()],
+    );
+    assert!(unknown.is_err(), "the operation list stays closed");
+    for statement in [
+        "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
+         WHERE idempotency_key = 'clear_provider_marker-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'clear_provider_marker-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'publish_fleet_policy-key'",
     ] {
         assert!(
             connection.execute(statement, []).is_err(),
@@ -7078,10 +7170,43 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
+    support::rewind_activation_name(&connection);
+    // v137 adds a column too; the simulated v119 fixture must remove it before
+    // replaying the chain, just as it removes every later additive table.
+    let consultation_pins:i64=connection.query_row("SELECT count(*) FROM topology_nodes WHERE consultation_intent IS NOT NULL OR consultation_git_readback IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert_eq!(
+        consultation_pins, 0,
+        "historical fixture must not erase consultation placement evidence"
+    );
+    connection.execute_batch("DROP TRIGGER consultation_intent_immutable; DROP TRIGGER consultation_readback_immutable; ALTER TABLE topology_nodes DROP COLUMN consultation_intent; ALTER TABLE topology_nodes DROP COLUMN consultation_intent_hash; ALTER TABLE topology_nodes DROP COLUMN consultation_git_readback;").unwrap();
+    let checkout_rows: i64 = connection
+        .query_row("SELECT count(*) FROM task_checkout_placements", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        checkout_rows, 0,
+        "historical fixture must not erase checkout evidence"
+    );
+    let domain_pins: i64 = connection.query_row(
+        "SELECT (SELECT count(*) FROM project_team_definition_defaults WHERE operational_domain_bundle_hash IS NOT NULL)
+              + (SELECT count(*) FROM mini_project_team_definition_snapshots WHERE operational_domain_bundle_hash IS NOT NULL)",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        domain_pins, 0,
+        "historical fixture must not erase domain pins"
+    );
+    connection.execute_batch("ALTER TABLE project_team_definition_defaults DROP COLUMN operational_domain_bundle_hash;
+        ALTER TABLE mini_project_team_definition_snapshots DROP COLUMN operational_domain_bundle_hash;").unwrap();
+    connection.execute_batch("DROP TRIGGER task_checkout_claim_insert; DROP TRIGGER task_checkout_claim_update; DROP TRIGGER task_checkout_container_insert; DROP TRIGGER task_checkout_container_update; DROP TABLE task_checkout_placements;").unwrap();
+    connection
+        .execute_batch("ALTER TABLE publication_attestations DROP COLUMN source_bundle_hash;")
+        .unwrap();
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.
-    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TABLE execution_hold_attention; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TABLE execution_hold_attention; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks; DROP TRIGGER provider_marker_write_starts_are_immutable; DROP TRIGGER provider_marker_write_starts_are_permanent; DROP TABLE provider_marker_write_starts; DROP TABLE provider_marker_completions;").unwrap();
     drop(connection);
     let store = SqliteStore::open(&database).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);

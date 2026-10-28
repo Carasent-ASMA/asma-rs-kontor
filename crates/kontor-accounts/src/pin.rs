@@ -12,8 +12,8 @@
 //! served every provider.
 //!
 //! The lever was already in that flag list. If a deployment registers **one
-//! Paseo provider alias per coding account** — `codex-work` for one login,
-//! `codex-personal` for the other — then `--provider` *is* the account
+//! Paseo provider alias per coding account** — `codex-b` for one login,
+//! `codex-a` for the other — then `--provider` *is* the account
 //! selector, and the pin is attested by the readback Paseo already performs:
 //! the adapter compares the provider the agent reports against the provider
 //! that was requested and fails correlation if they differ.
@@ -219,12 +219,12 @@ mod tests {
     #[test]
     fn one_alias_per_login_is_what_makes_two_codex_accounts_addressable() {
         let profile = profile(
-            serde_json::json!({ "selectable_providers": ["codex-work", "codex-personal"] }),
+            serde_json::json!({ "selectable_providers": ["codex-b", "codex-a"] }),
             true,
         );
         assert_eq!(
             selectable_providers(&profile).expect("a well-formed pin"),
-            ["codex-personal".to_owned(), "codex-work".to_owned()]
+            ["codex-a".to_owned(), "codex-b".to_owned()]
                 .into_iter()
                 .collect::<BTreeSet<_>>()
         );
@@ -259,11 +259,11 @@ mod tests {
     fn one_alias_naming_two_enabled_accounts_is_refused_not_ordered_away() {
         let profiles = [
             profile(
-                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                serde_json::json!({ "selectable_providers": ["codex-b"] }),
                 true,
             ),
             profile(
-                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                serde_json::json!({ "selectable_providers": ["codex-b"] }),
                 true,
             ),
         ];
@@ -277,11 +277,11 @@ mod tests {
     fn a_disabled_profile_may_share_an_alias_because_it_is_never_walked() {
         let profiles = [
             profile(
-                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                serde_json::json!({ "selectable_providers": ["codex-b"] }),
                 false,
             ),
             profile(
-                serde_json::json!({ "selectable_providers": ["codex-work"] }),
+                serde_json::json!({ "selectable_providers": ["codex-b"] }),
                 true,
             ),
         ];
@@ -292,13 +292,11 @@ mod tests {
     #[test]
     fn a_declared_pin_is_normalized_and_a_blank_alias_is_refused() {
         let declared =
-            declared_selectable_providers(&[" codex-work ".to_owned(), "codex-work".to_owned()])
+            declared_selectable_providers(&[" codex-b ".to_owned(), "codex-b".to_owned()])
                 .expect("a well-formed declaration");
         assert_eq!(
             declared,
-            ["codex-work".to_owned()]
-                .into_iter()
-                .collect::<BTreeSet<_>>()
+            ["codex-b".to_owned()].into_iter().collect::<BTreeSet<_>>()
         );
         assert!(declared_selectable_providers(&["   ".to_owned()]).is_err());
     }
@@ -306,18 +304,16 @@ mod tests {
     #[test]
     fn a_declared_pin_is_walked_only_under_its_own_aliases() {
         let declared = profile(
-            serde_json::json!({ "selectable_providers": ["codex-work"] }),
+            serde_json::json!({ "selectable_providers": ["codex-b"] }),
             true,
         );
         let accounts = eligible_accounts(std::slice::from_ref(&declared)).expect("one candidate");
-        let every_rung: BTreeSet<String> = ["codex-work".to_owned(), "codex-personal".to_owned()]
+        let every_rung: BTreeSet<String> = ["codex-b".to_owned(), "codex-a".to_owned()]
             .into_iter()
             .collect();
         assert_eq!(
             pinned_selectable_providers(declared.id, &accounts, every_rung.clone()),
-            ["codex-work".to_owned()]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
+            ["codex-b".to_owned()].into_iter().collect::<BTreeSet<_>>(),
             "a foreign alias rung would launch one account while claiming another"
         );
         // An undeclared pin keeps the latitude it always had: any rung.

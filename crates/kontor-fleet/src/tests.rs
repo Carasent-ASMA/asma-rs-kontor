@@ -88,8 +88,8 @@ fn policy(lsa: &str, tpm: &str) -> String {
         "\
 schema_version: 2
 domains:
-  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}
-  codex: {{ provider: codex, accounts: [codex-work] }}
+  claude: {{ provider: claude, accounts: [claude-a, claude-b] }}
+  codex: {{ provider: codex, accounts: [codex-b] }}
   cursor: {{ provider: cursor, accounts: [cursor] }}
 models:
   opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}
@@ -449,27 +449,27 @@ fn one_policy_resolves_leadership_delivery_and_consultation_with_provenance() {
     assert_eq!(
         accounts(&advisor),
         [
-            ("codex-work", "gpt-5.6-sol", 1, 1),
-            ("claude-personal", "claude-opus-5-5", 2, 1),
-            ("claude-work", "claude-opus-5-5", 2, 2),
-            ("claude-personal", "claude-opus-5", 2, 3),
-            ("claude-work", "claude-opus-5", 2, 4),
+            ("codex-b", "gpt-5.6-sol", 1, 1),
+            ("claude-a", "claude-opus-5-5", 2, 1),
+            ("claude-b", "claude-opus-5-5", 2, 2),
+            ("claude-a", "claude-opus-5", 2, 3),
+            ("claude-b", "claude-opus-5", 2, 4),
         ]
     );
     assert_eq!(
         accounts(&lsa_resolution),
         [
-            ("codex-work", "gpt-5.6-sol", 1, 1),
-            ("claude-personal", "claude-opus-5", 2, 1),
-            ("claude-work", "claude-opus-5", 2, 2),
+            ("codex-b", "gpt-5.6-sol", 1, 1),
+            ("claude-a", "claude-opus-5", 2, 1),
+            ("claude-b", "claude-opus-5", 2, 2),
         ]
     );
     assert_eq!(
         accounts(&tpm_resolution),
         [
-            ("claude-personal", "claude-opus-5", 1, 1),
-            ("claude-work", "claude-opus-5", 1, 2),
-            ("codex-work", "gpt-5.6-sol", 2, 1),
+            ("claude-a", "claude-opus-5", 1, 1),
+            ("claude-b", "claude-opus-5", 1, 2),
+            ("codex-b", "gpt-5.6-sol", 2, 1),
         ]
     );
     assert_eq!(accounts(&team), accounts(&tpm_resolution));
@@ -477,7 +477,7 @@ fn one_policy_resolves_leadership_delivery_and_consultation_with_provenance() {
         accounts(&committee),
         [
             ("cursor", "grok-4.6", 1, 1),
-            ("codex-work", "gpt-5.6-sol", 2, 1)
+            ("codex-b", "gpt-5.6-sol", 2, 1)
         ]
     );
     assert_eq!(
@@ -552,18 +552,14 @@ fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
         effort,
     };
     let offered = resolution
-        .route_for(&rung(
-            "claude-work",
-            "claude-opus-5",
-            Some(EffortLevel::Xhigh),
-        ))
+        .route_for(&rung("claude-b", "claude-opus-5", Some(EffortLevel::Xhigh)))
         .expect("step 2 offers Opus 5 on the work login");
     assert_eq!((offered.step, offered.sub_step), (2, 2));
     for refused in [
         // The chain's own model on an effort it does not name.
-        rung("claude-work", "claude-opus-5", Some(EffortLevel::High)),
+        rung("claude-b", "claude-opus-5", Some(EffortLevel::High)),
         // A model the chain lists but the LSA's calibration rule removed.
-        rung("claude-work", "claude-opus-5-5", Some(EffortLevel::Xhigh)),
+        rung("claude-b", "claude-opus-5-5", Some(EffortLevel::Xhigh)),
         // A listed model on an account the domain does not declare.
         rung("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
         // A route no chain binds to this seat.
@@ -571,6 +567,30 @@ fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
     ] {
         assert!(resolution.route_for(&refused).is_none(), "{refused:?}");
     }
+}
+
+#[test]
+fn a_runtime_family_route_is_authorized_only_by_selected_fleet_data() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let (tpm, lsa) = (key(&roster, &seats[0]), key(&roster, &seats[1]));
+    let snapshot =
+        FleetSnapshot::parse_policy(&policy(lsa.as_str(), tpm.as_str())).expect("valid policy");
+    let rung = |provider: &str, model: &str, effort: EffortLevel| ModelRung {
+        provider: ProviderRef(provider.to_owned()),
+        model: ModelRef(model.to_owned()),
+        effort: Some(effort),
+    };
+
+    let family = rung("codex", "gpt-5.6-sol", EffortLevel::Xhigh);
+    assert!(snapshot.lists_family_route(&family));
+    assert!(
+        !snapshot.lists(&family),
+        "a family-level runtime route is not an account-level placement route"
+    );
+    assert!(!snapshot.lists_family_route(&rung("claude", "gpt-5.6-sol", EffortLevel::Xhigh,)));
+    assert!(!snapshot.lists_family_route(&rung("codex", "gpt-5.6-sol", EffortLevel::High,)));
+    assert!(!snapshot.lists_family_route(&rung("codex", "unlisted-model", EffortLevel::Xhigh,)));
 }
 
 /// ASMA-8433: a characterization guard for the fleet gate the host-local pool
@@ -584,8 +604,8 @@ fn a_fleet_that_lists_the_pool_provider_first_admits_its_route() {
     let roster = revision(SpecVersion::FIRST, &seats);
     let (tpm, lsa) = (key(&roster, &seats[0]), key(&roster, &seats[1]));
     let yaml = policy(lsa.as_str(), tpm.as_str()).replace(
-        "claude: { provider: claude, accounts: [claude-personal, claude-work] }",
-        "claude: { provider: claude, accounts: [claude, claude-work, claude-personal] }",
+        "claude: { provider: claude, accounts: [claude-a, claude-b] }",
+        "claude: { provider: claude, accounts: [claude, claude-b, claude-a] }",
     );
     let snapshot = FleetSnapshot::parse_policy(&yaml).expect("valid pool policy");
     let resolution = snapshot.resolve(TEAM).expect("TEAM is bound");
@@ -634,12 +654,12 @@ fn selection_policy(lsa: &str) -> String {
         "\
 schema_version: 2
 domains:
-  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}
-  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}
+  claude: {{ provider: claude, accounts: [claude-a, claude-b] }}
+  codex: {{ provider: codex, accounts: [codex-b, codex-a] }}
   cursor: {{ provider: cursor, accounts: [cursor] }}
 unavailable:
   domains: [cursor]
-  accounts: [codex-personal]
+  accounts: [codex-a]
 models:
   opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}
   opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}
@@ -701,7 +721,7 @@ fn the_policy_explains_every_route_it_removed() {
             (
                 2,
                 "gpt-5.6-sol",
-                Some("codex-personal"),
+                Some("codex-a"),
                 ExclusionReason::UnavailableAccount
             ),
             (3, "grok-4.6", None, ExclusionReason::UnavailableDomain),
@@ -716,7 +736,7 @@ fn the_policy_explains_every_route_it_removed() {
     );
     assert_eq!(
         route_of(&team.routes[0]),
-        ("claude-personal", "claude-opus-5-5", 1, 1)
+        ("claude-a", "claude-opus-5-5", 1, 1)
     );
 }
 
@@ -731,20 +751,20 @@ fn a_policy_chooses_the_first_eligible_route_and_says_why_it_passed_the_rest() {
     let open = resolution.select(&Eligibility::default());
     assert_eq!(
         open.selected.as_ref().map(route_of),
-        Some(("claude-personal", "claude-opus-5", 1, 1)),
+        Some(("claude-a", "claude-opus-5", 1, 1)),
         "with nothing unavailable the chain's first route is the choice"
     );
     assert_eq!(open.provenance, resolution.provenance);
     assert_eq!(open.excluded_by_policy, resolution.excluded);
 
     let eligibility = Eligibility {
-        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
         excluded_vendors: BTreeSet::new(),
     };
     let degraded = resolution.select(&eligibility);
     assert_eq!(
         degraded.selected.as_ref().map(route_of),
-        Some(("claude-work", "claude-opus-5", 1, 2)),
+        Some(("claude-b", "claude-opus-5", 1, 2)),
         "the next account of the same step before the next step"
     );
     assert_eq!(degraded.eligibility, eligibility);
@@ -757,11 +777,11 @@ fn a_policy_chooses_the_first_eligible_route_and_says_why_it_passed_the_rest() {
         verdicts,
         [
             (
-                ("claude-personal", "claude-opus-5", 1, 1),
+                ("claude-a", "claude-opus-5", 1, 1),
                 Some(ExclusionReason::AccountUnavailableNow)
             ),
-            (("claude-work", "claude-opus-5", 1, 2), None),
-            (("codex-work", "gpt-5.6-sol", 2, 1), None),
+            (("claude-b", "claude-opus-5", 1, 2), None),
+            (("codex-b", "gpt-5.6-sol", 2, 1), None),
         ]
     );
 
@@ -771,7 +791,7 @@ fn a_policy_chooses_the_first_eligible_route_and_says_why_it_passed_the_rest() {
     });
     assert_eq!(
         independent.selected.as_ref().map(route_of),
-        Some(("codex-work", "gpt-5.6-sol", 2, 1)),
+        Some(("codex-b", "gpt-5.6-sol", 2, 1)),
         "a seat that must avoid a vendor descends past it"
     );
 }
@@ -784,7 +804,7 @@ fn an_eligibility_that_admits_nothing_is_the_defined_block() {
     let snapshot = FleetSnapshot::parse_policy(&selection_policy(lsa.as_str())).expect("valid");
     let resolution = snapshot.resolve_leadership(&lsa).expect("bound");
     let blocked = resolution.select(&Eligibility {
-        unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+        unavailable_accounts: BTreeSet::from(["codex-b".to_owned()]),
         excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
     });
     assert!(blocked.selected.is_none(), "no fallback to any other route");
@@ -859,14 +879,14 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     let walked = resolution.select_observed(
         &open,
         Some(&health(vec![
-            observed("claude-personal", "claude-opus-5", Unknown, 5),
-            observed("claude-work", "claude-opus-5", Available, 61),
-            observed("codex-work", "gpt-5.6-sol", Available, 60),
+            observed("claude-a", "claude-opus-5", Unknown, 5),
+            observed("claude-b", "claude-opus-5", Available, 61),
+            observed("codex-b", "gpt-5.6-sol", Available, 60),
         ])),
     );
     assert_eq!(
         walked.selected.as_ref().map(route_of),
-        Some(("codex-work", "gpt-5.6-sol", 2, 1))
+        Some(("codex-b", "gpt-5.6-sol", 2, 1))
     );
     assert_eq!(
         health_verdicts(&walked),
@@ -888,10 +908,10 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     let refused = resolution.select_observed(
         &open,
         Some(&health(vec![
-            observed("claude-personal", "claude-opus-5", Unavailable, 1),
-            observed("claude-work", "claude-opus-5", Available, -1),
-            observed("codex-work", "gpt-5.6-sol", Available, 1),
-            observed("codex-work", "gpt-5.6-sol", Unavailable, 2),
+            observed("claude-a", "claude-opus-5", Unavailable, 1),
+            observed("claude-b", "claude-opus-5", Available, -1),
+            observed("codex-b", "gpt-5.6-sol", Available, 1),
+            observed("codex-b", "gpt-5.6-sol", Unavailable, 2),
         ])),
     );
     assert!(refused.selected.is_none());
@@ -905,9 +925,9 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
     );
 
     // An observation of another mode or effort is not this route's.
-    let mut other_mode = observed("claude-personal", "claude-opus-5", Available, 1);
+    let mut other_mode = observed("claude-a", "claude-opus-5", Available, 1);
     other_mode.mode = Some("bypassPermissions".to_owned());
-    let mut other_effort = observed("claude-work", "claude-opus-5", Available, 1);
+    let mut other_effort = observed("claude-b", "claude-opus-5", Available, 1);
     other_effort.effort = Some(EffortLevel::High);
     let elsewhere =
         resolution.select_observed(&open, Some(&health(vec![other_mode, other_effort])));
@@ -915,17 +935,17 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
 
     // A stated exclusion still wins, and both inputs are echoed.
     let eligibility = Eligibility {
-        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
         excluded_vendors: BTreeSet::new(),
     };
     let stated = health(vec![
-        observed("claude-personal", "claude-opus-5", Available, 1),
-        observed("claude-work", "claude-opus-5", Available, 1),
+        observed("claude-a", "claude-opus-5", Available, 1),
+        observed("claude-b", "claude-opus-5", Available, 1),
     ]);
     let chosen = resolution.select_observed(&eligibility, Some(&stated));
     assert_eq!(
         chosen.selected.as_ref().map(route_of),
-        Some(("claude-work", "claude-opus-5", 1, 2))
+        Some(("claude-b", "claude-opus-5", 1, 2))
     );
     assert_eq!(health_verdicts(&chosen)[0], Some(AccountUnavailableNow));
     assert_eq!(chosen.eligibility, eligibility);
@@ -950,7 +970,7 @@ fn stated_route_health_admits_only_one_fresh_positive_observation() {
 fn route_health_refuses_fields_it_does_not_declare() {
     let accepted: RouteHealth = serde_yaml_ng::from_str(
         r#"{"as_of": "2026-10-25T09:00:00Z", "max_age_seconds": 60, "observations": [
-            {"account": "codex-work", "model": "gpt-5.6-sol", "effort": "xhigh", "state": "available",
+            {"account": "codex-b", "model": "gpt-5.6-sol", "effort": "xhigh", "state": "available",
              "observed_at": "2026-10-25T08:59:30Z", "revision": "r1"}]}"#,
     )
     .expect("a declared document");
@@ -978,7 +998,7 @@ fn equal_policy_bytes_and_eligibility_choose_identically() {
     let lsa = key(&roster, &seats[1]);
     let yaml = selection_policy(lsa.as_str());
     let eligibility = Eligibility {
-        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
         excluded_vendors: BTreeSet::new(),
     };
     let choose = |key: &str| {
@@ -1084,7 +1104,7 @@ fn an_older_roster_revision_keeps_its_own_leadership_binding() {
     let (old_lsa, new_lsa) = (key(&first, &seats[1]), key(&second, &seats[1]));
     let yaml = format!(
         "schema_version: 2\n\
-         domains:\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  claude: {{ provider: claude, accounts: [claude-work] }}\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex-b] }}\n  claude: {{ provider: claude, accounts: [claude-b] }}\n\
          models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh] }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh] }}\n\
          chains:\n  old:\n    - [sol@xhigh]\n  new:\n    - [opus@xhigh]\n\
          bindings:\n  {old_lsa}: old\n  {new_lsa}: new\n"
@@ -1100,10 +1120,10 @@ fn an_older_roster_revision_keeps_its_own_leadership_binding() {
     };
     assert_eq!(
         chosen(&old_lsa).as_deref(),
-        Some("codex-work"),
+        Some("codex-b"),
         "the pinned epic keeps its route"
     );
-    assert_eq!(chosen(&new_lsa).as_deref(), Some("claude-work"));
+    assert_eq!(chosen(&new_lsa).as_deref(), Some("claude-b"));
 }
 
 #[test]
@@ -1189,27 +1209,27 @@ fn reviewers_take_distinct_vendors_and_the_judge_is_unconstrained() {
         slot(
             "reviewer-a",
             AllocationRole::Reviewer,
-            vec![candidate("codex-work", 1, Some("openai"))],
+            vec![candidate("codex-b", 1, Some("openai"))],
         ),
         slot(
             "reviewer-b",
             AllocationRole::Reviewer,
             vec![
-                candidate("codex-personal", 1, Some("openai")),
-                candidate("claude-personal", 2, Some("anthropic")),
+                candidate("codex-a", 1, Some("openai")),
+                candidate("claude-a", 2, Some("anthropic")),
             ],
         ),
         slot(
             "judge",
             AllocationRole::Judge,
-            vec![candidate("codex-personal", 1, Some("openai"))],
+            vec![candidate("codex-a", 1, Some("openai"))],
         ),
     ];
     let allocation = allocate(AllocationDiversity::DistinctVendorPerReviewer, &slots);
     assert!(allocation.is_complete());
     assert_eq!(
         chosen_providers(&allocation),
-        ["codex-work", "claude-personal", "codex-personal"]
+        ["codex-b", "claude-a", "codex-a"]
     );
     assert_eq!(allocation.chosen(), Some(vec![0, 1, 0]));
     // The passed-over candidate names the slot that holds its vendor.
@@ -1220,10 +1240,7 @@ fn reviewers_take_distinct_vendors_and_the_judge_is_unconstrained() {
 
     // Without a diversity rule the same reviewers may share a vendor.
     let shared = allocate(AllocationDiversity::None, &slots);
-    assert_eq!(
-        chosen_providers(&shared),
-        ["codex-work", "codex-personal", "codex-personal"]
-    );
+    assert_eq!(chosen_providers(&shared), ["codex-b", "codex-a", "codex-a"]);
 }
 
 #[test]
@@ -1233,23 +1250,20 @@ fn the_search_backtracks_and_slot_order_breaks_the_tie() {
         "reviewer-a",
         AllocationRole::Reviewer,
         vec![
-            candidate("codex-work", 1, Some("openai")),
-            candidate("claude-personal", 2, Some("anthropic")),
+            candidate("codex-b", 1, Some("openai")),
+            candidate("claude-a", 2, Some("anthropic")),
         ],
     );
     let b = slot(
         "reviewer-b",
         AllocationRole::Reviewer,
-        vec![candidate("codex-personal", 1, Some("openai"))],
+        vec![candidate("codex-a", 1, Some("openai"))],
     );
     let allocation = allocate(
         AllocationDiversity::DistinctVendorPerReviewer,
         &[a.clone(), b.clone()],
     );
-    assert_eq!(
-        chosen_providers(&allocation),
-        ["claude-personal", "codex-personal"]
-    );
+    assert_eq!(chosen_providers(&allocation), ["claude-a", "codex-a"]);
     assert_eq!(
         allocation.slots[0].considered[0].excluded,
         Some(AllocationExclusion::NoCompleteAllocation)
@@ -1257,10 +1271,7 @@ fn the_search_backtracks_and_slot_order_breaks_the_tie() {
 
     // The same slots in the other order: B is decided first.
     let reordered = allocate(AllocationDiversity::DistinctVendorPerReviewer, &[b, a]);
-    assert_eq!(
-        chosen_providers(&reordered),
-        ["codex-personal", "claude-personal"]
-    );
+    assert_eq!(chosen_providers(&reordered), ["codex-a", "claude-a"]);
     assert_eq!(
         reordered.slots[1].considered[0].conflicts_with.as_deref(),
         Some("reviewer-b")
@@ -1273,7 +1284,7 @@ fn the_search_backtracks_and_slot_order_breaks_the_tie() {
             &[slot(
                 "reviewer-a",
                 AllocationRole::Reviewer,
-                vec![candidate("codex-work", 1, Some("openai"))]
+                vec![candidate("codex-b", 1, Some("openai"))]
             ),]
         ),
         allocate(
@@ -1281,7 +1292,7 @@ fn the_search_backtracks_and_slot_order_breaks_the_tie() {
             &[slot(
                 "reviewer-a",
                 AllocationRole::Reviewer,
-                vec![candidate("codex-work", 1, Some("openai"))]
+                vec![candidate("codex-b", 1, Some("openai"))]
             ),]
         )
     );
@@ -1294,13 +1305,13 @@ fn each_slot_is_judged_by_its_own_eligibility_and_an_unknown_vendor() {
         AllocationRole::Reviewer,
         vec![
             candidate("opencode", 1, None),
-            candidate("codex-work", 1, Some("openai")),
-            candidate("claude-personal", 2, Some("anthropic")),
-            candidate("claude-work", 2, Some("anthropic")),
+            candidate("codex-b", 1, Some("openai")),
+            candidate("claude-a", 2, Some("anthropic")),
+            candidate("claude-b", 2, Some("anthropic")),
         ],
     );
     reviewer.eligibility = Eligibility {
-        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        unavailable_accounts: BTreeSet::from(["claude-a".to_owned()]),
         excluded_vendors: BTreeSet::from(["openai".to_owned()]),
     };
     let judge = slot(
@@ -1312,7 +1323,7 @@ fn each_slot_is_judged_by_its_own_eligibility_and_an_unknown_vendor() {
         AllocationDiversity::DistinctVendorPerReviewer,
         &[reviewer, judge],
     );
-    assert_eq!(chosen_providers(&allocation), ["claude-work", "opencode"]);
+    assert_eq!(chosen_providers(&allocation), ["claude-b", "opencode"]);
     let verdicts: Vec<_> = allocation.slots[0]
         .considered
         .iter()
@@ -1340,13 +1351,13 @@ fn there_is_no_partial_allocation() {
     let mut empty = slot(
         "reviewer-b",
         AllocationRole::Reviewer,
-        vec![candidate("claude-personal", 1, Some("anthropic"))],
+        vec![candidate("claude-a", 1, Some("anthropic"))],
     );
-    empty.eligibility.unavailable_accounts = BTreeSet::from(["claude-personal".to_owned()]);
+    empty.eligibility.unavailable_accounts = BTreeSet::from(["claude-a".to_owned()]);
     let a = slot(
         "reviewer-a",
         AllocationRole::Reviewer,
-        vec![candidate("codex-work", 1, Some("openai"))],
+        vec![candidate("codex-b", 1, Some("openai"))],
     );
     let blocked = allocate(
         AllocationDiversity::DistinctVendorPerReviewer,
@@ -1372,7 +1383,7 @@ fn there_is_no_partial_allocation() {
     let b = slot(
         "reviewer-b",
         AllocationRole::Reviewer,
-        vec![candidate("codex-personal", 1, Some("openai"))],
+        vec![candidate("codex-a", 1, Some("openai"))],
     );
     let collision = allocate(AllocationDiversity::DistinctVendorPerReviewer, &[a, b]);
     assert_eq!(
@@ -1422,26 +1433,26 @@ fn shaped_committee() -> Vec<AllocationSlot> {
             "reviewer-a",
             AllocationRole::Reviewer,
             vec![
-                candidate("codex-work", 1, Some("openai")),
-                candidate("codex-personal", 1, Some("openai")),
+                candidate("codex-b", 1, Some("openai")),
+                candidate("codex-a", 1, Some("openai")),
             ],
         ),
         slot(
             "reviewer-b",
             AllocationRole::Reviewer,
             vec![
-                candidate("claude-work", 1, Some("anthropic")),
-                candidate("claude-personal", 1, Some("anthropic")),
+                candidate("claude-b", 1, Some("anthropic")),
+                candidate("claude-a", 1, Some("anthropic")),
             ],
         ),
         slot(
             "judge",
             AllocationRole::Judge,
             vec![
-                candidate("claude-work", 1, Some("anthropic")),
-                candidate("claude-personal", 1, Some("anthropic")),
-                candidate("codex-work", 2, Some("openai")),
-                candidate("codex-personal", 2, Some("openai")),
+                candidate("claude-b", 1, Some("anthropic")),
+                candidate("claude-a", 1, Some("anthropic")),
+                candidate("codex-b", 2, Some("openai")),
+                candidate("codex-a", 2, Some("openai")),
                 candidate("cursor", 3, Some("xai")),
             ],
         ),
@@ -1455,7 +1466,7 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_rung_two() {
     let generic = allocate(diversity, &slots);
     assert_eq!(
         chosen_providers(&generic),
-        ["codex-work", "claude-work", "claude-work"]
+        ["codex-b", "claude-b", "claude-b"]
     );
     assert_eq!(
         anthropic_seats(&generic),
@@ -1467,7 +1478,7 @@ fn the_formal_review_seats_one_claude_and_moves_the_judge_to_rung_two() {
     let allocation = allocate_constrained(diversity, &slots, &formal());
     assert_eq!(
         chosen_providers(&allocation),
-        ["codex-work", "claude-work", "codex-work"]
+        ["codex-b", "claude-b", "codex-b"]
     );
     assert_eq!(anthropic_seats(&allocation), 1);
     let judge = &allocation.slots[2];
@@ -1508,7 +1519,7 @@ fn the_cap_counts_the_judge_and_every_alias_and_blocks_whole() {
     // Neither Sol account can take the judge: below rung 3 only Claude is left.
     let mut slots = shaped_committee();
     slots[2].eligibility.unavailable_accounts =
-        BTreeSet::from(["codex-work".to_owned(), "codex-personal".to_owned()]);
+        BTreeSet::from(["codex-b".to_owned(), "codex-a".to_owned()]);
     let blocked = allocate_constrained(diversity, &slots, &formal());
     assert_eq!(blocked.blocked, Some(AllocationFailure::VendorCapExceeded));
     assert!(blocked.chosen().is_none());
@@ -1532,17 +1543,17 @@ fn the_cap_counts_the_judge_and_every_alias_and_blocks_whole() {
         slot(
             "reviewer-a",
             AllocationRole::Reviewer,
-            vec![candidate("codex-work", 1, Some("openai"))],
+            vec![candidate("codex-b", 1, Some("openai"))],
         ),
         slot(
             "reviewer-b",
             AllocationRole::Reviewer,
-            vec![candidate("claude-personal", 1, Some("anthropic"))],
+            vec![candidate("claude-a", 1, Some("anthropic"))],
         ),
         slot(
             "judge",
             AllocationRole::Judge,
-            vec![candidate("claude-work", 1, Some("anthropic"))],
+            vec![candidate("claude-b", 1, Some("anthropic"))],
         ),
     ];
     assert_eq!(
@@ -1562,8 +1573,8 @@ fn the_cap_is_searched_jointly_not_greedily() {
             "reviewer-a",
             AllocationRole::Reviewer,
             vec![
-                candidate("claude-work", 1, Some("anthropic")),
-                candidate("codex-work", 1, Some("openai")),
+                candidate("claude-b", 1, Some("anthropic")),
+                candidate("codex-b", 1, Some("openai")),
             ],
         ),
         slot(
@@ -1574,13 +1585,13 @@ fn the_cap_is_searched_jointly_not_greedily() {
         slot(
             "judge",
             AllocationRole::Judge,
-            vec![candidate("claude-personal", 1, Some("anthropic"))],
+            vec![candidate("claude-a", 1, Some("anthropic"))],
         ),
     ];
     let allocation = allocate_constrained(diversity, &slots, &formal());
     assert_eq!(
         chosen_providers(&allocation),
-        ["codex-work", "cursor", "claude-personal"]
+        ["codex-b", "cursor", "claude-a"]
     );
     assert_eq!(
         allocation.slots[0].considered[0].excluded,
@@ -1599,7 +1610,7 @@ fn an_unknown_maker_cannot_evade_the_cap() {
     slots[2].candidates = vec![
         candidate("cursor", 1, None),
         candidate("cursor-auto", 1, Some("unknown")),
-        candidate("claude-personal", 1, Some("anthropic")),
+        candidate("claude-a", 1, Some("anthropic")),
     ];
     let blocked = allocate_constrained(diversity, &slots, &formal());
     assert_eq!(blocked.blocked, Some(AllocationFailure::VendorCapExceeded));
@@ -1617,12 +1628,12 @@ fn no_governed_slot_is_seated_below_rung_two() {
         slot(
             "reviewer-a",
             AllocationRole::Reviewer,
-            vec![candidate("codex-work", 3, Some("openai"))],
+            vec![candidate("codex-b", 3, Some("openai"))],
         ),
         slot(
             "reviewer-b",
             AllocationRole::Reviewer,
-            vec![candidate("claude-work", 1, Some("anthropic"))],
+            vec![candidate("claude-b", 1, Some("anthropic"))],
         ),
         slot(
             "judge",
@@ -1666,7 +1677,7 @@ fn constraints_hold_only_the_protocols_slots() {
     let judge_only = committee_constraints(INDEPENDENT_REVIEW_TEMPLATE_ID, ["judge"]);
     assert_eq!(
         chosen_providers(&allocate_constrained(diversity, &slots, &judge_only)),
-        ["codex-work", "claude-work", "claude-work"]
+        ["codex-b", "claude-b", "claude-b"]
     );
 }
 
@@ -1713,7 +1724,7 @@ fn a_governed_slot_cannot_take_a_route_whose_rung_is_unstated() {
     // Reviewer B's Opus route states no rung; its second account does.
     slots[1].candidates[0].step = 0;
     let allocation = allocate_constrained(diversity, &slots, &formal());
-    assert_eq!(chosen_providers(&allocation)[1], "claude-personal");
+    assert_eq!(chosen_providers(&allocation)[1], "claude-a");
     assert_eq!(
         allocation.slots[1].considered[0].excluded,
         Some(AllocationExclusion::RungUnknown)
@@ -1731,4 +1742,67 @@ fn a_governed_slot_cannot_take_a_route_whose_rung_is_unstated() {
     );
     // A generic allocation reads no rung at all.
     assert!(allocate(diversity, &slots).is_complete());
+}
+
+#[test]
+fn catalog_uses_exact_accounts_and_preserves_model_capabilities_without_ambiguity() {
+    let policy = FleetSnapshot::parse_policy(include_str!(
+        "../../../tests/fixtures/config/consultation-permissions.yml"
+    ))
+    .unwrap();
+    let entries = policy.model_catalog();
+    let cursor = entries
+        .iter()
+        .find(|entry| entry.account == "cursor-secondary")
+        .unwrap();
+    assert_eq!(cursor.provider, "cursor");
+    assert_eq!(cursor.id, "review-model");
+    assert_eq!(cursor.efforts, ["high", "xhigh"]);
+    assert!(cursor.permission_eligible);
+    let rung = |account: &str| ModelRung {
+        provider: ProviderRef(account.into()),
+        model: ModelRef("review-model".into()),
+        effort: Some(EffortLevel::Xhigh),
+    };
+    assert!(policy.lists(&rung("cursor-secondary")));
+    assert!(!policy.lists(&rung("cursor-guessed")));
+    assert!(!policy.lists(&rung("unknown-secondary")));
+    assert!(
+        FleetSnapshot::parse_policy(
+            &policy
+                .raw
+                .replace("provider: cursor", "provider: cursor-secondary")
+        )
+        .is_err()
+    );
+    let duplicate = policy.raw.replace(
+        "  open-review:
+",
+        "  duplicate:
+    domain: cursor
+    id: review-model
+    vendor: example
+  open-review:
+",
+    );
+    assert!(FleetSnapshot::parse_policy(&duplicate).is_err());
+    let ambiguous = "schema_version: 2
+domains:
+  one: {provider: cursor, accounts: [cursor-secondary], model_prefix: example/}
+  two: {provider: cursor, accounts: [cursor-secondary], model_prefix: example/r}
+models:
+  one: {domain: one, id: example/review, vendor: first}
+  two: {domain: two, id: example/review, vendor: second}
+chains: {}
+bindings: {}
+";
+    let ambiguous = FleetSnapshot::parse_policy(ambiguous).unwrap();
+    let route = ModelRung {
+        provider: ProviderRef("cursor-secondary".into()),
+        model: ModelRef("example/review".into()),
+        effort: None,
+    };
+    assert!(!ambiguous.lists(&route));
+    assert_eq!(ambiguous.vendor_of(&route), None);
+    assert!(ambiguous.model_catalog().is_empty());
 }
