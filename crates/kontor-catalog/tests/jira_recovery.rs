@@ -557,3 +557,50 @@ async fn rate_limit_exhaustion_is_incomplete_and_keeps_prior_facts() {
     assert_eq!(evidence.generation, 1);
     assert_eq!(evidence.issues.len(), 1);
 }
+
+#[tokio::test]
+async fn an_incremental_recheck_bound_rotates_without_marking_the_sweep_incomplete() {
+    let fixture = JiraFixture::with_bounds(&[], 2, 1).await;
+    let first = full(
+        &fixture,
+        fixture.now(0),
+        vec![
+            epic("100", "ASMA-100", &["ws:kontor"]),
+            epic("101", "ASMA-101", &["ws:kontor"]),
+            epic("102", "ASMA-102", &["ws:kontor"]),
+        ],
+    )
+    .await;
+    assert!(first.complete, "{first:?}");
+
+    fixture.reset().await;
+    fixture
+        .mount_scope_page(
+            true,
+            0,
+            None,
+            vec![epic("100", "ASMA-100", &["ws:kontor"])],
+            true,
+        )
+        .await;
+    fixture
+        .mount_issue(epic("101", "ASMA-101", &["ws:kontor"]))
+        .await;
+    fixture
+        .mount_issue(epic("102", "ASMA-102", &["ws:kontor"]))
+        .await;
+    fixture.mount_catch_all_missing().await;
+    let incremental = fixture.collect(fixture.now(60)).await;
+    assert_eq!(incremental.mode, JiraSweepMode::Incremental);
+    assert!(
+        incremental.complete,
+        "a bounded rotating recheck does not make an incremental sweep incomplete: {incremental:?}"
+    );
+    assert!(
+        incremental
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("rotating slice")),
+        "{incremental:?}"
+    );
+}

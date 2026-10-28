@@ -256,9 +256,9 @@ pub enum StoreError {
 }
 
 /// The catalog database.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Database {
-    connection: Mutex<Connection>,
+    connection: std::sync::Arc<Mutex<Connection>>,
 }
 
 impl Database {
@@ -291,7 +291,7 @@ impl Database {
             ],
         )?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: std::sync::Arc::new(Mutex::new(connection)),
         })
     }
 

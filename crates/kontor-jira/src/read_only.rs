@@ -618,7 +618,13 @@ impl JiraReadOnly {
                     }
                     token = Some(next);
                 }
-                _ => break,
+                _ => {
+                    return Err(JiraReadError::new(
+                        JiraReadFailure::Malformed,
+                        stats,
+                        "Jira did not supply a continuation token for a non-final search page",
+                    ));
+                }
             }
         }
         stats.pages = pages;

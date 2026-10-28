@@ -499,7 +499,7 @@ impl Catalog {
         };
         let mut snapshot_written = false;
         if discovered.finished {
-            match self.write_snapshot() {
+            match self.write_snapshot().await {
                 Ok(()) => snapshot_written = true,
                 Err(error) => diagnostics.push(format!(
                     "The fallback snapshot could not be written ({error})."
@@ -764,7 +764,7 @@ impl Catalog {
         };
         let mut snapshot_written = false;
         if complete {
-            match self.write_native_snapshot(&now.to_string()) {
+            match self.write_native_snapshot(&now.to_string()).await {
                 Ok(()) => snapshot_written = true,
                 Err(error) => diagnostics.push(format!(
                     "The native fallback snapshot could not be written ({error})."
@@ -943,9 +943,14 @@ impl Catalog {
         state_root.join(native::NATIVE_SNAPSHOT_FILE)
     }
 
-    fn write_native_snapshot(&self, written_at: &str) -> Result<(), CatalogError> {
+    async fn write_native_snapshot(&self, written_at: &str) -> Result<(), CatalogError> {
         let mut status = self.native_status()?;
-        let projection = self.database.native_snapshot_projection()?;
+        let database = self.database.clone();
+        let projection = tokio::task::spawn_blocking(move || database.native_snapshot_projection())
+            .await
+            .map_err(|error| CatalogError::Config {
+                detail: format!("the native snapshot read task failed ({error})"),
+            })??;
         let generation = projection.generation;
         status.source = ReadSource::Database;
         status.snapshot = contract::SnapshotStatus {
@@ -973,31 +978,11 @@ impl Catalog {
             native::NATIVE_SNAPSHOT_FILE,
             uuid::Uuid::now_v7()
         ));
-        {
-            use std::io::Write as _;
-            let mut file =
-                std::fs::File::create(&temporary).map_err(|error| CatalogError::Config {
-                    detail: format!(
-                        "the native snapshot could not be created ({})",
-                        error.kind()
-                    ),
-                })?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| CatalogError::Config {
-                    detail: format!(
-                        "the native snapshot could not be written ({})",
-                        error.kind()
-                    ),
-                })?;
-        }
-        std::fs::rename(&temporary, &path).map_err(|error| CatalogError::Config {
-            detail: format!(
-                "the native snapshot could not be published ({})",
-                error.kind()
-            ),
-        })?;
-        Ok(())
+        tokio::task::spawn_blocking(move || write_bytes_atomically(&path, &temporary, &bytes))
+            .await
+            .map_err(|error| CatalogError::Config {
+                detail: format!("the native snapshot write task failed ({error})"),
+            })?
     }
 
     fn native_snapshot_status(&self, active: u64) -> contract::SnapshotStatus {
@@ -1521,9 +1506,15 @@ impl Catalog {
         Ok(Some(snapshot))
     }
 
-    fn write_snapshot(&self) -> Result<(), CatalogError> {
+    async fn write_snapshot(&self) -> Result<(), CatalogError> {
         let status = self.status()?;
-        let (generation, _as_of, entries) = self.database.snapshot_projection()?;
+        let database = self.database.clone();
+        let (generation, _as_of, entries) =
+            tokio::task::spawn_blocking(move || database.snapshot_projection())
+                .await
+                .map_err(|error| CatalogError::Config {
+                    detail: format!("the snapshot read task failed ({error})"),
+                })??;
         let snapshot = contract::CatalogSnapshot {
             schema_version: CATALOG_CONTRACT_VERSION,
             generation,
@@ -1540,22 +1531,11 @@ impl Catalog {
             config::CATALOG_SNAPSHOT_FILE,
             uuid::Uuid::now_v7()
         ));
-        {
-            use std::io::Write as _;
-            let mut file =
-                std::fs::File::create(&temporary).map_err(|error| CatalogError::Config {
-                    detail: format!("the snapshot could not be created ({})", error.kind()),
-                })?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| CatalogError::Config {
-                    detail: format!("the snapshot could not be written ({})", error.kind()),
-                })?;
-        }
-        std::fs::rename(&temporary, &path).map_err(|error| CatalogError::Config {
-            detail: format!("the snapshot could not be published ({})", error.kind()),
-        })?;
-        Ok(())
+        tokio::task::spawn_blocking(move || write_bytes_atomically(&path, &temporary, &bytes))
+            .await
+            .map_err(|error| CatalogError::Config {
+                detail: format!("the snapshot write task failed ({error})"),
+            })?
     }
 
     fn snapshot_status(&self, active: u64) -> contract::SnapshotStatus {
@@ -1933,6 +1913,23 @@ fn entry_matches_scope(entry: &CatalogEntry, scope: &str) -> bool {
                     contract::AssociationRelation::Workstream | contract::AssociationRelation::Epic
                 )
         })
+}
+
+fn write_bytes_atomically(path: &Path, temporary: &Path, bytes: &[u8]) -> Result<(), CatalogError> {
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(temporary).map_err(|error| CatalogError::Config {
+            detail: format!("the snapshot could not be created ({})", error.kind()),
+        })?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| CatalogError::Config {
+                detail: format!("the snapshot could not be written ({})", error.kind()),
+            })?;
+    }
+    std::fs::rename(temporary, path).map_err(|error| CatalogError::Config {
+        detail: format!("the snapshot could not be published ({})", error.kind()),
+    })
 }
 
 fn error_class(error: &StoreError) -> &'static str {

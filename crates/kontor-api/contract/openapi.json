@@ -31039,6 +31039,7 @@
         "description": "Whether one configured root was read.",
         "enum": [
           "scanned",
+          "partial",
           "not_reached",
           "failed"
         ]

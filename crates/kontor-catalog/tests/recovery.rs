@@ -402,3 +402,29 @@ async fn an_invalid_catalog_json_cannot_advance_generation_or_replace_the_snapsh
         1
     );
 }
+
+#[tokio::test]
+async fn plan_sweep_pages_and_old_checkpoints_are_pruned() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/bounded.md",
+        &plan("Bounded plan", Some("ASMA-9802"), Some("kontor"), ""),
+    );
+    repo.commit("bounded");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    for _ in 0..20 {
+        sweep(&fixture.catalog).await;
+    }
+    let connection = rusqlite::Connection::open(Catalog::database_path(fixture.state.path()))
+        .expect("the catalog database");
+    let pages: i64 = connection
+        .query_row("SELECT COUNT(*) FROM catalog_sweep_pages", [], |row| {
+            row.get(0)
+        })
+        .expect("the page count");
+    let sweeps: i64 = connection
+        .query_row("SELECT COUNT(*) FROM catalog_sweeps", [], |row| row.get(0))
+        .expect("the sweep count");
+    assert_eq!(pages, 1, "only the current generation's plan page remains");
+    assert!(sweeps <= 17, "old checkpoints are bounded history");
+}

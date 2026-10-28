@@ -600,8 +600,8 @@ only declares read sources; it does not activate teams or grant execution.
 The plugin also reads the host-local Kontor work catalog through the existing
 observer `kontor-mcp` boundary (`--credential-tier observer`; no credential is
 forwarded). `work-catalog.read` takes the exact host `serverId`, asks for the
-composite per-source status, the native status and up to three bounded pages of
-native inventory (up to five pages) and entries (up to three pages). The Overview **Sources and coverage** disclosure
+composite per-source status, the native status, up to five bounded native
+inventory pages and up to three bounded entry pages. The Overview **Sources and coverage** disclosure
 shows each source's state, generation, source `asOf`, coverage, retry deadline,
 conflicts and pending verification.
 
@@ -617,10 +617,10 @@ The RPC answers one of three modes:
 - `unavailable`: there is no usable answer and no snapshot; the direct readers
   below remain active.
 
-The shared inventory adapter (`client/shared-inventory.ts`) prefers a
-database-backed complete live catalog, then a usable direct directory, then the
-labelled snapshot. A `catalog` answer whose native view source is `snapshot` is
-the daemon's fallback, not live: direct wins when usable. Native rows are mapped
+The shared inventory adapter (`client/shared-inventory.ts`) prefers a ready,
+live, complete direct directory, then a database-backed complete live catalog,
+then the labelled snapshot. A `catalog` answer whose native view source is
+`snapshot` is the daemon's fallback, not live: direct wins when usable. Native rows are mapped
 by exact session id; live labels, permissions, attention, telemetry and
 availability overlay only for that exact id. A complete exact-empty catalog is
 empty; a truncated inventory or a missing archived scope is visibly partial.

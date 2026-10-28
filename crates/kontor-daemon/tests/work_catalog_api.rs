@@ -410,6 +410,12 @@ async fn entry_cursors_and_per_source_status_are_served_and_fenced() {
     let report = catalog.collect_once().await.expect("the sweep completes");
     assert!(report.finished);
 
+    let zero = Call::get("/v1/work-catalog/entries?limit=0")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(zero.status, 400, "{}", zero.body);
+
     let first = Call::get("/v1/work-catalog/entries?limit=1")
         .signed_as(&world, "observer")
         .send(&world)

@@ -96,8 +96,9 @@ partial, never an exact empty host. A native view that is still larger than the
 bound stays visibly partial rather than silently reporting a complete total.
 
 `client/shared-inventory.ts` is the one adapter at the screen composition point.
-It prefers a database-backed complete live catalog, maps native projects,
-workspaces and sessions to the existing directory shapes, and overlays live
+It keeps a ready, live, complete direct directory ahead of the catalog, maps
+native projects, workspaces and sessions to the existing directory shapes from
+the catalog only when direct cannot answer, and overlays live
 labels, pending permissions, needs-input, attention, active-turn, telemetry and
 availability only by exact session id. A `catalog`-mode answer whose native view
 source is `snapshot` is the daemon's own fallback, not a complete live catalog:
@@ -158,7 +159,8 @@ honest limit instead of turning a declaration into a verification.
 - The plugin's native inventory is bounded to five pages / 5,000 rows, covering
   the known production census; a larger or archive-incomplete inventory stays
   visibly partial.
-- Catalog-served rows are not merged with direct-only rows. A complete catalog
-  wins, including an exact empty host; direct rows fill in only when the catalog
-  cannot answer completely.
-- No console TypeScript regeneration: the console does not consume these reads.
+- Catalog-served rows are not merged with direct-only rows. A ready, live,
+  complete direct directory wins; the catalog answers only when direct cannot,
+  including an exact empty host.
+- The console TypeScript schema is regenerated when the served contract changes;
+  these reads are not yet consumed by a console screen.

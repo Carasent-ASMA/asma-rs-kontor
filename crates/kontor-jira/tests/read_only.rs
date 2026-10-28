@@ -132,6 +132,36 @@ async fn pagination_walks_every_enhanced_search_page() {
 }
 
 #[tokio::test]
+async fn a_non_final_page_without_a_continuation_token_is_malformed() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search/jql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issues": [issue("101", "ASMA-101", 1, &[])],
+            "isLast": false
+        })))
+        .mount(&server)
+        .await;
+    let (limits, retry) = fast();
+    let (reader, _root) = compose_reader(
+        &server,
+        limits,
+        retry,
+        Arc::new(FixtureKeychain {
+            secret: Ok(credential()),
+        }),
+    );
+    assert_eq!(
+        reader
+            .search_all("project = ASMA AND issuetype = Epic")
+            .await
+            .expect_err("a non-final page without a token is not a complete search")
+            .failure,
+        JiraReadFailure::Malformed
+    );
+}
+
+#[tokio::test]
 async fn retry_after_is_honoured_and_exhaustion_exposes_the_backoff() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

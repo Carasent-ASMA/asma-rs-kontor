@@ -115,6 +115,7 @@ type FakeOptions = {
   refuseSources?: boolean;
   refuseNative?: boolean;
   silent?: boolean;
+  staleCursorOnce?: boolean;
 };
 
 async function fakeMcp(options: FakeOptions = {}) {
@@ -133,6 +134,8 @@ const nativeStatus = ${JSON.stringify(options.nativeStatus ?? nativeStatus())};
 const nativePages = ${JSON.stringify(options.nativePages ?? { first: nativePage() })};
 const refuseSources = ${options.refuseSources === true};
 const refuseNative = ${options.refuseNative === true};
+const staleCursorOnce = ${options.staleCursorOnce === true};
+let staleSent = false;
 const text = (document, isError) => ({ content: [{ type: "text", text: JSON.stringify(document) }], ...(isError ? { isError: true } : {}) });
 const envelope = (tool, body) => text({ tool, status: 200, body });
 let buffer = "";
@@ -157,6 +160,11 @@ process.stdin.setEncoding("utf8").on("data", (chunk) => {
     }
     if (name === "kontor_work_catalog_entries") {
       const key = message.params.arguments.cursor ?? "first";
+      if (staleCursorOnce && key !== "first" && !staleSent) {
+        staleSent = true;
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: text({ tool: name, status: 410, body: { code: "stale_cursor" } }, true) }) + "\\n");
+        continue;
+      }
       process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: envelope(name, pages[key]) }) + "\\n");
       continue;
     }
@@ -289,6 +297,15 @@ describe("the plugin's shared catalog read", () => {
     expect(observation.entries.map((value) => value.logical_plan_id)).toEqual(["plan-a", "plan-b", "plan-c"]);
     expect(observation.entriesTruncated).toBe(false);
     expect(WORK_CATALOG_MAX_PAGES).toBe(3);
+    const starts = await fake.starts();
+    expect(starts).toHaveLength(1);
+  });
+
+  it("retries a stale entry cursor once from the first page", async () => {
+    const fake = await fakeMcp({ staleCursorOnce: true });
+    const { paseoHome } = await sandbox();
+    const observation = await observeWorkCatalog(configFor(fake.command, paseoHome), HOST_ID, 2_000);
+    expect(observation.entries.map((value) => value.logical_plan_id)).toEqual(["plan-a", "plan-b", "plan-c"]);
     const starts = await fake.starts();
     expect(starts).toHaveLength(1);
   });

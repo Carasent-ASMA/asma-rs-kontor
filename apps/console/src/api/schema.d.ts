@@ -11959,7 +11959,7 @@ export interface components {
          * @description Whether one configured root was read.
          * @enum {string}
          */
-        RepositoryState: "scanned" | "not_reached" | "failed";
+        RepositoryState: "scanned" | "partial" | "not_reached" | "failed";
         /** @description The caller's one clarification question. */
         RequestPlanningPairClarificationRequest: {
             /** @description One or both members, each once. */

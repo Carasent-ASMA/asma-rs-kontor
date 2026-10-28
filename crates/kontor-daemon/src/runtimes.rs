@@ -1387,6 +1387,11 @@ mod tests {
                 .runtime_instance()
                 .starts_with("paseo:ws://127.0.0.1:6767/ws")
         );
+        assert_eq!(
+            native_runtime_instance("  ws://127.0.0.1:6767/ws/  "),
+            "paseo:ws://127.0.0.1:6767/ws",
+            "the runtime identity normalizes surrounding whitespace and a trailing slash"
+        );
 
         let deduped = RuntimeSettings {
             schema_version: RUNTIMES_SCHEMA,
