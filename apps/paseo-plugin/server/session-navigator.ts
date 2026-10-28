@@ -3,10 +3,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readNavigatorCapabilities, UNSUPPORTED, type NavigatorCapabilities } from "../shared/session-navigator";
 import { draftAttachInstalledCapability } from "./session-summary-attach";
 import { summariesInstalledCapability } from "./session-summaries";
-import { TAKEOVER_LIMITS, type TakeoverClient } from "./session-lifecycle";
-
-const WAKE_SCHEDULE_API_GAP =
-  "The host SDK does not expose schedules.forAgent; wake continuity stays unknown and executable takeover remains gated until the host adds that bounded read.";
+import type { TakeoverClient } from "./session-lifecycle";
 
 /** Optional bounded wake read when the installed SDK exposes it; otherwise absent. */
 export function paseoWakeScheduleReader(paseo: PaseoApi): TakeoverClient["schedules"] {
@@ -21,12 +18,11 @@ export function asTakeoverClient(paseo: PaseoApi): TakeoverClient {
 
 /** Answers what this installed plugin can drive on the host; unsupported owners stay explicit. */
 export function readInstalledNavigatorCapabilities(paseo: PaseoApi): NavigatorCapabilities {
-  const takeoverLimits = paseoWakeScheduleReader(paseo) ? TAKEOVER_LIMITS : [...TAKEOVER_LIMITS, WAKE_SCHEDULE_API_GAP];
   return {
     usageTotals: UNSUPPORTED.usageTotals,
     summaries: summariesInstalledCapability(paseo),
     draftAttach: draftAttachInstalledCapability(paseo),
-    takeover: { supported: true, limits: takeoverLimits },
+    takeover: UNSUPPORTED.takeover,
     takeoverBulk: UNSUPPORTED.takeoverBulk,
     takeoverRoute: UNSUPPORTED.takeoverRoute,
   };

@@ -15,7 +15,7 @@ import {
   routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, takeoverAdapter, takeoverPinnedMatches,
   type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute,
 } from "./session-takeover";
-import { asTakeoverClient } from "./session-navigator";
+import { asTakeoverClient, readInstalledNavigatorCapabilities } from "./session-navigator";
 import { createTeamsSourceAdapter } from "./teams-source-adapter";
 import { CREATE_REQUEST_LABEL, TITLE_AUTO_LABEL, type CreateOutcome } from "../shared/session-create";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
@@ -1118,6 +1118,10 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
     });
   };
   server.handle(reviewTakeover, (input, { paseo }) => takeover(paseo).review(input));
-  server.handle(applyTakeover, (input, { paseo }) => takeover(paseo).apply(input));
+  server.handle(applyTakeover, (input, { paseo }) => {
+    const capability = readInstalledNavigatorCapabilities(paseo).takeover;
+    if (!capability.supported) throw new Error(capability.reason);
+    return takeover(paseo).apply(input);
+  });
   server.handle(checkTakeover, (input, { paseo }) => takeover(paseo).check(input.reviewId));
 }

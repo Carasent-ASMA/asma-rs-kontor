@@ -38,7 +38,7 @@ describe("session summary host route", () => {
     expect(paseoSummaryGenerator(paseo)).toBeUndefined();
     const caps = readInstalledNavigatorCapabilities(paseo);
     expect(caps.summaries).toEqual({ supported: false, reason: SUMMARY_MODEL_API_GAP });
-    expect(caps.takeover.supported).toBe(true);
+    expect(caps.takeover.supported).toBe(false);
   });
 
   it("qualifies summaries and store limits when the host advertises agentCompactSummary", () => {
