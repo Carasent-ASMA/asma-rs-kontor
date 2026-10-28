@@ -34355,13 +34355,11 @@ impl ApplicationOperations for Services {
                         "the completion reader is not a seat in this project",
                     )
                 })?;
-            if seat.lifecycle != TopologyLifecycle::Active
-                || seat.released_at.is_some()
-                || ![MANDATORY_LEAD_ROLE, MANDATORY_PROGRAM_ROLE]
-                    .contains(&seat.role.role_code.as_str())
-            {
-                return Err(self.deny(ApiErrorCode::Forbidden,
-                    "only active epic LSA and TPM seats may read completion through a scoped credential"));
+            if seat.lifecycle != TopologyLifecycle::Active || seat.released_at.is_some() {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "only active epic architecture and process closer seats may read completion through a scoped credential",
+                ));
             }
             // Membership before staffing: a seat of another epic must never
             // reach that epic's control-plane lookup, while a reader of this
@@ -34381,15 +34379,51 @@ impl ApplicationOperations for Services {
                     "the completion reader must be an active seat of this exact epic",
                 ));
             }
+            let reader_purpose = |purpose| {
+                self.epic_purpose(project_id, epic_id, purpose)
+                    .map_err(|error| {
+                        if error.rule == "operational_domain_definition_mismatch" {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "the completion reader's frozen leadership definition is unreadable",
+                            )
+                        } else {
+                            error
+                        }
+                    })
+            };
+            let architecture = reader_purpose(CoreTeamSeatPurpose::ArchitectureCloser)?;
+            let purpose = if Self::purpose_binding_matches(&seat, &architecture) {
+                CoreTeamSeatPurpose::ArchitectureCloser
+            } else {
+                let process = reader_purpose(CoreTeamSeatPurpose::ProcessCloser)?;
+                if !Self::purpose_binding_matches(&seat, &process) {
+                    return Err(self.deny(
+                        ApiErrorCode::Forbidden,
+                        "only active epic architecture and process closer seats may read completion through a scoped credential",
+                    ));
+                }
+                CoreTeamSeatPurpose::ProcessCloser
+            };
             // Use the same occupancy fence as remediation writes. A scoped read
             // grants no general Observer authority.
             self.require_completion_authority(
                 project_id,
                 epic_id,
-                seat.role.role_code.as_str(),
+                purpose,
                 reader.seat_binding_id,
                 reader.occupancy_generation,
-            )?;
+            )
+            .map_err(|error| {
+                if error.rule == "operational_domain_definition_mismatch" {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the completion reader's frozen leadership definition is unreadable",
+                    )
+                } else {
+                    error
+                }
+            })?;
         }
         self.epic_row(project_id, epic_id)?;
         let stored = self.require_completion(project_id, epic_id)?;
