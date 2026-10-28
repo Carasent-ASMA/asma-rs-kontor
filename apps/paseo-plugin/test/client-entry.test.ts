@@ -101,6 +101,7 @@ describe("Kontor client entry", () => {
           cleaned.push("sidebar");
         };
       },
+      addSlashCommand: () => () => undefined,
       addCommandCenterItem(value: CommandContribution) {
         calls.push({ kind: "command", value });
         return () => {

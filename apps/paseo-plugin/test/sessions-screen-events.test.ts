@@ -2743,6 +2743,29 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(selector().about).toContain("My work shows every choice");
   });
 
+  it.each([true, false])("keeps the Filters summary's filtered placement counts unavailable under unknown labels (compact=%s)", (compact) => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", shortcut: "Adam", advancedOpen: true, includeArchived: false, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web");
+    if (compact) openMobileFilters();
+    const summary = textOf(findByTestID(harness.current(), "sessions-options-count"));
+    expect(summary).toContain("Inventory: 1 session");
+    expect(summary).toContain("Filtered result counts unavailable");
+    expect(summary).not.toContain("Results span");
+    expect(summary).not.toContain("Matching sessions:");
+    expect(summary).not.toMatch(/Matching sessions: 0/);
+  });
+
+  it.each(["all", "mine"] as const)("shows native placement, not Other work or No epic linked, when labels are unknown in %s work", (work) => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work, layout: "grouped", grouping: "hierarchy", includeArchived: false });
+    renderScreen();
+    expect(textOf(findByTestID(harness.current(), "sessions-attribution-unavailable"))).toContain("Workstream and epic attribution unavailable");
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["project:Project"]);
+    expect(textOf(harness.current())).not.toContain("Other work");
+    expect(textOf(harness.current())).not.toContain("No epic linked");
+  });
+
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];

@@ -156,6 +156,7 @@ describe("Kontor client entry cleanup", () => {
     const client = {
       addScreen: () => () => cleanups.push("screen"),
       addSidebarHeaderItem: () => () => cleanups.push("sidebar"),
+      addSlashCommand: () => () => undefined,
       addCommandCenterItem: () => () => cleanups.push("command"),
       addComposerPill: () => {
         const registration = {

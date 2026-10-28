@@ -341,7 +341,7 @@ function timestampOf(value: string): number {
 }
 
 /** The newest host-stamped instant on these rows, or null when none can be read. */
-function latestHostTime(rows: Iterable<DirectoryEntry>): number | null {
+function latestHostTime(rows: Iterable<{ readonly updatedAt: string; readonly createdAt: string }>): number | null {
   let latest: number | null = null;
   for (const row of rows) {
     for (const value of [row.updatedAt, row.createdAt]) {
@@ -575,6 +575,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       lastUpdatedAt,
       inventoryComplete,
       includeArchived,
+      labelsComplete: true,
       directKnownThrough,
     };
   }
@@ -661,6 +662,10 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     if (!includeArchived && (update.agent.archivedAt ?? null) !== null) {
+      // The archive event is still host-stamped evidence: the row leaves this
+      // scope, but direct is known complete through its instant.
+      const observed = latestHostTime([update.agent]);
+      if (observed !== null) directKnownThrough = Math.max(directKnownThrough ?? observed, observed);
       entries.delete(update.agent.id);
       return;
     }

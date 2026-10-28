@@ -2154,7 +2154,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const sortDirection: SortDirection = view.sortDirection ?? defaultSortDirection(sort);
   // An explicit sort orders sessions within each group and the flat results; it never moves a group.
   const leafOrder = useMemo(() => explicitLeafOrder(scoped, sort, sortDirection), [scoped, sort, sortDirection]);
-  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder, byWorkstream: streams !== null }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder, streams]);
+  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder, byWorkstream: streams !== null, labelsComplete: state.labelsComplete === true }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder, streams, state.labelsComplete]);
   const flatTree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping: "flat" }), [scoped, preferences, mappings]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
@@ -2386,8 +2386,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     : state.inventoryComplete
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
+  const filteredCountsUnknown = labelsUnavailable && labelDerivedFilter;
   const countSummary = !readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null
     ? "Inventory for this membership has not been read yet."
+    : filteredCountsUnknown
+    ? `${sessionCount}. Filtered result counts unavailable: shared catalog rows carry no session labels for this filter. ${inventoryRead}.`
     : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
   const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
@@ -3400,7 +3403,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{`Promotion evidence unavailable: ${retirement.promotionRead.error ?? "the host did not report a readable promotion list"}.`}</Text>
     </View>
   ) : null;
-  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
+  const labelTreeFallback = labelsUnavailable && !resultMode && grouping !== "placement";
+  const attributionNotice = labelTreeFallback ? <Text testID="sessions-attribution-unavailable" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 17, paddingHorizontal: 4 }}>Workstream and epic attribution unavailable: shared catalog rows carry no labels, so the tree shows native project and workspace placement.</Text> : null;
+  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{attributionNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
   withHeaderRef.current = listHeader !== null;
 
   return (

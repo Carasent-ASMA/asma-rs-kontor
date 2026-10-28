@@ -126,6 +126,8 @@ export type OrganizationInput = {
   readonly leafOrder?: ReadonlyMap<string, number>;
   /** A workstream filter is active: sessions group by their workstream and epic, not by native desk project or project. */
   readonly byWorkstream?: boolean;
+  /** Shared catalog rows carry labels only when this is true; false keeps label-derived grouping out of the tree. */
+  readonly labelsComplete?: boolean;
 };
 export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
 export type OrganizationProject = { readonly id: string; readonly name: string };
@@ -1218,6 +1220,17 @@ export function buildOrganizationTree(organization: OrganizationInput): Organiza
     });
   }
   if (input.grouping === "placement") {
+    return buildPlacement({
+      entries: input.entries,
+      siblingOrder: input.siblingOrder,
+      nativeOrder,
+      workspaces: input.workspaces,
+      projects: input.projects,
+    });
+  }
+  if (input.labelsComplete === false) {
+    // A label-derived workstream/epic group would turn missing labels into
+    // Other work / No epic linked. Keep the independently known native placement.
     return buildPlacement({
       entries: input.entries,
       siblingOrder: input.siblingOrder,

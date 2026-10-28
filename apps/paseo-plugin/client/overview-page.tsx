@@ -67,6 +67,7 @@ export function OverviewPage(props: Props) {
   // The fourth entry is the tile's full meaning (its label); only a partial-capture qualifier stays visible.
   const labelsComplete = props.directory.labelsComplete === true;
   const sessionAttributionUnknown = !labelsComplete;
+  const filteredCountUnknown = sessionAttributionUnknown && (filter === "active" || filter === "review");
   const scopeSessionsUnknown = sessionAttributionUnknown && props.epicScoped === true;
   const tiles: Array<[PortfolioFilter, string, number | string, string, string | null]> = [
     ["all", "Epics", sessionAttributionUnknown ? "Unknown" : rows.length, sessionAttributionUnknown ? "All work; session labels unavailable may omit epics" : "All work", null],
@@ -122,7 +123,7 @@ export function OverviewPage(props: Props) {
     <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface1, overflow: "hidden" }}>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderColor: colors.border }}>
         <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{tiles.find(([key]) => key === filter)![1]}</Text>
-        {shown.length !== rows.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{shown.length} of {rows.length} shown</Text> : null}
+        {filteredCountUnknown ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Filtered count unavailable</Text> : shown.length !== rows.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{shown.length} of {rows.length} shown</Text> : null}
       </View>
       {shown.length ? shown.map((row, index) => <PortfolioItem key={row.id} row={row} last={index === shown.length - 1} wide={wide} readingDecisions={readingDecisions} readingDelivery={readingDelivery} {...props} />)
         : <View style={{ padding: 14, gap: 8, alignItems: "flex-start" }}><Copy colors={colors}>{sessionAttributionUnknown && (filter === "active" || filter === "review") ? "Session attribution unknown for this filter." : rows.length ? "No epics in this group." : "No epics, plans or Jira records in this scope."}</Copy>{rows.length && !(sessionAttributionUnknown && (filter === "active" || filter === "review")) ? <Action small={!props.compact} label="Show all epics" colors={colors} onPress={() => props.setQuery("")} /> : null}</View>}

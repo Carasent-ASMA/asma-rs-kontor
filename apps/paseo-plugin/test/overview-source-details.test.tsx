@@ -178,6 +178,19 @@ describe("compact Overview source evidence", () => {
     expect(text(active)).not.toContain("No epics in this group.");
   });
 
+  it.each(["active", "review"])("keeps the filtered %s count unavailable when session attribution is unknown", (query) => {
+    const catalogRow = sessionEntry("catalog-running", { status: "running", labels: {} });
+    const directory = {
+      entries: [catalogRow], status: "ready" as const, live: false, lastUpdatedAt: 1, error: null,
+      staleReason: null, pages: 1, includeArchived: false, source: "catalog" as const,
+      labelsComplete: false, inventoryComplete: true,
+    };
+    const tree = overview({ plan, jira: read }, { entries: [catalogRow], directory, scoped: true, epicScoped: true, query });
+    expect(text(tree)).toContain("Filtered count unavailable");
+    expect(text(tree)).not.toMatch(/\d+ of \d+ shown/);
+    expect(text(tree)).toContain("Session attribution unknown for this filter");
+  });
+
   it("distinguishes live, partial, snapshot and unavailable catalog cues", () => {
     const cue = (catalog: WorkCatalogRead, directory = { entries: [], status: "ready" as const, live: false, lastUpdatedAt: 1, error: null,
       staleReason: null, pages: 1, includeArchived: false, source: "catalog" as const, inventoryComplete: true, labelsComplete: false }) =>
