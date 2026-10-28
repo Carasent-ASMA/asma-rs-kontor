@@ -171,7 +171,7 @@ A planned brain change follows this rule:
 
 A new epic's brainstorm is not a handoff when no canonical epic LSA exists: the
 same ADHOC LSA is promoted in place under the conditional promotion rule.
-Use this handoff only when a distinct canonical epic LSA already exists.
+For the ADHOC-to-epic promotion case only, use this handoff when a distinct canonical epic LSA already exists; the planned provider/brain-change procedure above remains governed by its own conditions.
 
 ## Refuse premature closure
 

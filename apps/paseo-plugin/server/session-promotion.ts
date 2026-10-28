@@ -5,7 +5,7 @@ import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorksp
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { asmaJiraSearch, createStateRoot, createSwitchFile, createSwitchProblem, personaVersion, serial as sessionSerial, type JiraSearch } from "./session-create";
 import { canonicalBindingProblem, discoverCanonical, placement, readRecord, records, type Discovery } from "./session-canonical";
-import { readPromotion, readPromotionList, promoteSession, type NativePromotionPlacement, type PromotionOutcome, type PromotionRecord, type PromoteSessionInput, promotionRecordSchema, promotionOutcomeSchema, logicalPromotionPlacementSchema } from "../shared/session-promotion";
+import { readPromotion, readPromotionList, promoteSession, type NativePromotionPlacement, type PromotionListEntry, type PromotionOutcome, type PromotionRecord, type PromoteSessionInput, promotionRecordSchema, promotionOutcomeSchema, logicalPromotionPlacementSchema } from "../shared/session-promotion";
 import { TITLE_SEPARATOR, type JiraIssue } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -135,14 +135,14 @@ function contextMessage(source: SourceState, input: PromoteSessionInput, logical
   ].join("\n");
 }
 
-function handoffPrompt(source: SourceState, input: PromoteSessionInput, summary: string, summaryRevision: string): string {
+function handoffPrompt(source: SourceState, input: PromoteSessionInput, summary: string, summarySha256: string, summaryRevision: string): string {
   return [
     `Kontor handoff to the canonical epic LSA ${input.epic}. Source ADHOC LSA: ${source.agent.id}.`,
-    `Summary revision: ${summaryRevision}.`,
+    `Summary revision: ${summaryRevision}. Summary sha256: ${summarySha256}.`,
     "",
     summary,
     "",
-    `Acknowledge the exact revision by replying with only: HANDOFF-ACK ${input.epic} ${summaryRevision}`,
+    `Acknowledge the exact revision and content by replying with only: HANDOFF-ACK ${input.epic} ${summaryRevision} ${summarySha256}`,
     "Do not create or relabel a second lead.",
   ].join("\n");
 }
@@ -152,7 +152,9 @@ export function createPromotionService(client: PromotionClient, root: string, sw
     return sessionSerial(async () => {
       try {
         const earlier = await readRecord(root, input.requestId);
-        if (earlier) return earlier.agentId === input.agentId && earlier.epic === input.epic ? outcome(earlier) : refused(input, "This request id is already recorded for another session or epic.");
+        const summaryMatches = !earlier || earlier.branch !== "handoff" || (input.summary !== undefined
+          && earlier.summaryRevision === input.summary.revision && earlier.summarySha256 === createHash("sha256").update(input.summary.text).digest("hex"));
+        if (earlier) return earlier.agentId === input.agentId && earlier.epic === input.epic && summaryMatches ? outcome(earlier) : refused(input, "This request id is already recorded for another session, epic or summary payload.");
         const prior = (await records(root)).filter((entry) => entry.agentId === input.agentId).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
         if (prior) return prior.epic === input.epic ? outcome(prior) : refused(input, `This session already has a promotion record for ${prior.epic}; it cannot be rebound to ${input.epic}.`);
         const switched = createSwitchProblem(switchFile);
@@ -180,8 +182,8 @@ export function createPromotionService(client: PromotionClient, root: string, sw
           await writeRecord(root, pending);
           let acknowledgement: PromotionRecord["acknowledgement"] = "unknown";
           try {
-            const result = await client.agents.ref(found.agent.id).run(handoffPrompt(source, input, input.summary.text, input.summary.revision), { timeoutMs: 120_000 });
-            const expected = `HANDOFF-ACK ${input.epic} ${input.summary.revision}`;
+            const result = await client.agents.ref(found.agent.id).run(handoffPrompt(source, input, input.summary.text, summarySha256, input.summary.revision), { timeoutMs: 120_000 });
+            const expected = `HANDOFF-ACK ${input.epic} ${input.summary.revision} ${summarySha256}`;
             acknowledgement = result?.status === "idle" && result.lastMessage?.trim().split("\n").at(-1)?.trim() === expected ? "verified" : "unknown";
           } catch {}
           const afterProblem = await canonicalBindingProblem(client, root, input.epic, found.agent.id);
@@ -223,7 +225,16 @@ export function createPromotionService(client: PromotionClient, root: string, sw
     return { record: found, native: current?.native ?? null };
   }
 
-  async function list(): Promise<PromotionRecord[]> { return records(root); }
+  async function list(): Promise<PromotionListEntry[]> {
+    const all = await records(root);
+    return Promise.all(all.map(async (record): Promise<PromotionListEntry> => {
+      if (record.state !== "promoted" && record.state !== "handoff") return { record, validation: { state: "unknown", message: "The promotion is not a settled canonical binding." } };
+      const owner = record.state === "promoted" ? record.agentId : record.canonicalAgentId;
+      if (!owner) return { record, validation: { state: "unknown", message: "The record names no canonical owner." } };
+      const problem = await canonicalBindingProblem(client, root, record.epic, owner);
+      return { record, validation: problem ? { state: "stale", message: problem } : { state: "current", message: "The canonical binding matches its exact native owner evidence." } };
+    }));
+  }
 
   return { promote, read, list };
 }

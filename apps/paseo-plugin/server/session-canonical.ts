@@ -1,7 +1,8 @@
-import { readFile, readdir } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
-import { nativePromotionPlacementSchema, promotionRecordSchema, type NativePromotionPlacement, type PromotionRecord } from "../shared/session-promotion";
+import { logicalPromotionPlacementSchema, nativePromotionPlacementSchema, promotionRecordSchema, type NativePromotionPlacement, type PromotionRecord } from "../shared/session-promotion";
 import { TITLE_AUTO_LABEL } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -24,6 +25,8 @@ export type Discovery =
   | { kind: "inflight"; message: string };
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const BOUND_PERSONA = /^kontor-lsa-bound(\+bootstrap)?@[a-f0-9]{12}$/;
 
 async function allPages<T>(read: (cursor?: string) => Promise<Page<T>>): Promise<T[]> {
   const rows: T[] = [], cursors = new Set<string>();
@@ -89,6 +92,15 @@ export async function records(root: string): Promise<PromotionRecord[]> {
   return result;
 }
 
+async function writePromotionRecord(root: string, record: PromotionRecord): Promise<void> {
+  const path = recordPath(root, record.requestId);
+  await mkdir(join(root, "promotion-v1"), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const file = await open(temporary, "w", 0o600);
+  try { await file.writeFile(JSON.stringify(promotionRecordSchema.parse(record))); await file.sync(); } finally { await file.close(); }
+  await rename(temporary, path);
+}
+
 function promotedBindingProblem(record: PromotionRecord, current: { agent: Agent; native: NativePromotionPlacement }): string | null {
   if (record.state !== "promoted" || record.agentId !== current.agent.id) return null;
   if (current.native.workspaceId !== record.native.workspaceId) return "The promoted session moved out of its recorded native workspace.";
@@ -111,13 +123,22 @@ export async function canonicalBindingProblem(client: CanonicalClient, root: str
   const record = stored.filter((entry) => entry.epic === epic
     && (entry.agentId === agentId && entry.state === "promoted" || entry.canonicalAgentId === agentId && entry.state === "handoff"))
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
-  if (record) return promotedBindingProblem(record, current);
+  const title = labels[TITLE_AUTO_LABEL] ?? current.agent.title ?? "";
+  const [titleRole, titleKey] = title.split(" • ").map((part) => part.trim());
+  const personaProblem = () => BOUND_PERSONA.test(labels.persona ?? "") ? null : "The canonical LSA does not carry a supported bound-lead persona.";
+  if (record) {
+    if (record.state === "handoff") {
+      if (current.native.workspace.toUpperCase() !== "LSA") return "The handoff receiver must live in the native LSA workspace.";
+      if (labels.epic !== epic) return "The handoff receiver must retain its exact epic label.";
+      if (titleRole !== "LSA" || titleKey !== epic) return "The handoff receiver must have an LSA • <epic> • <topic> title.auto.";
+      return personaProblem();
+    }
+    return promotedBindingProblem(record, current);
+  }
   if (labels.epic !== epic) return "A label-only canonical LSA must retain its exact epic label.";
   if (current.native.workspace.toUpperCase() !== "LSA") return "A label-only canonical LSA must live in the native LSA workspace.";
-  const title = labels[TITLE_AUTO_LABEL] ?? current.agent.title ?? "";
-  const [role, key] = title.split(" • ").map((part) => part.trim());
-  if (role !== "LSA" || key !== epic) return "A label-only canonical LSA must have an LSA • <epic> • <topic> title.auto.";
-  return null;
+  if (titleRole !== "LSA" || titleKey !== epic) return "A label-only canonical LSA must have an LSA • <epic> • <topic> title.auto.";
+  return personaProblem();
 }
 
 
@@ -166,11 +187,11 @@ export async function discoverCanonical(client: CanonicalClient, root: string, e
     const problem = await canonicalBindingProblem(client, root, epic, agent.id);
     if (problem) return { kind: "ambiguous", message: problem };
   }
+  let archivedRecord = false;
   for (const entry of stored.filter((candidate) => candidate.epic === epic && candidate.state === "promoted")) {
     if (bound.has(entry.agentId)) continue;
     const current = await placement(client, entry.agentId).catch(() => null);
-    if (!current) return { kind: "archived", message: `The promoted LSA for ${epic} is no longer readable. Its owner must reconcile it before another promotion.` };
-    if (current.agent.archivedAt) return { kind: "archived", message: `The promoted LSA for ${epic} is archived. No fresh replacement is allowed.` };
+    if (!current || current.agent.archivedAt) { archivedRecord = true; continue; }
     const problem = await canonicalBindingProblem(client, root, epic, current.agent.id);
     if (problem) return { kind: "ambiguous", message: problem };
     bound.set(current.agent.id, current.agent);
@@ -178,15 +199,36 @@ export async function discoverCanonical(client: CanonicalClient, root: string, e
   for (const entry of stored.filter((candidate) => candidate.epic === epic && candidate.state === "handoff" && candidate.canonicalAgentId)) {
     if (bound.has(entry.canonicalAgentId!)) continue;
     const current = await placement(client, entry.canonicalAgentId!).catch(() => null);
-    if (!current || current.agent.archivedAt) return { kind: "archived", message: `The recorded canonical LSA for ${epic} is unreadable or archived; its owner must reconcile the handoff before another promotion.` };
+    if (!current || current.agent.archivedAt) { archivedRecord = true; continue; }
     const problem = await canonicalBindingProblem(client, root, epic, current.agent.id);
     if (problem) return { kind: "ambiguous", message: problem };
     bound.set(current.agent.id, current.agent);
   }
   if (bound.size > 1) return { kind: "ambiguous", message: `Multiple active canonical LSAs exist for ${epic}; promotion is refused until the owner reconciles them.` };
   if (bound.size === 1) return { kind: "one", agent: [...bound.values()][0]! };
-  if (archived.length) return { kind: "archived", message: `An archived canonical LSA exists for ${epic}; it is not revived and no fresh replacement is created.` };
+  if (archived.length || archivedRecord) return { kind: "archived", message: `An archived canonical LSA exists for ${epic}; it is not revived and no fresh replacement is created.` };
   return { kind: "none" };
+}
+
+
+/** After an authorized takeover, move a promoted/handoff canonical binding to the successor's exact native ID. */
+export async function transferPromotion(root: string, predecessorAgentId: string, successor: { agentId: string; native: NativePromotionPlacement; persona: string }): Promise<string | null> {
+  const all = await records(root);
+  const source = all.filter((entry) => entry.epic && (entry.agentId === predecessorAgentId || entry.canonicalAgentId === predecessorAgentId)
+    && ["promoted", "handoff"].includes(entry.state)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+  if (!source) return null;
+  if (all.some((entry) => entry.epic === source.epic && entry.agentId === successor.agentId && entry.state === "promoted")) return null;
+  const persona = successor.persona || source.persona.effective;
+  const logical = logicalPromotionPlacementSchema.parse({ workspace: "LSA", node: `epic:${source.epic}`,
+    bindingRevision: digest({ agentId: successor.agentId, epic: source.epic, persona, native: successor.native }) });
+  const stamp = new Date().toISOString();
+  try {
+    await writePromotionRecord(root, promotionRecordSchema.parse({ schemaVersion: 1, requestId: randomUUID(), agentId: successor.agentId, epic: source.epic,
+      branch: "promote", state: "promoted", native: successor.native, logical, persona: { issued: persona, effective: persona },
+      canonicalAgentId: successor.agentId, summarySha256: null, summaryRevision: null, acknowledgement: "not-required",
+      message: "Canonical epic LSA binding transferred to the authorized takeover successor.", createdAt: stamp, updatedAt: stamp }));
+    return null;
+  } catch (error) { return `The successor's epic binding could not be recorded: ${errorText(error)}.`; }
 }
 
 /** New-session admission: a From-Jira epic LSA may only be created when no canonical owner exists. */

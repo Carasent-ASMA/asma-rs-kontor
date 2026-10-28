@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
-import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
+import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, personaVersion, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
 import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
 import { promotionRecordSchema } from "../shared/session-promotion";
 
@@ -388,7 +388,7 @@ describe("new session create", () => {
 
   it("refuses a From Jira epic LSA when an existing canonical owner is present", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-adam-lsa", title: "LSA • ASMA-100 • Existing topic",
-      labels: { role: "LSA", epic: "ASMA-100", "title.auto": "LSA • ASMA-100 • Existing topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", "title.auto": "LSA • ASMA-100 • Existing topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ existing: [canonical] });
     expect(await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic: "New topic" })))
       .toMatchObject({ state: "refused", message: expect.stringContaining("already has a canonical LSA") });

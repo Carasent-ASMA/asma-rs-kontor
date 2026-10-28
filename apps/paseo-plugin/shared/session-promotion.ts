@@ -68,6 +68,14 @@ export const promotionOutcomeSchema = z.object({
 }).strict();
 export type PromotionOutcome = z.infer<typeof promotionOutcomeSchema>;
 
+export const promotionValidationSchema = z.object({
+  state: z.enum(["current", "stale", "unknown"]),
+  message: z.string(),
+}).strict();
+export type PromotionValidation = z.infer<typeof promotionValidationSchema>;
+export const promotionListEntrySchema = z.object({ record: promotionRecordSchema, validation: promotionValidationSchema }).strict();
+export type PromotionListEntry = z.infer<typeof promotionListEntrySchema>;
+
 export const promoteSession = defineRpc({ name: "sessions.promote", input: promoteSessionInput, output: promotionOutcomeSchema });
 export const readPromotion = defineRpc({ name: "sessions.promotion-read", input: z.object({ agentId: id }).strict(), output: z.object({ record: promotionRecordSchema, native: nativePromotionPlacementSchema.nullable() }).strict().nullable() });
-export const readPromotionList = defineRpc({ name: "sessions.promotion-list", input: z.object({}).strict(), output: z.array(promotionRecordSchema) });
+export const readPromotionList = defineRpc({ name: "sessions.promotion-list", input: z.object({}).strict(), output: z.array(promotionListEntrySchema) });

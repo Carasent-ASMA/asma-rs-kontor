@@ -6,6 +6,7 @@ import type {
 import { useHosts } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { contributeReturnControl } from "./client/return-control";
+import { contributePromotionCommand } from "./client/promotion-command";
 import { KontorScreen } from "./client/kontor-screen";
 import { contributePlanControl } from "./client/plan-control";
 import { SWITCH_SHEET } from "./client/start-switch-sheet";
@@ -54,6 +55,7 @@ function SessionsSidebarItem({
 }
 
 export default function contribute(client: PluginClientContext): () => void {
+  contributePromotionCommand(client);
   const cleanups = [
     client.addScreen({
       id: SESSIONS_SCREEN_ID,

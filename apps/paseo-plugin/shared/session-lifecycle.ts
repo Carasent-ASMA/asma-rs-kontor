@@ -257,10 +257,12 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
   const session = input.session, now = input.now ?? session.observedAt;
   const work = [...(input.workClaims ?? [])], roles = [...(input.roleClaims ?? [])];
   const promotion = input.promotion && input.promotion.agentId === session.id ? input.promotion : null;
-  if (promotion) work.push({ kind: "epic", value: promotion.epic, binding: "verified", source: promotion.source });
+  if (promotion) work.push({ kind: "epic", value: promotion.epic, binding: promotion.source.fresh === "current" ? "verified" : "claimed", source: promotion.source });
   const intent = input.intent ?? { ...UNKNOWN_INTENT, sessionId: session.id }, coverage = input.coverage;
   const nativeSource: ProjectionSource = { id: `native:${session.id}`, kind: "native", detail: `native ${session.status}; ${session.archived ? "archived" : "not archived"}`, observedAt: session.observedAt, revision: session.updatedAt, fresh: "current" };
   const conflicts: ProjectionConflict[] = [...(input.evidenceConflicts ?? []), ...claimConflicts(work, false), ...claimConflicts(roles, true)];
+  if (promotion && promotion.source.fresh !== "current") conflicts.push({ kind: "stale-or-mismatched-evidence",
+    detail: "The logical promotion is not a current verified canonical binding; it remains historical evidence only.", sources: [promotion.source] });
   const blocking: Array<{ readonly reason: string; readonly source: ProjectionSource }> = [];
   const missing: string[] = [];
   const evidence: ProjectionSource[] = [nativeSource];

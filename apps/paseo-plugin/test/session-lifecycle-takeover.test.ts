@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { readFile } from "node:fs/promises";
 import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, readTakeoverContinuity, type TakeoverDeps } from "../server/session-lifecycle";
+import { discoverCanonical } from "../server/session-canonical";
+import { promotionRecordSchema } from "../shared/session-promotion";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
@@ -90,7 +92,7 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
   const observedAt = new Date().toISOString();
   const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
-  const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create,
+  const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, promotionRoot: createRoot,
     operatorFleetDiscovery: async () => ({ choices, catalog: fleetCatalog }),
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
@@ -104,6 +106,32 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   const fence = () => readdir(root).then((names) => names.filter((name) => name.startsWith("intent-")));
   return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
 }
+
+
+  it("moves a promoted canonical binding to the verified takeover successor", async () => {
+    const title = "LSA • ADHOC • Route review";
+    const predecessor = agent("agent-1", { title, status: "error", labels: { role: "LSA", "title.auto": title, persona: personaVersion("lsa-ad-hoc", true), note: "not carried" } });
+    const h = await host({ predecessor, workspace: { ...WORKSPACE, name: "ADHOC", title: null }, targetProvider: "claude" });
+    await (async () => {
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(join(h.createRoot, "promotion-v1"), { recursive: true });
+      const native = { workspaceId: "wks-1", workspace: "ADHOC", title, titleAuto: title, observedAt: "2026-10-25T08:00:00Z", revision: "r1" };
+      const record = promotionRecordSchema.parse({ schemaVersion: 1, requestId: "11111111-1111-4111-8111-111111111111", agentId: predecessor.id,
+        epic: "ASMA-1", branch: "promote", state: "promoted", native,
+        logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "a".repeat(64) },
+        persona: { issued: personaVersion("lsa-ad-hoc", true), effective: personaVersion("lsa-ad-hoc", true) }, canonicalAgentId: predecessor.id,
+        summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+        createdAt: "2026-10-25T08:00:00Z", updatedAt: "2026-10-25T08:00:00Z" });
+      await writeFile(join(h.createRoot, "promotion-v1", `${record.requestId}.json`), JSON.stringify(record));
+    })();
+    const review = await h.ready();
+    expect(review.state).toBe("ready");
+    const result = await h.apply(review);
+    expect(result.state).toBe("succeeded");
+    const successor = [...h.agents.values()].find((entry) => entry.id !== predecessor.id)!;
+    expect(await discoverCanonical(h.client as never, h.createRoot, "ASMA-1")).toMatchObject({ kind: "one", agent: { id: successor.id } });
+    expect(successor.labels?.role).toBe("LSA");
+  });
 
 describe("direct takeover continuity", () => {
   type Host = Awaited<ReturnType<typeof host>>;

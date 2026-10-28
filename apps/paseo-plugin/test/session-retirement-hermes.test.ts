@@ -47,6 +47,30 @@ describe("read-only retirement projection under the iOS (Hermes) scoping of plug
     expect(drawn.projections.get(D)?.intent.state).toBe("none");
   });
 
+
+  it("keeps a stale promotion visible as historical evidence, never as current verified scope", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e2", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "b".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    const h = harness(() => "host", () => [sessionEntry(A)], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000aa", [], []),
+      "sessions.promotion-list": async () => [{ record, validation: { state: "stale", message: "persona drift" } }],
+    });
+    h.draw(); await settle();
+    const drawn = h.draw();
+    expect(drawn.projections.get(A)?.promotion).toMatchObject({ agentId: A, epic: "ASMA-100", source: { fresh: "stale" } });
+    expect(drawn.projections.get(A)?.scope.claims).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "epic", value: "ASMA-100", binding: "claimed" }),
+    ]));
+    expect(drawn.projections.get(A)?.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "stale-or-mismatched-evidence" }),
+    ]));
+  });
   it("preserves successful receipts and only marks the failed receipt's sessions Unknown", async () => {
     let failSecond = true, failFirst = false;
     const h = harness(() => "host", () => [sessionEntry(A), sessionEntry(B), sessionEntry(D)], {

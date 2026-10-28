@@ -9,6 +9,7 @@ import { readConfig, type KontorPluginConfig } from "./config";
 import { parent, seatBinding } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
+import { placement, records as promotionRecords, transferPromotion } from "./session-canonical";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
 import {
   BINDING_KEY, GOVERNED_ELSEWHERE, configuredAccountCatalogFromFleet, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
@@ -640,6 +641,8 @@ export type TakeoverContinuity = z.infer<typeof continuitySchema>;
 export type TakeoverDeps = {
   config: Pick<KontorPluginConfig, "cliCommand" | "stateRoot" | "placementRoots">;
   create: Pick<ReturnType<typeof createSessionCreateService>, "createSeat" | "check" | "preflight" | "record">;
+  /** Durable promotion records, shared with the New-session writer. */
+  promotionRoot: string;
   /** One operator configured-source read per assess: profile choices and account-alias catalog share one revision. */
   operatorFleetDiscovery: () => Promise<{ choices: ProfileChoice[]; catalog: ConfiguredAccountCatalog }>;
   /** The host's route evidence for one checkout and permission mode; only a qualified positive source may call a route available. */
@@ -965,7 +968,14 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (created.state === "differences") return outcome(record, "partial", "create", `Successor ${created.agentId} was created with differences, so its task was not released. ${created.differences.join(" ")}`, named, "none");
     if (!created.agentId) return outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is resent.", named, "check");
     const problem = await verify(spec, created.agentId, record.review.agentId);
-    return problem ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none") : null;
+    if (problem) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none");
+    const promotion = (await promotionRecords(deps.promotionRoot).catch(() => [] as never[])).some((entry) => entry.state === "promoted" && entry.agentId === record.review.agentId || entry.state === "handoff" && entry.canonicalAgentId === record.review.agentId);
+    if (!promotion) return null;
+    const successor = await placement(client, created.agentId).catch(() => null);
+    if (!successor) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but its exact placement could not be read back, so its task was not released.`, named, "none");
+    const transfer = await transferPromotion(deps.promotionRoot, record.review.agentId, { agentId: created.agentId, native: successor.native,
+      persona: successor.agent.labels?.persona ?? "" });
+    return transfer ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${transfer} Its task was not released.`, named, "none") : null;
   }
   async function succeeded(record: TakeoverRecord, spec: SeatCreateSpec, id: string): Promise<TakeoverOutcome> {
     // The successor's chain, recorded for its exact ID; if this write fails its next review asks for a choice again.
@@ -1109,7 +1119,7 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   server.handle(readSessionDispositions, (input, { paseo }) => createLifecycleService(paseo, root).dispositions(input.agentIds));
   server.handle(readProviderRefusal, (input, { paseo }) => createLifecycleService(paseo, root).providerRefusal(input.agentId));
   const takeover = (paseo: PaseoApi) => createTakeoverService(paseo, root, {
-    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), operatorFleetDiscovery: readOperatorFleetDiscovery,
+    config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), promotionRoot: createStateRoot(), operatorFleetDiscovery: readOperatorFleetDiscovery,
     evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
     continuity: (agentId, requestId) => readTakeoverContinuity(paseo, root, agentId, requestId),
   });

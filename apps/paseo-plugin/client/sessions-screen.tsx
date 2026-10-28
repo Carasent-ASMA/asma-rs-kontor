@@ -2118,9 +2118,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const rowClock = useClock();
   const opened = useMemo(() => new Map(recent.record.visits.map((visit) => [visit.id, visit.at])), [recent.record]);
   const recentIds = useMemo(() => recent.record.visits.map((visit) => visit.id), [recent.record]);
+  // A current verified promotion is a logical epic binding even though the native ADHOC labels stay untouched.
+  const projectedEntries = useMemo(() => {
+    if (!retirement) return state.entries;
+    return state.entries.map((entry) => {
+      const promotion = retirement.projections.get(entry.id)?.promotion;
+      if (!promotion || promotion.source.fresh !== "current" || entry.labels.epic) return entry;
+      return { ...entry, labels: { ...entry.labels, epic: promotion.epic } };
+    });
+  }, [state.entries, retirement]);
   const scoped = useMemo(
-    () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
-    [state.entries, projectId, epicKey, mappings],
+    () => projectedEntries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
+    [projectedEntries, projectId, epicKey, mappings],
   );
   const scopedWorkspaces = useMemo(() => workspaces?.filter((workspace) => (projectId === null || workspace.projectKey === projectId)
     && (epicKey === null || mappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === epicKey.trim().toLocaleLowerCase())), [workspaces, projectId, epicKey, mappings]);

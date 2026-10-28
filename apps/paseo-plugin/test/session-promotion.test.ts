@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { createPromotionService, type PromotionClient } from "../server/session-promotion";
-import { PERSONA_VERSION, reissuePersona } from "../server/session-create";
+import { PERSONA_VERSION, personaVersion, reissuePersona } from "../server/session-create";
 import { TITLE_AUTO_LABEL } from "../shared/session-create";
 import type { JiraSearch } from "../server/session-create";
 
@@ -17,7 +17,7 @@ const sourceTitle = "LSA • ADHOC • Route review";
 const summary = "Scope: keep the ADHOC session.\nArtifacts: design revision 7.\nVerified: source reviewed.\nUnverified: installed readback.\nNext action: await operator.";
 const summarySha = createHash("sha256").update(summary).digest("hex");
 const summaryRevision = "artifact-rev-7";
-const ack = `HANDOFF-ACK ASMA-100 ${summaryRevision}`;
+const ack = `HANDOFF-ACK ASMA-100 ${summaryRevision} ${summarySha}`;
 
 function agent(id: string, patch: Partial<Agent> = {}): Agent {
   return { id, provider: "claude", model: "opus", effectiveThinkingOptionId: "high", cwd: "/fixtures/wks-adhoc", workspaceId: "wks-adhoc",
@@ -88,7 +88,7 @@ describe("ADHOC LSA conditional promotion", () => {
 
   it("hands off to the exact existing epic LSA with a different topic and requires its exact-revision ACK", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical] });
     const outcome = await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } });
     expect(outcome).toMatchObject({ state: "handoff", canonicalAgentId: canonical.id, summarySha256: summarySha, summaryRevision, acknowledgement: "verified",
@@ -178,7 +178,7 @@ describe("ADHOC LSA conditional promotion", () => {
   });
 
   it("does not release or claim a handoff when the receiver does not ACK the exact revision", async () => {
-    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical], runText: "Handoff received." });
     const outcome = await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } });
     expect(outcome).toMatchObject({ state: "unknown", canonicalAgentId: canonical.id, acknowledgement: "unknown" });
@@ -192,13 +192,13 @@ describe("ADHOC LSA conditional promotion", () => {
     const requestId = randomUUID();
     expect(await s.service.promote({ requestId, agentId: "agent-adhoc", epic: "ASMA-100" })).toMatchObject({ state: "promoted" });
     expect(await s.service.promote({ requestId, agentId: "agent-adhoc", epic: "ASMA-200" }))
-      .toMatchObject({ state: "refused", message: expect.stringContaining("another session or epic") });
+      .toMatchObject({ state: "refused", message: expect.stringContaining("another session, epic or summary payload") });
     expect(s.send).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an existing lead without an explicitly authored summary revision", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical] });
     expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100" }))
       .toMatchObject({ state: "refused", message: expect.stringContaining("explicitly authored handoff summary") });
@@ -208,7 +208,7 @@ describe("ADHOC LSA conditional promotion", () => {
   it("allows a legacy source to hand off to an existing lead without changing its instructions", async () => {
     const legacy = agent("agent-legacy", { labels: { role: "LSA", [TITLE_AUTO_LABEL]: sourceTitle, persona: "kontor-lsa-adhoc@79da7ff9c079" } });
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ source: legacy, others: [canonical] });
     expect(await s.service.promote({ requestId: randomUUID(), agentId: legacy.id, epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
       .toMatchObject({ state: "handoff", canonicalAgentId: canonical.id });
@@ -231,7 +231,7 @@ describe("ADHOC LSA conditional promotion", () => {
 
   it("does not certify an ACK from an errored or permission-blocked run", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical] });
     s.run.mockResolvedValueOnce({ status: "error", lastMessage: ack, permission: null });
     expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
@@ -240,7 +240,7 @@ describe("ADHOC LSA conditional promotion", () => {
 
   it("does not certify an ACK when the receiver drifted before the acknowledgement", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical] });
     s.run.mockImplementationOnce(async () => {
       s.agents.set(canonical.id, { ...canonical, labels: { ...canonical.labels, role: "TPM" } });
@@ -269,7 +269,7 @@ describe("ADHOC LSA conditional promotion", () => {
 
   it("refuses a receiver exact read that returns another agent ID", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical] });
     s.agents.set(canonical.id, { ...canonical, id: "wrong-canonical" });
     expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
@@ -279,7 +279,7 @@ describe("ADHOC LSA conditional promotion", () => {
 
   it("refuses a label-only receiver whose epic label disappears during revalidation", async () => {
     const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
-      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
     const s = await setup({ others: [canonical] });
     const original = s.list.getMockImplementation()!;
     s.list.mockImplementationOnce(async (options) => {
@@ -291,6 +291,37 @@ describe("ADHOC LSA conditional promotion", () => {
     expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
       .toMatchObject({ state: "refused", message: expect.stringContaining("exact epic label") });
     expect(s.run).not.toHaveBeenCalled();
+  });
+
+  it("does not certify an ACK for the same revision when the summary body changed", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
+    const s = await setup({ others: [canonical] });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100",
+      summary: { text: summary.replace("keep", "change"), revision: summaryRevision } }))
+      .toMatchObject({ state: "unknown", acknowledgement: "unknown" });
+  });
+
+  it("refuses a replay of a handoff request id with a different summary payload", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
+    const s = await setup({ others: [canonical] });
+    const requestId = randomUUID();
+    expect(await s.service.promote({ requestId, agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
+      .toMatchObject({ state: "handoff" });
+    expect(await s.service.promote({ requestId, agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary.replace("keep", "change"), revision: summaryRevision } }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("summary payload") });
+    expect(s.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates each listed promotion against its exact native owner before marking it current", async () => {
+    const s = await setup();
+    await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100" });
+    expect((await s.service.list()).find((entry) => entry.record.agentId === "agent-adhoc")?.validation.state).toBe("current");
+    const source = s.agents.get("agent-adhoc")!;
+    s.agents.set(source.id, { ...source, labels: { ...source.labels, persona: "kontor-lsa-adhoc@000000000000" } });
+    expect((await s.service.list()).find((entry) => entry.record.agentId === "agent-adhoc")?.validation)
+      .toMatchObject({ state: "stale", message: expect.stringContaining("persona") });
   });
   it("refuses a source that is not an ADHOC LSA and a closed or non-epic key before any effect", async () => {
     const tpm = agent("agent-tpm", { labels: { role: "TPM", [TITLE_AUTO_LABEL]: "TPM • ADHOC • Route", persona: PERSONA_VERSION } });

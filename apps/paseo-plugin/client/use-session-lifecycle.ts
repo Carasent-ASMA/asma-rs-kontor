@@ -3,7 +3,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { ARCHIVE_BATCH_LIMIT, archiveSummary, DEFAULT_RECOVERY_TARGET, RESUME_REMOVED, deriveSessionProjection, executeLifecycleItem, freshAvailability, nativeArchiveMembership, reconcileLifecycleItem, previewLifecycle, readLifecycleReview, unresolvedArchive, type ArchiveIntentObservation, type LifecycleReview, type LifecycleRow, type ProjectionConflict, type ProjectionSource, type ScopeClaim, type SessionProjection, type UnresolvedRef } from "../shared/session-lifecycle";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
-import { readPromotionList, type PromotionRecord } from "../shared/session-promotion";
+import { readPromotionList, type PromotionListEntry } from "../shared/session-promotion";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
 export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
@@ -152,7 +152,7 @@ const failureText = (failure: unknown) => failure instanceof Error ? failure.mes
 
 export type SessionRetirementRead = ReturnType<typeof useSessionRetirementProjection>;
 
-function emptyPromotions(hostId: string): { readonly hostId: string; readonly rows: Readonly<Record<string, PromotionRecord>>; readonly state: "idle" | "reading" | "ready" | "unknown"; readonly error: string | null } {
+function emptyPromotions(hostId: string): { readonly hostId: string; readonly rows: Readonly<Record<string, PromotionListEntry>>; readonly state: "idle" | "reading" | "ready" | "unknown"; readonly error: string | null } {
   return { hostId, rows: {}, state: "idle", error: null };
 }
 
@@ -190,13 +190,14 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     if (stale()) return;
     setReceipts((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
     setPromotions((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
-    let promotionRows: PromotionRecord[] | null = null, promotionError: string | null = null;
+    let promotionRows: PromotionListEntry[] | null = null, promotionError: string | null = null;
     try { promotionRows = await readPromotions({}); } catch (failure) { promotionError = failureText(failure); }
     if (!stale()) {
-      const rows: Record<string, PromotionRecord> = {};
-      for (const record of promotionRows ?? []) {
-        if (record.state === "promoted") rows[record.agentId] = record;
-        else if (record.state === "handoff" && record.canonicalAgentId) rows[record.canonicalAgentId] = record;
+      const rows: Record<string, PromotionListEntry> = {};
+      for (const entry of promotionRows ?? []) {
+        const record = entry.record;
+        if (record.state === "promoted") rows[record.agentId] = entry;
+        else if (record.state === "handoff" && record.canonicalAgentId) rows[record.canonicalAgentId] = entry;
       }
       setPromotions({ hostId: host, rows, state: promotionRows ? "ready" : "unknown", error: promotionError });
     }
@@ -282,13 +283,17 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     };
     const promotionOf = (entry: DirectoryEntry) => {
       if (promotions.hostId !== hostId) return null;
-      const record = promotions.rows[entry.id];
-      if (!record || (record.state !== "promoted" && record.state !== "handoff")) return null;
+      const entryRecord = promotions.rows[entry.id];
+      if (!entryRecord) return null;
+      const record = entryRecord.record;
+      if (record.state !== "promoted" && record.state !== "handoff") return null;
+      const validation = entryRecord.validation;
+      const fresh = validation.state === "current" ? "current" as const : validation.state === "stale" ? "stale" as const : "unknown" as const;
       return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
           title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
         source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
-        detail: `${record.state} promotion record`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
-        fresh: promotions.state === "ready" ? "current" as const : "unknown" as const } };
+        detail: `${record.state} promotion record: ${validation.message}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+        fresh } };
     };
     const projections = new Map<string, SessionProjection>();
     for (const entry of input.entries) {
