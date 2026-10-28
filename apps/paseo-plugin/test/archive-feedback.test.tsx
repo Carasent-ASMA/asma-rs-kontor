@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type * as Feedback from "../client/archive-feedback";
 import type { useSessionLifecycle as Hook } from "../client/use-session-lifecycle";
 import * as lifecycle from "../shared/session-lifecycle";
+import * as promotion from "../shared/session-promotion";
 import type { LifecycleReview, LifecycleRow, UnresolvedRef } from "../shared/session-lifecycle";
 import { deferredReact, loadHermesScoped } from "./hermes-scoping";
 import { configureArchiveNoticeStorage, hiddenArchivesKey, readHiddenArchives, recoveryKey, recoveryLine, recoveryState, refreshNote, writeHiddenArchives, type RecoveryItem } from "../client/archive-feedback";
@@ -26,7 +27,7 @@ function mount(rpc: Record<string, (input: Record<string, unknown>) => Promise<u
   const react = { ...base, useEffect: (fn: () => (() => void) | void, deps: unknown[]) => base.useEffect(() => {
     const cleanup = fn(); if (!cleanup) return; cleanups.add(cleanup); return () => { cleanups.delete(cleanup); cleanup(); };
   }, deps) };
-  const modules = { react, "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle };
+  const modules = { react, "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle, "../shared/session-promotion": promotion };
   const { useSessionLifecycle } = loadHermesScoped<{ useSessionLifecycle: typeof Hook }>("../client/use-session-lifecycle.ts", modules);
   const { useArchiveRecovery } = loadHermesScoped<typeof Feedback>("../client/archive-feedback.ts", modules);
   return Object.assign(() => render(() => { const state = useSessionLifecycle(host(), changed); return { lifecycle: state, recovery: useArchiveRecovery(host(), state, changed) }; }),
@@ -41,6 +42,7 @@ function host(reads: Array<() => Promise<unknown>> = []) {
     "sessions.lifecycle-preview": async (input) => ({ id: "00000000-0000-4000-8000-0000000000d4", action: input.action, scope: "filtered", rows: (input.agentIds as string[]).map((id) => row(id)) }),
     "sessions.lifecycle-execute-item": async (input) => row(input.agentId as string, { outcome: "archived", runtime: "closed" }),
     "sessions.lifecycle-reconcile-item": async (input) => row(input.agentId as string, { outcome: "archived", runtime: "closed" }),
+    "sessions.promotion-list": async () => [],
   };
   const rpc = Object.fromEntries(Object.keys(handlers).map((name) => [name, record(name)]));
   return { handlers, rpc, calls, owners, count: (name: string) => calls.filter(([called]) => called === name).length,

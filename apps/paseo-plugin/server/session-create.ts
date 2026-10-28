@@ -9,6 +9,7 @@ import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorksp
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { summaryPinSchema, UNSUPPORTED } from "../shared/session-navigator";
 import { readConfig } from "./config";
+import { canonicalLeadProblem } from "./session-canonical";
 import { readPinnedSummary, summaryStateRoot } from "./session-summaries";
 import { readFloor } from "./floor";
 import {
@@ -95,7 +96,7 @@ const PERSONA_HEAD = [
 const ADHOC_LSA_TEMPLATE = [
   PERSONA_HEAD.replace("{role}", "LSA (Lead Software Architect)").replace("{scope}", "Scope: ADHOC."),
   "Purpose: own architecture, scope coherence, cross-task decisions and remediation design for the question at hand. Your outputs are decisions, designs, decision-record proposals, review verdicts and named gaps, never delivery code that belongs to a task.",
-  "Promotion is a handoff. This session stays ad hoc: do not rename yourself to a key and do not create the successor yourself. When the work gets a confirmed epic key, write the handoff summary through the seat-handoff mechanism (scope, artifacts, fulfilled and unverified criteria, findings, next action and artifact revision) and ask the operator to start the bound lead in the desk's LSA workspace with this session named as the source.",
+  "Promotion rule. If the operator confirms an epic key and authoritative discovery finds no canonical epic LSA, this same session may be promoted in place: keep this native ID, history, model and operator title; consume the authoritative binding context and own that epic's architecture. Do not create a replacement or a second lead. If a canonical epic LSA exists, write the durable handoff summary (scope, artifacts and revisions, fulfilled and unverified criteria, findings, next action) and wait for that exact lead's exact-revision acknowledgement before releasing this work; do not create or relabel another lead. Unknown, incomplete or ambiguous discovery is not proof of absence. Never infer a lead from a title or label. Keep the native origin unchanged; a retained ADHOC origin is the logical epic LSA, not a native workspace move.",
 ].join("\n");
 
 const BOUND_LSA_TEMPLATE = [
@@ -441,7 +442,7 @@ async function createLeadWorkspace(client: CreateClient, desk: DeskInventory, na
 
 // shortcut: one plugin worker owns the state root; add an inter-process fence if the host supports concurrent workers.
 let queue: Promise<unknown> = Promise.resolve();
-function serial<T>(step: () => Promise<T>): Promise<T> {
+export function serial<T>(step: () => Promise<T>): Promise<T> {
   const next = queue.then(step);
   queue = next.catch(() => {});
   return next;
@@ -671,7 +672,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const desk = desksOf(workspaces).find((entry) => entry.projectId === input.projectId);
     if (!desk) return refusal(deskCheckoutProblem(workspaces, input.projectId) ?? "That desk is no longer available on this host.");
     if (input.start === "from-jira" && (desk.kind === "pr-review" || desk.kind === "other")) return refusal(`${desk.project} offers ad hoc sessions only; From Jira is not available there.`);
-    let key: string | null = null, topic: string;
+    let key: string | null = null, canonicalEpic: string | null = null, topic: string;
     if (input.start === "from-jira") {
       const wanted = (input.issueKey ?? "").trim().toUpperCase();
       if (!JIRA_KEY_PATTERN.test(wanted)) return refusal("Choose an ASMA issue key, for example ASMA-1234.");
@@ -682,6 +683,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       const gate = deskIssueProblem(desk, issue);
       if (gate) return refusal(gate);
       key = wanted;
+      if (issue.epic) canonicalEpic = wanted;
       topic = input.topic === undefined ? issueTopic(issue.summary) : normalizeTopic(input.topic);
     } else {
       topic = normalizeTopic(input.topic ?? "");
@@ -689,6 +691,10 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const problem = topicProblem(topic);
     if (problem) return refusal(problem);
     const title = leadTitle(input.role, key, topic);
+    if (input.role === "LSA" && canonicalEpic) {
+      const canonical = await canonicalLeadProblem(client, root, canonicalEpic);
+      if (canonical) return refusal(canonical, title);
+    }
     let source: string | null = null;
     let pinned: z.infer<typeof summaryPinSchema> | null = null;
     if (input.sourceSummary) {
