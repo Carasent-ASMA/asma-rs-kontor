@@ -2238,7 +2238,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, recent: recentIds, refined, state, includeArchived,
     freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count }),
     [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
-  const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
+  // Native catalog rows carry no labels. Desk and outside-desk facts depend on
+  // those labels, so their counts are unknown, never zero, while direct cannot
+  // supply the labels.
+  const labelsUnavailable = state.labelsComplete === false;
+  const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => labelsUnavailable && id !== null
+    ? null
+    : scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [labelsUnavailable, scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
   const workstreamChoices = useMemo(() => work === "all" ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),

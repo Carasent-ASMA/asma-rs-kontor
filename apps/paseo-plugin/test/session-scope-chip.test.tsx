@@ -37,6 +37,14 @@ describe("scope icon controls", () => {
     props.onPress!({} as never); expect(help.dismiss).toHaveBeenCalledOnce(); expect(onPress).toHaveBeenCalledOnce();
   });
 
+  it("shows an unknown desk count instead of a false zero when catalog rows carry no labels", () => {
+    const tree = SessionScopeChip({ choice: SESSION_SHORTCUTS[2], count: null, active: false, colors, onPress() {} });
+    expect(tree.props.accessibilityLabel).toBe("Adam desk, desk count unavailable");
+    expect(String(tree.props.accessibilityHint)).toContain("does not carry session labels");
+    expect(walk(tree).some((node) => node.props.children === "—")).toBe(true);
+    expect(help.text).toContain("desk count is unavailable");
+  });
+
   it("keeps 44pt targets, zero/large counts, pressed feedback, focus and disabled states", () => {
     for (const count of [0, 1, 10000]) {
       const tree = SessionScopeChip({ choice: SESSION_SHORTCUTS[0], count, active: false, disabled: true, colors, onPress() {} });

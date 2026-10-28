@@ -157,7 +157,18 @@ pub async fn discover_with_budget(
                 let absent = diagnostic.code == "explicit_source_absent";
                 diagnostics.push(diagnostic.message);
                 if !absent {
-                    finished = false;
+                    // A source that is not a readable plan document is one bad
+                    // source, not evidence that the whole root was read. Drop
+                    // the containing root's absence evidence so its occurrence
+                    // cannot be tombstoned, then keep the sweep complete.
+                    let canonical = std::fs::canonicalize(&source.path).ok();
+                    scanned_roots.retain(|root| {
+                        let root_path = Path::new(&root.repository_root);
+                        !source.path.starts_with(root_path)
+                            && !canonical
+                                .as_deref()
+                                .is_some_and(|path| path.starts_with(root_path))
+                    });
                 }
             }
         }

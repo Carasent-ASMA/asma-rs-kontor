@@ -288,6 +288,201 @@ async fn an_incomplete_sweep_cannot_tombstone_an_absence_it_did_not_prove() {
 }
 
 #[tokio::test]
+async fn a_plan_that_grew_past_the_read_bound_is_not_removed() {
+    let repo = Repo::new();
+    let content = plan("Grows", Some("ASMA-9704"), Some("kontor"), "");
+    repo.write("plans/grows.md", &content);
+    repo.commit("grows");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    sweep(&fixture.catalog).await;
+
+    let mut huge = content;
+    huge.push_str(&"x".repeat(3 * 1024 * 1024));
+    repo.write("plans/grows.md", &huge);
+    repo.commit("huge");
+    sweep(&fixture.catalog).await;
+
+    let status = fixture.catalog.status().unwrap();
+    assert_eq!(
+        status.collection.coverage[0].state,
+        kontor_catalog::contract::RepositoryState::Partial
+    );
+    let entries = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert!(
+        entries.entries.iter().any(
+            |entry| entry.title == "Grows" && entry.state == kontor_catalog::EntryState::Active
+        ),
+        "a plan that could not be read is not proven absent"
+    );
+}
+
+#[tokio::test]
+async fn a_partial_root_cannot_prove_a_sibling_plan_absent() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/gone.md",
+        &plan("Gone", Some("ASMA-9705"), Some("kontor"), ""),
+    );
+    let mut huge = plan("Huge", Some("ASMA-9706"), Some("kontor"), "");
+    huge.push_str(&"x".repeat(3 * 1024 * 1024));
+    repo.write("plans/huge.md", &huge);
+    repo.commit("two");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    sweep(&fixture.catalog).await;
+
+    repo.remove("plans/gone.md");
+    repo.commit("remove gone");
+    sweep(&fixture.catalog).await;
+    let entries = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert!(
+        entries.entries.iter().any(|entry| entry.title == "Gone"),
+        "a partial root withholds its absence evidence"
+    );
+}
+
+#[tokio::test]
+async fn a_tombstone_survives_later_generations() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/keep.md",
+        &plan("Keep", Some("ASMA-9707"), Some("kontor"), ""),
+    );
+    repo.write(
+        "plans/drop.md",
+        &plan("Drop", Some("ASMA-9708"), Some("kontor"), ""),
+    );
+    repo.commit("two");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    sweep(&fixture.catalog).await;
+
+    repo.remove("plans/drop.md");
+    repo.commit("drop");
+    for _ in 0..4 {
+        sweep(&fixture.catalog).await;
+    }
+    let history = fixture
+        .catalog
+        .entries(&EntryFilter {
+            include_removed: true,
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    let dropped = history
+        .entries
+        .iter()
+        .find(|entry| entry.title == "Drop")
+        .expect("the tombstone remains readable four generations later");
+    assert_eq!(dropped.state, kontor_catalog::EntryState::Removed);
+    assert_eq!(dropped.occurrences.len(), 1);
+    assert_eq!(
+        dropped.occurrences[0].state,
+        kontor_catalog::EntryState::Removed
+    );
+    assert!(fixture.catalog.status().unwrap().counts.tombstones >= 1);
+}
+
+#[tokio::test]
+async fn observer_reads_do_not_write_configuration_provenance() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/a.md",
+        &plan("A", Some("ASMA-9709"), Some("kontor"), ""),
+    );
+    repo.commit("a");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    sweep(&fixture.catalog).await;
+    let read = || -> String {
+        let connection =
+            rusqlite::Connection::open(Catalog::database_path(fixture.state.path())).unwrap();
+        connection
+            .query_row("SELECT imported_at FROM catalog_config", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    let before = read();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fixture.catalog.status().unwrap();
+    fixture.catalog.sources().unwrap();
+    assert_eq!(read(), before, "a GET is not a configuration event");
+}
+
+#[tokio::test]
+async fn a_hidden_occurrence_does_not_pin_a_removed_plan_active() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/a.md",
+        &plan(
+            "Pinned",
+            Some("ASMA-9712"),
+            Some("kontor"),
+            "catalog_id: pinned-id\n",
+        ),
+    );
+    repo.commit("a");
+    let fixture = Fixture::open(&[(repo.root().to_path_buf(), false)], None, 30);
+    sweep(&fixture.catalog).await;
+
+    repo.write(
+        "plans/b.md",
+        &plan(
+            "Pinned",
+            Some("ASMA-9712"),
+            Some("kontor"),
+            "catalog_id: pinned-id\n",
+        ),
+    );
+    repo.commit("b");
+    let settings = settings_of(fixture.state.path());
+    let now = Timestamp::now();
+    fixture.catalog.release_owner().unwrap();
+    let database = Database::open(&Catalog::database_path(fixture.state.path())).unwrap();
+    database.acquire_owner("partial-owner", 120, &now).unwrap();
+    let partial = database.begin_sweep("partial-owner", &now).unwrap();
+    let discovered = kontor_catalog::discovery::discover(&settings, now).await;
+    database
+        .commit_page(
+            &partial,
+            0,
+            &now,
+            &discovered.entries,
+            discovered.files_seen,
+        )
+        .unwrap();
+    database
+        .finalize_sweep(
+            &partial,
+            &SweepOutcome {
+                complete: false,
+                coverage: discovered.coverage,
+                diagnostics: Vec::new(),
+                registry: discovered.registry,
+                files_seen: discovered.files_seen,
+                entries_seen: discovered.entries.len(),
+                error: None,
+                scanned_roots: discovered.scanned_roots,
+            },
+            &now,
+        )
+        .unwrap();
+    database.release_owner("partial-owner", &now).unwrap();
+
+    repo.remove("plans/a.md");
+    repo.remove("plans/b.md");
+    repo.commit("remove both");
+    let report = sweep(&fixture.catalog).await;
+    assert!(report.finished);
+    let entries = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert!(
+        entries
+            .entries
+            .iter()
+            .all(|entry| entry.logical_plan_id != "pinned-id"),
+        "a plan with no visible occurrence in a fully read root is removed"
+    );
+}
+
+#[tokio::test]
 async fn the_snapshot_is_generation_consistent_and_version_checked() {
     let repo = Repo::new();
     repo.write(
@@ -357,6 +552,87 @@ async fn a_root_removed_from_configuration_keeps_its_last_facts_visible() {
         "a root removed from configuration is unobserved, not removed"
     );
     assert_eq!(after.entries[0].title, "Retained plan");
+}
+
+#[tokio::test]
+async fn an_unreadable_root_keeps_plan_associations_diagnostics_and_conflicts() {
+    let repo = Repo::new();
+    let source_path = repo.write(
+        "plans/retained.md",
+        &plan(
+            "Retained plan",
+            Some("not-a-valid-epic"),
+            Some("kontor"),
+            "",
+        ),
+    );
+    repo.commit("retained");
+    let settings = CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: repo.root().to_path_buf(),
+            include_github_plans: false,
+        }],
+        sources: vec![kontor_catalog::config::OperatorSource {
+            id: "retained-source".to_owned(),
+            title: None,
+            kind: kontor_catalog::config::SourceKind::Plan,
+            path: source_path,
+            workstream: Some("operator".to_owned()),
+            epic: None,
+            project_id: None,
+            revision_kind: Default::default(),
+            expected_sha256: None,
+            logical_plan_id: None,
+        }],
+        ..CatalogSettings::default()
+    };
+    let fixture = Fixture::open_settings(settings);
+    sweep(&fixture.catalog).await;
+    let before = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(before.entries.len(), 1);
+    let before_entry = &before.entries[0];
+    let associations = before_entry.associations.len();
+    let diagnostics = before_entry.diagnostics.len();
+    let conflicts = before_entry.conflicts.len();
+    assert!(
+        associations >= 2,
+        "the declaration and operator associations"
+    );
+    assert!(diagnostics > 0, "the registry diagnostic is retained");
+    assert_eq!(conflicts, 1, "the workstream disagreement is retained");
+    let before_sources = fixture.catalog.sources().unwrap();
+    let pending = before_sources.sources[0].pending_verification;
+    assert_eq!(pending, associations);
+
+    std::fs::rename(repo.root(), fixture.state.path().join("moved-repository"))
+        .expect("the configured root becomes unreadable");
+    for _ in 0..2 {
+        sweep(&fixture.catalog).await;
+    }
+
+    let after = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(after.entries.len(), 1);
+    let after_entry = &after.entries[0];
+    assert_eq!(after_entry.associations.len(), associations);
+    assert_eq!(after_entry.diagnostics.len(), diagnostics);
+    assert_eq!(after_entry.conflicts.len(), conflicts);
+    let scoped = fixture
+        .catalog
+        .entries(&EntryFilter {
+            scope: Some("kontor".to_owned()),
+            ..EntryFilter::default()
+        })
+        .unwrap();
+    assert_eq!(
+        scoped.entries.len(),
+        1,
+        "the carried association still scopes"
+    );
+    assert_eq!(
+        fixture.catalog.sources().unwrap().sources[0].pending_verification,
+        pending
+    );
 }
 
 #[tokio::test]

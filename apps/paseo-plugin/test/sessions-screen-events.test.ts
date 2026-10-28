@@ -1075,6 +1075,41 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual([]);
   });
 
+  it("keeps the catalog freshness word on session state counts", () => {
+    directory.state = {
+      ...(directory.state as object),
+      entries: [sessionEntry("catalog", { status: "idle" })],
+      source: "catalog",
+      status: "stale",
+      live: false,
+      inventoryComplete: true,
+      lastUpdatedAt: 0,
+    };
+    renderScreen();
+    const count = findByTestID(harness.current(), "sessions-filter-idle").props.count as SessionStateCount;
+    expect(count.text).toBe("…");
+    expect(count.label.toLowerCase()).toContain("catalog");
+    expect(count.label.toLowerCase()).not.toContain("stale");
+  });
+
+  it("does not show false desk zeros when catalog rows carry no labels", () => {
+    directory.state = {
+      ...(directory.state as object),
+      entries: [sessionEntry("catalog-only", { labels: {} })],
+      source: "catalog",
+      labelsComplete: false,
+      status: "ready",
+      live: false,
+      inventoryComplete: true,
+    };
+    renderScreen();
+    const chip = (index: number) => findByTestID(harness.current(), `sessions-shortcut-${index}`);
+    expect(chip(0).props.count).toBe(1);
+    for (const index of [1, 2, 3, 4]) {
+      expect(chip(index).props.count).toBeNull();
+    }
+  });
+
   it.each([
     ["unavailable", { status: "unavailable", error: "Settings unreadable" }],
     ["saving", { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: true, saveError: null }],

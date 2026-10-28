@@ -30,6 +30,18 @@ function signalLine(sessions: ReturnType<typeof nativeSummary>, directory: Direc
   return [count(sessions.total, "session"), sessions.running ? `${sessions.running} running` : null, sessions.attention ? `${sessions.attention} attention` : null,
     sessions.needsInput ? `${sessions.needsInput} need input` : null, sessions.errors ? count(sessions.errors, "error") : null].filter(Boolean).join(" · ");
 }
+/** The disclosure's short catalog state; a bounded or incomplete read is never called live. */
+export function catalogDisclosureCue(catalog: WorkCatalogRead | null | undefined, directory: DirectoryState): string | null {
+  if (catalog?.mode === "snapshot") return "catalog snapshot";
+  if (catalog?.mode === "unavailable") return "catalog unavailable";
+  if (catalog?.mode !== "catalog") return null;
+  const partial = (directory.source === "catalog" && directory.inventoryComplete !== true)
+    || catalog.sourceAsOf === null
+    || catalog.view?.entriesTruncated === true
+    || catalog.native?.view?.truncated === true;
+  return partial ? "catalog partial" : "catalog live";
+}
+
 /** A visible cue only when the native read is not a complete one; the exact read stays in Sources and coverage. */
 function inventoryCue(directory: DirectoryState): string | null {
   if (directory.lastUpdatedAt === null) return directory.source === "unavailable" ? "inventory unavailable" : "inventory not read yet";
@@ -67,9 +79,7 @@ export function OverviewPage(props: Props) {
   const scope = `${props.scoped ? "Project" : "Global"} overview, available without kontord.`;
   const meta = [signalLine(total, props.directory), !props.scoped && loose ? `${loose} epic unknown` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
   const jiraLabel = observed.length ? `Jira captured ${observed.map(shortDates).join(" / ")}` : "Jira not connected";
-  const catalogCue = props.catalog?.mode === "snapshot" ? "catalog snapshot"
-    : props.catalog?.mode === "unavailable" ? "catalog unavailable"
-    : props.catalog?.mode === "catalog" ? "catalog live" : null;
+  const catalogCue = catalogDisclosureCue(props.catalog, props.directory);
   return <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ width: "100%", maxWidth: 1100, alignSelf: "center", gap: 14 }}>
     {/* One title and one meta line; scope, exact counts and the read time stay in Sources and coverage. */}
     <View style={{ gap: props.compact ? 3 : 4 }}>

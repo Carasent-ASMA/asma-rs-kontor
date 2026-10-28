@@ -32,8 +32,13 @@ export const WORK_CATALOG_OUTPUT_LIMIT = 8 * 1024 * 1024;
 export const WORK_CATALOG_SNAPSHOT_LIMIT = 8 * 1024 * 1024;
 export const WORK_CATALOG_PAGE_LIMIT = 1_000;
 export const WORK_CATALOG_MAX_PAGES = 3;
-/** Native census bound: five 1,000-row pages cover the known production census. */
-export const WORK_CATALOG_NATIVE_MAX_PAGES = 5;
+/**
+ * Native census bound: six 1,000-row pages cover the known 5,654-record
+ * production census. The daemon orders active sessions before archived ones,
+ * so a future census that outgrows this bound still cannot drop an active
+ * session from the first page.
+ */
+export const WORK_CATALOG_NATIVE_MAX_PAGES = 6;
 export const WORK_CATALOG_SNAPSHOT_FILE = "work-catalog-snapshot.json";
 
 const SOURCES_TOOL = "kontor_work_catalog_sources";

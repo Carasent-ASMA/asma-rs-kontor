@@ -54,8 +54,8 @@ export const workCatalogViewSchema = z.object({
   entriesTruncated: z.boolean(),
 }).strict();
 
-/** The plugin's native view bound: covers the known production census above the old 3,000-row bound. */
-export const WORK_CATALOG_NATIVE_VIEW_MAX = 5_000;
+/** The plugin's native view bound: six pages cover the known 5,654-record production census. */
+export const WORK_CATALOG_NATIVE_VIEW_MAX = 6_000;
 
 /** One native project, reduced to what the plugin displays and groups. */
 export const workCatalogNativeProjectSchema = z.object({

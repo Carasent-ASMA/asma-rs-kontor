@@ -620,6 +620,23 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-create-status")?.props.children).toBe(message);
   });
 
+  it("keeps catalog freshness in the switch sheet", async () => {
+    const s = sheet({
+      directory: {
+        ...directory([prompted("agent-a", Date.now() - 60_000)]),
+        source: "catalog",
+        status: "stale",
+        live: false,
+        inventoryComplete: true,
+      },
+    });
+    await settle();
+    s.render();
+    expect(byTestId(s.tree, "kontor-switch-freshness")).toBeDefined();
+    expect(text(s.tree)).toContain("Last known · Catalog");
+    expect(text(s.tree)).not.toContain("Last known · Stale");
+  });
+
   it("asks nothing of an offline host and shows the last known list", () => {
     const s = sheet({ hostStatus: "offline", directory: directory([prompted("agent-a", Date.now() - 60_000)], false) });
     expect(model.rpc["sessions.create-options"]).not.toHaveBeenCalled();

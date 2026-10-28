@@ -494,6 +494,27 @@ describe("Board linked sessions", () => {
     expect(elements(mount({ selectedId: "plan", reads: [plan, jira] }).header).some((element) => element.props.testID === "board-sessions-meta")).toBe(false);
   });
 
+  it("says linked sessions are unknown, not absent, when catalog rows carry no labels", () => {
+    const base = sessionsOf(entries);
+    const sessions: BoardSessions = {
+      ...base,
+      state: {
+        ...base.state,
+        source: "catalog",
+        labelsComplete: false,
+        live: false,
+        status: "ready",
+        inventoryComplete: true,
+      },
+    };
+    const { data, row, header } = mount({ selectedId: "plan", reads: [plan, jira], sessions });
+    const meta = elements(header).find((element) => element.props.testID === "board-sessions-meta")!;
+    expect(text(meta)).toContain("Linked sessions unknown");
+    expect(text(meta)).not.toContain("No task has a linked session");
+    expect(text(header)).not.toContain("No task has a linked session");
+    expect(control(row(taskRows(data)[0]!))).toBeUndefined();
+  });
+
   it("adds one chain line to a linked compact row, a real 44pt target on touch, and nothing to an unlinked row", () => {
     const { data, row } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries) });
     const linked = card(row(taskRows(data)[0]!));

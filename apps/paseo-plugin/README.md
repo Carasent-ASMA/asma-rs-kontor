@@ -600,7 +600,7 @@ only declares read sources; it does not activate teams or grant execution.
 The plugin also reads the host-local Kontor work catalog through the existing
 observer `kontor-mcp` boundary (`--credential-tier observer`; no credential is
 forwarded). `work-catalog.read` takes the exact host `serverId`, asks for the
-composite per-source status, the native status, up to five bounded native
+composite per-source status, the native status, up to six bounded native
 inventory pages and up to three bounded entry pages. The Overview **Sources and coverage** disclosure
 shows each source's state, generation, source `asOf`, coverage, retry deadline,
 conflicts and pending verification.

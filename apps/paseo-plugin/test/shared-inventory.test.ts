@@ -103,6 +103,7 @@ describe("the shared native inventory adapter", () => {
     expect(adapted.directory.source).toBe("catalog");
     expect(adapted.directory.status).toBe("ready");
     expect(adapted.directory.inventoryComplete).toBe(true);
+    expect(adapted.directory.labelsComplete).toBe(false);
     expect(adapted.directory.lastUpdatedAt).toBe(Date.parse(AS_OF));
     expect(adapted.directory.staleReason).toBeNull();
     expect(adapted.directory.entries.map((entry) => entry.id)).toEqual(["session-a", "session-b"]);
@@ -135,6 +136,7 @@ describe("the shared native inventory adapter", () => {
     });
     expect(adapted.directory.source).toBe("direct");
     expect(adapted.directory.live).toBe(true);
+    expect(adapted.directory.labelsComplete).toBe(true);
     expect(adapted.directory.entries).toEqual([live]);
     expect(adapted.workspaces.source).toBe("direct");
   });
@@ -227,7 +229,7 @@ describe("the shared native inventory adapter", () => {
     expect(activeOnly.directory.status).toBe("ready");
   });
 
-  it("keeps duplicate titles as distinct rows and enriches only the exact session id", () => {
+  it("keeps duplicate titles as distinct rows and lets direct win per exact id", () => {
     const view = nativeView({
       sessions: [nativeSession("session-a", { title: "Same title" }), nativeSession("session-b", { title: "Same title" })],
     });
@@ -236,19 +238,52 @@ describe("the shared native inventory adapter", () => {
     });
     const wrongTitle = sessionEntry("session-x", { title: "Same title", labels: { epic: "ASMA-9" } });
     const adapted = adapt({
-      direct: { status: "stale", entries: [renamed, wrongTitle], inventoryComplete: false, lastUpdatedAt: Date.parse(AS_OF) },
+      direct: { status: "stale", live: false, entries: [renamed, wrongTitle], inventoryComplete: false, lastUpdatedAt: Date.parse(AS_OF) },
       catalog: catalog(native({ view })),
     });
     const a = adapted.directory.entries.find((entry) => entry.id === "session-a")!;
     const b = adapted.directory.entries.find((entry) => entry.id === "session-b")!;
-    expect(adapted.directory.entries).toHaveLength(2);
-    expect(a.title).toBe("Same title");
+    const x = adapted.directory.entries.find((entry) => entry.id === "session-x")!;
+    expect(adapted.directory.entries).toHaveLength(3);
+    expect(a.title).toBe("Live title");
     expect(a.labels).toEqual({ epic: "ASMA-1" });
     expect(a.pendingPermissionCount).toBe(2);
     expect(a.needsInput).toBe(true);
+    expect(b.title).toBe("Same title");
     expect(b.labels).toEqual({});
     expect(b.needsInput).toBe(false);
+    expect(x.labels).toEqual({ epic: "ASMA-9" });
     expect(a.id).not.toBe(b.id);
+  });
+
+  it("does not let a sweep-time catalog drop a seconds-old direct transition read", () => {
+    const directA = sessionEntry("session-a", { status: "running", title: "Direct title" });
+    const directNew = sessionEntry("session-new", { status: "running", title: "Just created" });
+    const adapted = adapt({
+      direct: {
+        status: "stale",
+        live: false,
+        entries: [directA, directNew],
+        inventoryComplete: false,
+        lastUpdatedAt: Date.parse("2026-10-25T06:14:02Z"),
+      },
+      catalog: catalog(native({ checkedAt: "2026-10-25T09:00:00Z" })),
+    });
+    expect(adapted.directory.source).toBe("catalog");
+    const a = adapted.directory.entries.find((entry) => entry.id === "session-a")!;
+    const fresh = adapted.directory.entries.find((entry) => entry.id === "session-new")!;
+    expect(adapted.directory.entries.map((entry) => entry.id).sort()).toEqual([
+      "session-a", "session-b", "session-new",
+    ]);
+    expect(a.status).toBe("running");
+    expect(a.title).toBe("Direct title");
+    expect(fresh.title).toBe("Just created");
+    expect(openSessionById({
+      entries: adapted.directory.entries,
+      id: "session-new",
+      serverId: HOST_ID,
+      navigation: { openAgent: vi.fn(), openWorkspace: vi.fn() },
+    }).ok).toBe(true);
   });
 
   it("keeps manual associations on the exact id rather than the title", () => {

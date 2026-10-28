@@ -133,6 +133,72 @@ async fn a_cursor_from_another_filter_is_refused() {
 }
 
 #[tokio::test]
+async fn one_unreadable_operator_source_does_not_freeze_the_catalog() {
+    let repo = Repo::new();
+    repo.write(
+        "_docs/plans/plan.md",
+        &plan("Plan", Some("ASMA-9010"), Some("kontor"), ""),
+    );
+    repo.commit("plan");
+    let bad_source = tempfile::TempDir::new().expect("a directory source");
+    let fixture = Fixture::open_settings(kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: repo.root().to_path_buf(),
+            include_github_plans: false,
+        }],
+        sources: vec![kontor_catalog::config::OperatorSource {
+            id: "bad-source".to_owned(),
+            title: None,
+            kind: kontor_catalog::config::SourceKind::Plan,
+            path: bad_source.path().to_path_buf(),
+            workstream: None,
+            epic: None,
+            project_id: None,
+            revision_kind: Default::default(),
+            expected_sha256: None,
+            logical_plan_id: None,
+        }],
+        ..kontor_catalog::CatalogSettings::default()
+    });
+
+    let first = sweep(&fixture.catalog).await;
+    assert!(
+        first.finished,
+        "a bad source is a diagnostic, not a failed sweep"
+    );
+    assert_eq!(first.generation, 1);
+    assert_eq!(
+        fixture
+            .catalog
+            .entries(&EntryFilter::default())
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+
+    repo.write(
+        "_docs/plans/second.md",
+        &plan("Second", Some("ASMA-9011"), Some("kontor"), ""),
+    );
+    repo.commit("second plan");
+    let second = sweep(&fixture.catalog).await;
+    assert!(second.finished);
+    assert_eq!(second.generation, 2, "the catalog keeps advancing");
+    assert_eq!(
+        fixture
+            .catalog
+            .entries(&EntryFilter::default())
+            .unwrap()
+            .entries
+            .len(),
+        2,
+        "a newly committed plan appears despite the bad source"
+    );
+}
+
+#[tokio::test]
 async fn source_coverage_is_bounded_and_keeps_its_summaries() {
     // The settings document admits at most 16 roots; the source view must stay
     // inside the plugin's 64-line public bound and keep its summary rows.

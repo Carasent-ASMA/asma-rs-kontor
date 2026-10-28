@@ -3762,6 +3762,53 @@ mod tests {
         assert!(!printed.contains("u:p@host"), "got {printed}");
     }
 
+    #[tokio::test]
+    async fn opening_a_live_connection_bumps_the_epoch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("client connection");
+            let mut socket = tokio_tungstenite::accept_async(socket)
+                .await
+                .expect("WebSocket handshake");
+            socket.next().await.expect("hello").expect("hello frame");
+            let info: serde_json::Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/paseo-0.8.0/protocol/server-info.json"
+            ))
+            .expect("server identity fixture");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "session",
+                        "message": { "type": "status", "payload": info },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("server identity");
+            let _ = socket.next().await;
+        });
+        let transport = PaseoLiveTransport::new(
+            "paseo",
+            SecretString::from(address.to_string()),
+            &format!("ws://{address}/ws"),
+            "epoch-bump-test",
+            30,
+        )
+        .expect("test transport");
+        assert_eq!(transport.connection_epoch(), 0);
+        transport.server_identity().await.expect("the identity");
+        assert_eq!(
+            transport.connection_epoch(),
+            1,
+            "connect() publishes a new epoch so a mid-walk reconnect is visible"
+        );
+        server.abort();
+    }
+
     /// A real socket is necessary here: the recorded transport never passes
     /// through the live reader's frame bound or its pending-request routing.
     async fn read_canonical_socket_answer(output_bytes: usize) -> RuntimeResult<PaseoFrame> {

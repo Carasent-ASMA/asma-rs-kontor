@@ -673,6 +673,11 @@ impl JiraCatalog {
         // Periodically recheck every fact not already answered by this sweep.
         // This is how a removed `ws:` label and a moved key are observed
         // without letting search consistency lag become a deletion.
+        //
+        // Incremental sweeps run far more often than full sweeps, so their
+        // recheck slice has its own bound. Using `max_recheck` here would let a
+        // small project direct-GET every prior issue every incremental cycle.
+        const INCREMENTAL_RECHECK_LIMIT: usize = 12;
         let mut recheck: Vec<JiraIssueObservation> = attempt
             .previous
             .values()
@@ -682,9 +687,14 @@ impl JiraCatalog {
             .cloned()
             .collect();
         recheck.sort_by_key(|item| key_order(&item.key));
-        if recheck.len() > self.settings.max_recheck {
+        let incremental_limit = self.settings.max_recheck.min(INCREMENTAL_RECHECK_LIMIT);
+        let recheck_limit = match mode {
+            JiraSweepMode::Full => self.settings.max_recheck,
+            JiraSweepMode::Incremental => incremental_limit,
+        };
+        if recheck.len() > recheck_limit {
             let total = recheck.len();
-            let limit = self.settings.max_recheck;
+            let limit = recheck_limit;
             match mode {
                 JiraSweepMode::Full => {
                     attempt.recovery_complete = false;

@@ -8,6 +8,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ ActivityIndicator: "ActivityIndicator", ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { SourceDetails } from "../client/source-details";
+import type { WorkCatalogRead } from "../shared/work-catalog";
 import { ReadOnlyPage } from "../client/read-only-pages";
 import { sessionEntry } from "./session-fixtures";
 type Props = Parameters<typeof ReadOnlyPage>[0];
@@ -35,6 +36,33 @@ function overview(reads: Record<string, SourceRead>, extra: Partial<Props> = {})
   const child = elements(outer).find((element) => element.props.tab === "Overview")!;
   return (child.type as (props: Props) => ReactNode)(child.props as Props);
 }
+const catalogRead = (nativeTruncated: boolean, entriesTruncated = false) => ({
+  mode: "catalog",
+  checkedAt: "2026-10-25T09:00:00Z",
+  sourceAsOf: "2026-10-25T08:15:00Z",
+  view: { schemaVersion: 1, sources: [], entries: [], entriesTruncated },
+  error: null,
+  snapshot: null,
+  native: {
+    mode: "catalog",
+    hostId: "srv_host_a",
+    runtimeInstance: "paseo:ws://127.0.0.1:6767/ws",
+    checkedAt: "2026-10-25T09:00:00Z",
+    view: {
+      runtimeInstance: "paseo:ws://127.0.0.1:6767/ws",
+      generation: 12,
+      asOf: "2026-10-25T08:55:00Z",
+      source: "database",
+      archiveScope: true,
+      truncated: nativeTruncated,
+      projects: [],
+      workspaces: [],
+      sessions: [],
+    },
+    error: null,
+    snapshotSavedAt: null,
+  },
+}) as unknown as WorkCatalogRead;
 const meta = (tree: ReactNode) => String(elements(tree).find((node) => node.props.testID === "overview-meta")!.props.accessibilityLabel);
 const tile = (tree: ReactNode, label: string) => elements(tree).find((node) => node.props.accessibilityRole === "button" && String(node.props.accessibilityLabel).startsWith(`${label}: `))!;
 beforeEach(() => { model.open = false; });
@@ -116,6 +144,14 @@ describe("compact Overview source evidence", () => {
     expect(opened).toContain("full backlog coverage is not established");
     expect(opened).toContain("Historical Jira · ready · Historical Jira snapshot");
   });
+  it("calls a bounded catalog partial instead of live", () => {
+    const cue = (catalog: WorkCatalogRead) => elements(overview({ plan, jira: read }, { scoped: true, catalog }))
+      .find((node) => node.props.accessibilityRole === "button" && String(node.props.accessibilityLabel).startsWith("Sources and coverage"))!;
+    expect(String(cue(catalogRead(true)).props.accessibilityLabel)).toContain("catalog partial");
+    expect(String(cue(catalogRead(false, true)).props.accessibilityLabel)).toContain("catalog partial");
+    expect(String(cue(catalogRead(false)).props.accessibilityLabel)).toContain("catalog live");
+  });
+
   it("retains native content when Jira is unavailable and never treats idle as task completion", () => {
     const tree = overview({ plan }, { scoped: true }); const visible = text(tree);
     expect(visible).toContain("1 session"); expect(meta(tree)).toContain("Sessions in this scope: 1 session · 0 running");

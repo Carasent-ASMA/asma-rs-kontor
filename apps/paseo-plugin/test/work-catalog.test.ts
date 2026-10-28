@@ -12,6 +12,7 @@ import {
   workCatalogReader,
   WORK_CATALOG_MAX_PAGES,
   WORK_CATALOG_NATIVE_MAX_PAGES,
+  WORK_CATALOG_OUTPUT_LIMIT,
   WORK_CATALOG_SNAPSHOT_FILE,
   WORK_CATALOG_SNAPSHOT_LIMIT,
 } from "../server/work-catalog";
@@ -331,6 +332,17 @@ describe("the plugin's shared catalog read", () => {
     expect((await fake.starts()).length).toBe(starts + 2);
   });
 
+  it("shares one in-flight read before it settles", async () => {
+    const fake = await fakeMcp();
+    const { paseoHome } = await sandbox();
+    const read = workCatalogReader(() => configFor(fake.command, paseoHome), () => Date.parse(AS_OF));
+    const first = read(HOST_ID);
+    const second = read(HOST_ID);
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+    expect(await fake.starts()).toHaveLength(1);
+  });
+
   it("reads the realistic multi-page native census without a cumulative response bound", async () => {
     const long = "x".repeat(1_500);
     const page = (index: number, next: string | null) => ({
@@ -357,6 +369,22 @@ describe("the plugin's shared catalog read", () => {
     expect(observation.native.view?.sessions).toHaveLength(5_000);
     expect(observation.native.view?.truncated).toBe(false);
   });
+
+  it("refuses one observer frame beyond the bounded read and keeps the plan catalog", async () => {
+    const huge = nativePage({
+      sessions: [nativeSession("huge", { title: "x".repeat(WORK_CATALOG_OUTPUT_LIMIT + 1_024) })],
+    });
+    const fake = await fakeMcp({ nativePages: { first: huge } });
+    const { paseoHome } = await sandbox();
+    const read = await loadWorkCatalog(configFor(fake.command, paseoHome), {
+      hostId: HOST_ID,
+      now: () => Date.parse(AS_OF),
+    });
+    expect(read.mode).toBe("catalog");
+    expect(read.view?.entries).toHaveLength(3);
+    expect(read.native.mode).toBe("unavailable");
+    expect(read.native.error).toContain("bounded read");
+  }, 30_000);
 
   it("leaves every operator-owned source file byte-identical through a fallback", async () => {
     const fake = await fakeMcp();
@@ -433,8 +461,8 @@ describe("the plugin's shared catalog read", () => {
     expect(read.native.view?.truncated).toBe(false);
   });
 
-  it("consumes a census above the old 3,000-row bound within the native bound", async () => {
-    const count = 4_500;
+  it("consumes the 5,654-record production census within the native bound", async () => {
+    const count = 5_654;
     const page = (start: number, end: number, next: string | null) => nativePage({
       sessions: Array.from({ length: end - start }, (_, index) => nativeSession(`session-${start + index}`)),
       projects: start === 0 ? [nativeProject] : [],
@@ -458,12 +486,13 @@ describe("the plugin's shared catalog read", () => {
         "native-2": page(1_000, 2_000, "native-3"),
         "native-3": page(2_000, 3_000, "native-4"),
         "native-4": page(3_000, 4_000, "native-5"),
-        "native-5": page(4_000, count, null),
+        "native-5": page(4_000, 5_000, "native-6"),
+        "native-6": page(5_000, count, null),
       },
     });
     const { paseoHome, configDirectory } = await sandbox();
     const read = await loadWorkCatalog(configFor(fake.command, paseoHome), { hostId: HOST_ID, now: () => Date.parse(AS_OF) });
-    expect(WORK_CATALOG_NATIVE_MAX_PAGES).toBe(5);
+    expect(WORK_CATALOG_NATIVE_MAX_PAGES).toBe(6);
     expect(read.native.mode).toBe("catalog");
     expect(read.native.view?.sessions).toHaveLength(count);
     expect(read.native.view?.truncated).toBe(false);

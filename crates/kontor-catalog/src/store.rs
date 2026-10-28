@@ -894,7 +894,7 @@ impl Database {
                ON p.logical_plan_id = a.logical_plan_id
              WHERE a.verified = 0
                AND a.dangling = 0
-               AND a.last_seen_generation = ?1
+               AND a.last_seen_generation = p.last_seen_generation
                AND p.state = 'active'
                AND p.visible_generation = ?1",
             params![generation_to_sql(active)],
@@ -1201,6 +1201,7 @@ fn promote_complete(
                SELECT 1 FROM catalog_occurrences o
                WHERE o.logical_plan_id = catalog_logical_plans.logical_plan_id
                  AND o.state = 'active'
+                 AND o.visible_generation IS NOT NULL
            )",
         params![observed_at, generation_to_sql(generation)],
     )?;
@@ -1909,7 +1910,8 @@ fn read_entries_at(
     include_removed: bool,
 ) -> Result<Vec<CatalogEntry>, StoreError> {
     let mut plans_statement = connection.prepare(
-        "SELECT logical_plan_id, kind, title, state, first_seen, last_seen
+        "SELECT logical_plan_id, kind, title, state, first_seen, last_seen,
+                last_seen_generation
          FROM catalog_logical_plans
          WHERE visible_generation = ?1
          ORDER BY kind, logical_plan_id",
@@ -1923,19 +1925,22 @@ fn read_entries_at(
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut result = Vec::with_capacity(plans.len());
-    for (logical_plan_id, kind, title, state, first_seen, last_seen) in plans {
+    for (logical_plan_id, kind, title, state, first_seen, last_seen, plan_generation) in plans {
+        let plan_generation = u64::try_from(plan_generation)
+            .map_err(|_| StoreError::Corrupt("negative plan generation".to_owned()))?;
         if !include_removed && state == "removed" {
             continue;
         }
         let occurrences = read_occurrences(connection, active, &logical_plan_id, include_removed)?;
         let aliases = read_aliases(connection, &logical_plan_id)?;
-        let associations = read_associations(connection, active, &logical_plan_id)?;
-        let diagnostics = read_entry_diagnostics(connection, active, &logical_plan_id)?;
-        let conflicts = read_entry_conflicts(connection, active, &logical_plan_id)?;
+        let associations = read_associations(connection, plan_generation, &logical_plan_id)?;
+        let diagnostics = read_entry_diagnostics(connection, plan_generation, &logical_plan_id)?;
+        let conflicts = read_entry_conflicts(connection, plan_generation, &logical_plan_id)?;
         result.push(CatalogEntry {
             logical_plan_id,
             kind: match kind.as_str() {
@@ -2094,7 +2099,7 @@ fn read_aliases(connection: &Connection, logical_plan_id: &str) -> Result<Vec<Al
 
 fn read_associations(
     connection: &Connection,
-    active: u64,
+    plan_generation: u64,
     logical_plan_id: &str,
 ) -> Result<Vec<Association>, StoreError> {
     let mut statement = connection.prepare(
@@ -2104,31 +2109,34 @@ fn read_associations(
            AND (last_seen_generation = ?2 OR dangling = 1)
          ORDER BY relation, value, association_kind",
     )?;
-    let rows = statement.query_map(params![logical_plan_id, generation_to_sql(active)], |row| {
-        let relation: String = row.get(0)?;
-        let kind: String = row.get(2)?;
-        let verified: i64 = row.get(4)?;
-        let dangling: i64 = row.get(5)?;
-        Ok(Association {
-            relation: parse_relation(&relation),
-            value: row.get(1)?,
-            kind: if kind == "explicit_operator" {
-                AssociationKind::ExplicitOperator
-            } else {
-                AssociationKind::PlanDeclaration
-            },
-            source_id: row.get(3)?,
-            verified: verified != 0,
-            dangling: dangling != 0,
-            note: row.get(6)?,
-        })
-    })?;
+    let rows = statement.query_map(
+        params![logical_plan_id, generation_to_sql(plan_generation)],
+        |row| {
+            let relation: String = row.get(0)?;
+            let kind: String = row.get(2)?;
+            let verified: i64 = row.get(4)?;
+            let dangling: i64 = row.get(5)?;
+            Ok(Association {
+                relation: parse_relation(&relation),
+                value: row.get(1)?,
+                kind: if kind == "explicit_operator" {
+                    AssociationKind::ExplicitOperator
+                } else {
+                    AssociationKind::PlanDeclaration
+                },
+                source_id: row.get(3)?,
+                verified: verified != 0,
+                dangling: dangling != 0,
+                note: row.get(6)?,
+            })
+        },
+    )?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 fn read_entry_diagnostics(
     connection: &Connection,
-    active: u64,
+    plan_generation: u64,
     logical_plan_id: &str,
 ) -> Result<Vec<Diagnostic>, StoreError> {
     let mut statement = connection.prepare(
@@ -2140,7 +2148,7 @@ fn read_entry_diagnostics(
     let rows = statement.query_map(
         params![
             crate::contract::HOST_SCOPE,
-            generation_to_sql(active),
+            generation_to_sql(plan_generation),
             logical_plan_id
         ],
         |row| {
@@ -2164,7 +2172,7 @@ fn read_entry_diagnostics(
 
 fn read_entry_conflicts(
     connection: &Connection,
-    active: u64,
+    plan_generation: u64,
     logical_plan_id: &str,
 ) -> Result<Vec<Conflict>, StoreError> {
     let mut statement = connection.prepare(
@@ -2176,7 +2184,7 @@ fn read_entry_conflicts(
     let rows = statement.query_map(
         params![
             crate::contract::HOST_SCOPE,
-            generation_to_sql(active),
+            generation_to_sql(plan_generation),
             logical_plan_id
         ],
         |row| {

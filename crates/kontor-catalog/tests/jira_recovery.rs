@@ -604,3 +604,60 @@ async fn an_incremental_recheck_bound_rotates_without_marking_the_sweep_incomple
         "{incremental:?}"
     );
 }
+
+#[tokio::test]
+async fn an_incremental_recheck_is_bounded_below_a_full_read() {
+    let fixture = JiraFixture::with_limits(&[], 1, 500, 10, 100, 100).await;
+    let issues: Vec<Value> = (100..116)
+        .map(|index| epic(&index.to_string(), &format!("ASMA-{index}"), &["ws:kontor"]))
+        .collect();
+    let first = full(&fixture, fixture.now(0), issues).await;
+    assert!(first.complete, "{first:?}");
+    assert_eq!(first.observed, 16);
+
+    fixture.reset().await;
+    fixture
+        .mount_scope_page(
+            true,
+            0,
+            None,
+            vec![epic("100", "ASMA-100", &["ws:kontor"])],
+            true,
+        )
+        .await;
+    for index in 101..116 {
+        fixture
+            .mount_issue(epic(
+                &index.to_string(),
+                &format!("ASMA-{index}"),
+                &["ws:kontor"],
+            ))
+            .await;
+    }
+    fixture.mount_catch_all_missing().await;
+    let incremental = fixture.collect(fixture.now(60)).await;
+    assert!(incremental.complete, "{incremental:?}");
+    assert_eq!(incremental.mode, JiraSweepMode::Incremental);
+    assert!(
+        incremental
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("rotating slice") && line.contains("12-issue")),
+        "{incremental:?}"
+    );
+
+    let requests = fixture.server.received_requests().await.expect("requests");
+    let searches = requests
+        .iter()
+        .filter(|request| request.url.path() == "/rest/api/3/search/jql")
+        .count();
+    let direct = requests
+        .iter()
+        .filter(|request| request.url.path().starts_with("/rest/api/3/issue/"))
+        .count();
+    assert_eq!(searches, 1);
+    assert_eq!(
+        direct, 12,
+        "incremental rechecks stop at the incremental bound, not max_recheck"
+    );
+}

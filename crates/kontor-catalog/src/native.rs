@@ -1919,7 +1919,7 @@ fn read_native_sessions(
          WHERE visible_generation = ?1
            AND (?2 = 1 OR state = 'active')
            AND (?3 IS NULL OR runtime_instance = ?3)
-         ORDER BY runtime_instance, workspace_id, session_id",
+         ORDER BY runtime_instance, (archived_at IS NOT NULL), workspace_id, session_id",
     )?;
     let rows = statement.query_map(
         params![

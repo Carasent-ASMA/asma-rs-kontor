@@ -47,10 +47,24 @@ impl JiraFixture {
     }
 
     pub async fn with_bounds(declared: &[&str], max_attempts: u32, max_recheck: usize) -> Self {
+        Self::with_limits(declared, max_attempts, max_recheck, 10, 100, 2).await
+    }
+
+    pub async fn with_limits(
+        declared: &[&str],
+        max_attempts: u32,
+        max_recheck: usize,
+        max_pages: usize,
+        max_issues: usize,
+        page_size: u32,
+    ) -> Self {
         let server = MockServer::start().await;
         let state_root = TempDir::new().expect("a catalog state root");
         let catalog = Arc::new(Catalog::open(state_root.path()).expect("the catalog opens"));
-        let settings = jira_settings(declared, max_attempts, max_recheck);
+        let mut settings = jira_settings(declared, max_attempts, max_recheck);
+        settings.max_pages = max_pages;
+        settings.max_issues = max_issues;
+        settings.page_size = page_size;
         let credential_root = TempDir::new().expect("a credential root");
         let reader = JiraReadOnly::new_with_keychain(
             credential_root.path(),
@@ -64,9 +78,9 @@ impl JiraFixture {
                     max_response_bytes: 1024 * 1024,
                     connect_timeout: Duration::from_millis(200),
                     request_timeout: Duration::from_secs(2),
-                    max_issues: 100,
-                    max_pages: 10,
-                    page_size: 2,
+                    max_issues,
+                    max_pages,
+                    page_size,
                 },
                 retry: JiraRetryPolicy {
                     max_attempts,

@@ -4,7 +4,7 @@
 > **Status:** implemented on `feat/ASMA-8655-plugin-integration-compatibility-and-degradation`; not merged
 > **Category:** architecture
 > **Scope:** `/v1/work-catalog` entries/cursors and per-source status, the observer MCP tools, `apps/paseo-plugin` catalog consumption and its versioned snapshot
-> **Summary:** TASK-004 makes the shared catalog readable through stable observer tools, pages entries and native inventory without mixing generations, and lets the plugin prefer the catalog while keeping its direct readers, exact native identity and every operator-owned association through a daemon outage.
+> **Summary:** TASK-004 makes the shared catalog readable through stable observer tools, pages entries and native inventory without mixing generations, and lets the plugin use the catalog as a per-id fallback while keeping its direct readers, exact native identity and every operator-owned association through a daemon outage.
 
 ## When to Load
 
@@ -71,7 +71,7 @@ allowlist entry.
 `kontor-status.ts`: it starts `kontor-mcp` with `--state-root`,
 `--credential-tier observer` and the optional serve profile, gives the child only
 `PATH` and `HOME`, and never opens, names or forwards a credential. It asks for
-`kontor_work_catalog_sources`, `kontor_work_catalog_native_status`, up to three
+`kontor_work_catalog_sources`, `kontor_work_catalog_native_status`, up to six
 bounded `kontor_work_catalog_native_inventory` pages and up to three bounded
 `kontor_work_catalog_entries` pages (1,000 rows each). The composite status is the
 source of truth for freshness; the entries are mapped to plan summaries by the
@@ -87,8 +87,10 @@ exist, with a positive generation and a completion instant. A missing, ambiguous
 or incomplete match is an unavailable native read, not a best-effort title match.
 
 The native inventory request pins the exact runtime instance and asks for up to
-five pages of 1,000 rows with `include_removed: false`. The 5,000-row native view
-bound covers the known production census with headroom. Every page
+six pages of 1,000 rows with `include_removed: false`. The 6,000-row native view
+bound covers the known 5,654-record production census. The daemon orders active
+sessions before archived ones, so an archived census that outgrows the bound
+cannot push active sessions out of the read. Every page
 must carry the same runtime instance, generation, `as_of`, source and archive
 scope. Rows are deduplicated by native id. `truncated`, a missing completion
 instant, or an archived request against `archiveScope: false` is a visible
@@ -156,11 +158,11 @@ honest limit instead of turning a declaration into a verification.
 
 - No catalog or plugin write to Jira, Paseo, plans, settings or the governed
   store; no session mutation and no enrollment.
-- The plugin's native inventory is bounded to five pages / 5,000 rows, covering
-  the known production census; a larger or archive-incomplete inventory stays
+- The plugin's native inventory is bounded to six pages / 6,000 rows; the daemon orders
+  active sessions first, and a larger or archive-incomplete inventory stays
   visibly partial.
-- Catalog-served rows are not merged with direct-only rows. A ready, live,
-  complete direct directory wins; the catalog answers only when direct cannot,
-  including an exact empty host.
+- Direct rows win per exact id; catalog rows fill only the ids direct does not
+  have. A ready, live, complete direct directory answers alone, and the catalog
+  answers only for ids direct cannot supply, including an exact empty host.
 - The console TypeScript schema is regenerated when the served contract changes;
   these reads are not yet consumed by a console screen.

@@ -146,10 +146,18 @@ function catalogDirectory(
   partial: boolean,
   warning: string | null,
 ): DirectoryState {
-  const byId = new Map(live.map((entry) => [entry.id, entry]));
-  const entries = view.sessions
-    .filter((session) => includeArchived || session.archivedAt === null)
-    .map((session) => catalogEntry(session, view, byId.get(session.sessionId)));
+  // Direct rows are fresher per id than any sweep-time catalog row: the
+  // catalog may have started before a session was created, renamed or changed
+  // state. Keep every direct row and use the catalog only for ids direct does
+  // not have. This also covers the archive-scope re-walk window, where a
+  // complete older catalog must not replace a seconds-old direct read.
+  const directIds = new Set(live.map((entry) => entry.id));
+  const entries = [...live];
+  for (const session of view.sessions) {
+    if (directIds.has(session.sessionId)) continue;
+    if (!includeArchived && session.archivedAt !== null) continue;
+    entries.push(catalogEntry(session, view, undefined));
+  }
   const asOf = timeOf(view.asOf);
   return {
     entries: sortDirectoryEntries(entries),
@@ -163,6 +171,7 @@ function catalogDirectory(
     includeArchived,
     source: warning !== null && view.source === "snapshot" ? "catalog-snapshot" : "catalog",
     sourceAsOf: view.asOf,
+    labelsComplete: false,
     catalogGeneration: view.generation,
     catalogRuntimeInstance: view.runtimeInstance,
   };
@@ -175,7 +184,7 @@ function snapshotDirectory(view: WorkCatalogNativeView, includeArchived: boolean
 }
 
 function directDirectory(direct: DirectoryState): DirectoryState {
-  return { ...direct, source: "direct", sourceAsOf: null, catalogGeneration: null, catalogRuntimeInstance: null };
+  return { ...direct, source: "direct", sourceAsOf: null, labelsComplete: true, catalogGeneration: null, catalogRuntimeInstance: null };
 }
 
 function unavailableDirectory(direct: DirectoryState): DirectoryState {

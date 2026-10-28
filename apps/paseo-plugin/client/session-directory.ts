@@ -160,6 +160,8 @@ export type DirectoryState = {
   readonly includeArchived: boolean;
   /** Which inventory supplied the rows; absent means the older direct reader. */
   readonly source?: "direct" | "catalog" | "catalog-snapshot" | "unavailable";
+  /** Whether every row carries the session labels task/desk joins need; absent means unknown. */
+  readonly labelsComplete?: boolean;
   /** The source completion instant the rows are as of, when a catalog supplied them. */
   readonly sourceAsOf?: string | null;
   readonly catalogGeneration?: number | null;

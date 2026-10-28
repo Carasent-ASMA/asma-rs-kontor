@@ -17,11 +17,13 @@ export const SESSION_SHORTCUTS = [
 
 type Shortcut = (typeof SESSION_SHORTCUTS)[number];
 export function SessionScopeChip({ choice, count, active, colors, disabled = false, onFocus, onBlur, onPress, testID }: {
-  choice: Shortcut; count: number; active: boolean; colors: Colors; disabled?: boolean;
+  choice: Shortcut; count: number | null; active: boolean; colors: Colors; disabled?: boolean;
   onFocus?: () => void; onBlur?: () => void; onPress(): void; testID?: string;
 }) {
-  const countLabel = `${count} session${count === 1 ? "" : "s"}`;
-  const explanation = `${choice.help} Search and other filters still apply.`;
+  const countLabel = count === null ? "desk count unavailable" : `${count} session${count === 1 ? "" : "s"}`;
+  const explanation = count === null
+    ? `${choice.help} The shared catalog does not carry session labels, so this desk count is unavailable. Search and other filters still apply.`
+    : `${choice.help} Search and other filters still apply.`;
   const help = useControlHelp(`${choice.label}, ${countLabel}. ${explanation} Counts are before search and other filters.`);
   return <Pressable {...help.bindings} testID={testID} accessibilityRole="button"
     accessibilityLabel={`${choice.label}, ${countLabel}`} accessibilityHint={explanation}
@@ -35,7 +37,7 @@ export function SessionScopeChip({ choice, count, active, colors, disabled = fal
     })}>
     <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
       <Icon name={choice.icon} size={16} color={colors.foreground} />
-      <Text style={{ color: colors.foreground, fontSize: 12, fontVariant: ["tabular-nums"] }}>{count}</Text>
+      <Text style={{ color: colors.foreground, fontSize: 12, fontVariant: ["tabular-nums"] }}>{count ?? "—"}</Text>
     </View>
     <Text style={{ color: colors.foreground, fontSize: 10, fontWeight: active ? "600" : "400", textDecorationLine: active ? "underline" : "none" }}>{choice.caption}</Text>
   </Pressable>;

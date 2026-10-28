@@ -945,3 +945,151 @@ async fn native_sweep_pages_and_old_checkpoints_are_pruned() {
     assert_eq!(pages, 3, "only the current generation's pages remain");
     assert!(sweeps <= 17, "old checkpoints are bounded history");
 }
+
+#[tokio::test]
+async fn failed_attempts_keep_the_served_native_checkpoint() {
+    let fixture = Fixture::open(&[], None, 30);
+    let mut answers = vec![census(
+        vec![project("prj_desk", "DESK • ADAM", "/repo")],
+        vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+        vec![session("agt_served", "Served", "wks_adam", None)],
+    )];
+    for _ in 0..25 {
+        answers.push(NativeCensus::unavailable(
+            RUNTIME,
+            CLIENT,
+            "the runtime is asleep",
+        ));
+    }
+    let source = FakeSource::new(answers);
+    assert!(collect(&fixture.catalog, &source).await.complete);
+    for _ in 0..25 {
+        assert!(!collect(&fixture.catalog, &source).await.complete);
+    }
+
+    let status = fixture.catalog.native_status().expect("status");
+    assert_eq!(status.generation, 1, "the served checkpoint is retained");
+    assert_eq!(status.attempted_generation, 26);
+    assert!(
+        status.as_of.is_some(),
+        "the active checkpoint is not pruned after 17 failed attempts"
+    );
+    assert_eq!(status.counts.sessions, 1);
+    let inventory = fixture
+        .catalog
+        .native_inventory(&NativeInventoryFilter::default())
+        .expect("inventory");
+    assert_eq!(inventory.generation, 1);
+    assert_eq!(inventory.sessions.len(), 1);
+}
+
+#[tokio::test]
+async fn a_native_tombstone_is_carried_across_later_generations() {
+    let fixture = Fixture::open(&[], None, 30);
+    let source = FakeSource::new(vec![
+        census(
+            vec![project("prj_desk", "DESK • ADAM", "/repo")],
+            vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+            vec![
+                session("agt_keep", "Keep", "wks_adam", None),
+                session("agt_drop", "Drop", "wks_adam", None),
+            ],
+        ),
+        census(
+            vec![project("prj_desk", "DESK • ADAM", "/repo")],
+            vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+            vec![session("agt_keep", "Keep", "wks_adam", None)],
+        ),
+        census(
+            vec![project("prj_desk", "DESK • ADAM", "/repo")],
+            vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+            vec![session("agt_keep", "Keep", "wks_adam", None)],
+        ),
+        census(
+            vec![project("prj_desk", "DESK • ADAM", "/repo")],
+            vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+            vec![session("agt_keep", "Keep", "wks_adam", None)],
+        ),
+    ]);
+    for _ in 0..4 {
+        assert!(collect(&fixture.catalog, &source).await.complete);
+    }
+
+    let history = fixture
+        .catalog
+        .native_inventory(&NativeInventoryFilter {
+            include_removed: true,
+            ..NativeInventoryFilter::default()
+        })
+        .expect("inventory");
+    let dropped = history
+        .sessions
+        .iter()
+        .find(|session| session.session_id == "agt_drop")
+        .expect("the tombstone remains readable after later generations");
+    assert_eq!(dropped.state, EntryState::Removed);
+    assert!(
+        !history
+            .sessions
+            .iter()
+            .any(|session| session.session_id == "agt_drop" && session.state == EntryState::Active),
+        "the removed session is not resurrected"
+    );
+}
+
+#[tokio::test]
+async fn native_pages_serve_active_sessions_before_archived_sessions() {
+    let fixture = Fixture::open(&[], None, 30);
+    let source = FakeSource::new(vec![census(
+        vec![project("prj_desk", "DESK • ADAM", "/repo")],
+        vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+        vec![
+            session("agt_active_b", "Active B", "wks_adam", None),
+            session(
+                "agt_archived_a",
+                "Archived A",
+                "wks_adam",
+                Some("2026-10-24T00:00:00Z"),
+            ),
+            session("agt_active_a", "Active A", "wks_adam", None),
+            session(
+                "agt_archived_b",
+                "Archived B",
+                "wks_adam",
+                Some("2026-10-24T01:00:00Z"),
+            ),
+        ],
+    )]);
+    assert!(collect(&fixture.catalog, &source).await.complete);
+
+    let mut cursor = None;
+    let mut sessions = Vec::new();
+    loop {
+        let page = fixture
+            .catalog
+            .native_inventory(&NativeInventoryFilter {
+                limit: 1,
+                cursor,
+                ..NativeInventoryFilter::default()
+            })
+            .expect("a native page");
+        sessions.extend(page.sessions);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(sessions.len(), 4);
+    assert!(
+        sessions[..2]
+            .iter()
+            .all(|session| session.archived_at.is_none()),
+        "active sessions occupy the first pages before any archived session"
+    );
+    assert!(
+        sessions[2..]
+            .iter()
+            .all(|session| session.archived_at.is_some()),
+        "archived sessions follow the active ones"
+    );
+}
