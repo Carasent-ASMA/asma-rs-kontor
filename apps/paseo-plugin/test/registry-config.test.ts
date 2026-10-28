@@ -3,15 +3,16 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginSettings } from "@getpaseo/plugin/server";
+import { stringify } from "yaml";
 import { contributeReadSources, readWorkstreamRegistry } from "../server/read-sources";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema } from "../shared/organization";
 import { listReadSources } from "../shared/read-sources";
 
 let root: string, config: string;
 async function registry(workspace: string, key = "access") {
-  const file = join(workspace, "config/orchestration/workstreams.json");
+  const file = join(workspace, "config/orchestration/workstreams.yml");
   await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: { [key]: { name: key } }, desks: { "pr-review-desk": { name: "Review" } } }));
+  await writeFile(file, stringify({ schema_version: 1, workstreams: { [key]: { name: key } }, desks: { "pr-review-desk": { name: "Review" } } }));
   return file;
 }
 beforeEach(async () => {
@@ -37,20 +38,39 @@ describe("operator registry configuration", () => {
     await writeFile(config, JSON.stringify({ workspaceRoot: b }));
     const next = await readWorkstreamRegistry(); expect(next.path).toBe(file); expect(next.revision).not.toBe(first.revision);
     expect(Object.keys(next.workstreams)).toEqual(["reporting"]); expect(Object.keys(next.desks)).toEqual(["pr-review-desk"]);
-    await writeFile(file, JSON.stringify({ schema_version: 2, workstreams: {}, desks: {} }));
+    await writeFile(file, stringify({ schema_version: 2, workstreams: {}, desks: {} }));
     expect((await readWorkstreamRegistry()).diagnostics.join()).toContain("unavailable");
     await writeFile(config, "invalid"); expect((await readWorkstreamRegistry()).workstreams).toEqual({});
   });
   it("keeps a desk's match rule and native project and nothing else of the desk entry", async () => {
     const workspace = join(root, "workspace");
     const file = await registry(workspace);
-    await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: {}, desks: {
+    await writeFile(file, stringify({ schema_version: 1, workstreams: {}, desks: {
       "pr-review-desk": { name: "PR Review Desk", paseo_project_from: "config/orchestration/pr-desk.yml desk.project", match: "first", row_by: "workspace" },
       "adam-adhoc": { name: "Adam • Ad-hoc", paseo_project: "DESK • ADAM", match: "fallback", row_by: "tab", rows: "one per tab" } } }));
     expect((await readWorkstreamRegistry(workspace)).desks).toEqual({ "pr-review-desk": { name: "PR Review Desk", match: "first" },
       "adam-adhoc": { name: "Adam • Ad-hoc", paseo_project: "DESK • ADAM", match: "fallback" } });
-    await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: {}, desks: { odd: { name: "Odd", match: "sometimes" } } }));
+    await writeFile(file, stringify({ schema_version: 1, workstreams: {}, desks: { odd: { name: "Odd", match: "sometimes" } } }));
     expect((await readWorkstreamRegistry(workspace)).diagnostics.join()).toContain("registry unavailable");
+  });
+
+  it("rejects malformed and repeated YAML keys", async () => {
+    const workspace = join(root, "workspace"); const file = await registry(workspace);
+    await writeFile(file, "schema_version: 1\nworkstreams: [\ndesks: {}\n");
+    expect((await readWorkstreamRegistry(workspace)).diagnostics.join()).toContain("valid YAML");
+    await writeFile(file, "schema_version: 1\nworkstreams: {}\nworkstreams: {}\ndesks: {}\n");
+    expect((await readWorkstreamRegistry(workspace)).diagnostics.join()).toContain("repeat keys");
+  });
+
+  it("does not fall back to the removed JSON registry", async () => {
+    const workspace = join(root, "workspace");
+    const legacy = join(workspace, "config/orchestration/workstreams.json");
+    await mkdir(dirname(legacy), { recursive: true });
+    await writeFile(legacy, JSON.stringify({ schema_version: 1, workstreams: { legacy: { name: "Legacy" } }, desks: {} }));
+    const result = await readWorkstreamRegistry(workspace);
+    expect(result.path).toBe(join(workspace, "config/orchestration/workstreams.yml"));
+    expect(result.workstreams).toEqual({}); expect(result.revision).toBeNull();
+    expect(result.diagnostics.join()).toContain("registry unavailable");
   });
 
   it("rejects a relative operator-config location instead of inferring cwd", async () => {
@@ -93,7 +113,7 @@ describe("operator registry configuration", () => {
     const stop = contributeReadSources(server, settings, { sources: [], diagnostics: [] });
     const handler = server.handle.mock.calls.find(([rpc]) => rpc.name === listReadSources.name)![1];
     const result = await handler({ workspaceRoot: "/caller/path" });
-    expect(result.registry.path).toBe(join(workspace, "config/orchestration/workstreams.json"));
+    expect(result.registry.path).toBe(join(workspace, "config/orchestration/workstreams.yml"));
     expect(Object.keys(result.registry.workstreams)).toEqual(["access"]); expect(result.sources).toEqual([]);
     stop();
   });

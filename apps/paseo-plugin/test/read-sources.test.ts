@@ -242,11 +242,11 @@ it("refreshes graphless metadata from exact read bytes despite an omitted catalo
   expect((await readConfiguredSource({ ...source, workstream: "tokenomics" }, exporter)).planMetadata?.workstream).toBeNull();
 });
 it("refreshes the bounded authoritative registry and reports missing configuration", async () => {
-  const { source } = await fixture(); const root = dirname(source.path), file = join(root, "config/orchestration/workstreams.json");
+  const { source } = await fixture(); const root = dirname(source.path), file = join(root, "config/orchestration/workstreams.yml");
   await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: { access: { name: "Access" } }, desks: {} }));
+  await writeFile(file, "schema_version: 1\nworkstreams:\n  access:\n    name: Access\ndesks: {}\n");
   const first = await readWorkstreamRegistry(root);
-  await writeFile(file, JSON.stringify({ schema_version: 1, workstreams: { reporting: { name: "Reporting" } }, desks: {} }));
+  await writeFile(file, "schema_version: 1\nworkstreams:\n  reporting:\n    name: Reporting\ndesks: {}\n");
   const next = await readWorkstreamRegistry(root);
   expect(next.revision).not.toBe(first.revision); expect(Object.keys(next.workstreams)).toEqual(["reporting"]);
   expect((await readWorkstreamRegistry("relative")).diagnostics.join()).toContain("unavailable");

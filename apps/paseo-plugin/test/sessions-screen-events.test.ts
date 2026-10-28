@@ -2627,7 +2627,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       await mkdir(join(root, "plugin-config/kontor"), { recursive: true });
       await mkdir(join(root, "config/orchestration"), { recursive: true });
       await writeFile(join(root, "plugin-config/kontor/registry.json"), JSON.stringify({ workspaceRoot: root }));
-      await writeFile(join(root, "config/orchestration/workstreams.json"), JSON.stringify({ schema_version: 1, workstreams: { access: { name: "Access" }, reporting: { name: "Reporting" } }, desks: { "pr-review-desk": { name: "Review" }, "adam-adhoc": { name: "Adam" } } }));
+      await writeFile(join(root, "config/orchestration/workstreams.yml"), "schema_version: 1\nworkstreams:\n  access:\n    name: Access\n  reporting:\n    name: Reporting\ndesks:\n  pr-review-desk:\n    name: Review\n  adam-adhoc:\n    name: Adam\n");
       vi.stubEnv("PASEO_HOME", root); vi.stubEnv("KONTOR_PLUGIN_ASMA_WORKSPACE", "");
       const registry = await readWorkstreamRegistry();
       directory.state = { ...emptyDirectoryState(), entries: [], status: "ready", live: true, inventoryComplete: true };
