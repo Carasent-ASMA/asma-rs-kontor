@@ -1389,6 +1389,16 @@ changes it. The daemon environment is not read for this switch.
 
 ## Tests
 
+Sessions cancels pending native row measurements when its screen unmounts, so
+late geometry replies cannot compensate the departed list's scroll position.
+The scroll-anchor regression covers delayed capture and restate replies,
+repeated Flat unmounts and measurement reuse after cleanup. This lifecycle
+coverage does not establish the cause or resolution of a native app exit;
+physical-device verification remains separate.
+On native devices, disabled and already-selected layout choices keep their
+radio labels and accessibility hints but suppress their tooltip measurement.
+This targeted mitigation does not establish a cause or cure for the iPhone exit.
+
 ```bash
 pnpm --filter @carasent/kontor-paseo-plugin typecheck
 pnpm --filter @carasent/kontor-paseo-plugin test
