@@ -153,6 +153,8 @@ impl Modify for RealmBearer {
         crate::applications::publish_fleet_bundle,
         crate::applications::activate_fleet_bundle,
         crate::applications::propose_fleet_bundle,
+        crate::applications::preview_provider_marker,
+        crate::applications::apply_provider_marker,
         crate::applications::project_capacity,
         crate::applications::refresh_capacity,
         crate::applications::capacity_observation,

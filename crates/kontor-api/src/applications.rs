@@ -3246,6 +3246,118 @@ pub struct FleetBundleProposalDto {
     pub role_catalog: FleetRoleCatalogPinDto,
 }
 
+/// One runtime setting's provider-unavailability marker, addressed for removal.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderMarkerPreviewRequest {
+    /// The runtime family key naming the configured setting. It is unique per
+    /// realm: two settings may not claim one family.
+    pub runtime_family: String,
+    /// The provider whose marker would be removed.
+    pub provider: String,
+}
+
+/// One effect a marker correction would have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderMarkerEffectDto {
+    /// The provider is removed from the setting's `unavailable_providers` in
+    /// `<state-root>/runtimes.json`.
+    MarkerRemoved,
+    /// A daemon composes its runtime fleet at start, so a running one keeps
+    /// answering with its current composition until it next starts.
+    RestartRequired,
+}
+
+/// What removing one setting's provider-unavailability marker would do.
+///
+/// A preview is a read: it takes no idempotency key, rewrites nothing and
+/// touches no seat. The `revision` it reports is the exact document revision it
+/// was computed against, and the hash the apply must name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProviderMarkerPreviewDto {
+    /// The Realm that computed it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The runtime family addressed.
+    pub runtime_family: String,
+    /// The non-secret host key the addressed setting is bound under.
+    #[schema(value_type = String)]
+    pub host_key: ExternalName,
+    /// The provider whose marker would be removed.
+    pub provider: String,
+    /// The setting's unavailable providers, as the document stands.
+    pub before: Vec<String>,
+    /// The same set with the named provider removed.
+    pub after: Vec<String>,
+    /// Whether applying would rewrite the document.
+    pub changed: bool,
+    /// What the correction would effect, in a stable order.
+    pub effects: Vec<ProviderMarkerEffectDto>,
+    /// The document revision this preview was computed against.
+    #[schema(value_type = String)]
+    pub revision: ContentHash,
+    /// The hash the corresponding apply must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Remove one setting's provider-unavailability marker under compare-and-swap.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderMarkerApplyRequest {
+    /// The runtime family key naming the configured setting.
+    pub runtime_family: String,
+    /// The provider whose marker is removed.
+    pub provider: String,
+    /// The document revision the preview read.
+    #[schema(value_type = String)]
+    pub expected_revision: ContentHash,
+    /// The hash the preview answered with.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// The typed outcome of one marker correction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderMarkerOutcomeDto {
+    /// The marker was present and removed; the document was written.
+    Cleared,
+    /// No marker existed for this provider; nothing was written.
+    AlreadyCleared,
+    /// This key already performed the correction; nothing was written again.
+    Replayed,
+}
+
+/// One setting's provider-unavailability marker after a correction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ProviderMarkerDto {
+    /// The Realm it was applied in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The runtime family addressed.
+    pub runtime_family: String,
+    /// The non-secret host key the addressed setting is bound under.
+    #[schema(value_type = String)]
+    pub host_key: ExternalName,
+    /// The provider whose marker was removed.
+    pub provider: String,
+    /// Which of the three stable outcomes this call was.
+    pub outcome: ProviderMarkerOutcomeDto,
+    /// The setting's unavailable providers before the call.
+    pub before: Vec<String>,
+    /// The setting's unavailable providers after the call.
+    pub after: Vec<String>,
+    /// Whether this call rewrote the document.
+    pub changed: bool,
+    /// What the correction effected, in a stable order.
+    pub effects: Vec<ProviderMarkerEffectDto>,
+    /// The document revision after the call.
+    #[schema(value_type = String)]
+    pub revision: ContentHash,
+}
+
 /// One provider account's availability, as the realm currently reads it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct AccountAvailabilityDto {
@@ -8222,6 +8334,20 @@ pub trait ApplicationOperations: Send + Sync {
     /// Propose an initial bundle for review. Writes nothing.
     fn propose_fleet_bundle(&self) -> Result<FleetBundleProposalDto, ApiError>;
 
+    /// What removing one setting's provider-unavailability marker would do.
+    fn preview_provider_marker(
+        &self,
+        request: &ProviderMarkerPreviewRequest,
+    ) -> Result<ProviderMarkerPreviewDto, ApiError>;
+
+    /// Remove one setting's provider-unavailability marker under
+    /// compare-and-swap, with an idempotent replay.
+    async fn apply_provider_marker(
+        &self,
+        key: &IdempotencyKey,
+        request: &ProviderMarkerApplyRequest,
+    ) -> Result<ProviderMarkerDto, ApiError>;
+
     /// One project's admission picture.
     fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError>;
 
@@ -11025,6 +11151,46 @@ pub async fn propose_fleet_bundle(
 ) -> Result<Json<FleetBundleProposalDto>, ApiError> {
     caller.require(&state, CallerCapability::Admin)?;
     Ok(Json(state.applications().propose_fleet_bundle()?))
+}
+
+/// What removing one setting's provider-unavailability marker would do.
+#[utoipa::path(
+    post, path = "/v1/provider-markers:preview", tag = "applications",
+    request_body = ProviderMarkerPreviewRequest,
+    responses((status = 200, body = ProviderMarkerPreviewDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 503))
+)]
+pub async fn preview_provider_marker(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<ProviderMarkerPreviewRequest>,
+) -> Result<Json<ProviderMarkerPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(
+        state.applications().preview_provider_marker(&request)?,
+    ))
+}
+
+/// Remove one setting's provider-unavailability marker under compare-and-swap.
+#[utoipa::path(
+    post, path = "/v1/provider-markers:apply", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = ProviderMarkerApplyRequest,
+    responses((status = 200, body = ProviderMarkerDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn apply_provider_marker(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<ProviderMarkerApplyRequest>,
+) -> Result<Json<ProviderMarkerDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_provider_marker(&key, &request)
+            .await?,
+    ))
 }
 
 /// One project's admission picture.

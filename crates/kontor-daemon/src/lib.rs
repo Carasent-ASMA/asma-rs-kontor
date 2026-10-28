@@ -54,6 +54,7 @@ pub mod lock;
 pub mod logging;
 pub mod orchestration;
 pub mod provider_config;
+pub mod provider_marker;
 pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
@@ -606,6 +607,7 @@ impl Daemon {
             realm_id,
             config.capacity,
             jira,
+            config.state_root.clone(),
             config.state_root.join("runtime-roots"),
             usage_poller.clone(),
             quota_signals,
@@ -774,6 +776,15 @@ impl Daemon {
     #[must_use]
     pub fn hold_planning_pair_recovery_writes(&self) -> applications::PlanningPairReceiptHold {
         self.applications.hold_planning_pair_recovery_writes()
+    }
+
+    /// Hold every provider-marker apply between its replay pre-check and its
+    /// durable claim, for a black-box test that lets another operation bind the
+    /// same key in that window. No composed daemon installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_provider_marker_bind(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_provider_marker_bind()
     }
 
     /// The concrete Jira reconciliation services owned by this daemon.
