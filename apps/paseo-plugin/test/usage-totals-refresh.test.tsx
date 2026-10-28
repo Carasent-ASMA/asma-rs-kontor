@@ -23,7 +23,7 @@ describe("vendor cumulative refresh", () => {
     const entry = sessionEntry("a"), base = usageTotalsRevision("host-a", [entry]);
     expect(usageTotalsRevision("host-a", [{ ...entry, updatedAt: "later", title: "renamed" }])).toBe(base);
     expect(usageTotalsRevision("host-b", [entry])).not.toBe(base);
-    expect(usageTotalsRevision("host-a", [{ ...entry, telemetry: { runtimeInfo: { sessionId: "new-native-thread" } } }])).not.toBe(base);
+    expect(usageTotalsRevision("host-a", [{ ...entry, telemetry: { runtimeInfo: { provider: "codex", sessionId: "new-native-thread" } } }])).not.toBe(base);
     expect(usageTotalsRevision("host-a", [{ ...entry, activeTurn: true }])).not.toBe(base);
     expect(usageTotalsRevision("host-a", [{ ...entry, telemetry: { lastUsage: { inputTokens: 1 } } }])).not.toBe(base);
   });
