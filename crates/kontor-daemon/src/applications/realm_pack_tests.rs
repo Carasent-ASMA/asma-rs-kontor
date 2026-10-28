@@ -335,7 +335,10 @@ fn asma_yaml_overlay_preserves_the_authored_pack_domain_and_committee_bytes() {
     );
     assert_eq!(selected.project.key, "ASMA");
     assert!(selected.project.publication_policy.is_none());
-    assert_eq!(selected.project.check_runs, ["asma/publication-identity"]);
+    assert_eq!(
+        selected.project.check_runs,
+        ["asma/publication-branch-title", "asma/publication-identity"]
+    );
     let state_root = tempfile::tempdir().unwrap();
     let daemon = crate::Daemon::start_configured(
         crate::DaemonConfig::at(state_root.path())
