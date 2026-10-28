@@ -54,11 +54,11 @@ function nativePlacementSchema(agent: Agent, workspace: PaseoWorkspace) {
 
 export async function placement(client: CanonicalClient, agentId: string): Promise<{ agent: Agent; workspace: PaseoWorkspace; native: NativePromotionPlacement } | null> {
   const found = await client.agents.ref(agentId).refresh().catch(() => null);
-  if (!found) return null;
+  if (!found || found.agent.id !== agentId) return null;
   const agent = found.agent;
   if (!agent.workspaceId) return null;
   const workspace = await client.workspaces.ref(agent.workspaceId).refresh().catch(() => null);
-  if (!workspace || workspace.archivingAt) return null;
+  if (!workspace || workspace.id !== agent.workspaceId || workspace.archivingAt) return null;
   return { agent, workspace, native: nativePlacementSchema(agent, workspace) };
 }
 
@@ -112,6 +112,7 @@ export async function canonicalBindingProblem(client: CanonicalClient, root: str
     && (entry.agentId === agentId && entry.state === "promoted" || entry.canonicalAgentId === agentId && entry.state === "handoff"))
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   if (record) return promotedBindingProblem(record, current);
+  if (labels.epic !== epic) return "A label-only canonical LSA must retain its exact epic label.";
   if (current.native.workspace.toUpperCase() !== "LSA") return "A label-only canonical LSA must live in the native LSA workspace.";
   const title = labels[TITLE_AUTO_LABEL] ?? current.agent.title ?? "";
   const [role, key] = title.split(" • ").map((part) => part.trim());

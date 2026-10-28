@@ -249,6 +249,49 @@ describe("ADHOC LSA conditional promotion", () => {
     expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
       .toMatchObject({ state: "unknown", acknowledgement: "unknown" });
   });
+
+  it("refuses a source exact read that returns another agent ID", async () => {
+    const s = await setup();
+    const source = s.agents.get("agent-adhoc")!;
+    s.agents.set(source.id, { ...source, id: "wrong-source" });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: source.id, epic: "ASMA-100" }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("exact native placement") });
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("refuses a source exact read whose workspace ID changed", async () => {
+    const s = await setup();
+    s.homes.set("wks-adhoc", workspace("wrong-workspace", "ADHOC"));
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100" }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("exact native placement") });
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("refuses a receiver exact read that returns another agent ID", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+    const s = await setup({ others: [canonical] });
+    s.agents.set(canonical.id, { ...canonical, id: "wrong-canonical" });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
+      .toMatchObject({ state: "refused" });
+    expect(s.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses a label-only receiver whose epic label disappears during revalidation", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic" } });
+    const s = await setup({ others: [canonical] });
+    const original = s.list.getMockImplementation()!;
+    s.list.mockImplementationOnce(async (options) => {
+      const result = await original(options);
+      const { epic: _epic, ...labels } = canonical.labels ?? {};
+      s.agents.set(canonical.id, { ...canonical, labels });
+      return result;
+    });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("exact epic label") });
+    expect(s.run).not.toHaveBeenCalled();
+  });
   it("refuses a source that is not an ADHOC LSA and a closed or non-epic key before any effect", async () => {
     const tpm = agent("agent-tpm", { labels: { role: "TPM", [TITLE_AUTO_LABEL]: "TPM • ADHOC • Route", persona: PERSONA_VERSION } });
     const s = await setup({ source: tpm });
