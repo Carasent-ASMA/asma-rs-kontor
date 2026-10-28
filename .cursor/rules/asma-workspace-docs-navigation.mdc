@@ -1,0 +1,7 @@
+---
+description: "Docs read-path router — attaches when _docs markdown enters context"
+globs: "**/_docs/**/*.md"
+alwaysApply: false
+---
+
+@.asma/workspace/rules/docs-navigation.mdc

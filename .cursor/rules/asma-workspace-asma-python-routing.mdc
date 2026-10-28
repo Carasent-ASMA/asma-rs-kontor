@@ -1,0 +1,7 @@
+---
+description: "Apply the Python-specific rules to Python source and tests."
+globs: "**/*.py"
+alwaysApply: false
+---
+
+@.asma/workspace/rules/asma-python-routing.mdc

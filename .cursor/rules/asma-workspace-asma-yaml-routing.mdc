@@ -1,0 +1,7 @@
+---
+description: "Apply YAML-specific editing and validation rules."
+globs: "**/*.yaml, **/*.yml"
+alwaysApply: false
+---
+
+@.asma/workspace/rules/asma-yaml-routing.mdc

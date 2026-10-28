@@ -1,0 +1,7 @@
+---
+description: "Route Playwright specs and opted-in behaviour scenarios to their test rules."
+globs: "**/*.feature, **/*.spec.ts, **/*.spec.tsx, **/*.steps.ts"
+alwaysApply: false
+---
+
+@.asma/workspace/rules/asma-playwright-routing.mdc

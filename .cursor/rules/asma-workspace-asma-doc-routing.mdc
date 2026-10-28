@@ -1,0 +1,7 @@
+---
+description: "Route new or reorganized documentation to its placement procedure."
+globs: "**/_docs/**/*.md"
+alwaysApply: false
+---
+
+@.asma/workspace/rules/asma-doc-routing.mdc

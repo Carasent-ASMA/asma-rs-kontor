@@ -1,0 +1,19 @@
+{
+  "generated_files": {
+    ".asma/workspace/rules/asma-doc-routing.mdc": "6be468f273cdbc503b0d1a6d108d53600fe9e001053f3fcd5e7f8410031caf23",
+    ".asma/workspace/rules/asma-playwright-routing.mdc": "80fc4f5d76b8f7814643da12bac255211b980cb3bdf233fb5ffb3bb1e5f4b0f3",
+    ".asma/workspace/rules/asma-python-routing.mdc": "93e47576b90c337090ee169ab62b257832990ec1a3e1fd7e86ca18a638b80ea1",
+    ".asma/workspace/rules/asma-qnr-index.mdc": "6bfea1a16497daa28fdb3c464bd52ca0d11d3e2c6d23dd02c3c5e3ffdca54044",
+    ".asma/workspace/rules/asma-yaml-routing.mdc": "80e22dd578cf649bf37d609e986c642c42df8fff84640c3b7db0179fe4bbea9d",
+    ".asma/workspace/rules/docs-navigation.mdc": "e6012a5535549680ee2792e875bfa0e7a07ecdd79b89b27152574033a250771e",
+    ".cursor/rules/asma-workspace-asma-doc-routing.mdc": "59d1781f91446c01e05725a602dbed783b04a68e53260805472cb2feaacf4140",
+    ".cursor/rules/asma-workspace-asma-playwright-routing.mdc": "e18b78150daebdc369f14a7d337a1fb628ce0a89076a14d5415d09ddfc4b144c",
+    ".cursor/rules/asma-workspace-asma-python-routing.mdc": "23760bb3728bcf29c4d5ad9670a45754c3812b29002237559b4bfdbd2e2eee82",
+    ".cursor/rules/asma-workspace-asma-qnr-index.mdc": "8b5d94e7185692e63800035d4f888642d3a7a60582b863f7f83ef82018cc8427",
+    ".cursor/rules/asma-workspace-asma-yaml-routing.mdc": "934708bd25de93b25c439182fbbcef49d91f437c21b2acc1cdc8e9a416c5993d",
+    ".cursor/rules/asma-workspace-docs-navigation.mdc": "6df5430d7af649b7fd6e0940c23066be4102030c420910fe245495c44b933220"
+  },
+  "module_path": "_tools/asma-rs-kontor",
+  "version": 1,
+  "workspace_root": "/Users/igor/carasent/asma-modules"
+}

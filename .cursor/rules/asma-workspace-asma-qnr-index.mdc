@@ -1,0 +1,7 @@
+---
+description: "Apply the qnr-v2 index ownership rule only to QNRS documentation."
+globs: "**/_docs/editor/qnrs/**/*.md"
+alwaysApply: false
+---
+
+@.asma/workspace/rules/asma-qnr-index.mdc

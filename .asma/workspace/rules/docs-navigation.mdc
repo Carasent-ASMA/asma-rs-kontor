@@ -1,0 +1,6 @@
+
+When navigating or reading `_docs/`, follow `.github/skills/docs-navigation/SKILL.md`:
+start at the project `index.md` router (or the UX root `_docs/ux/index.md` for UX
+material) → `adr/README.md` for architectural questions → filename decodes as
+`yyyy-mm-dd-hh-mm-<category>-<slug>.md` (living specs/patterns are by name, no
+timestamp); trust each doc's Status / When-to-Load header before reading the body.
