@@ -44,6 +44,7 @@ import { deviceProfileStorage } from "./viewer-profile";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
 import { declaredPlanWorkstream, planWorkstreamMappings } from "./plan-workstreams";
 import { taskTeamReader } from "./task-team-source";
+import { KONTOR_BLUE_DARK, KONTOR_BLUE_LIGHT } from "./session-status-ink";
 
 // One device store; Recent uses a separate key for each host.
 configureRecentStorage(deviceProfileStorage(() => ({ platform: Platform.OS, settings: Settings })));
@@ -53,8 +54,8 @@ const PRIMARY_DESKTOP: Destination[] = ["Sessions", "Overview", "Plan", "Board",
 const ICONS: Partial<Record<Destination, string>> = { Sessions: "List", Overview: "LayoutDashboard", Plan: "BookOpen", Board: "Columns3", Graph: "GitBranch", Delivery: "GitPullRequest" };
 function appearanceColors(colors: Colors, appearance: string): Colors {
   if (appearance === "system") return colors;
-  if (appearance === "dark") return { ...colors, foreground: "#ecedf0", foregroundMuted: "#a8adb7", surface0: "#15171c", surface1: "#1f222a", surface2: "#2e333e", border: "#414754", accent: "#9cbfff" };
-  return { ...colors, foreground: "#20242c", foregroundMuted: "#5e6570", surface0: "#ffffff", surface1: "#f5f6f8", surface2: "#e6ebf2", border: "#c7cdd7", accent: "#245bba" };
+  if (appearance === "dark") return { ...colors, foreground: "#ecedf0", foregroundMuted: "#a8adb7", surface0: "#15171c", surface1: "#1f222a", surface2: "#2e333e", border: "#414754", accent: KONTOR_BLUE_DARK };
+  return { ...colors, foreground: "#20242c", foregroundMuted: "#5e6570", surface0: "#ffffff", surface1: "#f5f6f8", surface2: "#e6ebf2", border: "#c7cdd7", accent: KONTOR_BLUE_LIGHT };
 }
 /** Exact sources a page demands; Sessions reads none and never triggers Markdown, a graph or records. */
 export function demandedSourceIdsFor(route: Pick<KontorRoute, "tab" | "sourceId">, sources: readonly ReadSourceSummary[], associationIds: readonly string[] | null): string[] {
