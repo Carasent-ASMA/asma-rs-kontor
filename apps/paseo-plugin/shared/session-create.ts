@@ -171,9 +171,9 @@ export function issueDesk<D extends Pick<CreateDesk, "project" | "kind">>(desks:
 }
 
 /**
- * - `verified`: the host's readback of the new session matches every requested field.
- * - `differences`: created; the readback differs in the listed fields.
- * - `unknown`: dispatched, but neither a reply nor a readback confirmed the effect. Do not retry; Check.
+ * - `verified`: the host's readback of the new session matches every requested field (and bootstrap delivery when required).
+ * - `differences`: created; the readback differs in the listed fields. Check returns the same outcome; it does not upgrade to verified.
+ * - `unknown`: dispatched, but neither a reply nor a readback confirmed the effect. Do not retry; Check may re-read the host.
  * - `refused`: nothing was dispatched.
  */
 export const createOutcomeSchema = z.object({

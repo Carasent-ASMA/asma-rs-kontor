@@ -126,10 +126,15 @@ describe("direct takeover continuity", () => {
       expect(receipt?.wakes).toBe("clear");
     });
 
-    it("non-empty array entries yields wakes preserved on the production reader", async () => {
-      const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [{ id: "hb-1" }] }) });
+    it("non-empty schedule entries yields wakes unknown and blocks review without retirement", async () => {
+      const h = productionContinuity(await host(), { forAgent: async () => ({ entries: [{ id: "hb-1", agentId: "agent-1" }] }) });
       const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
-      expect(receipt?.wakes).toBe("preserved");
+      expect(receipt?.wakes).toBe("unknown");
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+      expect(review.state).toBe("unknown");
+      expect(review.message).toMatch(/wake-continuity receipt/i);
+      expect(review.digest).toBeNull();
+      noRetirementEffects(h);
     });
 
     it.each([
