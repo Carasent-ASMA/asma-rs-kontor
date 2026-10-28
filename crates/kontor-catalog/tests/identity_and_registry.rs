@@ -490,3 +490,67 @@ async fn removing_one_worktree_occurrence_does_not_remove_the_sibling() {
         1
     );
 }
+
+#[tokio::test]
+async fn an_unobserved_worktree_root_does_not_lose_its_occurrence() {
+    let repo = Repo::new();
+    repo.write(
+        "_docs/plans/unobserved.md",
+        &plan("Unobserved plan", Some("ASMA-9260"), Some("kontor"), ""),
+    );
+    repo.commit("unobserved");
+    let worktree_root = TempDir::new().expect("a worktree parent");
+    let worktree = repo.worktree(&worktree_root.path().join("wt"), "unobserved");
+    let settings = kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        repositories: vec![
+            kontor_catalog::RepositoryConfig {
+                root: repo.root().to_path_buf(),
+                include_github_plans: false,
+            },
+            kontor_catalog::RepositoryConfig {
+                root: worktree,
+                include_github_plans: false,
+            },
+        ],
+        ..kontor_catalog::CatalogSettings::default()
+    };
+    let fixture = Fixture::open_settings(settings);
+    sweep(&fixture.catalog).await;
+    assert_eq!(
+        fixture
+            .catalog
+            .entries(&EntryFilter::default())
+            .unwrap()
+            .entries[0]
+            .occurrences
+            .len(),
+        2
+    );
+
+    fixture.rewrite_settings(&kontor_catalog::CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: repo.root().to_path_buf(),
+            include_github_plans: false,
+        }],
+        ..kontor_catalog::CatalogSettings::default()
+    });
+    sweep(&fixture.catalog).await;
+    let entry = &fixture
+        .catalog
+        .entries(&EntryFilter::default())
+        .unwrap()
+        .entries[0];
+    assert_eq!(
+        entry.occurrences.len(),
+        2,
+        "a root removed from configuration is unobserved, not removed"
+    );
+    assert!(
+        entry
+            .occurrences
+            .iter()
+            .all(|occurrence| occurrence.state == kontor_catalog::EntryState::Active)
+    );
+}
