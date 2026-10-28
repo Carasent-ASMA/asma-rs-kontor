@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { createPromotionService, type PromotionClient } from "../server/session-promotion";
+import { promotionBindingFor } from "../server/session-canonical";
 import { PERSONA_VERSION, personaVersion, reissuePersona } from "../server/session-create";
 import { TITLE_AUTO_LABEL } from "../shared/session-create";
 import type { JiraSearch } from "../server/session-create";
@@ -360,6 +361,19 @@ describe("ADHOC LSA conditional promotion", () => {
       summary: { text: summary.replace("Scope: keep the ADHOC session.", "Scope:"), revision: summaryRevision } }))
       .toMatchObject({ state: "refused", message: expect.stringContaining("missing required section") });
     expect(s.run).not.toHaveBeenCalled();
+  });
+
+  it("keeps a promoted owner valid after later handoffs to that same lead", async () => {
+    const b = agent("agent-b"), c = agent("agent-c");
+    const s = await setup({ others: [b, c] });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100" })).toMatchObject({ state: "promoted" });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-b", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
+      .toMatchObject({ state: "handoff", canonicalAgentId: "agent-adhoc" });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-c", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
+      .toMatchObject({ state: "handoff", canonicalAgentId: "agent-adhoc" });
+    const validation = (await s.service.list()).find((entry) => entry.record.agentId === "agent-adhoc")!.validation;
+    expect(validation.state).toBe("current");
+    expect(await promotionBindingFor(s.root, "agent-adhoc")).toMatchObject({ state: "settled", record: { state: "promoted", agentId: "agent-adhoc" } });
   });
   it("refuses a source that is not an ADHOC LSA and a closed or non-epic key before any effect", async () => {
     const tpm = agent("agent-tpm", { labels: { role: "TPM", [TITLE_AUTO_LABEL]: "TPM • ADHOC • Route", persona: PERSONA_VERSION } });

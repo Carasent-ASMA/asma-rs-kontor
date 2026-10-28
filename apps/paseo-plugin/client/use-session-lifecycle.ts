@@ -196,7 +196,7 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       const rows: Record<string, PromotionListEntry> = {};
       for (const entry of promotionRows ?? []) {
         const record = entry.record;
-        if (record.state === "promoted") rows[record.agentId] = entry;
+        if (record.state === "promoted" || record.state === "promoting" || record.state === "unknown") rows[record.agentId] = entry;
         else if (record.state === "handoff" && record.canonicalAgentId) rows[record.canonicalAgentId] = entry;
       }
       setPromotions({ hostId: host, rows, state: promotionRows ? "ready" : "unknown", error: promotionError });

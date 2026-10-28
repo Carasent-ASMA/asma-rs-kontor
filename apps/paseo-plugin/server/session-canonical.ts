@@ -120,9 +120,10 @@ export async function canonicalBindingProblem(client: CanonicalClient, root: str
   let stored: PromotionRecord[];
   try { stored = await records(root); }
   catch (error) { return `Promotion state could not be revalidated: ${errorText(error)}.`; }
-  const record = stored.filter((entry) => entry.epic === epic
-    && (entry.agentId === agentId && entry.state === "promoted" || entry.canonicalAgentId === agentId && entry.state === "handoff"))
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+  const record = stored.filter((entry) => entry.epic === epic && entry.agentId === agentId && entry.state === "promoted")
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1)
+    ?? stored.filter((entry) => entry.epic === epic && entry.canonicalAgentId === agentId && entry.state === "handoff")
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   const title = labels[TITLE_AUTO_LABEL] ?? current.agent.title ?? "";
   const [titleRole, titleKey, titleTopic] = title.split(" • ").map((part) => part.trim());
   const titleProblem = titleRole !== "LSA" || titleKey !== epic || !titleTopic?.trim();
@@ -221,17 +222,22 @@ export async function promotionBindingFor(root: string, agentId: string): Promis
   catch (error) { return { state: "blocked", message: `Promotion state could not be read: ${errorText(error)}. No retirement is allowed.` }; }
   const pending = all.filter((entry) => (entry.agentId === agentId || entry.canonicalAgentId === agentId) && (entry.state === "promoting" || entry.state === "unknown"));
   if (pending.length) return { state: "blocked", message: "This session has an unsettled promotion. Reconcile the recorded intent before takeover; no retirement is allowed." };
-  const owned = all.filter((entry) => entry.state === "promoted" && entry.agentId === agentId || entry.state === "handoff" && entry.canonicalAgentId === agentId)
+  const owned = all.filter((entry) => entry.state === "promoted" && entry.agentId === agentId)
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   if (owned.length > 1) return { state: "blocked", message: "Multiple promotion bindings name this session; reconcile them before takeover; no retirement is allowed." };
-  return owned.length ? { state: "settled", record: owned[0]! } : { state: "none" };
+  if (owned.length) return { state: "settled", record: owned[0]! };
+  const history = all.filter((entry) => entry.canonicalAgentId === agentId && entry.state === "handoff")
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  return history.length ? { state: "settled", record: history.at(-1)! } : { state: "none" };
 }
 
 /** After an authorized takeover, move a promoted/handoff canonical binding to the successor's exact native ID. */
 export async function transferPromotion(root: string, predecessorAgentId: string, successor: { agentId: string; native: NativePromotionPlacement; persona: string }): Promise<string | null> {
   const all = await records(root);
-  const source = all.filter((entry) => (entry.state === "promoted" && entry.agentId === predecessorAgentId)
-    || (entry.state === "handoff" && entry.canonicalAgentId === predecessorAgentId)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+  const promoted = all.filter((entry) => entry.state === "promoted" && entry.agentId === predecessorAgentId)
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+  const source = promoted ?? all.filter((entry) => entry.state === "handoff" && entry.canonicalAgentId === predecessorAgentId)
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   if (!source) return null;
   if (all.some((entry) => entry.epic === source.epic && entry.agentId === successor.agentId && entry.state === "promoted")) return null;
   const persona = successor.persona || source.persona.effective;

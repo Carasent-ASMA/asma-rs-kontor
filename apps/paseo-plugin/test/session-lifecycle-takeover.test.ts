@@ -123,6 +123,16 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
         summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
         createdAt: "2026-10-25T08:00:00Z", updatedAt: "2026-10-25T08:00:00Z" });
       await writeFile(join(h.createRoot, "promotion-v1", `${record.requestId}.json`), JSON.stringify(record));
+      for (const [index, source] of ["agent-b", "agent-c"].entries()) {
+        const handoff = promotionRecordSchema.parse({
+          schemaVersion: 1, requestId: `2222222${index}-2222-4222-8222-22222222222${index}`, agentId: source, epic: "ASMA-1", branch: "handoff", state: "handoff",
+          native, logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "b".repeat(64) },
+          persona: { issued: personaVersion("lsa-ad-hoc", true), effective: personaVersion("lsa-ad-hoc", true) }, canonicalAgentId: predecessor.id,
+          summarySha256: "b".repeat(64), summaryRevision: "r1", acknowledgement: "verified", message: "handoff",
+          createdAt: "2026-10-25T08:01:00Z", updatedAt: `2026-10-25T08:0${index + 1}:00Z`,
+        });
+        await writeFile(join(h.createRoot, "promotion-v1", `${handoff.requestId}.json`), JSON.stringify(handoff));
+      }
     })();
     const review = await h.ready();
     expect(review.state).toBe("ready");
