@@ -1510,6 +1510,63 @@ ASMA-8507 evidence with the widened upstream action; G-20 is not closed by the
 hook alone.
 
 
+### Procedural takeover backend on stock Paseo
+
+The backend exposes `sessions.procedural-takeover.prepare`, `.execute` and
+`.check` for a reviewed, plugin-owned procedure. These RPCs do not enable the
+legacy **Take over** control. They use the public Paseo SDK; no patched host,
+SDK, native adoption API or provider-private store is involved.
+
+Specify both workflow and orchestration. The valid pairs are `kontor` +
+`kontor`, `kontor` + `paseo`, and `free` + `paseo`. The governed pair is
+recognized but refused by this direct executor: its transitions belong to
+`kontord`. Direct Kontor work requires its existing coordinator. Free work
+has no inferred coordinator. Governed native labels always block this route,
+even when the supplied admission claims another mode.
+
+Preparation takes a SHA-256 reference to an operator/owner-prepared admission
+(`shared/procedural-takeover.ts`). It binds the exact source, local host
+annotation, mode, coordinator, configuration, placement, checkout and expiring
+handoff/authority/plan/history/accounting references. The host annotation is
+owner-supplied; the selected plugin connection owns the native reads. Preparation
+also preserves a bounded public timeline tail. Complete available history is an
+owner-prepared reference; provider-private conversation state is not migrated.
+Schedule and background-worker accounting must name reviewed paused/completed
+schedules, no running schedule claims, and finished/checkpointed workers, with
+source references and a finite reporting owner. This is procedural accounting,
+not a host-certified complete inventory. Effective provider account identity
+remains unverified. Confirmation explicitly accepts these limits.
+
+The operation reserves one successor UUID and creation idempotency key. It
+shares the plugin's existing lifecycle intent namespace with Archive, preserves
+reviewed children by detach/readback, then requires the exact predecessor's
+archived/closed/no-turn observation before creating or prompting its successor.
+Creation keeps the existing workspace and original title, without a task prompt.
+Bootstrap verifies effective configuration, placement, native session identity,
+authority and checkout before continuation. Success requires a correlated public
+prompt ID, provider, turn and successor response. `active` means task continuation
+was observed, never that the task or its delivery criteria completed.
+
+Immutable intents precede effects. A lost reply or interrupted worker retains
+its operation and claims; nothing steals them by elapsed age. Repeating execute
+returns the existing operation without dispatch. Check reads the exact recorded
+IDs and timeline; it can persist observed continuation evidence without resending.
+Successful execution and correlated check share child-claim settlement using the
+exact persisted operation tokens; a restart can finish interrupted cleanup.
+Foreign or unreadable claims are preserved, and the predecessor tombstone stays.
+Configured governed state/placement roots refuse direct admission even when seat
+labels are missing. Earlier partial phases stay held for the existing owner's reconciliation. No
+second successor, automatic predecessor revival, schedule target/history transfer,
+or new scheduler is created. An interrupted procedure can leave local lifecycle
+claims requiring owner reconciliation; do not remove them to trigger a retry.
+
+Other clients and background senders are not fenced. Child creation, native
+state or checkout changes can race the last read. The procedure detects observed
+changes and holds, but cannot promise an atomic cutover or globally exact-once
+execution on stock Paseo. The existing creation operator-off switch also blocks
+this route. Native/installed qualification and independent review remain separate
+from contract tests; no UI success claim follows from a create/send acknowledgement.
+
 ### Native availability and manual lifecycle actions
 
 Attention includes unread finished results as well as current actionable notices.
