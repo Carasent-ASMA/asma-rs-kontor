@@ -51,6 +51,7 @@ use kontor_core::id::{
     TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
+use kontor_core::repository::TopologyRepository;
 use kontor_core::selector::{EpicSelector, TaskSelector};
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, EpicPresence, HoldAttentionCode, HoldLiftCondition,
@@ -8694,10 +8695,14 @@ pub trait ApplicationOperations: Send + Sync {
         request: &crate::pr_reviews::ClosePrReviewRequest,
     ) -> Result<crate::pr_reviews::PrReviewOutcomeDto, ApiError>;
     /// One epic's completion state.
+    ///
+    /// `reader` is the seat a scoped leadership credential names; `None` is a
+    /// tier caller already admitted as an observer.
     fn completion(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        reader: Option<crate::auth::ScopedSeatSubject>,
     ) -> Result<CompletionStateDto, ApiError>;
     /// Advance one epic's completion.
     async fn advance_completion(
@@ -12602,7 +12607,7 @@ pub async fn apply_completion_profile(
     ),
     responses(
         (status = 200, body = CompletionStateDto),
-        (status = 401), (status = 403), (status = 404),
+        (status = 401), (status = 403), (status = 404), (status = 409),
         (status = 503, description = "The owning application service is not composed")
     )
 )]
@@ -12611,10 +12616,56 @@ pub async fn completion(
     caller: Caller,
     Path((project_id, epic_id)): Path<(String, String)>,
 ) -> Result<Json<CompletionStateDto>, ApiError> {
-    caller.require(&state, CallerCapability::Observer)?;
+    let reader = if let Some(seat_binding_id) = caller.seat() {
+        Some(crate::auth::ScopedSeatSubject {
+            seat_binding_id,
+            occupancy_generation: caller.occupancy_generation().ok_or_else(|| {
+                state.refuse(
+                    ApiErrorCode::Forbidden,
+                    "the completion reader credential has no occupancy generation",
+                )
+            })?,
+        })
+    } else {
+        caller.require(&state, CallerCapability::Observer)?;
+        None
+    };
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    // The selector below reads the addressed project's Jira bindings, and the
+    // store tells a missing key from an unconfirmed one from a task-kind one.
+    // A seat credential carries no project scope of its own, so membership is
+    // decided first: a seat of another project learns nothing by trying keys.
+    require_scoped_seat_membership(&state, project_id, caller)?;
     let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
-    Ok(Json(state.applications().completion(project_id, epic_id)?))
+    Ok(Json(
+        state
+            .applications()
+            .completion(project_id, epic_id, reader)?,
+    ))
+}
+
+/// Refuse a scoped seat that is not a seat of the project a route addresses.
+///
+/// Only the bearer's persistent seat identity is known here; the path project
+/// has to vouch for it before anything reads that project's data.
+pub(crate) fn require_scoped_seat_membership(
+    state: &ApiState,
+    project_id: ProjectId,
+    caller: Caller,
+) -> Result<(), ApiError> {
+    let Some(seat_binding_id) = caller.seat() else {
+        return Ok(());
+    };
+    let seat = state
+        .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
+    if seat.is_none() {
+        return Err(state.refuse(
+            ApiErrorCode::Forbidden,
+            "the scoped seat is not a seat in this project",
+        ));
+    }
+    Ok(())
 }
 
 /// Advance one epic's completion.
@@ -12681,6 +12732,10 @@ pub async fn remediate_completion(
         )
     })?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    // Resolving the selector reads this project's Jira bindings and tells a
+    // missing key from an unconfirmed one from a task-kind one. A seat
+    // credential names no project, so membership is decided first.
+    require_scoped_seat_membership(&state, project_id, caller)?;
     let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;
     Ok(Json(

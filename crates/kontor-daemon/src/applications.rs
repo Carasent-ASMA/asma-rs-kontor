@@ -32328,7 +32328,55 @@ impl ApplicationOperations for Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        reader: Option<kontor_api::auth::ScopedSeatSubject>,
     ) -> Result<CompletionStateDto, ApiError> {
+        if let Some(reader) = reader {
+            let state = self.state()?;
+            let seat = state
+                .with_store(|store| store.get_seat_binding(project_id, reader.seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Forbidden,
+                        "the completion reader is not a seat in this project",
+                    )
+                })?;
+            if seat.lifecycle != TopologyLifecycle::Active
+                || seat.released_at.is_some()
+                || ![MANDATORY_LEAD_ROLE, MANDATORY_PROGRAM_ROLE]
+                    .contains(&seat.role.role_code.as_str())
+            {
+                return Err(self.deny(ApiErrorCode::Forbidden,
+                    "only active epic LSA and TPM seats may read completion through a scoped credential"));
+            }
+            // Membership before staffing: a seat of another epic must never
+            // reach that epic's control-plane lookup, while a reader of this
+            // epic keeps the true refusal when its own staffing is unreadable.
+            let node = state
+                .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Forbidden,
+                        "the completion reader has no owning topology",
+                    )
+                })?;
+            if node.mini_project_id != Some(epic_id) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the completion reader must be an active seat of this exact epic",
+                ));
+            }
+            // Use the same occupancy fence as remediation writes. A scoped read
+            // grants no general Observer authority.
+            self.require_completion_authority(
+                project_id,
+                epic_id,
+                seat.role.role_code.as_str(),
+                reader.seat_binding_id,
+                reader.occupancy_generation,
+            )?;
+        }
         self.epic_row(project_id, epic_id)?;
         let stored = self.require_completion(project_id, epic_id)?;
         let compiled = self.pinned_completion(&stored)?;
@@ -32519,6 +32567,32 @@ impl ApplicationOperations for Services {
         request: &RemediateCompletionRequest,
     ) -> Result<CompletionOutcomeDto, ApiError> {
         let state = self.state()?;
+        // Membership before lookup: a seat of another epic must not learn
+        // whether this epic has a completion run, nor how it is staffed.
+        let seat = state
+            .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the remediation authority is not a seat in this project",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the remediation authority has no owning topology",
+                )
+            })?;
+        if node.mini_project_id != Some(epic_id) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the remediation authority must be an active seat of this exact epic",
+            ));
+        }
         let epic = self.epic_row(project_id, epic_id)?;
         let now = kontor_api::now();
         let stored = self.require_completion(project_id, epic_id)?;
