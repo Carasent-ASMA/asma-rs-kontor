@@ -6,7 +6,9 @@ import type { PluginButtonIconProps } from "@getpaseo/plugin/client";
 import { composerSessionPresentation } from "../client/composer-session-state";
 import { deriveNeedsInput, type DirectoryEntry } from "../client/session-directory";
 import { sessionState, STATE_LABELS } from "../client/session-organization";
-import { sessionStatusInk } from "../client/session-status-ink";
+import { composerRunningInk, sessionStatusInk } from "../client/session-status-ink";
+import { ComposerPulse } from "../client/composer-pulse";
+import { observePulseEnvironment, type PulseEnvironment } from "../client/composer-pulse-environment";
 
 function entry(patch: Partial<DirectoryEntry> = {}): DirectoryEntry {
   return {
@@ -45,7 +47,12 @@ describe("composer exact-session state presentation", () => {
     expect(value.title).toBe(`Start or switch session · ${STATE_LABELS[state]}`);
     const root = value.icon(props);
     const icon = root.props.children as ReactElement<{ name: string; color: string }>;
-    expect(icon.props).toMatchObject({ name: "Building2", size: props.size, color: sessionStatusInk(state === "failed" ? "error" : state, props.theme.colors) });
+    if (state === "running") {
+      expect(icon.type).toBe(ComposerPulse);
+      expect(icon.props).toEqual({ colors: props.theme.colors, size: props.size });
+    } else {
+      expect(icon.props).toMatchObject({ name: "Building2", size: props.size, color: sessionStatusInk(state === "failed" ? "error" : state, props.theme.colors) });
+    }
     expect(root.props.accessible).toBe(false);
   });
 
@@ -70,5 +77,99 @@ describe("composer exact-session state presentation", () => {
     expect(metadata).toEqual(initial);
     expect(composerSessionPresentation(entry(), { live: false }, "Kontor").icon).not.toBe(initial.icon);
     expect(composerSessionPresentation(entry(), { live: true }, "Kontor").icon).toBe(initial.icon);
+  });
+});
+
+function environment(initialState: string | null = "active") {
+  let resolveMotion!: (reduced: boolean) => void;
+  let rejectMotion!: (error: unknown) => void;
+  const pending = new Promise<boolean>((resolve, reject) => { resolveMotion = resolve; rejectMotion = reject; });
+  const motions = new Set<(reduced: boolean) => void>();
+  const states = new Set<(state: string) => void>();
+  const errors: unknown[] = [];
+  const port: PulseEnvironment = {
+    currentState: initialState,
+    readReducedMotion: () => pending,
+    onReducedMotion: listener => { motions.add(listener); return () => { motions.delete(listener); }; },
+    onAppState: listener => { states.add(listener); return () => { states.delete(listener); }; },
+    onError: error => { errors.push(error); },
+  };
+  return { port, resolveMotion, rejectMotion, motions, states, errors,
+    motion: (reduced: boolean) => { for (const listener of motions) listener(reduced); },
+    state: (state: string) => { for (const listener of states) listener(state); },
+  };
+}
+
+describe("composer pulse accessibility and lifetime", () => {
+  it("waits for the OS preference and stops/resumes for live reduced motion and background changes", async () => {
+    const fixture = environment();
+    const published: boolean[] = [];
+    const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    expect(published).toEqual([]);
+    fixture.resolveMotion(false);
+    await Promise.resolve();
+    fixture.state("inactive");
+    fixture.state("background");
+    fixture.state("active");
+    fixture.motion(true);
+    fixture.motion(false);
+    expect(published).toEqual([true, false, true, false, true]);
+    cleanup();
+    expect([fixture.motions.size, fixture.states.size]).toEqual([0, 0]);
+  });
+
+  it("does not let an older preference read undo a live accessibility event", async () => {
+    const fixture = environment();
+    const published: boolean[] = [];
+    const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    fixture.motion(true);
+    fixture.resolveMotion(false);
+    await Promise.resolve();
+    expect(published).toEqual([]);
+    fixture.motion(false);
+    expect(published).toEqual([true]);
+    cleanup();
+  });
+
+  it("ignores preference completion after host switch or unmount", async () => {
+    const fixture = environment();
+    const published: boolean[] = [];
+    const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    cleanup();
+    fixture.resolveMotion(false);
+    await Promise.resolve();
+    fixture.motion(false);
+    fixture.state("active");
+    expect(published).toEqual([]);
+    expect([fixture.motions.size, fixture.states.size]).toEqual([0, 0]);
+  });
+
+  it("keeps motion disabled when the native preference read fails", async () => {
+    const fixture = environment();
+    const published: boolean[] = [];
+    const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    fixture.rejectMotion(new Error("preference unavailable"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(published).toEqual([]);
+    expect(fixture.errors.map(error => String(error))).toEqual(["Error: preference unavailable"]);
+    cleanup();
+  });
+
+  it("waits for foreground when the initial native app state is unknown", async () => {
+    const fixture = environment(null);
+    const published: boolean[] = [];
+    const cleanup = observePulseEnvironment(fixture.port, value => { published.push(value); });
+    fixture.resolveMotion(false);
+    await Promise.resolve();
+    expect(published).toEqual([]);
+    fixture.state("active");
+    expect(published).toEqual([true]);
+    cleanup();
+  });
+
+  it("uses Kontor's blue appearance ink with a green host accent in either theme", () => {
+    expect(composerRunningInk(props.theme.colors)).toBe("#9cbfff");
+    expect(composerRunningInk({ ...props.theme.colors, surface0: "#ffffff", surface1: "#f5f6f8", surface2: "#e6ebf2", foreground: "#20242c" })).toBe("#245bba");
   });
 });

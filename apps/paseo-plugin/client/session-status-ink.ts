@@ -2,6 +2,14 @@ import type { Colors } from "./page-controls";
 import type { OrganizationState } from "./session-organization";
 import type { StatusFilter } from "./session-view";
 
+export const KONTOR_BLUE_LIGHT = "#245bba";
+export const KONTOR_BLUE_DARK = "#9cbfff";
+
+/** Reuse Kontor's appearance blues: a host's CTA accent can be green. */
+export function composerRunningInk(colors: Colors): string {
+  return readableInk(luminance(colors.surface0) < 0.5 ? KONTOR_BLUE_DARK : KONTOR_BLUE_LIGHT, colors);
+}
+
 function statusColor(status: StatusFilter | null, colors: Colors): string {
   switch (status) {
     case "running": return colors.accent;
