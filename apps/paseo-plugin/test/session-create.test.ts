@@ -7,6 +7,7 @@ import type { PaseoAgentListResult, PaseoWorkspace } from "@getpaseo/client";
 import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
 import { SCOPE_LABEL_RULE, createProviders, createSessionCreateService, createSwitchProblem, deskProjects, desksOf, personaFor, PERSONA_VERSION, sourceSummary, type CreateClient, type JiraSearch } from "../server/session-create";
 import { deskIssueProblem, deskKind, issueDesk, issueTopic, leadTitle, leadWorkspaceName, normalizeTopic, topicProblem, type CreateRequest, type JiraIssue } from "../shared/session-create";
+import { promotionRecordSchema } from "../shared/session-promotion";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 type NativeCreate = ReturnType<CreateClient["workspaces"]["ref"]>["agents"]["create"];
@@ -384,6 +385,34 @@ describe("new session create", () => {
     expect(JSON.parse(await readFile(join(s.stateRoot, `${input.requestId}.json`), "utf8")).outcome).toEqual(outcome);
   });
 
+
+  it("refuses a From Jira epic LSA when an existing canonical owner is present", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-adam-lsa", title: "LSA • ASMA-100 • Existing topic",
+      labels: { role: "LSA", epic: "ASMA-100", "title.auto": "LSA • ASMA-100 • Existing topic" } });
+    const s = await setup({ existing: [canonical] });
+    expect(await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic: "New topic" })))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("already has a canonical LSA") });
+    expect(s.create).not.toHaveBeenCalled();
+    expect(s.intents).toEqual([]);
+  });
+
+  it("refuses a From Jira epic LSA after the same native session was promoted", async () => {
+    const promoted = agent("agent-promoted", { workspaceId: "wks-adam-lsa", title: "LSA • ADHOC • Route review",
+      labels: { role: "LSA", "title.auto": "LSA • ADHOC • Route review", persona: PERSONA_VERSION } });
+    const s = await setup({ existing: [promoted] });
+    const native = { workspaceId: "wks-adam-lsa", workspace: "ADHOC", title: "LSA • ADHOC • Route review", titleAuto: "LSA • ADHOC • Route review", observedAt: "2026-10-28T00:00:00.000Z", revision: "r1" };
+    const logical = { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "a".repeat(64) };
+    await mkdir(join(s.stateRoot, "promotion-v1"), { recursive: true });
+    await writeFile(join(s.stateRoot, "promotion-v1", `${randomUUID()}.json`), JSON.stringify(promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: randomUUID(), agentId: promoted.id, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native, logical, persona: { issued: PERSONA_VERSION, effective: PERSONA_VERSION }, canonicalAgentId: promoted.id,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-28T00:00:00.000Z", updatedAt: "2026-10-28T00:00:00.000Z",
+    })));
+    expect(await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic: "New topic" })))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("already has a canonical LSA") });
+    expect(s.create).not.toHaveBeenCalled();
+  });
   it("places a bound LSA from an epic in LSA with the epic label and persona", async () => {
     const s = await setup();
     const outcome = await s.service.create(request({ start: "from-jira", issueKey: "ASMA-100", topic: undefined }));

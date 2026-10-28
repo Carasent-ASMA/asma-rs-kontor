@@ -3,6 +3,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { ARCHIVE_BATCH_LIMIT, archiveSummary, DEFAULT_RECOVERY_TARGET, RESUME_REMOVED, deriveSessionProjection, executeLifecycleItem, freshAvailability, nativeArchiveMembership, reconcileLifecycleItem, previewLifecycle, readLifecycleReview, unresolvedArchive, type ArchiveIntentObservation, type LifecycleReview, type LifecycleRow, type ProjectionConflict, type ProjectionSource, type ScopeClaim, type SessionProjection, type UnresolvedRef } from "../shared/session-lifecycle";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { readPromotionList, type PromotionRecord } from "../shared/session-promotion";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
 export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
@@ -151,6 +152,10 @@ const failureText = (failure: unknown) => failure instanceof Error ? failure.mes
 
 export type SessionRetirementRead = ReturnType<typeof useSessionRetirementProjection>;
 
+function emptyPromotions(hostId: string): { readonly hostId: string; readonly rows: Readonly<Record<string, PromotionRecord>>; readonly state: "idle" | "reading" | "ready" | "unknown"; readonly error: string | null } {
+  return { hostId, rows: {}, state: "idle", error: null };
+}
+
 export type SessionProjectionHookInput = {
   readonly entries: readonly DirectoryEntry[];
   readonly directory: Pick<DirectoryState, "status" | "live" | "lastUpdatedAt" | "inventoryComplete" | "includeArchived">;
@@ -172,7 +177,8 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
   readonly receipts: { readonly state: ProjectionReceipts["state"]; readonly complete: boolean; readonly error: string | null; readonly readAt: string | null };
   readonly reload: () => void;
 } {
-  const read = useRpc(readLifecycleReview);
+  const read = useRpc(readLifecycleReview), readPromotions = useRpc(readPromotionList);
+  const [promotions, setPromotions] = useState(() => emptyPromotions(hostId));
   const [receipts, setReceipts] = useState<ProjectionReceipts>(() => emptyReceipts(hostId));
   const receiptsRef = useRef(receipts);
   receiptsRef.current = receipts;
@@ -183,6 +189,17 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     const stale = () => !live.current || owner.current !== host || token.current !== current;
     if (stale()) return;
     setReceipts((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
+    setPromotions((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
+    let promotionRows: PromotionRecord[] | null = null, promotionError: string | null = null;
+    try { promotionRows = await readPromotions({}); } catch (failure) { promotionError = failureText(failure); }
+    if (!stale()) {
+      const rows: Record<string, PromotionRecord> = {};
+      for (const record of promotionRows ?? []) {
+        if (record.state === "promoted") rows[record.agentId] = record;
+        else if (record.state === "handoff" && record.canonicalAgentId) rows[record.canonicalAgentId] = record;
+      }
+      setPromotions({ hostId: host, rows, state: promotionRows ? "ready" : "unknown", error: promotionError });
+    }
     try {
       const latest = await read({});
       if (stale()) return;
@@ -229,12 +246,13 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     } catch (failure) {
       if (!stale()) setReceipts((value) => value.hostId === host ? { ...value, state: "unknown", error: failureText(failure) } : value);
     }
-  }, [hostId, read]);
+  }, [hostId, read, readPromotions]);
   useEffect(() => {
     live.current = true;
     owner.current = hostId;
     token.current += 1;
     setReceipts((value) => value.hostId === hostId ? value : emptyReceipts(hostId));
+    setPromotions((value) => value.hostId === hostId ? value : emptyPromotions(hostId));
     if (input.enabled === false) return;
     void load();
     return () => { live.current = false; token.current += 1; };
@@ -261,6 +279,16 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       return unknownAll || hosted && receipts.unknownIntent.has(id)
         ? { state: "unknown", reviewId: null, sessionId: id, observedAt: null, detail: receipts.error ?? "Archive receipt coverage is unknown." }
         : { state: "none", reviewId: null, sessionId: id, observedAt: null, detail: "No unresolved archive receipt is recorded." };
+    };
+    const promotionOf = (entry: DirectoryEntry) => {
+      if (promotions.hostId !== hostId) return null;
+      const record = promotions.rows[entry.id];
+      if (!record || (record.state !== "promoted" && record.state !== "handoff")) return null;
+      return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
+          title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
+        source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
+        detail: `${record.state} promotion record`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+        fresh: promotions.state === "ready" ? "current" as const : "unknown" as const } };
     };
     const projections = new Map<string, SessionProjection>();
     for (const entry of input.entries) {
@@ -293,7 +321,7 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
         evidenceConflicts.push({ kind: "stale-or-mismatched-evidence", detail: "An exact-ID read belongs to another native identity or revision.", sources: [{ id: `availability:${entry.id}`, kind: "native", detail: entry.availability.reason, observedAt: entry.availability.checkedAt, revision: entry.availability.revision, fresh: "stale" }] });
       }
       projections.set(entry.id, deriveSessionProjection({
-        hostId, workClaims, roleClaims, evidenceConflicts, coverage, receiptObservedAt: hosted ? receipts.readAt : null, intent: intentOf(entry.id),
+        hostId, workClaims, roleClaims, evidenceConflicts, coverage, receiptObservedAt: hosted ? receipts.readAt : null, intent: intentOf(entry.id), promotion: promotionOf(entry),
         session: { id: entry.id, status: entry.status, archived: archive.archived, archivedAt: entry.archivedAt ?? availability?.archivedAt ?? null,
           activeTurn: entry.activeTurn === true || entry.activeTurnStartedAt !== null && entry.activeTurnStartedAt !== undefined,
           pendingInteraction: entry.pendingPermissionCount > 0 || entry.attentionReason === "permission", title: entry.title,
@@ -303,7 +331,7 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       }));
     }
     return projections;
-  }, [hostId, input.entries, input.directory, input.sources, input.reads, input.associations, receipts]);
+  }, [hostId, input.entries, input.directory, input.sources, input.reads, input.associations, receipts, promotions]);
   const current = receipts.hostId === hostId ? receipts : emptyReceipts(hostId);
   return { projections, receipts: { state: current.state, complete: current.state === "ready", error: current.error, readAt: current.readAt }, reload: () => { void load(); } };
 }

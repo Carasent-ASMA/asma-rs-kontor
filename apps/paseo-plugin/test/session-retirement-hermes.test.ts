@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { useSessionRetirementProjection as Hook } from "../client/use-session-lifecycle";
 import * as lifecycle from "../shared/session-lifecycle";
+import * as promotion from "../shared/session-promotion";
 import type { LifecycleReview, LifecycleRow, UnresolvedRef } from "../shared/session-lifecycle";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import { sessionEntry } from "./session-fixtures";
@@ -22,9 +23,10 @@ function harness(host: () => string, entries: () => ReturnType<typeof sessionEnt
   const calls: Array<[string, Record<string, unknown>]> = [];
   const rpc: Record<string, (input: Record<string, unknown>) => Promise<unknown>> = {};
   for (const name of Object.keys(handlers)) rpc[name] = (input) => { calls.push([name, input]); return handlers[name]!(input); };
+  rpc["sessions.promotion-list"] ??= async () => [];
   const { react, render } = deferredReact();
   const { useSessionRetirementProjection } = loadHermesScoped<{ useSessionRetirementProjection: typeof Hook }>("../client/use-session-lifecycle.ts", {
-    react, "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle,
+    react, "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle, "../shared/session-promotion": promotion,
   });
   const draw = () => render(() => useSessionRetirementProjection(host(), { entries: entries(), directory, enabled: true, ...extra }));
   return { draw, calls, count: (name: string) => calls.filter(([called]) => called === name).length };

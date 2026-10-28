@@ -246,14 +246,16 @@ and its desk layout amendment.
   `ADHOC` on the desk's checkout path. Create a missing one and read back its
   id, name and `cwd`. The navigator shows them first, in that order.
 - `LSA` holds key-bound LSAs and durable desk LSA seats. `TPM` holds key-bound
-  TPMs, including PR desk Adams. `ADHOC` holds only ad-hoc LSA sessions
-  `LSA • ADHOC • <topic>`. `ADHOC` is a scope word, not a workspace-kind code.
+  TPMs, including PR desk Adams. `ADHOC` holds ad-hoc LSA sessions
+  `LSA • ADHOC • <topic>`, including a promoted ADHOC LSA whose native origin
+  is retained. `ADHOC` is a scope word, not a workspace-kind code.
 - No new session is created in an `ADAM` workspace. A legacy `ADAM` workspace
   still renders until its tabs finish and it is archived when empty.
 - One durable top-level Paseo project `DESK • ADAM` holds each epic's lead tab
-  in `LSA`, or in `TPM` for a TPM. A bound epic lead never lands in `ADHOC`,
-  which holds ad-hoc LSA sessions only. Tab names follow the project's new-work
-  naming card.
+  in `LSA`, or in `TPM` for a TPM. A newly created bound epic lead never lands
+  in `ADHOC`; a promoted ADHOC LSA keeps its native ADHOC origin while it
+  projects under the epic's logical LSA node. Tab names follow the project's
+  new-work naming card.
 - Promotion is conditional (supersedes the 2026-10-24 handoff-only rule). When
   a confirmed epic has no canonical epic LSA, promote the same native ADHOC LSA
   in place: preserve its native ID, conversation, model and operator title,

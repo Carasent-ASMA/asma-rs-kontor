@@ -36,6 +36,7 @@ export const promotionRecordSchema = z.object({
   persona: z.object({ issued: z.string().min(1), effective: z.string().min(1) }).strict(),
   canonicalAgentId: id.nullable(),
   summarySha256: digest.nullable(),
+  summaryRevision: z.string().min(1).max(200).nullable(),
   acknowledgement: z.enum(["not-required", "verified", "unknown"]),
   message: z.string(),
   createdAt: z.string(),
@@ -47,6 +48,7 @@ export const promoteSessionInput = z.object({
   requestId: z.string().uuid(),
   agentId: id,
   epic,
+  summary: z.object({ text: z.string().min(1).max(20_000), revision: z.string().min(1).max(200) }).strict().optional(),
 }).strict();
 export type PromoteSessionInput = z.infer<typeof promoteSessionInput>;
 
@@ -59,6 +61,7 @@ export const promotionOutcomeSchema = z.object({
   native: nativePromotionPlacementSchema.nullable(),
   logical: logicalPromotionPlacementSchema.nullable(),
   summarySha256: digest.nullable(),
+  summaryRevision: z.string().min(1).max(200).nullable(),
   acknowledgement: z.enum(["not-required", "verified", "unknown"]),
   message: z.string(),
   checkedAt: z.string(),
@@ -67,3 +70,4 @@ export type PromotionOutcome = z.infer<typeof promotionOutcomeSchema>;
 
 export const promoteSession = defineRpc({ name: "sessions.promote", input: promoteSessionInput, output: promotionOutcomeSchema });
 export const readPromotion = defineRpc({ name: "sessions.promotion-read", input: z.object({ agentId: id }).strict(), output: z.object({ record: promotionRecordSchema, native: nativePromotionPlacementSchema.nullable() }).strict().nullable() });
+export const readPromotionList = defineRpc({ name: "sessions.promotion-list", input: z.object({}).strict(), output: z.array(promotionRecordSchema) });

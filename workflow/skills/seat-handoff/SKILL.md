@@ -169,8 +169,9 @@ A planned brain change follows this rule:
 - [seat-takeover](../seat-takeover/SKILL.md) handles same-work recovery or explicitly authorized
   replacement. The planned phase-boundary brain change above uses handoff.
 
-New brainstorm work uses this handoff: the premium brainstorm Adam hands the
-approved plan to the coordinator Adam and stops.
+A new epic's brainstorm is not a handoff when no canonical epic LSA exists: the
+same ADHOC LSA is promoted in place under the conditional promotion rule.
+Use this handoff only when a distinct canonical epic LSA already exists.
 
 ## Refuse premature closure
 

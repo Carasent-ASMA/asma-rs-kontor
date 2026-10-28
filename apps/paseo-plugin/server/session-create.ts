@@ -9,6 +9,7 @@ import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorksp
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { UNSUPPORTED } from "../shared/session-navigator";
 import { readConfig } from "./config";
+import { canonicalLeadProblem } from "./session-canonical";
 import { readFloor } from "./floor";
 import {
   CREATE_REQUEST_LABEL, CREATE_ROLES, CREATE_SCOPE, CREATE_STARTS, JIRA_KEY_PATTERN, PERSONA_PROVIDERS, TITLE_AUTO_LABEL, TITLE_SEPARATOR, checkCreate, createChoiceProblem, createOutcomeSchema, createProviders, createRequestSchema,
@@ -596,7 +597,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const desk = desksOf(workspaces).find((entry) => entry.projectId === input.projectId);
     if (!desk) return refusal(deskCheckoutProblem(workspaces, input.projectId) ?? "That desk is no longer available on this host.");
     if (input.start === "from-jira" && (desk.kind === "pr-review" || desk.kind === "other")) return refusal(`${desk.project} offers ad hoc sessions only; From Jira is not available there.`);
-    let key: string | null = null, topic: string;
+    let key: string | null = null, canonicalEpic: string | null = null, topic: string;
     if (input.start === "from-jira") {
       const wanted = (input.issueKey ?? "").trim().toUpperCase();
       if (!JIRA_KEY_PATTERN.test(wanted)) return refusal("Choose an ASMA issue key, for example ASMA-1234.");
@@ -607,6 +608,7 @@ export function createSessionCreateService(client: CreateClient, root: string, s
       const gate = deskIssueProblem(desk, issue);
       if (gate) return refusal(gate);
       key = wanted;
+      if (issue.epic) canonicalEpic = wanted;
       topic = input.topic === undefined ? issueTopic(issue.summary) : normalizeTopic(input.topic);
     } else {
       topic = normalizeTopic(input.topic ?? "");
@@ -614,6 +616,10 @@ export function createSessionCreateService(client: CreateClient, root: string, s
     const problem = topicProblem(topic);
     if (problem) return refusal(problem);
     const title = leadTitle(input.role, key, topic);
+    if (input.role === "LSA" && canonicalEpic) {
+      const canonical = await canonicalLeadProblem(client, root, canonicalEpic);
+      if (canonical) return refusal(canonical, title);
+    }
     let source: string | null = null;
     if (input.sourceSummary) return refusal(UNSUPPORTED.summaries.reason, title);
     if (input.sourceAgentId?.trim()) {
