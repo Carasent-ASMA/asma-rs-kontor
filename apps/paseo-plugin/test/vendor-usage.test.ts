@@ -1,0 +1,42 @@
+import { describe, expect, it, vi } from "vitest";
+import { createVendorUsageService, codexThreadIdentity } from "../server/vendor-usage";
+import { readInstalledNavigatorCapabilities } from "../server/session-navigator";
+const THREAD = "00000000-0000-4000-8000-000000000001", NEXT = "00000000-0000-4000-8000-000000000002";
+const agent = (id: string, nativeHandle = THREAD, provider = "codex") => ({ id, title: "Same title", persistence: { provider, sessionId: "tree-root-is-not-thread-id", nativeHandle, metadata: { threadId: nativeHandle } } });
+const found = (a: ReturnType<typeof agent>) => ({ agent: a });
+const host = (refresh: ReturnType<typeof vi.fn>) => ({ agents: { ref: vi.fn(() => ({ refresh })) } }) as never;
+const value = { input: 100, output: 5, scope: "provider-cumulative" as const, source: "Fixture provider cumulative; history unavailable" };
+
+describe("vendor-native usage ownership", () => {
+  it("uses the exact native thread and public read-only refresh, never the tree root/title/model", async () => {
+    const refresh = vi.fn(async () => found(agent("a"))), read = vi.fn(async () => value), service = createVendorUsageService({ read });
+    expect(await service(host(refresh), ["a", "a"])).toEqual({ a: value });
+    expect(read).toHaveBeenCalledExactlyOnceWith(THREAD, expect.any(Object)); expect(refresh).toHaveBeenCalledTimes(2);
+  });
+  it("rejects conflicting identities, wrong native agent and unqualified Claude without inventing numbers", async () => {
+    const read = vi.fn(async () => value), service = createVendorUsageService({ read });
+    for (const a of [agent("wrong"), agent("a", THREAD, "claude"), { ...agent("a"), persistence: { ...agent("a").persistence, metadata: { threadId: NEXT } } }]) {
+      expect(await service(host(vi.fn(async () => found(a))), ["a"])).toMatchObject({ a: { input: null, output: null } });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(codexThreadIdentity({ persistence: { provider: "codex", sessionId: THREAD } } as never)).toBeNull();
+  });
+  it("rejects a provider/thread switch between exact read and reply", async () => {
+    const refresh = vi.fn().mockResolvedValueOnce(found(agent("a"))).mockResolvedValueOnce(found(agent("a", NEXT)));
+    const result = await createVendorUsageService({ read: async () => value })(host(refresh), ["a"]);
+    expect(result.a).toMatchObject({ input: null, output: null, source: expect.stringContaining("changed") });
+  });
+  it("keeps failures unknown and shares a finite budget across the batch", async () => {
+    const budgets: object[] = [], read = vi.fn(async (_id, budget) => { budgets.push(budget); return value; });
+    const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agent(id)) }) } } as never;
+    await createVendorUsageService({ read })(paseo, ["a", "b"]);
+    expect(budgets[0]).toBe(budgets[1]); expect(budgets[0]).toMatchObject({ bytes: 8 * 1024 * 1024 });
+    const result = await createVendorUsageService({ read })(host(vi.fn(async () => { throw Error("PRIVATE_ERROR"); })), ["a"]);
+    expect(result.a).toMatchObject({ input: null, output: null }); expect(JSON.stringify(result)).not.toContain("PRIVATE_ERROR");
+  });
+  it("advertises only the labelled qualified source while preserving unrelated capability refusals", () => {
+    const capabilities = readInstalledNavigatorCapabilities({} as never);
+    expect(capabilities.usageTotals).toMatchObject({ supported: true, limits: expect.arrayContaining([expect.stringContaining("0.160.0"), expect.stringContaining("Historical completeness")]) });
+    expect(capabilities.takeoverBulk.supported).toBe(false);
+  });
+});

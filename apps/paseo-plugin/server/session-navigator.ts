@@ -1,3 +1,4 @@
+import { CODEX_USAGE_LIMITS } from "./codex-usage";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readNavigatorCapabilities, UNSUPPORTED, type NavigatorCapabilities } from "../shared/session-navigator";
@@ -19,7 +20,7 @@ export function asTakeoverClient(paseo: PaseoApi): TakeoverClient {
 /** Answers what this installed plugin can drive on the host; unsupported owners stay explicit. */
 export function readInstalledNavigatorCapabilities(paseo: PaseoApi): NavigatorCapabilities {
   return {
-    usageTotals: UNSUPPORTED.usageTotals,
+    usageTotals: { supported: true, limits: CODEX_USAGE_LIMITS },
     summaries: summariesInstalledCapability(paseo),
     draftAttach: draftAttachInstalledCapability(paseo),
     takeover: UNSUPPORTED.takeover,

@@ -1,5 +1,6 @@
 import { contributeProceduralTakeover } from "./server/procedural-takeover";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { contributeVendorUsage } from "./server/vendor-usage";
 import { contribute } from "./server/hooks";
 import { readFloor, reportFloor } from "./server/floor";
 import { organizationSettings } from "./shared/organization";
@@ -23,6 +24,7 @@ export default function plugin(server: PluginServerContext): () => void {
   contributeSessionCreate(server);
   contributeSessionPromotion(server);
   contributeSessionNavigator(server);
+  contributeVendorUsage(server);
   contributeSessionSummaries(server);
   const settings = server.registerSettings(organizationSettings);
   server.registerSettings(keyboardSettings);

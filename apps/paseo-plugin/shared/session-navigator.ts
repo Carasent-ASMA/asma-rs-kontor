@@ -32,8 +32,8 @@ export type NavigatorCapability = keyof NavigatorCapabilities;
 
 export const readNavigatorCapabilities = defineRpc({ name: "sessions.navigator-capabilities", input: z.object({}).strict(), output: navigatorCapabilitiesSchema });
 
-/** One session's totals since it started and what reported them; a null side was not reported. */
-export const usageTotalsSchema = z.object({ input: z.number().int().nonnegative().nullable(), output: z.number().int().nonnegative().nullable(), source: z.string() }).strict();
+/** Qualified session totals or an explicitly labelled provider cumulative snapshot; null is unavailable, never zero. */
+export const usageTotalsSchema = z.object({ input: z.number().int().nonnegative().nullable(), output: z.number().int().nonnegative().nullable(), source: z.string(), scope: z.enum(["session", "provider-cumulative"]).optional() }).strict();
 export type UsageTotals = z.infer<typeof usageTotalsSchema>;
 export const readUsageTotals = defineRpc({ name: "sessions.usage-totals", input: z.object({ agentIds: z.array(id).max(200) }).strict(),
   output: z.record(z.string(), usageTotalsSchema.nullable()) });

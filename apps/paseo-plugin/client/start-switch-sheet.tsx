@@ -35,7 +35,7 @@ import { BulkArchiveDialog, useArchiveSelection } from "./bulk-archive";
 import type { LeadSource } from "./new-lead-source";
 import { useSessionOperations } from "./session-operations";
 import { SelectionBar, SelectionHeader } from "./session-selection";
-import { useUsageTotals } from "./use-navigator";
+import { useUsageTotals, usageTotalsRevision } from "./use-navigator";
 import { OperationSheet, SheetFooter } from "./operation-sheet";
 import { sessionRowDetails } from "./session-compact-content";
 import { SessionDetailSection } from "./session-detail-section";
@@ -257,7 +257,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const ops = useSessionOperations({ hostId, online: hostStatus === "online", colors, compact, entries, opened,
     newLead: (source, revision) => startNew({ entry: source, summary: revision }), onTakeoverStart: () => selection.clear() });
-  const totals = useUsageTotals(ops.totals, rows.map((entry) => entry.id));
+  const totals = useUsageTotals(ops.totals, rows.map((entry) => entry.id), usageTotalsRevision(hostId, rows));
   const seats = selection.selected.flatMap((id) => entries.filter((entry) => entry.id === id));
   const takeover = ops.takeover(seats);
   const complete = directory.status === "ready" && directory.inventoryComplete === true;
