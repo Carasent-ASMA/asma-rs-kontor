@@ -141,7 +141,7 @@ export function nativeArchiveMembership(entry: { readonly id: string; readonly u
   return (entry.archivedAt ?? null) !== null ? { archived: true, evidence: "native" } : evidence?.state === "readable" && !!evidence.archivedAt ? { archived: true, evidence: "availability" } : { archived: false, evidence: "none" };
 }
 
-export const PROJECTION_SOURCE_KINDS = ["native", "title", "label", "workspace", "project", "plan", "jira", "responsibility", "archive", "owner", "desk", "ticket", "source"] as const;
+export const PROJECTION_SOURCE_KINDS = ["native", "title", "label", "workspace", "project", "plan", "jira", "responsibility", "archive", "owner", "desk", "ticket", "source", "promotion"] as const;
 export type ProjectionSourceKind = (typeof PROJECTION_SOURCE_KINDS)[number];
 export type ProjectionFreshness = "current" | "stale" | "unknown";
 /** One observation with its own source identity, revision and time; source freshness never borrows the session's updatedAt. */
@@ -181,6 +181,13 @@ export type NativeSessionObservation = {
   readonly updatedAt: string; readonly observedAt: string;
 };
 export type ProjectionCoverage = { readonly archiveInventory: "complete" | "partial" | "unknown"; readonly observedAt: string | null; readonly detail: string };
+export type PromotionObservation = {
+  readonly agentId: string;
+  readonly epic: string;
+  readonly native: { readonly workspaceId: string; readonly workspace: string; readonly title: string; readonly observedAt: string; readonly revision: string };
+  readonly logical: { readonly workspace: "LSA"; readonly node: string; readonly bindingRevision: string };
+  readonly source: ProjectionSource;
+};
 export type SessionProjectionInput = {
   readonly hostId: string;
   readonly session: NativeSessionObservation;
@@ -201,6 +208,7 @@ export type SessionProjectionInput = {
   readonly evidence?: readonly ProjectionSource[];
   /** Conflicts the caller observed in exact evidence, such as a read for another native identity. */
   readonly evidenceConflicts?: readonly ProjectionConflict[];
+  readonly promotion?: PromotionObservation | null;
   readonly receiptObservedAt?: string | null;
   readonly now?: string;
 };
@@ -213,6 +221,7 @@ export type SessionProjection = {
   /** Native lifecycle and archive membership stay their own facts, apart from the retirement disposition. */
   readonly native: { readonly status: string; readonly archiveMembership: "archived" | "unarchived" };
   readonly scope: { readonly placement: ScopeClaim | null; readonly work: readonly ScopeClaim[]; readonly claims: readonly ScopeClaim[] };
+  readonly promotion: PromotionObservation | null;
   readonly responsibility: { readonly status: "verified" | "unknown"; readonly role: string | null; readonly owner: string | null; readonly duty: string | null; readonly claimedRole: string | null; readonly evidence: readonly ProjectionSource[]; readonly missing: readonly string[] };
   readonly retirement: { readonly disposition: RetirementDisposition; readonly reason: string; readonly evidence: readonly ProjectionSource[]; readonly missing: readonly string[]; readonly attention: boolean };
   readonly intent: ArchiveIntentObservation;
@@ -247,6 +256,8 @@ function claimConflicts(claims: readonly ScopeClaim[], role: boolean): Projectio
 export function deriveSessionProjection(input: SessionProjectionInput): SessionProjection {
   const session = input.session, now = input.now ?? session.observedAt;
   const work = [...(input.workClaims ?? [])], roles = [...(input.roleClaims ?? [])];
+  const promotion = input.promotion && input.promotion.agentId === session.id ? input.promotion : null;
+  if (promotion) work.push({ kind: "epic", value: promotion.epic, binding: "verified", source: promotion.source });
   const intent = input.intent ?? { ...UNKNOWN_INTENT, sessionId: session.id }, coverage = input.coverage;
   const nativeSource: ProjectionSource = { id: `native:${session.id}`, kind: "native", detail: `native ${session.status}; ${session.archived ? "archived" : "not archived"}`, observedAt: session.observedAt, revision: session.updatedAt, fresh: "current" };
   const conflicts: ProjectionConflict[] = [...(input.evidenceConflicts ?? []), ...claimConflicts(work, false), ...claimConflicts(roles, true)];
@@ -399,7 +410,7 @@ export function deriveSessionProjection(input: SessionProjectionInput): SessionP
     hostId: input.hostId, sessionId: session.id, nativeRevision: session.updatedAt, observedAt: session.observedAt,
     native: { status: session.status, archiveMembership: session.archived ? "archived" : "unarchived" },
     scope: { placement, work: work.filter((claim) => claim.kind !== "role"), claims: work },
-    responsibility, retirement, intent,
+    promotion, responsibility, retirement, intent,
     sources: uniqueSources([...evidence, ...work.map((claim) => claim.source), ...roles.map((claim) => claim.source), ...responsibility.evidence]),
     freshness: { nativeObservedAt: session.observedAt, inventoryObservedAt: coverage.observedAt, receiptObservedAt: input.receiptObservedAt ?? null },
     conflicts, coverage: coverage.archiveInventory,

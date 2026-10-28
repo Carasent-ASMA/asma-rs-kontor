@@ -405,7 +405,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       <Text style={{ ...heading, flex: 1 }}>Desk</Text>
       <Text numberOfLines={1} style={value}>{deskName ?? "No desk on this host has lead workspaces."}</Text>
     </View>;
-  const binding = `${fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The lead stays ad hoc and writes a handoff summary when a key is confirmed."}${choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}`;
+  const binding = `${fromJira ? `The lead is bound to ${choice.issue?.key ?? "the chosen issue"}.` : "The lead starts ad hoc; when an epic key is confirmed it is promoted in place if no epic lead exists, otherwise it hands off to that exact existing lead."}${choice.workspaceMissing ? ` The ${choice.workspaceName} workspace is created on this desk.` : ""}`;
   return wrap(<>
     {settingsLine ? <Text testID="kontor-new-lead-settings" style={muted}>{settingsLine}</Text> : null}
     <Choices label="Role" layout="segmented" caption={ROLE_NAMES[choice.role]} colors={colors} tall={tall} selected={choice.role} onSelect={(role) => {

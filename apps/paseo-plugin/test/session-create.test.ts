@@ -374,7 +374,7 @@ describe("new session create", () => {
     const sent = s.create.mock.calls[0]![0];
     expect(sent).toEqual({ idempotencyKey: input.requestId, title,
       labels: { role: "LSA", "title.auto": title, persona: PERSONA_VERSION, "create.request": input.requestId },
-      config: { provider: "claude/opus", modeId: "default", thinkingOptionId: "max", systemPrompt: expect.stringContaining("stays ad hoc") } });
+      config: { provider: "claude/opus", modeId: "default", thinkingOptionId: "max", systemPrompt: expect.stringContaining("may be promoted in place") } });
     expect(Object.keys(sent.labels!).some((key) => key.startsWith("kontor.") || key.includes("orchestration"))).toBe(false);
     expect(sent.config.systemPrompt).toContain("desk DESK • ADAM, workspace ADHOC (id assigned at creation)");
     expect(sent.config.systemPrompt).toContain(SCOPE_LABEL_RULE);

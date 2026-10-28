@@ -34,6 +34,22 @@ const ticket = (patch: Partial<NonNullable<SessionProjectionInput["ticket"]>> = 
   ({ kind: "delivery", seats: [duty("delivery", "settled")], pullRequest: "merged", pullRequestSource: src("ticket:pull-request", "ticket"), escalation: "none", escalationSource: src("ticket:escalation", "ticket"), ...patch });
 const peer = () => ({ role: "tpm", shutdownObservedAt: "2026-10-24T08:03:00.000Z", source: src("peer:tpm", "native") });
 
+describe("promotion projection", () => {
+  it("keeps native ADHOC origin and logical epic placement as separate evidence", () => {
+    const source = src("promotion:ASMA-1", "promotion");
+    const promotion = {
+      agentId: "fix-session", epic: "ASMA-1",
+      native: { workspaceId: "wks_adhoc", workspace: "ADHOC", title: "LSA • ADHOC • fixture", observedAt: "2026-10-24T08:00:03.000Z", revision: "rev-fixture" },
+      logical: { workspace: "LSA" as const, node: "epic:ASMA-1", bindingRevision: "a".repeat(64) },
+      source,
+    };
+    const projection = deriveSessionProjection(input({ promotion }));
+    expect(projection.promotion).toEqual(promotion);
+    expect(projection.native).toEqual({ status: "idle", archiveMembership: "unarchived" });
+    expect(projection.scope.claims).toContainEqual({ kind: "epic", value: "ASMA-1", binding: "verified", source });
+  });
+});
+
 describe("installation boundary", () => {
   it("never manufactures release from an idle installed session", () => {
     const projection = deriveSessionProjection(input());

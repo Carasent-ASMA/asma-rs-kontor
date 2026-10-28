@@ -254,12 +254,17 @@ and its desk layout amendment.
   in `LSA`, or in `TPM` for a TPM. A bound epic lead never lands in `ADHOC`,
   which holds ad-hoc LSA sessions only. Tab names follow the project's new-work
   naming card.
-- Promotion is a handoff. Creation accepts an optional source session; the new
-  bound lead reads that source's handoff summary before its first task. The
-  ad-hoc persona no longer renames itself: on a confirmed key it writes the
-  summary through [seat-handoff](../../seat-handoff/SKILL.md) and asks the
-  operator to start the bound lead with the source named. The source is
-  released only after the bound lead reads the summary back.
+- Promotion is conditional (supersedes the 2026-10-24 handoff-only rule). When
+  a confirmed epic has no canonical epic LSA, promote the same native ADHOC LSA
+  in place: preserve its native ID, conversation, model and operator title,
+  bind the authoritative epic context, and project it under the epic's logical
+  LSA node. The native `ADHOC` origin is retained; never claim a native
+  workspace move. When a distinct canonical epic LSA exists, write the durable
+  handoff summary through [seat-handoff](../../seat-handoff/SKILL.md) and
+  require that exact lead's exact-revision acknowledgement before releasing
+  the source; create no second lead. Unknown, incomplete or ambiguous discovery
+  is not absence. A legacy fixed persona that conflicts with promotion needs a
+  supported same-ID refresh, or the promotion remains an explicit legacy gap.
 - The workforce lives in the epic project (or the RSW) as the lead's children.
 - A new epic gets no `ECP` workspace. Its ticket TSWs and consultation
   ASW/CSW workspaces stay inside the epic project.
