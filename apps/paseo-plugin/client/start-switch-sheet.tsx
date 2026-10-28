@@ -21,7 +21,7 @@ import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { buildOrganizationTree, flattenOrganizationTree, sessionState } from "./session-organization";
 import { byLastActivity, totalsDetail, type SessionTotals } from "./session-row-format";
 import type { SessionStateCount } from "./session-state-counts";
-import { SessionStateMarker } from "./session-state-marker";
+import { SessionPulseContext, SessionStateMarker } from "./session-state-marker";
 import { startSwitchCounts, type SwitchView } from "./session-state-shortcuts";
 import { SessionLayoutControl } from "./session-layout-control";
 import { sessionStatusInk } from "./session-status-ink";
@@ -401,7 +401,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       selection.remove(archived); setBulkOpen(false);
     }} /> : null}
   </>;
-  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : "Start or switch session", header, body: <>{body}{layers}</>, footer, dismiss };
+  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : "Start or switch session", header, body: <SessionPulseContext.Provider value={{ live: directory.live, visible: true }}>{body}{layers}</SessionPulseContext.Provider>, footer, dismiss };
 }
 
 /** Board C1's Details for a switcher row: its full values, read-only. Kontor's own Details adds placement, plan and retirement. */
@@ -471,7 +471,7 @@ export function SwitchRowItem({ row, colors, tall, onPress, role = "menuitem", a
   return <View style={{ flexDirection: "row", alignItems: "center" }}><Pressable testID={`kontor-switch-row-${row.entry.id}`} role={role} accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
     style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5,
       flex: 1, minWidth: 0, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
-    <SessionStateMarker state={sessionState(row.entry)} colors={colors} />
+    <SessionStateMarker state={sessionState(row.entry)} colors={colors} session />
     <View style={{ flex: 1, minWidth: 0 }}>
       <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 13 }}>{row.entry.title}</Text>
       <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 2 }}>{row.detail}</Text>

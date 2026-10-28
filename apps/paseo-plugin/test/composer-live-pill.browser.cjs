@@ -11,7 +11,7 @@ const renderer = createRequire(path.resolve(process.env.RENDERER_PACKAGE_JSON));
 const output = path.resolve(process.env.EVIDENCE_DIR);
 assert.ok(!output.startsWith(plugin + path.sep), 'Keep evidence outside the plugin');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || deps.resolve('@playwright/test'));
-for (const [name, version] of [['react', '19.2.3'], ['react-dom', '19.2.3'], ['react-native-web', '0.21.2']]) assert.equal(renderer(name + '/package.json').version, version);
+for (const [name, version] of [['react', '19.1.0'], ['react-dom', '19.1.0'], ['react-native-web', '0.21.4']]) assert.equal(renderer(name + '/package.json').version, version);
 const rootOf = name => path.dirname(renderer.resolve(name + '/package.json'));
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'kontor-live-pill-'));
 fs.mkdirSync(output, { recursive: true });

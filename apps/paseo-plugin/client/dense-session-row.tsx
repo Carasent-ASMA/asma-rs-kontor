@@ -113,7 +113,7 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
     <Pressable {...stateHelp.bindings} testID="session-row-state" accessibilityRole="button"
       accessibilityLabel={`${STATE_LABELS[state]}: ${entry.title}`} accessibilityHint={onSelectStart ? "Double-tap to select sessions" : undefined}
       onPress={tapState} style={{ width: TARGET, minHeight: TARGET, alignItems: "center", justifyContent: "center" }}>
-      <SessionStateMarker state={state} colors={colors} size={22} />
+      <SessionStateMarker state={state} colors={colors} size={22} session />
     </Pressable>
     <Pressable testID="session-row-body" role={mode.kind === "open" ? "button" : mode.kind === "select" ? "checkbox" : "radio"}
       accessibilityLabel={spoken} aria-checked={choice ?? undefined} aria-disabled={unavailable ? true : undefined}
