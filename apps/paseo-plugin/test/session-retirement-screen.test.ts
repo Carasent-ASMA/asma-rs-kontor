@@ -102,6 +102,7 @@ const retiredProjection = deriveSessionProjection(projectionInput("retired", { s
 const retirement = (projections: readonly SessionProjection[]): SessionRetirementRead => ({
   projections: new Map(projections.map((projection) => [projection.sessionId, projection])),
   receipts: { state: "ready", complete: true, error: null, readAt: "2026-10-24T08:00:03.000Z" },
+  promotionRead: { state: "ready", error: null },
   reload: vi.fn(),
 });
 
@@ -141,6 +142,13 @@ const press = (testID: string) => { const found = byTestID(testID)[0]!; (found.p
 
 beforeEach(() => { clearSessionViews(); patchSessionView("host-a", { query: "", status: "all", membership: "sessions", includeArchived: false, layout: "flat", grouping: "flat", advancedOpen: true, toolbarOpen: true }); fake.state = ready(); fake.inputs = []; fake.hostStatus = "online"; });
 afterEach(() => harness.unmount());
+
+
+  it("shows promotion-read coverage failure separately from archive receipts", () => {
+    mount({ ...retirement([ordinaryProjection]), promotionRead: { state: "unknown", error: "list failed" } });
+    expect(byTestID("sessions-promotion-coverage")).toHaveLength(1);
+    expect(pureText(byTestID("sessions-promotion-coverage")[0]!)).toContain("Promotion evidence unavailable: list failed");
+  });
 
 describe("Sessions retirement integration", () => {
   it("keeps compact routine retirement behind Details and preserves inventory membership", () => {

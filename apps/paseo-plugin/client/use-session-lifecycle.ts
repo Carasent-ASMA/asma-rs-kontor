@@ -3,6 +3,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { ARCHIVE_BATCH_LIMIT, archiveSummary, DEFAULT_RECOVERY_TARGET, RESUME_REMOVED, deriveSessionProjection, executeLifecycleItem, freshAvailability, nativeArchiveMembership, reconcileLifecycleItem, previewLifecycle, readLifecycleReview, unresolvedArchive, type ArchiveIntentObservation, type LifecycleReview, type LifecycleRow, type ProjectionConflict, type ProjectionSource, type ScopeClaim, type SessionProjection, type UnresolvedRef } from "../shared/session-lifecycle";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { readPromotionList, type PromotionListEntry } from "../shared/session-promotion";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
 export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
@@ -151,6 +152,10 @@ const failureText = (failure: unknown) => failure instanceof Error ? failure.mes
 
 export type SessionRetirementRead = ReturnType<typeof useSessionRetirementProjection>;
 
+function emptyPromotions(hostId: string): { readonly hostId: string; readonly rows: Readonly<Record<string, PromotionListEntry>>; readonly state: "idle" | "reading" | "ready" | "unknown"; readonly error: string | null } {
+  return { hostId, rows: {}, state: "idle", error: null };
+}
+
 export type SessionProjectionHookInput = {
   readonly entries: readonly DirectoryEntry[];
   readonly directory: Pick<DirectoryState, "status" | "live" | "lastUpdatedAt" | "inventoryComplete" | "includeArchived">;
@@ -170,9 +175,11 @@ export type SessionProjectionHookInput = {
 export function useSessionRetirementProjection(hostId: string, input: SessionProjectionHookInput): {
   readonly projections: ReadonlyMap<string, SessionProjection>;
   readonly receipts: { readonly state: ProjectionReceipts["state"]; readonly complete: boolean; readonly error: string | null; readonly readAt: string | null };
+  readonly promotionRead: { readonly state: "idle" | "reading" | "ready" | "unknown"; readonly error: string | null };
   readonly reload: () => void;
 } {
-  const read = useRpc(readLifecycleReview);
+  const read = useRpc(readLifecycleReview), readPromotions = useRpc(readPromotionList);
+  const [promotions, setPromotions] = useState(() => emptyPromotions(hostId));
   const [receipts, setReceipts] = useState<ProjectionReceipts>(() => emptyReceipts(hostId));
   const receiptsRef = useRef(receipts);
   receiptsRef.current = receipts;
@@ -183,6 +190,25 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     const stale = () => !live.current || owner.current !== host || token.current !== current;
     if (stale()) return;
     setReceipts((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
+    setPromotions((value) => value.hostId === host ? { ...value, state: "reading", error: null } : value);
+    let promotionRows: PromotionListEntry[] | null = null, promotionError: string | null = null;
+    try { promotionRows = await readPromotions({}); } catch (failure) { promotionError = failureText(failure); }
+    if (!stale()) {
+      const rows: Record<string, PromotionListEntry> = {};
+      const rank = (state: PromotionListEntry["record"]["state"]) => state === "promoted" ? 3 : state === "promoting" || state === "unknown" ? 2 : 1;
+      const put = (id: string, entry: PromotionListEntry) => {
+        const current = rows[id];
+        if (!current || rank(entry.record.state) > rank(current.record.state)) rows[id] = entry;
+      };
+      for (const entry of promotionRows ?? []) {
+        const record = entry.record;
+        if (record.state === "handoff" && record.canonicalAgentId) put(record.canonicalAgentId, entry);
+        else if (record.state === "promoted" || record.state === "promoting" || record.state === "unknown") put(record.agentId, entry);
+      }
+      setPromotions((value) => promotionRows === null && value.hostId === host
+        ? { ...value, state: "unknown", error: promotionError }
+        : { hostId: host, rows: rows, state: promotionRows ? "ready" : "unknown", error: promotionError });
+    }
     try {
       const latest = await read({});
       if (stale()) return;
@@ -229,12 +255,13 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     } catch (failure) {
       if (!stale()) setReceipts((value) => value.hostId === host ? { ...value, state: "unknown", error: failureText(failure) } : value);
     }
-  }, [hostId, read]);
+  }, [hostId, read, readPromotions]);
   useEffect(() => {
     live.current = true;
     owner.current = hostId;
     token.current += 1;
     setReceipts((value) => value.hostId === hostId ? value : emptyReceipts(hostId));
+    setPromotions((value) => value.hostId === hostId ? value : emptyPromotions(hostId));
     if (input.enabled === false) return;
     void load();
     return () => { live.current = false; token.current += 1; };
@@ -261,6 +288,38 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       return unknownAll || hosted && receipts.unknownIntent.has(id)
         ? { state: "unknown", reviewId: null, sessionId: id, observedAt: null, detail: receipts.error ?? "Archive receipt coverage is unknown." }
         : { state: "none", reviewId: null, sessionId: id, observedAt: null, detail: "No unresolved archive receipt is recorded." };
+    };
+    const promotionOf = (entry: DirectoryEntry) => {
+      if (promotions.hostId !== hostId) return null;
+      const entryRecord = promotions.rows[entry.id];
+      if (!entryRecord) return null;
+      const record = entryRecord.record;
+      const validation = entryRecord.validation;
+      if (record.state !== "promoted" && record.state !== "handoff") {
+        return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
+            title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
+          source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
+            detail: `${record.state} promotion record: ${validation.message}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+            fresh: "unknown" as const } };
+      }
+      const localProblem = (() => {
+        if (entry.archivedAt !== null) return "The native owner is archived.";
+        if (validation.revision !== null && entry.updatedAt !== validation.revision) return "The native owner changed after validation.";
+        if (entry.labels.role !== "LSA" || entry.labels.ticket) return "The native owner is no longer an epic LSA.";
+        if (record.state === "promoted") {
+          if (entry.workspaceId !== record.native.workspaceId) return "The promoted session moved native workspace.";
+          if ((entry.labels.persona ?? "") !== record.persona.effective) return "The promoted session persona changed.";
+        } else if (record.state === "handoff" && entry.labels.epic !== record.epic) return "The handoff receiver lost its epic label.";
+        return null;
+      })();
+      const fresh = promotions.state !== "ready" ? "unknown" as const
+        : validation.state === "current" && !localProblem ? "current" as const : localProblem || validation.state === "stale" ? "stale" as const : "unknown" as const;
+      const coverage = promotions.state === "ready" ? "" : ` Promotion read coverage is ${promotions.state}${promotions.error ? `: ${promotions.error}` : ""}.`;
+      return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
+          title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
+        source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
+        detail: `${record.state} promotion record: ${localProblem ?? validation.message}${coverage}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+        fresh } };
     };
     const projections = new Map<string, SessionProjection>();
     for (const entry of input.entries) {
@@ -293,7 +352,7 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
         evidenceConflicts.push({ kind: "stale-or-mismatched-evidence", detail: "An exact-ID read belongs to another native identity or revision.", sources: [{ id: `availability:${entry.id}`, kind: "native", detail: entry.availability.reason, observedAt: entry.availability.checkedAt, revision: entry.availability.revision, fresh: "stale" }] });
       }
       projections.set(entry.id, deriveSessionProjection({
-        hostId, workClaims, roleClaims, evidenceConflicts, coverage, receiptObservedAt: hosted ? receipts.readAt : null, intent: intentOf(entry.id),
+        hostId, workClaims, roleClaims, evidenceConflicts, coverage, receiptObservedAt: hosted ? receipts.readAt : null, intent: intentOf(entry.id), promotion: promotionOf(entry),
         session: { id: entry.id, status: entry.status, archived: archive.archived, archivedAt: entry.archivedAt ?? availability?.archivedAt ?? null,
           activeTurn: entry.activeTurn === true || entry.activeTurnStartedAt !== null && entry.activeTurnStartedAt !== undefined,
           pendingInteraction: entry.pendingPermissionCount > 0 || entry.attentionReason === "permission", title: entry.title,
@@ -303,7 +362,8 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       }));
     }
     return projections;
-  }, [hostId, input.entries, input.directory, input.sources, input.reads, input.associations, receipts]);
+  }, [hostId, input.entries, input.directory, input.sources, input.reads, input.associations, receipts, promotions]);
   const current = receipts.hostId === hostId ? receipts : emptyReceipts(hostId);
-  return { projections, receipts: { state: current.state, complete: current.state === "ready", error: current.error, readAt: current.readAt }, reload: () => { void load(); } };
+  return { projections, receipts: { state: current.state, complete: current.state === "ready", error: current.error, readAt: current.readAt },
+    promotionRead: { state: promotions.hostId === hostId ? promotions.state : "idle", error: promotions.hostId === hostId ? promotions.error : null }, reload: () => { void load(); } };
 }

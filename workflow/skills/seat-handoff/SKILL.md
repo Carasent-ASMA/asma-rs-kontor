@@ -130,6 +130,24 @@ When completion review rejects the epic candidate:
 5. Corrected evidence receives a **clean independent re-review**.
 6. Exhausted rounds follow the owning workflow escalation, not session replacement.
 
+## Conditional ADHOC promotion
+
+Promotion into an epic is not a brain change by default.
+
+- If authoritative discovery finds no canonical epic LSA, promote the same native
+  ADHOC LSA in place. Preserve its ID, history, model and operator title; bind the
+  epic context and project the logical LSA node while retaining and reporting the
+  native `ADHOC` origin. Do not claim a workspace move and do not create a seat.
+- If a distinct canonical epic LSA exists, use the normal handoff procedure with
+  the durable summary, decisions, artifacts and revisions, fulfilled and unverified
+  criteria, findings and next action. Require that exact receiver's exact-revision
+  acknowledgement before releasing the source; create no second lead.
+- Unknown, incomplete or ambiguous discovery is not evidence of absence. A legacy
+  fixed persona that forbids promotion needs supported same-ID refresh; otherwise
+  report the legacy gap and do not substitute a fresh session.
+- Promotion grants no tracker, runtime or scheduler authority beyond the receiving
+  role's existing boundaries, and does not inherit stale grants.
+
 <a id="brain-change-handoff"></a>
 
 ## Brain-change handoff (new work)
@@ -151,8 +169,9 @@ A planned brain change follows this rule:
 - [seat-takeover](../seat-takeover/SKILL.md) handles same-work recovery or explicitly authorized
   replacement. The planned phase-boundary brain change above uses handoff.
 
-New brainstorm work uses this handoff: the premium brainstorm Adam hands the
-approved plan to the coordinator Adam and stops.
+A new epic's brainstorm is not a handoff when no canonical epic LSA exists: the
+same ADHOC LSA is promoted in place under the conditional promotion rule.
+For the ADHOC-to-epic promotion case only, use this handoff when a distinct canonical epic LSA already exists; the planned provider/brain-change procedure above remains governed by its own conditions.
 
 ## Refuse premature closure
 

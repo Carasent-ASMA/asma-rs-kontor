@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { useSessionRetirementProjection as Hook } from "../client/use-session-lifecycle";
 import * as lifecycle from "../shared/session-lifecycle";
+import * as promotion from "../shared/session-promotion";
 import type { LifecycleReview, LifecycleRow, UnresolvedRef } from "../shared/session-lifecycle";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import { sessionEntry } from "./session-fixtures";
@@ -22,9 +23,10 @@ function harness(host: () => string, entries: () => ReturnType<typeof sessionEnt
   const calls: Array<[string, Record<string, unknown>]> = [];
   const rpc: Record<string, (input: Record<string, unknown>) => Promise<unknown>> = {};
   for (const name of Object.keys(handlers)) rpc[name] = (input) => { calls.push([name, input]); return handlers[name]!(input); };
+  rpc["sessions.promotion-list"] ??= async () => [];
   const { react, render } = deferredReact();
   const { useSessionRetirementProjection } = loadHermesScoped<{ useSessionRetirementProjection: typeof Hook }>("../client/use-session-lifecycle.ts", {
-    react, "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle,
+    react, "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle, "../shared/session-promotion": promotion,
   });
   const draw = () => render(() => useSessionRetirementProjection(host(), { entries: entries(), directory, enabled: true, ...extra }));
   return { draw, calls, count: (name: string) => calls.filter(([called]) => called === name).length };
@@ -45,6 +47,129 @@ describe("read-only retirement projection under the iOS (Hermes) scoping of plug
     expect(drawn.projections.get(D)?.intent.state).toBe("none");
   });
 
+
+  it("keeps a stale promotion visible as historical evidence, never as current verified scope", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e2", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "b".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    const h = harness(() => "host", () => [sessionEntry(A)], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000aa", [], []),
+      "sessions.promotion-list": async () => [{ record, validation: { state: "stale", message: "persona drift" } }],
+    });
+    h.draw(); await settle();
+    const drawn = h.draw();
+    expect(drawn.projections.get(A)?.promotion).toMatchObject({ agentId: A, epic: "ASMA-100", source: { fresh: "stale" } });
+    expect(drawn.projections.get(A)?.scope.claims).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "epic", value: "ASMA-100", binding: "claimed" }),
+    ]));
+    expect(drawn.projections.get(A)?.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "stale-or-mismatched-evidence" }),
+    ]));
+  });
+
+  it("invalidates a current promotion when the native directory row drifts", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e3", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "c".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    let row = sessionEntry(A, { updatedAt: "r1", workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } });
+    const h = harness(() => "host", () => [row], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000aa", [], []),
+      "sessions.promotion-list": async () => [{ record, validation: { state: "current", message: "matches", revision: "r1" } }],
+    });
+    h.draw(); await settle();
+    expect(h.draw().projections.get(A)?.promotion?.source.fresh).toBe("current");
+    row = { ...row, updatedAt: "r2", labels: { ...row.labels, role: "TPM" } };
+    const drifted = h.draw();
+    expect(drifted.projections.get(A)?.promotion?.source.fresh).toBe("stale");
+    expect(drifted.projections.get(A)?.scope.claims).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "epic", binding: "claimed" })]));
+  });
+
+  it("keeps a promoting promotion visible as historical evidence", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e4", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoting",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "d".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: null,
+      summarySha256: null, summaryRevision: null, acknowledgement: "unknown", message: "pending",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    const h = harness(() => "host", () => [sessionEntry(A, { workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } })], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000ab", [], []),
+      "sessions.promotion-list": async () => [{ record, validation: { state: "unknown", message: "The promotion is not a settled canonical binding.", revision: null } }],
+    });
+    h.draw(); await settle();
+    const projection = h.draw().projections.get(A);
+    expect(projection?.promotion?.source.fresh).toBe("unknown");
+    expect(projection?.scope.claims).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "epic", value: "ASMA-100", binding: "claimed" })]));
+  });
+
+  it("keeps the promoted owner when handoff history names the same lead", async () => {
+    const promoted = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e5", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "e".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    const handoff = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e6", agentId: B, epic: "ASMA-100", branch: "handoff", state: "handoff",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Source", titleAuto: "LSA • ADHOC • Source", observedAt: "2026-10-24T08:00:00.000Z", revision: "r2" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "f".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: "a".repeat(64), summaryRevision: "r2", acknowledgement: "verified", message: "handoff",
+      createdAt: "2026-10-24T08:01:00.000Z", updatedAt: "2026-10-24T08:01:00.000Z",
+    });
+    const h = harness(() => "host", () => [sessionEntry(A, { updatedAt: "r1", workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } })], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000ac", [], []),
+      "sessions.promotion-list": async () => [{ record: handoff, validation: { state: "current", message: "receiver matches", revision: "r1" } },
+        { record: promoted, validation: { state: "current", message: "matches", revision: "r1" } }],
+    });
+    h.draw(); await settle();
+    const projection = h.draw().projections.get(A);
+    expect(projection?.promotion).toMatchObject({ epic: "ASMA-100", source: { fresh: "current" } });
+    expect(projection?.scope.claims).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "epic", value: "ASMA-100", binding: "verified" })]));
+  });
+
+  it("retains known promotion history when a later list refresh fails", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e7", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "a".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    let lists = 0;
+    const h = harness(() => "host", () => [sessionEntry(A, { updatedAt: "r1", workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } })], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000ad", [], []),
+      "sessions.promotion-list": async () => { lists++; if (lists > 1) throw new Error("list failed"); return [{ record, validation: { state: "current", message: "matches", revision: "r1" } }]; },
+    });
+    h.draw(); await settle();
+    const first = h.draw();
+    expect(first.projections.get(A)?.promotion?.source.fresh).toBe("current");
+    first.reload(); await settle();
+    const last = h.draw();
+    const failed = last.projections.get(A)?.promotion;
+    expect(failed?.source.fresh).toBe("unknown");
+    expect(failed?.epic).toBe("ASMA-100");
+    expect(failed?.source.detail).toContain("Promotion read coverage is unknown: list failed");
+    expect(last.promotionRead).toEqual({ state: "unknown", error: "list failed" });
+  });
   it("preserves successful receipts and only marks the failed receipt's sessions Unknown", async () => {
     let failSecond = true, failFirst = false;
     const h = harness(() => "host", () => [sessionEntry(A), sessionEntry(B), sessionEntry(D)], {

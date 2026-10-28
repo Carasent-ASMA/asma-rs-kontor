@@ -64,9 +64,13 @@ There is no `kontord` graph, hold, selection, receipt or memory step on this
 surface. A `kontord` defect needs no containment or repair: log one row in the
 project gap ledger, as the transition rule describes.
 
-New work: at plan approval, the premium brainstorm Adam hands the approved plan
-to a cheaper coordinator Adam and stops. Follow the
-[brain-change handoff](../seat-handoff/SKILL.md#brain-change-handoff).
+New work: at plan approval, promote the lead conditionally. If the confirmed
+epic has no canonical epic LSA, promote the source ADHOC LSA in place and keep
+its native origin; otherwise hand the approved plan and durable summary to that
+exact existing epic LSA and require its exact-revision acknowledgement. Do not
+create a fresh replacement. Follow the [conditional promotion rule](../epic-orchestration/references/paseo-direct-native-placement.md#desks-and-lead-workspaces-2026-10-24)
+and the [brain-change handoff](../seat-handoff/SKILL.md#brain-change-handoff)
+only when the change is actually a brain/provider change.
 
 ## Configuration and skill handoff (both surfaces)
 

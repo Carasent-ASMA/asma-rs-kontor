@@ -9,6 +9,7 @@ import { readConfig, type KontorPluginConfig } from "./config";
 import { parent, seatBinding } from "./labels";
 import { within } from "./placement";
 import { sourceCatalog } from "./read-sources";
+import { canonicalBindingProblem, placement, promotionBindingFor, transferPromotion } from "./session-canonical";
 import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwitchFile, effectValidityProblem, expectedPlacementProblem, readbackDifferences, reissuePersona, sourceSummary, type SeatCreateSpec } from "./session-create";
 import {
   BINDING_KEY, GOVERNED_ELSEWHERE, configuredAccountCatalogFromFleet, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
@@ -641,6 +642,8 @@ export type TakeoverContinuity = z.infer<typeof continuitySchema>;
 export type TakeoverDeps = {
   config: Pick<KontorPluginConfig, "cliCommand" | "stateRoot" | "placementRoots">;
   create: Pick<ReturnType<typeof createSessionCreateService>, "createSeat" | "check" | "preflight" | "record">;
+  /** Durable promotion records, shared with the New-session writer. */
+  promotionRoot: string;
   /** One operator configured-source read per assess: profile choices and account-alias catalog share one revision. */
   operatorFleetDiscovery: () => Promise<{ choices: ProfileChoice[]; catalog: ConfiguredAccountCatalog }>;
   /** The host's route evidence for one checkout and permission mode; only a qualified positive source may call a route available. */
@@ -784,6 +787,12 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (first === undefined) return answer("unknown", "This session could not be read on this host.");
     if (!first) return answer("refused", "This session is not on this host.");
     agent = first;
+    const promotion = await promotionBindingFor(deps.promotionRoot, agentId, first.labels?.epic ?? null);
+    if (promotion.state === "blocked") return answer("unknown", promotion.message);
+    if (promotion.state === "settled") {
+      const ownerProblem = await canonicalBindingProblem(client, deps.promotionRoot, promotion.record.epic, agentId);
+      if (ownerProblem) return answer("unknown", `The settled promotion binding does not match its native owner: ${ownerProblem}`);
+    }
     const direct = owner = takeoverAdapter(first);
     if (direct.adapter === "governed") return answer("refused", GOVERNED_ELSEWHERE);
     if (direct.adapter === "refused") return answer("refused", direct.reason);
@@ -868,16 +877,18 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (direct.basis === "orchestrated" ? continuity.owner?.agentId !== direct.owner || continuity.owner.revision !== ownerRevision : continuity.owner !== null)
       return answer("refused", "Its continuity receipt does not confirm its current owner and binding revision. Nothing is retired.");
     const carried = Object.fromEntries(CARRIED_LABELS.flatMap((key) => labels[key] === undefined ? [] : [[key, labels[key]!]]));
+    const recovered = promotion.state === "settled" ? promotion.record.epic : null;
+    const bindingContext = recovered ? `\n\nKontor recovered canonical epic binding: ${recovered}. Treat this successor as the epic's canonical LSA; the promoted native origin is retained.` : "";
     const spec: SeatCreateSpec = {
       requestId, title: first.title!, provider: selected.account, model: selected.model, effort: selected.effort, modeId: mode,
-      labels: { ...carried, ...(parent(first) ? { "paseo.parent-agent-id": parent(first)! } : {}), ...(persona ? { persona: persona.version } : {}), [CREATE_REQUEST_LABEL]: requestId, [TAKEOVER_PREDECESSOR_LABEL]: agentId },
+      labels: { ...carried, ...(recovered ? { epic: recovered } : {}), ...(parent(first) ? { "paseo.parent-agent-id": parent(first)! } : {}), ...(persona ? { persona: persona.version } : {}), [CREATE_REQUEST_LABEL]: requestId, [TAKEOVER_PREDECESSOR_LABEL]: agentId },
       workspaceId: workspace.id, anchorWorkspaceId: workspace.id, workspaceName: (workspace.title ?? workspace.name ?? "").trim(), cwd: first.cwd,
       expectedPlacement: { workspaceId: workspace.id, cwd: first.cwd },
       effectValidity: { route: route.validity, continuity: { observedAt: continuity.observedAt, validUntil: new Date(Date.parse(continuity.observedAt) + 60_000).toISOString() } },
       createWorkspace: null, revalidate: null,
       // A plain session stays plain: no persona, no system prompt.
       persona: persona ? { text: persona.text, supported: persona.supported } : { text: "", supported: false },
-      bootstrap: bootstrapPrompt(persona?.text ?? "", summary, persona?.supported ?? true),
+      bootstrap: bootstrapPrompt(persona?.text ?? "", summary, persona?.supported ?? true) + bindingContext,
     };
     let expired: string | null;
     const checked = await deps.create.preflight(spec, agentId);
@@ -966,7 +977,15 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (created.state === "differences") return outcome(record, "partial", "create", `Successor ${created.agentId} was created with differences, so its task was not released. ${created.differences.join(" ")}`, named, "none");
     if (!created.agentId) return outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is resent.", named, "check");
     const problem = await verify(spec, created.agentId, record.review.agentId);
-    return problem ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none") : null;
+    if (problem) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none");
+    const promotion = await promotionBindingFor(deps.promotionRoot, record.review.agentId, spec.labels.epic ?? null);
+    if (promotion.state === "blocked") return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${promotion.message} Its task was not released.`, named, "none");
+    if (promotion.state === "none") return null;
+    const successor = await placement(client, created.agentId).catch(() => null);
+    if (!successor) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but its exact placement could not be read back, so its task was not released.`, named, "none");
+    const transfer = await transferPromotion(deps.promotionRoot, record.review.agentId, { agentId: created.agentId, native: successor.native,
+      persona: successor.agent.labels?.persona ?? "" }, promotion.record.epic);
+    return transfer ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${transfer} Its task was not released.`, named, "none") : null;
   }
   async function succeeded(record: TakeoverRecord, spec: SeatCreateSpec, id: string): Promise<TakeoverOutcome> {
     // The successor's chain, recorded for its exact ID; if this write fails its next review asks for a choice again.
@@ -1112,7 +1131,7 @@ export function contributeSessionLifecycle(server: PluginServerContext) {
   const takeover = (paseo: PaseoApi) => {
     const client = asTakeoverClient(paseo);
     return createTakeoverService(client, root, {
-      config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), operatorFleetDiscovery: readOperatorFleetDiscovery,
+      config: readConfig(), create: createSessionCreateService(paseo, createStateRoot(), createSwitchFile()), promotionRoot: createStateRoot(), operatorFleetDiscovery: readOperatorFleetDiscovery,
       evidence: async ({ mode, cwd, catalog }) => routeHealthFromProviderSnapshot(await paseo.providers.snapshot({ cwd }), mode, catalog),
       continuity: (agentId, requestId) => readTakeoverContinuity(client, root, agentId, requestId),
     });

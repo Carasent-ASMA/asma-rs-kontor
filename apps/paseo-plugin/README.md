@@ -1486,6 +1486,16 @@ does not invent a row or a workspace. When the host returns an archived row,
 `archivedAt` is shown separately from the native `closed` status. The default
 non-archived inventory is not affected.
 
+Returned sessions keep their native workspace ID even when workspace metadata is
+unavailable. The tree and result provenance show `Workspace <id>` when the host
+provides no workspace name; a project name is not used as the workspace name.
+This identifies the parent without asserting that it is archived. The public
+workspace list and workspace-handle refresh do not distinguish an archived
+workspace from another absent workspace. `archivingAt` describes an archive in
+progress, not confirmed archive membership. Classifying a session solely from
+its parent requires a supported exact-workspace archive observation; the plugin
+cannot supply that from list omission or recover rows the host omits.
+
 The guard covers an explicit `workspace.create` request whose initial agent
 carries Kontor labels, and the caller carried as `agent.callerAgentId` on
 that request. Paths that carry neither a labelled
@@ -1516,6 +1526,16 @@ a null record on the selected host, and an unknown/error reply. They do not load
 provider history or verify that a provider conversation can continue. Reviews and
 receipts keep that distinction: a row whose exact read failed is shown by its ID
 and stays unknown, never missing.
+
+The public SDK has no exact-session, read-only provider-history existence result.
+A persistence session ID is a reference, not proof that history exists, and a
+timeline read may load the provider runtime. Availability checks therefore keep
+history `unverified` or `not-reported`; they do not fetch history automatically
+or remove old readable sessions or failed/unknown reads from Attention. History
+can be inspected deliberately in the native session, but opening it is not a
+no-load availability check. An accessibility filter requires a supported reader
+that distinguishes available, absent and unknown/error for the exact host,
+agent and provider session without starting or hydrating its runtime.
 
 The per-session X performs one exact-session Archive after native preflight.
 Native archive requests cancellation and closes the runtime, including an active
