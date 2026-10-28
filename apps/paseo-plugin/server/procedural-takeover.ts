@@ -8,7 +8,8 @@ import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { readConfig } from "./config";
-import { createSwitchFile, createSwitchProblem } from "./session-create";
+import { promotionBindingFor } from "./session-canonical";
+import { createStateRoot, createSwitchFile, createSwitchProblem } from "./session-create";
 import { hasKontorLabels, parent } from "./labels";
 import { takeoverAdapter } from "./session-takeover";
 import { lifecycleRevision } from "./session-lifecycle";
@@ -363,10 +364,26 @@ export function createProceduralTakeover(client: PaseoApi, root: string, hostId:
       "Checkout branch/HEAD/WIP changed",
     );
   }
+  async function unsupportedCanonical(source: Agent) {
+    const binding = await promotionBindingFor(
+      createStateRoot(),
+      source.id,
+      source.labels?.epic ?? null,
+    );
+    requireFact(
+      binding.state === "none",
+      "Promotion ownership is unsupported by procedural takeover; reconcile through the canonical owner before retirement",
+    );
+    requireFact(
+      source.labels?.role !== "LSA",
+      "Canonical/LSA lead takeover is unsupported by this procedural route; persona/title continuity and durable canonical transfer require the existing owner",
+    );
+  }
   async function preflight(admission: ProceduralAdmission, detached: boolean) {
     await evidence(admission);
     const result = await exact(admission.sourceId),
       source = result.agent;
+    await unsupportedCanonical(source);
     requireFact(
       takeoverAdapter(source).adapter === "direct",
       "Governed or conflicting ownership cannot use the direct route",
@@ -420,6 +437,7 @@ export function createProceduralTakeover(client: PaseoApi, root: string, hostId:
   async function retired(receipt: ProceduralReceipt, afterContinuation = false) {
     if (!afterContinuation) await evidence(receipt.admission);
     const source = (await exact(receipt.sourceId)).agent;
+    await unsupportedCanonical(source);
     requireFact(
       takeoverAdapter(source).adapter === "direct" &&
         source.archivedAt &&

@@ -18,7 +18,7 @@ import { discoverCanonical } from "../server/session-canonical";
 import { promotionRecordSchema } from "../shared/session-promotion";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
-import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
+import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
@@ -1249,5 +1249,69 @@ describe("R11 source review regressions", () => {
     const checked = await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId);
     expect(checked.phase).toBe(kind === "uncertain" ? "held" : "active");
     expect(await readFile(childClaim, "utf8")).toBe(changed); expect(f.effects).toEqual(before);
+  });
+});
+
+async function reviewLeadFixture(promoted = false, state: "promoted" | "promoting" | "unknown" = "promoted") {
+  const f = await proceduralFixture(undefined, "kontor");
+  const title = promoted ? "LSA • ADHOC • Fixture" : "LSA • ASMA-1 • Fixture";
+  const persona = personaVersion(promoted ? "lsa-ad-hoc" : "lsa-bound", true);
+  f.source.title = title;
+  f.source.labels = { ...f.source.labels, role: "LSA", persona, "title.auto": title, ...(promoted ? {} : { epic: "ASMA-1" }) };
+  f.admission.title = title;
+  f.admission.sourceRevision = lifecycleRevision(f.source);
+  const ref = f.client.workspaces.ref.bind(f.client.workspaces);
+  f.client.workspaces.ref = ((id: string) => {
+    const handle = ref(id);
+    return { ...handle, refresh: async () => ({ ...await handle.refresh(), id, name: promoted ? "ADHOC" : "LSA", title: null, archivingAt: null }) };
+  }) as typeof f.client.workspaces.ref;
+  const root = createStateRoot();
+  if (promoted) {
+    const stamp = new Date().toISOString();
+    const record = promotionRecordSchema.parse({ schemaVersion: 1, requestId: randomUUID(), agentId: f.source.id, epic: "ASMA-1", branch: "promote", state,
+      native: { workspaceId: f.admission.workspaceId, workspace: "ADHOC", title, titleAuto: title, observedAt: stamp, revision: f.source.updatedAt },
+      logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "a".repeat(64) }, persona: { issued: persona, effective: persona },
+      canonicalAgentId: f.source.id, summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "Synthetic review fixture", createdAt: stamp, updatedAt: stamp });
+    await makeDirectory(join(root, "promotion-v1"), { recursive: true });
+    await writeFile(join(root, "promotion-v1", `${record.requestId}.json`), JSON.stringify(record));
+  }
+  return { ...f, canonicalRoot: root };
+}
+describe("R11 canonical refusal regressions", () => {
+  it("holds a promotion appearing after prepare across restart without effects", async () => {
+    const f = await reviewLeadFixture(true, "promoting"), root = join(f.canonicalRoot, "promotion-v1");
+    const name = (await readdir(root))[0]!, record = await readFile(join(root, name), "utf8");
+    await rm(root, { recursive: true }); delete f.source.labels!.role;
+    f.admission.sourceRevision = lifecycleRevision(f.source);
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    await makeDirectory(root, { recursive: true }); await writeFile(join(root, name), record);
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    expect((await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
+  });
+
+  it.each([false, true])("refuses canonical lead before effects (promoted=%s)", async (promoted) => {
+    const f = await reviewLeadFixture(promoted);
+    expect((await discoverCanonical(f.client, f.canonicalRoot, "ASMA-1")).kind).toBe("one");
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow(/[Cc]anonical|[Pp]romotion/);
+    expect(f.effects).toEqual([]);
+  });
+  it.each(["promoting", "unknown", "promoted"] as const)("refuses promotion %s without LSA label", async (state) => {
+    const f = await reviewLeadFixture(true, state);
+    delete f.source.labels!.role; f.admission.sourceRevision = lifecycleRevision(f.source);
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow(/[Pp]romotion/);
+    expect(f.effects).toEqual([]);
+  });
+  it.each(["unreadable", "malformed", "role"])("holds ownership drift after prepare: %s", async (drift) => {
+    const f = await proceduralFixture();
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    const root = join(createStateRoot(), "promotion-v1");
+    if (drift === "role") f.source.labels!.role = "LSA";
+    else if (drift === "unreadable") { await makeDirectory(createStateRoot(), { recursive: true }); await writeFile(root, "unreadable store"); }
+    else { await makeDirectory(root, { recursive: true }); await writeFile(join(root, "bad.json"), "invalid promotion record"); }
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
+    expect((await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
   });
 });

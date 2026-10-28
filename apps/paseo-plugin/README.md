@@ -1512,6 +1512,12 @@ hook alone.
 
 ### Procedural takeover backend on stock Paseo
 
+This bounded route refuses every LSA-role session and every session named by a
+promotion or canonical handoff record, including pending or unreadable promotion
+state. It rechecks that absence before retirement and during reconciliation.
+Canonical lead takeover needs the existing persona/title contract and durable
+binding transfer; this backend does not implement that support.
+
 The backend exposes `sessions.procedural-takeover.prepare`, `.execute` and
 `.check` for a reviewed, plugin-owned procedure. These RPCs do not enable the
 legacy **Take over** control. They use the public Paseo SDK; no patched host,
