@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -322,6 +322,44 @@ describe("ADHOC LSA conditional promotion", () => {
     s.agents.set(source.id, { ...source, labels: { ...source.labels, persona: "kontor-lsa-adhoc@000000000000" } });
     expect((await s.service.list()).find((entry) => entry.record.agentId === "agent-adhoc")?.validation)
       .toMatchObject({ state: "stale", message: expect.stringContaining("persona") });
+  });
+
+  it("refuses a fresh request id with a changed summary after a handoff", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
+    const s = await setup({ others: [canonical] });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary, revision: summaryRevision } }))
+      .toMatchObject({ state: "handoff" });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100", summary: { text: summary.replace("keep", "change"), revision: summaryRevision } }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("different summary") });
+    expect(s.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a prior promoted owner is unreadable even if another label lead is visible", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
+    const s = await setup({ others: [canonical] });
+    await mkdir(join(s.root, "promotion-v1"), { recursive: true });
+    await writeFile(join(s.root, "promotion-v1", "11111111-1111-4111-8111-111111111111.json"), JSON.stringify({
+      schemaVersion: 1, requestId: "11111111-1111-4111-8111-111111111111", agentId: "ghost", epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Missing", titleAuto: "LSA • ADHOC • Missing", observedAt: "2026-10-28T00:00:00Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "a".repeat(64) },
+      persona: { issued: PERSONA_VERSION, effective: PERSONA_VERSION }, canonicalAgentId: "ghost", summarySha256: null, summaryRevision: null,
+      acknowledgement: "not-required", message: "promoted", createdAt: "2026-10-28T00:00:00Z", updatedAt: "2026-10-28T00:00:00Z",
+    }));
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100" }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("unreadable") });
+    expect(s.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses empty required summary headings even when the digest is valid", async () => {
+    const canonical = agent("agent-canonical", { workspaceId: "wks-lsa", title: "LSA • ASMA-100 • Other topic",
+      labels: { role: "LSA", epic: "ASMA-100", [TITLE_AUTO_LABEL]: "LSA • ASMA-100 • Other topic", persona: personaVersion("lsa-bound", true) } });
+    const s = await setup({ others: [canonical] });
+    expect(await s.service.promote({ requestId: randomUUID(), agentId: "agent-adhoc", epic: "ASMA-100",
+      summary: { text: summary.replace("Scope: keep the ADHOC session.", "Scope:"), revision: summaryRevision } }))
+      .toMatchObject({ state: "refused", message: expect.stringContaining("missing required section") });
+    expect(s.run).not.toHaveBeenCalled();
   });
   it("refuses a source that is not an ADHOC LSA and a closed or non-epic key before any effect", async () => {
     const tpm = agent("agent-tpm", { labels: { role: "TPM", [TITLE_AUTO_LABEL]: "TPM • ADHOC • Route", persona: PERSONA_VERSION } });

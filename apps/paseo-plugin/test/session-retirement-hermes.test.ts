@@ -71,6 +71,29 @@ describe("read-only retirement projection under the iOS (Hermes) scoping of plug
       expect.objectContaining({ kind: "stale-or-mismatched-evidence" }),
     ]));
   });
+
+  it("invalidates a current promotion when the native directory row drifts", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e3", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "c".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    let row = sessionEntry(A, { updatedAt: "r1", workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } });
+    const h = harness(() => "host", () => [row], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000aa", [], []),
+      "sessions.promotion-list": async () => [{ record, validation: { state: "current", message: "matches", revision: "r1" } }],
+    });
+    h.draw(); await settle();
+    expect(h.draw().projections.get(A)?.promotion?.source.fresh).toBe("current");
+    row = { ...row, updatedAt: "r2", labels: { ...row.labels, role: "TPM" } };
+    const drifted = h.draw();
+    expect(drifted.projections.get(A)?.promotion?.source.fresh).toBe("stale");
+    expect(drifted.projections.get(A)?.scope.claims).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "epic", binding: "claimed" })]));
+  });
   it("preserves successful receipts and only marks the failed receipt's sessions Unknown", async () => {
     let failSecond = true, failFirst = false;
     const h = harness(() => "host", () => [sessionEntry(A), sessionEntry(B), sessionEntry(D)], {

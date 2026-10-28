@@ -131,6 +131,29 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     const successor = [...h.agents.values()].find((entry) => entry.id !== predecessor.id)!;
     expect(await discoverCanonical(h.client as never, h.createRoot, "ASMA-1")).toMatchObject({ kind: "one", agent: { id: successor.id } });
     expect(successor.labels?.role).toBe("LSA");
+    expect(successor.labels?.epic).toBe("ASMA-1");
+    expect(h.effects.create[0]?.prompt).toContain("Kontor recovered canonical epic binding: ASMA-1");
+  });
+
+
+  it("does not retire a session whose promotion store is unreadable or unsettled", async () => {
+    for (const corrupt of [true, false]) {
+      const h = await host();
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(join(h.createRoot, "promotion-v1"), { recursive: true });
+      if (corrupt) await writeFile(join(h.createRoot, "promotion-v1", "broken.json"), "{");
+      else await writeFile(join(h.createRoot, "promotion-v1", "11111111-1111-4111-8111-111111111111.json"), JSON.stringify({
+        schemaVersion: 1, requestId: "11111111-1111-4111-8111-111111111111", agentId: "agent-1", epic: "ASMA-1", branch: "promote", state: "promoting",
+        native: { workspaceId: "wks-1", workspace: "TSW", title: "Fix the parser", titleAuto: "Fix the parser", observedAt: "2026-10-25T08:00:00Z", revision: "r1" },
+        logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "a".repeat(64) },
+        persona: { issued: "p", effective: "p" }, canonicalAgentId: null, summarySha256: null, summaryRevision: null,
+        acknowledgement: "unknown", message: "pending", createdAt: "2026-10-25T08:00:00Z", updatedAt: "2026-10-25T08:00:00Z",
+      }));
+      const review = await h.ready();
+      expect(review.state).toBe("unknown");
+      expect(h.effects.archive).toHaveLength(0);
+      expect(h.effects.create).toHaveLength(0);
+    }
   });
 
 describe("direct takeover continuity", () => {

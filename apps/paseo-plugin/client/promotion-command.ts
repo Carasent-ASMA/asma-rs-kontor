@@ -1,6 +1,14 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { newRequestId } from "./new-lsa-form";
-import { promoteSession } from "../shared/session-promotion";
+import { newRequestId } from "./request-id";
+import { promoteSession, type PromotionOutcome } from "../shared/session-promotion";
+
+export function parsePromotionArguments(args: string): { epic: string; revision: string; summary: string } | null {
+  const text = args.trim(), first = text.indexOf(" "), second = first < 0 ? -1 : text.indexOf(" ", first + 1);
+  if (first < 0 || second < 0 || !text.slice(first + 1, second).trim() || !text.slice(second + 1).trim()) return null;
+  return { epic: text.slice(0, first).trim(), revision: text.slice(first + 1, second).trim(), summary: text.slice(second + 1).trim() };
+}
+
+const resultText = (outcome: PromotionOutcome) => `Promotion ${outcome.state}${outcome.epic ? ` for ${outcome.epic}` : ""}: ${outcome.message}`;
 
 /** `/promote-adhoc <epic> <revision> <summary>` is the runtime caller for same-session promotion. */
 export function contributePromotionCommand(client: PluginClientContext): void {
@@ -10,12 +18,17 @@ export function contributePromotionCommand(client: PluginClientContext): void {
     argumentHint: "ASMA-123 <summary-revision> <Scope/Artifacts/Verified/Unverified/Next-action summary>",
     context: "agent",
     async onSubmit(context) {
-      const text = context.args.trim(), first = text.indexOf(" "), second = first < 0 ? -1 : text.indexOf(" ", first + 1);
-      if (first < 0 || second < 0 || !text.slice(second + 1).trim()) return;
-      await context.rpc(promoteSession, {
-        requestId: newRequestId(), agentId: context.agent.id, epic: text.slice(0, first).trim(),
-        summary: { revision: text.slice(first + 1, second).trim(), text: text.slice(second + 1).trim() },
-      });
+      const parsed = parsePromotionArguments(context.args);
+      let message: string;
+      if (!parsed) message = "Promotion not sent: use /promote-adhoc <epic> <summary-revision> <complete summary>.";
+      else {
+        try {
+          const outcome = await context.rpc(promoteSession, { requestId: newRequestId(), agentId: context.agent.id, ...parsed,
+            summary: { revision: parsed.revision, text: parsed.summary } });
+          message = resultText(outcome);
+        } catch (failure) { message = `Promotion state unknown: ${failure instanceof Error ? failure.message : String(failure)}. Do not retry blindly.`; }
+      }
+      await context.paseo.agents.ref(context.agent.id).send(message).catch(() => {});
     },
   });
 }

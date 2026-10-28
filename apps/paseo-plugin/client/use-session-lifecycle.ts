@@ -286,13 +286,29 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
       const entryRecord = promotions.rows[entry.id];
       if (!entryRecord) return null;
       const record = entryRecord.record;
-      if (record.state !== "promoted" && record.state !== "handoff") return null;
       const validation = entryRecord.validation;
-      const fresh = validation.state === "current" ? "current" as const : validation.state === "stale" ? "stale" as const : "unknown" as const;
+      if (record.state !== "promoted" && record.state !== "handoff") {
+        return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
+            title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
+          source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
+            detail: `${record.state} promotion record: ${validation.message}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+            fresh: "unknown" as const } };
+      }
+      const localProblem = (() => {
+        if (entry.archivedAt !== null) return "The native owner is archived.";
+        if (validation.revision !== null && entry.updatedAt !== validation.revision) return "The native owner changed after validation.";
+        if (entry.labels.role !== "LSA" || entry.labels.ticket) return "The native owner is no longer an epic LSA.";
+        if (record.state === "promoted") {
+          if (entry.workspaceId !== record.native.workspaceId) return "The promoted session moved native workspace.";
+          if ((entry.labels.persona ?? "") !== record.persona.effective) return "The promoted session persona changed.";
+        } else if (record.state === "handoff" && entry.labels.epic !== record.epic) return "The handoff receiver lost its epic label.";
+        return null;
+      })();
+      const fresh = validation.state === "current" && !localProblem ? "current" as const : localProblem || validation.state === "stale" ? "stale" as const : "unknown" as const;
       return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
           title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
         source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,
-        detail: `${record.state} promotion record: ${validation.message}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
+        detail: `${record.state} promotion record: ${localProblem ?? validation.message}`, observedAt: record.updatedAt, revision: record.logical.bindingRevision,
         fresh } };
     };
     const projections = new Map<string, SessionProjection>();

@@ -71,6 +71,7 @@ export type PromotionOutcome = z.infer<typeof promotionOutcomeSchema>;
 export const promotionValidationSchema = z.object({
   state: z.enum(["current", "stale", "unknown"]),
   message: z.string(),
+  revision: z.string().nullable(),
 }).strict();
 export type PromotionValidation = z.infer<typeof promotionValidationSchema>;
 export const promotionListEntrySchema = z.object({ record: promotionRecordSchema, validation: promotionValidationSchema }).strict();

@@ -710,13 +710,23 @@ function buildWorkspaceGroups(input: {
   return sortGroups(
     [...byWorkspace.entries()].map(([key, value]) => {
       const workspaceKey = `${input.parentKey}/workspace:${segment(key)}`;
+      const promoted = value.label.trim().toUpperCase() === "ADHOC"
+        ? value.entries.filter((entry) => clean(entry.labels.epic) !== null) : [];
+      const ordinary = promoted.length ? value.entries.filter((entry) => !promoted.includes(entry)) : value.entries;
       const roles = buildRoleGroups({
-        entries: value.entries,
+        entries: ordinary,
         parentKey: workspaceKey,
         depth: input.depth + 1,
         siblingOrder: input.siblingOrder,
         nativeOrder: input.nativeOrder,
       });
+      const epics = new Map<string, DirectoryEntry[]>();
+      for (const entry of promoted) {
+        const epic = clean(entry.labels.epic)!.toUpperCase();
+        const groupEntries = epics.get(epic) ?? [];
+        groupEntries.push(entry);
+        epics.set(epic, groupEntries);
+      }
       return group({
         key: workspaceKey,
         kind: "workspace",
@@ -726,7 +736,15 @@ function buildWorkspaceGroups(input: {
         depth: input.depth,
         workspace: input.emptyWorkspaces?.find((workspace) => key === `id:${workspace.id}`),
         sessions: roles.sessions,
-        groups: roles.groups,
+        groups: [
+          ...[...epics.entries()].map(([epic, entries]) => {
+            const epicKey = `${workspaceKey}/epic:${segment(epic)}`;
+            const children = buildRoleGroups({ entries, parentKey: epicKey, depth: input.depth + 2, siblingOrder: input.siblingOrder, nativeOrder: input.nativeOrder });
+            return group({ key: epicKey, kind: "epic", label: epic, shortCode: null, parentKey: workspaceKey, depth: input.depth + 1,
+              sessions: children.sessions, groups: children.groups, epic, association: "epic" });
+          }),
+          ...roles.groups,
+        ],
       });
     }),
     input.parentKey,

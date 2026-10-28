@@ -112,7 +112,7 @@ async function validEpic(epic: string, jira: JiraSearch): Promise<JiraIssue | st
 }
 
 function summaryProblem(text: string): string | null {
-  const missing = ["Scope", "Artifacts", "Verified", "Unverified", "Next action"].filter((heading) => !new RegExp(`^${heading}:`, "m").test(text));
+  const missing = ["Scope", "Artifacts", "Verified", "Unverified", "Next action"].filter((heading) => !new RegExp(`^${heading}:[ \\t]*\\S`, "m").test(text));
   return missing.length ? `The handoff summary is missing required section${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.` : null;
 }
 
@@ -156,7 +156,13 @@ export function createPromotionService(client: PromotionClient, root: string, sw
           && earlier.summaryRevision === input.summary.revision && earlier.summarySha256 === createHash("sha256").update(input.summary.text).digest("hex"));
         if (earlier) return earlier.agentId === input.agentId && earlier.epic === input.epic && summaryMatches ? outcome(earlier) : refused(input, "This request id is already recorded for another session, epic or summary payload.");
         const prior = (await records(root)).filter((entry) => entry.agentId === input.agentId).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
-        if (prior) return prior.epic === input.epic ? outcome(prior) : refused(input, `This session already has a promotion record for ${prior.epic}; it cannot be rebound to ${input.epic}.`);
+        if (prior) {
+          const sameSummary = prior.branch !== "handoff" || (input.summary !== undefined
+            && prior.summaryRevision === input.summary.revision && prior.summarySha256 === createHash("sha256").update(input.summary.text).digest("hex"));
+          if (prior.epic !== input.epic) return refused(input, `This session already has a promotion record for ${prior.epic}; it cannot be rebound to ${input.epic}.`);
+          if (!sameSummary) return refused(input, "This session already handed a different summary to the canonical lead; a new request cannot replace that record.");
+          return outcome(prior);
+        }
         const switched = createSwitchProblem(switchFile);
         if (switched) return refused(input, switched);
         const issue = await validEpic(input.epic, jira);
@@ -228,11 +234,13 @@ export function createPromotionService(client: PromotionClient, root: string, sw
   async function list(): Promise<PromotionListEntry[]> {
     const all = await records(root);
     return Promise.all(all.map(async (record): Promise<PromotionListEntry> => {
-      if (record.state !== "promoted" && record.state !== "handoff") return { record, validation: { state: "unknown", message: "The promotion is not a settled canonical binding." } };
+      if (record.state !== "promoted" && record.state !== "handoff") return { record, validation: { state: "unknown", message: "The promotion is not a settled canonical binding.", revision: null } };
       const owner = record.state === "promoted" ? record.agentId : record.canonicalAgentId;
-      if (!owner) return { record, validation: { state: "unknown", message: "The record names no canonical owner." } };
-      const problem = await canonicalBindingProblem(client, root, record.epic, owner);
-      return { record, validation: problem ? { state: "stale", message: problem } : { state: "current", message: "The canonical binding matches its exact native owner evidence." } };
+      if (!owner) return { record, validation: { state: "unknown", message: "The record names no canonical owner.", revision: null } };
+      const current = await placement(client, owner).catch(() => null);
+      const problem = current ? await canonicalBindingProblem(client, root, record.epic, owner) : "The canonical owner is unreadable.";
+      return { record, validation: problem ? { state: "stale", message: problem, revision: current?.agent.updatedAt ?? null }
+        : { state: "current", message: "The canonical binding matches its exact native owner evidence.", revision: current?.agent.updatedAt ?? null } };
     }));
   }
 

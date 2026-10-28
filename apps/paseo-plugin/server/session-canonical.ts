@@ -124,20 +124,21 @@ export async function canonicalBindingProblem(client: CanonicalClient, root: str
     && (entry.agentId === agentId && entry.state === "promoted" || entry.canonicalAgentId === agentId && entry.state === "handoff"))
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   const title = labels[TITLE_AUTO_LABEL] ?? current.agent.title ?? "";
-  const [titleRole, titleKey] = title.split(" • ").map((part) => part.trim());
+  const [titleRole, titleKey, titleTopic] = title.split(" • ").map((part) => part.trim());
+  const titleProblem = titleRole !== "LSA" || titleKey !== epic || !titleTopic?.trim();
   const personaProblem = () => BOUND_PERSONA.test(labels.persona ?? "") ? null : "The canonical LSA does not carry a supported bound-lead persona.";
   if (record) {
     if (record.state === "handoff") {
       if (current.native.workspace.toUpperCase() !== "LSA") return "The handoff receiver must live in the native LSA workspace.";
       if (labels.epic !== epic) return "The handoff receiver must retain its exact epic label.";
-      if (titleRole !== "LSA" || titleKey !== epic) return "The handoff receiver must have an LSA • <epic> • <topic> title.auto.";
+      if (titleProblem) return "The handoff receiver must have an LSA • <epic> • <topic> title.auto.";
       return personaProblem();
     }
     return promotedBindingProblem(record, current);
   }
   if (labels.epic !== epic) return "A label-only canonical LSA must retain its exact epic label.";
   if (current.native.workspace.toUpperCase() !== "LSA") return "A label-only canonical LSA must live in the native LSA workspace.";
-  if (titleRole !== "LSA" || titleKey !== epic) return "A label-only canonical LSA must have an LSA • <epic> • <topic> title.auto.";
+  if (titleProblem) return "A label-only canonical LSA must have an LSA • <epic> • <topic> title.auto.";
   return personaProblem();
 }
 
@@ -191,7 +192,8 @@ export async function discoverCanonical(client: CanonicalClient, root: string, e
   for (const entry of stored.filter((candidate) => candidate.epic === epic && candidate.state === "promoted")) {
     if (bound.has(entry.agentId)) continue;
     const current = await placement(client, entry.agentId).catch(() => null);
-    if (!current || current.agent.archivedAt) { archivedRecord = true; continue; }
+    if (!current) return { kind: "archived", message: `The promoted LSA for ${epic} is unreadable. Its owner must reconcile it before another promotion.` };
+    if (current.agent.archivedAt) { archivedRecord = true; continue; }
     const problem = await canonicalBindingProblem(client, root, epic, current.agent.id);
     if (problem) return { kind: "ambiguous", message: problem };
     bound.set(current.agent.id, current.agent);
@@ -199,7 +201,8 @@ export async function discoverCanonical(client: CanonicalClient, root: string, e
   for (const entry of stored.filter((candidate) => candidate.epic === epic && candidate.state === "handoff" && candidate.canonicalAgentId)) {
     if (bound.has(entry.canonicalAgentId!)) continue;
     const current = await placement(client, entry.canonicalAgentId!).catch(() => null);
-    if (!current || current.agent.archivedAt) { archivedRecord = true; continue; }
+    if (!current) return { kind: "archived", message: `The recorded canonical LSA for ${epic} is unreadable. Its owner must reconcile the handoff before another promotion.` };
+    if (current.agent.archivedAt) { archivedRecord = true; continue; }
     const problem = await canonicalBindingProblem(client, root, epic, current.agent.id);
     if (problem) return { kind: "ambiguous", message: problem };
     bound.set(current.agent.id, current.agent);
@@ -211,11 +214,24 @@ export async function discoverCanonical(client: CanonicalClient, root: string, e
 }
 
 
+/** The predecessor's canonical promotion state, used before a takeover may archive it. */
+export async function promotionBindingFor(root: string, agentId: string): Promise<{ state: "none" } | { state: "settled"; record: PromotionRecord } | { state: "blocked"; message: string }> {
+  let all: PromotionRecord[];
+  try { all = await records(root); }
+  catch (error) { return { state: "blocked", message: `Promotion state could not be read: ${errorText(error)}. No retirement is allowed.` }; }
+  const pending = all.filter((entry) => (entry.agentId === agentId || entry.canonicalAgentId === agentId) && (entry.state === "promoting" || entry.state === "unknown"));
+  if (pending.length) return { state: "blocked", message: "This session has an unsettled promotion. Reconcile the recorded intent before takeover; no retirement is allowed." };
+  const owned = all.filter((entry) => entry.state === "promoted" && entry.agentId === agentId || entry.state === "handoff" && entry.canonicalAgentId === agentId)
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  if (owned.length > 1) return { state: "blocked", message: "Multiple promotion bindings name this session; reconcile them before takeover; no retirement is allowed." };
+  return owned.length ? { state: "settled", record: owned[0]! } : { state: "none" };
+}
+
 /** After an authorized takeover, move a promoted/handoff canonical binding to the successor's exact native ID. */
 export async function transferPromotion(root: string, predecessorAgentId: string, successor: { agentId: string; native: NativePromotionPlacement; persona: string }): Promise<string | null> {
   const all = await records(root);
-  const source = all.filter((entry) => entry.epic && (entry.agentId === predecessorAgentId || entry.canonicalAgentId === predecessorAgentId)
-    && ["promoted", "handoff"].includes(entry.state)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+  const source = all.filter((entry) => (entry.state === "promoted" && entry.agentId === predecessorAgentId)
+    || (entry.state === "handoff" && entry.canonicalAgentId === predecessorAgentId)).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   if (!source) return null;
   if (all.some((entry) => entry.epic === source.epic && entry.agentId === successor.agentId && entry.state === "promoted")) return null;
   const persona = successor.persona || source.persona.effective;
