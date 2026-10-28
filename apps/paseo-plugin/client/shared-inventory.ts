@@ -185,7 +185,7 @@ function unavailableDirectory(direct: DirectoryState): DirectoryState {
 function directWorkspaces(direct: DirectWorkspaceDirectory): SharedWorkspaceDirectory {
   const partial = direct.error !== null || direct.projectError !== null || direct.readAt === null || direct.projectsReadAt === null;
   return {
-    entries: direct.entries.map((workspace) => ({
+    entries: (direct.entries ?? []).map((workspace) => ({
       id: workspace.id,
       projectId: workspace.projectId,
       name: workspace.name,
@@ -278,7 +278,8 @@ export function adaptSharedInventory(input: {
     input.direct.status === "ready" && input.direct.live && input.direct.inventoryComplete === true;
   const directWorkspacesAuthoritative =
     directAuthoritative
-    || ((input.directWorkspaces.entries.length > 0 || input.directWorkspaces.projects.length > 0)
+    || (((input.directWorkspaces.entries?.length ?? 0) > 0
+      || (input.directWorkspaces.projects?.length ?? 0) > 0)
       && input.directWorkspaces.error === null
       && input.directWorkspaces.projectError === null);
 
