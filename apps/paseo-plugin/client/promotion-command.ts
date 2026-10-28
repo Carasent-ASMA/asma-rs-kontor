@@ -23,7 +23,7 @@ export function contributePromotionCommand(client: PluginClientContext): void {
       if (!parsed) message = "Promotion not sent: use /promote-adhoc <epic> <summary-revision> <complete summary>.";
       else {
         try {
-          const outcome = await context.rpc(promoteSession, { requestId: newRequestId(), agentId: context.agent.id, ...parsed,
+          const outcome = await context.rpc(promoteSession, { requestId: newRequestId(), agentId: context.agent.id, epic: parsed.epic,
             summary: { revision: parsed.revision, text: parsed.summary } });
           message = resultText(outcome);
         } catch (failure) { message = `Promotion state unknown: ${failure instanceof Error ? failure.message : String(failure)}. Do not retry blindly.`; }
