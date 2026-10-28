@@ -107,7 +107,15 @@ fn accepted_loader_resolves_slot_role_fleet_and_exact_pack_pins() {
     assert!(!value["fleet"]["selected"].is_null());
     assert_eq!(
         value["attachments"]["skills"]["references"],
+        value["profile"]["skills"]
+    );
+    assert_eq!(
+        value["attachments"]["skills"]["slot_references"],
         value["slot"]["skills"]
+    );
+    assert!(
+        value["profile"]["skills"].as_array().unwrap().len()
+            > value["slot"]["skills"].as_array().unwrap().len()
     );
     assert_eq!(
         value["attachments"]["persona"],

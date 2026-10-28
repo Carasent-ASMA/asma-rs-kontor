@@ -262,7 +262,10 @@ pub fn preview_selected_composition(
         "fleet": resolution.select(&input.eligibility),
         "attachments": {
             "persona": persona,
-            "skills": {"state": "planned", "references": slot.skills},
+            "skills": {
+                "state": "planned", "references": profile.skills,
+                "slot_references": slot.skills,
+            },
         },
         "unverified": [
             "atomic_selected_folder_generation", "policy_activation", "project_registration",

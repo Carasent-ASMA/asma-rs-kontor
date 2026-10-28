@@ -85,8 +85,10 @@ team. Its logical role maps through the selected operational domain; the fleet
 owner derives the team/slot key and selects its route. The role code used in the
 title and persona comes from that mapping, overriding a caller's role label.
 An absent optional role prompt stays `not_configured`; a present prompt becomes
-a planned hash, never prompt text. Planned skill references are the slot's own
-pinned requirements, not all skills from every role in the profile.
+a planned hash, never prompt text. Planned skills retain the profile owner's
+full resolved union of profile and team-slot pins, as P1 does. The requested
+slot's pins are also retained separately; the preview does not narrow the
+owner's resolution or decide which native attachments have actually loaded.
 
 The `selected-composition-preview@1` document retains exact captured pack-source
 hashes, the separately read fleet-byte hash and a canonical projection of the
