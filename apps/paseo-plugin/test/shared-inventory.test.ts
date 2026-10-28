@@ -127,6 +127,18 @@ describe("the shared native inventory adapter", () => {
     expect(adapted.workspaces.source).toBe("direct");
   });
 
+  it("keeps a fresh direct inventory when the live catalog is also complete", () => {
+    const live = sessionEntry("session-direct", { labels: { epic: "ASMA-1" } });
+    const adapted = adapt({
+      direct: { status: "ready", live: true, entries: [live], inventoryComplete: true, lastUpdatedAt: Date.parse(AS_OF) },
+      catalog: catalog(native()),
+    });
+    expect(adapted.directory.source).toBe("direct");
+    expect(adapted.directory.live).toBe(true);
+    expect(adapted.directory.entries).toEqual([live]);
+    expect(adapted.workspaces.source).toBe("direct");
+  });
+
   it("uses the daemon's native snapshot only when both live sources cannot answer", () => {
     const adapted = adapt({
       workspaces: { readAt: null, projectsReadAt: null, error: "Paseo is unavailable", projectError: "Paseo is unavailable" },
@@ -170,7 +182,7 @@ describe("the shared native inventory adapter", () => {
       direct: { status: "ready", live: true, entries: [], inventoryComplete: true, lastUpdatedAt: Date.parse(AS_OF) },
       catalog: catalog(native({ view: nativeView({ projects: [], workspaces: [], sessions: [] }) })),
     });
-    expect(empty.directory.source).toBe("catalog");
+    expect(empty.directory.source).toBe("direct");
     expect(empty.directory.status).toBe("ready");
     expect(empty.directory.entries).toEqual([]);
     expect(empty.directory.inventoryComplete).toBe(true);

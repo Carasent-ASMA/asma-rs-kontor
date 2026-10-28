@@ -682,6 +682,8 @@ pub(crate) struct NativeStoreInventory {
     pub(crate) sessions: Vec<NativeSessionRecord>,
 }
 
+const NATIVE_SWEEP_HISTORY: u64 = 16;
+
 fn generation_to_sql(generation: u64) -> i64 {
     i64::try_from(generation).unwrap_or(i64::MAX)
 }
@@ -731,6 +733,31 @@ impl Database {
         let generation = u64::try_from(generation)
             .map_err(|_| StoreError::Corrupt("negative native generation".to_owned()))?
             + 1;
+        transaction.execute(
+            "UPDATE catalog_native_sweeps
+             SET state = 'failed', finished_at = ?1,
+                 error = COALESCE(error, 'superseded by a newer attempt')
+             WHERE scope = ?2 AND state = 'running' AND generation < ?3",
+            params![
+                now_text,
+                crate::contract::HOST_SCOPE,
+                generation_to_sql(generation)
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM catalog_native_sweep_pages WHERE scope = ?1 AND generation < ?2",
+            params![crate::contract::HOST_SCOPE, generation_to_sql(generation)],
+        )?;
+        transaction.execute(
+            "DELETE FROM catalog_native_sweeps
+             WHERE scope = ?1 AND generation < ?2
+               AND generation <> COALESCE(
+                   (SELECT native_active_generation FROM catalog_scope WHERE scope = ?1), 0)",
+            params![
+                crate::contract::HOST_SCOPE,
+                generation_to_sql(generation.saturating_sub(NATIVE_SWEEP_HISTORY))
+            ],
+        )?;
         transaction.execute(
             "INSERT INTO catalog_native_sweeps
                  (scope, generation, owner_id, state, started_at, pages_committed,
@@ -972,6 +999,20 @@ impl Database {
             .filter(|coverage| coverage.state == NativeRuntimeState::Scanned)
             .count();
         transaction.execute(
+            "DELETE FROM catalog_native_sweep_pages WHERE scope = ?1 AND generation < ?2",
+            params![sweep.scope, generation_to_sql(sweep.generation)],
+        )?;
+        transaction.execute(
+            "DELETE FROM catalog_native_sweeps
+             WHERE scope = ?1 AND generation < ?2
+               AND generation <> COALESCE(
+                   (SELECT native_active_generation FROM catalog_scope WHERE scope = ?1), 0)",
+            params![
+                sweep.scope,
+                generation_to_sql(sweep.generation.saturating_sub(NATIVE_SWEEP_HISTORY))
+            ],
+        )?;
+        transaction.execute(
             "INSERT INTO catalog_native_collection
                  (scope, generation, attempt_generation, state, started_at, finished_at,
                   duration_ms, retry_at, runtimes_configured, runtimes_complete,
@@ -997,7 +1038,8 @@ impl Database {
                  workspaces_observed = ?12,
                  sessions_observed = ?13,
                  archived_sessions = ?14,
-                 include_archived = ?15,
+                 include_archived = CASE WHEN ?2 = 1 THEN ?15
+                                         ELSE catalog_native_collection.include_archived END,
                  runtimes_json = ?16,
                  diagnostics_json = ?17,
                  error = ?18",
@@ -1067,7 +1109,7 @@ impl Database {
                   projects_observed, workspaces_observed, sessions_observed,
                   archived_sessions, include_archived, runtimes_json,
                   diagnostics_json, error)
-             VALUES (?1, 0, ?2, 'failed', ?3, ?3, 0, ?4, ?5, 0, 0, 0, 0, 0, 1, ?6, ?7, ?8)
+             VALUES (?1, 0, ?2, 'failed', ?3, ?3, 0, ?4, ?5, 0, 0, 0, 0, 0, 0, ?6, ?7, ?8)
              ON CONFLICT (scope) DO UPDATE SET
                  attempt_generation = ?2,
                  state = 'failed',
@@ -1168,7 +1210,7 @@ impl Database {
         )?;
         let active = u64::try_from(active)
             .map_err(|_| StoreError::Corrupt("negative native active generation".to_owned()))?;
-        let archive_scope = include_archived != 0;
+        let archive_scope = active != 0 && include_archived != 0;
         if active == 0 {
             return Ok(NativeStoreInventory {
                 generation: 0,
@@ -1211,7 +1253,7 @@ impl Database {
     pub(crate) fn native_snapshot_projection(
         &self,
     ) -> Result<NativeSnapshotProjection, StoreError> {
-        let inventory = self.read_native_inventory(true, None)?;
+        let inventory = self.read_native_inventory(false, None)?;
         Ok(NativeSnapshotProjection {
             generation: inventory.generation,
             projects: inventory.projects,
@@ -1254,6 +1296,21 @@ fn promote_native_complete(
     sessions: &[NativeSession],
 ) -> Result<(), StoreError> {
     let observed_at = now.to_string();
+    let previous: i64 = transaction.query_row(
+        "SELECT native_active_generation FROM catalog_scope WHERE scope = ?1",
+        [crate::contract::HOST_SCOPE],
+        |row| row.get(0),
+    )?;
+    for table in [
+        "catalog_native_projects",
+        "catalog_native_workspaces",
+        "catalog_native_sessions",
+    ] {
+        transaction.execute(
+            &format!("UPDATE {table} SET visible_generation = ?1 WHERE visible_generation = ?2"),
+            params![generation_to_sql(generation), previous],
+        )?;
+    }
     for project in projects {
         upsert_native_project(transaction, generation, &observed_at, project)?;
     }
@@ -1272,6 +1329,7 @@ fn promote_native_complete(
             "UPDATE catalog_native_projects
              SET state = 'removed', removed_at = ?1, visible_generation = ?2
              WHERE runtime_instance = ?3 AND state = 'active'
+               AND visible_generation IS NOT NULL
                AND last_seen_generation <> ?2",
             params![
                 observed_at,
@@ -1283,6 +1341,7 @@ fn promote_native_complete(
             "UPDATE catalog_native_workspaces
              SET state = 'removed', removed_at = ?1, visible_generation = ?2
              WHERE runtime_instance = ?3 AND state = 'active'
+               AND visible_generation IS NOT NULL
                AND last_seen_generation <> ?2",
             params![
                 observed_at,
@@ -1294,6 +1353,7 @@ fn promote_native_complete(
             "UPDATE catalog_native_sessions
              SET state = 'removed', removed_at = ?1, visible_generation = ?2
              WHERE runtime_instance = ?3 AND state = 'active'
+               AND visible_generation IS NOT NULL
                AND last_seen_generation <> ?2",
             params![
                 observed_at,

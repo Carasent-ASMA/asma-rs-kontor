@@ -127,6 +127,8 @@ pub struct EffectiveSettings {
     pub revision: Option<String>,
     /// Structural resolution diagnostics.
     pub diagnostics: Vec<String>,
+    /// Whether the document can prove absence.
+    pub usable: bool,
 }
 
 /// The result of one collection attempt.
@@ -276,6 +278,30 @@ impl Catalog {
         Ok(self.database.schema_version()?)
     }
 
+    /// Resolve the effective settings without writing anything.
+    ///
+    /// Observer reads must not materialize a migrated file or record a new
+    /// provenance row. They see the same resolved settings and diagnostics the
+    /// next sweep would see, but a GET is not a configuration event.
+    fn effective_settings_readonly(&self) -> EffectiveSettings {
+        let now = Timestamp::now().to_string();
+        let resolved = config::resolve(&self.state_root, &ProcessEnvironment, &now);
+        let mut diagnostics = resolved.diagnostics.clone();
+        let mut origin = resolved.origin;
+        if let Some(migrated) = resolved.settings.migrated_from {
+            origin = migrated;
+        }
+        diagnostics.sort();
+        diagnostics.dedup();
+        EffectiveSettings {
+            settings: resolved.settings,
+            origin,
+            revision: resolved.revision,
+            usable: resolved.usable,
+            diagnostics,
+        }
+    }
+
     /// Resolve the effective settings, materializing a migrated plugin
     /// configuration exactly once.
     ///
@@ -332,6 +358,7 @@ impl Catalog {
             settings: resolved.settings,
             origin,
             revision,
+            usable: resolved.usable,
             diagnostics: {
                 diagnostics.sort();
                 diagnostics.dedup();
@@ -369,6 +396,30 @@ impl Catalog {
             *released = false;
         }
         let sweep = self.database.begin_sweep(&self.owner_id, &now)?;
+        if !effective.usable {
+            let detail = effective.diagnostics.first().cloned().unwrap_or_else(|| {
+                "The catalog settings cannot be read completely; this attempt cannot prove absence."
+                    .to_owned()
+            });
+            let mut diagnostics = effective.diagnostics.clone();
+            if diagnostics.is_empty() {
+                diagnostics.push(detail.clone());
+            }
+            let _ = self
+                .database
+                .fail_sweep(&sweep, &detail, &diagnostics, &now);
+            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return Ok(SweepReport {
+                generation: sweep.generation,
+                finished: false,
+                state: CollectionState::Failed,
+                entries: 0,
+                files_seen: 0,
+                duration_ms,
+                diagnostics,
+                snapshot_written: false,
+            });
+        }
         let discovered = discovery::discover(&effective.settings, now).await;
 
         let mut diagnostics = effective.diagnostics;
@@ -436,7 +487,7 @@ impl Catalog {
             files_seen: discovered.files_seen,
             entries_seen: discovered.entries.len(),
             error: error.clone(),
-            scanned_repository_ids: discovered.scanned_repository_ids,
+            scanned_roots: discovered.scanned_roots,
         };
         self.database.finalize_sweep(&sweep, &outcome, &now)?;
 
@@ -517,8 +568,28 @@ impl Catalog {
         let mut diagnostics = effective.diagnostics.clone();
         let mut first_error: Option<String> = None;
         let mut include_archived = !sources.is_empty();
+        let scan_budget = Duration::from_secs(effective.settings.scan_budget_seconds.max(1));
         for source in sources {
-            let census = source.observe().await;
+            let census = match tokio::time::timeout(scan_budget, source.observe()).await {
+                Ok(census) => census,
+                Err(_) => {
+                    let detail = format!(
+                        "The native census for `{}` exceeded the {}s scan budget.",
+                        source.runtime_instance(),
+                        scan_budget.as_secs()
+                    );
+                    diagnostics.push(detail.clone());
+                    include_archived = false;
+                    if first_error.is_none() {
+                        first_error = Some(detail.clone());
+                    }
+                    native::NativeCensus::unavailable(
+                        source.runtime_instance(),
+                        source.client_id(),
+                        detail,
+                    )
+                }
+            };
             if census.runtime_instance != source.runtime_instance() {
                 let detail = format!(
                     "A native source answered as `{}` while configured as `{}`; the observation was not promoted.",
@@ -566,9 +637,10 @@ impl Catalog {
             .iter()
             .filter(|session| session.archived_at.is_some())
             .count();
-        let complete = coverage
-            .iter()
-            .all(|runtime| runtime.state == native::NativeRuntimeState::Scanned);
+        let complete = include_archived
+            && coverage
+                .iter()
+                .all(|runtime| runtime.state == native::NativeRuntimeState::Scanned);
         let retry_at = (!complete)
             .then(|| native::retry_after(&now, effective.settings.cadence_seconds.clamp(1, 3600)));
 
@@ -977,7 +1049,7 @@ impl Catalog {
     /// # Errors
     /// Neither the database nor a compatible snapshot could answer.
     pub fn status(&self) -> Result<CatalogStatus, CatalogError> {
-        let effective = self.effective_settings();
+        let effective = self.effective_settings_readonly();
         match self.database.read_status() {
             Ok(store_status) => {
                 let mut status = self.project_status(store_status, &effective);
@@ -1074,7 +1146,7 @@ impl Catalog {
     /// # Errors
     /// The catalog settings could not be read. An unreadable source is a row.
     pub fn sources(&self) -> Result<CatalogSourcesView, CatalogError> {
-        let effective = self.effective_settings();
+        let effective = self.effective_settings_readonly();
         let sources = vec![
             self.plan_source_status(&effective),
             self.jira_source_status(&effective),
@@ -1807,6 +1879,7 @@ fn collection_state_name(state: CollectionState) -> &'static str {
 fn repository_state_name(state: contract::RepositoryState) -> &'static str {
     match state {
         contract::RepositoryState::Scanned => "scanned",
+        contract::RepositoryState::Partial => "partial",
         contract::RepositoryState::NotReached => "not_reached",
         contract::RepositoryState::Failed => "failed",
     }

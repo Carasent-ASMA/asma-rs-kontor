@@ -72,6 +72,8 @@ describe("shared native freshness truth", () => {
     expect(nativeFreshnessLabel({ hostStatus: "offline", status: "ready", live: true })).toBe("Host offline");
     expect(nativeFreshnessLabel({ hostStatus: "online", status: "error", live: false })).toBe("Unavailable");
     expect(nativeFreshnessLabel({ hostStatus: "online", status: "ready", live: true })).toBe("Live");
+    expect(nativeFreshnessLabel({ hostStatus: "online", status: "ready", live: false, source: "catalog", inventoryComplete: true })).toBe("Catalog");
+    expect(nativeFreshnessLabel({ hostStatus: "online", status: "stale", live: false, source: "catalog", inventoryComplete: false })).toBe("Catalog partial");
   });
   it.each([
     { hostStatus: "connecting", status: "ready", live: true, label: "Reconnecting" },

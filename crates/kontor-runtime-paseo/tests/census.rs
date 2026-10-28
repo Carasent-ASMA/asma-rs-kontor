@@ -7,7 +7,7 @@
 //! protocol preflight against the installed daemon.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
@@ -448,20 +448,15 @@ async fn every_census_starts_on_a_fresh_connection_and_failure_discards_it() {
 }
 
 #[derive(Debug)]
-struct ChangingIdentity {
+struct ChangingConnection {
     inner: Arc<RecordedPaseo>,
-    reads: AtomicUsize,
+    epoch: AtomicU64,
 }
 
 #[async_trait]
-impl PaseoTransport for ChangingIdentity {
+impl PaseoTransport for ChangingConnection {
     async fn server_identity(&self) -> RuntimeResult<PaseoServerInfo> {
-        let read = self.reads.fetch_add(1, Ordering::SeqCst);
-        let mut identity = self.inner.server_identity().await?;
-        if read >= 1 {
-            identity.server_id = "srv_after_restart".to_owned();
-        }
-        Ok(identity)
+        self.inner.server_identity().await
     }
 
     async fn run(&self, command: &PaseoCommand) -> RuntimeResult<PaseoOutput> {
@@ -475,14 +470,18 @@ impl PaseoTransport for ChangingIdentity {
     async fn drain_stream(&self, agent_id: &str) -> RuntimeResult<Vec<serde_json::Value>> {
         self.inner.drain_stream(agent_id).await
     }
+
+    fn connection_epoch(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
 }
 
 #[tokio::test]
-async fn a_boot_identity_change_during_the_walk_discards_the_census() {
+async fn a_reconnect_during_the_walk_discards_the_census() {
     let daemon = scripted_daemon();
-    let changing = ChangingIdentity {
+    let changing = ChangingConnection {
         inner: Arc::clone(&daemon),
-        reads: AtomicUsize::new(0),
+        epoch: AtomicU64::new(0),
     };
     let census = PaseoCensus::with_transport(RUNTIME, CLIENT, 200, 1_000, Box::new(changing))
         .census()
@@ -492,7 +491,7 @@ async fn a_boot_identity_change_during_the_walk_discards_the_census() {
         census
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("boot identity changed"))
+            .is_some_and(|error| error.contains("connection was replaced"))
     );
 }
 

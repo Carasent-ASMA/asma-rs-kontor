@@ -26,7 +26,7 @@ import { DEFAULT_CREDENTIAL_TIER, readConfig, type KontorPluginConfig } from "./
 
 export const WORK_CATALOG_TTL_MS = 30_000;
 export const WORK_CATALOG_BUDGET_MS = 5_000;
-/** Everything the child may write, frames included. */
+/** The largest one JSON-RPC response frame the child may write. */
 export const WORK_CATALOG_OUTPUT_LIMIT = 8 * 1024 * 1024;
 /** The plugin's own snapshot bound; a snapshot is a fallback, not a second catalog. */
 export const WORK_CATALOG_SNAPSHOT_LIMIT = 8 * 1024 * 1024;
@@ -140,7 +140,6 @@ function startObserver(config: KontorPluginConfig, budgetMs: number, signal?: Ab
   });
   let closed = false;
   let nextId = 1;
-  let received = 0;
   let output = Buffer.alloc(0);
   let timer: ReturnType<typeof setTimeout> | null = null;
   const pending = new Map<number, JsonRpcPending>();
@@ -184,15 +183,20 @@ function startObserver(config: KontorPluginConfig, budgetMs: number, signal?: Ab
     request.resolve(message.result);
   };
   const read = (chunk: Buffer) => {
-    received += chunk.byteLength;
-    if (received > WORK_CATALOG_OUTPUT_LIMIT) {
-      return fail(new CatalogReadFailure("incompatible", "the observer's answer exceeded the plugin's bounded read"));
-    }
     output = Buffer.concat([output, chunk]);
     for (let newline = output.indexOf(10); newline >= 0 && !closed; newline = output.indexOf(10)) {
-      const line = output.subarray(0, newline).toString("utf8");
+      const frame = output.subarray(0, newline);
+      // Bound each response, not the sum of a multi-page read: the native
+      // census legitimately returns several large pages in one session.
+      if (frame.byteLength > WORK_CATALOG_OUTPUT_LIMIT) {
+        return fail(new CatalogReadFailure("incompatible", "one observer response exceeded the plugin's bounded read"));
+      }
+      const line = frame.toString("utf8");
       output = output.subarray(newline + 1);
       take(parse(line));
+    }
+    if (output.byteLength > WORK_CATALOG_OUTPUT_LIMIT) {
+      fail(new CatalogReadFailure("incompatible", "one observer response exceeded the plugin's bounded read"));
     }
   };
   child.stdout.on("data", (chunk: Buffer) => {
@@ -237,11 +241,27 @@ async function observeEntries(session: JsonRpcSession): Promise<{ entries: Daemo
   let page = 0;
   let generation: number | null = null;
   let entries: DaemonEntriesView["entries"] = [];
+  let retried = false;
   for (;;) {
-    const view = daemonEntriesViewSchema.parse(await callTool(session, ENTRIES_TOOL, {
-      limit: WORK_CATALOG_PAGE_LIMIT,
-      ...(cursor === null ? {} : { cursor }),
-    }));
+    let view: DaemonEntriesView;
+    try {
+      view = daemonEntriesViewSchema.parse(await callTool(session, ENTRIES_TOOL, {
+        limit: WORK_CATALOG_PAGE_LIMIT,
+        ...(cursor === null ? {} : { cursor }),
+      }));
+    } catch (error) {
+      // A generation change can turn a cursor into 410 mid-read. Discard the
+      // pages collected from the old generation and restart exactly once.
+      const stale = cursor !== null && !retried && error instanceof CatalogReadFailure
+        && error.message.includes("status 410");
+      if (!stale) throw error;
+      retried = true;
+      cursor = null;
+      page = 0;
+      generation = null;
+      entries = [];
+      continue;
+    }
     if (generation === null) generation = view.generation;
     else if (generation !== view.generation) throw new CatalogReadFailure("incompatible", "entry pages span two catalog generations");
     page += 1;
@@ -564,10 +584,14 @@ export async function writeWorkCatalogSnapshot(path: string, input: WorkCatalogS
   const effectiveSourceAsOf = keepPlan ? sameHost.sourceAsOf : sourceAsOf;
   const native = keepNative ? sameHost.native : input.native;
   const effectiveNativeAsOf = keepNative ? sameHost.nativeAsOf : nativeAsOf;
+  // If either half is kept from an older snapshot, do not label the whole
+  // document with the current read time: savedAt must not make a kept part
+  // look fresher than it is.
+  const savedAt = (keepPlan || keepNative) && sameHost !== null ? sameHost.savedAt : input.savedAt;
   const snapshot = {
     schema: "kontor/plugin-work-catalog@2" as const,
     version: 2 as const,
-    savedAt: input.savedAt,
+    savedAt,
     sourceAsOf: effectiveSourceAsOf,
     hostId: input.hostId,
     runtimeInstance: native?.runtimeInstance ?? null,
@@ -682,9 +706,38 @@ export async function loadWorkCatalog(
   }
 }
 
+/**
+ * At most one catalog read per 30 seconds for one host and one configuration.
+ * Concurrent callers and failures share it; a changed command, state root,
+ * profile or switch starts a new read. A different host never shares a cache
+ * entry, because the native inventory is bound to its exact server id.
+ */
+export function workCatalogReader(
+  config: () => KontorPluginConfig = readConfig,
+  now = Date.now,
+  signal?: AbortSignal,
+): (hostId: string) => Promise<WorkCatalogRead> {
+  const cached = new Map<string, { key: string; at: number; read: Promise<WorkCatalogRead> }>();
+  return (hostId: string) => {
+    const current = config();
+    const key = JSON.stringify([hostId, current.mcpEnabled, current.mcpCommand, current.stateRoot, current.serveProfile]);
+    const at = now();
+    const prior = cached.get(hostId);
+    if (prior === undefined || prior.key !== key || at - prior.at >= WORK_CATALOG_TTL_MS) {
+      cached.set(hostId, {
+        key,
+        at,
+        read: loadWorkCatalog(current, { hostId, signal }),
+      });
+    }
+    return cached.get(hostId)!.read;
+  };
+}
+
 /** Register the catalog read whatever the floor; it only observes. The disposer aborts a read still in flight. */
 export function contributeWorkCatalog(server: Pick<PluginServerContext, "handle">): () => void {
   const stop = new AbortController();
-  server.handle(readWorkCatalog, (input) => loadWorkCatalog(readConfig(), { hostId: input.hostId, signal: stop.signal }));
+  const read = workCatalogReader(readConfig, Date.now, stop.signal);
+  server.handle(readWorkCatalog, (input) => read(input.hostId));
   return () => stop.abort();
 }

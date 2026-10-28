@@ -543,7 +543,7 @@ pub fn zerosub_transport(settings: &RuntimeSettings) -> Option<PaseoLiveTranspor
 /// would create a second identity for every session after every restart.
 #[must_use]
 pub fn native_runtime_instance(endpoint: &str) -> String {
-    format!("paseo:{endpoint}")
+    format!("paseo:{}", endpoint.trim().trim_end_matches('/'))
 }
 
 /// Compose the read-only native census sources this fleet configures.

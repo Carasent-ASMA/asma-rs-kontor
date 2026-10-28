@@ -155,6 +155,9 @@ pub struct RepositoryCoverage {
 pub enum RepositoryState {
     /// Read to completion within the sweep.
     Scanned,
+    /// Read, but at least one listed candidate was truncated or could not be
+    /// read; the root cannot prove absence.
+    Partial,
     /// Not reached because the sweep budget was spent.
     NotReached,
     /// Could not be read; other roots keep their own results.

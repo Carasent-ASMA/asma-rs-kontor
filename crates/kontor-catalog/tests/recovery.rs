@@ -8,7 +8,7 @@
 mod support;
 
 use kontor_catalog::contract::{RegistryState, RegistryStatus};
-use kontor_catalog::store::{Database, ObservedEntry, SweepOutcome};
+use kontor_catalog::store::{Database, ObservedEntry, ScannedRoot, SweepOutcome};
 use kontor_catalog::{Catalog, CatalogError, CatalogSettings, EntryFilter};
 use kontor_core::id::Timestamp;
 use support::{Fixture, Repo, plan, sweep};
@@ -34,7 +34,7 @@ fn absent_registry() -> RegistryStatus {
 fn outcome(
     complete: bool,
     coverage: Vec<kontor_catalog::contract::RepositoryCoverage>,
-    scanned: Vec<String>,
+    scanned: Vec<ScannedRoot>,
 ) -> SweepOutcome {
     let entries_seen = coverage
         .iter()
@@ -49,7 +49,7 @@ fn outcome(
         files_seen,
         entries_seen,
         error: None,
-        scanned_repository_ids: scanned,
+        scanned_roots: scanned,
     }
 }
 
@@ -246,11 +246,7 @@ async fn an_incomplete_sweep_cannot_tombstone_an_absence_it_did_not_prove() {
     database
         .finalize_sweep(
             &partial_sweep,
-            &outcome(
-                false,
-                discovered.coverage,
-                discovered.scanned_repository_ids,
-            ),
+            &outcome(false, discovered.coverage, discovered.scanned_roots),
             &now,
         )
         .expect("the partial sweep records its checkpoint");
@@ -325,4 +321,84 @@ async fn the_snapshot_is_generation_consistent_and_version_checked() {
         "a newer snapshot contract is refused rather than misread"
     );
     assert!(!fixture.catalog.status().unwrap().snapshot.current);
+}
+
+#[tokio::test]
+async fn a_root_removed_from_configuration_keeps_its_last_facts_visible() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/retained.md",
+        &plan("Retained plan", Some("ASMA-9800"), Some("kontor"), ""),
+    );
+    repo.commit("retained");
+    let settings = CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: repo.root().to_path_buf(),
+            include_github_plans: false,
+        }],
+        ..CatalogSettings::default()
+    };
+    let fixture = Fixture::open_settings(settings);
+    sweep(&fixture.catalog).await;
+    let before = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(before.entries.len(), 1);
+
+    fixture.rewrite_settings(&CatalogSettings {
+        schema_version: 1,
+        repositories: Vec::new(),
+        ..CatalogSettings::default()
+    });
+    sweep(&fixture.catalog).await;
+    let after = fixture.catalog.entries(&EntryFilter::default()).unwrap();
+    assert_eq!(
+        after.entries.len(),
+        1,
+        "a root removed from configuration is unobserved, not removed"
+    );
+    assert_eq!(after.entries[0].title, "Retained plan");
+}
+
+#[tokio::test]
+async fn an_invalid_catalog_json_cannot_advance_generation_or_replace_the_snapshot() {
+    let repo = Repo::new();
+    repo.write(
+        "plans/stable.md",
+        &plan("Stable plan", Some("ASMA-9801"), Some("kontor"), ""),
+    );
+    repo.commit("stable");
+    let settings = CatalogSettings {
+        schema_version: 1,
+        repositories: vec![kontor_catalog::RepositoryConfig {
+            root: repo.root().to_path_buf(),
+            include_github_plans: false,
+        }],
+        ..CatalogSettings::default()
+    };
+    let fixture = Fixture::open_settings(settings);
+    sweep(&fixture.catalog).await;
+    let before = fixture.catalog.status().unwrap();
+    assert!(before.snapshot.present);
+
+    std::fs::write(Catalog::settings_path(fixture.state.path()), b"{not json")
+        .expect("the broken settings document");
+    let report = fixture
+        .catalog
+        .collect_once()
+        .await
+        .expect("a failed sweep");
+    assert!(!report.finished);
+    let after = fixture.catalog.status().unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.attempted_generation, before.attempted_generation + 1);
+    assert_eq!(after.snapshot.generation, before.snapshot.generation);
+    assert_eq!(
+        fixture
+            .catalog
+            .entries(&EntryFilter::default())
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
 }

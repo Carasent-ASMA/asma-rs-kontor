@@ -311,6 +311,12 @@ pub struct ResolvedConfiguration {
     pub diagnostics: Vec<String>,
     /// Whether the settings must be materialized to `catalog.json`.
     pub materialize: bool,
+    /// Whether the document can be used to prove absence.
+    ///
+    /// An absent file is usable (the plugin configuration may supply the
+    /// scope); an unreadable or invalid `catalog.json` is not. An unusable
+    /// document must never become a complete empty sweep.
+    pub usable: bool,
 }
 
 /// Resolve the effective configuration for one catalog root.
@@ -352,6 +358,7 @@ fn read_settings_file(file: &Path) -> Option<ResolvedConfiguration> {
                     error.kind()
                 )],
                 materialize: false,
+                usable: false,
             });
         }
     };
@@ -369,6 +376,7 @@ fn read_settings_file(file: &Path) -> Option<ResolvedConfiguration> {
                     error.column()
                 )],
                 materialize: false,
+                usable: false,
             });
         }
     };
@@ -380,6 +388,7 @@ fn read_settings_file(file: &Path) -> Option<ResolvedConfiguration> {
         revision: Some(revision),
         diagnostics,
         materialize: false,
+        usable: true,
     })
 }
 
@@ -468,6 +477,7 @@ fn resolve_plugin_configuration(
         revision,
         diagnostics,
         materialize: origin != ConfigOrigin::None,
+        usable: true,
     }
 }
 

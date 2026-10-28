@@ -52,7 +52,10 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -1874,6 +1877,15 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
     async fn reset_connection(&self) -> RuntimeResult<()> {
         Ok(())
     }
+
+    /// A monotonically increasing identity for the current connection epoch.
+    ///
+    /// A reconnect replaces the socket but not the daemon's stable server id,
+    /// so the census uses this to refuse a walk whose pages span two sockets.
+    /// Recorded fixtures have one epoch and keep the default.
+    fn connection_epoch(&self) -> u64 {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2034,6 +2046,7 @@ pub struct PaseoLiveTransport {
     client_id: String,
     timeout_seconds: u64,
     connection: Mutex<Option<LiveConnection>>,
+    connection_epoch: AtomicU64,
 }
 
 /// The default loopback endpoint Kontor 1.0 qualifies.
@@ -2086,6 +2099,7 @@ impl PaseoLiveTransport {
             client_id: client_id.to_owned(),
             timeout_seconds,
             connection: Mutex::new(None),
+            connection_epoch: AtomicU64::new(0),
         })
     }
 
@@ -2184,6 +2198,7 @@ impl PaseoLiveTransport {
                 rule: "channel failed before the runtime answered",
             });
         });
+        self.connection_epoch.fetch_add(1, Ordering::SeqCst);
         Ok(LiveConnection {
             writer,
             multiplex,
@@ -2263,7 +2278,12 @@ impl PaseoTransport for PaseoLiveTransport {
     async fn reset_connection(&self) -> RuntimeResult<()> {
         let mut held = self.connection.lock().await;
         *held = None;
+        self.connection_epoch.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn connection_epoch(&self) -> u64 {
+        self.connection_epoch.load(Ordering::SeqCst)
     }
 
     async fn run(&self, command: &PaseoCommand) -> RuntimeResult<PaseoOutput> {

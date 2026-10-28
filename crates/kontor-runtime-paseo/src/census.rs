@@ -23,8 +23,9 @@
 //!
 //! The walk follows bounded pages and refuses a repeated or missing cursor
 //! instead of returning a truncated list as if it were complete. A runtime
-//! that changes boot identity during the walk is an incomplete observation,
-//! because pages read across two daemons do not describe one directory.
+//! whose server identity changes, or whose connection is replaced, during the
+//! walk is an incomplete observation: pages read across two sockets do not
+//! describe one directory.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -218,6 +219,7 @@ impl PaseoCensus {
             .await
             .map_err(|error| format!("the runtime did not announce itself ({error})"))?;
         self.absorb_identity(census, &identity)?;
+        let epoch = self.transport.connection_epoch();
         let projects = self
             .read_projects()
             .await
@@ -241,7 +243,13 @@ impl PaseoCensus {
             .map_err(|error| format!("the runtime identity could not be re-read ({error})"))?;
         if final_identity.server_id != identity.server_id {
             return Err(
-                "the runtime boot identity changed during the walk; the census was discarded"
+                "the runtime server identity changed during the walk; the census was discarded"
+                    .to_owned(),
+            );
+        }
+        if self.transport.connection_epoch() != epoch {
+            return Err(
+                "the runtime connection was replaced during the walk; the census was discarded"
                     .to_owned(),
             );
         }

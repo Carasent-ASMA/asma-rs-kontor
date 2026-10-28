@@ -119,6 +119,19 @@ pub struct ObservedAssociation {
     pub note: Option<String>,
 }
 
+/// One root whose complete contents this sweep read.
+///
+/// A repository id alone is not enough: all worktrees of one clone share the
+/// git common directory, so a successful scan of one worktree must never
+/// tombstone a failed sibling worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedRoot {
+    /// The repository identity derived from the git common directory.
+    pub repository_id: String,
+    /// The exact worktree root whose contents were read.
+    pub repository_root: String,
+}
+
 /// The final facts a collector commits for one sweep.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepOutcome {
@@ -136,11 +149,11 @@ pub struct SweepOutcome {
     pub entries_seen: usize,
     /// A structural failure, when the attempt could not finish.
     pub error: Option<String>,
-    /// Repository ids whose complete contents were read in this sweep.
+    /// Roots whose complete contents were read in this sweep.
     ///
-    /// Only these can prove absence. A failed or unreached root keeps every
-    /// fact it last supplied.
-    pub scanned_repository_ids: Vec<String>,
+    /// Only these can prove absence. A failed, partial or unreached root keeps
+    /// every fact it last supplied.
+    pub scanned_roots: Vec<ScannedRoot>,
 }
 
 /// One in-flight sweep, which is also its fence.
@@ -394,6 +407,31 @@ impl Database {
             .map_err(|_| StoreError::Corrupt("negative generation".to_owned()))?
             + 1;
         transaction.execute(
+            "UPDATE catalog_sweeps
+             SET state = 'failed', finished_at = ?1,
+                 error = COALESCE(error, 'superseded by a newer attempt')
+             WHERE scope = ?2 AND state = 'running' AND generation < ?3",
+            params![
+                now_text,
+                crate::contract::HOST_SCOPE,
+                generation_to_sql(generation)
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM catalog_sweep_pages WHERE scope = ?1 AND generation < ?2",
+            params![crate::contract::HOST_SCOPE, generation_to_sql(generation)],
+        )?;
+        transaction.execute(
+            "DELETE FROM catalog_sweeps
+             WHERE scope = ?1 AND generation < ?2
+               AND generation <> COALESCE(
+                   (SELECT active_generation FROM catalog_scope WHERE scope = ?1), 0)",
+            params![
+                crate::contract::HOST_SCOPE,
+                generation_to_sql(generation.saturating_sub(SWEEP_HISTORY))
+            ],
+        )?;
+        transaction.execute(
             "INSERT INTO catalog_sweeps
                  (scope, generation, owner_id, state, started_at, pages_committed,
                   files_seen, entries_seen, coverage_json, diagnostics_json)
@@ -449,6 +487,7 @@ impl Database {
             Some(_) => return Err(StoreError::Fenced),
             None => return Err(StoreError::MissingSweep),
         }
+        ensure_current_generation(&transaction, sweep)?;
         transaction.execute(
             "INSERT INTO catalog_sweep_pages
                  (scope, generation, page_index, observed_at, entries_json,
@@ -515,6 +554,7 @@ impl Database {
             Some(_) => return Err(StoreError::Fenced),
             None => return Err(StoreError::MissingSweep),
         }
+        ensure_current_generation(&transaction, sweep)?;
 
         let mut staged = Vec::new();
         {
@@ -541,7 +581,7 @@ impl Database {
                 sweep.generation,
                 now,
                 &mut staged,
-                &outcome.scanned_repository_ids,
+                &outcome.scanned_roots,
             )?;
         } else {
             promote_incomplete(&transaction, sweep.generation, now, &staged)?;
@@ -604,6 +644,20 @@ impl Database {
         } else {
             "incomplete"
         };
+        transaction.execute(
+            "DELETE FROM catalog_sweep_pages WHERE scope = ?1 AND generation < ?2",
+            params![sweep.scope, generation_to_sql(sweep.generation)],
+        )?;
+        transaction.execute(
+            "DELETE FROM catalog_sweeps
+             WHERE scope = ?1 AND generation < ?2
+               AND generation <> COALESCE(
+                   (SELECT active_generation FROM catalog_scope WHERE scope = ?1), 0)",
+            params![
+                sweep.scope,
+                generation_to_sql(sweep.generation.saturating_sub(SWEEP_HISTORY))
+            ],
+        )?;
         transaction.execute(
             "INSERT INTO catalog_collection
                  (scope, generation, attempt_generation, state, started_at, finished_at,
@@ -941,6 +995,23 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+const SWEEP_HISTORY: u64 = 16;
+
+fn ensure_current_generation(
+    transaction: &rusqlite::Transaction<'_>,
+    sweep: &SweepId,
+) -> Result<(), StoreError> {
+    let current: i64 = transaction.query_row(
+        "SELECT generation FROM catalog_scope WHERE scope = ?1",
+        [&sweep.scope],
+        |row| row.get(0),
+    )?;
+    if u64::try_from(current).ok() != Some(sweep.generation) {
+        return Err(StoreError::Fenced);
+    }
+    Ok(())
+}
+
 /// One previous plan used only to decide whether a new path is its rename.
 struct PreviousPlan {
     logical_plan_id: String,
@@ -960,7 +1031,7 @@ fn promote_complete(
     generation: u64,
     now: &Timestamp,
     staged: &mut [ObservedEntry],
-    scanned_repository_ids: &[String],
+    scanned_roots: &[ScannedRoot],
 ) -> Result<(), StoreError> {
     let observed_at = now.to_string();
     let active: i64 = transaction.query_row(
@@ -1065,6 +1136,23 @@ fn promote_complete(
         }
     }
 
+    // Carry every fact of the previous generation forward before promoting
+    // this sweep. A root this sweep did not read (failed, partial, unreached or
+    // removed from configuration) keeps its facts visible, and a tombstone
+    // from an earlier generation remains readable with `include_removed`.
+    let carried_from = active;
+    let carried_to = generation_to_sql(generation);
+    transaction.execute(
+        "UPDATE catalog_logical_plans SET visible_generation = ?1
+         WHERE visible_generation = ?2",
+        params![carried_to, carried_from],
+    )?;
+    transaction.execute(
+        "UPDATE catalog_occurrences SET visible_generation = ?1
+         WHERE visible_generation = ?2",
+        params![carried_to, carried_from],
+    )?;
+
     let mut aliases_by_plan: std::collections::BTreeMap<String, Vec<Alias>> =
         std::collections::BTreeMap::new();
     for entry in staged.iter() {
@@ -1087,21 +1175,28 @@ fn promote_complete(
         }
     }
 
-    // Tombstone only after every staged observation is written, and only
-    // because this sweep read every configured repository.
-    for repository_id in scanned_repository_ids {
+    // Tombstone only after every staged observation is written, and only for
+    // the exact roots this sweep read completely. A sibling worktree of the
+    // same repository is a different root and keeps its facts.
+    for root in scanned_roots {
         transaction.execute(
             "UPDATE catalog_occurrences
              SET state = 'removed', removed_at = ?1, visible_generation = ?2
-             WHERE repository_id = ?3 AND state = 'active'
+             WHERE repository_id = ?3 AND repository_root = ?4 AND state = 'active'
+               AND visible_generation IS NOT NULL
                AND last_seen_generation <> ?2",
-            params![observed_at, generation_to_sql(generation), repository_id],
+            params![
+                observed_at,
+                generation_to_sql(generation),
+                root.repository_id,
+                root.repository_root
+            ],
         )?;
     }
     transaction.execute(
         "UPDATE catalog_logical_plans
          SET state = 'removed', removed_at = ?1, visible_generation = ?2
-         WHERE state = 'active'
+         WHERE state = 'active' AND visible_generation IS NOT NULL
            AND NOT EXISTS (
                SELECT 1 FROM catalog_occurrences o
                WHERE o.logical_plan_id = catalog_logical_plans.logical_plan_id

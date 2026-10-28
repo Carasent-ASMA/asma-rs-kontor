@@ -270,28 +270,43 @@ export function adaptSharedInventory(input: {
   const snapshot = usable !== null && (usable.read.mode === "snapshot" || usable.view.source === "snapshot") ? usable : null;
   const liveComplete = live !== null && catalogComplete(live.view, input.includeArchived);
   const directUsable = directIsUsable(input.direct);
+  // A ready, live, complete direct read is the authoritative answer. The
+  // catalog is an observational fallback, not a replacement for a source that
+  // already answered exactly; otherwise a stale catalog could shadow a fresh
+  // direct inventory.
+  const directAuthoritative =
+    input.direct.status === "ready" && input.direct.live && input.direct.inventoryComplete === true;
+  const directWorkspacesAuthoritative =
+    directAuthoritative
+    || ((input.directWorkspaces.entries.length > 0 || input.directWorkspaces.projects.length > 0)
+      && input.directWorkspaces.error === null
+      && input.directWorkspaces.projectError === null);
 
   const directory =
-    liveComplete && live !== null
-      ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, false, null)
-      : directUsable
-        ? directDirectory(input.direct)
-        : live !== null
-          ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, true, null)
-          : snapshot !== null
-            ? snapshotDirectory(snapshot.view, input.includeArchived)
-            : unavailableDirectory(input.direct);
+    directAuthoritative
+      ? directDirectory(input.direct)
+      : liveComplete && live !== null
+        ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, false, null)
+        : directUsable
+          ? directDirectory(input.direct)
+          : live !== null
+            ? catalogDirectory(live.view, input.direct.entries, input.includeArchived, true, null)
+            : snapshot !== null
+              ? snapshotDirectory(snapshot.view, input.includeArchived)
+              : unavailableDirectory(input.direct);
 
   const workspaces =
-    liveComplete && live !== null
-      ? catalogWorkspaces(live.view, false)
-      : directWorkspacesUsable(input.directWorkspaces)
-        ? directWorkspaces(input.directWorkspaces)
-        : live !== null
-          ? catalogWorkspaces(live.view, true)
-          : snapshot !== null
-            ? catalogWorkspaces(snapshot.view, !catalogComplete(snapshot.view, input.includeArchived), "catalog-snapshot")
-            : directWorkspaces(input.directWorkspaces);
+    directWorkspacesAuthoritative
+      ? directWorkspaces(input.directWorkspaces)
+      : liveComplete && live !== null
+        ? catalogWorkspaces(live.view, false)
+        : directWorkspacesUsable(input.directWorkspaces)
+          ? directWorkspaces(input.directWorkspaces)
+          : live !== null
+            ? catalogWorkspaces(live.view, true)
+            : snapshot !== null
+              ? catalogWorkspaces(snapshot.view, !catalogComplete(snapshot.view, input.includeArchived), "catalog-snapshot")
+              : directWorkspaces(input.directWorkspaces);
 
   return { directory, workspaces };
 }

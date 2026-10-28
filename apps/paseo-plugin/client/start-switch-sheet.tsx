@@ -247,7 +247,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const entries = archive.directory.entries;
   const recentIds = recentRows(entries, recent.record).map((row) => row.entry.id);
   const opened = new Map(recent.record.visits.map((visit) => [visit.id, visit.at]));
-  const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live });
+  const freshness = nativeFreshnessLabel({ hostStatus, status: directory.status, live: directory.live, source: directory.source, inventoryComplete: directory.inventoryComplete });
   const counts = startSwitchCounts(archive.directory, freshness, { query, recent: recentIds, favorites: preferences.favorites });
   const { rows, total } = switchList(entries, status, query, clock.now, recent.record, preferences.favorites, revealed);
   // Selection covers every known match, shown or not, and keeps its exact IDs when the state or search changes.

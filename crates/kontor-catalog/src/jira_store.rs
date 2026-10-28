@@ -1177,7 +1177,7 @@ mod tests {
                 .expect("the v1 schema");
         }
         let database = Database::open(&path).expect("the catalog migrates");
-        assert_eq!(database.schema_version().expect("a schema version"), 2);
+        assert_eq!(database.schema_version().expect("a schema version"), 3);
         let tables: i64 = database
             .lock()
             .query_row(

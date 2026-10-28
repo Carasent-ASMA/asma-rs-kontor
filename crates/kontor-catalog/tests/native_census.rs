@@ -11,7 +11,7 @@ mod support;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use kontor_catalog::native::{
@@ -25,6 +25,28 @@ const RUNTIME: &str = "paseo:ws://127.0.0.1:6767/ws";
 const CLIENT: &str = "kontor-census-test";
 
 #[derive(Debug)]
+struct SlowSource {
+    runtime: String,
+    client: String,
+}
+
+#[async_trait]
+impl NativeCensusSource for SlowSource {
+    fn runtime_instance(&self) -> &str {
+        &self.runtime
+    }
+
+    fn client_id(&self) -> &str {
+        &self.client
+    }
+
+    async fn observe(&self) -> NativeCensus {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        NativeCensus::unavailable(&self.runtime, &self.client, "unreachable")
+    }
+}
+
+#[derive(Debug)]
 struct FakeSource {
     runtime: String,
     client: String,
@@ -36,6 +58,15 @@ impl FakeSource {
     fn new(answers: Vec<NativeCensus>) -> Arc<Self> {
         Arc::new(Self {
             runtime: RUNTIME.to_owned(),
+            client: CLIENT.to_owned(),
+            answers: Mutex::new(answers.into()),
+            observations: AtomicUsize::new(0),
+        })
+    }
+
+    fn with_runtime(runtime: &str, answers: Vec<NativeCensus>) -> Arc<Self> {
+        Arc::new(Self {
+            runtime: runtime.to_owned(),
             client: CLIENT.to_owned(),
             answers: Mutex::new(answers.into()),
             observations: AtomicUsize::new(0),
@@ -379,6 +410,18 @@ async fn an_incomplete_enumeration_never_removes_a_fact_and_a_later_complete_wal
         .find(|session| session.session_id == "agt_b")
         .expect("the removed session is retained");
     assert_eq!(removed.state, EntryState::Removed);
+    let snapshot = fixture
+        .catalog
+        .read_native_snapshot()
+        .expect("snapshot reads")
+        .expect("snapshot exists");
+    assert!(
+        snapshot
+            .sessions
+            .iter()
+            .all(|session| session.session_id != "agt_b"),
+        "the fallback snapshot carries active rows only, not tombstone history"
+    );
 }
 
 #[tokio::test]
@@ -422,6 +465,151 @@ async fn an_unavailable_runtime_is_failed_and_retains_prior_facts() {
         .expect("inventory");
     assert_eq!(retained.sessions.len(), 1);
     assert_eq!(retained.sessions[0].session_id, "agt_a");
+}
+
+#[tokio::test]
+async fn a_complete_walk_without_archive_coverage_cannot_tombstone_or_change_archive_scope() {
+    let fixture = Fixture::open(&[], None, 30);
+    let first = FakeSource::new(vec![census(
+        vec![project("prj_desk", "DESK • ADAM", "/repo")],
+        vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+        vec![
+            session("agt_active", "Active", "wks_adam", None),
+            session(
+                "agt_archived",
+                "Archived",
+                "wks_adam",
+                Some("2026-10-24T00:00:00Z"),
+            ),
+        ],
+    )]);
+    let complete = collect(&fixture.catalog, &first).await;
+    assert!(complete.complete);
+
+    let mut active_only = census(
+        vec![project("prj_desk", "DESK • ADAM", "/repo")],
+        vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+        vec![session("agt_active", "Active", "wks_adam", None)],
+    );
+    active_only.complete = true;
+    active_only.include_archived = false;
+    let second = FakeSource::new(vec![active_only]);
+    let incomplete = collect(&fixture.catalog, &second).await;
+    assert!(
+        !incomplete.complete,
+        "a walk that did not cover the archive cannot prove archived sessions absent"
+    );
+    assert_eq!(incomplete.generation, 2);
+    let status = fixture.catalog.native_status().expect("status");
+    assert_eq!(status.generation, 1, "the complete generation is untouched");
+    assert!(
+        status.collection.include_archived,
+        "archive scope still describes the served generation"
+    );
+    let inventory = fixture
+        .catalog
+        .native_inventory(&NativeInventoryFilter::default())
+        .expect("inventory");
+    assert!(inventory.archive_scope);
+    assert!(
+        inventory
+            .sessions
+            .iter()
+            .any(|session| session.session_id == "agt_archived"),
+        "an archived session is not tombstoned by a non-archive walk"
+    );
+}
+
+#[tokio::test]
+async fn a_source_over_the_scan_budget_is_unavailable_not_empty() {
+    let fixture = Fixture::open(&[], None, 1);
+    let source: Arc<dyn NativeCensusSource> = Arc::new(SlowSource {
+        runtime: RUNTIME.to_owned(),
+        client: CLIENT.to_owned(),
+    });
+    let started = Instant::now();
+    let report = fixture
+        .catalog
+        .collect_native_once(&[source])
+        .await
+        .expect("the bounded census records a failed attempt");
+    assert!(!report.complete);
+    assert_eq!(report.state, CollectionState::Failed);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the scan budget, not the source, bounds the attempt"
+    );
+    let status = fixture.catalog.native_status().expect("status");
+    assert_eq!(status.generation, 0);
+    assert_eq!(status.collection.state, CollectionState::Failed);
+    assert!(
+        status.collection.coverage[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("scan budget"))
+    );
+}
+
+#[tokio::test]
+async fn a_fresh_failed_census_never_claims_archive_scope_or_a_generation() {
+    let fixture = Fixture::open(&[], None, 30);
+    let source = FakeSource::new(vec![NativeCensus::unavailable(
+        RUNTIME,
+        CLIENT,
+        "the daemon protocol socket could not be opened",
+    )]);
+    let report = collect(&fixture.catalog, &source).await;
+    assert!(!report.complete);
+    let inventory = fixture
+        .catalog
+        .native_inventory(&NativeInventoryFilter::default())
+        .expect("inventory");
+    assert_eq!(inventory.generation, 0);
+    assert!(!inventory.archive_scope);
+    assert!(inventory.sessions.is_empty());
+}
+
+#[tokio::test]
+async fn a_runtime_removed_from_configuration_keeps_its_visible_facts() {
+    let fixture = Fixture::open(&[], None, 30);
+    let other = "paseo:ws://127.0.0.1:9999/ws";
+    let mut other_census = census(
+        vec![project("prj_other", "OTHER", "/other")],
+        vec![workspace("wks_other", "prj_other", "OTHER", "/other")],
+        vec![session("agt_other", "Other", "wks_other", None)],
+    );
+    other_census.runtime_instance = other.to_owned();
+    other_census.projects[0].runtime_instance = other.to_owned();
+    other_census.workspaces[0].runtime_instance = other.to_owned();
+    other_census.sessions[0].runtime_instance = other.to_owned();
+    let source = FakeSource::with_runtime(other, vec![other_census]);
+    let first = collect(&fixture.catalog, &source).await;
+    assert!(first.complete);
+
+    let only_remaining = FakeSource::new(vec![census(
+        vec![project("prj_desk", "DESK • ADAM", "/repo")],
+        vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+        vec![session("agt_desk", "Desk", "wks_adam", None)],
+    )]);
+    let second = collect(&fixture.catalog, &only_remaining).await;
+    assert!(second.complete);
+    let inventory = fixture
+        .catalog
+        .native_inventory(&NativeInventoryFilter::default())
+        .expect("inventory");
+    assert!(
+        inventory
+            .sessions
+            .iter()
+            .any(|session| session.session_id == "agt_other"),
+        "a runtime removed from configuration is unobserved, not removed"
+    );
+    assert!(
+        inventory
+            .sessions
+            .iter()
+            .any(|session| session.session_id == "agt_desk")
+    );
 }
 
 #[tokio::test]
@@ -722,4 +910,38 @@ async fn native_inventory_pages_are_generation_fenced() {
         Err(kontor_catalog::CatalogError::StaleCursor { generation, active })
             if generation == first_sweep.generation && active == second_sweep.generation
     ));
+}
+
+#[tokio::test]
+async fn native_sweep_pages_and_old_checkpoints_are_pruned() {
+    let fixture = Fixture::open(&[], None, 30);
+    let answers = (0..20)
+        .map(|_| {
+            census(
+                vec![project("prj_desk", "DESK • ADAM", "/repo")],
+                vec![workspace("wks_adam", "prj_desk", "ADAM", "/repo/adam")],
+                vec![session("agt_a", "A", "wks_adam", None)],
+            )
+        })
+        .collect();
+    let source = FakeSource::new(answers);
+    for _ in 0..20 {
+        assert!(collect(&fixture.catalog, &source).await.complete);
+    }
+    let connection = rusqlite::Connection::open(Catalog::database_path(fixture.state.path()))
+        .expect("the catalog database");
+    let pages: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM catalog_native_sweep_pages",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the page count");
+    let sweeps: i64 = connection
+        .query_row("SELECT COUNT(*) FROM catalog_native_sweeps", [], |row| {
+            row.get(0)
+        })
+        .expect("the sweep count");
+    assert_eq!(pages, 3, "only the current generation's pages remain");
+    assert!(sweeps <= 17, "old checkpoints are bounded history");
 }

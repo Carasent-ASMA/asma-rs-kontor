@@ -355,7 +355,7 @@ async fn an_incremental_sweep_uses_an_overlap_and_never_tombstones() {
         })
         .expect("the incremental search JQL");
     assert!(jql.contains("updated >="), "{jql}");
-    assert!(jql.contains("2026-10-24 23:57"), "{jql}");
+    assert!(jql.contains("2026-10-24 23:56"), "{jql}");
 
     fixture.reset().await;
     let report = full(

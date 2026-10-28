@@ -37,7 +37,7 @@ use crate::contract::{
     Diagnostic, DiagnosticSeverity, EntryKind, RegistryState, RegistryStatus, RepositoryCoverage,
     RepositoryState, RevisionKind,
 };
-use crate::store::{ObservedAssociation, ObservedEntry, ObservedOccurrence};
+use crate::store::{ObservedAssociation, ObservedEntry, ObservedOccurrence, ScannedRoot};
 
 /// A bounded file read's ceiling, matching the existing direct reader.
 pub const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -63,11 +63,12 @@ pub struct Discovered {
     pub files_seen: usize,
     /// Whether every configured root was attempted before the budget expired.
     pub finished: bool,
-    /// Repository ids whose complete contents were read in this pass.
+    /// Roots whose complete contents were read in this pass.
     ///
-    /// Only these may be used to prove absence: a failed or unreached root has
-    /// not been read, so nothing it held can be called deleted.
-    pub scanned_repository_ids: Vec<String>,
+    /// Only these may be used to prove absence: a failed, partial or unreached
+    /// root has not been read completely, so nothing it held can be called
+    /// deleted.
+    pub scanned_roots: Vec<ScannedRoot>,
 }
 
 /// Discover everything the effective settings name.
@@ -92,7 +93,7 @@ pub async fn discover_with_budget(
     let mut staged: BTreeMap<String, ObservedEntry> = BTreeMap::new();
     let mut files_seen = 0usize;
     let mut finished = true;
-    let mut scanned_repository_ids = Vec::new();
+    let mut scanned_roots = Vec::new();
 
     for repository in &settings.repositories {
         if tokio::time::Instant::now() >= deadline {
@@ -114,7 +115,10 @@ pub async fn discover_with_budget(
         if outcome.coverage.state == RepositoryState::Scanned
             && let Some(id) = &outcome.coverage.repository_id
         {
-            scanned_repository_ids.push(id.clone());
+            scanned_roots.push(ScannedRoot {
+                repository_id: id.clone(),
+                repository_root: outcome.coverage.root.clone(),
+            });
         }
         diagnostics.extend(outcome.diagnostics);
         for entry in outcome.entries {
@@ -149,7 +153,13 @@ pub async fn discover_with_budget(
                 diagnostics.extend(extra);
                 merge_entry(&mut staged, entry);
             }
-            Err(diagnostic) => diagnostics.push(diagnostic.message),
+            Err(diagnostic) => {
+                let absent = diagnostic.code == "explicit_source_absent";
+                diagnostics.push(diagnostic.message);
+                if !absent {
+                    finished = false;
+                }
+            }
         }
     }
 
@@ -163,9 +173,11 @@ pub async fn discover_with_budget(
     let mut entries: Vec<ObservedEntry> = staged.into_values().collect();
     if entries.len() > MAX_ENTRIES {
         diagnostics.push(format!(
-            "The sweep observed more than {MAX_ENTRIES} plan documents; the extra documents were not retained."
+            "The sweep observed more than {MAX_ENTRIES} plan documents; the extra documents were not retained, so this sweep cannot prove absence."
         ));
         entries.truncate(MAX_ENTRIES);
+        finished = false;
+        scanned_roots.clear();
     }
     scan_epic_duplicates(&mut entries, now, &mut diagnostics);
 
@@ -176,7 +188,7 @@ pub async fn discover_with_budget(
         registry: registry.status,
         files_seen,
         finished,
-        scanned_repository_ids,
+        scanned_roots,
     }
 }
 
@@ -198,6 +210,7 @@ async fn scan_repository(
     deadline: tokio::time::Instant,
 ) -> RepositoryScan {
     let mut diagnostics = Vec::new();
+    let mut partial = false;
     let configured = match std::fs::canonicalize(&repository.root) {
         Ok(root) if root.is_dir() => root,
         Ok(_) => {
@@ -277,8 +290,9 @@ async fn scan_repository(
         Ok(text) => split_paths(&text),
         Err(error) => {
             diagnostics.push(format!(
-                "Ignored/untracked files could not be listed for one repository ({error})."
+                "Ignored/untracked files could not be listed for one repository ({error}); this root cannot prove absence."
             ));
+            partial = true;
             Vec::new()
         }
     };
@@ -298,9 +312,10 @@ async fn scan_repository(
     candidates.dedup_by(|left, right| left.0 == right.0);
     if candidates.len() > MAX_PATHS {
         diagnostics.push(format!(
-            "One repository listed more than {MAX_PATHS} candidate Markdown paths; the extra paths were not read."
+            "One repository listed more than {MAX_PATHS} candidate Markdown paths; the extra paths were not read, so this root cannot prove absence."
         ));
         candidates.truncate(MAX_PATHS);
+        partial = true;
     }
 
     let mut entries = Vec::new();
@@ -332,6 +347,7 @@ async fn scan_repository(
             Ok(bytes) => bytes,
             Err(Skip::Diagnostic(diagnostic)) => {
                 diagnostics.push(diagnostic);
+                partial = true;
                 continue;
             }
             Err(Skip::Silent) => continue,
@@ -340,6 +356,7 @@ async fn scan_repository(
             Ok((modified_at, byte_length)) => (modified_at, byte_length),
             Err(diagnostic) => {
                 diagnostics.push(diagnostic.message);
+                partial = true;
                 continue;
             }
         };
@@ -401,7 +418,11 @@ async fn scan_repository(
             root: configured.display().to_string(),
             repository_id: Some(repository_id),
             head,
-            state: RepositoryState::Scanned,
+            state: if partial {
+                RepositoryState::Partial
+            } else {
+                RepositoryState::Scanned
+            },
             files_seen,
             entries_observed: entries.len(),
             github_plans_permitted: repository.include_github_plans,
@@ -436,7 +457,12 @@ async fn read_explicit_source(
 ) -> Result<(ObservedEntry, Vec<String>), Diagnostic> {
     let mut diagnostics = Vec::new();
     let path = std::fs::canonicalize(&source.path).map_err(|error| Diagnostic {
-        code: "explicit_source_unreadable".to_owned(),
+        code: if error.kind() == std::io::ErrorKind::NotFound {
+            "explicit_source_absent"
+        } else {
+            "explicit_source_unreadable"
+        }
+        .to_owned(),
         severity: DiagnosticSeverity::Warning,
         message: format!(
             "Operator source `{}` could not be resolved ({}).",
@@ -448,7 +474,12 @@ async fn read_explicit_source(
         observed_at: now.to_string(),
     })?;
     let metadata = std::fs::symlink_metadata(&path).map_err(|error| Diagnostic {
-        code: "explicit_source_unreadable".to_owned(),
+        code: if error.kind() == std::io::ErrorKind::NotFound {
+            "explicit_source_absent"
+        } else {
+            "explicit_source_unreadable"
+        }
+        .to_owned(),
         severity: DiagnosticSeverity::Warning,
         message: format!(
             "Operator source `{}` could not be inspected ({}).",
@@ -473,7 +504,12 @@ async fn read_explicit_source(
         });
     }
     let bytes = std::fs::read(&path).map_err(|error| Diagnostic {
-        code: "explicit_source_unreadable".to_owned(),
+        code: if error.kind() == std::io::ErrorKind::NotFound {
+            "explicit_source_absent"
+        } else {
+            "explicit_source_unreadable"
+        }
+        .to_owned(),
         severity: DiagnosticSeverity::Warning,
         message: format!(
             "Operator source `{}` could not be read ({}).",
@@ -1253,8 +1289,14 @@ enum Skip {
 }
 
 fn bounded_read_inside(root: &Path, path: &Path) -> Result<Vec<u8>, Skip> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| {
-        Skip::Diagnostic("A listed plan disappeared before it was read.".to_owned())
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            // A path listed by git and then removed is an observed removal,
+            // not an unreadable root. The complete scan can prove its absence.
+            Skip::Silent
+        } else {
+            Skip::Diagnostic("A listed plan could not be inspected.".to_owned())
+        }
     })?;
     if metadata.file_type().is_symlink() {
         return Err(Skip::Diagnostic(
@@ -1269,15 +1311,25 @@ fn bounded_read_inside(root: &Path, path: &Path) -> Result<Vec<u8>, Skip> {
             "A plan is larger than 2 MiB and was not read.".to_owned(),
         ));
     }
-    let canonical = std::fs::canonicalize(path).map_err(|_| {
-        Skip::Diagnostic("A plan path could not be resolved inside its root.".to_owned())
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Skip::Silent
+        } else {
+            Skip::Diagnostic("A plan path could not be resolved inside its root.".to_owned())
+        }
     })?;
     if !canonical.starts_with(root) {
         return Err(Skip::Diagnostic(
             "A plan resolved outside its configured root and was not read.".to_owned(),
         ));
     }
-    std::fs::read(&canonical).map_err(|_| Skip::Diagnostic("A plan could not be read.".to_owned()))
+    std::fs::read(&canonical).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Skip::Silent
+        } else {
+            Skip::Diagnostic("A plan could not be read.".to_owned())
+        }
+    })
 }
 
 fn file_instant(path: &Path) -> Result<(String, u64), Box<Diagnostic>> {

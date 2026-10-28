@@ -10,6 +10,8 @@
 //! rather than as an empty catalog, because "nothing configured" and "nothing
 //! composed" are different facts.
 
+use std::sync::Arc;
+
 use axum::extract::{Query, State};
 use serde::Deserialize;
 use tracing::warn;
@@ -19,6 +21,22 @@ use crate::body::Json;
 use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
 use crate::{Caller, CallerCapability};
+
+/// Run a blocking catalog read off the async worker.
+async fn read_blocking<T, F>(
+    catalog: Arc<kontor_catalog::Catalog>,
+    read: F,
+) -> Result<T, kontor_catalog::CatalogError>
+where
+    T: Send + 'static,
+    F: FnOnce(&kontor_catalog::Catalog) -> Result<T, kontor_catalog::CatalogError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || read(&catalog))
+        .await
+        .map_err(|error| kontor_catalog::CatalogError::Unavailable {
+            detail: format!("the catalog read task failed ({error})"),
+        })?
+}
 
 /// Filters accepted by the entries read.
 #[derive(Debug, Clone, Deserialize, IntoParams)]
@@ -82,13 +100,16 @@ pub async fn native_status(
             "the work catalog is not composed in this realm",
         )
     })?;
-    catalog.native_status().map(Json).map_err(|error| {
-        warn!(detail = %error, "native work census status read failed");
-        state.refuse(
-            ApiErrorCode::Unavailable,
-            "the native census is unavailable",
-        )
-    })
+    read_blocking(Arc::clone(catalog), |catalog| catalog.native_status())
+        .await
+        .map(Json)
+        .map_err(|error| {
+            warn!(detail = %error, "native work census status read failed");
+            state.refuse(
+                ApiErrorCode::Unavailable,
+                "the native census is unavailable",
+            )
+        })
 }
 
 /// One generation-consistent native inventory.
@@ -112,13 +133,21 @@ pub async fn native_inventory(
             "the work catalog is not composed in this realm",
         )
     })?;
+    if query.limit == Some(0) {
+        return Err(state.refuse(ApiErrorCode::InvalidRequest, "the limit must be at least 1"));
+    }
     let filter = kontor_catalog::native::NativeInventoryFilter {
         include_removed: query.include_removed,
         runtime_instance: query.instance,
         limit: query.limit.unwrap_or(10_000),
         cursor: query.cursor,
     };
-    catalog.native_inventory(&filter).map(Json).map_err(|error| match error {
+    read_blocking(Arc::clone(catalog), move |catalog| {
+        catalog.native_inventory(&filter)
+    })
+    .await
+    .map(Json)
+    .map_err(|error| match error {
         kontor_catalog::CatalogError::StaleCursor { .. } => state.refuse(
             ApiErrorCode::StaleCursor,
             "the cursor belongs to a native generation that is no longer active; read again without a cursor",
@@ -156,10 +185,13 @@ pub async fn status(
             "the work catalog is not composed in this realm",
         )
     })?;
-    catalog.status().map(Json).map_err(|error| {
-        warn!(detail = %error, "work catalog status read failed");
-        state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
-    })
+    read_blocking(Arc::clone(catalog), |catalog| catalog.status())
+        .await
+        .map(Json)
+        .map_err(|error| {
+            warn!(detail = %error, "work catalog status read failed");
+            state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
+        })
 }
 
 /// Per-source freshness, coverage, errors, retry deadlines and conflicts.
@@ -181,10 +213,13 @@ pub async fn sources(
             "the work catalog is not composed in this realm",
         )
     })?;
-    catalog.sources().map(Json).map_err(|error| {
-        warn!(detail = %error, "work catalog source status read failed");
-        state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
-    })
+    read_blocking(Arc::clone(catalog), |catalog| catalog.sources())
+        .await
+        .map(Json)
+        .map_err(|error| {
+            warn!(detail = %error, "work catalog source status read failed");
+            state.refuse(ApiErrorCode::Unavailable, "the work catalog is unavailable")
+        })
 }
 
 /// One generation-consistent entries answer.
@@ -217,6 +252,9 @@ pub async fn entries(
             )
         })?),
     };
+    if query.limit == Some(0) {
+        return Err(state.refuse(ApiErrorCode::InvalidRequest, "the limit must be at least 1"));
+    }
     let filter = kontor_catalog::EntryFilter {
         kind,
         scope: query.scope,
@@ -224,7 +262,10 @@ pub async fn entries(
         limit: query.limit.unwrap_or(1000),
         cursor: query.cursor,
     };
-    catalog.entries(&filter).map(Json).map_err(|error| match error {
+    read_blocking(Arc::clone(catalog), move |catalog| catalog.entries(&filter))
+        .await
+        .map(Json)
+        .map_err(|error| match error {
         kontor_catalog::CatalogError::StaleCursor { .. } => state.refuse(
             ApiErrorCode::StaleCursor,
             "the cursor belongs to a catalog generation that is no longer active; read again without a cursor",

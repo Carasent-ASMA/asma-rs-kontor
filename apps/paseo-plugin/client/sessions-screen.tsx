@@ -2197,7 +2197,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
     [scoped, eligible, linked, tokens, mappings]);
-  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
+  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live, source: state.source, inventoryComplete: state.inventoryComplete });
   const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
   const blockedView = useMemo(() => providerBlockedView({ candidates, reads: NO_REFUSAL_READS, state, includeArchived, freshness: countFreshness,
     blocked: assignmentBlocked ? assignmentPart : null, now: clock.now }), [candidates, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, clock.now]);
@@ -2613,7 +2613,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const staleMessage = state.error ?? state.staleReason;
   // Ages tick only on a live list; otherwise rows give the time itself, and Details says as of when.
-  const timesLive = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) === "Live";
+  const timesLive = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live, source: state.source, inventoryComplete: state.inventoryComplete }) === "Live";
   const showBanner =
     state.status === "stale" ||
     state.status === "error" ||

@@ -9,6 +9,7 @@ import {
   readWorkCatalogSnapshot,
   workCatalogSnapshotPath,
   writeWorkCatalogSnapshot,
+  workCatalogReader,
   WORK_CATALOG_MAX_PAGES,
   WORK_CATALOG_NATIVE_MAX_PAGES,
   WORK_CATALOG_SNAPSHOT_FILE,
@@ -292,6 +293,54 @@ describe("the plugin's shared catalog read", () => {
     expect(starts).toHaveLength(1);
   });
 
+  it("shares one catalog read per host for the TTL and keeps hosts separate", async () => {
+    const fake = await fakeMcp();
+    const { paseoHome } = await sandbox();
+    const config = configFor(fake.command, paseoHome);
+    let clock = Date.parse(AS_OF);
+    const read = workCatalogReader(() => config, () => clock);
+    const first = await read(HOST_ID);
+    const starts = (await fake.starts()).length;
+    const second = await read(HOST_ID);
+    expect(second).toBe(first);
+    expect((await fake.starts()).length).toBe(starts);
+    clock += 29_999;
+    expect(await read(HOST_ID)).toBe(first);
+    expect((await fake.starts()).length).toBe(starts);
+    clock += 1;
+    await read(HOST_ID);
+    expect((await fake.starts()).length).toBe(starts + 1);
+    await read("srv_host_b");
+    expect((await fake.starts()).length).toBe(starts + 2);
+  });
+
+  it("reads the realistic multi-page native census without a cumulative response bound", async () => {
+    const long = "x".repeat(1_500);
+    const page = (index: number, next: string | null) => ({
+      ...nativePage({
+        sessions: Array.from({ length: 1_000 }, (_, offset) => nativeSession(`session-${index}-${offset}`, {
+          title: long,
+          cwd: `/${long}`,
+          project_name: long,
+        })),
+        next_cursor: next,
+        truncated: next !== null,
+      }),
+    });
+    const nativePages = {
+      first: page(0, "n1"),
+      n1: page(1, "n2"),
+      n2: page(2, "n3"),
+      n3: page(3, "n4"),
+      n4: page(4, null),
+    };
+    const fake = await fakeMcp({ nativePages });
+    const { paseoHome } = await sandbox();
+    const observation = await observeWorkCatalog(configFor(fake.command, paseoHome), HOST_ID, 10_000);
+    expect(observation.native.view?.sessions).toHaveLength(5_000);
+    expect(observation.native.view?.truncated).toBe(false);
+  });
+
   it("leaves every operator-owned source file byte-identical through a fallback", async () => {
     const fake = await fakeMcp();
     const { paseoHome, configDirectory } = await sandbox();
@@ -332,6 +381,7 @@ describe("the plugin's shared catalog read", () => {
     expect(first?.sourceAsOf).toBe("2026-10-25T08:00:00Z");
     const second = await writeWorkCatalogSnapshot(path, { hostId: HOST_ID, view: older, native: null, savedAt: "2026-10-25T08:02:00Z" });
     expect(second?.sourceAsOf).toBe("2026-10-25T08:00:00Z");
+    expect(second?.savedAt).toBe("2026-10-25T08:01:00Z");
     expect((await readWorkCatalogSnapshot(path, HOST_ID))?.sourceAsOf).toBe("2026-10-25T08:00:00Z");
     expect(workCatalogSnapshotPath(configFor("kontor-mcp", paseoHome))).toBe(path);
   });

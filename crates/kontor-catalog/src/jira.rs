@@ -683,14 +683,34 @@ impl JiraCatalog {
             .collect();
         recheck.sort_by_key(|item| key_order(&item.key));
         if recheck.len() > self.settings.max_recheck {
-            attempt.recovery_complete = false;
-            attempt.complete = false;
-            attempt.diagnostics.push(format!(
-                "{} previously observed issues exceeded the {}-issue recheck bound; prior facts were retained and no removal was committed.",
-                recheck.len(),
-                self.settings.max_recheck
-            ));
-            recheck.truncate(self.settings.max_recheck);
+            let total = recheck.len();
+            let limit = self.settings.max_recheck;
+            match mode {
+                JiraSweepMode::Full => {
+                    attempt.recovery_complete = false;
+                    attempt.complete = false;
+                    attempt.diagnostics.push(format!(
+                        "{total} previously observed issues exceeded the {limit}-issue recheck bound; prior facts were retained and no removal was committed."
+                    ));
+                    recheck.truncate(limit);
+                }
+                JiraSweepMode::Incremental => {
+                    // Recheck a bounded rotating slice. A full recheck would
+                    // defeat the incremental window; a fixed prefix would
+                    // starve every issue after the bound forever.
+                    let offset =
+                        usize::try_from(attempt.now.as_millisecond()).unwrap_or_default() % total;
+                    let mut rotated = Vec::with_capacity(limit);
+                    rotated.extend(recheck.iter().skip(offset).take(limit).cloned());
+                    if rotated.len() < limit {
+                        rotated.extend(recheck.iter().take(limit - rotated.len()).cloned());
+                    }
+                    recheck = rotated;
+                    attempt.diagnostics.push(format!(
+                        "{total} previously observed issues exceeded the {limit}-issue recheck bound; a rotating slice was rechecked and no removal was committed from the remainder."
+                    ));
+                }
+            }
         }
         for issue in recheck {
             match self.reader.issue(&issue.key).await {
@@ -1216,7 +1236,7 @@ fn key_project(key: &str) -> Option<&str> {
 }
 
 fn jql_minute(timestamp: &Timestamp) -> String {
-    let text = timestamp.to_string();
+    let text = (*timestamp - SignedDuration::from_secs(60)).to_string();
     text.get(0..16).unwrap_or(text.as_str()).replace('T', " ")
 }
 
@@ -1356,7 +1376,11 @@ mod tests {
     #[test]
     fn jql_windows_use_jira_minute_text() {
         let instant: Timestamp = "2026-10-25T04:05:06Z".parse().expect("an instant");
-        assert_eq!(jql_minute(&instant), "2026-10-25 04:05");
+        assert_eq!(
+            jql_minute(&instant),
+            "2026-10-25 04:04",
+            "the incremental window starts one minute early so a minute-truncated JQL bound cannot miss an update"
+        );
     }
 
     #[test]
