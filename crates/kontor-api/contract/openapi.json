@@ -12979,6 +12979,112 @@
         }
       }
     },
+    "/v1/provider-markers:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Remove one setting's provider-unavailability marker under compare-and-swap.",
+        "operationId": "apply_provider_marker",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderMarkerApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderMarkerDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/provider-markers:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "What removing one setting's provider-unavailability marker would do.",
+        "operationId": "preview_provider_marker",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderMarkerPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderMarkerPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/realm": {
       "get": {
         "tags": [
@@ -26206,6 +26312,205 @@
             "description": "The source inside that layer."
           }
         }
+      },
+      "ProviderMarkerApplyRequest": {
+        "type": "object",
+        "description": "Remove one setting's provider-unavailability marker under compare-and-swap.",
+        "required": [
+          "runtime_family",
+          "provider",
+          "expected_revision",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "string",
+            "description": "The document revision the preview read."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the preview answered with."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider whose marker is removed."
+          },
+          "runtime_family": {
+            "type": "string",
+            "description": "The runtime family key naming the configured setting."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderMarkerDto": {
+        "type": "object",
+        "description": "One setting's provider-unavailability marker after a correction.",
+        "required": [
+          "realm_id",
+          "runtime_family",
+          "host_key",
+          "provider",
+          "outcome",
+          "before",
+          "after",
+          "changed",
+          "effects",
+          "revision"
+        ],
+        "properties": {
+          "after": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The setting's unavailable providers after the call."
+          },
+          "before": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The setting's unavailable providers before the call."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether this call rewrote the document."
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderMarkerEffectDto"
+            },
+            "description": "What the correction effected, in a stable order."
+          },
+          "host_key": {
+            "type": "string",
+            "description": "The non-secret host key the addressed setting is bound under."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ProviderMarkerOutcomeDto",
+            "description": "Which of the three stable outcomes this call was."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider whose marker was removed."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was applied in."
+          },
+          "revision": {
+            "type": "string",
+            "description": "The document revision after the call."
+          },
+          "runtime_family": {
+            "type": "string",
+            "description": "The runtime family addressed."
+          }
+        }
+      },
+      "ProviderMarkerEffectDto": {
+        "type": "string",
+        "description": "One effect a marker correction would have.",
+        "enum": [
+          "marker_removed",
+          "restart_required"
+        ]
+      },
+      "ProviderMarkerOutcomeDto": {
+        "type": "string",
+        "description": "The typed outcome of one marker correction.",
+        "enum": [
+          "cleared",
+          "already_cleared",
+          "replayed"
+        ]
+      },
+      "ProviderMarkerPreviewDto": {
+        "type": "object",
+        "description": "What removing one setting's provider-unavailability marker would do.\n\nA preview is a read: it takes no idempotency key, rewrites nothing and\ntouches no seat. The `revision` it reports is the exact document revision it\nwas computed against, and the hash the apply must name.",
+        "required": [
+          "realm_id",
+          "runtime_family",
+          "host_key",
+          "provider",
+          "before",
+          "after",
+          "changed",
+          "effects",
+          "revision",
+          "preview_hash"
+        ],
+        "properties": {
+          "after": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The same set with the named provider removed."
+          },
+          "before": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The setting's unavailable providers, as the document stands."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether applying would rewrite the document."
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderMarkerEffectDto"
+            },
+            "description": "What the correction would effect, in a stable order."
+          },
+          "host_key": {
+            "type": "string",
+            "description": "The non-secret host key the addressed setting is bound under."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding apply must name."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider whose marker would be removed."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm that computed it."
+          },
+          "revision": {
+            "type": "string",
+            "description": "The document revision this preview was computed against."
+          },
+          "runtime_family": {
+            "type": "string",
+            "description": "The runtime family addressed."
+          }
+        }
+      },
+      "ProviderMarkerPreviewRequest": {
+        "type": "object",
+        "description": "One runtime setting's provider-unavailability marker, addressed for removal.",
+        "required": [
+          "runtime_family",
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "The provider whose marker would be removed."
+          },
+          "runtime_family": {
+            "type": "string",
+            "description": "The runtime family key naming the configured setting. It is unique per\nrealm: two settings may not claim one family."
+          }
+        },
+        "additionalProperties": false
       },
       "ProviderQuotaStateDto": {
         "type": "object",

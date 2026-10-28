@@ -544,12 +544,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "231 forever": this is what makes a later contract change fail here, so a
+    // Not "233 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        231,
+        233,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        230,
+        232,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        232,
+        234,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -833,6 +833,11 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // work, which admin inherits; an observer is not admitted. The CLI
         // enforces it before it reads the state root.
         ("kontor_fleet_policy_resolve", CallerTier::Operator),
+        // The provider-marker correction edits one runtime setting in the
+        // realm's operator-owned `runtimes.json`; it is configuration, so the
+        // whole pair is admin even though the preview writes nothing.
+        ("kontor_provider_marker_preview", CallerTier::Admin),
+        ("kontor_provider_marker_apply", CallerTier::Admin),
         ("kontor_capacity_get", CallerTier::Observer),
         ("kontor_capacity_refresh", CallerTier::Operator),
         ("kontor_capacity_observation_get", CallerTier::Observer),

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 136;
+pub const SCHEMA_VERSION: i64 = 138;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -470,6 +470,15 @@ const MIGRATIONS: &[&str] = &[
     // themselves; and an overdue review raises one typed attention record
     // (ASMA-8517 / REQ-008).
     include_str!("../migrations/0136_hold_terms_and_attention.sql"),
+    // Schema v137. Widen the realm-scoped idempotency operations by exactly one
+    // for the provider-marker correction, so a replay of a completed correction
+    // is answered before the revision CAS instead of writing the file again
+    // (ASMA-7968 / GAP-D).
+    include_str!("../migrations/0137_realm_idempotency_provider_marker.sql"),
+    // Schema v138. Durable completion for a provider-marker correction, so a
+    // replay of a completed key never removes a marker the operator restored
+    // for a later outage (ASMA-7968).
+    include_str!("../migrations/0138_provider_marker_completions.sql"),
 ];
 
 const _: () = assert!(
@@ -1387,7 +1396,7 @@ mod release_integration_tests {
                 [],
                 |row| row.get(0),
             )
-            .expect("the released binding survives both rebuilds");
+            .expect("the released binding survives every rebuild");
         assert_eq!(
             fingerprint,
             ContentHash::of(b"released-124-binding").as_str()
