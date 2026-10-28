@@ -270,6 +270,14 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     return by;
   };
   const layout = {
+    // Native measure replies can outlive the screen that requested them.
+    cancelMeasurements() {
+      captureVersion += 1;
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+    },
     // Stop reissuing an old capture against post-update cells before the parent's layout effect runs.
     renderRows(rows: readonly ListRow[]) { renderedRows = rows; },
     /** Cells measure themselves: with getItemLayout the list measures none. */
@@ -389,8 +397,9 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       const node = mounted.get(place.key);
       if (typeof node?.measure === "function") {
         const held = place;
+        const requestVersion = captureVersion;
         node.measure((_x, y) => {
-          if (place !== held || !Number.isFinite(y)) return;
+          if (captureVersion !== requestVersion || place !== held || !Number.isFinite(y)) return;
           const by = y - held.top;
           if (Math.abs(by) < 0.5) return;
           place = { ...held, top: y };
@@ -1612,6 +1621,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   /** How far the browser pulled a held row place back to the end of a list that got shorter; the next hold returns it. */
   const clampedByRef = useRef(0);
   const [rowLayout] = useState(() => createRowLayout((by, fromOffset) => resizedRef.current(by, fromOffset)));
+  useLayoutEffect(() => () => rowLayout.cancelMeasurements(), [rowLayout]);
   const resultsPlaceRef = useRef<{ readonly saved: ReturnType<typeof rowLayout.bookmark>; readonly returning: boolean } | null>(null);
   const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
   /** Lowest offset since the compact toolbar opened; see compactToolbarScroll. */
