@@ -891,3 +891,25 @@ describe("row layout by measured row", () => {
     expect(layout()(list().props.data, 40)).toEqual({ index: 40, length: 100, offset: 30 + 40 * 100 + 50 });
   });
 });
+
+
+describe("running mark viewability", () => {
+  it("enables only the public FlatList visible rows, keeps the callback stable, and clears offscreen work", () => {
+    fake.state = ready(HISTORY.map((entry) => ({ ...entry, status: "running" })));
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    const original = list().props.onViewableItemsChanged as (event: { viewableItems: object[] }) => void;
+    const items = list().props.data as { entry: DirectoryEntry }[];
+    const scope = (item: unknown) => ((list().props.renderItem as (info: { item: unknown }) => Element)({ item }).props.value as { live: boolean; visible: boolean });
+    expect(scope(items[0])).toEqual({ live: true, visible: false });
+    original({ viewableItems: [{ item: items[0], isViewable: true }] }); harness.flush();
+    expect(list().props.onViewableItemsChanged).toBe(original);
+    expect(scope(items[0])).toEqual({ live: true, visible: true });
+    expect(scope(items[1])).toEqual({ live: true, visible: false });
+    original({ viewableItems: [] }); harness.flush();
+    expect(scope(items[0])).toEqual({ live: true, visible: false });
+    fake.state = { ...ready(HISTORY), live: false }; harness.flush();
+    original({ viewableItems: [{ item: items[0], isViewable: true }] }); harness.flush();
+    expect(scope(items[0])).toEqual({ live: false, visible: true });
+  });
+});

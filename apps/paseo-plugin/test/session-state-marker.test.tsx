@@ -43,6 +43,15 @@ function contrast(a: string, b: string): number {
 }
 
 describe("compact session status markers", () => {
+  it("opts only an actual running-session marker into motion, never a filter, legend or another state", () => {
+    const marker = SessionStatusIcon({ status: "running", colors: dark, session: true });
+    expect(elements(marker).some((node) => node.type === "Icon")).toBe(false);
+    for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
+      expect(elements(SessionStatusIcon({ status, colors: dark })).some((node) => node.type === "Icon")).toBe(true);
+      if (status !== "running") expect(elements(SessionStatusIcon({ status, colors: dark, session: true })).some((node) => node.type === "Icon")).toBe(true);
+    }
+  });
+
   it("uses the agreed session icons and keeps history and filter choices distinct", () => {
     expect(QUICK_FILTER_ICONS).toEqual({
       recent: "Clock", activity: "Activity", current: "Activity", all: "LayoutGrid", running: "Play", idle: "Pause", error: "CircleAlert",
