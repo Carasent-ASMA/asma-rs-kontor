@@ -146,6 +146,30 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
   });
 
 
+
+  it("blocks takeover when a later handoff history names a different epic", async () => {
+    const title = "LSA • ASMA-1 • Route review";
+    const predecessor = agent("agent-1", { title, labels: { role: "LSA", epic: "ASMA-1", "title.auto": title, persona: personaVersion("lsa-ad-hoc", true) } });
+    const h = await host({ predecessor, workspace: { ...WORKSPACE, name: "ADHOC", title: null }, targetProvider: "claude" });
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(h.createRoot, "promotion-v1"), { recursive: true });
+    const native = { workspaceId: "wks-1", workspace: "ADHOC", title, titleAuto: title, observedAt: "2026-10-25T08:00:00Z", revision: "r1" };
+    const promoted = promotionRecordSchema.parse({ schemaVersion: 1, requestId: "33333333-3333-4333-8333-333333333331", agentId: predecessor.id,
+      epic: "ASMA-1", branch: "promote", state: "promoted", native, logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "a".repeat(64) },
+      persona: { issued: personaVersion("lsa-ad-hoc", true), effective: personaVersion("lsa-ad-hoc", true) }, canonicalAgentId: predecessor.id,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted", createdAt: "2026-10-25T08:00:00Z", updatedAt: "2026-10-25T08:00:00Z" });
+    const cross = promotionRecordSchema.parse({ schemaVersion: 1, requestId: "33333333-3333-4333-8333-333333333332", agentId: "agent-cross",
+      epic: "ASMA-2", branch: "handoff", state: "handoff", native, logical: { workspace: "LSA", node: "epic:ASMA-2", bindingRevision: "b".repeat(64) },
+      persona: { issued: personaVersion("lsa-ad-hoc", true), effective: personaVersion("lsa-ad-hoc", true) }, canonicalAgentId: predecessor.id,
+      summarySha256: "b".repeat(64), summaryRevision: "r2", acknowledgement: "verified", message: "handoff", createdAt: "2026-10-25T08:01:00Z", updatedAt: "2026-10-25T08:01:00Z" });
+    await writeFile(join(h.createRoot, "promotion-v1", `${promoted.requestId}.json`), JSON.stringify(promoted));
+    await writeFile(join(h.createRoot, "promotion-v1", `${cross.requestId}.json`), JSON.stringify(cross));
+    const review = await h.ready();
+    expect(review.state).toBe("unknown");
+    expect(review.message).toContain("different epic");
+    expect(h.effects.archive).toHaveLength(0);
+    expect(h.effects.create).toHaveLength(0);
+  });
   it("does not retire a session whose promotion store is unreadable or unsettled", async () => {
     for (const corrupt of [true, false]) {
       const h = await host();

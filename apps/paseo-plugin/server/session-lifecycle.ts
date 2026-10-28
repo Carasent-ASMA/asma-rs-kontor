@@ -786,7 +786,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (first === undefined) return answer("unknown", "This session could not be read on this host.");
     if (!first) return answer("refused", "This session is not on this host.");
     agent = first;
-    const promotion = await promotionBindingFor(deps.promotionRoot, agentId);
+    const promotion = await promotionBindingFor(deps.promotionRoot, agentId, first.labels?.epic ?? null);
     if (promotion.state === "blocked") return answer("unknown", promotion.message);
     const direct = owner = takeoverAdapter(first);
     if (direct.adapter === "governed") return answer("refused", GOVERNED_ELSEWHERE);
@@ -973,13 +973,13 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (!created.agentId) return outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is resent.", named, "check");
     const problem = await verify(spec, created.agentId, record.review.agentId);
     if (problem) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none");
-    const promotion = await promotionBindingFor(deps.promotionRoot, record.review.agentId);
+    const promotion = await promotionBindingFor(deps.promotionRoot, record.review.agentId, spec.labels.epic ?? null);
     if (promotion.state === "blocked") return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${promotion.message} Its task was not released.`, named, "none");
     if (promotion.state === "none") return null;
     const successor = await placement(client, created.agentId).catch(() => null);
     if (!successor) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but its exact placement could not be read back, so its task was not released.`, named, "none");
     const transfer = await transferPromotion(deps.promotionRoot, record.review.agentId, { agentId: created.agentId, native: successor.native,
-      persona: successor.agent.labels?.persona ?? "" });
+      persona: successor.agent.labels?.persona ?? "" }, promotion.record.epic);
     return transfer ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${transfer} Its task was not released.`, named, "none") : null;
   }
   async function succeeded(record: TakeoverRecord, spec: SeatCreateSpec, id: string): Promise<TakeoverOutcome> {

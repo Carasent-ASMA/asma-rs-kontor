@@ -194,12 +194,19 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
     try { promotionRows = await readPromotions({}); } catch (failure) { promotionError = failureText(failure); }
     if (!stale()) {
       const rows: Record<string, PromotionListEntry> = {};
+      const rank = (state: PromotionListEntry["record"]["state"]) => state === "promoted" ? 3 : state === "promoting" || state === "unknown" ? 2 : 1;
+      const put = (id: string, entry: PromotionListEntry) => {
+        const current = rows[id];
+        if (!current || rank(entry.record.state) > rank(current.record.state)) rows[id] = entry;
+      };
       for (const entry of promotionRows ?? []) {
         const record = entry.record;
-        if (record.state === "promoted" || record.state === "promoting" || record.state === "unknown") rows[record.agentId] = entry;
-        else if (record.state === "handoff" && record.canonicalAgentId) rows[record.canonicalAgentId] = entry;
+        if (record.state === "handoff" && record.canonicalAgentId) put(record.canonicalAgentId, entry);
+        else if (record.state === "promoted" || record.state === "promoting" || record.state === "unknown") put(record.agentId, entry);
       }
-      setPromotions({ hostId: host, rows, state: promotionRows ? "ready" : "unknown", error: promotionError });
+      setPromotions((value) => promotionRows === null && value.hostId === host
+        ? { ...value, state: "unknown", error: promotionError }
+        : { hostId: host, rows: rows, state: promotionRows ? "ready" : "unknown", error: promotionError });
     }
     try {
       const latest = await read({});
@@ -304,7 +311,8 @@ export function useSessionRetirementProjection(hostId: string, input: SessionPro
         } else if (record.state === "handoff" && entry.labels.epic !== record.epic) return "The handoff receiver lost its epic label.";
         return null;
       })();
-      const fresh = validation.state === "current" && !localProblem ? "current" as const : localProblem || validation.state === "stale" ? "stale" as const : "unknown" as const;
+      const fresh = promotions.state !== "ready" ? "unknown" as const
+        : validation.state === "current" && !localProblem ? "current" as const : localProblem || validation.state === "stale" ? "stale" as const : "unknown" as const;
       return { agentId: entry.id, epic: record.epic, native: { workspaceId: entry.workspaceId ?? "", workspace: entry.workspaceName ?? "",
           title: entry.title, observedAt: entry.updatedAt, revision: entry.updatedAt }, logical: record.logical,
         source: { id: `promotion:${record.requestId}`, kind: "promotion" as const,

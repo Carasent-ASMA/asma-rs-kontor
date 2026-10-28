@@ -114,6 +114,59 @@ describe("read-only retirement projection under the iOS (Hermes) scoping of plug
     expect(projection?.promotion?.source.fresh).toBe("unknown");
     expect(projection?.scope.claims).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "epic", value: "ASMA-100", binding: "claimed" })]));
   });
+
+  it("keeps the promoted owner when handoff history names the same lead", async () => {
+    const promoted = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e5", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "e".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    const handoff = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e6", agentId: B, epic: "ASMA-100", branch: "handoff", state: "handoff",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Source", titleAuto: "LSA • ADHOC • Source", observedAt: "2026-10-24T08:00:00.000Z", revision: "r2" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "f".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: "a".repeat(64), summaryRevision: "r2", acknowledgement: "verified", message: "handoff",
+      createdAt: "2026-10-24T08:01:00.000Z", updatedAt: "2026-10-24T08:01:00.000Z",
+    });
+    const h = harness(() => "host", () => [sessionEntry(A, { updatedAt: "r1", workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } })], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000ac", [], []),
+      "sessions.promotion-list": async () => [{ record: handoff, validation: { state: "current", message: "receiver matches", revision: "r1" } },
+        { record: promoted, validation: { state: "current", message: "matches", revision: "r1" } }],
+    });
+    h.draw(); await settle();
+    const projection = h.draw().projections.get(A);
+    expect(projection?.promotion).toMatchObject({ epic: "ASMA-100", source: { fresh: "current" } });
+    expect(projection?.scope.claims).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "epic", value: "ASMA-100", binding: "verified" })]));
+  });
+
+  it("retains known promotion history when a later list refresh fails", async () => {
+    const record = promotion.promotionRecordSchema.parse({
+      schemaVersion: 1, requestId: "00000000-0000-4000-8000-0000000000e7", agentId: A, epic: "ASMA-100", branch: "promote", state: "promoted",
+      native: { workspaceId: "wks-adhoc", workspace: "ADHOC", title: "LSA • ADHOC • Fixture", titleAuto: "LSA • ADHOC • Fixture", observedAt: "2026-10-24T08:00:00.000Z", revision: "r1" },
+      logical: { workspace: "LSA", node: "epic:ASMA-100", bindingRevision: "a".repeat(64) },
+      persona: { issued: "kontor-lsa-adhoc@fixture", effective: "kontor-lsa-adhoc@fixture" }, canonicalAgentId: A,
+      summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "promoted",
+      createdAt: "2026-10-24T08:00:00.000Z", updatedAt: "2026-10-24T08:00:00.000Z",
+    });
+    let lists = 0;
+    const h = harness(() => "host", () => [sessionEntry(A, { updatedAt: "r1", workspaceId: "wks-adhoc", workspaceName: "ADHOC",
+      labels: { role: "LSA", persona: "kontor-lsa-adhoc@fixture" } })], {
+      "sessions.lifecycle-review": async () => review("00000000-0000-4000-8000-0000000000ad", [], []),
+      "sessions.promotion-list": async () => { lists++; if (lists > 1) throw new Error("list failed"); return [{ record, validation: { state: "current", message: "matches", revision: "r1" } }]; },
+    });
+    h.draw(); await settle();
+    const first = h.draw();
+    expect(first.projections.get(A)?.promotion?.source.fresh).toBe("current");
+    first.reload(); await settle();
+    const failed = h.draw().projections.get(A)?.promotion;
+    expect(failed?.source.fresh).toBe("unknown");
+    expect(failed?.epic).toBe("ASMA-100");
+  });
   it("preserves successful receipts and only marks the failed receipt's sessions Unknown", async () => {
     let failSecond = true, failFirst = false;
     const h = harness(() => "host", () => [sessionEntry(A), sessionEntry(B), sessionEntry(D)], {

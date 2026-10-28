@@ -21,4 +21,15 @@ describe("promote-adhoc runtime caller", () => {
     expect(promoteSessionInput.safeParse(rpc.mock.calls[0]?.[1]).success).toBe(true);
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Promotion refused for ASMA-100: not allowed"));
   });
+
+  it("keeps the request identity when the RPC reply is lost and surfaces a failed result delivery", async () => {
+    let submitted: ((context: Record<string, unknown>) => Promise<void>) | null = null;
+    const rpc = vi.fn(async (_fn: unknown, _input: unknown) => { throw new Error("connection reset"); });
+    const send = vi.fn(async () => { throw new Error("send failed"); });
+    contributePromotionCommand({ addSlashCommand: (contribution: { onSubmit: (context: Record<string, unknown>) => Promise<void> }) => { submitted = contribution.onSubmit; return () => {}; } } as never);
+    await expect(submitted!({ args: "ASMA-100 rev-7 Scope: keep it", agent: { id: "agent" }, rpc, paseo: { agents: { ref: () => ({ send }) } } }))
+      .rejects.toThrow(/Promotion result for request .* could not be delivered/);
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(promoteSessionInput.safeParse(rpc.mock.calls[0]?.[1]).success).toBe(true);
+  });
 });

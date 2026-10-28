@@ -216,7 +216,7 @@ export async function discoverCanonical(client: CanonicalClient, root: string, e
 
 
 /** The predecessor's canonical promotion state, used before a takeover may archive it. */
-export async function promotionBindingFor(root: string, agentId: string): Promise<{ state: "none" } | { state: "settled"; record: PromotionRecord } | { state: "blocked"; message: string }> {
+export async function promotionBindingFor(root: string, agentId: string, expectedEpic: string | null = null): Promise<{ state: "none" } | { state: "settled"; record: PromotionRecord } | { state: "blocked"; message: string }> {
   let all: PromotionRecord[];
   try { all = await records(root); }
   catch (error) { return { state: "blocked", message: `Promotion state could not be read: ${errorText(error)}. No retirement is allowed.` }; }
@@ -225,18 +225,27 @@ export async function promotionBindingFor(root: string, agentId: string): Promis
   const owned = all.filter((entry) => entry.state === "promoted" && entry.agentId === agentId)
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   if (owned.length > 1) return { state: "blocked", message: "Multiple promotion bindings name this session; reconcile them before takeover; no retirement is allowed." };
-  if (owned.length) return { state: "settled", record: owned[0]! };
   const history = all.filter((entry) => entry.canonicalAgentId === agentId && entry.state === "handoff")
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-  return history.length ? { state: "settled", record: history.at(-1)! } : { state: "none" };
+  if (owned.length) {
+    const owner = owned[0]!;
+    if (expectedEpic && owner.epic !== expectedEpic) return { state: "blocked", message: `The promoted binding names ${owner.epic}, not the native ${expectedEpic} label; reconcile ownership before takeover.` };
+    if (history.some((entry) => entry.epic !== owner.epic)) return { state: "blocked", message: "Handoff history names a different epic than the promoted binding; reconcile ownership before takeover." };
+    return { state: "settled", record: owner };
+  }
+  if (!history.length) return { state: "none" };
+  const epics = new Set(history.map((entry) => entry.epic));
+  if (epics.size > 1) return { state: "blocked", message: "Handoff history names multiple epics for this session; reconcile ownership before takeover." };
+  if (expectedEpic && !epics.has(expectedEpic)) return { state: "blocked", message: `Handoff history does not name the native ${expectedEpic} label; reconcile ownership before takeover.` };
+  return { state: "settled", record: history.at(-1)! };
 }
 
 /** After an authorized takeover, move a promoted/handoff canonical binding to the successor's exact native ID. */
-export async function transferPromotion(root: string, predecessorAgentId: string, successor: { agentId: string; native: NativePromotionPlacement; persona: string }): Promise<string | null> {
+export async function transferPromotion(root: string, predecessorAgentId: string, successor: { agentId: string; native: NativePromotionPlacement; persona: string }, expectedEpic: string | null = null): Promise<string | null> {
   const all = await records(root);
-  const promoted = all.filter((entry) => entry.state === "promoted" && entry.agentId === predecessorAgentId)
+  const promoted = all.filter((entry) => entry.state === "promoted" && entry.agentId === predecessorAgentId && (!expectedEpic || entry.epic === expectedEpic))
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
-  const source = promoted ?? all.filter((entry) => entry.state === "handoff" && entry.canonicalAgentId === predecessorAgentId)
+  const source = promoted ?? all.filter((entry) => entry.state === "handoff" && entry.canonicalAgentId === predecessorAgentId && (!expectedEpic || entry.epic === expectedEpic))
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   if (!source) return null;
   if (all.some((entry) => entry.epic === source.epic && entry.agentId === successor.agentId && entry.state === "promoted")) return null;
