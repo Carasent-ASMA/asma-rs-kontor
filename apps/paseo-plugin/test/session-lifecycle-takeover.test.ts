@@ -20,6 +20,7 @@ import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
 import { createSessionSummaryService } from "../server/session-summaries";
+import { stockSummaryGenerator } from "../server/stock-summary-generator";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
@@ -253,9 +254,10 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
 
 describe("direct takeover continuity", () => {
   type Host = Awaited<ReturnType<typeof host>>;
-  const productionContinuity = (h: Host, schedules?: { forAgent: (agentId: string) => Promise<{ entries: unknown[] }> }) => {
+  const productionContinuity = (h: Host, schedules?: { forAgent: (agentId: string) => Promise<{ entries: unknown[] }> }, completeSchedules?: NonNullable<TakeoverDeps["completeSchedules"]>) => {
     if (schedules) (h.client as { schedules?: typeof schedules }).schedules = schedules;
-    h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id);
+    h.deps.completeSchedules = completeSchedules;
+    h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id, { completeSchedules });
     return h;
   };
   const noRetirementEffects = (h: Host) => {
@@ -407,6 +409,65 @@ describe("direct takeover continuity", () => {
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 1, 1]);
   });
 
+  const complete = (schedules: { target: { type: "agent" | "self"; agentId: string } | { type: "new-agent" }; status: string }[], hostId = "host-1") =>
+    async () => ({ complete: true as const, hostId, schedules });
+
+  it("settles a live source from an empty complete host inventory", async () => {
+    const h = productionContinuity(await host(), undefined, complete([]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "77777777-7777-4777-8777-777777777777", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt).toMatchObject({ surface: "direct", wakes: "clear", wakeHost: "host-1" });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+  });
+
+  it("settles a live source when the complete inventory contains only unrelated rows", async () => {
+    const h = productionContinuity(await host(), undefined, complete([
+      { target: { type: "agent", agentId: "other-agent" }, status: "active" },
+      { target: { type: "new-agent" }, status: "paused" },
+    ]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "88888888-8888-4888-8888-888888888888", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt).toMatchObject({ wakes: "clear", wakeHost: "host-1" });
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("ready");
+  });
+
+  it("does not turn a partial or unreadable complete inventory into clear", async () => {
+    for (const read of [
+      { complete: false as const, gap: "The complete inventory is partial." },
+      { complete: false as const, gap: "The complete inventory is unreadable." },
+    ]) {
+      const h = productionContinuity(await host(), undefined, async () => read);
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "99999999-9999-4999-8999-999999999999", { completeSchedules: h.deps.completeSchedules });
+      expect(receipt?.wakes).toBe("unknown");
+      expect(receipt?.wakeGap).toBe(read.gap);
+      expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+    }
+  });
+
+  it("blocks an ongoing exact source-linked scheduled duty without dropping it", async () => {
+    const h = productionContinuity(await host(), undefined, complete([{ target: { type: "agent", agentId: "agent-1" }, status: "paused" }]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("ongoing source-linked scheduled duty");
+    expect(receipt?.wakeGap).toContain("retirement is blocked");
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+  });
+
+  it.each(["", " ", "\t"])("does not turn an empty or whitespace complete-inventory target into clear (%j)", async (agentId) => {
+    const h = productionContinuity(await host(), undefined, complete([{ target: { type: "agent", agentId }, status: "active" }]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "cccccccc-cccc-4ccc-8ccc-cccccccccccc", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("empty, whitespace or missing target identity");
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+  });
+
+  it("requires an exact daemon host identity for a complete inventory", async () => {
+    const h = productionContinuity(await host(), undefined, complete([], ""));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("exact daemon host identity");
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+  });
+
   it("preserves a visible managed child by detaching it, never archiving it, with a qualified clear schedule read", async () => {
     const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
     const h = productionContinuity(await host({ others: [child] }), { forAgent: async () => ({ entries: [] }) });
@@ -429,7 +490,7 @@ describe("direct takeover continuity", () => {
     const h = productionContinuity(await host({ others: [child] }));
     const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "55555555-5555-4555-8555-555555555555");
     expect(receipt?.wakes).toBe("unknown");
-    expect(receipt?.wakeGap).toContain("No qualified scheduled-wake reader");
+    expect(receipt?.wakeGap).toContain("No qualified complete scheduled-wake reader");
     const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
     expect(review.state).toBe("unknown");
     expect(review.digest).toBeNull();
@@ -980,8 +1041,7 @@ describe("universal takeover operation", () => {
   it("stops a running source before archive and takes the final summary after the stop", async () => {
     const h = await host({ predecessor: agent("agent-1", { status: "running" }) }), order: string[] = [];
     h.deps.publicCli = {
-      stop: async (id) => { order.push(`stop:${id}`); h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); h.timelines.get(id)!.push({ item: { type: "assistant_message", text: "Final summary after the stop." } }); return { ok: true }; },
-      wakeState: async () => ({ wakes: "clear" }),
+      stop: async (id) => { order.push(`stop:${id}`); h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); h.timelines.get(id)!.push({ item: { type: "assistant_message", text: "Final summary after the stop." } }); return { ok: true }; }
     };
     const ref = h.client.agents.ref;
     h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle, archive: async () => { order.push(`archive:${id}`); return handle.archive(); } }; };
@@ -997,7 +1057,7 @@ describe("universal takeover operation", () => {
 
   it("refuses a running source when the public CLI is unavailable, with no archive or create", async () => {
     const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
-    h.deps.publicCli = { stop: async () => ({ ok: false, unavailable: true, message: "The configured public Paseo CLI paseo could not be found." }), wakeState: async () => ({ wakes: "clear" }) };
+    h.deps.publicCli = { stop: async () => ({ ok: false, unavailable: true, message: "The configured public Paseo CLI paseo could not be found." }) };
     const review = await h.ready();
     const applied = await h.apply(review);
     expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
@@ -1007,7 +1067,7 @@ describe("universal takeover operation", () => {
 
   it("refuses a running source that remains active after the stop, with no archive or create", async () => {
     const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
-    h.deps.publicCli = { stop: async () => ({ ok: true }), wakeState: async () => ({ wakes: "clear" }) };
+    h.deps.publicCli = { stop: async () => ({ ok: true }) };
     const review = await h.ready();
     const applied = await h.apply(review);
     expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
@@ -1017,7 +1077,7 @@ describe("universal takeover operation", () => {
 
   it("refuses a stopped source whose title changed during the stop, with no archive or create", async () => {
     const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
-    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle", title: "Changed title" }); return { ok: true }; }, wakeState: async () => ({ wakes: "clear" }) };
+    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle", title: "Changed title" }); return { ok: true }; } };
     const review = await h.ready();
     const applied = await h.apply(review);
     expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
@@ -1027,7 +1087,7 @@ describe("universal takeover operation", () => {
 
   it("Check reconciles a lost stop reply without archive, create or send", async () => {
     const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
-    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); throw new Error("stop reply lost"); }, wakeState: async () => ({ wakes: "clear" }) };
+    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); throw new Error("stop reply lost"); } };
     const review = await h.ready();
     const applied = await h.apply(review);
     expect(applied).toMatchObject({ state: "uncertain", phase: "stop", next: "check" });
@@ -1035,6 +1095,64 @@ describe("universal takeover operation", () => {
     expect(checked).toMatchObject({ state: "refused", phase: "stop", next: "review" });
     expect(checked.message).toContain("stop is complete");
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("reviews a running source without stopping or saving, then stops before the actual stock final summary", async () => {
+    const source = agent("agent-1", { status: "running", currentModeId: "default" }) as Agent & { persistence: { sessionId: string } };
+    source.persistence = { provider: "claude", sessionId: "source-session" };
+    const h = await host({ predecessor: source });
+    h.agents.set("agent-1", source);
+    h.timelines.set("agent-1", [
+      { item: { type: "user_message", text: "Do the work", clientMessageId: "source-user" }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:00:00Z" },
+      { item: { type: "assistant_message", text: "The parser is fixed; the migration is next." }, seqStart: 2, seqEnd: 2, timestamp: "2026-10-25T08:01:00Z" },
+    ] as never);
+    const sourcePage = () => ({ agent: h.agents.get("agent-1"), agentId: "agent-1", entries: h.timelines.get("agent-1") ?? [],
+      epoch: "source-epoch", gap: null, staleCursor: null, hasOlder: false, hasNewer: false });
+    const helperSections = JSON.stringify({ task: "Keep the parser fix.", decisions: "Keep the migration.", currentState: "The source is stopped.", nextStep: "Continue the migration." });
+    const order: string[] = [];
+    const ref = h.client.agents.ref;
+    h.client.agents.ref = (id: string) => {
+      const handle = ref(id);
+      return { ...handle,
+        archive: async () => { if (id === "agent-1") order.push("archive"); return handle.archive(); },
+        timeline: { refetch: async (options?: { projection?: string }) => options?.projection === "canonical"
+          ? (id === "agent-1" ? sourcePage() : { agent: h.agents.get(id), agentId: id, entries: h.timelines.get(id) ?? [], epoch: "helper-epoch", gap: null, staleCursor: null, hasOlder: false, hasNewer: false }) as never
+          : handle.timeline.refetch() },
+        waitForFinish: async () => {
+          const entries = h.timelines.get(id) ?? [];
+          entries.push({ item: { type: "assistant_message", text: helperSections }, seqStart: 2, seqEnd: 2, timestamp: "2026-10-25T08:02:00Z" } as never);
+          h.timelines.set(id, entries);
+          return { status: "idle" as const, final: null, error: null, lastMessage: helperSections };
+        },
+      } as typeof handle;
+    };
+    (h.client as unknown as { agents: { create: (input: Record<string, unknown> & { agentId: string; config: { provider: string }; prompt?: string; clientMessageId: string; title: string; cwd: string; labels: Record<string, string> }) => Promise<unknown> } }).agents.create = async (input) => {
+      const [provider, model] = input.config.provider.split("/");
+      const helper = agent(input.agentId, { title: input.title, labels: input.labels, provider: provider!, model: model!, cwd: input.cwd, workspaceId: "wks-1", status: "idle", currentModeId: "default", persistence: { sessionId: `helper-${input.agentId}` } } as Partial<Agent>);
+      h.agents.set(helper.id, helper);
+      h.timelines.set(helper.id, [{ item: { type: "user_message", text: input.prompt ?? "", clientMessageId: input.clientMessageId }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:01:30Z" } as never]);
+      return { id: helper.id, ...h.client.agents.ref(helper.id) };
+    };
+    const summaryRoot = join(h.root, "..", "summaries");
+    const summaries = createSessionSummaryService(h.client as never, summaryRoot, stockSummaryGenerator(h.client as never, summaryRoot));
+    h.deps.summaries = summaries;
+    const saveOriginal = summaries.save.bind(summaries);
+    const save = vi.spyOn(summaries, "save").mockImplementation(async (id) => { order.push("save"); return saveOriginal(id); });
+    const stop = vi.fn(async (id: string) => { order.push("stop"); h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    expect(stop).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["stop", "save", "archive"]);
+    expect(h.effects.archive.filter((id) => id === "agent-1")).toEqual(["agent-1"]);
+    expect(h.effects.archive).toHaveLength(2);
+    expect(h.effects.create).toHaveLength(1);
+    expect(String(h.effects.create[0]!.prompt)).toContain("Keep the parser fix.");
   });
 
   it("settles a crash before the release send with exactly one delivery and no second successor", async () => {
