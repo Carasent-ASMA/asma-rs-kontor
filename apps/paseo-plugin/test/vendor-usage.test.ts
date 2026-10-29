@@ -6,6 +6,11 @@ const THREAD = "00000000-0000-4000-8000-000000000001", NEXT = "00000000-0000-400
 const agent = (id: string, nativeHandle = THREAD, provider = "codex") => ({ id, provider, title: "Same title", persistence: { provider, sessionId: "tree-root-is-not-thread-id", nativeHandle, metadata: { threadId: nativeHandle } } });
 const found = (a: ReturnType<typeof agent>) => ({ agent: a });
 const host = (refresh: ReturnType<typeof vi.fn>) => ({ agents: { ref: vi.fn(() => ({ refresh })) } }) as never;
+const aliasMetadata = (aliases: string[]) => ({
+ providers: { snapshot: vi.fn(async () => ({ entries: aliases.map(provider => ({ provider, source: "custom" as "custom" | "builtin" })) })) },
+ config: { get: vi.fn(async () => ({ config: { providers: Object.fromEntries(aliases.map(provider => [provider, { extends: "codex" }])) } })) },
+});
+const aliasHost = (refresh: ReturnType<typeof vi.fn>, aliases: string[]) => Object.assign(host(refresh), aliasMetadata(aliases));
 const value = { input: 100, output: 5, scope: "provider-cumulative" as const, source: "Fixture provider cumulative; history unavailable" };
 
 describe("vendor-native usage ownership", () => {
@@ -37,9 +42,9 @@ describe("vendor-native usage ownership", () => {
   });
   it("preserves stable Codex aliases but refuses an alias/account route switch", async () => {
     const before = { ...agent("a"), provider: "fixture-codex-route-a" }, after = { ...before, provider: "fixture-codex-route-b" };
-    expect(await createVendorUsageService({ read: async () => value })(host(vi.fn(async () => found(before))), ["a"])).toEqual({ a: value });
+    expect(await createVendorUsageService({ read: async () => value })(aliasHost(vi.fn(async () => found(before)), [before.provider, after.provider]), ["a"])).toEqual({ a: value });
     const refresh = vi.fn().mockResolvedValueOnce(found(before)).mockResolvedValueOnce(found(after));
-    expect(await createVendorUsageService({ read: async () => value })(host(refresh), ["a"])).toMatchObject({ a: { input: null, output: null } });
+    expect(await createVendorUsageService({ read: async () => value })(aliasHost(refresh, [before.provider, after.provider]), ["a"])).toMatchObject({ a: { input: null, output: null } });
   });
   it("keeps failures unknown and shares a finite budget across the batch", async () => {
     const budgets: object[] = [], read = vi.fn(async (_id, budget) => { budgets.push(budget); return value; });
@@ -112,7 +117,63 @@ describe("session-usage provider coverage boundary", () => {
  });
  it("qualifies aliases by canonical Codex persistence and exact source, never model vendor", async () => {
   const native = { ...agent("a"), provider: "fixture-codex-alias", model: "other-model" }, read = vi.fn(async () => value);
-  expect(await createVendorUsageService({ read })(host(vi.fn(async () => found(native))), ["a"])).toEqual({ a: value });
+  expect(await createVendorUsageService({ read })(aliasHost(vi.fn(async () => found(native)), [native.provider]), ["a"])).toEqual({ a: value });
   expect(read).toHaveBeenCalledExactlyOnceWith(THREAD, expect.any(Object));
  });
+});
+
+describe("positive route provenance for retained Codex handles", () => {
+ it.each(["cursor", "glm-acp-agent"])("withholds native %s with a retained Codex handle", async (provider) => {
+  const native = { ...agent("a"), provider }, read = vi.fn(async () => ({ ...value, input: 100, output: 8 }));
+  // Even a conflicting config mapping cannot override the host's native/builtin classification.
+  const metadata = aliasMetadata([provider]);
+  metadata.providers.snapshot.mockResolvedValue({ entries: [{ provider, source: "builtin" }] });
+  expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, output: null } });
+  expect(read).not.toHaveBeenCalled();
+  const unverified = aliasMetadata([provider]);
+  unverified.config.get.mockResolvedValue({ config: { providers: {} } });
+  expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), unverified), ["a"])).toMatchObject({ a: { input: null, output: null } });
+  expect(await createVendorUsageService({ read })(host(vi.fn(async () => found(native))), ["a"])).toMatchObject({ a: { input: null, output: null } });
+  expect(read).not.toHaveBeenCalled();
+ });
+ it("withholds arbitrary routes whose alias mapping is absent or maps to another provider", async () => {
+  const native = { ...agent("a"), provider: "fixture-unverified-route" }, read = vi.fn(async () => value);
+  for (const mapping of [{}, { extends: "opencode" }]) {
+   const metadata = aliasMetadata([native.provider]);
+   metadata.config.get.mockResolvedValue({ config: { providers: { [native.provider]: mapping as never } } });
+   expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, output: null } });
+  }
+  expect(read).not.toHaveBeenCalled();
+ });
+ it.each(["cursor", "glm-acp-agent"])("discards usage after a Codex to native %s route transition", async (provider) => {
+  const after = { ...agent("a"), provider }, read = vi.fn(async () => value);
+  const refresh = vi.fn().mockResolvedValueOnce(found(agent("a"))).mockResolvedValueOnce(found(after));
+  expect(await createVendorUsageService({ read })(host(refresh), ["a"])).toMatchObject({ a: { input: null, output: null } });
+  expect(read).toHaveBeenCalledTimes(1);
+ });
+ it("revalidates a genuine alias mapping after the exact usage read", async () => {
+  const native = { ...agent("a"), provider: "fixture-codex-alias" }, metadata = aliasMetadata(["fixture-codex-alias"]);
+  metadata.config.get.mockResolvedValueOnce({ config: { providers: { [native.provider]: { extends: "codex" } } } })
+   .mockResolvedValueOnce({ config: { providers: { [native.provider]: { extends: "opencode" } } } });
+  const read = vi.fn(async () => value);
+  expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, source: expect.stringContaining("changed") } });
+  expect(read).toHaveBeenCalledTimes(1); expect(metadata.config.get).toHaveBeenCalledTimes(2);
+ });
+ it("withholds alias usage when supported metadata reads fail", async () => {
+  const native = { ...agent("a"), provider: "fixture-codex-alias" }, metadata = aliasMetadata(["fixture-codex-alias"]);
+  metadata.providers.snapshot.mockRejectedValue(Error("PRIVATE_PROVIDER_CONFIG"));
+  const read = vi.fn(async () => value);
+  const result = await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"]);
+  expect(result.a).toMatchObject({ input: null, output: null }); expect(read).not.toHaveBeenCalled();
+  expect(JSON.stringify(result)).not.toContain("PRIVATE_PROVIDER_CONFIG");
+ });
+});
+
+it("discards a formerly verified alias if the host now classifies it as native", async () => {
+ const native = { ...agent("a"), provider: "fixture-codex-alias" }, metadata = aliasMetadata(["fixture-codex-alias"]);
+ metadata.providers.snapshot.mockResolvedValueOnce({ entries: [{ provider: native.provider, source: "custom" }] })
+  .mockResolvedValueOnce({ entries: [{ provider: native.provider, source: "builtin" }] });
+ const read = vi.fn(async () => value);
+ expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toMatchObject({ a: { input: null, output: null } });
+ expect(read).toHaveBeenCalledTimes(1);
 });
