@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { usageTotalsSchema } from "../shared/session-navigator";
 import { createCodexUsageReader } from "../server/codex-usage";
 const ID = "00000000-0000-4000-8000-000000000001", OTHER = "00000000-0000-4000-8000-000000000002";
 let root: string, cache: string, source: string;
@@ -62,7 +63,7 @@ describe("qualified Codex cumulative snapshots", () => {
     Object.assign(old, { version: 1, size: current.size, modified: current.mtimeMs, offset: current.size, counts: { input_tokens: 900, output_tokens: 40, total_tokens: 940 }, baseline: { input_tokens: 900, output_tokens: 40, total_tokens: 940 } });
     await writeFile(path, JSON.stringify(old));
     expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
-    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(3);
+    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(4);
   });
   it("requalifies valid v1 sources from zero and resumes a partial consistent metadata append", async () => {
     await writeFile(source, lines(meta(), event(100, 5))); await reader().read(ID);
@@ -166,4 +167,50 @@ it("recovers a valid v2 qualified source without inventing a reset", async () =>
  const old = JSON.parse(await readFile(path, "utf8")); old.version = 2;
  await writeFile(path, JSON.stringify(old));
  expect(await reader().read(ID)).toMatchObject({ input: 100, output: 8 });
+});
+
+const responseUsage = (response: string, input: number, output: number, patch = {}) => JSON.stringify({ type: "token_usage_record", payload: {
+ thread_id: ID, session_id: ID, response_id: response, usage: { input_tokens: input, output_tokens: output, total_tokens: input + output }, ...patch,
+} });
+describe("recorded child response usage", () => {
+ it("sums unique exact child records, excludes foreign identities and never substitutes legacy cumulative", async () => {
+  await writeFile(source, lines(meta(ID, { forked_from_id: OTHER }), event(9000, 900),
+   responseUsage("one", 100, 5), responseUsage("one", 100, 5), responseUsage("two", 200, 8),
+   responseUsage("parent", 9999, 999, { thread_id: OTHER }), responseUsage("other-session", 9999, 999, { session_id: OTHER })));
+  const result = await reader().read(ID);
+  expect(result).toMatchObject({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("fork or inherited"),
+   recordedChildUsage: { scope: "recorded-child-responses", label: "Recorded child response usage", input: 300, output: 13, total: 313, responses: 2,
+    qualification: "Excludes parent history; completeness and billing unverified." } });
+  expect(usageTotalsSchema.parse(result)).toEqual(result);
+  expect(await reader().read(ID)).toEqual(result);
+  await appendFile(source, lines(responseUsage("one", 100, 5), responseUsage("three", 30, 2)));
+  expect(await reader().read(ID)).toMatchObject({ input: null, recordedChildUsage: { input: 330, output: 15, responses: 3 } });
+  const stored = await readFile(join(cache, (await readdir(cache))[0]!), "utf8");
+  expect(stored).not.toContain('"one"'); expect(stored).not.toContain('"three"');
+ });
+ it.each([
+  responseUsage("one", 101, 5),
+  responseUsage("bad", 0, 0, { usage: { input_tokens: -1, output_tokens: 1, total_tokens: 0 } }),
+  responseUsage("bad", 0, 0, { usage: { input_tokens: 10, output_tokens: 1, total_tokens: 100 } }),
+ ])("withholds recorded usage after conflicting or invalid matching records", async (bad) => {
+  await writeFile(source, lines(meta(ID, { forked_from_id: OTHER }), responseUsage("one", 100, 5), bad));
+  expect((await reader().read(ID)).recordedChildUsage).toBeUndefined();
+  expect((await reader().read(ID)).recordedChildUsage).toBeUndefined();
+ });
+ it("rejects unsupported fork metadata before exposing response usage", async () => {
+  await writeFile(source, lines(meta(ID, { forked_from_id: "not-a-thread" }), responseUsage("one", 100, 5)));
+  expect((await reader().read(ID)).recordedChildUsage).toBeUndefined();
+ });
+ it("recomputes v3 fork refusals and yields only complete bounded child scans", async () => {
+  await writeFile(source, lines(meta(), event(100, 8))); await reader().read(ID);
+  const path = join(cache, (await readdir(cache))[0]!);
+  const old = JSON.parse(await readFile(path, "utf8")); delete old.recorded; delete old.forked;
+  Object.assign(old, { version: 3, meta: false, counts: null, baseline: null, offset: 199, problem: "fork or inherited scope is unqualified" });
+  await writeFile(path, JSON.stringify(old));
+  await writeFile(source, lines(meta(ID, { forked_from_id: OTHER }), responseUsage("one", 100, 8),
+   JSON.stringify({ type: "response_item", payload: "x".repeat(2 * 1024 * 1024) }), responseUsage("two", 200, 7)));
+  const partial = await reader().read(ID, { bytes: 1024 * 1024 });
+  expect(partial.source).toContain("incomplete bounded"); expect(partial.recordedChildUsage).toBeUndefined();
+  expect(await reader().read(ID)).toMatchObject({ input: null, recordedChildUsage: { input: 300, output: 15, total: 315, responses: 2 } });
+ });
 });

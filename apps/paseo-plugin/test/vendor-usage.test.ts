@@ -79,3 +79,11 @@ it("completes eight legal 5MiB sources across bounded service batches", async ()
     for (const id of ids) expect(result![id]).toMatchObject({ input: 100, output: 8 });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+it("preserves separate recorded child usage through the exact-identity service", async () => {
+ const recorded = { ...value, input: null, output: null, recordedChildUsage: {
+  scope: "recorded-child-responses" as const, label: "Recorded child response usage" as const,
+  qualification: "Excludes parent history; completeness and billing unverified." as const, input: 100, output: 8, total: 108, responses: 1,
+ } };
+ expect(await createVendorUsageService({ read: async () => recorded })(host(vi.fn(async () => found(agent("a")))), ["a"])).toEqual({ a: recorded });
+});

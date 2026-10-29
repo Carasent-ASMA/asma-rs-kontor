@@ -33,7 +33,16 @@ export type NavigatorCapability = keyof NavigatorCapabilities;
 export const readNavigatorCapabilities = defineRpc({ name: "sessions.navigator-capabilities", input: z.object({}).strict(), output: navigatorCapabilitiesSchema });
 
 /** Qualified session totals or an explicitly labelled provider cumulative snapshot; null is unavailable, never zero. */
-export const usageTotalsSchema = z.object({ input: z.number().int().nonnegative().nullable(), output: z.number().int().nonnegative().nullable(), source: z.string(), scope: z.enum(["session", "provider-cumulative"]).optional() }).strict();
+export const RECORDED_CHILD_USAGE_LABEL = "Recorded child response usage";
+export const RECORDED_CHILD_USAGE_CAVEAT = "Excludes parent history; completeness and billing unverified.";
+const tokenCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export const recordedChildUsageSchema = z.object({
+  scope: z.literal("recorded-child-responses"), label: z.literal(RECORDED_CHILD_USAGE_LABEL),
+  qualification: z.literal(RECORDED_CHILD_USAGE_CAVEAT), input: tokenCount, output: tokenCount,
+  total: tokenCount, responses: tokenCount,
+}).strict().refine((value) => value.input + value.output === value.total, "Inconsistent recorded child usage");
+export type RecordedChildUsage = z.infer<typeof recordedChildUsageSchema>;
+export const usageTotalsSchema = z.object({ input: z.number().int().nonnegative().nullable(), output: z.number().int().nonnegative().nullable(), source: z.string(), scope: z.enum(["session", "provider-cumulative"]).optional(), recordedChildUsage: recordedChildUsageSchema.optional() }).strict();
 export type UsageTotals = z.infer<typeof usageTotalsSchema>;
 export const readUsageTotals = defineRpc({ name: "sessions.usage-totals", input: z.object({ agentIds: z.array(id).max(200) }).strict(),
   output: z.record(z.string(), usageTotalsSchema.nullable()) });

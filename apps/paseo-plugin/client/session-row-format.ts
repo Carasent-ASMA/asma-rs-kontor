@@ -1,3 +1,4 @@
+import type { RecordedChildUsage } from "../shared/session-navigator";
 import { deskName } from "../shared/session-create";
 import type { DirectoryEntry } from "./session-directory";
 import { sessionRole, TASK_JIRA_LABELS, TASK_TICKET_LABEL } from "./session-organization";
@@ -40,7 +41,13 @@ export function byLastActivity<T extends Parameters<typeof lastActivity>[0]>(ent
 
 /** Qualified totals or labelled cumulative snapshots. Null means unavailable, never latest-turn usage. */
 /** `source` is where a supported read says the totals come from, shown in Details. */
-export type SessionTotals = { readonly input: number | null; readonly output: number | null; readonly source?: string; readonly scope?: "session" | "provider-cumulative" };
+export type SessionTotals = { readonly input: number | null; readonly output: number | null; readonly source?: string; readonly scope?: "session" | "provider-cumulative"; readonly recordedChildUsage?: RecordedChildUsage };
+
+/** A separate recorded metric never fills the cumulative/session-total fields. */
+export function recordedChildUsageDetail(totals: SessionTotals | null | undefined): string | null {
+  const child = totals?.recordedChildUsage;
+  return child ? `${child.label}: ↓ ${child.input.toLocaleString("en-US")} / ↑ ${child.output.toLocaleString("en-US")} · ${child.total.toLocaleString("en-US")} tokens · ${child.responses.toLocaleString("en-US")} responses. ${child.qualification}` : null;
+}
 
 /** "↓ 124.8k" / "↑ 9.6k" with lowercase units; an unknown total is "↓ —", never 0. */
 export function tokenTotals(totals: SessionTotals | null | undefined): { readonly input: string; readonly output: string; readonly spoken: string } {
@@ -48,14 +55,14 @@ export function tokenTotals(totals: SessionTotals | null | undefined): { readonl
   const input = one(totals?.input), output = one(totals?.output);
   return {
     input: `${totals?.scope === "provider-cumulative" ? "reported " : ""}↓ ${input ?? "—"}`, output: `↑ ${output ?? "—"}`,
-    spoken: input === null && output === null ? "Session token totals unknown" : `${totals?.scope === "provider-cumulative" ? "Provider-reported cumulative" : "Session totals"}: ${input ?? "unknown"} input, ${output ?? "unknown"} output tokens`,
+    spoken: [(input === null && output === null ? "Session token totals unknown" : `${totals?.scope === "provider-cumulative" ? "Provider-reported cumulative" : "Session totals"}: ${input ?? "unknown"} input, ${output ?? "unknown"} output tokens`), recordedChildUsageDetail(totals)].filter(Boolean).join(". "),
   };
 }
 
 /** Details preserve the source scope; unknown is said, never zero. */
 export function totalsDetail(totals: SessionTotals | null | undefined): { readonly label: string; readonly value: string } {
   const { input, output } = tokenTotals(totals);
-  return { label: totals?.scope === "provider-cumulative" ? "Provider-reported cumulative input ↓ and output ↑" : "Input ↓ and output ↑", value: totals ? `${input} ${output} · ${totals.source ?? "Source not stated"}` : "Unknown: no supported read reports this session's totals." };
+  return { label: totals?.scope === "provider-cumulative" ? "Provider-reported cumulative input ↓ and output ↑" : "Input ↓ and output ↑", value: totals ? `${input} ${output} · ${totals.source ?? "Source not stated"}${recordedChildUsageDetail(totals) ? ` · ${recordedChildUsageDetail(totals)}` : ""}` : "Unknown: no supported read reports this session's totals." };
 }
 
 /** The task and pull request a session's labels name: the first Jira or Kontor ticket label, and "PR 42" from `pr`. */
