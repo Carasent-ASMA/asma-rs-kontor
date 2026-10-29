@@ -34,3 +34,26 @@ describe("vendor cumulative refresh", () => {
     expect(box.hooks.render(() => useUsageTotals(true, ["a"])).size).toBe(0);
   });
 });
+
+it("continues incomplete scans at an unchanged key and stops after completion", async () => {
+ vi.useFakeTimers();
+ try {
+  box.read.mockResolvedValueOnce({ a: { input: null, output: null, source: "Codex cumulative usage unavailable: incomplete bounded source read." } })
+   .mockResolvedValue({ a: { input: 200, output: 8, source: "Qualified fixture" } });
+  const draw = () => box.hooks.render(() => useUsageTotals(true, ["a"], "same"));
+  draw(); await vi.advanceTimersByTimeAsync(1000);
+  expect(box.read).toHaveBeenCalledTimes(2);
+  expect(draw().get("a")?.input).toBe(200);
+  await vi.advanceTimersByTimeAsync(5000); expect(box.read).toHaveBeenCalledTimes(2);
+ } finally { vi.useRealTimers(); }
+});
+it("cancels a pending continuation when capability is disabled", async () => {
+ vi.useFakeTimers();
+ try {
+  box.read.mockResolvedValue({ a: { input: null, output: null, source: "incomplete bounded source read" } });
+  box.hooks.render(() => useUsageTotals(true, ["a"]));
+  await vi.advanceTimersByTimeAsync(0);
+  box.hooks.render(() => useUsageTotals(false, ["a"]));
+  await vi.advanceTimersByTimeAsync(2000); expect(box.read).toHaveBeenCalledTimes(1);
+ } finally { vi.useRealTimers(); }
+});

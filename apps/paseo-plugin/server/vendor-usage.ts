@@ -23,7 +23,7 @@ const unavailable = (source: string): UsageTotals => ({ input: null, output: nul
 export function createVendorUsageService(reader: { read(threadId: string, budget: { bytes: number }): Promise<CodexUsageRead> }) {
   return async (paseo: Pick<PaseoApi, "agents">, agentIds: readonly string[]) => {
     const result: Record<string, UsageTotals | null> = {};
-    const ids = [...new Set(agentIds)], budget = { bytes: 8 * 1024 * 1024 };
+    const ids = [...new Set(agentIds)], budget = { bytes: 32 * 1024 * 1024 };
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(ids.length, 8) }, async () => {
       while (cursor < ids.length) {

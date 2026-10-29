@@ -44,7 +44,7 @@ describe("vendor-native usage ownership", () => {
     const budgets: object[] = [], read = vi.fn(async (_id, budget) => { budgets.push(budget); return value; });
     const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agent(id)) }) } } as never;
     await createVendorUsageService({ read })(paseo, ["a", "b"]);
-    expect(budgets[0]).toBe(budgets[1]); expect(budgets[0]).toMatchObject({ bytes: 8 * 1024 * 1024 });
+    expect(budgets[0]).toBe(budgets[1]); expect(budgets[0]).toMatchObject({ bytes: 32 * 1024 * 1024 });
     const result = await createVendorUsageService({ read })(host(vi.fn(async () => { throw Error("PRIVATE_ERROR"); })), ["a"]);
     expect(result.a).toMatchObject({ input: null, output: null }); expect(JSON.stringify(result)).not.toContain("PRIVATE_ERROR");
   });

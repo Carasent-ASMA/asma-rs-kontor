@@ -62,7 +62,7 @@ describe("qualified Codex cumulative snapshots", () => {
     Object.assign(old, { version: 1, size: current.size, modified: current.mtimeMs, offset: current.size, counts: { input_tokens: 900, output_tokens: 40, total_tokens: 940 }, baseline: { input_tokens: 900, output_tokens: 40, total_tokens: 940 } });
     await writeFile(path, JSON.stringify(old));
     expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
-    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(2);
+    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(3);
   });
   it("requalifies valid v1 sources from zero and resumes a partial consistent metadata append", async () => {
     await writeFile(source, lines(meta(), event(100, 5))); await reader().read(ID);
@@ -124,4 +124,20 @@ describe("qualified Codex cumulative snapshots", () => {
     expect(stored).not.toContain(secret); expect(stored).not.toContain(root);
     expect(stored).not.toContain("base_instructions");
   });
+});
+
+it("recomputes v2 failures and continues past a large record", async () => {
+ await writeFile(source, lines(meta(), event(100, 5))); await reader().read(ID);
+ const path = join(cache, (await readdir(cache))[0]!);
+ const old = JSON.parse(await readFile(path, "utf8"));
+ Object.assign(old, { version: 2, meta: false, counts: null, offset: 37874, problem: "record exceeds the source bound" });
+ await writeFile(path, JSON.stringify(old));
+ await writeFile(source, lines(meta(), JSON.stringify({ type: "response_item", payload: "x".repeat(5 * 1024 * 1024) }), event(200, 8)));
+ expect(await reader().read(ID, { bytes: 1024 * 1024 })).toMatchObject({ input: null });
+ expect(await reader().read(ID)).toMatchObject({ input: 200, output: 8 });
+});
+
+it("fails closed above the 16MiB record bound without exposing partial totals", async () => {
+ await writeFile(source, lines(meta(), event(100, 5), JSON.stringify({ type: "response_item", payload: "x".repeat(17 * 1024 * 1024) }), event(200, 8)));
+ expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("record exceeds") });
 });

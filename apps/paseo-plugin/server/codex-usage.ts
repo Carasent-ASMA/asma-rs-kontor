@@ -9,7 +9,7 @@ const number = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const countsSchema = z.object({ input_tokens: number, output_tokens: number, total_tokens: number,
   cached_input_tokens: number.optional(), cache_write_input_tokens: number.optional(), reasoning_output_tokens: number.optional() });
 type Counts = z.infer<typeof countsSchema>;
-const stateSchema = z.object({ version: z.literal(2), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
+const stateSchema = z.object({ version: z.literal(3), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
   meta: z.boolean(), problem: z.enum(["identity mismatch", "unqualified format version", "fork or inherited scope is unqualified", "invalid identity metadata", "invalid cumulative counters", "inconsistent cumulative counters", "cumulative counter reset", "malformed usage record", "record exceeds the source bound"]).nullable(), counts: countsSchema.nullable(), baseline: countsSchema.nullable(), at: z.string().nullable() }).strict();
 type State = z.infer<typeof stateSchema>;
 export type CodexUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative" };
@@ -86,8 +86,8 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
       const buffer = Buffer.alloc(4097), result = await file.read(buffer, 0, buffer.length, 0);
       if (result.bytesRead > 4096) throw new Error("cache bound");
       const raw = JSON.parse(buffer.subarray(0, result.bytesRead).toString("utf8"));
-      // v1 may have skipped contradictory metadata before its offset. Discard it and requalify from byte zero.
-      if (raw?.version === 1) return null;
+      // Recompute older caches, including permanent large-record failures, from byte zero.
+      if (raw?.version !== 3) return null;
       const value = stateSchema.parse(raw);
       if (value.threadId !== threadId) throw new Error("cache identity");
       return value;
@@ -117,7 +117,7 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         if (!stat.isFile()) return unknown("source is not a regular file");
         const old = await cached(threadId);
         const state: State = old && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) ? old
-          : { version: 2, threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
+          : { version: 3, threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
         let position = state.offset, pending = Buffer.alloc(0);
         const end = stat.size;
         // A shared RPC budget bounds all requested sessions; unfinished scans retain only numeric state and offsets.
@@ -128,11 +128,11 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
           position += bytesRead; pending = Buffer.concat([pending, buffer.subarray(0, bytesRead)]);
           let newline;
           while ((newline = pending.indexOf(10)) !== -1) {
-            if (newline > 1024 * 1024) { state.problem = "record exceeds the source bound"; break; }
+            if (newline > 16 * 1024 * 1024) { state.problem = "record exceeds the source bound"; break; }
             consumeCodexLine(state, pending.subarray(0, newline).toString("utf8"));
             state.offset += newline + 1; pending = pending.subarray(newline + 1);
           }
-          if (pending.length > 1024 * 1024) state.problem = "record exceeds the source bound";
+          if (pending.length > 16 * 1024 * 1024) state.problem = "record exceeds the source bound";
         }
         const after = await file.stat();
         const current = await lstat(path);
@@ -150,7 +150,7 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
     } catch { return unknown("source or numeric cache unreadable"); }
   }
   return {
-    read(threadId: string, budget = { bytes: 8 * 1024 * 1024 }) {
+    read(threadId: string, budget = { bytes: 32 * 1024 * 1024 }) {
       const previous = tails.get(threadId) ?? Promise.resolve();
       const result = previous.catch(() => undefined).then(() => read(threadId, budget)); tails.set(threadId, result);
       return result.finally(() => { if (tails.get(threadId) === result) tails.delete(threadId); });
