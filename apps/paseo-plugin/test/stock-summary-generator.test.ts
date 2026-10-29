@@ -237,6 +237,51 @@ describe("stock summary generator", () => {
     expect(h.counts().sends).toBe(0);
   });
 
+  it.each([false, true])("normalizes only known metadata in fenced=%s output into the four stored sections", async fenced => {
+    const h = await harness();
+    const body = JSON.stringify({ ...SECTIONS, captureStatus: "provider says full continuity", blockers: [" Awaiting review ", "", "Need fixture readback"] });
+    h.setResult({ lastMessage: fenced ? "```json\n" + body + "\n```" : body });
+    const service = createSessionSummaryService(h.api as never, h.root);
+    const saved = await service.save(SOURCE);
+    expect(saved.sections).toEqual({ ...SECTIONS, currentState: SECTIONS.currentState + "\n\nBlockers (provider-reported):\nAwaiting review\nNeed fixture readback" });
+    expect(saved.text).not.toContain("provider says full continuity");
+    expect(saved.historyBoundary?.partial).toBe(true);
+    expect(await service.save(SOURCE)).toEqual(saved);
+    expect(await readPinnedSummary(h.root, saved)).toEqual(saved);
+    expect(h.created).toHaveLength(1);
+    expect(h.archived.has(h.created[0]!.agentId)).toBe(true);
+  });
+
+  it.each([
+    ["capture status only", { captureStatus: "partial" }, SECTIONS.currentState],
+    ["string blockers", { blockers: " Waiting for review " }, SECTIONS.currentState + "\n\nBlockers (provider-reported):\nWaiting for review"],
+    ["empty blocker list", { blockers: [] }, SECTIONS.currentState],
+    ["blank blocker string", { blockers: "  " }, SECTIONS.currentState],
+  ])("accepts validated %s without changing the required section contract", async (_name, metadata, currentState) => {
+    const h = await harness(); h.setResult({ lastMessage: JSON.stringify({ ...SECTIONS, ...metadata }) });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual({ ...SECTIONS, currentState });
+  });
+
+  it.each([
+    ["unknown metadata", { unexpected: "ignored?" }],
+    ["null capture status", { captureStatus: null }],
+    ["object capture status", { captureStatus: { complete: true } }],
+    ["blank capture status", { captureStatus: " " }],
+    ["null blockers", { blockers: null }],
+    ["numeric blockers", { blockers: 1 }],
+    ["object blockers", { blockers: { task: "bad type" } }],
+    ["mixed blocker list", { blockers: ["valid", false] }],
+    ["empty required section with blockers", { currentState: " ", blockers: "Cannot fill missing required content" }],
+    ["missing required section", { nextStep: undefined, blockers: "No next step" }],
+  ])("rejects %s before persistence and cleans the finished helper", async (_name, metadata) => {
+    const h = await harness(); h.setResult({ lastMessage: "```json\n" + JSON.stringify({ ...SECTIONS, ...metadata }) + "\n```" });
+    const service = createSessionSummaryService(h.api as never, h.root);
+    await expect(service.save(SOURCE)).rejects.toThrow("four nonempty summary sections");
+    expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
+    expect(h.archived.has(h.created[0]!.agentId)).toBe(true);
+    expect(h.counts().sends).toBe(0);
+  });
+
   it("does not save malformed provider output and permits an explicit retry after a terminal failure", async () => {
     const h = await harness(); h.setResult({ lastMessage: "{}" });
     const service = createSessionSummaryService(h.api as never, h.root);
