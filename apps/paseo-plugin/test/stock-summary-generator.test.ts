@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS } from "../server/stock-summary-generator";
+import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS, selectSummaryRoute } from "../server/stock-summary-generator";
 import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
 
 import { UNSUPPORTED } from "../shared/session-navigator";
@@ -25,18 +25,20 @@ async function harness() {
   const workers = new Set<string>();
   let result = { status: "idle", lastMessage: JSON.stringify(SECTIONS), error: null, final: null };
   let waits = 0, sends = 0, refuseCreate = false;
+  const archived = new Set<string>();
+  const catalog = { entries: [{ provider: "codex", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "model-mini", label: "Mini", isDefault: true }], modes: [{ id: "auto", label: "Auto" }, { id: "auto-review", label: "Review" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }] };
   let foreignTurn = false, missingCorrelation = false, workerGap = false;
   const workerOverrides: Record<string, unknown> = {};
   const workerAgent = (id: string) => {
     const options = created.find(item => item.agentId === id)!;
-    return { id, provider: "codex", model: "model-a", cwd: options.cwd, currentModeId: "read-only", status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
+    return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
   };
   const forbidden = async () => { sends++; throw new Error("Must not send a source/destination turn"); };
-  const api = { agents: {
+  const api = { providers: { snapshot: async () => catalog }, config: { get: async () => ({ config: {} }) }, agents: {
     ref: (id: string) => id === SOURCE ? {
       refresh: async () => ({ agent: source }), timeline: { refetch: async (options: unknown) => { historyCalls.push(options); return page; } }, run: forbidden, send: forbidden,
     } : {
-      id, refresh: async () => workers.has(id) ? { agent: workerAgent(id) } : null,
+      id, archive: async () => { archived.add(id); return { archivedAt: "2026-10-29T00:00:00Z" }; }, refresh: async () => workers.has(id) ? { agent: workerAgent(id) } : null,
       timeline: { refetch: async () => {
         const options = created.find(item => item.agentId === id)!;
         return { agentId: id, agent: workerAgent(id), epoch: "worker-epoch", error: null, gap: workerGap, staleCursor: false, hasNewer: false, hasOlder: false,
@@ -49,11 +51,11 @@ async function harness() {
     create: async (options: Record<string, any>) => { created.push(options); workers.add(options.agentId); if (refuseCreate) { refuseCreate = false; throw new Error("Creation answer lost"); } return api.agents.ref(options.agentId); },
   } };
   const generator = () => stockSummaryGenerator(api as never, root)!;
-  return { root, api, source, page, created, historyCalls, generator, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
+  return { root, api, source, page, created, historyCalls, generator, catalog, archived, counts: () => ({ waits, sends }), setResult: (next: Partial<typeof result>) => { result = { ...result, ...next }; }, loseCreateAnswer: () => { refuseCreate = true; }, foreignTurn: () => { foreignTurn = true; }, missingCorrelation: () => { missingCorrelation = true; }, workerGap: () => { workerGap = true; }, workerOverrides };
 }
 
 describe("stock summary generator", () => {
-  it("uses stock structured creation in a separate read-only worker, saves the exact source boundary and reopens the same revision", async () => {
+  it("uses stock structured creation in a separate host-supported worker, saves the exact source boundary and reopens the same revision", async () => {
     const h = await harness();
     const service = createSessionSummaryService(h.api as never, h.root);
     const saved = await service.save(SOURCE);
@@ -62,7 +64,7 @@ describe("stock summary generator", () => {
     expect(saved.historyBoundary?.snapshotHash).toMatch(/^[a-f0-9]{64}$/);
     expect(h.historyCalls).toEqual([{ direction: "tail", projection: "canonical", limit: 48 }]);
     expect(h.created).toHaveLength(1);
-    expect(h.created[0]).toMatchObject({ config: { provider: "codex/model-a", modeId: "read-only" }, outputSchema: { required: ["task", "decisions", "currentState", "nextStep"] } });
+    expect(h.created[0]).toMatchObject({ config: { provider: "codex/model-mini", modeId: "auto" }, outputSchema: { required: ["task", "decisions", "currentState", "nextStep"] } });
     expect(h.created[0]!.agentId).not.toBe(SOURCE);
     expect(h.created[0]!.prompt).toContain('"sourceAgentId":"' + SOURCE + '"');
     expect(h.counts()).toEqual({ waits: 1, sends: 0 });
@@ -87,10 +89,51 @@ describe("stock summary generator", () => {
     expect(h.created).toEqual([]);
   });
 
-  it.each(["claude", "opencode"])("truthfully refuses unqualified provider %s", async provider => {
-    const h = await harness(); h.source.provider = provider;
-    await expect(h.generator().generate(SOURCE)).rejects.toThrow("Codex sessions only");
+  it.each(["claude", "opencode", "copilot", "pi", "antigravity", "muse", "codex"])("summarizes unavailable source provider %s through an independent route", async provider => {
+    const h = await harness(); h.source.provider = provider; h.page.agent.provider = provider;
+    Object.assign(h.source, { providerUnavailable: true }); Object.assign(h.page.agent, { providerUnavailable: true });
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created[0]!.config).toMatchObject({ provider: "codex/model-mini", modeId: "auto" });
+    expect(h.archived.has(h.created[0]!.agentId)).toBe(true);
+  });
+
+  it("uses another available summarizer when Codex is unavailable", async () => {
+    const h = await harness(); h.catalog.entries[0]!.provider = "opencode";
+    const saved = await createSessionSummaryService(h.api as never, h.root).save(SOURCE);
+    expect(saved.sections).toEqual(SECTIONS);
+    expect(h.created[0]!.config.provider).toBe("opencode/model-mini");
+  });
+
+  it("retains result and retries only cleanup after a lost archive readback", async () => {
+    const h = await harness(); h.workerOverrides.archivedAt = null;
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("cleanup is unconfirmed");
+    delete h.workerOverrides.archivedAt;
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created).toHaveLength(1);
+    expect(h.counts()).toEqual({ waits: 1, sends: 0 });
+  });
+
+  it.each(["error", "closed", "archived"])("captures settled source state %s without reviving it", async status => {
+    const h = await harness(); h.source.status = status; h.page.agent.status = status;
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it("rejects unavailable routes after durably retaining the source capture", async () => {
+    const h = await harness(); h.catalog.entries[0]!.status = "unavailable";
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("No available summarizer");
+    const captures = (await readdir(join(h.root, "generation-jobs"))).filter(name => name.endsWith(".capture.json"));
+    expect(captures).toHaveLength(1);
+    expect(JSON.parse(await readFile(join(h.root, "generation-jobs", captures[0]!), "utf8")).entries).toHaveLength(2);
     expect(h.created).toEqual([]);
+  });
+
+  it("validates the configured summary model and mode against the host instead of reusing the source", async () => {
+    const h = await harness();
+    h.api.config.get = async () => ({ config: { agentProfiles: [{ id: "summary", name: "Summary", provider: "codex", model: "model-mini", modeId: "auto-review" }] } });
+    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ model: "model-mini", modeId: "auto-review" });
+    h.catalog.entries[0]!.modes = [{ id: "full-access", label: "Full access", colorTier: "dangerous" }];
+    await expect(selectSummaryRoute(h.api as never, h.root)).rejects.toThrow("configured summary route");
   });
 
   it("refuses a running source and a history gap before generation", async () => {
@@ -134,6 +177,8 @@ describe("stock summary generator", () => {
     h.page.epoch = "epoch-2";
     const second = await service.save(SOURCE);
     expect(second.revision).toBe(2);
+    expect(JSON.parse(h.created[1]!.prompt.split("\n\n")[1]).priorSummary.text).toBe(first.text);
+    expect(await service.save(SOURCE)).toEqual(second);
     expect(await readPinnedSummary(h.root, first)).toEqual(first);
   });
 
@@ -197,7 +242,7 @@ describe("stock summary generator", () => {
     const h = await harness(); h.setResult({ status: "timeout" });
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("retry reads its result");
     const jobs = join(h.root, "generation-jobs");
-    const file = join(jobs, (await readdir(jobs)).find(name => name.endsWith(".json"))!);
+    const file = join(jobs, (await readdir(jobs)).find(name => name.endsWith(".json") && !name.endsWith(".capture.json"))!);
     const job = JSON.parse(await readFile(file, "utf8")); delete job.clientMessageId; delete job.promptHash;
     await writeFile(file, JSON.stringify(job));
     h.setResult({ status: "idle" });
