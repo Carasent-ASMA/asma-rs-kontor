@@ -76,6 +76,42 @@ describe("stock summary generator", () => {
     expect(await readdir(join(h.root, "generation-jobs"))).toContainEqual(expect.stringMatching(/\.json$/));
   });
 
+  it("captures the structured agent-message request, not only its assistant reply", async () => {
+    const h = await harness(); h.page.hasOlder = false;
+    Object.assign(h.page.entries[0]!, { seqStart: 1, seqEnd: 2 });
+    Object.assign(h.page.entries[0]!.item, { type: "tool_call", name: "agent_message", agentMessage: { event: "message", text: "Preserve the user's uncommitted work and report the pending review." } });
+    const service = createSessionSummaryService(h.api as never, h.root);
+    const first = await service.save(SOURCE);
+    const excerpt = JSON.parse(h.created[0]!.prompt.split("\n\n").at(-1));
+    expect(excerpt[0]).toEqual({ seqStart: 1, seqEnd: 2, role: "agent_message", text: "Preserve the user's uncommitted work and report the pending review." });
+    expect(first.historyBoundary).toMatchObject({ fromSeq: 1, toSeq: 8, partial: false });
+    expect(await service.save(SOURCE)).toEqual(first);
+    expect(h.created).toHaveLength(1);
+    Object.assign(h.page.entries[0]!.item, { agentMessage: { event: "message", text: "Also preserve the completed child result." } });
+    const second = await service.save(SOURCE);
+    expect(second.revision).toBe(2);
+    expect(second.historyBoundary?.snapshotHash).not.toBe(first.historyBoundary?.snapshotHash);
+    expect(await readPinnedSummary(h.root, first)).toEqual(first);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it.each(["other tool", "malformed message", "non-message event"])("marks omitted %s events partial instead of claiming full continuity", async kind => {
+    const h = await harness(); h.page.hasOlder = false;
+    Object.assign(h.page.entries[0]!.item, { type: "tool_call", name: kind === "other tool" ? "shell" : "agent_message", agentMessage: { event: kind === "non-message event" ? "notification" : "message", text: kind === "malformed message" ? { unsafe: true } : "Only structured message events are conversation" } });
+    const result = await h.generator().generate(SOURCE);
+    expect(result.historyBoundary).toMatchObject({ fromSeq: 8, toSeq: 8, partial: true });
+    expect(JSON.parse(h.created[0]!.prompt.split("\n\n").at(-1))).toHaveLength(1);
+  });
+
+  it("applies the same character budget to agent-message content", async () => {
+    const h = await harness(); h.page.hasOlder = false;
+    h.page.entries.splice(1, 1);
+    Object.assign(h.page.entries[0]!.item, { type: "tool_call", name: "agent_message", agentMessage: { event: "message", text: "X".repeat(SUMMARY_SOURCE_CHARACTERS + 1) } });
+    const result = await h.generator().generate(SOURCE);
+    expect(result.historyBoundary?.partial).toBe(true);
+    expect(JSON.parse(h.created[0]!.prompt.split("\n\n").at(-1))[0].text).toHaveLength(SUMMARY_SOURCE_CHARACTERS);
+  });
+
   it("bounds message characters even for one oversized row", async () => {
     const h = await harness(); h.page.entries[1]!.item.text = "X".repeat(SUMMARY_SOURCE_CHARACTERS + 1000);
     const result = await h.generator().generate(SOURCE);
