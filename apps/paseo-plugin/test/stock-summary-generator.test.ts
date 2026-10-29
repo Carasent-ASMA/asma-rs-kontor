@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, URL } from "node:url";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
+import { stockSummaryGenerator, SUMMARY_SOURCE_ITEMS, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
 import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
 
 import { UNSUPPORTED } from "../shared/session-navigator";
@@ -489,3 +490,108 @@ describe("stock summary generator", () => {
   });
 
 });
+
+const summaryCheckoutRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const within = (root: string, path: string) => {
+  const child = relative(root, path);
+  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
+};
+
+/** Resolve existing aliases before creating anything, including paths with missing descendants. */
+async function externalSummaryEvidence(path: string, checkout = summaryCheckoutRoot): Promise<string> {
+  if (!isAbsolute(path)) throw new Error("Summary evidence must be an absolute directory outside the checkout.");
+  const root = await realpath(checkout);
+  let parent = resolve(path);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      const canonical = resolve(await realpath(parent), ...missing.toReversed());
+      if (within(resolve(checkout), resolve(path)) || within(root, canonical)) throw new Error("Summary evidence must be outside the repository/export root.");
+      return canonical;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      // An unresolved existing alias must not be mistaken for a new literal directory.
+      const present = await lstat(parent).catch(cause => {
+        if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return null;
+        throw cause;
+      });
+      if (present) throw new Error("Summary evidence has an unresolved symlink or existing path.");
+      const next = dirname(parent);
+      if (next === parent) throw error;
+      missing.push(basename(parent)); parent = next;
+    }
+  }
+}
+
+describe("external live summary evidence", () => {
+  it("binds the default guard to the actual repository/export rather than pnpm cwd", async () => {
+    const repo = await realpath(summaryCheckoutRoot);
+    expect(await realpath(join(repo, "apps", "paseo-plugin", "test", "stock-summary-generator.test.ts"))).toBe(await realpath(fileURLToPath(import.meta.url)));
+    for (const path of [repo, join(repo, "apps", "paseo-plugin"), join(repo, "r28-live-evidence")]) await expect(externalSummaryEvidence(path)).rejects.toThrow("outside");
+  });
+  it("rejects root, plugin and repository siblings independently of the process cwd", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "summary-evidence-")); dirs.push(parent);
+    const repo = join(parent, "checkout"); await mkdir(join(repo, "apps", "paseo-plugin"), { recursive: true });
+    for (const path of [repo, join(repo, "apps", "paseo-plugin"), join(repo, "r28-live-evidence"), join(repo, "missing", "nested")]) await expect(externalSummaryEvidence(path, repo)).rejects.toThrow("outside");
+    expect(await externalSummaryEvidence(join(parent, "checkout-evidence", "new"), repo)).toBe(join(await realpath(parent), "checkout-evidence", "new"));
+  });
+  it("rejects symlink aliases into the checkout, including missing descendants", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "summary-evidence-alias-")); dirs.push(parent);
+    const repo = join(parent, "checkout"); await mkdir(repo); await symlink(repo, join(parent, "alias"));
+    await expect(externalSummaryEvidence(join(parent, "alias", "new", "nested"), repo)).rejects.toThrow("outside");
+    await expect(externalSummaryEvidence(join(parent, "alias"), repo)).rejects.toThrow("outside");
+  });
+  it("rejects internal aliases outward and dangling aliases; allows real external aliases", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "summary-evidence-external-")); dirs.push(parent);
+    const repo = join(parent, "checkout"), outside = join(parent, "external"); await mkdir(repo); await mkdir(outside);
+    await symlink(outside, join(repo, "outward")); await symlink(outside, join(parent, "external-alias")); await symlink(join(repo, "missing"), join(parent, "dangling"));
+    await expect(externalSummaryEvidence(join(repo, "outward", "new"), repo)).rejects.toThrow("outside");
+    await expect(externalSummaryEvidence(join(parent, "dangling", "new"), repo)).rejects.toThrow("unresolved");
+    expect(await externalSummaryEvidence(join(parent, "external-alias", "new"), repo)).toBe(join(await realpath(outside), "new"));
+  });
+});
+
+/** Explicit live qualification only; default tests never contact a host or run a provider. */
+it.skipIf(!process.env.KONTOR_REAL_SUMMARY_SOURCE)("qualifies a real provider saved-summary read/latest round trip", async () => {
+  const sourceId = process.env.KONTOR_REAL_SUMMARY_SOURCE!;
+  const requestedEvidence = process.env.KONTOR_REAL_SUMMARY_EVIDENCE;
+  const url = process.env.KONTOR_REAL_SUMMARY_URL;
+  if (!requestedEvidence || !url) throw new Error("Live qualification requires an explicit daemon URL and absolute evidence directory outside the checkout.");
+  const evidence = await externalSummaryEvidence(requestedEvidence);
+  await mkdir(evidence, { recursive: true, mode: 0o700 });
+  await externalSummaryEvidence(evidence);
+  const root = await mkdtemp(join(evidence, "summary-state-"));
+  const { createPaseoClient } = await import("@getpaseo/client");
+  const api = createPaseoClient({ url, clientId: "kontor-real-summary-qualification", connectTimeoutMs: 5_000, reconnect: { enabled: false }, logger: { debug() {}, info() {}, warn() {}, error() {} } });
+  try {
+    await api.connect();
+    const source = api.agents.ref(sourceId);
+    const before = await source.refresh();
+    expect(before?.agent.id).toBe(sourceId);
+    expect(before?.agent.activeTurn).toBeFalsy();
+    expect(["running", "initializing"]).not.toContain(before?.agent.status);
+    const historyBefore = await source.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
+    expect(await readdir(root)).toEqual([]);
+    const service = createSessionSummaryService(api, root);
+    const saved = await service.save(sourceId);
+    const read = await readPinnedSummary(root, saved);
+    const latest = (await createSessionSummaryService(api, root).latest([sourceId]))[sourceId];
+    expect(read).toEqual(saved);
+    expect(latest).toEqual(saved);
+    expect(saved.sourceAgentId).toBe(sourceId);
+    expect(saved.revision).toBe(1);
+    expect(saved.historyBoundary?.provider).toBe(before!.agent.provider);
+    const names = (await readdir(join(root, "generation-jobs"))).filter(name => name.endsWith(".json") && !name.endsWith(".capture.json"));
+    expect(names).toHaveLength(1);
+    const job = JSON.parse(await readFile(join(root, "generation-jobs", names[0]!), "utf8"));
+    expect(job).toMatchObject({ state: "complete", cleaned: true });
+    expect((await api.agents.ref(job.workerId).refresh())?.agent.archivedAt).toBeTruthy();
+    const historyAfter = await source.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
+    expect(historyAfter.entries).toEqual(historyBefore.entries);
+    expect(historyAfter.epoch).toBe(historyBefore.epoch);
+    await writeFile(join(evidence, "REAL-PROVIDER-PROOF.json"), JSON.stringify({ state: "REAL_PROVIDER_SAVE_READ_LATEST_PASS", sourceId, root, summaryId: saved.summaryId, revision: saved.revision, textSHA256: createHash("sha256").update(saved.text).digest("hex"), historyBoundary: saved.historyBoundary, exactReadEquals: true, latestEquals: true, sourceHistoryUnchanged: true, saveCalls: 1, workerId: job.workerId, route: job.route, workerArchived: true, sourceOrDestinationPromptSent: false, limits: "Candidate source with real public daemon/provider and fresh durable store; not installed-plugin, clipboard or native attachment proof." }, null, 2) + "\n", { mode: 0o600 });
+  } catch (error) {
+    await writeFile(join(evidence, "REAL-PROVIDER-FAILURE.json"), JSON.stringify({ sourceId, root, error: error instanceof Error ? error.message : String(error), retry: false }, null, 2) + "\n", { mode: 0o600 });
+    throw error;
+  } finally { await api.close(); }
+}, 180_000);
