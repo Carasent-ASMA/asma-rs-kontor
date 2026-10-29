@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 export const ASMA_COMMAND_ENV = "KONTOR_PLUGIN_ASMA_COMMAND";
@@ -24,7 +24,7 @@ function candidates(env: NodeJS.ProcessEnv, home: string): string[] {
   const workspace = env[ASMA_WORKSPACE_ENV]?.trim();
   if (workspace && isAbsolute(workspace)) paths.push(join(workspace, ".venv/bin/asma"));
   paths.push("/opt/homebrew/bin/asma", "/usr/local/bin/asma", "/usr/bin/asma");
-  return [...new Set(paths)];
+  return [...new Set(paths.filter(isAbsolute))];
 }
 
 export async function resolveAsmaCommand(options: AsmaCommandOptions = {}): Promise<string> {
@@ -38,9 +38,16 @@ export async function resolveAsmaCommand(options: AsmaCommandOptions = {}): Prom
       throw new Error(`${ASMA_COMMAND_ENV} does not name an executable asma file.`);
     return configured;
   }
-  const home = options.home ?? (env.HOME?.trim() || homedir());
+  const configuredHome = options.home?.trim() || env.HOME?.trim();
+  let home = configuredHome && isAbsolute(configuredHome) ? configuredHome : "";
+  if (!home) {
+    try { home = userInfo().homedir; } catch { home = ""; }
+    if (!isAbsolute(home)) home = homedir();
+  }
   for (const path of candidates(env, home)) {
+    if (!isAbsolute(path)) continue;
     if (await check(path)) return path;
   }
-  throw new Error(`The ASMA CLI could not be found at a trusted absolute path. Install it at ${join(home, ".local/bin/asma")} or set ${ASMA_COMMAND_ENV} to its absolute executable path.`);
+  const install = isAbsolute(home) ? join(home, ".local/bin/asma") : "an absolute home directory";
+  throw new Error(`The ASMA CLI could not be found at a trusted absolute path. Install it at ${install} or set ${ASMA_COMMAND_ENV} to its absolute executable path.`);
 }

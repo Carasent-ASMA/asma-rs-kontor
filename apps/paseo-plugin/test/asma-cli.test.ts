@@ -52,6 +52,27 @@ describe("trusted asma executable resolution", () => {
     })).toBe(command);
   });
 
+  it("never inspects or returns a candidate built from a relative HOME", async () => {
+    const seen: string[] = [];
+    await expect(resolveAsmaCommand({
+      env: { HOME: "relative-home", PATH: "/usr/bin:/bin" },
+      inspect: async (path) => { seen.push(path); return false; },
+    })).rejects.toThrow("trusted absolute path");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(isAbsolute)).toBe(true);
+    expect(seen.some((path) => path.includes("relative-home"))).toBe(false);
+  });
+
+  it("falls back to an absolute standard path when HOME is relative", async () => {
+    const seen: string[] = [];
+    expect(await resolveAsmaCommand({
+      env: { HOME: "relative-home", PATH: "/usr/bin:/bin" },
+      inspect: async (path) => { seen.push(path); return path === "/usr/local/bin/asma"; },
+    })).toBe("/usr/local/bin/asma");
+    expect(seen.every(isAbsolute)).toBe(true);
+    expect(seen.some((path) => path.includes("relative-home"))).toBe(false);
+  });
+
   it("fails closed on a relative or missing absolute override instead of choosing another binary", async () => {
     const directory = await home();
     await executable(join(directory, ".local/bin/asma"));

@@ -217,6 +217,14 @@ describe("trusted ASMA executable resolver", () => {
     expect(text).toContain("isAbsolute(configured)");
     expect(text).not.toMatch(/node:child_process|execFile|spawn\(|exec\(|shell:/);
   });
+
+  it("keeps the plan-export caller on the trusted executable with its fixed limits", () => {
+    const read = source("../server/read-sources.ts");
+    expect(read).not.toContain('execute("asma"');
+    expect(read).toContain("await resolveAsmaCommand()");
+    expect(read).toContain("timeout: 15_000, maxBuffer: MAX_BYTES");
+    expect(read).toContain("const MAX_BYTES = 2 * 1024 * 1024;");
+  });
 });
 
 describe("bounded fleet selection read", () => {

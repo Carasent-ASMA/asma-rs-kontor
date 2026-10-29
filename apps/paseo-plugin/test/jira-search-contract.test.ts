@@ -74,7 +74,7 @@ describe("asma jira search server boundary", () => {
     expect(result.failure).toBeNull();
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute.mock.calls[0]?.[0]).toBe("/opt/asma");
-    expect(execute.mock.calls[0]?.[2]).toMatchObject({ timeout: 15_000 });
+    expect(execute.mock.calls[0]?.[2]).toMatchObject({ timeout: 15_000, maxBuffer: 2 * 1024 * 1024 });
     expect(execute.mock.calls[0]?.[1]).toEqual(["jira", "search", "--query", "", "--limit", "50", "--class", "epic"]);
   });
 
