@@ -48,6 +48,11 @@ item, not permission to claim autonomous operation or to create another TPM.
 4. Settle completed work; admit the next eligible work and useful independent
    streams under standing authorization. Routine continuation, approved
    fallback and reversible implementation do not need another "continue".
+   Apply [selected fleet enforcement](fleet-selection.md) to every launch,
+   resume or replacement, including supervisor recovery. The heartbeat points
+   to the fleet selection record; it never embeds its own model blacklist or
+   fallback chain. Missing fleet selection is an owned setup gap, not authority
+   to use a runtime default.
 5. For a blocker, record evidence, owner, next action and an observable
    resumption trigger. Continue unaffected work. Do not retry an unchanged
    authentication, capacity or permission failure on a timer.

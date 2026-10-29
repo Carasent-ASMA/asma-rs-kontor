@@ -56,6 +56,17 @@ The selected config folder is explicit:
 - A missing selection, missing folder, missing referenced file or invalid YAML
   is refused by name.
 
+Before placing any workflow seat, also declare its fleet selection:
+
+- Resolve `{{ project.fleet }}` from that config folder and record the exact
+  location, content hash, selection evidence and role/slot bindings.
+- Follow [selected fleet enforcement](../skills/epic-orchestration/references/fleet-selection.md)
+  for launch, reuse, resume, brain change and replacement, with actual runtime
+  provider/model/effort readback.
+- If no valid fleet is selected, name the gap and the owner who will locate an
+  existing fleet or create and select one. No model roster is invented or copied
+  into this plan; only the affected seat operation waits.
+
 ## 2. Implementation Steps
 
 | Task | Tracker key | Description | Closure condition | Completed | Date |

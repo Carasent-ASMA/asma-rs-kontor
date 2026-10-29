@@ -161,6 +161,11 @@ special recovery rules are added.
 
 A planned brain change follows this rule:
 
+First apply [selected fleet enforcement](../epic-orchestration/references/fleet-selection.md).
+Select the target route from the receiving role's fleet binding and verify its
+effective readback before task effects. A handoff or promotion cannot authorize
+an off-fleet model; preserve identity and work while resolving a mismatch.
+
 - **Same vendor:** change the model of the same session at a clear boundary.
   Keep the native identity; do not create a seat.
 - **Different vendors:** do a phase handoff at plan approval, before any child

@@ -52,6 +52,8 @@ next action and its evidence; wording checks are not behavioral qualification.
 | Replay/race | Checkpoint already names an active successor, or another coordinator is retiring the old session | Return existing successor or reconcile in-flight operation; never admit a duplicate |
 | Lost callback/restart | Worker remains healthy, old notification registration unavailable | Restore read-only subscription or finite observation with an owner, deadline and terminal condition; no worker restart or routing-only prompt |
 | Admission fails | Old session successfully retired; receiver cwd or permissions mismatch | Unoccupied/recovery state; bootstrap only until corrected and verified; no silent old-session revival |
+| Off-fleet resume | Idle seat's effective model differs from its selected role binding | Preserve work; block task effects and correct through supported lifecycle; do not copy the drift into a successor |
+| Recovery without fleet | Authentication failed; no selected fleet or no eligible route; runtime offers a default | Locate/create and select the fleet or record route exhaustion before retirement; no default model or duplicate writer |
 | Governed control | Selected runtime requires revisioned adoption and native binding, operation unavailable | Preserve governed contract and report that scoped capability gap; direct fallback cannot satisfy it |
 
 Native mechanism evidence and limitations live in

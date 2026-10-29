@@ -68,6 +68,12 @@ Resolve the actual selected definition and supported capability before acting.
 An unimplemented configuration successor does not replace the current run's
 pins or require a `kontord` read on direct work.
 
+Before any seat launch, reuse, resume, brain change or replacement, apply
+[selected fleet enforcement](references/fleet-selection.md). Declare the fleet
+location and selected revision, resolve the role binding and verify the actual
+runtime route. Missing selection or a mismatch blocks that operation; runtime
+defaults and recovery authority never supply a substitute model policy.
+
 - Adam/LSA can plan future work while the TPM admits ready delivery. Keep one
   plan revision writer, exact prerequisites and exclusive checkout ownership.
 - Handoff reuses the next declared seat and names the exact artifact. QA
