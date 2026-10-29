@@ -728,11 +728,37 @@ const NO_SCROLL_ANCHOR: ViewStyle & { readonly overflowAnchor: "none" } = { over
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
  * A workstream may come from a native desk project when no display mapping or label names it. A session
  * nothing links also says why no plan links it and where an explicit link is made; no name is read.
+ * When labels were not read, role, workstream, epic and linking are unavailable; only native facts remain.
  */
-export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null, sourceNote: string | null = null): { label: string; value: string }[] {
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null, sourceNote: string | null = null, labelsComplete = true): { label: string; value: string }[] {
+  const provenance = sessionProvenance(entry, mappings);
+  const labelsUnavailable = "Unavailable: session labels were not read";
+  if (!labelsComplete) {
+    // A catalog row without labels cannot establish role, workstream, epic or linking absence.
+    const lines = [
+      { label: "Role", value: labelsUnavailable },
+      { label: "Other role declarations", value: labelsUnavailable },
+    ];
+    if (provenance.nativeDesk) {
+      return [...lines,
+        { label: "Native desk", value: provenance.nativeDesk.name },
+        { label: "Native project ID", value: provenance.nativeDesk.id },
+        { label: "Workspace", value: provenance.workspace },
+        { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
+        { label: "Workstream association", value: labelsUnavailable },
+        { label: "Epic association", value: labelsUnavailable },
+        { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." },
+        { label: "Linking", value: "Unavailable: session labels were not read, so plan or Jira links cannot be determined." }];
+    }
+    const native = nativeDesk(entry.projectName);
+    return [...lines,
+      { label: "Workstream", value: native === null ? labelsUnavailable : `${native} (native desk project)` },
+      { label: "Epic", value: labelsUnavailable },
+      { label: "Linking", value: "Unavailable: session labels were not read, so plan or Jira links cannot be determined." },
+      { label: "Workspace", value: provenance.workspace }];
+  }
   const source = sourceNote ? [{ label: "Workstream source", value: sourceNote }] : [];
   const role = sessionRole(entry);
-  const provenance = sessionProvenance(entry, mappings);
   const lines = [
     { label: "Role", value: role.code === null ? "No role: no kontor.role or role label, and no role prefix in the title" : `${role.code}, from the ${ROLE_SOURCE_NAMES[role.source!]}` },
     { label: "Other role declarations", value: roleConflicts(entry).join("; ") || "None" },
@@ -3060,6 +3086,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : availability.entries.find((entry) => entry.id === detailsId) ?? null;
   const detailsWork = detailsEntry ? sessionWork(detailsEntry) : { task: null, pr: null };
+  const detailsLabelsComplete = state.labelsComplete === true;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
@@ -3095,7 +3122,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <SessionDetailSection title="Timing" colors={colors}>
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
-        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]), derivedSource(detailsEntry))} colors={colors} />
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, detailsLabelsComplete ? planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]) : null, detailsLabelsComplete ? derivedSource(detailsEntry) : null, detailsLabelsComplete)} colors={colors} />
         <SessionDetailSection title="Native status and availability" values={sessionRowDetails(detailsEntry)} colors={colors} />
         {detailsWork.task || detailsWork.pr ? <SessionDetailSection title="Task and pull request" colors={colors} values={[
           ...(detailsWork.task ? [{ label: "Task", value: detailsWork.task }] : []), ...(detailsWork.pr ? [{ label: "Pull request", value: detailsWork.pr }] : [])]} /> : null}

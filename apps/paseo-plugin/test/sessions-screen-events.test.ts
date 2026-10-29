@@ -1707,6 +1707,50 @@ describe("SessionsScreen toolbar events", () => {
     });
   });
 
+  it("keeps Details role, workstream, epic and linking unavailable when labels were not read", () => {
+    const labelsUnavailable = "Unavailable: session labels were not read";
+    const linkingUnavailable = "Unavailable: session labels were not read, so plan or Jira links cannot be determined.";
+    const ordinary = sessionEntry("catalog", { title: "QA • plain task", labels: { "kontor.role": "QA", workstream: "Kontor", epic: "ASMA-1" } });
+    const ordinaryLines = Object.fromEntries(sessionDetailLines(ordinary, {}, null, null, false).map(({ label, value }) => [label, value]));
+    expect(ordinaryLines).toEqual({
+      Role: labelsUnavailable, "Other role declarations": labelsUnavailable, Workstream: labelsUnavailable,
+      Epic: labelsUnavailable, Linking: linkingUnavailable, Workspace: "Workspace",
+    });
+    const desk = sessionEntry("desk", { projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "wks_1", workspaceName: "ADAM",
+      labels: { "kontor.role": "SWE", workstream: "Kontor", epic: "ASMA-99101" } });
+    const deskLines = Object.fromEntries(sessionDetailLines(desk, {}, null, "Workstream from the Jira ws:kontor label of ASMA-99101.", false).map(({ label, value }) => [label, value]));
+    expect(deskLines).toEqual({
+      Role: labelsUnavailable, "Other role declarations": labelsUnavailable, "Native desk": "DESK • ADAM", "Native project ID": "prj_desk",
+      Workspace: "ADAM", "Native workspace ID": "wks_1", "Workstream association": labelsUnavailable, "Epic association": labelsUnavailable,
+      "Association verification": "Workstream registry membership and epic/plan links are not checked here.", Linking: linkingUnavailable,
+    });
+    expect(Object.values(deskLines).join(" ")).not.toMatch(/No role|Other work|Not declared|no workstream or desk label|no epic or task label/);
+  });
+
+  it("renders ordinary and native-desk Details without fabricated attribution when labels were not read", () => {
+    const labelsUnavailable = "Unavailable: session labels were not read";
+    const linkingUnavailable = "Unavailable: session labels were not read, so plan or Jira links cannot be determined.";
+    const entries = [
+      sessionEntry("catalog", { title: "QA • plain task", labels: { "kontor.role": "QA", workstream: "Kontor", epic: "ASMA-1" } }),
+      sessionEntry("desk", { projectName: "DESK • ADAM", projectKey: "prj_desk", workspaceName: "ADAM", workspaceId: "wks_1", labels: { "kontor.role": "SWE", workstream: "Kontor", epic: "ASMA-99101" } }),
+    ];
+    directory.state = { ...emptyDirectoryState(), entries, source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    const screen = renderDetails(entries);
+    screen.open("catalog");
+    expect(screen.lines()).toEqual([
+      `Role: ${labelsUnavailable}`, `Other role declarations: ${labelsUnavailable}`, `Workstream: ${labelsUnavailable}`,
+      `Epic: ${labelsUnavailable}`, `Linking: ${linkingUnavailable}`, "Workspace: Workspace",
+    ]);
+    (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+    screen.open("desk");
+    expect(screen.lines()).toEqual([
+      `Role: ${labelsUnavailable}`, `Other role declarations: ${labelsUnavailable}`, "Native desk: DESK • ADAM", "Native project ID: prj_desk",
+      "Workspace: ADAM", "Native workspace ID: wks_1", `Workstream association: ${labelsUnavailable}`, `Epic association: ${labelsUnavailable}`,
+      "Association verification: Workstream registry membership and epic/plan links are not checked here.", `Linking: ${linkingUnavailable}`,
+    ]);
+    expect(screen.lines().join(" ")).not.toMatch(/No role|Other work|Not declared|no workstream or desk label|no epic or task label/);
+  });
+
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
     const chain = (entry: ReturnType<typeof sessionEntry>, mappings: Parameters<typeof sessionDetailLines>[1] = {}) =>
       sessionDetailLines(entry, mappings).filter(({ label }) => label === "Workstream" || label === "Epic").map(({ label, value }) => `${label}: ${value}`);
