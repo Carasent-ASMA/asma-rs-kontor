@@ -43,6 +43,12 @@ const SNAPSHOT = { requestId: "fixture", generatedAt: "2026-10-25T08:59:00.000Z"
     models: [{ provider: "claude-a", id: "claude-opus-5", label: "Opus 5", thinkingOptions: [{ id: "xhigh", label: "X-High" }] }],
     modes: [{ id: "default", label: "Default", colorTier: "safe" }] },
 ] };
+const FEATURES: NonNullable<Agent["features"]> = [
+  { type: "toggle", id: "plan", label: "Plan", value: true },
+  { type: "select", id: "speed", label: "Speed", value: "fast", options: [
+    { id: "fast", label: "Fast", isDefault: true }, { id: "slow", label: "Slow", isDefault: false },
+  ] },
+];
 const health = (mode: string | null): RouteHealth => ({ as_of: "2026-10-25T09:00:00Z", max_age_seconds: 60, ...(mode ? { mode } : {}),
   observations: [{ account: "claude-a", model: "claude-opus-5", effort: "xhigh", ...(mode ? { mode } : {}), state: "available", observed_at: "2026-10-25T08:59:30Z", revision: "r1" }] });
 const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" }, step: 1, sub_step: 1, vendor: "anthropic" };
@@ -50,7 +56,7 @@ const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "x
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
+async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a", features = [] as NonNullable<Agent["features"]> } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
   const root = join(tmp, "lifecycle"), createRoot = join(tmp, "create");
   const agents = new Map([predecessor, ...others].map((value) => [value.id, value]));
@@ -63,11 +69,12 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
       list: async () => ({ requestId: "fixture", entries: [workspace], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } }),
       ref: (id: string) => ({
         refresh: async () => id === workspace.id ? workspace : null,
-        agents: { create: async (input: { idempotencyKey: string; title: string; labels: Record<string, string>; config: { provider: string; modeId?: string; thinkingOptionId?: string }; prompt?: string }) => {
+        agents: { create: async (input: { idempotencyKey: string; title: string; labels: Record<string, string>; config: { provider: string; modeId?: string; thinkingOptionId?: string; featureValues?: Record<string, string | boolean> }; prompt?: string }) => {
           effects.create.push(input);
           const [provider, model] = input.config.provider.split("/");
           const successor = agent(`successor-${++created}`, { title: input.title, labels: input.labels, provider, model, cwd: workspace.workspaceDirectory!, workspaceId: id,
-            currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, status: "idle", lastError: undefined });
+            currentModeId: input.config.modeId, effectiveThinkingOptionId: input.config.thinkingOptionId, status: "idle", lastError: undefined,
+            features: features.map((feature) => ({ ...feature, value: input.config.featureValues?.[feature.id] ?? feature.value })) as NonNullable<Agent["features"]> });
           agents.set(successor.id, successor);
           timelines.set(successor.id, input.prompt ? [{ item: { type: "user_message", text: input.prompt } }] : []);
           if (loseCreateReply) throw new Error("connection reset");
@@ -88,7 +95,10 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
         timeline: { refetch: async () => ({ entries: timelines.get(id) ?? [] }) },
       }),
     },
-    providers: { snapshot: async () => ({ ...SNAPSHOT, entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }) },
+    providers: {
+      snapshot: async () => ({ ...SNAPSHOT, entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
+      listFeatures: async () => ({ features, error: null }),
+    },
     config: { get: async () => ({ requestId: "fixture", config: {} }) },
   };
   const run: ResolverRun = async (_command, args) => {
@@ -448,6 +458,9 @@ describe("direct takeover continuity", () => {
     const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", { completeSchedules: h.deps.completeSchedules });
     expect(receipt?.wakes).toBe("unknown");
     expect(receipt?.wakeGap).toContain("ongoing source-linked scheduled duty");
+    expect(receipt?.wakeGap).toContain("atomic retarget");
+    expect(receipt?.wakeGap).toContain("in-flight run settlement");
+    expect(receipt?.wakeGap).toContain("successor ownership readback");
     expect(receipt?.wakeGap).toContain("retirement is blocked");
     expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
   });
@@ -639,6 +652,36 @@ describe("takeover review", () => {
     expect((await stripped.service.review({ agentId: "agent-1", bindingKey: KEY })).message).toContain("Kontor placement");
     const none = await host({ choices: [] });
     expect(await none.service.review({ agentId: "agent-1", bindingKey: null })).toMatchObject({ state: "refused", message: expect.stringContaining("No configured profile") });
+  });
+
+  it("carries the source's listed model settings to the one successor", async () => {
+    const predecessor = agent("agent-1", { features: FEATURES });
+    const h = await host({ predecessor, features: FEATURES });
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    expect(review.limits.join(" ")).toContain("MCP server or provider-option configuration");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: true, speed: "fast" } });
+  });
+
+  it("refuses rather than dropping a source setting the target model does not offer", async () => {
+    const predecessor = agent("agent-1", { features: FEATURES });
+    const h = await host({ predecessor, features: [FEATURES[0]!] });
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("refused");
+    expect(review.message).toContain("speed");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("names both external writers and the missing handoff fields for a governed seat", async () => {
+    const h = await host({ predecessor: agent("agent-1", { labels: { "kontor.seat_binding_id": "seat-1" } }) });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state).toBe("refused");
+    expect(review.message).toContain("Core Team route apply");
+    expect(review.message).toContain("delivery seat replacement");
+    expect(review.message).toContain("handoff summary");
+    expect(review.message).toContain("bootstrap acknowledgement");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
   });
 
   it("states a block, never a route, when no positive route evidence exists", async () => {

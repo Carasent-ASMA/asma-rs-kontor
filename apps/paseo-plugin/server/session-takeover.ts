@@ -6,7 +6,7 @@ import type { PaseoAgentListResult } from "@getpaseo/client";
 import type { KontorPluginConfig } from "./config";
 import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, parent, seatBinding } from "./labels";
 import { observeRefusal, type RefusalAgent, type RefusalObservation } from "../shared/provider-block";
-import { CREATE_REQUEST_LABEL, featureValuesSchema } from "../shared/session-create";
+import { CREATE_REQUEST_LABEL, featureValuesSchema, type FeatureValues } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -263,6 +263,22 @@ export function takeoverPinnedMatches(reviewed: {
   if (!isDeepStrictEqual(reviewed.route.considered, current.route.considered)) return false;
   if (reviewed.evidence !== current.evidence) return false;
   return isDeepStrictEqual(takeoverSpecPin(reviewed.spec), takeoverSpecPin(current.spec));
+}
+
+/**
+ * The source's listed model settings as create values. The snapshot exposes only these settings; it does not expose
+ * MCP servers or provider-native options, so those are never guessed. A select with no current value is omitted, and
+ * the result is validated against the create contract before it can be pinned.
+ */
+export function sourceFeatureValues(agent: Pick<Agent, "features">): { values: FeatureValues | null; problem: string | null } {
+  const values: FeatureValues = {};
+  for (const feature of agent.features ?? []) {
+    if (feature.type === "toggle") values[feature.id] = feature.value;
+    else if (feature.value !== null) values[feature.id] = feature.value;
+  }
+  const parsed = featureValuesSchema.safeParse(values);
+  if (!parsed.success) return { values: null, problem: "This session's listed model settings do not match the host's create contract, so its configuration cannot be carried." };
+  return { values: Object.keys(parsed.data).length ? parsed.data : null, problem: null };
 }
 
 const TOOL = "kontor_fleet_policy_resolve";

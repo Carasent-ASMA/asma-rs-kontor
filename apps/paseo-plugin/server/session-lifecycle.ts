@@ -15,7 +15,7 @@ import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwi
 import { createSessionSummaryService, summaryStateRoot } from "./session-summaries";
 import {
   BINDING_KEY, configuredAccountCatalogFromFleet, explicitTakeoverRoute, explicitTakeoverRouteSchema, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
-  routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, takeoverAdapter, takeoverPinnedMatches,
+  routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, sourceFeatureValues, takeoverAdapter, takeoverPinnedMatches,
   type ConfiguredAccountCatalog, type ExplicitTakeoverRoute, type ProviderRouteSnapshot, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute,
 } from "./session-takeover";
 import { asTakeoverClient } from "./session-navigator";
@@ -27,7 +27,7 @@ import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import {
   TAKEOVER_LIMIT, RESUME_REMOVED, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
-  TAKEOVER_LIMITS, TAKEOVER_PROMPT, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
+  TAKEOVER_EXTERNAL_BOUNDARIES, TAKEOVER_LIMITS, TAKEOVER_PROMPT, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type TakeoverOutcome, type TakeoverReview, type TakeoverReviewInput, type UnresolvedRef,
 } from "../shared/session-lifecycle";
 import {
@@ -693,7 +693,8 @@ const UNOBSERVED_LIMIT = "No host source of positive route health is qualified y
 export const RUNNING_STOP_GAP = "This session is running, and no server-configured public Paseo CLI stop adapter is available. Nothing was retired; configure the public CLI on the plugin server or wait for the turn to end, then take over.";
 export const RUNNING_STOP_DISCLOSURE = "This session is running. Apply stops the exact source through the server-configured public Paseo CLI, reads it back on the same host, and only then captures the final handoff summary and archives it. If the stop is unconfirmed or its title, checkout, workspace or owner changes, nothing is archived or created.";
 const RUNNING_SUMMARY_PREVIEW = "Preview only: this source is still running. The final handoff summary is captured after the approved stop and before retirement; this preview is not a final summary.";
-export const GOVERNED_ADAPTER_GAP = "This is a Kontor-governed seat. Its existing authority writer is the only creator of a successor (Core Team route apply for a hosted seat, or the delivery seat replacement operation), and neither installed writer accepts the handoff summary and bootstrap acknowledgement a takeover must place before task effects. No native fallback is performed and nothing is retired here.";
+export const SCHEDULE_TRANSFER_GAP = `The source has an ongoing source-linked scheduled duty. It is readable through ${TAKEOVER_EXTERNAL_BOUNDARIES.schedule.publicRead}, but the public schedule surface provides none of: ${TAKEOVER_EXTERNAL_BOUNDARIES.schedule.missing.join("; ")}; retirement is blocked rather than silently dropping the wake.`;
+export const GOVERNED_ADAPTER_GAP = `This is a Kontor-governed seat. Its existing authority writer is the only creator of a successor (${TAKEOVER_EXTERNAL_BOUNDARIES.governed.writers.join(" or ")}), and neither installed writer accepts ${TAKEOVER_EXTERNAL_BOUNDARIES.governed.missing.join(" or ")} that a takeover must place before task effects. No native fallback is performed and nothing is retired here.`;
 const CWD_DRIFT = "This session runs outside its workspace directory, and a successor would start in the workspace directory, so it is not taken over.";
 /** Scope, title, supervisor and orchestration labels a successor keeps; anything else is not carried. */
 const CARRIED_LABELS = ["role", "epic", "task", "ticket", TITLE_AUTO_LABEL, "orchestration", "paseo.parent-agent-id"];
@@ -752,7 +753,7 @@ async function readDirectWakeState(client: TakeoverClient, completeSchedules: Co
   const ongoing = read.schedules.find((schedule) => (schedule.target.type === "agent" || schedule.target.type === "self")
     && schedule.target.agentId === agentId && schedule.status !== "completed");
   return ongoing
-    ? { wakes: "unknown", gap: "The source has an ongoing source-linked scheduled duty. The existing schedule API cannot retarget it and scheduleCreate requestId is not proven deduplication, so no verified preservation contract exists; retirement is blocked rather than silently dropping the wake.", hostId: read.hostId }
+    ? { wakes: "unknown", gap: SCHEDULE_TRANSFER_GAP, hostId: read.hostId }
     : { wakes: "clear", hostId: read.hostId };
 }
 
@@ -922,6 +923,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     try { workspace = await client.workspaces.ref(first.workspaceId!).refresh(); } catch (error) { return answer("unknown", `Its workspace could not be read: ${errorText(error)}.`); }
     if (!workspace || workspace.id !== first.workspaceId || workspace.archivingAt || !workspace.workspaceDirectory) return answer("refused", "Its exact workspace is no longer available on this host.");
     if (workspace.workspaceDirectory !== first.cwd) return answer("refused", CWD_DRIFT);
+    const sourceSettings = sourceFeatureValues(first);
+    if (sourceSettings.problem) return answer("unknown", sourceSettings.problem);
     let children: Agent[];
     try { children = childrenOf(first, await inventory(client)); }
     catch (error) { return answer("unknown", errorText(error)); }
@@ -970,7 +973,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     let health: RouteHealth;
     let evidence: string;
     let selection: "auto" | "explicit" = "auto";
-    let featureValues: ExplicitTakeoverRoute["featureValues"];
+    let featureValues: ExplicitTakeoverRoute["featureValues"] = sourceSettings.values ?? undefined;
     if (chosenRoute) {
       selection = "explicit";
       let snapshot: ProviderRouteSnapshot;
@@ -982,7 +985,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       const explicit = explicitTakeoverRoute(health, chosenRoute, mode);
       if ("problem" in explicit) return answer("refused", explicit.problem);
       route = explicit.route;
-      featureValues = explicit.featureValues;
+      featureValues = explicit.featureValues ?? featureValues;
       evidence = route.digest!;
     } else {
       if (!fleetCatalog) return answer("unknown", "The configured account catalog could not be read: the operator fleet source names no verifiable configured account aliases.");
