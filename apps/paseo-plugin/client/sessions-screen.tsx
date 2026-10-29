@@ -138,7 +138,7 @@ import { ArchiveRowFeedback, archiveFeedbackShown, BulkArchiveDialog, BulkArchiv
 import type { LeadSource } from "./new-lead-source";
 import { useSessionOperations } from "./session-operations";
 import { SelectionBar, SelectionHeader } from "./session-selection";
-import { useUsageTotals } from "./use-navigator";
+import { useUsageTotals, usageTotalsRevision } from "./use-navigator";
 import { ARCHIVE_BATCH_LIMIT, freshAvailability, unresolvedArchive } from "../shared/session-lifecycle";
 import { archiveAckKey, archiveNoticeKey, configureArchiveNoticeStorage, notifyArchive, recoveryLine as archiveSummary, useArchiveRecovery, type RecoveryItem } from "./archive-feedback";
 import { ArchiveRecoverySheet } from "./archive-recovery";
@@ -2368,7 +2368,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const ops = useSessionOperations({ hostId: host.id, online: hostOnline, colors, compact, entries: availability.entries, opened,
     newLead: onNewLead ? (source, revision) => onNewLead({ entry: source, summary: revision }) : "New lead is not offered on this screen; start it from the session switcher.",
     onTakeoverStart: () => bulkSelection.clear() });
-  const rowTotals = useUsageTotals(ops.totals, shown.map((entry) => entry.id));
+  const rowTotals = useUsageTotals(ops.totals, shown.map((entry) => entry.id), usageTotalsRevision(host.id, shown));
   const selectedSeats = bulkSelection.selected.flatMap((id) => availability.entries.filter((entry) => entry.id === id));
   const allSelected = bulkScopeIds.length > 0 && bulkScopeIds.every((id) => bulkSelection.selected.includes(id));
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);

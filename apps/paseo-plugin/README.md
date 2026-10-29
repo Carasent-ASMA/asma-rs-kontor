@@ -247,9 +247,11 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   leave the saved layout unchanged.
 - **Rows.** Each session is one dense row: state on the left, title and opened
   age, then origin (role, scope, desk, workspace, metadata age), then the
-  model's vendor mark, alias and effort with the session's token totals. Paseo
-  reports no session totals, so they read ↓ — ↑ —; the last usage report is
-  never shown as a total. Tapping a row opens the session by native ID through
+  model's vendor mark, alias and effort with qualified usage. Exact-thread
+  Codex 0.160.0 snapshots read **reported ↓ … ↑ …**; Details identifies them as
+  provider cumulative values, with historical completeness and child-thread
+  inclusion unverified. Other or unqualified sources read ↓ — ↑ —; a latest
+  turn report is never shown as a total. Tapping a row opens the session by native ID through
   the same path as Sessions; the session the switcher was opened from is marked.
   The trailing **…** opens the row's actions: **Add to favorites** or **Remove
   from favorites**, **Copy exact session ID** (reported copied only after the
@@ -257,6 +259,20 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   preflight and action as Sessions. Pending and refusal/result feedback stays in
   the switcher; uncertain outcomes stay visible for review in Sessions and are
   never called success. Opening the switcher adds no archive or inventory read.
+- **Vendor-native usage boundary.** Both Sessions and Start or switch use the
+  same read-only usage RPC. It joins public Paseo persistence native handles or
+  thread IDs to an exact Codex `session_meta.id` in the host's explicit
+  `CODEX_HOME` or default Codex store. It does not search account/profile homes,
+  infer identity from titles, sum cumulative snapshots, start/resume providers,
+  or read credential files. Forked/inherited, reset, ambiguous, unsupported,
+  missing and incomplete sources stay unknown. Reads are bounded and on demand;
+  only numeric counters, exact identity and source offsets are cached privately
+  across restart, without transcript text. Usage/turn/host changes refresh the
+  view; there is no polling timer. Claude and other provider routes remain
+  unqualified for totals; repeated Claude message records and restored/compacted
+  history require separate accounting proof. Historical/complete totals are
+  unavailable, including for newly observed sessions. This adds no R19 quota or
+  historical accounting claim.
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.
