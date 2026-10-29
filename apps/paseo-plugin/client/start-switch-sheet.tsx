@@ -1,3 +1,4 @@
+import type { TakeoverOutcome } from "../shared/session-lifecycle";
 import { SummaryAttachmentHelp } from "./summary-attachments";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
@@ -187,6 +188,7 @@ type StartSwitchProps = {
   /** Whether this Paseo app exposes native navigation to plugins. */
   canOpen: boolean;
   onOpenCreated: (outcome: CreateOutcome) => OpenSessionResult;
+  onOpenTakeover?: (outcome: TakeoverOutcome) => OpenSessionResult;
   onOpen: (entry: DirectoryEntry) => void;
   /** Kontor's Sessions with this state, search and membership. */
   onShowView: (view: SwitchView) => void;
@@ -219,7 +221,7 @@ export function popoverBodyHeight(window: number, compact: boolean, line: number
  * state strip, search and layout over this host's sessions, plus New lead as a header action when the host allows it.
  * Rows open only through `onOpen`, so each surface keeps its own single open path and its refusals.
  */
-export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowView, onClose, popover = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null }: StartSwitchProps) {
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpenTakeover, onOpen, onShowView, onClose, popover = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">(initialSource ? "new" : "switch");
   const creation = useRef({ hostId, open: !!initialSource });
   const scope = creation.current;
@@ -257,7 +259,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
   const [bulkOpen, setBulkOpen] = useState(false);
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const ops = useSessionOperations({ hostId, online: hostStatus === "online", colors, compact, entries, opened,
-    newLead: (source, revision) => startNew({ entry: source, summary: revision }), onTakeoverStart: () => selection.clear() });
+    newLead: (source, revision) => startNew({ entry: source, summary: revision }), onOpenTakeover, onTakeoverStart: () => selection.clear() });
   const totals = useUsageTotals(ops.totals, rows.map((entry) => entry.id), usageTotalsRevision(hostId, rows));
   const seats = selection.selected.flatMap((id) => entries.filter((entry) => entry.id === id));
   const takeover = ops.takeover(seats);
@@ -446,17 +448,20 @@ export function StartSwitchPopover(props: PluginButtonContentProps & { openScree
   const directory = useSessionDirectory({ hostId: host.id, hostStatus });
   const toast = useToast();
   const viewOpened = useRef(false);
-  /** Null once Kontor received the request and the popover closed; otherwise why it could not open. */
-  const go = (key: string): string | null => {
+  // Late native-open acknowledgements belong only to their original mounted host.
+  const openingOwner = useRef({ hostId: host.id, mounted: true });
+  openingOwner.current.hostId = host.id;
+  useEffect(() => { openingOwner.current.mounted = true; return () => { openingOwner.current.mounted = false; }; }, [host.id]);
+  const go = (key: string, closeAfter = true): string | null => {
     try { openScreen({ screenId, params: { target: key } }); }
     catch (error) { withdrawHandOff(key); return errorText(error) || "Paseo could not open Kontor."; }
-    close();
+    if (closeAfter) close();
     return null;
   };
   const handOff = (target: HandOffTarget) => {
     if (target.kind === "view" && viewOpened.current) return null;
     if (target.kind === "view") viewOpened.current = true;
-    const failure = go(handOffOpen(host.id, target));
+    const failure = go(handOffOpen(host.id, target), target.kind !== "takeover");
     if (failure && target.kind === "view") viewOpened.current = false;
     return failure;
   };
@@ -464,6 +469,13 @@ export function StartSwitchPopover(props: PluginButtonContentProps & { openScree
   const { header, body, footer } = useStartSwitch({ compact: layout.compact, colors: theme.colors, hostId: host.id, hostStatus, directory: directory.state, canOpen: true,
     onOpen: (entry) => report(handOff({ kind: "session", agentId: entry.id })),
     onShowView: (view) => report(handOff({ kind: "view", ...view })),
+    onOpenTakeover: (outcome) => {
+      if (!openingOwner.current.mounted || openingOwner.current.hostId !== host.id) return { ok: false, reason: "navigation", message: "The original host view changed before the replacement could open." };
+      const failure = handOff({ kind: "takeover", outcome, onOpened: (result) => {
+        if (openingOwner.current.mounted && openingOwner.current.hostId === host.id && result.ok) close();
+      } });
+      return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };
+    },
     onOpenCreated: (outcome) => {
       const failure = handOff({ kind: "created", outcome });
       return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };

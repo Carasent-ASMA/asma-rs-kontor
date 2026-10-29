@@ -29,7 +29,7 @@ import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
 import { OrganizationSettingsPage } from "./organization-settings-page";
-import { openCreatedSession, openHandOff, openSessionById } from "./session-actions";
+import { openCreatedSession, openTakeoverSuccessor, openHandOff, openSessionById } from "./session-actions";
 import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
 import { GraphPage } from "./graph-page";
@@ -315,6 +315,7 @@ function HostScreen(props: PluginScreenProps) {
     </ScrollView>
   </AnchoredMenu> : menu === "switch" ? <StartSwitchSheet anchor={switchRef} root={rootRef} rootSize={rootSize} compact={layout.compact} colors={colors} hostId={host.id} hostStatus={hostStatus} directory={directory.state} initialScope={switchScope} initialSource={leadSource}
     canOpen={!!props.navigation} onClose={() => setMenu(null)} onOpen={(entry) => { setMenu(null); open(entry); }}
+    onOpenTakeover={(outcome) => { const result = openTakeoverSuccessor({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); else toast.error(result.message); return result; }}
     onOpenCreated={(outcome) => { const result = openCreatedSession({ outcome, serverId: host.id, navigation: props.navigation }); if (result.ok) setMenu(null); return result; }}
     onShowView={(view) => { showView(view); setMenu(null); }} /> : null;
   let page;

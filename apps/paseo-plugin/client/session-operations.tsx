@@ -1,5 +1,6 @@
+import type { OpenSessionResult } from "./session-actions";
+import type { TakeoverOutcome } from "../shared/session-lifecycle";
 import { useSummaryAttachmentAvailability, SUMMARY_ATTACHMENT_UNAVAILABLE } from "./summary-attachments";
-import { PreparedTakeoverSheet, usePreparedCapability } from "./prepared-takeover";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text } from "react-native";
 import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
@@ -17,10 +18,8 @@ import { seatAction, TAKEOVER_EFFECTS, takeoverBusy, takeoverSummary, TakeoverRe
 import { useNavigatorCapabilities } from "./use-navigator";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
-const ACTIVE = ["running", "initializing"];
 
-type Sheet = { readonly kind: "prepared"; readonly source: DirectoryEntry }
-  | { readonly kind: "summary"; readonly source: DirectoryEntry }
+type Sheet = { readonly kind: "summary"; readonly source: DirectoryEntry }
   | { readonly kind: "attach"; readonly source: DirectoryEntry; readonly revision: SummaryRevision | null }
   | { readonly kind: "picker"; readonly seats: readonly DirectoryEntry[] }
   | { readonly kind: "results" };
@@ -55,7 +54,7 @@ function TakeoverPicker({ seats, disclosure, colors, compact, onUse, onCancel }:
  * does not support stays listed with its reason. `newLead` opens New lead with a revision pinned, or says why this
  * surface cannot.
  */
-export function useSessionOperations({ hostId, online, colors, compact, entries, opened, newLead, onTakeoverStart }: {
+export function useSessionOperations({ hostId, online, colors, compact, entries, opened, newLead, onTakeoverStart, onOpenTakeover }: {
   hostId: string; online: boolean; colors: Colors; compact: boolean;
   /** This host's known sessions, the destinations Attach offers. */
   entries: readonly DirectoryEntry[];
@@ -63,9 +62,9 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   newLead: ((source: DirectoryEntry, revision: SummaryRevision) => void) | string;
   /** Called once a takeover starts, Auto or chosen, so a selection can end only then; cancelling the picker keeps it. */
   onTakeoverStart?: () => void;
+  onOpenTakeover?: (outcome: TakeoverOutcome) => OpenSessionResult;
 }) {
   const capabilities = useNavigatorCapabilities(hostId);
-  const preparedCapability = usePreparedCapability(hostId);
   const toast = useToast();
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const resultsOpen = useRef(false);
@@ -74,16 +73,14 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const disclosed = capabilities?.takeover.supported ? capabilities.takeover.limits ?? [] : [];
   const disclosure = [TAKEOVER_EFFECTS, ...disclosed].join(" ");
   // A run that finishes after its results closed still reports, once.
-  const takeover = useTakeoverRun(hostId, disclosed, (run) => { if (!resultsOpen.current) toast.show(`Takeover finished: ${takeoverSummary(run.seats)}.`); });
+  const takeover = useTakeoverRun(hostId, disclosed, (run) => { if (!resultsOpen.current) toast.show(`Takeover finished: ${takeoverSummary(run.seats)}.`); }, onOpenTakeover);
   useEffect(() => { setSheet(null); }, [hostId]);
   const reason = (key: NavigatorCapability) => !capabilities ? "Reading what this host supports…" : capabilities[key].supported ? null : capabilities[key].reason;
   const offline = online ? null : "This host is offline.";
   const running = takeover.run?.running ? takeover.busy : null;
   /** Why these seats cannot be taken over together now; each seat's own refusal is its result. */
   const takeoverUnavailable = (seats: readonly DirectoryEntry[]) => {
-    const one = seats.length === 1 ? seats[0]! : null;
-    return offline ?? takeover.busy ?? reason("takeover") ?? (seats.length > 1 ? reason("takeoverBulk") : null)
-      ?? (one?.archivedAt ? "Archived: there is no seat to take over." : one && ACTIVE.includes(one.status) ? "Running. Stop it in the session, then take it over." : null);
+    return offline ?? takeover.busy ?? reason("takeover") ?? (seats.length > 1 ? reason("takeoverBulk") : null);
   };
   // Read when pressed, not when drawn: a picker opened earlier, or another surface of this host, may meet unresolved seats.
   const start = (seats: readonly DirectoryEntry[], route: TakeoverRoute) => {
@@ -101,21 +98,19 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const actions = (entry: DirectoryEntry): SessionAction[] => {
     const seat = pending.find((one) => one.id === entry.id), next = seat && seatAction(seat);
     return [
-      { key: "prepared-takeover", label: "Prepared procedural takeover…", icon: "ShieldAlert", detail: "Import owner-prepared admission · Non-LSA only", unavailable: offline ?? preparedCapability, perform: () => setSheet({ kind: "prepared", source: entry }) },
       // A held review is confirmed or declined only in its results, where its limits are listed; Check and Finish run from here.
       seat ? { key: "takeover", label: next?.kind === "confirm" ? "Review takeover" : next?.label ?? "Takeover unfinished", icon: next?.kind === "check" ? "CircleHelp" : next?.kind === "confirm" ? "ShieldAlert" : "RefreshCw",
         detail: seat.line, footer: seat.detail ?? undefined, unavailable: offline ?? running ?? (next ? null : seat.detail ?? "Nothing here can finish this takeover."),
         perform: () => next?.kind === "confirm" ? setSheet({ kind: "results" }) : settle(entry.id) }
-      : { key: "takeover", label: "Take over", icon: "RefreshCw", detail: "Compact context · Same seat", caption: "Auto uses the first available model in the chain.",
+      : { key: "takeover", label: "Take over", icon: "RefreshCw", detail: "Continue in a replacement session", caption: "Auto uses the first available model in the chain.",
         footer: disclosure, unavailable: takeoverUnavailable([entry]), perform: () => start([entry], null),
         option: { label: "Auto", accessibilityLabel: `Choose a model for taking over ${entry.title}`, unavailable: reason("takeoverRoute"), perform: () => setSheet({ kind: "picker", seats: [entry] }) } },
       { key: "summarize", label: "Summarize & copy", icon: "FileText", unavailable: summaryUnavailable, perform: () => setSheet({ kind: "summary", source: entry }) },
-      { key: "attach", label: "Choose summary attachment in destination…", icon: "GitFork", unavailable: attachUnavailable, perform: () => setSheet({ kind: "attach", source: entry, revision: null }) },
+      { key: "attach", label: "Attach summary…", icon: "GitFork", unavailable: attachUnavailable, perform: () => setSheet({ kind: "attach", source: entry, revision: null }) },
     ];
   };
   const close = () => setSheet(null);
-  const layer = sheet?.kind === "prepared" ? <PreparedTakeoverSheet hostId={hostId} source={sheet.source} colors={colors} onClose={close} />
-    : sheet?.kind === "summary" ? <SummarySheet source={sheet.source} colors={colors} attachUnavailable={attachUnavailable} onClose={close}
+  const layer = sheet?.kind === "summary" ? <SummarySheet source={sheet.source} colors={colors} attachUnavailable={attachUnavailable} onClose={close}
       onAttach={(revision) => setSheet({ kind: "attach", source: sheet.source, revision })} />
     : sheet?.kind === "attach" ? <AttachSheet source={sheet.source} revision={sheet.revision} colors={colors} onClose={close} />
     : sheet?.kind === "picker" ? <TakeoverPicker seats={sheet.seats} disclosure={disclosure} colors={colors} compact={compact} onCancel={close} onUse={(route) => start(sheet.seats, route)} />
