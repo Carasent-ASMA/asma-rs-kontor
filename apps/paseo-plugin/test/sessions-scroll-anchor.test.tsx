@@ -167,6 +167,25 @@ describe("Sessions list place across live updates", () => {
     return { reads, top };
   }
 
+  it("does not scroll after repeated Flat unmounts with native geometry still queued", () => {
+    for (let cycle = 0; cycle < 25; cycle += 1) {
+      clearSessionViews();
+      fake.state = ready(HISTORY);
+      const reads = pendingVisibleCell();
+      const headerLayout = (list().props.ListHeaderComponent as Element).props.onLayout as (event: unknown) => void;
+      if (cycle % 2 === 0) {
+        headerLayout(layoutEvent(100));
+      } else {
+        reads.shift()!(0, 4200, 320, 96, 0, 4200);
+        headerLayout(layoutEvent(100));
+      }
+      harness.unmount();
+      scrollTo.mockClear();
+      reads.forEach((done) => done(0, 4300, 320, 96, 0, 4300));
+      expect(scrollTo).not.toHaveBeenCalled();
+    }
+  });
+
   it("keeps a settled exact ID authoritative after its cell detaches before a live reorder", () => {
     const reads = pendingVisibleCell();
     reads[0]!(0, 4200, 320, 96, 0, 4200);
@@ -606,6 +625,31 @@ function measure(layout: Layout, item: unknown, height: number, width = 320) {
 }
 
 describe("row layout by measured row", () => {
+  it("drops delayed capture and restate replies when the screen releases its measurements", () => {
+    const moved = vi.fn();
+    const layout = createRowLayout(moved);
+    const rows = Array.from({ length: 450 }, (_, index) => result(`r${index}`));
+    const reads: ((...values: number[]) => void)[] = [];
+    const cell = layout.Cell({ cellKey: "r43", index: 43, item: rows[43]!, children: null } as never) as unknown as Element;
+    (cell.props.ref as (node: unknown) => void)({ measure: (done: (...values: number[]) => void) => reads.push(done) });
+    layout.capture(rows, false, 4265, 300, 45000);
+    layout.cancelMeasurements();
+    reads.splice(0).forEach((done) => done(0, 4300, 320, 96, 0, 4300));
+    expect(moved).not.toHaveBeenCalled();
+    layout.capture(rows, false, 4265, 300, 45000);
+    reads.shift()!(0, 4200, 320, 96, 0, 4200);
+    layout.restate(rows, false);
+    layout.cancelMeasurements();
+    reads.shift()!(0, 4300, 320, 96, 0, 4300);
+    expect(moved).not.toHaveBeenCalled();
+    // An effect setup after cleanup can capture again (React Strict Mode).
+    layout.capture(rows, false, 4265, 300, 45000);
+    reads.shift()!(0, 4200, 320, 96, 0, 4200);
+    layout.restate(rows, false);
+    reads.shift()!(0, 4300, 320, 96, 0, 4300);
+    expect(moved).toHaveBeenCalledWith(100);
+  });
+
   it("applies queued pre-update geometry to a present exact ID after follow has already run", () => {
     let offset = 4265;
     const moved = vi.fn((by?: number, from?: number) => { if (by !== undefined) offset = (from ?? offset) + by; });
@@ -845,5 +889,27 @@ describe("row layout by measured row", () => {
     expect(ids()[0]).toBe("s31");
     expect(layout()(list().props.data, 0)).toEqual({ index: 0, length: 150, offset: 30 });
     expect(layout()(list().props.data, 40)).toEqual({ index: 40, length: 100, offset: 30 + 40 * 100 + 50 });
+  });
+});
+
+
+describe("running mark viewability", () => {
+  it("enables only the public FlatList visible rows, keeps the callback stable, and clears offscreen work", () => {
+    fake.state = ready(HISTORY.map((entry) => ({ ...entry, status: "running" })));
+    patchSessionView("host-a", { status: "all", layout: "flat" });
+    mount();
+    const original = list().props.onViewableItemsChanged as (event: { viewableItems: object[] }) => void;
+    const items = list().props.data as { entry: DirectoryEntry }[];
+    const scope = (item: unknown) => ((list().props.renderItem as (info: { item: unknown }) => Element)({ item }).props.value as { live: boolean; visible: boolean });
+    expect(scope(items[0])).toEqual({ live: true, visible: false });
+    original({ viewableItems: [{ item: items[0], isViewable: true }] }); harness.flush();
+    expect(list().props.onViewableItemsChanged).toBe(original);
+    expect(scope(items[0])).toEqual({ live: true, visible: true });
+    expect(scope(items[1])).toEqual({ live: true, visible: false });
+    original({ viewableItems: [] }); harness.flush();
+    expect(scope(items[0])).toEqual({ live: true, visible: false });
+    fake.state = { ...ready(HISTORY), live: false }; harness.flush();
+    original({ viewableItems: [{ item: items[0], isViewable: true }] }); harness.flush();
+    expect(scope(items[0])).toEqual({ live: false, visible: true });
   });
 });

@@ -451,8 +451,7 @@ function workspaceOf(entry: DirectoryEntry): {
       key: `id:${entry.workspaceId}`,
       label:
         clean(entry.workspaceName) ??
-        clean(entry.projectName) ??
-        "Workspace",
+        `Workspace ${entry.workspaceId}`,
     };
   }
   const name = clean(entry.workspaceName);

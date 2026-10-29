@@ -127,6 +127,12 @@ describe("model alias and vendor", () => {
 });
 
 describe("session token totals", () => {
+  it("labels provider cumulative counts without claiming complete session totals", () => {
+    const counts = { input: 200, output: 7, scope: "provider-cumulative" as const, source: "Fixture vendor snapshot; historical completeness unverified" };
+    expect(tokenTotals(counts)).toMatchObject({ input: "reported ↓ 200", output: "↑ 7", spoken: "Provider-reported cumulative: 200 input, 7 output tokens" });
+    expect(totalsDetail(counts)).toMatchObject({ label: "Provider-reported cumulative input ↓ and output ↑", value: expect.stringContaining("historical completeness unverified") });
+    expect(tokenTotals({ ...counts, input: null, output: null }).spoken).toBe("Session token totals unknown");
+  });
   it("uses only down input, up output and lowercase units", () => {
     expect(tokenTotals({ input: 124_800, output: 9_600 })).toMatchObject({ input: "↓ 124.8k", output: "↑ 9.6k" });
     expect(tokenTotals({ input: 1_200_000, output: 84_600 })).toMatchObject({ input: "↓ 1.2m", output: "↑ 84.6k" });
