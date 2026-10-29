@@ -1315,3 +1315,30 @@ describe("R11 canonical refusal regressions", () => {
     expect(f.effects).toEqual([]);
   });
 });
+
+describe("R11 selected prepared import", () => {
+  it("rejects a wrong selected row before history or operation claim", async () => {
+    const f = await proceduralFixture();
+    await expect(f.service.importSelected(await f.ref("admission.json", f.admission), randomUUID())).rejects.toThrow("selected session");
+    expect(f.effects).toEqual([]);
+    expect((await f.service.importSelected(await f.ref("admission.json", f.admission), f.source.id)).canExecute).toBe(true);
+  });
+  it("rejects unavailable and invalid SHA references", async () => {
+    const f = await proceduralFixture(), ref = await f.ref("admission.json", f.admission);
+    await expect(f.service.importSelected({ ...ref, sha256: "0".repeat(64) }, f.source.id)).rejects.toThrow("changed");
+    await expect(f.service.importSelected({ ...ref, path: join(f.store, "absent") }, f.source.id)).rejects.toThrow();
+    expect(f.effects).toEqual([]);
+  });
+  it("does not offer confirmation after an interrupted execution claim", async () => {
+    const f = await proceduralFixture(), ref = await f.ref("admission.json", f.admission);
+    const prepared = await f.service.importSelected(ref, f.source.id);
+    await writeFile(join(f.store, "operations", f.admission.operationId, "execution.claim"), "unknown");
+    expect((await createProceduralTakeover(f.client, f.store, "fixture-host").importSelected(ref, f.source.id)).canExecute).toBe(false);
+    expect(prepared.receipt.phase).toBe("prepared"); expect(f.effects).toEqual([]);
+  });
+  it("retains canonical refusal through selected import", async () => {
+    const f = await reviewLeadFixture(true, "promoting");
+    await expect(f.service.importSelected(await f.ref("admission.json", f.admission), f.source.id)).rejects.toThrow("Promotion");
+    expect(f.effects).toEqual([]);
+  });
+});

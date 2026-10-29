@@ -15,6 +15,8 @@ import { takeoverAdapter } from "./session-takeover";
 import { lifecycleRevision } from "./session-lifecycle";
 import { within } from "./placement";
 import {
+  readPreparedTakeoverCapability,
+  importPreparedTakeover,
   proceduralAdmissionSchema,
   proceduralReceiptSchema,
   prepareProceduralTakeover,
@@ -588,10 +590,14 @@ export function createProceduralTakeover(client: PaseoApi, root: string, hostId:
     }
     throw new Error("Matching successor response is not visible; acceptance remains unknown");
   }
-  async function prepare(ref: Ref) {
+  async function prepare(ref: Ref, selectedSourceId?: string) {
     const text = await referenced(ref),
       admission = proceduralAdmissionSchema.parse(JSON.parse(text)),
       admissionHash = takeoverHash(text);
+    requireFact(
+      !selectedSourceId || admission.sourceId === selectedSourceId,
+      "Admission source differs from the selected session",
+    );
     try {
       const previous = await read(admission.operationId);
       requireFact(
@@ -911,7 +917,19 @@ export function createProceduralTakeover(client: PaseoApi, root: string, hostId:
       };
     }
   }
-  return { prepare, execute, check, read };
+  async function importSelected(ref: Ref, sourceId: string) {
+    const answer = await prepare(ref, sourceId);
+    let canExecute = false;
+    if (answer.receipt.phase === "prepared") {
+      try {
+        await readFile(join(directory(answer.receipt.operationId), "execution.claim"));
+      } catch (error) {
+        canExecute = code(error, "ENOENT");
+      }
+    }
+    return { ...answer, canExecute };
+  }
+  return { prepare, execute, check, read, importSelected };
 }
 export function contributeProceduralTakeover(server: PluginServerContext) {
   const root = join(
@@ -920,6 +938,23 @@ export function contributeProceduralTakeover(server: PluginServerContext) {
     "kontor",
     "procedural-takeover-v1",
   );
+  server.handle(readPreparedTakeoverCapability, () => ({
+    supported: true as const,
+    limits: PROCEDURAL_LIMITS,
+  }));
+  server.handle(importPreparedTakeover, async (input, { paseo }) => {
+    const admission = proceduralAdmissionSchema.parse(
+      JSON.parse(await referenced(input.admission)),
+    );
+    requireFact(
+      admission.sourceId === input.sourceId,
+      "Admission source differs from the selected session",
+    );
+    return createProceduralTakeover(paseo, root, admission.hostId).importSelected(
+      input.admission,
+      input.sourceId,
+    );
+  });
   // The selected host identity is pinned in the local admission. There is no new native host capability.
   server.handle(prepareProceduralTakeover, async (input, { paseo }) => {
     const admission = proceduralAdmissionSchema.parse(

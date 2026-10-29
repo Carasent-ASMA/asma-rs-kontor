@@ -1616,6 +1616,18 @@ hook alone.
 
 ### Procedural takeover backend on stock Paseo
 
+**Prepared procedural takeover…** is a separate single-session row action. It
+imports an owner-prepared admission using its absolute host path and exact SHA-256.
+The server binds the admission to that selected session before preparing it. Read
+the exact source, reserved successor, configuration, mode and limitations, then
+confirm once. A lost reply offers Check for the same operation. Closing retains
+client recovery state; after an app restart, import the same admission to recover
+its durable receipt. An existing execution claim never offers a new confirmation.
+This action does not generate admissions or accounting. It does not enable legacy
+Take over, bulk takeover or manual route selection. LSA/canonical and governed
+refusals remain server-owned, and installed/native qualification is separate.
+
+
 This bounded route refuses every LSA-role session and every session named by a
 promotion or canonical handoff record, including pending or unreadable promotion
 state. It rechecks that absence before retirement and during reconciliation.
