@@ -381,6 +381,19 @@ describe("host provider eligibility", () => {
     expect(provider!.defaultModel).toBe("opus");
   });
 
+  it("preserves native operating mode metadata and exact IDs without inventing permission tiers", () => {
+    const modes = [
+      { id: "build", label: "Build", description: "Tools follow configured permissions.", icon: "Bot", colorTier: "moderate" },
+      { id: "plan", label: "Plan", description: "Editing tools are disabled.", icon: "Bot", colorTier: "planning" },
+      { id: "kontor-epic", label: "Kontor-epic", description: "Project-specific control-plane specialist; not for ordinary code edits.", icon: "Bot" },
+    ];
+    const [provider] = createProviders({ entries: [{ provider: "opencode", enabled: true, status: "ready", models: [], modes, defaultModeId: "build" }] });
+    expect(provider!.modes).toEqual(modes.map(mode => ({ ...mode, dangerous: false })));
+    expect(provider!.defaultMode).toBe("build");
+    const [missing] = createProviders({ entries: [{ provider: "custom", modes: [{ id: "specialist", label: "Specialist", description: null, icon: null, colorTier: null }] }] });
+    expect(missing!.modes[0]).toEqual({ id: "specialist", label: "Specialist", dangerous: false, description: null, icon: null, colorTier: null });
+  });
+
   it("names a default model only when the catalog flags one, never the first listed", () => {
     const snapshot = { ...SNAPSHOT, entries: [{ ...SNAPSHOT.entries[1]!, models: [{ provider: "opencode", id: "big", label: "Big" }, { provider: "opencode", id: "small", label: "Small", isDefault: true }] }, SNAPSHOT.entries[1]!] } as Awaited<ReturnType<CreateClient["providers"]["snapshot"]>>;
     expect(createProviders(snapshot).map((provider) => provider.defaultModel)).toEqual(["small", null]);

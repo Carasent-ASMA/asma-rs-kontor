@@ -456,14 +456,14 @@ describe("Model & settings", () => {
     expect(levels()).toEqual(["High", "XHigh ✓"]);
     expect(byTestId(p.tree, "kontor-model-effort")).toBeUndefined();
     expect(text(p.tree).split("\n")).not.toContain("Effort");
-    expect(opener(p.tree, "kontor-model-permissions")?.props).toMatchObject({ accessibilityLabel: "Permissions: Default permissions", "aria-expanded": false });
+    expect(opener(p.tree, "kontor-model-permissions")?.props).toMatchObject({ accessibilityLabel: "Mode: Default permissions", "aria-expanded": false });
     expect(byLabel(p.tree, "Speed")?.props.accessibilityRole).toBe("radiogroup");
     expect(byLabel(p.tree, "Fast")).toBeDefined();
     press(byLabel(p.tree, "High")); p.render();
     expect(levels()).toEqual(["High ✓", "XHigh"]);
     press(opener(p.tree, "kontor-model-permissions")); p.render();
     expect(levels()).toEqual(["High ✓", "XHigh"]);
-    expect(byLabel(p.tree, "Full access ⚠")).toBeDefined();
+    expect(byLabel(p.tree, "Full access")).toBeDefined();
     const order = p.tree.filter((node) => (node.props.accessibilityRole === "radiogroup" && ["Effort", "Speed"].includes(String(node.props.accessibilityLabel)))
       || (node.props.accessibilityRole === "button" && node.props.testID === "kontor-model-permissions") || node.props.accessibilityRole === "switch")
       .map((node) => String(node.props.testID ?? node.props.accessibilityLabel));
@@ -518,9 +518,9 @@ describe("Model & settings", () => {
     await settle(); p.render();
     press(byLabel(p.tree, "Fast")); p.render();
     press(p.tree.find((node) => node.props.accessibilityRole === "switch" && node.props.accessibilityLabel === "Plan")); p.render();
-    expect(byLabel(p.tree, "Full access ⚠")).toBeUndefined();
+    expect(byLabel(p.tree, "Full access")).toBeUndefined();
     press(opener(p.tree, "kontor-model-permissions")); p.render();
-    press(byLabel(p.tree, "Full access ⚠")); p.render();
+    press(byLabel(p.tree, "Full access")); p.render();
     expect(byTestId(p.tree, "kontor-model-danger")).toBeDefined();
     expect(footer(p.tree, "kontor-model-use")).toEqual(["Cancel", "kontor-model-use"]);
     expect(byTestId(p.tree, "kontor-model-use")?.props.accessibilityLabel).toBe("Use A6 · XHigh");
@@ -596,7 +596,7 @@ describe("Model & settings", () => {
     press(byLabel(p.tree, "Fast")); p.render();
     press(p.tree.find((node) => node.props.accessibilityRole === "switch" && node.props.accessibilityLabel === "Plan")); p.render();
     press(opener(p.tree, "kontor-model-permissions")); p.render();
-    press(byLabel(p.tree, "Full access ⚠")); p.render();
+    press(byLabel(p.tree, "Full access")); p.render();
     press(byTestId(p.tree, "kontor-model-row-codex/gpt-6-astra")); p.render(); await settle(); p.render();
     press(byTestId(p.tree, "kontor-model-use"));
     expect(onUse).toHaveBeenLastCalledWith({ provider: "codex", model: "gpt-6-astra", effort: "high", modeId: "full-access", featureValues: { service_tier: "priority", plan_mode: true } });
@@ -643,8 +643,8 @@ describe("Model & settings", () => {
     const onUse = vi.fn();
     const p = mount(ModelPicker, pickerProps({ onUse, permissions: { inherited: "full-access", provider: "codex" }, value: { provider: "codex", model: "gpt-6-astra", effort: "xhigh", modeId: null, featureValues: {} } }));
     const block = elements(byTestId(p.tree, "kontor-model-permissions-inherited")!.props.children as ReactNode);
-    expect(text(block)).toBe("Permissions\nFull access ⚠ · Codex\nInherited from the seat; takeover never changes permissions.");
-    expect(byLabel(p.tree, "Permissions")).toBeUndefined();
+    expect(text(block)).toBe("Mode\nFull access · Codex\nOperating mode is inherited from the source. Permission settings are separate.");
+    expect(byLabel(p.tree, "Mode")).toBeUndefined();
     expect(p.tree.some((node) => node.props.accessibilityRole === "radio" && ["Default permissions", "Full access ⚠"].includes(String(node.props.accessibilityLabel)))).toBe(false);
     press(byTestId(p.tree, "kontor-model-row-codex/gpt-6.1-sol")); p.render();
     press(byTestId(p.tree, "kontor-model-use"));
@@ -655,8 +655,8 @@ describe("Model & settings", () => {
   it("refuses a seat whose permission mode was never reported", () => {
     const onUse = vi.fn();
     const p = mount(ModelPicker, pickerProps({ onUse, permissions: { inherited: null, provider: "codex" }, value: { provider: "codex", model: "gpt-6-astra", effort: "xhigh", modeId: null, featureValues: {} } }));
-    expect(text(elements(byTestId(p.tree, "kontor-model-permissions-inherited")!.props.children as ReactNode))).toBe("Permissions\nInherited (unknown) · Codex\nInherited from the seat; takeover never changes permissions.");
-    expect(byTestId(p.tree, "kontor-model-problem")?.props.children).toBe("Codex cannot keep this seat's permissions: its permission mode was not reported, so the new session's permissions cannot be confirmed.");
+    expect(text(elements(byTestId(p.tree, "kontor-model-permissions-inherited")!.props.children as ReactNode))).toBe("Mode\nInherited (unknown) · Codex\nOperating mode is inherited from the source. Permission settings are separate.");
+    expect(byTestId(p.tree, "kontor-model-problem")?.props.children).toBe("Codex: the source operating mode was not reported, so its inherited mode cannot be confirmed.");
     press(byTestId(p.tree, "kontor-model-use"));
     expect(onUse).not.toHaveBeenCalled();
   });
@@ -665,7 +665,7 @@ describe("Model & settings", () => {
     const p = mount(ModelPicker, pickerProps());
     expect(byTestId(p.tree, "kontor-model-permissions-inherited")).toBeUndefined();
     press(opener(p.tree, "kontor-model-permissions")); p.render();
-    expect(byLabel(p.tree, "Permissions")?.props.accessibilityRole).toBe("radiogroup");
+    expect(byLabel(p.tree, "Mode")?.props.accessibilityRole).toBe("radiogroup");
     expect(byLabel(p.tree, "Default permissions")?.props["aria-checked"]).toBe(true);
   });
 
@@ -685,7 +685,7 @@ describe("Model & settings", () => {
     expect(chosen.props).toMatchObject({ role: "group", accessibilityLabel: "Selected model" });
     expect(children.indexOf(chosen)).toBeLessThan(children.indexOf(list));
     expect(inChosen.findIndex((node) => node.props.label === "Effort")).toBeGreaterThan(inChosen.indexOf(byTestId(inChosen, "kontor-model-selected")!));
-    for (const label of ["Speed", "Permissions: Default permissions"]) {
+    for (const label of ["Speed", "Mode: Default permissions"]) {
       expect(inList.some((node) => node.props.accessibilityLabel === label)).toBe(false);
       expect(inSettings.some((node) => node.props.accessibilityLabel === label)).toBe(true);
     }

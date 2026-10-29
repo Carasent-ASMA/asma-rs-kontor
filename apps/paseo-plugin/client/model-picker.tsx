@@ -10,12 +10,18 @@ import { VendorMark, vendorName, vendorShortName } from "./vendor-mark";
 import { SheetFooter } from "./operation-sheet";
 import type { LeadModel } from "./new-lead-defaults";
 
+/** The native mode control sentence-cases provider labels; IDs and metadata remain untouched. */
+export function modeLabel(mode: { label: string }): string {
+  const label = mode.label.replace(/_+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+  return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
+}
+
 /** The gaps the list draws: between rows, between providers. */
 const ROW_GAP = 2, GROUP_GAP = 8;
 /** Whole model rows listed at first, and added by each press of more. */
 export const MODEL_BATCH = 6;
 
-/** One model with its settings, as Use hands it back. `featureValues` holds only the listed settings the operator set; `modeId` is null when permissions are inherited. */
+/** One model with its settings, as Use hands it back. `featureValues` holds only the listed settings the operator set; `modeId` is null when the source operating mode is inherited. */
 export type PickedModel = { readonly provider: string; readonly model: string; readonly effort: string | null; readonly modeId: string | null; readonly featureValues: FeatureValues };
 export type ModelSettings = { readonly features: readonly CreateFeature[]; readonly problem: string | null };
 
@@ -47,7 +53,7 @@ export function featureLabels(features: readonly CreateFeature[], values: Featur
 
 /**
  * Model & settings: the chosen model and its effort levels first, then the vendors whose models this host's available
- * routes offer, the browsed vendor's models under those routes, and the permissions and settings the host lists for
+ * routes offer, the browsed vendor's models under those routes, and the modes and settings the host lists for
  * the chosen model. The list starts with a short batch of whole rows and more adds the next batch below them; a search
  * matches every row, shown or not. The picker scrolls as one page: its own scroller only where the surface around it
  * does not scroll already. Choosing another model keeps the effort and settings it also offers and says which it drops. Only a
@@ -63,7 +69,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   onUse: (choice: PickedModel) => void; onCancel: () => void;
   defaults?: { readonly name: string; readonly make: (choice: PickedModel) => void; readonly reset: () => void };
   /**
-   * Permissions a takeover inherits: one seat's own mode id on its own provider (null when nobody reported it), or
+   * The legacy `permissions` prop carries a source operating mode, not its complete permissions: a mode id on its provider (null when nobody reported it), or
    * `seats` when each of several seats keeps its own. Either way they are shown read-only and no mode is emitted; a
    * model on a provider that cannot keep one seat's mode is refused here, as its host would.
    */
@@ -88,8 +94,12 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   const [browsing, setBrowsing] = useState<Vendor | null>(null);
   // How many rows the list shows, in list order; another vendor or search starts again from the first batch.
   const [revealed, setRevealed] = useState(MODEL_BATCH);
-  // Permissions stay one line until opened, so Make default and Reset stay in reach.
+  // Mode stays one line until opened, so Make default and Reset stay in reach.
   const [open, setOpen] = useState<"permissions" | null>(null);
+  const modeTrigger = useRef<View>(null), restoreModeFocus = useRef(false);
+  useEffect(() => {
+    if (open === null && restoreModeFocus.current) { restoreModeFocus.current = false; modeTrigger.current?.focus(); }
+  }, [open]);
   // What the last change of model could not keep, said until the next change.
   const [changed, setChanged] = useState<string | null>(null);
   // Every setting read so far, so a value the new model drops is still named as the operator set it.
@@ -131,7 +141,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
   // The settings this model lists keep their values; the rest are dropped, and said. Values wait for the list to be read.
   const listed = settings ? settings.problem ? [] : settings.features : null;
   const values = listed && pick ? keptFeatureValues(listed, pick.featureValues, [...seen.current.values()]) : null;
-  // Inherited permissions are the seat's own: one seat's mode is checked against the chosen provider; model and effort are checked here.
+  // The inherited operating mode is provider-specific: one seat's mode is checked against the chosen provider; model and effort are checked here.
   const problem = onAuto && !pick ? null : !pick ? "Choose a model."
     : (permissions ? ("inherited" in permissions ? inheritedModeProblem(providers, permissions.provider, permissions.inherited, pick.provider) : null)
       ?? createChoiceProblem(providers.map((entry) => ({ ...entry, modes: [] })), { ...pick, modeId: null }) : createChoiceProblem(providers, pick))
@@ -149,7 +159,7 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
     onUse(choice);
   };
   // Reset starts again from the Codex default as supplied, even on the model already checked: its effort and settings,
-  // and Codex's default permissions. While that default cannot be chosen here, Reset clears nothing and says why.
+  // and Codex's default operating mode. While that default cannot be chosen here, Reset clears nothing and says why.
   const codexRoute = codex && providers.find((entry) => entry.id === codex.provider && entry.available && entry.models.some((option) => option.id === codex.model));
   const resetUnavailable = codexRoute ? null : "The Codex default is not available on this host now, so Reset would leave a different model chosen.";
   const reset = () => {
@@ -250,18 +260,20 @@ export function ModelPicker({ colors, compact, providers, projectId, value, code
               options={feature.options} onSelect={(next) => patch({ featureValues: { ...pick?.featureValues, [feature.id]: next } })} /> : null)}
         {permissions ? <View testID="kontor-model-permissions-inherited" style={{ gap: 2 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Icon name="Lock" size={14} color={colors.foregroundMuted} />
-            <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{"seats" in permissions ? "Permissions inherited per seat" : "Permissions"}</Text>
+            <Icon name={mode ? mode.icon ?? "ShieldCheck" : "Lock"} size={14} color={colors.foregroundMuted} />
+            <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{"seats" in permissions ? "Mode inherited per session" : "Mode"}</Text>
           </View>
-          {"seats" in permissions ? null : <Text testID="kontor-model-permissions-mode" style={{ color: colors.foreground, fontSize: 12 }}>{`${permissions.inherited === null ? "Inherited (unknown)" : `${mode?.label ?? permissions.inherited}${mode?.dangerous ? " ⚠" : ""}`} · ${providers.find((entry) => entry.id === permissions.provider)?.label ?? permissions.provider}`}</Text>}
-          <Text style={muted}>Inherited from the seat; takeover never changes permissions.</Text>
-        </View> : provider.modes.length ? <Disclosure testID="kontor-model-permissions" label="Permissions" value={mode ? `${mode.label}${mode.dangerous ? " ⚠" : ""}` : "Choose"}
+          {"seats" in permissions ? null : <Text testID="kontor-model-permissions-mode" style={{ color: colors.foreground, fontSize: 12 }}>{`${permissions.inherited === null ? "Inherited (unknown)" : `${mode ? modeLabel(mode) : permissions.inherited}`} · ${providers.find((entry) => entry.id === permissions.provider)?.label ?? permissions.provider}`}</Text>}
+          <Text style={muted}>Operating mode is inherited from the source. Permission settings are separate.</Text>
+        </View> : provider.modes.length ? <Disclosure testID="kontor-model-permissions" label="Mode" ref={modeTrigger} value={mode ? modeLabel(mode) : "Choose"} icon={mode ? mode.icon ?? "ShieldCheck" : null}
           open={open === "permissions"} onToggle={() => toggle("permissions")} colors={colors} tall={tall}>
-          <Choices bare label="Permissions" colors={colors} tall={tall} selected={pick?.modeId ?? null} onSelect={(next) => patch({ modeId: next })}
-            options={provider.modes.map((entry) => ({ id: entry.id, label: entry.dangerous ? `${entry.label} ⚠` : entry.label }))} />
+          <Choices bare layout="list" label="Mode" colors={colors} tall={tall} selected={pick?.modeId ?? null} onSelect={(next) => { patch({ modeId: next }); restoreModeFocus.current = true; setOpen(null); }}
+            options={provider.modes.map((entry) => ({ id: entry.id, label: modeLabel(entry), note: entry.description, icon: entry.icon ?? "ShieldCheck" }))} />
         </Disclosure> : null}
-        {mode?.dangerous ? <Text testID="kontor-model-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {mode.label} is a dangerous permission mode on this host.</Text> : null}
-        {/* Toggles follow permissions, as the board orders them; selects stand inline above. */}
+        {mode?.dangerous ? <Text testID="kontor-model-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {modeLabel(mode)} is marked dangerous by this provider.</Text> : null}
+        {mode?.description ? <Text testID="kontor-model-mode-description" style={muted}>{mode.description}</Text> : null}
+        {provider.modes.length ? <Text testID="kontor-model-mode-meaning" style={muted}>Mode selects how this provider operates. Its permission settings are separate.</Text> : null}
+        {/* Toggles follow the operating mode, as the board orders them; selects stand inline above. */}
         {settings && !settings.problem ? settings.features.map((feature) => feature.type === "toggle"
           ? <Toggle key={feature.id} label={feature.label} colors={colors} tall={tall} checked={featureValue(feature, pick?.featureValues ?? {}) === true}
             onPress={() => patch({ featureValues: { ...pick?.featureValues, [feature.id]: featureValue(feature, pick?.featureValues ?? {}) !== true } })} /> : null) : null}
@@ -331,16 +343,16 @@ function Toggle({ label, checked, onPress, colors, tall }: { label: string; chec
  * `bare` leaves the label to the control that opened the choice.
  */
 export function Choices({ label, options, selected, onSelect, colors, tall, empty, layout = "wrap", bare = false, dense = false, caption = null, captionShown = true }: {
-  label: string; options: readonly { id: string; label: string; disabled?: boolean; note?: string | null }[]; selected: string | null;
+  label: string; options: readonly { id: string; label: string; disabled?: boolean; note?: string | null; icon?: string | null }[]; selected: string | null;
   onSelect: (id: string) => void; colors: Colors; tall: boolean; empty?: string;
-  layout?: "wrap" | "segmented" | "inline"; bare?: boolean; dense?: boolean; caption?: string | null; captionShown?: boolean;
+  layout?: "wrap" | "segmented" | "inline" | "list"; bare?: boolean; dense?: boolean; caption?: string | null; captionShown?: boolean;
 }) {
   const enabled = options.filter((option) => !option.disabled);
   const tabStop = enabled.find((option) => option.id === selected)?.id ?? enabled[0]?.id;
-  const inline = layout === "inline", parts = layout === "segmented";
+  const inline = layout === "inline", parts = layout === "segmented", list = layout === "list";
   return <View accessibilityRole="radiogroup" accessibilityLabel={label} style={{ gap: 4, ...(inline ? { flexDirection: "row", alignItems: "center" } : {}) }}>
     {bare ? null : <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600", ...(inline ? { flex: 1 } : {}) }}>{label}</Text>}
-    {options.length ? <View style={{ flexDirection: "row", flexWrap: inline ? "nowrap" : "wrap", gap: parts || dense ? 4 : 6 }}>
+    {options.length ? <View style={{ flexDirection: list ? "column" : "row", flexWrap: inline || list ? "nowrap" : "wrap", gap: parts || dense ? 4 : 6 }}>
       {options.map((option) => {
         const checked = option.id === selected, disabled = !!option.disabled;
         return <Pressable key={option.id} accessibilityRole="radio" accessibilityLabel={option.note ? `${option.label}, ${option.note}` : option.label} accessibilityState={{ checked, disabled }} aria-checked={checked} aria-disabled={disabled}
@@ -367,7 +379,12 @@ export function Choices({ label, options, selected, onSelect, colors, tall, empt
           disabled={disabled} onPress={() => onSelect(option.id)} style={({ focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 30, maxWidth: "100%", paddingHorizontal: dense ? 6 : 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, justifyContent: "center",
             ...(parts ? { flexGrow: 1, flexShrink: 1, flexBasis: "auto", alignItems: "center" } : {}),
             borderColor: checked || focused ? colors.accent : colors.border, backgroundColor: checked ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 })}>
-          <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: checked ? "600" : "400" }}>{option.label}</Text>
+          {list ? <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-start" }}>
+            {option.icon ? <Icon name={option.icon} size={16} color={colors.foreground} /> : null}
+            <View style={{ flex: 1, gap: 2 }}><Text style={{ color: colors.foreground, fontSize: 12, fontWeight: checked ? "600" : "400" }}>{option.label}</Text>
+              {option.note ? <Text style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 15 }}>{option.note}</Text> : null}
+            </View>
+          </View> : <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: checked ? "600" : "400" }}>{option.label}</Text>}
         </Pressable>;
       })}
     </View> : <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{empty}</Text>}
@@ -378,12 +395,13 @@ export function Choices({ label, options, selected, onSelect, colors, tall, empt
 }
 
 /** One setting on one line, its name and current value; pressing it opens its choices below it (board B2). */
-export function Disclosure({ label, value, open, onToggle, colors, tall, testID, children, ref }: {
-  label: string; value: string; open: boolean; onToggle: () => void; colors: Colors; tall: boolean; testID?: string; children: React.ReactNode; ref?: React.Ref<View>;
+export function Disclosure({ label, value, icon, open, onToggle, colors, tall, testID, children, ref }: {
+  label: string; value: string; icon?: string | null; open: boolean; onToggle: () => void; colors: Colors; tall: boolean; testID?: string; children: React.ReactNode; ref?: React.Ref<View>;
 }) {
   return <View style={{ gap: 4 }}>
     <Pressable ref={ref} testID={testID} accessibilityRole="button" accessibilityLabel={`${label}: ${value}`} aria-expanded={open} accessibilityState={{ expanded: open }} onPress={onToggle}
       style={({ pressed }: { pressed: boolean }) => ({ minHeight: tall ? 44 : 32, flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 6, ...pressFeedback(colors, pressed) })}>
+      {icon ? <Icon name={icon} size={16} color={colors.foreground} /> : null}
       <Text style={{ flex: 1, color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{label}</Text>
       <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: 12 }}>{value}</Text>
       <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={colors.foregroundMuted} />

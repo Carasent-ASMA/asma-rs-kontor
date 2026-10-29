@@ -96,8 +96,8 @@ describe("ModelPicker in takeover mode", () => {
   it("shows permissions inherited per seat, read-only, for a picked model", async () => {
     const p = picker();
     press(pressable(p.tree, "kontor-model-row-codex/gpt-6-sol")); p.render(); await settle(); p.render();
-    expect(text(p.tree)).toContain("Permissions inherited per seat");
-    expect(text(p.tree)).toContain("Inherited from the seat; takeover never changes permissions.");
+    expect(text(p.tree)).toContain("Mode inherited per session");
+    expect(text(p.tree)).toContain("Operating mode is inherited from the source. Permission settings are separate.");
     expect(p.tree.find((node) => node.props.testID === "kontor-model-permissions")).toBeUndefined();
   });
 
@@ -134,7 +134,7 @@ describe("ModelPicker inherited permissions for one seat", () => {
     const p = seat("bypassPermissions");
     press(pressable(p.tree, "kontor-model-vendor-anthropic")); p.render();
     press(pressable(p.tree, "kontor-model-row-claude/claude-opus-5-5")); p.render(); await settle(); p.render();
-    expect(p.tree.find((node) => node.props.testID === "kontor-model-permissions-mode")!.props.children).toBe("Bypass permissions ⚠ · Claude Code");
+    expect(p.tree.find((node) => node.props.testID === "kontor-model-permissions-mode")!.props.children).toBe("Bypass permissions · Claude Code");
     expect(p.tree.find((node) => node.props.testID === "kontor-model-permissions")).toBeUndefined();
     expect(use(p.tree).props.disabled).toBe(false);
     press(use(p.tree));
@@ -146,7 +146,7 @@ describe("ModelPicker inherited permissions for one seat", () => {
     const p = seat(null);
     press(pressable(p.tree, "kontor-model-vendor-anthropic")); p.render();
     press(pressable(p.tree, "kontor-model-row-claude/claude-opus-5-5")); p.render(); await settle(); p.render();
-    expect(problemText(p.tree)).toBe("Claude Code cannot keep this seat's permissions: its permission mode was not reported, so the new session's permissions cannot be confirmed.");
+    expect(problemText(p.tree)).toBe("Claude Code: the source operating mode was not reported, so its inherited mode cannot be confirmed.");
     expect(use(p.tree).props.disabled).toBe(true);
     press(use(p.tree));
     expect(p.props.onUse).not.toHaveBeenCalled();
@@ -155,7 +155,7 @@ describe("ModelPicker inherited permissions for one seat", () => {
   it.each(["bypassPermissions", "auto"])("refuses a Codex model for a Claude seat in %s, even where Codex lists the same mode id", async (mode) => {
     const p = seat(mode);
     press(pressable(p.tree, "kontor-model-row-codex/gpt-6-sol")); p.render(); await settle(); p.render();
-    expect(problemText(p.tree)).toBe(`Codex cannot keep this seat's permissions (${mode} on claude): no permission mapping between providers is qualified.`);
+    expect(problemText(p.tree)).toBe(`Codex cannot inherit operating mode ${mode} from claude. Cross-provider mode and permission equivalence must be verified by the host.`);
     expect(use(p.tree).props.disabled).toBe(true);
     press(use(p.tree));
     expect(p.props.onUse).not.toHaveBeenCalled();
@@ -286,5 +286,37 @@ describe("ModelPicker effort levels per route", () => {
     expect(problemText(p.tree)).toBe("Effort xhigh is not offered for DeepSeek V4.");
     press(use(p.tree));
     expect(p.props.onUse).not.toHaveBeenCalled();
+  });
+});
+
+describe("provider operating mode parity", () => {
+  it.each([true, false])("keeps OpenCode mode IDs/descriptions/icons separate from permission features (compact %s)", async compact => {
+    const { createProviders, createProviderSchema } = await import("../shared/session-create");
+    const { Choices } = await import("../client/model-picker");
+    const modes = [
+      { id: "build", label: "Build", icon: "Bot", description: "Tools follow configured permissions.", colorTier: "moderate" },
+      { id: "plan", label: "Plan", icon: "Bot", description: "Editing tools are disabled.", colorTier: "planning" },
+      { id: "kontor-epic", label: "Kontor-epic", icon: "Bot", description: "Project-specific specialist; not for ordinary code edits." },
+    ];
+    const [listed] = createProviders({ entries: [{ provider: "opencode", enabled: true, status: "ready", defaultModeId: "build", models: [{ id: "deepseek/fixture", label: "Fixture" }], modes }] });
+    const provider = createProviderSchema.parse(listed);
+    rpc["sessions.create-features"] = vi.fn(async () => ({ features: [{ type: "toggle", id: "auto_accept", label: "Auto Accept", value: false }], problem: null }));
+    const p = picker({ compact, providers: [provider], codex: null, permissions: undefined, onAuto: undefined, value: { provider: "opencode", model: "deepseek/fixture", effort: null, modeId: "build", featureValues: {} } });
+    await settle(); p.render();
+    const disclosure = () => p.tree.find(node => node.props.testID === "kontor-model-permissions")!;
+    expect(disclosure().props).toMatchObject({ label: "Mode", value: "Build", icon: "Bot" });
+    (disclosure().props.onToggle as () => void)(); p.render();
+    const choices = p.tree.find(node => (node.type as { name?: string }).name === "Choices" && node.props.label === "Mode")!;
+    expect(choices.props.options).toEqual(modes.map(mode => ({ id: mode.id, label: mode.label, icon: mode.icon, note: mode.description })));
+    const modeRows = walk(Choices(choices.props as Parameters<typeof Choices>[0]));
+    for (const mode of modes) { expect(text(modeRows)).toContain(mode.description); expect(modeRows.some(row => row.props.name === mode.icon)).toBe(true); }
+    for (const mode of modes) {
+      (choices.props.onSelect as (id: string) => void)(mode.id); p.render();
+      expect(disclosure().props.value).toBe(mode.label);
+      press(use(p.tree)); expect(p.props.onUse).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "opencode", modeId: mode.id, featureValues: {} }));
+      expect(text(p.tree)).not.toContain("Permissions inherited");
+    }
+    expect(p.tree.some(node => (node.type as { name?: string }).name === "Toggle" && node.props.label === "Auto Accept" && node.props.checked === false)).toBe(true);
+    expect(text(p.tree)).toContain("permission settings are separate");
   });
 });
