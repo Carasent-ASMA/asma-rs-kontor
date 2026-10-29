@@ -248,14 +248,15 @@ export function takeoverContinuitySemanticsMatch(left: TakeoverContinuitySemanti
 export function takeoverPinnedMatches(reviewed: {
   predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
   route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: unknown;
-  spec: { effectValidity?: unknown };
+  spec: { effectValidity?: unknown }; sourceSettings?: string | null;
 }, current: {
   predecessor: string; owner: TakeoverAdapter; ownerRevision: string | null; created: string | null; bindingKey: string;
   route: Pick<TakeoverRoute, "provenance" | "selected" | "considered" | "validity">; evidence: string; continuity: unknown;
-  spec: { effectValidity?: unknown };
+  spec: { effectValidity?: unknown }; sourceSettings?: string | null;
 }): boolean {
   if (reviewed.predecessor !== current.predecessor || reviewed.bindingKey !== current.bindingKey) return false;
   if (reviewed.created !== current.created || reviewed.ownerRevision !== current.ownerRevision) return false;
+  if ((reviewed.sourceSettings ?? null) !== (current.sourceSettings ?? null)) return false;
   if (!isDeepStrictEqual(reviewed.owner, current.owner)) return false;
   if (!takeoverContinuitySemanticsMatch(reviewed.continuity as TakeoverContinuitySemantics, current.continuity as TakeoverContinuitySemantics)) return false;
   if (!isDeepStrictEqual(reviewed.route.provenance, current.route.provenance)) return false;

@@ -49,6 +49,8 @@ const FEATURES: NonNullable<Agent["features"]> = [
     { id: "fast", label: "Fast", isDefault: true }, { id: "slow", label: "Slow", isDefault: false },
   ] },
 ];
+const withPlan = (value: boolean): NonNullable<Agent["features"]> =>
+  FEATURES.map((feature) => feature.id === "plan" ? { ...feature, value } : feature) as NonNullable<Agent["features"]>;
 const health = (mode: string | null): RouteHealth => ({ as_of: "2026-10-25T09:00:00Z", max_age_seconds: 60, ...(mode ? { mode } : {}),
   observations: [{ account: "claude-a", model: "claude-opus-5", effort: "xhigh", ...(mode ? { mode } : {}), state: "available", observed_at: "2026-10-25T08:59:30Z", revision: "r1" }] });
 const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" }, step: 1, sub_step: 1, vendor: "anthropic" };
@@ -660,8 +662,48 @@ describe("takeover review", () => {
     const review = await h.ready();
     expect(review.state, review.message).toBe("ready");
     expect(review.limits.join(" ")).toContain("MCP server or provider-option configuration");
-    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    const result = await h.apply(review);
+    expect(result).toMatchObject({ state: "succeeded" });
     expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: true, speed: "fast" } });
+    expect(await h.apply(review)).toEqual(result);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("refuses source settings changed before apply preflight", async () => {
+    const h = await host({ predecessor: agent("agent-1", { features: FEATURES }), features: FEATURES });
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, features: withPlan(false) });
+    expect(await h.apply(review)).toMatchObject({ state: "refused", next: "review" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("refuses source settings changed during apply preflight with zero effects", async () => {
+    const h = await host({ predecessor: agent("agent-1", { features: FEATURES }), features: FEATURES });
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    const listFeatures = h.client.providers.listFeatures;
+    h.client.providers.listFeatures = async () => {
+      h.agents.set("agent-1", { ...h.agents.get("agent-1")!, features: withPlan(false) });
+      return listFeatures();
+    };
+    expect(await h.apply(review)).toMatchObject({ state: "refused", next: "review" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("refuses source settings changed during the stopped source's final assessment", async () => {
+    const h = await host({ predecessor: agent("agent-1", { features: FEATURES, status: "running" }), features: FEATURES });
+    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true }; } };
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    const listFeatures = h.client.providers.listFeatures;
+    let calls = 0;
+    h.client.providers.listFeatures = async () => {
+      if (++calls === 2) h.agents.set("agent-1", { ...h.agents.get("agent-1")!, features: withPlan(false) });
+      return listFeatures();
+    };
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "stop" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
   });
 
   it("keeps the source settings when an explicit route names no replacement values", async () => {
@@ -672,6 +714,22 @@ describe("takeover review", () => {
     expect(review.state, review.message).toBe("ready");
     expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
     expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: true, speed: "fast" } });
+  });
+
+  it("keeps an explicit replacement value separate from source setting drift", async () => {
+    const predecessor = agent("agent-1", { features: FEATURES });
+    const h = await host({ predecessor, features: FEATURES });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null,
+      route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh", featureValues: { plan: false } } });
+    expect(review.state, review.message).toBe("ready");
+    const listFeatures = h.client.providers.listFeatures;
+    h.client.providers.listFeatures = async () => {
+      h.agents.set("agent-1", { ...h.agents.get("agent-1")!, features: withPlan(false) });
+      return listFeatures();
+    };
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: false } });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 
   it("refuses rather than dropping a source setting the target model does not offer", async () => {
