@@ -9,6 +9,7 @@ import { createProviders } from "../shared/session-create";
 
 export const SUMMARY_SOURCE_ITEMS = 48;
 export const SUMMARY_SOURCE_CHARACTERS = 24_000;
+const sourceAgentMessageSchema = z.object({ event: z.literal("message"), text: z.string() });
 const sectionsSchema = summaryRevisionSchema.shape.sections;
 const providerSectionsSchema = sectionsSchema.extend({ captureStatus: z.string().trim().min(1).optional(), blockers: z.union([z.string(), z.array(z.string())]).optional() }).strict();
 const outputSchema = { type: "object", additionalProperties: false, required: ["task", "decisions", "currentState", "nextStep"], properties: Object.fromEntries(["task", "decisions", "currentState", "nextStep"].map(key => [key, { type: "string" }])) };
@@ -90,22 +91,29 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string): SessionSum
     const reread = await source.refresh();
     if (!page.agent || !sameSession(agent, page.agent) || !reread || !sameSession(page.agent, reread.agent)) throw new Error("The source provider session changed while capturing history. No worker was created.");
     if (reread.agent.status === "running" || reread.agent.status === "initializing" || reread.agent.activeTurn) throw new Error("The source is still working. Wait for its turn to finish before summarizing.");
-    const entries = page.entries.filter(entry => entry.item.type === "user_message" || entry.item.type === "assistant_message");
+    const entries = page.entries.flatMap(entry => {
+      const item = entry.item;
+      if (item.type === "user_message" || item.type === "assistant_message") return [{ ...entry, role: item.type, text: item.text }];
+      if (item.type === "tool_call" && item.name === "agent_message") {
+        const message = sourceAgentMessageSchema.safeParse(item.agentMessage);
+        if (message.success) return [{ ...entry, role: "agent_message", text: message.data.text }];
+      }
+      return [];
+    });
     if (!entries.length) throw new Error("This source has no message history to summarize.");
     let remaining = SUMMARY_SOURCE_CHARACTERS;
     const captured: Array<{ seqStart: number; seqEnd: number; role: string; text: string }> = [];
     for (const entry of [...entries].reverse()) {
       if (!remaining) break;
-      if (entry.item.type !== "user_message" && entry.item.type !== "assistant_message") continue;
-      const text = entry.item.text.slice(-remaining);
+      const text = entry.text.slice(-remaining);
       remaining -= text.length;
-      captured.unshift({ seqStart: entry.seqStart, seqEnd: entry.seqEnd, role: entry.item.type, text });
+      captured.unshift({ seqStart: entry.seqStart, seqEnd: entry.seqEnd, role: entry.role, text });
     }
     const excerpt = JSON.stringify(captured);
     const snapshotHash = createHash("sha256").update(excerpt).digest("hex");
     const historyBoundary: SummaryHistoryBoundary = {
       epoch: page.epoch, fromSeq: captured[0]!.seqStart, toSeq: captured.at(-1)!.seqEnd,
-      snapshotHash, partial: page.hasOlder || remaining === 0, provider: agent.provider, providerSessionId: agent.persistence?.sessionId ?? null,
+      snapshotHash, partial: page.hasOlder || remaining === 0 || entries.length !== page.entries.length, provider: agent.provider, providerSessionId: agent.persistence?.sessionId ?? null,
     };
     const cutoff = entries.at(-1)!.timestamp;
     if (!Number.isFinite(Date.parse(cutoff))) throw new Error("The source history has no valid cutoff timestamp.");
