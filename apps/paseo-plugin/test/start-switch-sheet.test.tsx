@@ -1,4 +1,4 @@
-import { SUMMARY_ATTACHMENT_UNAVAILABLE } from "../client/summary-attachments";
+
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateOptions, CreateOutcome } from "../shared/session-create";
@@ -224,7 +224,7 @@ describe("Start or switch sheet", () => {
     // This host's server qualifies no takeover and has no summary store: each stays listed, refused with its reason.
     expect(items.filter((node) => node.props["aria-disabled"]).map((node) => node.props.accessibilityLabel)).toEqual([`Take over. ${UNSUPPORTED.takeover.reason}`,
       `Choose a model for taking over LSA • ASMA-1 • Route. ${UNSUPPORTED.takeover.reason}`,
-      `Summarize & copy. ${UNSUPPORTED.summaries.reason}`, `Attach summary…. ${SUMMARY_ATTACHMENT_UNAVAILABLE}`]);
+      `Summarize & copy. ${UNSUPPORTED.summaries.reason}`, `Attach summary…. ${UNSUPPORTED.draftAttach.reason}`]);
     press(byTestId(s.tree, "session-action-copy-id")); await settle(); s.render();
     expect(model.copyText).toHaveBeenCalledExactlyOnceWith("agent-a");
     expect(model.toast.show).toHaveBeenCalledExactlyOnceWith("Copied session ID agent-a");

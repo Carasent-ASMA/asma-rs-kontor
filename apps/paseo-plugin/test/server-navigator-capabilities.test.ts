@@ -4,6 +4,7 @@ import { UNSUPPORTED } from "../shared/session-navigator";
 import { applyTakeover } from "../shared/session-lifecycle";
 import { contributeSessionLifecycle } from "../server/session-lifecycle";
 import { SUMMARY_MODEL_API_GAP } from "../server/session-summaries";
+import { DRAFT_ATTACH_API_GAP } from "../server/session-summary-attach";
 import { asTakeoverClient, paseoWakeScheduleReader, readInstalledNavigatorCapabilities } from "../server/session-navigator";
 
 describe("installed navigator capabilities", () => {
@@ -12,7 +13,7 @@ describe("installed navigator capabilities", () => {
   it("keeps draft attachment unsupported even when a host advertises legacy draft APIs", () => {
     const host = { supportsHostFeature: () => true, agents: { create: vi.fn(), ref: vi.fn(), attachSavedSummaryToDraft: vi.fn() }, workspaces: {} } as never;
     const caps = readInstalledNavigatorCapabilities(host);
-    expect(caps.draftAttach).toEqual(UNSUPPORTED.draftAttach);
+    expect(caps.draftAttach).toEqual({ supported: false, reason: DRAFT_ATTACH_API_GAP });
     expect(caps.takeover.supported).toBe(true);
     expect(caps.takeover.supported && caps.takeover.limits?.join(" ")).toMatch(/stop/i);
     expect(caps.usageTotals.supported).toBe(true);

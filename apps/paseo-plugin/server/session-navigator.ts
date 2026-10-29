@@ -4,6 +4,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { TAKEOVER_LIMITS } from "../shared/session-lifecycle";
 import { readNavigatorCapabilities, type NavigatorCapabilities } from "../shared/session-navigator";
 import { summaryOnlyNavigatorCapabilities } from "./session-summaries";
+import { draftAttachInstalledCapability } from "./session-summary-attach";
 import type { TakeoverClient } from "./session-lifecycle";
 
 /** Optional bounded wake read when the installed SDK exposes it; otherwise absent. */
@@ -24,6 +25,7 @@ export function readInstalledNavigatorCapabilities(paseo: PaseoApi): NavigatorCa
   return {
     ...installed,
     usageTotals: { supported: true, limits: CODEX_USAGE_LIMITS },
+    draftAttach: draftAttachInstalledCapability(paseo),
     takeover: installed.summaries.supported ? { supported: true, limits: [...TAKEOVER_LIMITS, GOVERNED_CAPABILITY_LIMIT] }
       : installed.summaries,
     takeoverBulk: installed.summaries.supported ? { supported: true, limits: ["Each selected seat keeps its own review, confirmation, receipt and successor; the seats run one at a time."] }
