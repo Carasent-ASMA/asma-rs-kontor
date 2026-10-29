@@ -343,3 +343,36 @@ describe("composer hand-off to the Kontor screen", () => {
     expect(readRecent("host-a").record.visits).toEqual([]);
   });
 });
+
+describe("verified takeover navigation", () => {
+  beforeEach(() => configureRecentStorage(null));
+  const completed = (patch: Partial<import("../shared/session-lifecycle").TakeoverOutcome> = {}): import("../shared/session-lifecycle").TakeoverOutcome => ({ reviewId: "00000000-0000-4000-8000-000000000001", revision: 1, agentId: "source", state: "succeeded", phase: "done", message: "Continues", successor: { requestId: "00000000-0000-4000-8000-000000000002", agentId: "exact-replacement", title: "Original title" }, next: "none", checkedAt: "2026-10-29", ...patch });
+  it("opens only the verified replacement on its host without a directory row and records the visit", async () => {
+    const { openTakeoverSuccessor } = await import("../client/session-actions"); const nav = navigation();
+    expect(openTakeoverSuccessor({ outcome: completed(), serverId: "host-a", navigation: nav })).toEqual({ ok: true });
+    expect(nav.openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "exact-replacement", serverId: "host-a" });
+    expect(readRecent("host-a").record.visits.map(v => v.id)).toEqual(["exact-replacement"]);
+    expect(readRecent("host-b").record.visits).toEqual([]);
+  });
+  it.each(["partial", "uncertain", "refused"] as const)("does not open a %s takeover", async state => {
+    const { openTakeoverSuccessor } = await import("../client/session-actions"); const nav = navigation();
+    expect(openTakeoverSuccessor({ outcome: completed({ state }), serverId: "host-a", navigation: nav }).ok).toBe(false);
+    expect(nav.openAgent).not.toHaveBeenCalled(); expect(readRecent("host-a").record.visits).toEqual([]);
+  });
+  it.each([null, { requestId: "request", agentId: "source", title: "Source" }, { requestId: "request", agentId: "replacement", title: "" }])("refuses an unverified successor %s", async successor => {
+    const { openTakeoverSuccessor } = await import("../client/session-actions"); const nav = navigation();
+    expect(openTakeoverSuccessor({ outcome: completed({ successor }), serverId: "host-a", navigation: nav }).ok).toBe(false); expect(nav.openAgent).not.toHaveBeenCalled();
+  });
+  it("consumes a typed host-scoped handoff once and acknowledges the actual open result", () => {
+    const nav = navigation(), onOpened = vi.fn(), key = handOffOpen("host-a", { kind: "takeover", outcome: completed(), onOpened });
+    expect(openHandOff({ hostId: "host-b", key, entries: [], navigation: nav })?.ok).toBe(false);
+    expect(nav.openAgent).not.toHaveBeenCalled(); expect(onOpened).not.toHaveBeenCalled();
+    const own = handOffOpen("host-a", { kind: "takeover", outcome: completed(), onOpened });
+    nav.openAgent.mockImplementation(() => { throw new Error("Navigation unavailable"); });
+    expect(openHandOff({ hostId: "host-a", key: own, entries: [], navigation: nav })).toMatchObject({ ok: false, message: expect.stringContaining("Takeover completed") });
+    expect(onOpened).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ok: false }));
+    expect(readRecent("host-a").record.visits).toEqual([]);
+    expect(openHandOff({ hostId: "host-a", key: own, entries: [], navigation: nav })).toMatchObject({ ok: false, reason: "stale" });
+    expect(nav.openAgent).toHaveBeenCalledTimes(1);
+  });
+});

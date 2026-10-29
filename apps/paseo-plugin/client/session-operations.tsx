@@ -1,3 +1,5 @@
+import type { OpenSessionResult } from "./session-actions";
+import type { TakeoverOutcome } from "../shared/session-lifecycle";
 import { useSummaryAttachmentAvailability, SUMMARY_ATTACHMENT_UNAVAILABLE } from "./summary-attachments";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text } from "react-native";
@@ -52,7 +54,7 @@ function TakeoverPicker({ seats, disclosure, colors, compact, onUse, onCancel }:
  * does not support stays listed with its reason. `newLead` opens New lead with a revision pinned, or says why this
  * surface cannot.
  */
-export function useSessionOperations({ hostId, online, colors, compact, entries, opened, newLead, onTakeoverStart }: {
+export function useSessionOperations({ hostId, online, colors, compact, entries, opened, newLead, onTakeoverStart, onOpenTakeover }: {
   hostId: string; online: boolean; colors: Colors; compact: boolean;
   /** This host's known sessions, the destinations Attach offers. */
   entries: readonly DirectoryEntry[];
@@ -60,6 +62,7 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   newLead: ((source: DirectoryEntry, revision: SummaryRevision) => void) | string;
   /** Called once a takeover starts, Auto or chosen, so a selection can end only then; cancelling the picker keeps it. */
   onTakeoverStart?: () => void;
+  onOpenTakeover?: (outcome: TakeoverOutcome) => OpenSessionResult;
 }) {
   const capabilities = useNavigatorCapabilities(hostId);
   const toast = useToast();
@@ -70,7 +73,7 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const disclosed = capabilities?.takeover.supported ? capabilities.takeover.limits ?? [] : [];
   const disclosure = [TAKEOVER_EFFECTS, ...disclosed].join(" ");
   // A run that finishes after its results closed still reports, once.
-  const takeover = useTakeoverRun(hostId, disclosed, (run) => { if (!resultsOpen.current) toast.show(`Takeover finished: ${takeoverSummary(run.seats)}.`); });
+  const takeover = useTakeoverRun(hostId, disclosed, (run) => { if (!resultsOpen.current) toast.show(`Takeover finished: ${takeoverSummary(run.seats)}.`); }, onOpenTakeover);
   useEffect(() => { setSheet(null); }, [hostId]);
   const reason = (key: NavigatorCapability) => !capabilities ? "Reading what this host supports…" : capabilities[key].supported ? null : capabilities[key].reason;
   const offline = online ? null : "This host is offline.";

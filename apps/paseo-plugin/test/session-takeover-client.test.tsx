@@ -33,7 +33,7 @@ const review = (agentId: string, state: TakeoverReview["state"] = "ready", patch
   ...patch,
 });
 const outcome = (agentId: string, state: TakeoverOutcome["state"], phase: TakeoverOutcome["phase"] = "done", next: TakeoverOutcome["next"] = "review"): TakeoverOutcome => ({
-  reviewId: reviewId(agentId), revision: 2, agentId, state, phase, message: `Fixture outcome ${state}.`, successor: null, next, checkedAt: "2026-10-26T09:01:00Z" });
+  reviewId: reviewId(agentId), revision: 2, agentId, state, phase, message: `Fixture outcome ${state}.`, successor: state === "succeeded" ? { requestId: "00000000-0000-4000-8000-0000000000f1", agentId: `replacement-${agentId}`, title: `Seat ${agentId}` } : null, next, checkedAt: "2026-10-26T09:01:00Z" });
 const entries = (...ids: string[]) => ids.map((id) => ({ id, title: `Seat ${id}` }));
 
 beforeEach(() => {
@@ -442,5 +442,40 @@ describe("TakeoverResults", () => {
     const chosen = text(sheet({ ...finished, route: { provider: "codex", model: "gpt-6-sol", effort: "high", featureValues: {} } }).tree);
     expect(chosen).toContain("S6 was chosen for this takeover only. Defaults stay unchanged.");
     expect(chosen).not.toContain("Auto used");
+  });
+});
+
+describe("automatic verified replacement opening", () => {
+  it("opens the exact successful outcome and retries only navigation when opening fails", async () => {
+    const open = vi.fn(() => ({ ok: false as const, reason: "navigation" as const, message: "Native open failed" }));
+    const hostId = "auto-open-failure";
+    const draw = () => harness.current.render(() => useTakeoverRun(hostId, [], undefined, open));
+    await draw().start(entries("a"), null);
+    let result = draw().run!.seats[0]!;
+    expect(result.state).toBe("done"); expect(result.detail).toContain("Takeover completed; opening failed: Native open failed");
+    expect(open).toHaveBeenCalledExactlyOnceWith(outcome("a", "succeeded", "done", "none"));
+    expect(seatAction(result)).toEqual({ kind: "open", label: "Open replacement" });
+    draw().act("a"); result = draw().run!.seats[0]!;
+    expect(open).toHaveBeenCalledTimes(2); expect(result.state).toBe("done");
+    expect(rpc["sessions.takeover-review"]).toHaveBeenCalledTimes(1); expect(rpc["sessions.takeover-apply"]).toHaveBeenCalledTimes(1); expect(rpc["sessions.takeover-check"]).not.toHaveBeenCalled();
+  });
+  it("does not open an uncertain or mismatched reply, and opens only after correlated Check", async () => {
+    const open = vi.fn(() => ({ ok: true as const }));
+    rpc["sessions.takeover-apply"] = vi.fn(async () => outcome("b", "succeeded", "done", "none"));
+    const draw = () => harness.current.render(() => useTakeoverRun("auto-open-wrong-source", [], undefined, open));
+    await draw().start(entries("a"), null); expect(open).not.toHaveBeenCalled(); expect(draw().run!.seats[0]!.state).toBe("unknown");
+    draw().act("a"); await settle(); await settle();
+    expect(open).toHaveBeenCalledExactlyOnceWith(outcome("a", "succeeded", "done", "none")); expect(rpc["sessions.takeover-apply"]).toHaveBeenCalledTimes(1);
+  });
+  it("holds automatic navigation after a host change while retaining the old host's successful operation", async () => {
+    let finish!: (reply: TakeoverOutcome) => void;
+    rpc["sessions.takeover-apply"] = vi.fn(() => new Promise<TakeoverOutcome>(yes => { finish = yes; }));
+    const open = vi.fn(() => ({ ok: true as const })); let hostId = "auto-open-original-host";
+    const draw = () => harness.current.render(() => useTakeoverRun(hostId, [], undefined, open));
+    const pending = draw().start(entries("a"), null); await settle();
+    hostId = "auto-open-other-host"; draw(); finish(outcome("a", "succeeded", "done", "none")); await pending;
+    expect(open).not.toHaveBeenCalled(); hostId = "auto-open-original-host";
+    expect(draw().run!.seats[0]!.state).toBe("done"); expect(draw().run!.seats[0]!.detail).toContain("original host view");
+    draw().act("a"); expect(open).toHaveBeenCalledTimes(1); expect(rpc["sessions.takeover-apply"]).toHaveBeenCalledTimes(1);
   });
 });

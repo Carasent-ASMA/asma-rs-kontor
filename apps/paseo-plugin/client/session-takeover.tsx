@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import type { OpenSessionResult } from "./session-actions";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
@@ -29,6 +30,7 @@ export type SeatResult = {
   readonly id: string; readonly title: string; readonly state: SeatState; readonly line: string; readonly detail: string | null;
   /** The successor's model alias once a review named it. */
   readonly model: string | null;
+  readonly navigationOutcome?: TakeoverOutcome;
   readonly reviewId: string | null; readonly next: TakeoverOutcome["next"];
   /** A `review` seat's exact review: the limits it states beyond what was shown, and what confirming it sends back unchanged. */
   readonly held?: { readonly revision: number; readonly digest: string; readonly limits: readonly string[] } | null;
@@ -98,20 +100,40 @@ export function takeoverBusy(hostId: string): string | null {
  * to its host, not to a sheet or surface, so a reply that lands after either closed is still recorded. Every action
  * reads the host's current run, never the one its render saw, and a new start is refused while `takeoverBusy` says why.
  */
-export function useTakeoverRun(hostId: string, disclosed: readonly string[], onFinish?: (run: TakeoverRun) => void) {
+export function useTakeoverRun(hostId: string, disclosed: readonly string[], onFinish?: (run: TakeoverRun) => void, onOpenTakeover?: (outcome: TakeoverOutcome) => OpenSessionResult) {
   const review = useRpc(reviewTakeover), apply = useRpc(applyTakeover), check = useRpc(checkTakeover);
   const [, redraw] = useState(0);
   useEffect(() => { const listener = () => redraw((count) => count + 1); listeners.add(listener); return () => { listeners.delete(listener); }; }, []);
   const run = runs.get(hostId) ?? null;
+  const owner = useRef({ hostId, mounted: true, onOpenTakeover });
+  owner.current.hostId = hostId; owner.current.onOpenTakeover = onOpenTakeover;
+  useEffect(() => { owner.current.mounted = true; return () => { owner.current.mounted = false; }; }, [hostId]);
+  const openedResult = (seat: SeatResult, outcome: TakeoverOutcome): SeatResult => {
+    const result = outcomeResult(seat, outcome);
+    if (outcome.state !== "succeeded") return result;
+    let opening: OpenSessionResult;
+    try {
+      opening = owner.current.mounted && owner.current.hostId === hostId && owner.current.onOpenTakeover
+        ? owner.current.onOpenTakeover(outcome)
+        : { ok: false, reason: "navigation", message: "The original host view is no longer open. Open the replacement from this operation's results." };
+    } catch (error) { opening = { ok: false, reason: "failed", message: failure(error) }; }
+    return { ...result, navigationOutcome: outcome, detail: opening.ok ? outcome.message : `${outcome.message} Takeover completed; opening failed: ${opening.message}` };
+  };
+  const accepted = (seat: SeatResult, outcome: TakeoverOutcome, expectedReview: string): SeatResult => {
+    if (outcome.agentId !== seat.id || outcome.reviewId !== expectedReview || outcome.state === "succeeded" && (!outcome.successor?.agentId?.trim() || !outcome.successor.title.trim() || outcome.successor.agentId === seat.id))
+      return { ...seat, state: "unknown", line: UNCONFIRMED, next: "check", reviewId: expectedReview, detail: "The takeover reply did not confirm this exact source, operation and replacement. Check the same operation; nothing is resent." };
+    return openedResult(seat, outcome);
+  };
+
   const confirm = async (seat: SeatResult, digest: { reviewId: string; revision: number; digest: string }): Promise<SeatResult> => {
-    try { return outcomeResult(seat, await apply(digest)); }
+    try { return accepted(seat, await apply(digest), digest.reviewId); }
     catch (error) {
       return { ...seat, state: "unknown", line: UNCONFIRMED, next: "check", held: null, detail: `No reply after confirming (${failure(error)}). The takeover may have started; its exact result is read before anything else runs.` };
     }
   };
   const one = async (seat: SeatResult, route: TakeoverRoute): Promise<SeatResult> => {
     if (seat.next === "check" && seat.reviewId) {
-      try { return outcomeResult(seat, await check({ reviewId: seat.reviewId })); }
+      try { return accepted(seat, await check({ reviewId: seat.reviewId }), seat.reviewId); }
       catch (error) { return { ...seat, state: "unknown", line: UNCONFIRMED, detail: `Kontor could not read this takeover's result (${failure(error)}).` }; }
     }
     // The operator confirms the exact review they read; a stale one is refused by its server and needs a fresh review.
@@ -154,7 +176,12 @@ export function useTakeoverRun(hostId: string, disclosed: readonly string[], onF
     },
     retry: () => { const now = idle(); if (now) void go(now.seats, now.route); },
     /** Check, Finish or Confirm one seat of this host's run, leaving every other seat as it is. */
-    act: (id: string) => { const now = idle(); if (now) void go(now.seats, now.route, new Set([id])); },
+    act: (id: string) => {
+      const now = idle(), seat = now?.seats.find(one => one.id === id);
+      if (now && seat?.state === "done" && seat.navigationOutcome) {
+        publish(hostId, { ...now, seats: now.seats.map(one => one.id === id ? openedResult(one, seat.navigationOutcome!) : one) });
+      } else if (now) void go(now.seats, now.route, new Set([id]));
+    },
     /** The operator declines a held review: nothing was sent, the original keeps the seat, and the review stays named until Close. */
     decline: (id: string) => {
       const now = idle();
@@ -167,7 +194,8 @@ export function useTakeoverRun(hostId: string, disclosed: readonly string[], onF
 }
 
 /** What one seat's own button does next, or null when nothing here can. */
-export function seatAction(seat: SeatResult): { readonly kind: "check" | "finish" | "confirm"; readonly label: string } | null {
+export function seatAction(seat: SeatResult): { readonly kind: "check" | "finish" | "confirm" | "open"; readonly label: string } | null {
+  if (seat.state === "done" && seat.navigationOutcome) return { kind: "open", label: "Open replacement" };
   if (seat.state === "unknown" && seat.reviewId) return { kind: "check", label: "Check takeover" };
   if (seat.state === "recovery" && seat.next === "review") return { kind: "finish", label: "Finish takeover" };
   if (seat.state === "review" && seat.held) return { kind: "confirm", label: "Confirm takeover" };

@@ -109,11 +109,13 @@ describe("useSessionOperations gating", () => {
     const ready = (limits: string[]) => vi.fn(async (input: { agentId: string }) => ({ reviewId: "00000000-0000-4000-8000-0000000000c1", revision: 1, agentId: input.agentId, checkedAt: "2026-10-26T09:00:00Z",
       state: "ready", message: "Ready.", predecessor: null, ownership: "ordinary", association: { bindingKey: null, source: null, choices: [] }, route: null,
       successor: { requestId: "00000000-0000-4000-8000-0000000000f1", title: "Route review", workspaceId: "wks", cwd: "/fixture", provider: "codex", model: "gpt-6-sol", effort: null, mode: null, persona: null }, limits, digest: "e".repeat(64) }));
-    host.rpc["sessions.takeover-apply"] = vi.fn(async () => ({ reviewId: "00000000-0000-4000-8000-0000000000c1", revision: 1, agentId: "agent-a", state: "succeeded", phase: "done", message: "Done.", successor: null, next: "none", checkedAt: "2026-10-26T09:01:00Z" }));
+    host.rpc["sessions.takeover-apply"] = vi.fn(async () => ({ reviewId: "00000000-0000-4000-8000-0000000000c1", revision: 1, agentId: "agent-a", state: "succeeded", phase: "done", message: "Done.", successor: { requestId: "00000000-0000-4000-8000-0000000000f1", agentId: "replacement", title: "Replacement" }, next: "none", checkedAt: "2026-10-26T09:01:00Z" }));
     host.rpc["sessions.takeover-review"] = ready([SIMULATED]);
-    const shown = await mount();
+    const onOpenTakeover = vi.fn(() => ({ ok: true as const }));
+    const shown = await mount({ onOpenTakeover });
     action(shown.render(), A, "takeover").perform(); await settle(); await settle();
     expect(host.rpc["sessions.takeover-apply"]).toHaveBeenCalledTimes(1);
+    expect(onOpenTakeover).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ state: "succeeded", agentId: A.id, successor: expect.objectContaining({ agentId: "replacement" }) }));
     harness.fresh();
     host.rpc["sessions.takeover-review"] = ready([SIMULATED, "The supervisor is not told."]);
     const extra = await mount();
@@ -221,8 +223,8 @@ describe("useSessionOperations unfinished takeover", () => {
     host.rpc["sessions.takeover-review"] = vi.fn(async (input: { agentId: string }) => ({ reviewId: REVIEW, revision: 1, agentId: input.agentId, checkedAt: "2026-10-26T09:00:00Z",
       state: "ready", message: "Ready.", predecessor: null, ownership: "ordinary", association: { bindingKey: null, source: null, choices: [] }, route: null,
       successor: { requestId: "00000000-0000-4000-8000-0000000000f1", title: "Route review", workspaceId: "wks", cwd: "/fixture", provider: "codex", model: "gpt-6-sol", effort: null, mode: null, persona: null }, limits: [SIMULATED], digest: "e".repeat(64) }));
-    host.rpc["sessions.takeover-apply"] = vi.fn(async () => ({ reviewId: REVIEW, revision: 1, agentId: "agent-a", message: "Fixture.", successor: null, checkedAt: "2026-10-26T09:01:00Z", ...outcome }));
-    host.rpc["sessions.takeover-check"] = vi.fn(async () => ({ reviewId: REVIEW, revision: 1, agentId: "agent-a", state: "succeeded", phase: "done", message: "Checked.", successor: null, next: "none", checkedAt: "2026-10-26T09:02:00Z" }));
+    host.rpc["sessions.takeover-apply"] = vi.fn(async () => ({ reviewId: REVIEW, revision: 1, agentId: "agent-a", message: "Fixture.", successor: { requestId: "00000000-0000-4000-8000-0000000000f1", agentId: "replacement", title: "Replacement" }, checkedAt: "2026-10-26T09:01:00Z", ...outcome }));
+    host.rpc["sessions.takeover-check"] = vi.fn(async () => ({ reviewId: REVIEW, revision: 1, agentId: "agent-a", state: "succeeded", phase: "done", message: "Checked.", successor: { requestId: "00000000-0000-4000-8000-0000000000f1", agentId: "replacement", title: "Replacement" }, next: "none", checkedAt: "2026-10-26T09:02:00Z" }));
   }
   const close = (ops: Ops) => (layer(ops)!.props.onClose as () => void)();
 
