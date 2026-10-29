@@ -12,6 +12,7 @@ import { readTeamsSource } from "./shared/teams-source-snapshot";
 import { sourceCatalog, contributeReadSources } from "./server/read-sources";
 import { contributeSessionLifecycle } from "./server/session-lifecycle";
 import { contributeSessionCreate } from "./server/session-create";
+import { contributeSessionPromotion } from "./server/session-promotion";
 import { contributeResponsibility } from "./server/responsibility";
 import { contributeKontorStatus } from "./server/kontor-status";
 import { readNavigatorCapabilities, UNSUPPORTED } from "./shared/session-navigator";
@@ -21,6 +22,7 @@ export default function plugin(server: PluginServerContext): () => void {
   contributeProceduralTakeover(server);
   // Registered whatever the floor; each request reads create.json: absent defaults on, explicit off or invalid/unreadable paths fail closed.
   contributeSessionCreate(server);
+  contributeSessionPromotion(server);
   // Only the qualified Codex reported-cumulative usage source is enabled here.
   server.handle(readNavigatorCapabilities, () => ({ ...UNSUPPORTED, usageTotals: { supported: true as const, limits: CODEX_USAGE_LIMITS } }));
   contributeVendorUsage(server);

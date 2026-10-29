@@ -75,7 +75,7 @@ describe("server entry floor mode", () => {
     writeFileSync(file, content, { mode: 0o600 });
   };
 
-  it("registers procedural prepare/execute/check without enabling the legacy takeover action", () => {
+  it("registers procedural and promotion handlers without enabling the legacy takeover action", () => {
     const registered = start();
     expect(registered.handlers).toContain("sessions.procedural-takeover.capability");
     expect(registered.handlers).toContain("sessions.procedural-takeover.import");
@@ -83,8 +83,8 @@ describe("server entry floor mode", () => {
     const started = start();
     expect(started.handlers).toEqual(expect.arrayContaining([
       "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check",
+      "sessions.promote",
     ]));
-    expect(started.handlers).not.toContain("sessions.promote");
     expect(started.handlers).not.toContain("sessions.summary-save");
     expect(started.handlers).not.toContain("sessions.summary-attach");
     expect(started.implementations["sessions.navigator-capabilities"]!()).toMatchObject({ takeover: { supported: false } });
@@ -92,12 +92,12 @@ describe("server entry floor mode", () => {
     started.cleanup();
   });
 
-  it("registers usage without enabling summary, attachment or takeover", () => {
+  it("registers usage and promotion without enabling summary, attachment or takeover", () => {
     const started = start();
     expect(started.handlers).toContain("sessions.usage-totals");
+    expect(started.handlers).toContain("sessions.promote");
     expect(started.handlers).not.toContain("sessions.summary-save");
     expect(started.handlers).not.toContain("sessions.summary-attach");
-    expect(started.handlers).not.toContain("sessions.promote");
     expect(started.implementations["sessions.navigator-capabilities"]!()).toMatchObject({
       usageTotals: { supported: true, limits: expect.arrayContaining([expect.stringContaining("0.160.0"), expect.stringContaining("Historical completeness")]) },
       summaries: { supported: false }, draftAttach: { supported: false }, takeover: { supported: false }, takeoverBulk: { supported: false },
