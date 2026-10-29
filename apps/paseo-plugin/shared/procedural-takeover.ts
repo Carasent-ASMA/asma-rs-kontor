@@ -105,3 +105,20 @@ export const checkProceduralTakeover = defineRpc({
   input: z.object({ operationId: id }).strict(),
   output: proceduralReceiptSchema,
 });
+
+export const readPreparedTakeoverCapability = defineRpc({
+  name: "sessions.procedural-takeover.capability",
+  input: z.object({}).strict(),
+  output: z.object({ supported: z.literal(true), limits: z.array(z.string()) }).strict(),
+});
+export const importPreparedTakeover = defineRpc({
+  name: "sessions.procedural-takeover.import",
+  input: z.object({ sourceId: id, admission: evidenceRefSchema }).strict(),
+  output: z
+    .object({
+      receipt: proceduralReceiptSchema,
+      canExecute: z.boolean(),
+      limits: z.array(z.string()),
+    })
+    .strict(),
+});
