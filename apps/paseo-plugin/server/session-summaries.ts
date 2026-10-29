@@ -4,10 +4,9 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { attachSummary, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type Capability, type SummaryPin, type SummaryRevision, type SummaryHistoryBoundary } from "../shared/session-navigator";
+import { readNavigatorCapabilities, UNSUPPORTED, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type NavigatorCapabilities, type Capability, type SummaryPin, type SummaryRevision, type SummaryHistoryBoundary } from "../shared/session-navigator";
 import { stockSummaryGenerator } from "./stock-summary-generator";
 import { readConfig } from "./config";
-import { attachStateRoot, createSummaryAttachService } from "./session-summary-attach";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 
@@ -148,27 +147,21 @@ export function summaryStateRoot() {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-summaries-v1");
 }
 
-export function contributeSessionSummaries(server: PluginServerContext) {
-  const root = summaryStateRoot();
-  server.handle(saveSummary, (input, { paseo }) => sessionSummaryService(paseo, root).save(input.agentId));
-  server.handle(readSummary, (input, { paseo }) => {
-    return readPinnedSummary(root, input);
-  });
-  server.handle(latestSummaries, (input, { paseo }) => {
-    return sessionSummaryService(paseo, root).latest(input.agentIds);
-  });
-  server.handle(attachSummary, (input, { paseo }) => summaryAttachService(paseo, root, attachStateRoot()).attach(input));
+/** Standalone R28 capability seam; no attachment, takeover or usage owner is pulled in. */
+export function summaryOnlyNavigatorCapabilities(paseo: PaseoApi): NavigatorCapabilities {
+  return { ...UNSUPPORTED, summaries: summariesInstalledCapability(paseo) };
 }
 
-const summaryAttachServices = new WeakMap<PaseoApi, ReturnType<typeof createSummaryAttachService>>();
-
-function summaryAttachService(paseo: PaseoApi, summaryRoot: string, attachRoot: string) {
-  let service = summaryAttachServices.get(paseo);
-  if (!service) {
-    service = createSummaryAttachService(paseo, summaryRoot, attachRoot);
-    summaryAttachServices.set(paseo, service);
-  }
-  return service;
+export function contributeSessionSummaries(server: PluginServerContext, options: {
+  root?: string;
+  capabilities?: (paseo: PaseoApi) => NavigatorCapabilities;
+} = {}) {
+  const root = options.root ?? summaryStateRoot();
+  const capabilities = options.capabilities ?? summaryOnlyNavigatorCapabilities;
+  server.handle(readNavigatorCapabilities, (_input, { paseo }) => capabilities(paseo));
+  server.handle(saveSummary, (input, { paseo }) => sessionSummaryService(paseo, root).save(input.agentId));
+  server.handle(readSummary, (input) => readPinnedSummary(root, input));
+  server.handle(latestSummaries, (input, { paseo }) => sessionSummaryService(paseo, root).latest(input.agentIds));
 }
 
 const sessionSummaryServices = new WeakMap<PaseoApi, ReturnType<typeof createSessionSummaryService>>();

@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS } from "../server/stock-summary-generator";
-import { createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
+import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
+
+import { UNSUPPORTED } from "../shared/session-navigator";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 const SECTIONS = { task: "Review the parser", decisions: "Keep the grammar", currentState: "Ready", nextStep: "Review" };
 const SOURCE = "00000000-0000-4000-8000-000000000001";
@@ -200,6 +203,27 @@ describe("stock summary generator", () => {
     h.setResult({ status: "idle" });
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("no matching prompt correlation");
     expect(h.created).toHaveLength(1);
+  });
+
+
+  it("registers the R28-only capability/save/read/latest closure and persists through its RPCs", async () => {
+    const h = await harness();
+    const handlers = new Map<string, (...args: any[]) => any>();
+    contributeSessionSummaries({ handle: (rpc: { name: string }, handler: (...args: any[]) => any) => {
+      expect(handlers.has(rpc.name)).toBe(false); handlers.set(rpc.name, handler);
+    } } as unknown as PluginServerContext, { root: h.root });
+    expect([...handlers.keys()].sort()).toEqual(["sessions.navigator-capabilities", "sessions.summary-latest", "sessions.summary-read", "sessions.summary-save"].sort());
+    const context = { paseo: h.api };
+    const caps = handlers.get("sessions.navigator-capabilities")!({}, context);
+    expect(caps).toMatchObject({ summaries: { supported: true }, usageTotals: UNSUPPORTED.usageTotals, draftAttach: UNSUPPORTED.draftAttach,
+      takeover: UNSUPPORTED.takeover, takeoverBulk: UNSUPPORTED.takeoverBulk, takeoverRoute: UNSUPPORTED.takeoverRoute });
+    expect(h.created).toHaveLength(0);
+    const saved = await handlers.get("sessions.summary-save")!({ agentId: SOURCE }, context);
+    expect(saved.historyBoundary.providerSessionId).toBe("source-session");
+    expect(await handlers.get("sessions.summary-read")!({ summaryId: saved.summaryId, revision: saved.revision }, context)).toEqual(saved);
+    expect(await handlers.get("sessions.summary-latest")!({ agentIds: [SOURCE] }, context)).toEqual({ [SOURCE]: saved });
+    expect(h.created).toHaveLength(1);
+    expect(h.counts().sends).toBe(0);
   });
 
 });

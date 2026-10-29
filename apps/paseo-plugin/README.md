@@ -35,6 +35,31 @@ Stock `copyText` confirms the write, not readback: paste into the sheet's
 verification field to compare with the saved text. This does not read the
 clipboard automatically.
 
+### R28-only source composition
+
+`contributeSessionSummaries(server)` registers only navigator capabilities and
+summary save/read/latest. Its default capabilities keep usage totals, draft
+attachment and legacy Take over unsupported. The full repository entry passes
+its existing aggregate capabilities to preserve separately owned features.
+The summary module has no import of the attachment service and registers no
+attachment handler.
+
+For a baseline without summary server files, use complete source files rather
+than a delta requiring their preimages. The runtime closure is
+`server/session-summaries.ts`, `server/stock-summary-generator.ts`,
+`client/session-summary.tsx`, `shared/session-navigator.ts` and
+`paseo-plugin.json`, plus their unchanged baseline imports. In that baseline's
+`index.server.ts`, import `contributeSessionSummaries` and replace the existing
+unsupported navigator-capabilities registration with
+`contributeSessionSummaries(server)`. Preserve its other registrations; do not
+copy the repository's full entry or add aggregate capabilities from another
+feature. Remove the unused capability-contract import if nothing else uses it.
+Do not include `server/session-summary-attach.ts`, its attachment test, or
+`server/session-navigator.ts` in this closure. The focused summary store,
+stock-generator and SummarySheet tests qualify this route; source entry tests
+also assert a single capability registration and no attachment handler.
+Composition still requires independent review before installation.
+
 ### R29 destination-side selection design
 
 R28 does not depend on draft attachment. Stock Paseo exposes an attachment

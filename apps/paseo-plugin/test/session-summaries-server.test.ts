@@ -10,9 +10,9 @@ import {
   paseoSummaryGenerator,
   readPinnedSummary,
   summariesInstalledCapability,
+  summaryOnlyNavigatorCapabilities,
   summaryStateRoot,
 } from "../server/session-summaries";
-import { readInstalledNavigatorCapabilities } from "../server/session-navigator";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 
@@ -37,7 +37,7 @@ describe("session summary host route", () => {
     const paseo = { agents: { ref: () => ({ refresh: async () => null }) } } as never;
     expect(summariesInstalledCapability(paseo)).toEqual({ supported: false, reason: SUMMARY_MODEL_API_GAP });
     expect(paseoSummaryGenerator(paseo)).toBeUndefined();
-    const caps = readInstalledNavigatorCapabilities(paseo);
+    const caps = summaryOnlyNavigatorCapabilities(paseo);
     expect(caps.summaries).toEqual({ supported: false, reason: SUMMARY_MODEL_API_GAP });
     expect(caps.takeover.supported).toBe(false);
   });
