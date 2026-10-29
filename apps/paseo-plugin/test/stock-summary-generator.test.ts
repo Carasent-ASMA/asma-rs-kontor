@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, URL } from "node:url";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { stockSummaryGenerator, SUMMARY_SOURCE_ITEMS, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
@@ -490,13 +491,75 @@ describe("stock summary generator", () => {
 
 });
 
+const summaryCheckoutRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const within = (root: string, path: string) => {
+  const child = relative(root, path);
+  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
+};
+
+/** Resolve existing aliases before creating anything, including paths with missing descendants. */
+async function externalSummaryEvidence(path: string, checkout = summaryCheckoutRoot): Promise<string> {
+  if (!isAbsolute(path)) throw new Error("Summary evidence must be an absolute directory outside the checkout.");
+  const root = await realpath(checkout);
+  let parent = resolve(path);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      const canonical = resolve(await realpath(parent), ...missing.toReversed());
+      if (within(resolve(checkout), resolve(path)) || within(root, canonical)) throw new Error("Summary evidence must be outside the repository/export root.");
+      return canonical;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      // An unresolved existing alias must not be mistaken for a new literal directory.
+      const present = await lstat(parent).catch(cause => {
+        if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return null;
+        throw cause;
+      });
+      if (present) throw new Error("Summary evidence has an unresolved symlink or existing path.");
+      const next = dirname(parent);
+      if (next === parent) throw error;
+      missing.push(basename(parent)); parent = next;
+    }
+  }
+}
+
+describe("external live summary evidence", () => {
+  it("binds the default guard to the actual repository/export rather than pnpm cwd", async () => {
+    const repo = await realpath(summaryCheckoutRoot);
+    expect(await realpath(join(repo, "apps", "paseo-plugin", "test", "stock-summary-generator.test.ts"))).toBe(await realpath(fileURLToPath(import.meta.url)));
+    for (const path of [repo, join(repo, "apps", "paseo-plugin"), join(repo, "r28-live-evidence")]) await expect(externalSummaryEvidence(path)).rejects.toThrow("outside");
+  });
+  it("rejects root, plugin and repository siblings independently of the process cwd", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "summary-evidence-")); dirs.push(parent);
+    const repo = join(parent, "checkout"); await mkdir(join(repo, "apps", "paseo-plugin"), { recursive: true });
+    for (const path of [repo, join(repo, "apps", "paseo-plugin"), join(repo, "r28-live-evidence"), join(repo, "missing", "nested")]) await expect(externalSummaryEvidence(path, repo)).rejects.toThrow("outside");
+    expect(await externalSummaryEvidence(join(parent, "checkout-evidence", "new"), repo)).toBe(join(await realpath(parent), "checkout-evidence", "new"));
+  });
+  it("rejects symlink aliases into the checkout, including missing descendants", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "summary-evidence-alias-")); dirs.push(parent);
+    const repo = join(parent, "checkout"); await mkdir(repo); await symlink(repo, join(parent, "alias"));
+    await expect(externalSummaryEvidence(join(parent, "alias", "new", "nested"), repo)).rejects.toThrow("outside");
+    await expect(externalSummaryEvidence(join(parent, "alias"), repo)).rejects.toThrow("outside");
+  });
+  it("rejects internal aliases outward and dangling aliases; allows real external aliases", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "summary-evidence-external-")); dirs.push(parent);
+    const repo = join(parent, "checkout"), outside = join(parent, "external"); await mkdir(repo); await mkdir(outside);
+    await symlink(outside, join(repo, "outward")); await symlink(outside, join(parent, "external-alias")); await symlink(join(repo, "missing"), join(parent, "dangling"));
+    await expect(externalSummaryEvidence(join(repo, "outward", "new"), repo)).rejects.toThrow("outside");
+    await expect(externalSummaryEvidence(join(parent, "dangling", "new"), repo)).rejects.toThrow("unresolved");
+    expect(await externalSummaryEvidence(join(parent, "external-alias", "new"), repo)).toBe(join(await realpath(outside), "new"));
+  });
+});
+
 /** Explicit live qualification only; default tests never contact a host or run a provider. */
 it.skipIf(!process.env.KONTOR_REAL_SUMMARY_SOURCE)("qualifies a real provider saved-summary read/latest round trip", async () => {
   const sourceId = process.env.KONTOR_REAL_SUMMARY_SOURCE!;
-  const evidence = process.env.KONTOR_REAL_SUMMARY_EVIDENCE;
+  const requestedEvidence = process.env.KONTOR_REAL_SUMMARY_EVIDENCE;
   const url = process.env.KONTOR_REAL_SUMMARY_URL;
-  if (!evidence || !isAbsolute(evidence) || resolve(evidence).startsWith(resolve(process.cwd())) || !url) throw new Error("Live qualification requires an explicit daemon URL and absolute evidence directory outside the checkout.");
+  if (!requestedEvidence || !url) throw new Error("Live qualification requires an explicit daemon URL and absolute evidence directory outside the checkout.");
+  const evidence = await externalSummaryEvidence(requestedEvidence);
   await mkdir(evidence, { recursive: true, mode: 0o700 });
+  await externalSummaryEvidence(evidence);
   const root = await mkdtemp(join(evidence, "summary-state-"));
   const { createPaseoClient } = await import("@getpaseo/client");
   const api = createPaseoClient({ url, clientId: "kontor-real-summary-qualification", connectTimeoutMs: 5_000, reconnect: { enabled: false }, logger: { debug() {}, info() {}, warn() {}, error() {} } });
