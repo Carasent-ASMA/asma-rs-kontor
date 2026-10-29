@@ -9,6 +9,15 @@ import { asTakeoverClient, paseoWakeScheduleReader, readInstalledNavigatorCapabi
 describe("installed navigator capabilities", () => {
   const paseo = { agents: {}, workspaces: {} } as never;
 
+  it("keeps draft attachment unsupported even when a host advertises legacy draft APIs", () => {
+    const host = { supportsHostFeature: () => true, agents: { create: vi.fn(), ref: vi.fn(), attachSavedSummaryToDraft: vi.fn() }, workspaces: {} } as never;
+    const caps = readInstalledNavigatorCapabilities(host);
+    expect(caps.draftAttach).toEqual(UNSUPPORTED.draftAttach);
+    expect(caps.takeover).toEqual(UNSUPPORTED.takeover);
+    expect(caps.usageTotals.supported).toBe(true);
+    expect(caps.summaries.supported).toBe(true);
+  });
+
   it("holds takeover until admission and continuation are qualified", () => {
     const caps = readInstalledNavigatorCapabilities(paseo);
     expect(caps.takeover).toEqual(UNSUPPORTED.takeover);

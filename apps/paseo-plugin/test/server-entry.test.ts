@@ -86,6 +86,13 @@ describe("server entry floor mode", () => {
     started.cleanup();
   });
 
+  it("registers summary-only RPCs and exactly one capabilities handler without attachment", () => {
+    const started = start();
+    for (const name of ["sessions.navigator-capabilities", "sessions.summary-save", "sessions.summary-read", "sessions.summary-latest"]) expect(started.handlers.filter(item => item === name)).toHaveLength(1);
+    expect(started.handlers).not.toContain("sessions.summary-attach");
+    started.cleanup();
+  });
+
   it("registers the three hooks when floor.json is absent, with the mode line only", () => {
     const started = start();
     expect(started.hooks).toEqual(HOOKS);
