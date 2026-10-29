@@ -945,6 +945,73 @@ describe("universal takeover operation", () => {
     expect(h.effects.send).toHaveLength(1);
   });
 
+  it.each(["absent", "foreign"] as const)("does not send or create from Check when this operation's fence is %s", async (kind) => {
+    const h = await host({ loseCreateReply: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
+    const fence = join(h.root, `intent-${hash("agent-1")}.json`), operation = join(h.root, `takeover-operation-${review.reviewId}.json`);
+    if (kind === "absent") await rm(fence, { force: true });
+    else await writeFile(fence, JSON.stringify({ reviewId: randomUUID(), agentId: "agent-1", action: "archive", phase: "intent", fingerprint: "x", token: randomUUID() }));
+    const before = await readFile(operation, "utf8");
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "uncertain", next: "check" });
+    expect(checked.message).toContain("fence");
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 0]);
+    expect(await readFile(operation, "utf8")).toBe(before);
+  });
+
+  it("returns the delivered operation on repeated Check without another send", async () => {
+    const h = await host();
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "succeeded", next: "none" });
+    expect(await h.service.check(review.reviewId)).toEqual(checked);
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("refuses a fresh takeover after success with the exact recorded successor and no new effect", async () => {
+    const h = await host();
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
+    const refused = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(refused).toMatchObject({ state: "refused" });
+    expect(refused.message).toContain("successor-1");
+    expect(refused.message).toContain("does not create another successor");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("refuses a fresh takeover after a crash out of create before release without a second successor", async () => {
+    const h = await host({ failFirstSend: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    const refused = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(refused).toMatchObject({ state: "refused" });
+    expect(refused.message).toContain("successor-1");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+  });
+
+  it("fails closed on a corrupt successor marker even when a lineage label exists", async () => {
+    const h = await host();
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
+    await writeFile(join(h.root, `takeover-successor-${hash("agent-1")}.json`), "{not-json");
+    const unknown = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(unknown).toMatchObject({ state: "unknown" });
+    expect(unknown.message).toContain("successor record could not be read");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("uses the successor lineage label when no marker was written, before any summary or route", async () => {
+    const h = await host();
+    h.agents.set("successor-1", agent("successor-1", { labels: { [TAKEOVER_PREDECESSOR_LABEL]: "agent-1" } }));
+    const refused = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(refused).toMatchObject({ state: "refused" });
+    expect(refused.message).toContain("successor-1");
+    expect(refused.message).toContain(TAKEOVER_PREDECESSOR_LABEL);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length, h.effects.resolve.length]).toEqual([0, 0, 0, 0]);
+  });
+
   it("does not release a verified successor when the source was revived before Check", async () => {
     const h = await host({ loseCreateReply: true });
     const review = await h.ready();

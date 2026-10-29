@@ -684,6 +684,13 @@ const CARRIED_LABELS = ["role", "epic", "task", "ticket", TITLE_AUTO_LABEL, "orc
 export const TAKEOVER_PREDECESSOR_LABEL = "takeover.predecessor";
 const takeoverRecordSchema = z.object({ review: takeoverReviewSchema, requestId: z.string().uuid(), chosen: z.string().nullable(), chosenRoute: z.unknown().nullable().optional(), pinned: z.unknown(), nonce: z.string().nullable() }).strict();
 type TakeoverRecord = z.infer<typeof takeoverRecordSchema>;
+/** One durable source->successor record: a second takeover of the same source never creates another successor. */
+const successorMarkerSchema = z.object({
+  sourceAgentId: z.string().min(1), reviewId: z.string().uuid(), requestId: z.string().uuid(),
+  successorAgentId: z.string().min(1), successorTitle: z.string().min(1),
+  state: z.enum(["created", "succeeded"]), updatedAt: z.iso.datetime(),
+}).strict();
+type SuccessorMarker = z.infer<typeof successorMarkerSchema>;
 const associationSchema = z.object({ agentId: z.string(), bindingKey: z.string().regex(BINDING_KEY), reviewId: z.string() }).strict();
 const seal = (nonce: string, record: Pick<TakeoverReview, "reviewId" | "revision" | "agentId">, pinned: unknown) => hash(JSON.stringify([nonce, record.reviewId, record.revision, record.agentId, pinned]));
 const sameDigest = (left: string, right: string) => left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right));
@@ -786,6 +793,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   const file = (prefix: string, id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid review ID"); return join(root, `${prefix}-${id}.json`); };
   const intentPath = (agentId: string) => join(root, `intent-${hash(agentId)}.json`);
   const associationPath = (agentId: string) => join(root, `association-${hash(agentId)}.json`);
+  const successorMarkerPath = (agentId: string) => join(root, `takeover-successor-${hash(agentId)}.json`);
   const readRecord = (reviewId: string) => readDurable(file("takeover", reviewId), takeoverRecordSchema);
   const readOperation = (reviewId: string) => readDurable(file("takeover-operation", reviewId), takeoverOutcomeSchema);
   const stageOf = (state: TakeoverOutcome["state"], phase: TakeoverOutcome["phase"]): NonNullable<TakeoverOutcome["stage"]> =>
@@ -798,6 +806,38 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       : "delivering";
   const outcome = (record: TakeoverRecord, state: TakeoverOutcome["state"], phase: TakeoverOutcome["phase"], message: string, successor: TakeoverOutcome["successor"], next: TakeoverOutcome["next"]): TakeoverOutcome =>
     ({ reviewId: record.review.reviewId, revision: record.review.revision, agentId: record.review.agentId, state, phase, stage: stageOf(state, phase), message, successor, next, checkedAt: new Date().toISOString() });
+  /** Reads the source's durable successor marker; a corrupt or unreadable marker is not permission to duplicate. */
+  async function readSuccessorMarker(agentId: string): Promise<{ marker: SuccessorMarker | null } | { problem: string }> {
+    try { return { marker: await readDurable(successorMarkerPath(agentId), successorMarkerSchema) }; }
+    catch (error) { return { problem: `This session's successor record could not be read: ${errorText(error)}.` }; }
+  }
+  /** Every native session, archived included, whose own label names this source as its predecessor. */
+  async function labelledSuccessors(agentId: string): Promise<Agent[]> {
+    const found: Agent[] = [], cursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 1_000; page++) {
+      const result = await client.agents.list({ filter: { labels: { [TAKEOVER_PREDECESSOR_LABEL]: agentId }, includeArchived: true }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+      for (const { agent } of result.entries) if (agent.labels?.[TAKEOVER_PREDECESSOR_LABEL] === agentId) found.push(agent);
+      if (!result.pageInfo.hasMore) return found;
+      const next = result.pageInfo.nextCursor;
+      if (!next || cursors.has(next)) throw new Error("The successor-label inventory is incomplete; no takeover is allowed.");
+      cursors.add(next); cursor = next;
+    }
+    throw new Error("The successor-label inventory exceeded its bounded page walk; no takeover is allowed.");
+  }
+  /** Records this operation's one successor before any continuation; a different recorded successor is a conflict. */
+  async function recordSuccessor(record: TakeoverRecord, spec: SeatCreateSpec, id: string, state: SuccessorMarker["state"]): Promise<{ problem: "unreadable" | "conflict"; message: string } | null> {
+    const sourceAgentId = record.review.agentId, current = await readSuccessorMarker(sourceAgentId);
+    if ("problem" in current) return { problem: "unreadable", message: current.problem };
+    const next: SuccessorMarker = { sourceAgentId, reviewId: record.review.reviewId, requestId: spec.requestId, successorAgentId: id, successorTitle: spec.title, state, updatedAt: new Date().toISOString() };
+    if (current.marker && (current.marker.sourceAgentId !== sourceAgentId || current.marker.reviewId !== record.review.reviewId
+      || current.marker.requestId !== spec.requestId || current.marker.successorAgentId !== id))
+      return { problem: "conflict", message: `This session already records successor ${current.marker.successorAgentId} (“${current.marker.successorTitle}”) from operation ${current.marker.reviewId}. No other successor is created.` };
+    if (current.marker && ({ created: 0, succeeded: 1 } as const)[current.marker.state] >= ({ created: 0, succeeded: 1 } as const)[state]) return null;
+    try { await writeDurable(successorMarkerPath(sourceAgentId), next); }
+    catch (error) { return { problem: "unreadable", message: `This session's successor record could not be written: ${errorText(error)}.` }; }
+    return null;
+  }
   /** The record, null when the host confirms no such session, undefined when the read failed or named another. */
   async function exact(id: string): Promise<Agent | null | undefined> {
     try { const found = await client.agents.ref(id).refresh(); return !found ? null : found.agent.id === id ? found.agent : undefined; } catch { return undefined; }
@@ -813,6 +853,19 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (first === undefined) return answer("unknown", "This session could not be read on this host.");
     if (!first) return answer("refused", "This session is not on this host.");
     agent = first;
+    // Read the durable successor record before any summary, route or effect. A corrupt record is unknown, never a
+    // reason to create another successor.
+    const markerRead = await readSuccessorMarker(agentId);
+    if ("problem" in markerRead) return answer("unknown", markerRead.problem);
+    if (markerRead.marker) return answer("refused", `This session already has a recorded successor ${markerRead.marker.successorAgentId} (“${markerRead.marker.successorTitle}”) from operation ${markerRead.marker.reviewId}. Take over does not create another successor; follow that session or its Check.`);
+    // Fallback for a process that died after creation and before the marker: the successor's own lineage label is exact.
+    let labelled: Agent[];
+    try { labelled = await labelledSuccessors(agentId); }
+    catch (error) { return answer("unknown", `This session's successor-label check failed: ${errorText(error)}. Nothing is taken over.`); }
+    if (labelled.length) {
+      const [successor] = labelled;
+      return answer("refused", `This session already has a recorded successor ${successor!.id} (“${successor!.title ?? successor!.id}”) whose ${TAKEOVER_PREDECESSOR_LABEL} label names it. Take over does not create another successor; follow that session or its Check.`);
+    }
     const promotion = await promotionBindingFor(deps.promotionRoot, agentId, first.labels?.epic ?? null);
     if (promotion.state === "blocked") return answer("unknown", promotion.message);
     if (promotion.state === "settled") {
@@ -1053,6 +1106,12 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   /** Null when the successor is created and verified; otherwise the outcome that stops before its task is released. */
   async function afterCreate(record: TakeoverRecord, spec: SeatCreateSpec, created: CreateOutcome): Promise<TakeoverOutcome | null> {
     const named = { requestId: spec.requestId, agentId: created.agentId, title: spec.title };
+    // Record the one successor identity before any verification, promotion or continuation work.
+    if (created.agentId) {
+      const recorded = await recordSuccessor(record, spec, created.agentId, "created");
+      if (recorded) return outcome(record, recorded.problem === "conflict" ? "partial" : "uncertain", "create",
+        `${recorded.message} Its task was not released and no other successor is created.`, named, recorded.problem === "conflict" ? "none" : "check");
+    }
     if (created.state === "refused") return outcome(record, "partial", "create", `The session was retired, but its successor was refused: ${created.message}`, named, "none");
     if (created.state === "unknown") return outcome(record, "uncertain", "create", `The session was retired; its successor's creation is not confirmed. ${created.message}`, named, "check");
     if (created.state === "differences") return outcome(record, "partial", "create", `Successor ${created.agentId} was created with differences, so its task was not released. ${created.differences.join(" ")}`, named, "none");
@@ -1081,8 +1140,6 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   async function deliver(record: TakeoverRecord, spec: SeatCreateSpec, id: string, observeAfterError = true): Promise<TakeoverOutcome> {
     const wanted = releaseMessage(record.review.reviewId), named = { requestId: spec.requestId, agentId: id, title: spec.title };
     if (await observedRelease(id, wanted)) return succeeded(record, spec, id);
-    await writeDurable(file("takeover-operation", record.review.reviewId), outcome(record, "uncertain", "release",
-      `Successor “${spec.title}” (${id}) is verified; its one task-release intent is recorded. If nothing follows, Check reads it; nothing else is created.`, named, "check"));
     const sent = await client.agents.ref(id).send(TAKEOVER_PROMPT, { messageId: wanted }).then(() => null, (error: unknown) => error ?? "rejected");
     if (sent && !observeAfterError) return outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; nothing else is created and the same message ID is used if it must be sent.`, named, "check");
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -1094,10 +1151,15 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       : `Successor “${spec.title}” (${id}) is verified and its task prompt was accepted, but no delivery is observed on its timeline yet. Queued delivery is not continuation. Check reads it; nothing else is created.`, named, "check");
   }
   async function succeeded(record: TakeoverRecord, spec: SeatCreateSpec, id: string): Promise<TakeoverOutcome> {
+    const named = { requestId: spec.requestId, agentId: id, title: spec.title };
+    // The durable source->successor record settles before the operation does; a conflict is never overwritten.
+    const recorded = await recordSuccessor(record, spec, id, "succeeded");
+    if (recorded) return outcome(record, recorded.problem === "conflict" ? "partial" : "uncertain", "release",
+      `${recorded.message} The continuation is observed, but the operation is not settled as this successor.`, named, recorded.problem === "conflict" ? "none" : "check");
     // An Auto successor's chain is recorded for its exact ID; an explicit choice is this operation only.
     if ((record.pinned as Pinned).selection === "auto")
       await writeDurable(associationPath(id), { agentId: id, bindingKey: (record.pinned as Pinned).bindingKey, reviewId: record.review.reviewId }).catch(() => {});
-    return outcome(record, "succeeded", "done", `Taken over by “${spec.title}” (${id}) on ${spec.provider}/${spec.model}.`, { requestId: spec.requestId, agentId: id, title: spec.title }, "none");
+    return outcome(record, "succeeded", "done", `Taken over by “${spec.title}” (${id}) on ${spec.provider}/${spec.model}.`, named, "none");
   }
 
   async function apply(input: { reviewId: string; revision: number; digest: string }): Promise<TakeoverOutcome> {
@@ -1205,6 +1267,18 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (!record || !stored) throw new Error("No confirmed takeover of this review is on this host.");
     if (stored.next !== "check") return stored;
     const pinned = record.pinned as Pinned, spec = pinned.spec, agentId = record.review.agentId;
+    // Check performs effects only as this operation: the exact per-session fence must still name this review, agent,
+    // action and predecessor revision. A missing or foreign fence is read as unconfirmed and nothing is sent or created.
+    const lockPath = intentPath(agentId), bytes = await readFile(lockPath, "utf8").catch(() => null);
+    let fence: z.infer<typeof fenceSchema> | null = null;
+    try { fence = bytes ? fenceSchema.parse(JSON.parse(bytes)) : null; } catch { /* Not this operation's fence. */ }
+    const owned = !!bytes && fence?.reviewId === reviewId && fence.agentId === agentId && fence.action === "takeover" && fence.fingerprint === pinned.predecessor;
+    if (!owned) return { ...stored, state: "uncertain", next: "check", checkedAt: new Date().toISOString(),
+      message: "This takeover's operation fence is missing or belongs to another action. No continuation was sent and no successor was created. Check reads it again." };
+    const releaseIntent = (id: string) => outcome(record, "uncertain", "release",
+      `Successor “${spec.title}” (${id}) is verified; its one task-release intent is recorded. If nothing follows, Check reads it; nothing else is created.`,
+      { requestId: spec.requestId, agentId: id, title: spec.title }, "check");
+    const writeReleaseIntent = (id: string) => whileOwned(lockPath, bytes!, () => writeDurable(file("takeover-operation", reviewId), releaseIntent(id)));
     let result: TakeoverOutcome;
     if (stored.phase === "preserve") {
       const source = await exact(agentId);
@@ -1225,7 +1299,11 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       const revived = predecessorConflict(await exact(agentId));
       result = stopped ?? (revived
         ? outcome(record, "partial", "verify", `${revived} The verified successor is not released and no other successor is created.`, { requestId: spec.requestId, agentId: created.agentId, title: spec.title }, "none")
-        : created.agentId ? await deliver(record, spec, created.agentId) : outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is created again.", { requestId: spec.requestId, agentId: null, title: spec.title }, "check"));
+        : created.agentId
+          ? await writeReleaseIntent(created.agentId)
+            ? await deliver(record, spec, created.agentId)
+            : { ...stored, state: "uncertain", next: "check", checkedAt: new Date().toISOString(), message: "This takeover's fence changed before its release intent. No continuation was sent and no successor was created. Check reads it again." }
+          : outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is created again.", { requestId: spec.requestId, agentId: null, title: spec.title }, "check"));
     } else {
       const id = stored.successor?.agentId ?? "";
       const problem = id ? await verify(spec, id, agentId, false) : "no exact successor is named";
@@ -1234,22 +1312,16 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         ? outcome(record, "partial", "release", `${revived} The successor is not released and no other successor is created.`, stored.successor, "none")
         : problem
           ? outcome(record, "partial", "release", `The recorded successor is not verified: ${problem}. Its task was not released and no other successor is created.`, stored.successor, "none")
-          : await deliver(record, spec, id);
+          : await writeReleaseIntent(id)
+            ? await deliver(record, spec, id)
+            : { ...stored, state: "uncertain", next: "check", checkedAt: new Date().toISOString(), message: "This takeover's fence changed before its release intent. No continuation was sent and no other successor is created. Check reads it again." };
     }
     // Saved under this operation's own fence while it still holds the session; a settled result releases it.
-    const lockPath = intentPath(agentId), bytes = await readFile(lockPath, "utf8").catch(() => null);
-    let fence: z.infer<typeof fenceSchema> | null = null;
-    try { fence = bytes ? fenceSchema.parse(JSON.parse(bytes)) : null; } catch { /* Not this operation's fence. */ }
-    const save = async () => { await writeDurable(file("takeover-operation", reviewId), result); };
-    if (bytes && fence?.reviewId === reviewId && fence.action === "takeover") {
-      const kept = await whileOwned(lockPath, bytes, async () => {
-        await save();
-        if (settledTakeover(result)) await unlink(lockPath); else await writeFile(lockPath, JSON.stringify({ ...JSON.parse(bytes), phase: result.phase }), { mode: 0o600 });
-      });
-      return kept ? result : { ...result, message: `${result.message} This session's fence changed during the read, so this result was not recorded.` };
-    }
-    await save();
-    return result;
+    const kept = await whileOwned(lockPath, bytes!, async () => {
+      await writeDurable(file("takeover-operation", reviewId), result);
+      if (settledTakeover(result)) await unlink(lockPath); else await writeFile(lockPath, JSON.stringify({ ...JSON.parse(bytes!), phase: result.phase }), { mode: 0o600 });
+    });
+    return kept ? result : { ...result, message: `${result.message} This session's fence changed during the read, so this result was not recorded.` };
   }
   // Review revisions, confirmations and Check share one queue across service instances in this plugin worker.
   return {
