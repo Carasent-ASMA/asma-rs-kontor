@@ -5,7 +5,7 @@ import { useActionHelp } from "./control-help";
 import { spaceActivates, type Colors } from "./page-controls";
 import type { DirectoryEntry } from "./session-directory";
 import { sessionState, STATE_LABELS } from "./session-organization";
-import { compactAge, lastActivity, rowOrigin, recordedChildUsageDetail, tokenTotals, type SessionTotals } from "./session-row-format";
+import { compactAge, lastActivity, rowOrigin, recordedChildUsageCompact, tokenTotals, type SessionTotals } from "./session-row-format";
 import { SessionStateMarker } from "./session-state-marker";
 import { readableInk } from "./session-status-ink";
 import { exactTime, parseTime, type Clock } from "./session-time";
@@ -82,7 +82,7 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
   const { title, origin } = rowOrigin(entry, clock.now);
   const model = rowModel(entry);
   const tokens = tokenTotals(totals);
-  const recordedChild = recordedChildUsageDetail(totals);
+  const recordedChild = recordedChildUsageCompact(totals);
   const times = rowTimes(entry, opened, clock);
   const catalogCopy = entry.catalogCopyAt ? `catalog copy · as of ${entry.catalogCopyAt}` : null;
   const visibleNote = [note, catalogCopy].filter(Boolean).join(" · ") || null;
@@ -132,11 +132,10 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
         {origin.length ? <Text testID="session-row-origin" numberOfLines={1} style={{ ...ORIGIN, color: colors.foregroundMuted }}>{origin.join(" · ")}</Text> : null}
         <View testID="session-row-model" style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
           <VendorMark vendor={model.vendor} size={9} colors={colors} />
-          <Text numberOfLines={1} style={{ ...MODEL, flexShrink: 1, color: colors.foreground, fontVariant: ["tabular-nums"] }}>{[model.alias, model.effort].filter(Boolean).join(" · ")}</Text>
+          <Text numberOfLines={1} style={{ ...MODEL, minWidth: 0, flexShrink: 1, color: colors.foreground, fontVariant: ["tabular-nums"] }}>{[model.alias, model.effort].filter(Boolean).join(" · ")}</Text>
           <View style={{ flex: 1 }} />
-          <Text testID="session-row-tokens" style={{ ...MODEL, color: colors.foregroundMuted, fontVariant: ["tabular-nums"] }}>{tokens.input}   {tokens.output}</Text>
+          <Text testID="session-row-tokens" numberOfLines={1} style={{ ...MODEL, flexShrink: 0, color: colors.foregroundMuted, fontVariant: ["tabular-nums"] }}>{recordedChild ?? `${tokens.input}   ${tokens.output}`}</Text>
         </View>
-        {recordedChild ? <Text testID="session-row-recorded-child-usage" style={{ ...MODEL, color: colors.foregroundMuted }}>{recordedChild}</Text> : null}
         {visibleNote ? <Text testID="session-row-note" numberOfLines={1} style={{ ...MODEL, color: colors.foregroundMuted }}>{visibleNote}</Text> : null}
       </View>
       {/* Inside the body, so tapping the visible box or radio is the same single toggle or choice as the row. */}
