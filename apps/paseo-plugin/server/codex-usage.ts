@@ -3,19 +3,25 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rename, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { RECORDED_CHILD_USAGE_LABEL, RECORDED_CHILD_USAGE_CAVEAT, type RecordedChildUsage } from "../shared/session-navigator";
 
 const uuid = z.string().uuid();
 const number = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const countsSchema = z.object({ input_tokens: number, output_tokens: number, total_tokens: number,
   cached_input_tokens: number.optional(), cache_write_input_tokens: number.optional(), reasoning_output_tokens: number.optional() });
 type Counts = z.infer<typeof countsSchema>;
-const stateSchema = z.object({ version: z.literal(3), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
-  meta: z.boolean(), problem: z.enum(["identity mismatch", "unqualified format version", "fork or inherited scope is unqualified", "invalid identity metadata", "invalid cumulative counters", "inconsistent cumulative counters", "cumulative counter reset", "malformed usage record", "record exceeds the source bound"]).nullable(), counts: countsSchema.nullable(), baseline: countsSchema.nullable(), at: z.string().nullable() }).strict();
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const emptyRecorded = () => ({ input: 0, output: 0, total: 0, seen: {} as Record<string, string>, problem: null as string | null });
+const recordedStateSchema = z.object({ input: number, output: number, total: number,
+  seen: z.record(digest, digest).refine((value) => Object.keys(value).length <= 10_000), problem: z.string().nullable() });
+const stateSchema = z.object({ version: z.literal(4), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
+  meta: z.boolean(), forked: z.boolean(), recorded: recordedStateSchema, problem: z.enum(["identity mismatch", "unqualified format version", "fork or inherited scope is unqualified", "invalid identity metadata", "invalid cumulative counters", "inconsistent cumulative counters", "cumulative counter reset", "malformed usage record", "record exceeds the source bound"]).nullable(), counts: countsSchema.nullable(), baseline: countsSchema.nullable(), at: z.string().nullable() }).strict();
 type State = z.infer<typeof stateSchema>;
-export type CodexUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative" };
+export type CodexUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative"; recordedChildUsage?: RecordedChildUsage };
 export const CODEX_USAGE_LIMITS = [
-  "Codex 0.160.0 local provider cumulative snapshots only, joined by exact native thread ID in this host's configured/default Codex store.",
+  "Codex 0.160.0 local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store.",
   "Historical completeness and child-thread inclusion are unverified. Forked/inherited, reset, ambiguous, unsupported and incomplete sources remain unavailable; snapshots are never summed.",
+  "Recorded child response usage excludes parent history; completeness and billing unverified. At most 10,000 unique response records per source; larger indexes stay unavailable.",
   "Other provider routes and provider homes without a qualified exact source remain unknown. No provider session is started or resumed.",
 ];
 const unknown = (reason: string): CodexUsageRead => ({ input: null, output: null, source: `Codex cumulative usage unavailable: ${reason}. Historical/complete totals unavailable.`, scope: "provider-cumulative" });
@@ -23,18 +29,41 @@ const countKeys = ["input_tokens", "output_tokens", "total_tokens", "cached_inpu
 
 /** Interpret only identity and numeric usage records; never retain transcript text or sum cumulative values. */
 export function consumeCodexLine(state: State, line: string): void {
-  if (state.problem) return;
+  if (state.problem && (state.problem !== "fork or inherited scope is unqualified" || !state.meta)) return;
   try {
     const row = JSON.parse(line);
     // Revalidate every metadata boundary, including one appended after a cached offset.
     if (!state.meta || row?.type === "session_meta") {
+      state.meta = false;
       const meta = row?.payload;
       if (row?.type !== "session_meta" || meta?.id !== state.threadId) { state.problem = "identity mismatch"; return; }
       if (meta.cli_version !== "0.160.0" || meta.originator !== "codex_cli_rs") { state.problem = "unqualified format version"; return; }
-      if (meta.session_id !== meta.id || meta.forked_from_id || meta.parent_thread_id || typeof meta.source !== "string") { state.problem = "fork or inherited scope is unqualified"; return; }
+      if (meta.session_id !== meta.id || meta.parent_thread_id || typeof meta.source !== "string") { state.problem = "fork or inherited scope is unqualified"; return; }
+      if (meta.forked_from_id !== undefined && !uuid.safeParse(meta.forked_from_id).success) { state.problem = "invalid identity metadata"; return; }
+      state.forked = !!meta.forked_from_id;
+      if (state.forked) state.problem = "fork or inherited scope is unqualified";
       state.meta = true;
       return;
     }
+    if (row?.type === "token_usage_record") {
+      const record = row.payload;
+      // Other threads/sessions are never part of this recorded child metric.
+      if (record?.thread_id !== state.threadId || record?.session_id !== state.threadId) return;
+      const parsed = countsSchema.safeParse(record.usage), recorded = state.recorded;
+      if (recorded.problem) return;
+      if (!parsed.success || typeof record.response_id !== "string" || !record.response_id || record.response_id.length > 1024) { recorded.problem = "invalid response usage"; return; }
+      const usage = parsed.data;
+      if (usage.input_tokens + usage.output_tokens !== usage.total_tokens || (usage.cached_input_tokens ?? 0) > usage.input_tokens || (usage.reasoning_output_tokens ?? 0) > usage.output_tokens) { recorded.problem = "inconsistent response usage"; return; }
+      const key = createHash("sha256").update(record.response_id).digest("hex");
+      const value = createHash("sha256").update(JSON.stringify(countKeys.map((key) => usage[key] ?? null))).digest("hex");
+      if (recorded.seen[key]) { if (recorded.seen[key] !== value) recorded.problem = "conflicting response replay"; return; }
+      if (Object.keys(recorded.seen).length >= 10_000) { recorded.problem = "response index bound"; return; }
+      const input = recorded.input + usage.input_tokens, output = recorded.output + usage.output_tokens, total = recorded.total + usage.total_tokens;
+      if (![input, output, total].every(Number.isSafeInteger)) { recorded.problem = "response sum bound"; return; }
+      Object.assign(recorded, { input, output, total }); recorded.seen[key] = value;
+      return;
+    }
+    if (state.forked) return;
     if (row?.type !== "event_msg" || row?.payload?.type !== "token_count") return;
     const raw = row.payload.info?.total_token_usage;
     if (raw === undefined || raw === null) return;
@@ -83,14 +112,15 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
     try { file = await open(cacheFile(threadId), constants.O_RDONLY | constants.O_NOFOLLOW); }
     catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null; throw error; }
     try {
-      const buffer = Buffer.alloc(4097), result = await file.read(buffer, 0, buffer.length, 0);
-      if (result.bytesRead > 4096) throw new Error("cache bound");
+      const buffer = Buffer.alloc(2 * 1024 * 1024 + 1), result = await file.read(buffer, 0, buffer.length, 0);
+      if (result.bytesRead > 2 * 1024 * 1024) throw new Error("cache bound");
       const raw = JSON.parse(buffer.subarray(0, result.bytesRead).toString("utf8"));
       // v1 offsets were untrusted. Validate v2 before retaining its reset evidence.
       if (raw?.version === 1) return null;
-      const value = stateSchema.parse(raw?.version === 2 ? { ...raw, version: 3 } : raw);
+      const legacy = raw?.version === 2 || raw?.version === 3;
+      const value = stateSchema.parse(legacy ? { ...raw, version: 4, forked: false, recorded: emptyRecorded() } : raw);
       if (value.threadId !== threadId) throw new Error("cache identity");
-      if (raw.version === 2) return { ...value, offset: 0, meta: false, counts: null, at: null,
+      if (legacy) return { ...value, offset: 0, meta: false, counts: null, at: null,
         baseline: value.baseline ?? value.counts,
         problem: value.problem === "cumulative counter reset" ? value.problem : null };
       return value;
@@ -120,11 +150,11 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         if (!stat.isFile()) return unknown("source is not a regular file");
         const old = await cached(threadId);
         const state: State = old && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) ? old
-          : { version: 3, threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
+          : { version: 4, forked: false, recorded: emptyRecorded(), threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
         let position = state.offset, pending = Buffer.alloc(0);
         const end = stat.size;
         // A shared RPC budget bounds all requested sessions; unfinished scans retain only numeric state and offsets.
-        while (position < end && budget.bytes > 0 && !state.problem) {
+        while (position < end && budget.bytes > 0 && (!state.problem || (state.meta && state.problem === "fork or inherited scope is unqualified"))) {
           const size = Math.min(64 * 1024, end - position, budget.bytes); budget.bytes -= size;
           const buffer = Buffer.alloc(size), { bytesRead } = await file.read(buffer, 0, size, position);
           if (!bytesRead) break;
@@ -144,7 +174,16 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         if (!state.problem && state.offset === end && state.counts) state.baseline = state.counts;
         state.size = end; state.modified = stat.mtimeMs;
         await save(state);
-        if (state.problem) return unknown(state.problem);
+        if (state.problem) {
+          const result = unknown(state.problem);
+          if (state.problem === "fork or inherited scope is unqualified" && state.meta && state.offset === end && !state.recorded.problem && Object.keys(state.recorded.seen).length) {
+            result.recordedChildUsage = { scope: "recorded-child-responses", label: RECORDED_CHILD_USAGE_LABEL, qualification: RECORDED_CHILD_USAGE_CAVEAT,
+              input: state.recorded.input, output: state.recorded.output, total: state.recorded.total, responses: Object.keys(state.recorded.seen).length };
+          }
+          // Fork scans need the same continuation as cumulative scans until the source is exhausted.
+          if (state.problem === "fork or inherited scope is unqualified" && state.offset < end && position < end) return unknown("incomplete bounded source read");
+          return result;
+        }
         // Empty sources and partial final lines need an append, not an identical timed scan.
         if (position === end && (state.offset < end || !state.meta)) return unknown("awaiting source record completion");
         if (state.offset < end || !state.meta) return unknown("incomplete bounded source read");

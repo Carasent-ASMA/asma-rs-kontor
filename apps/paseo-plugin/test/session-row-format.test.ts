@@ -180,3 +180,11 @@ describe("row title and origin", () => {
     expect(rowOrigin({ ...(entry as object), workspaceName: "TSW • roles" } as never, NOW).origin).toEqual(["LSA", "ADHOC", "ADAM", "TSW • roles", "upd 2m"]);
   });
 });
+
+it("keeps child usage scope and qualification in Details without filling cumulative counts", () => {
+ const totals = { input: null, output: null, scope: "provider-cumulative" as const, source: "Fork cumulative unqualified",
+  recordedChildUsage: { scope: "recorded-child-responses" as const, label: "Recorded child response usage" as const, qualification: "Excludes parent history; completeness and billing unverified." as const, input: 1200, output: 20, total: 1220, responses: 2 } };
+ expect(tokenTotals(totals)).toMatchObject({ input: "reported ↓ —", output: "↑ —", spoken: expect.stringContaining("Session token totals unknown") });
+ expect(totalsDetail(totals)).toMatchObject({ label: "Provider-reported cumulative input ↓ and output ↑", value: expect.stringContaining("Recorded child response usage: ↓ 1,200 / ↑ 20") });
+ expect(totalsDetail(totals).value).toContain("Excludes parent history; completeness and billing unverified.");
+});

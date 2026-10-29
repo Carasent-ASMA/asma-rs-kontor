@@ -228,3 +228,13 @@ describe("DenseSessionRow", () => {
     expect(body.props.accessibilityLabel).toContain("Session token totals unknown");
   });
 });
+
+it("shows recorded child response usage separately while cumulative totals stay unknown", () => {
+ const { tree, body } = row(undefined, { input: null, output: null, scope: "provider-cumulative", source: "Fork cumulative unqualified",
+  recordedChildUsage: { scope: "recorded-child-responses", label: "Recorded child response usage", qualification: "Excludes parent history; completeness and billing unverified.", input: 1200, output: 20, total: 1220, responses: 2 } });
+ expect(text(byTestId(tree, "session-row-tokens"))).toContain("↓ —");
+ const detail = text(byTestId(tree, "session-row-recorded-child-usage"));
+ expect(detail).toContain("Recorded child response usage: ↓ 1,200 / ↑ 20");
+ expect(detail).toContain("Excludes parent history; completeness and billing unverified.");
+ expect(body.props.accessibilityLabel).toContain("Recorded child response usage");
+});
