@@ -16,7 +16,17 @@ export const admissionProblem = (path: string, sha256: string) =>
 
 /** Client recovery identity only. The existing server receipt remains the operation owner. */
 export function preparedState(sourceId: string) {
+  const listeners = new Set<() => void>();
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
   return {
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
     receipt: null as ProceduralReceipt | null,
     limits: [] as string[],
     problem: null as string | null,
@@ -25,8 +35,12 @@ export function preparedState(sourceId: string) {
     async import(calls: PreparedCalls, ref: Ref) {
       if (this.busy || this.receipt) return;
       this.problem = admissionProblem(ref.path, ref.sha256);
-      if (this.problem) return;
+      if (this.problem) {
+        notify();
+        return;
+      }
       this.busy = true;
+      notify();
       try {
         const answer = await calls.import({ sourceId, admission: ref });
         if (answer.receipt.sourceId !== sourceId)
@@ -38,6 +52,7 @@ export function preparedState(sourceId: string) {
         this.problem = String(error);
       } finally {
         this.busy = false;
+        notify();
       }
     },
     async act(calls: PreparedCalls, execute: boolean) {
@@ -52,6 +67,7 @@ export function preparedState(sourceId: string) {
       this.problem = null;
       // Set before dispatch: a lost reply may only be checked, never sent again by this client.
       if (execute) this.dispatched = true;
+      notify();
       try {
         const next = execute
           ? await calls.execute({
@@ -73,6 +89,7 @@ export function preparedState(sourceId: string) {
         this.problem = `Unconfirmed: ${String(error)}. Check the same operation; nothing is resent.`;
       } finally {
         this.busy = false;
+        notify();
       }
     },
   };

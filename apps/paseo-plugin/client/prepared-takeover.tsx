@@ -60,11 +60,15 @@ export function PreparedTakeoverSheet({
   const [path, setPath] = useState(""),
     [sha, setSha] = useState("");
   const [, redraw] = useState(0);
+  useEffect(() => {
+    const stop = model.subscribe(() => redraw((n) => n + 1));
+    // Read again after subscribing in case an operation settled between render and this effect.
+    redraw((n) => n + 1);
+    return stop;
+  }, [model]);
   const calls = { import: imported, execute, check };
   const run = (work: () => Promise<void>) => {
-    const pending = work();
-    redraw((n) => n + 1);
-    void pending.finally(() => redraw((n) => n + 1));
+    void work();
   };
   const receipt = model.receipt,
     inputProblem = admissionProblem(path, sha);
