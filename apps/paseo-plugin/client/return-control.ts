@@ -34,6 +34,7 @@ type RegisteredPill = {
 export function contributeReturnControl(
   client: PluginClientContext,
   screenId: string,
+  summaryAttachmentAvailable = false,
 ): () => void {
   const pills = new Map<string, RegisteredPill>();
   let stopped = false;
@@ -43,6 +44,7 @@ export function contributeReturnControl(
       ...props,
       openScreen: (input) => client.openScreen(input),
       screenId,
+      summaryAttachmentAvailable,
     });
 
   function removePill(agentId: string): void {

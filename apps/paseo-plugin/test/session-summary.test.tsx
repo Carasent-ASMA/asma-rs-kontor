@@ -1,10 +1,10 @@
 import { isValidElement } from "react";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { AttachOutcome, SummaryRevision } from "../shared/session-navigator";
+import type { SummaryRevision } from "../shared/session-navigator";
 
 // Each test gets a fresh renderer, so a saved summary never carries into another test.
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
-const host = vi.hoisted(() => ({ rpc: {} as Record<string, ReturnType<typeof vi.fn>>, copyText: null as unknown as Mock<(text: string) => Promise<void>> }));
+const host = vi.hoisted(() => ({ nativeAvailable: true, rpc: {} as Record<string, ReturnType<typeof vi.fn>>, copyText: null as unknown as Mock<(text: string) => Promise<void>> }));
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
 vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844 }), Pressable: "Pressable", Text: "Text", View: "View", ScrollView: "ScrollView", Image: "Image",
   BackHandler: { addEventListener: () => ({ remove() {} }) } }));
@@ -12,6 +12,9 @@ vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string })
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput", ScrollView: "ScrollView", copyText: (text: string) => host.copyText(text),
   Modal: Object.assign(function Modal() { return null; }, { Content: function ModalContent() { return null; } }) }));
 
+vi.mock("../client/summary-attachments", async (original) => ({ ...(await original<typeof import("../client/summary-attachments")>()), useSummaryAttachmentAvailability: () => host.nativeAvailable }));
+
+import { SummaryAttachmentHelp } from "../client/summary-attachments";
 import { AttachSheet, SummarySheet } from "../client/session-summary";
 import { Choices } from "../client/model-picker";
 import { DenseSessionRow } from "../client/dense-session-row";
@@ -37,7 +40,8 @@ const SUMMARY: SummaryRevision = { summaryId: "00000000-0000-4000-8000-000000000
 
 beforeEach(() => {
   harness.fresh();
-  host.rpc = { "sessions.summary-save": vi.fn(async () => SUMMARY), "sessions.summary-read": vi.fn(async () => SUMMARY), "sessions.summary-attach": vi.fn() };
+  host.nativeAvailable = true;
+  host.rpc = { "sessions.summary-save": vi.fn(async () => SUMMARY), "sessions.summary-read": vi.fn(async () => SUMMARY), "sessions.summary-latest": vi.fn(async () => ({ [SOURCE.id]: SUMMARY })), "sessions.summary-attach": vi.fn() };
   host.copyText = vi.fn(async () => {});
 });
 
@@ -94,11 +98,11 @@ describe("SummarySheet", () => {
     expect(banner(s.render())).toBe("Copied to clipboard · Saved r3 · Source linked");
   });
 
-  it("puts Copy again left and Attach to another seat right", async () => {
+  it("puts Copy again left and destination instructions right", async () => {
     const s = sheet();
     s.render(); await settle(); s.render(); await settle();
     const tree = s.render();
-    expect(footer(tree)).toEqual(["Copy again", "Attach to another seat…"]);
+    expect(footer(tree)).toEqual(["Copy again", "Choose attachment in destination…"]);
     press(button(tree, "summary-attach"));
     expect(s.onAttach).toHaveBeenCalledExactlyOnceWith(SUMMARY);
   });
@@ -108,7 +112,7 @@ describe("SummarySheet", () => {
     const s = sheet(reason);
     s.render(); await settle(); s.render(); await settle();
     const tree = s.render();
-    expect(button(tree, "summary-attach")!.props).toMatchObject({ accessibilityLabel: `Attach to another seat…. ${reason}`, disabled: true, tabIndex: 0 });
+    expect(button(tree, "summary-attach")!.props).toMatchObject({ accessibilityLabel: `Choose attachment in destination…. ${reason}`, disabled: true, tabIndex: 0 });
     expect(text(tree)).toContain(reason);
   });
   it("rereads the exact pin before every copy and never regenerates on Copy again", async () => {
@@ -166,70 +170,53 @@ describe("SummarySheet", () => {
 
 });
 
-describe("AttachSheet", () => {
-  const DESTINATIONS = [SOURCE, sessionEntry("agent-b", { title: "Billing" }), sessionEntry("agent-old", { title: "Old billing", archivedAt: "2026-10-20T09:00:00Z" }), sessionEntry("agent-c", { title: "Release notes" })];
-  const sheet = (newLead: Parameters<typeof AttachSheet>[0]["newLead"] = vi.fn<(revision: SummaryRevision) => void>()) => {
-    let tree: Element[] = [];
-    const render = () => (tree = walk(harness.current.render(() => AttachSheet({ source: SOURCE, revision: SUMMARY, destinations: DESTINATIONS, opened: new Map(), colors: COLORS, compact: true, newLead, onClose: vi.fn() }))));
-    render();
-    return { render, get tree() { return tree; } };
+describe("native AttachSheet", () => {
+  const sheet = (given: SummaryRevision | null = SUMMARY) => {
+    const onClose = vi.fn();
+    return { onClose, render: () => walk(harness.current.render(() => AttachSheet({ source: SOURCE, revision: given, colors: COLORS, onClose }))) };
   };
-  const rows = (tree: Element[]) => tree.filter((node) => node.type === DenseSessionRow).map((node) => (node.props.entry as { id: string }).id);
-  const pick = (s: ReturnType<typeof sheet>, id: string) => { press(s.tree.find((node) => node.type === DenseSessionRow && node.props.testID === `attach-destination-${id}`)); s.render(); };
-  const target = (s: ReturnType<typeof sheet>, id: "existing" | "new") => { (s.tree.find((node) => node.type === Choices)!.props.onSelect as (id: string) => void)(id); s.render(); };
-
-  it("offers every other live seat, never the source or an archived one", () => {
-    expect(rows(sheet().tree)).toEqual(["agent-b", "agent-c"]);
-  });
-
-  it("previews the draft with the source and revision once a destination is chosen", () => {
-    const s = sheet();
-    expect(s.tree.find((node) => node.props.testID === "attach-preview")).toBeUndefined();
-    expect(button(s.tree, "attach-confirm")!.props).toMatchObject({ disabled: true, accessibilityLabel: "Attach to draft. Choose a destination." });
-    pick(s, "agent-b");
-    const preview = text(walk(s.tree.find((node) => node.props.testID === "attach-preview")));
-    expect(preview).toContain("Draft preview · Billing");
-    expect(preview).toContain("Context from Route review (r3)");
-  });
-
-  it("attaches the pinned revision to the chosen draft, shows the outcome and sends nothing", async () => {
-    const drafted: AttachOutcome = { state: "drafted", message: "The summary is in Billing's draft for its operator to review.", destinationAgentId: "agent-b", summaryId: SUMMARY.summaryId, revision: 3 };
-    host.rpc["sessions.summary-attach"] = vi.fn(async () => drafted);
-    const s = sheet();
-    pick(s, "agent-b");
-    press(button(s.tree, "attach-confirm")); await settle(); s.render();
-    expect(host.rpc["sessions.summary-attach"]).toHaveBeenCalledExactlyOnceWith({ summaryId: SUMMARY.summaryId, revision: 3, destinationAgentId: "agent-b" });
-    expect(text(walk(s.tree.find((node) => node.props.testID === "attach-result")))).toBe(drafted.message);
-    expect(button(s.tree, "attach-confirm")!.props).toMatchObject({ accessibilityLabel: "Attached", disabled: true });
-    // A given revision is never saved again, and attaching is the only call: nothing is sent to the destination.
+  it("reads the exact saved pin and discloses native user selection without changing a draft or sending", async () => {
+    const s = sheet(); s.render(); await settle(); const tree = s.render();
+    expect(text(tree)).toContain("Kontor has not changed a draft or verified a destination.");
+    expect(text(tree)).toContain(`${SUMMARY.summaryId}:r3`);
+    expect(text(tree)).toContain("Only your native picker selection adds the attachment.");
+    expect(text(tree)).toContain("cannot insert remotely, verify an exact destination");
+    expect(host.rpc["sessions.summary-read"]).toHaveBeenCalledExactlyOnceWith({ summaryId: SUMMARY.summaryId, revision: 3 });
     expect(host.rpc["sessions.summary-save"]).not.toHaveBeenCalled();
-    expect(text(s.tree)).toContain("Review before sending. Nothing is sent automatically.");
+    expect(host.rpc["sessions.summary-attach"]).not.toHaveBeenCalled();
+    press(button(tree, "attach-cancel")); expect(s.onClose).toHaveBeenCalledOnce();
+    expect(host.copyText).not.toHaveBeenCalled();
   });
-
-  it("asks to check the destination's draft when the attach outcome is unknown", async () => {
-    host.rpc["sessions.summary-attach"] = vi.fn(async (): Promise<AttachOutcome> => ({ state: "unknown", message: "No reply from the draft owner.", destinationAgentId: "agent-b", summaryId: SUMMARY.summaryId, revision: 3 }));
-    const s = sheet();
-    pick(s, "agent-b");
-    press(button(s.tree, "attach-confirm")); await settle(); s.render();
-    expect(text(walk(s.tree.find((node) => node.props.testID === "attach-result")))).toBe("No reply from the draft owner. Check the destination's draft before trying again.");
+  it("offers only an unavailable explanation when the native source cannot register", async () => {
+    host.nativeAvailable = false; const s = sheet(); s.render(); await settle();
+    expect(text(s.render())).toContain("cannot register");
+    expect(host.rpc["sessions.summary-read"]).not.toHaveBeenCalled();
+    expect(host.rpc["sessions.summary-save"]).not.toHaveBeenCalled();
   });
-
-  it("opens New lead with the pinned revision", () => {
-    const newLead = vi.fn();
-    const s = sheet(newLead);
-    target(s, "new");
-    const start = button(s.tree, "attach-new-lead")!;
-    expect(start.props).toMatchObject({ accessibilityLabel: "New lead with r3", disabled: false });
-    press(start);
-    expect(newLead).toHaveBeenCalledExactlyOnceWith(SUMMARY);
+  it("reads latest without generating and reports an absent summary", async () => {
+    host.rpc["sessions.summary-latest"] = vi.fn(async () => ({ [SOURCE.id]: null }));
+    const s = sheet(null); s.render(); await settle();
+    expect(text(s.render())).toContain("Use Summarize & copy first");
+    expect(host.rpc["sessions.summary-save"]).not.toHaveBeenCalled();
+  });
+  it.each(["empty", "malformed", "wrong source", "changed text"])("refuses %s summary data", async kind => {
+    host.rpc["sessions.summary-read"] = vi.fn(async () => kind === "malformed" ? {} : { ...SUMMARY, text: kind === "empty" ? "" : kind === "changed text" ? "different" : SUMMARY.text, sourceAgentId: kind === "wrong source" ? "elsewhere" : SOURCE.id });
+    const s = sheet(); s.render(); await settle(); const tree = s.render();
+    expect(tree.some(node => node.props.testID === "attach-revision-identifier")).toBe(false);
     expect(host.rpc["sessions.summary-attach"]).not.toHaveBeenCalled();
   });
+});
 
-  it("shows why New lead is not offered when the surface gives a reason instead", () => {
-    const reason = "New lead opens only from Kontor's Sessions.";
-    const s = sheet(reason);
-    target(s, "new");
-    expect(button(s.tree, "attach-new-lead")!.props).toMatchObject({ disabled: true, accessibilityLabel: expect.stringContaining(`. ${reason}`) });
-    expect(text(s.tree)).toContain(reason);
+
+describe("destination composer instructions", () => {
+  it.each([true, false])("opens and dismisses instructions with source availability %s without any RPC or send", available => {
+    const render = () => walk(harness.current.render(() => SummaryAttachmentHelp({ available, colors: COLORS })));
+    let tree = render(); expect(tree.some(node => node.props.testID === "summary-native-instructions")).toBe(false);
+    press(button(tree, "summary-native-help")); tree = render();
+    expect(text(tree)).toContain(available ? "Only your native picker selection" : "cannot register");
+    press(button(tree, "summary-native-help")); tree = render();
+    expect(tree.some(node => node.props.testID === "summary-native-instructions")).toBe(false);
+    for (const rpc of Object.values(host.rpc)) expect(rpc).not.toHaveBeenCalled();
+    expect(host.copyText).not.toHaveBeenCalled();
   });
 });

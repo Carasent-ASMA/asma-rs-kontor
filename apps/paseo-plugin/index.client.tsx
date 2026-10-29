@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { createElement, useEffect } from "react";
 import type {
   PluginClientContext,
+  PluginScreenProps,
   PluginSidebarItemProps,
 } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
@@ -15,6 +16,8 @@ import {
   startHostDirectory,
 } from "./client/use-session-directory";
 import { forgetWorkspaceDirectories } from "./client/use-workspace-directory";
+
+import { registerSummaryAttachments, SummaryAttachmentAvailability } from "./client/summary-attachments";
 
 export const SESSIONS_SCREEN_ID = "sessions";
 export const SESSIONS_SIDEBAR_ID = "sessions";
@@ -55,12 +58,14 @@ function SessionsSidebarItem({
 }
 
 export default function contribute(client: PluginClientContext): () => void {
+  const summaryAttachments = registerSummaryAttachments(client);
+  const SummaryScreen = (props: PluginScreenProps) => createElement(SummaryAttachmentAvailability.Provider, { value: summaryAttachments.available }, createElement(KontorScreen, props));
   contributePromotionCommand(client);
   const cleanups = [
     client.addScreen({
       id: SESSIONS_SCREEN_ID,
       title: "Kontor",
-      Component: KontorScreen,
+      Component: SummaryScreen,
     }),
     client.addSidebarHeaderItem({
       id: SESSIONS_SIDEBAR_ID,
@@ -99,9 +104,10 @@ export default function contribute(client: PluginClientContext): () => void {
       },
     }),
   ];
-  const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID);
+  const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID, summaryAttachments.available);
   const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
   return () => {
+    runCleanup("summary attachments", summaryAttachments.remove);
     runCleanup("retained directories", () => disposeRetainedDirectories());
     runCleanup("workspace directories", forgetWorkspaceDirectories);
     runCleanup("plan control", stopPlanControl);

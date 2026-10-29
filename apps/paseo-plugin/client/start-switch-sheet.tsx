@@ -1,3 +1,4 @@
+import { SummaryAttachmentHelp } from "./summary-attachments";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
@@ -438,7 +439,7 @@ export function StartSwitchSheet({ anchor, root, rootSize, onClose, ...props }: 
  * session navigation, so each open is handed once to the Kontor screen, which opens it by exact ID (`openHandOff`).
  * Whether this app lets plugins open sessions is the screen's to say, so rows stay openable here.
  */
-export function StartSwitchPopover(props: PluginButtonContentProps & { openScreen: (input: PluginOpenScreenInput) => void; screenId: string }) {
+export function StartSwitchPopover(props: PluginButtonContentProps & { openScreen: (input: PluginOpenScreenInput) => void; screenId: string; summaryAttachmentAvailable?: boolean }) {
   const { host, theme, layout, workspaceId, close, openScreen, screenId } = props;
   const hostStatus = useHosts().find((candidate) => candidate.serverId === host.id)?.status ?? "offline";
   // Reads the shared directory without setting its Archived choice; the switcher leaves archived sessions out.
@@ -468,7 +469,7 @@ export function StartSwitchPopover(props: PluginButtonContentProps & { openScree
       return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };
     },
     onClose: close, initialScope: { workspaceId }, popover: true, currentId: props.context === "agent" ? props.agentId : null, currentWorkspaceId: workspaceId });
-  return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}{footer}</View></ControlHelpProvider>;
+  return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}{footer}<SummaryAttachmentHelp available={props.summaryAttachmentAvailable ?? false} colors={theme.colors} /></View></ControlHelpProvider>;
 }
 
 /** Open and the shared archive X have independent hit areas; the action is never nested in Open. */

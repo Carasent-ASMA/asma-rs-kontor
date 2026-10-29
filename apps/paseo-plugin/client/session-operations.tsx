@@ -1,3 +1,4 @@
+import { useSummaryAttachmentAvailability, SUMMARY_ATTACHMENT_UNAVAILABLE } from "./summary-attachments";
 import { PreparedTakeoverSheet, usePreparedCapability } from "./prepared-takeover";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text } from "react-native";
@@ -95,7 +96,8 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const pending = takeover.run?.seats.filter(unresolved) ?? [];
   const settle = (id: string) => { setSheet({ kind: "results" }); takeover.act(id); };
   const summaryUnavailable = offline ?? reason("summaries");
-  const attachUnavailable = summaryUnavailable ?? reason("draftAttach");
+  const nativeAttachments = useSummaryAttachmentAvailability();
+  const attachUnavailable = offline ?? (!nativeAttachments ? SUMMARY_ATTACHMENT_UNAVAILABLE : null);
   const actions = (entry: DirectoryEntry): SessionAction[] => {
     const seat = pending.find((one) => one.id === entry.id), next = seat && seatAction(seat);
     return [
@@ -108,15 +110,14 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
         footer: disclosure, unavailable: takeoverUnavailable([entry]), perform: () => start([entry], null),
         option: { label: "Auto", accessibilityLabel: `Choose a model for taking over ${entry.title}`, unavailable: reason("takeoverRoute"), perform: () => setSheet({ kind: "picker", seats: [entry] }) } },
       { key: "summarize", label: "Summarize & copy", icon: "FileText", unavailable: summaryUnavailable, perform: () => setSheet({ kind: "summary", source: entry }) },
-      { key: "attach", label: "Attach summary to another seat…", icon: "GitFork", unavailable: attachUnavailable, perform: () => setSheet({ kind: "attach", source: entry, revision: null }) },
+      { key: "attach", label: "Choose summary attachment in destination…", icon: "GitFork", unavailable: attachUnavailable, perform: () => setSheet({ kind: "attach", source: entry, revision: null }) },
     ];
   };
   const close = () => setSheet(null);
   const layer = sheet?.kind === "prepared" ? <PreparedTakeoverSheet hostId={hostId} source={sheet.source} colors={colors} onClose={close} />
     : sheet?.kind === "summary" ? <SummarySheet source={sheet.source} colors={colors} attachUnavailable={attachUnavailable} onClose={close}
       onAttach={(revision) => setSheet({ kind: "attach", source: sheet.source, revision })} />
-    : sheet?.kind === "attach" ? <AttachSheet source={sheet.source} revision={sheet.revision} destinations={entries} opened={opened} colors={colors} compact={compact} onClose={close}
-      newLead={typeof newLead === "string" ? newLead : (revision) => { close(); newLead(sheet.source, revision); }} />
+    : sheet?.kind === "attach" ? <AttachSheet source={sheet.source} revision={sheet.revision} colors={colors} onClose={close} />
     : sheet?.kind === "picker" ? <TakeoverPicker seats={sheet.seats} disclosure={disclosure} colors={colors} compact={compact} onCancel={close} onUse={(route) => start(sheet.seats, route)} />
     : sheet?.kind === "results" && takeover.run ? <TakeoverResults run={takeover.run} colors={colors} onRetry={takeover.retry} onSeat={takeover.act} onDecline={takeover.decline} onClose={() => { close(); takeover.clear(); }} />
     : null;

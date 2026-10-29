@@ -313,7 +313,7 @@ describe("Kontor composer controls share one host directory", () => {
     const releaseWalk = host.holdWalk();
     const controls = fakeControls();
 
-    const stop = contributeReturnControl(controls.client, "sessions");
+    const stop = contributeReturnControl(controls.client, "sessions", true);
     startHostDirectory("host-a");
     await settle();
 
@@ -361,7 +361,7 @@ describe("Kontor composer controls share one host directory", () => {
     expect(popover(controls.pillFor("s-2"))).toBe(Content);
     const body = Content({ host: { id: "host-a", label: "Host A" }, close: vi.fn() });
     expect(body.type).toBe(StartSwitchPopover);
-    expect(body.props).toMatchObject({ screenId: "sessions", host: { id: "host-a" } });
+    expect(body.props).toMatchObject({ screenId: "sessions", host: { id: "host-a" }, summaryAttachmentAvailable: true });
     body.props.openScreen({ screenId: "sessions" });
     expect(controls.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
     expect(readRecent("host-a")).toEqual(beforeReturn);

@@ -4,13 +4,15 @@ import type { NavigatorCapabilities, SummaryRevision } from "../shared/session-n
 
 // Each test gets a fresh renderer, so one host's sheets and runs never carry into another test.
 const harness = await vi.hoisted(async () => { const { deferredReact } = await import("./hermes-scoping"); const box = { current: deferredReact(), fresh: () => { box.current = deferredReact(); } }; return box; });
-const host = vi.hoisted(() => ({ rpc: {} as Record<string, ReturnType<typeof vi.fn>>, toast: { show: () => {} } }));
+const host = vi.hoisted(() => ({ nativeAvailable: true, rpc: {} as Record<string, ReturnType<typeof vi.fn>>, toast: { show: () => {} } }));
 vi.mock("react", async (original) => ({ ...(await original<typeof import("react")>()), ...Object.fromEntries((["useState", "useRef", "useMemo", "useCallback", "useEffect"] as const).map((name) => [name, (...args: unknown[]) => (harness.current.react[name] as (...values: unknown[]) => unknown)(...args)])) }));
 vi.mock("react-native", () => ({ Platform: { OS: "web" }, useWindowDimensions: () => ({ width: 390, height: 844 }), Pressable: "Pressable", Text: "Text", View: "View", ScrollView: "ScrollView", Image: "Image",
   BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => host.rpc[contract.name] }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput", ScrollView: "ScrollView", copyText: async () => {}, useToast: () => host.toast,
   Modal: Object.assign(function Modal() { return null; }, { Content: function ModalContent() { return null; } }) }));
+
+vi.mock("../client/summary-attachments", async (original) => ({ ...(await original<typeof import("../client/summary-attachments")>()), useSummaryAttachmentAvailability: () => host.nativeAvailable }));
 
 import { useSessionOperations } from "../client/session-operations";
 import { AttachSheet } from "../client/session-summary";
@@ -32,6 +34,7 @@ const SUMMARY: SummaryRevision = { summaryId: "00000000-0000-4000-8000-000000000
 
 beforeEach(() => {
   harness.fresh();
+  host.nativeAvailable = true;
   host.toast = { show: vi.fn() };
   host.rpc = {
     "sessions.procedural-takeover.capability": vi.fn(async () => ({ supported: true, limits: [] })),
@@ -137,13 +140,14 @@ describe("useSessionOperations gating", () => {
     expect(ops.takeover([A, B])).toMatchObject({ unavailable: null, auto: reason });
   });
 
-  it("gates Summarize on saved summaries and Attach on saved summaries and draft attach", async () => {
-    const noStore = "This host has no saved summary store.", noDraft = "This Paseo app gives plugins no way to place a draft.";
-    const stored = (await mount({}, { ...SUPPORTED, summaries: off(noStore) })).render();
-    expect([action(stored, A, "summarize").unavailable, action(stored, A, "attach").unavailable]).toEqual([noStore, noStore]);
-    harness.fresh();
-    const drafted = (await mount({}, { ...SUPPORTED, draftAttach: off(noDraft) })).render();
-    expect([action(drafted, A, "summarize").unavailable, action(drafted, A, "attach").unavailable]).toEqual([null, noDraft]);
+  it("gates Summarize separately from native user-selected attachment availability", async () => {
+    const noStore = "This host has no generation route.";
+    const ops = (await mount({}, { ...SUPPORTED, summaries: off(noStore), draftAttach: off("No remote draft insertion") })).render();
+    expect(action(ops, A, "summarize").unavailable).toBe(noStore);
+    expect(action(ops, A, "attach").unavailable).toBeNull();
+    host.nativeAvailable = false;
+    const unavailable = (await mount()).render();
+    expect(action(unavailable, A, "attach").unavailable).toContain("cannot register");
   });
 });
 
@@ -301,19 +305,15 @@ describe("useSessionOperations unfinished takeover", () => {
 });
 
 describe("useSessionOperations attach", () => {
-  it("passes the surface's reason for no New lead through to Attach", async () => {
-    const reason = "New lead opens only from Kontor's Sessions.";
-    const h = await mount({ newLead: reason });
-    action(h.render(), A, "attach").perform();
-    expect(layer(h.render())).toMatchObject({ type: AttachSheet, props: { newLead: reason, revision: null } });
-  });
-
-  it("closes Attach and opens New lead with its source and revision", async () => {
-    const h = await mount();
-    action(h.render(), A, "attach").perform();
-    (layer(h.render())!.props.newLead as (revision: SummaryRevision) => void)(SUMMARY);
-    expect(h.props.newLead).toHaveBeenCalledExactlyOnceWith(A, SUMMARY);
+  it("opens only a native-selection guide and cancellation sends nothing", async () => {
+    const h = await mount(); action(h.render(), A, "attach").perform();
+    const current = layer(h.render())!;
+    expect(current).toMatchObject({ type: AttachSheet, props: { source: A, revision: null } });
+    expect(current.props).not.toHaveProperty("newLead");
+    (current.props.onClose as () => void)();
     expect(layer(h.render())).toBeNull();
+    expect(h.props.newLead).not.toHaveBeenCalled();
+    expect(host.rpc["sessions.takeover-apply"]).not.toHaveBeenCalled();
   });
 });
 

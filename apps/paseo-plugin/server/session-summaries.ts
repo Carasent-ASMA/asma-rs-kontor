@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { readNavigatorCapabilities, UNSUPPORTED, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type NavigatorCapabilities, type Capability, type SummaryPin, type SummaryRevision, type SummaryHistoryBoundary } from "../shared/session-navigator";
+import { searchSummaryAttachments, summaryAttachmentIdentifier } from "../shared/summary-attachments";
 import { stockSummaryGenerator } from "./stock-summary-generator";
 import { readConfig } from "./config";
 
@@ -143,6 +144,35 @@ export async function readPinnedSummary(root: string, pin: SummaryPin): Promise<
   throw new Error("That summary revision is not stored on this host.");
 }
 
+/** Search reads immutable revisions only; the stock picker supplies no destination or selection receipt. */
+export async function savedSummaryResources(root: string, query: string) {
+  const { readdir } = await import("node:fs/promises");
+  let names: string[];
+  try { names = await readdir(root); }
+  catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return { items: [] }; throw error; }
+  const revisions: SummaryRevision[] = [];
+  const ids = new Set<string>();
+  for (const name of names.sort()) {
+    if (!name.startsWith("source-") || !name.endsWith(".json")) continue;
+    let store: SummaryStore;
+    try { store = storeSchema.parse(JSON.parse(await readFile(join(root, name), "utf8"))); }
+    catch { throw new Error("A saved summary is unreadable. No attachment choices were returned."); }
+    for (const [key, revision] of Object.entries(store.revisions)) {
+      if (key !== String(revision.revision) || ids.has(summaryAttachmentIdentifier(revision.summaryId, revision.revision)) || revision.summaryId !== store.summaryId || revision.sourceAgentId !== store.sourceAgentId || !revision.text.trim() || Object.values(revision.sections).some(text => !text.trim()) || revision.text !== formatSummaryText(revision.sections)) throw new Error("A saved summary is empty or inconsistent. No attachment choices were returned.");
+      ids.add(summaryAttachmentIdentifier(revision.summaryId, revision.revision));
+      revisions.push(revision);
+    }
+  }
+  const needle = query.trim().toLowerCase();
+  const exactPin = /^[a-f0-9-]{36}:r[1-9][0-9]*$/.test(needle);
+  const items = revisions.sort((a, b) => b.savedAt.localeCompare(a.savedAt) || b.revision - a.revision || a.summaryId.localeCompare(b.summaryId))
+    .filter(revision => exactPin ? summaryAttachmentIdentifier(revision.summaryId, revision.revision).toLowerCase() === needle : `${summaryAttachmentIdentifier(revision.summaryId, revision.revision)} ${revision.sourceTitle} ${revision.sourceAgentId}`.toLowerCase().includes(needle)).slice(0, 50)
+    .map(revision => ({ id: summaryAttachmentIdentifier(revision.summaryId, revision.revision), identifier: summaryAttachmentIdentifier(revision.summaryId, revision.revision),
+      title: `${revision.sourceTitle} · r${revision.revision}`, subtitle: `Source ${revision.sourceAgentId} · until ${revision.cutoff}`,
+      url: `urn:kontor:summary:${revision.summaryId}:${revision.revision}`, text: revision.text, resourceType: "kontor-summary-revision" as const }));
+  return { items };
+}
+
 export function summaryStateRoot() {
   return join(dirname(readConfig().paseoWorktreesRoot), "plugin-state", "kontor", "session-summaries-v1");
 }
@@ -159,6 +189,7 @@ export function contributeSessionSummaries(server: PluginServerContext, options:
   const root = options.root ?? summaryStateRoot();
   const capabilities = options.capabilities ?? summaryOnlyNavigatorCapabilities;
   server.handle(readNavigatorCapabilities, (_input, { paseo }) => capabilities(paseo));
+  server.handle(searchSummaryAttachments, ({ query }) => savedSummaryResources(root, query));
   server.handle(saveSummary, (input, { paseo }) => sessionSummaryService(paseo, root).save(input.agentId));
   server.handle(readSummary, (input) => readPinnedSummary(root, input));
   server.handle(latestSummaries, (input, { paseo }) => sessionSummaryService(paseo, root).latest(input.agentIds));
