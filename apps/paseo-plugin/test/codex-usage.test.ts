@@ -3,7 +3,7 @@ import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, write
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { usageTotalsSchema } from "../shared/session-navigator";
-import { createCodexUsageReader } from "../server/codex-usage";
+import { createCodexUsageReader, FORK_CUMULATIVE_UNQUALIFIED } from "../server/codex-usage";
 const ID = "00000000-0000-4000-8000-000000000001", OTHER = "00000000-0000-4000-8000-000000000002";
 let root: string, cache: string, source: string;
 const meta = (id = ID, patch = {}) => JSON.stringify({ type: "session_meta", payload: { id, session_id: id, cli_version: "0.160.0", originator: "codex_cli_rs", source: "cli", ...patch } });
@@ -212,5 +212,35 @@ describe("recorded child response usage", () => {
   const partial = await reader().read(ID, { bytes: 1024 * 1024 });
   expect(partial.source).toContain("incomplete bounded"); expect(partial.recordedChildUsage).toBeUndefined();
   expect(await reader().read(ID)).toMatchObject({ input: null, recordedChildUsage: { input: 300, output: 15, total: 315, responses: 2 } });
+ });
+});
+
+describe("fork cumulative qualification boundary", () => {
+ it("keeps a recoverable parent baseline and disagreeing counter families unqualified", async () => {
+  const parent = lines(meta(OTHER), event(1000, 40));
+  await writeFile(source.replace(ID, OTHER), parent);
+  const inherited = { forked_from_id: OTHER, forked_from_ordinal_exclusive: 2, history_mode: "paginated",
+   history_base: { thread_id: OTHER, end_ordinal_exclusive: 2, end_byte_offset: Buffer.byteLength(parent) } };
+  await writeFile(source, lines(meta(ID, inherited), event(1700, 90),
+   responseUsage("one", 100, 5, { thread_token_usage: { input_tokens: 1300, output_tokens: 65, total_tokens: 1365 } }),
+   responseUsage("two", 200, 8, { thread_token_usage: { input_tokens: 1500, output_tokens: 73, total_tokens: 1573 } })));
+  // This numeric baseline is readable; the missing fact is its authoritative inherited scope.
+  expect(await reader().read(OTHER)).toMatchObject({ input: 1000, output: 40 });
+  const result = await reader().read(ID);
+  expect(result).toMatchObject({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining(FORK_CUMULATIVE_UNQUALIFIED),
+   recordedChildUsage: { input: 300, output: 13, total: 313, responses: 2, label: "Recorded child response usage", qualification: "Excludes parent history; completeness and billing unverified." } });
+  expect(await reader().read(ID)).toEqual(result);
+ });
+ it("does not equate a physical history base with the logical fork boundary after revert", async () => {
+  const physical = "00000000-0000-4000-8000-000000000003";
+  await writeFile(source, lines(meta(ID, { forked_from_id: OTHER, forked_from_ordinal_exclusive: 100, history_mode: "paginated",
+   history_base: { thread_id: physical, end_ordinal_exclusive: 2, end_byte_offset: 1000 } }), event(2000, 80), responseUsage("one", 100, 8)));
+  expect(await reader().read(ID)).toMatchObject({ input: null, output: null, source: expect.stringContaining("logical fork and physical history boundaries"), recordedChildUsage: { input: 100, output: 8 } });
+ });
+ it("never upgrades inherited legacy snapshots alone into child or complete totals", async () => {
+  await writeFile(source, lines(meta(ID, { forked_from_id: OTHER, forked_from_ordinal_exclusive: 2 }), event(1700, 90), event(1800, 98)));
+  const result = await reader().read(ID);
+  expect(result).toMatchObject({ input: null, output: null, source: expect.stringContaining("no qualified inherited-counter contract") });
+  expect(result.recordedChildUsage).toBeUndefined();
  });
 });
