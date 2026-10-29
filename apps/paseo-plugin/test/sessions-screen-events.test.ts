@@ -1800,7 +1800,7 @@ describe("SessionsScreen toolbar events", () => {
     const screen = renderResults(compact);
     expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
     const row = screen.result("found");
-    expect(row.props.testID).toBe("sessions-result-found");
+    expect(findByTestID(row, "sessions-result-found").props.testID).toBe("sessions-result-found");
     // The origin ends with the Updated age, the same at every width; the role leaves the title for the origin.
     expect(textOf(findByTestID(row, "session-row-origin"))).toBe("SWE · Workspace · upd 3h");
     expect(textOf(findByTestID(screen.result("found-too"), "session-row-origin"))).toBe("QA · Workspace · upd now");
