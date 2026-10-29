@@ -9,7 +9,7 @@ const number = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const countsSchema = z.object({ input_tokens: number, output_tokens: number, total_tokens: number,
   cached_input_tokens: number.optional(), cache_write_input_tokens: number.optional(), reasoning_output_tokens: number.optional() });
 type Counts = z.infer<typeof countsSchema>;
-const stateSchema = z.object({ version: z.literal(1), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
+const stateSchema = z.object({ version: z.literal(2), threadId: uuid, file: z.string(), inode: z.string(), size: number, modified: z.number().nonnegative(), offset: number,
   meta: z.boolean(), problem: z.enum(["identity mismatch", "unqualified format version", "fork or inherited scope is unqualified", "invalid identity metadata", "invalid cumulative counters", "inconsistent cumulative counters", "cumulative counter reset", "malformed usage record", "record exceeds the source bound"]).nullable(), counts: countsSchema.nullable(), baseline: countsSchema.nullable(), at: z.string().nullable() }).strict();
 type State = z.infer<typeof stateSchema>;
 export type CodexUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative" };
@@ -24,19 +24,18 @@ const countKeys = ["input_tokens", "output_tokens", "total_tokens", "cached_inpu
 /** Interpret only identity and numeric usage records; never retain transcript text or sum cumulative values. */
 export function consumeCodexLine(state: State, line: string): void {
   if (state.problem) return;
-  if (!state.meta) {
-    try {
-      const row = JSON.parse(line), meta = row?.payload;
+  if (state.meta && !line.includes('"token_count"') && !line.includes('"session_meta"')) return;
+  try {
+    const row = JSON.parse(line);
+    // Revalidate every metadata boundary, including one appended after a cached offset.
+    if (!state.meta || row?.type === "session_meta") {
+      const meta = row?.payload;
       if (row?.type !== "session_meta" || meta?.id !== state.threadId) { state.problem = "identity mismatch"; return; }
       if (meta.cli_version !== "0.160.0" || meta.originator !== "codex_cli_rs") { state.problem = "unqualified format version"; return; }
       if (meta.session_id !== meta.id || meta.forked_from_id || meta.parent_thread_id || typeof meta.source !== "string") { state.problem = "fork or inherited scope is unqualified"; return; }
       state.meta = true;
-    } catch { state.problem = "invalid identity metadata"; }
-    return;
-  }
-  if (!line.includes('"token_count"')) return;
-  try {
-    const row = JSON.parse(line);
+      return;
+    }
     if (row?.type !== "event_msg" || row?.payload?.type !== "token_count") return;
     const raw = row.payload.info?.total_token_usage;
     if (raw === undefined || raw === null) return;
@@ -46,7 +45,7 @@ export function consumeCodexLine(state: State, line: string): void {
     if (next.input_tokens + next.output_tokens !== next.total_tokens || (next.cached_input_tokens ?? 0) > next.input_tokens || (next.reasoning_output_tokens ?? 0) > next.output_tokens) { state.problem = "inconsistent cumulative counters"; return; }
     if (state.counts && countKeys.some((key) => state.counts![key] !== undefined && next[key] !== undefined && next[key]! < state.counts![key]!)) { state.problem = "cumulative counter reset"; return; }
     state.counts = next; state.at = row.timestamp;
-  } catch { state.problem = "malformed usage record"; }
+  } catch { state.problem = state.meta ? "malformed usage record" : "invalid identity metadata"; }
 }
 
 /** Bounded, on-demand source index and incremental numeric cache. Provider files are opened read-only. */
@@ -87,7 +86,10 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
     try {
       const buffer = Buffer.alloc(4097), result = await file.read(buffer, 0, buffer.length, 0);
       if (result.bytesRead > 4096) throw new Error("cache bound");
-      const value = stateSchema.parse(JSON.parse(buffer.subarray(0, result.bytesRead).toString("utf8")));
+      const raw = JSON.parse(buffer.subarray(0, result.bytesRead).toString("utf8"));
+      // v1 may have skipped contradictory metadata before its offset. Discard it and requalify from byte zero.
+      if (raw?.version === 1) return null;
+      const value = stateSchema.parse(raw);
       if (value.threadId !== threadId) throw new Error("cache identity");
       return value;
     } finally { await file.close(); }
@@ -116,7 +118,7 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         if (!stat.isFile()) return unknown("source is not a regular file");
         const old = await cached(threadId);
         const state: State = old && old.file === matches[0] && old.inode === inode && old.offset <= stat.size && !(old.size === stat.size && old.modified !== stat.mtimeMs) ? old
-          : { version: 1, threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
+          : { version: 2, threadId, file: matches[0]!, inode, size: stat.size, modified: stat.mtimeMs, offset: 0, meta: false, problem: old?.problem === "cumulative counter reset" ? old.problem : null, counts: null, baseline: old?.baseline ?? old?.counts ?? null, at: null };
         let position = state.offset, pending = Buffer.alloc(0);
         const end = stat.size;
         // A shared RPC budget bounds all requested sessions; unfinished scans retain only numeric state and offsets.

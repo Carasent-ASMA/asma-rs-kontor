@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createVendorUsageService, codexThreadIdentity } from "../server/vendor-usage";
 import { readInstalledNavigatorCapabilities } from "../server/session-navigator";
 const THREAD = "00000000-0000-4000-8000-000000000001", NEXT = "00000000-0000-4000-8000-000000000002";
-const agent = (id: string, nativeHandle = THREAD, provider = "codex") => ({ id, title: "Same title", persistence: { provider, sessionId: "tree-root-is-not-thread-id", nativeHandle, metadata: { threadId: nativeHandle } } });
+const agent = (id: string, nativeHandle = THREAD, provider = "codex") => ({ id, provider, title: "Same title", persistence: { provider, sessionId: "tree-root-is-not-thread-id", nativeHandle, metadata: { threadId: nativeHandle } } });
 const found = (a: ReturnType<typeof agent>) => ({ agent: a });
 const host = (refresh: ReturnType<typeof vi.fn>) => ({ agents: { ref: vi.fn(() => ({ refresh })) } }) as never;
 const value = { input: 100, output: 5, scope: "provider-cumulative" as const, source: "Fixture provider cumulative; history unavailable" };
@@ -25,6 +25,20 @@ describe("vendor-native usage ownership", () => {
     const refresh = vi.fn().mockResolvedValueOnce(found(agent("a"))).mockResolvedValueOnce(found(agent("a", NEXT)));
     const result = await createVendorUsageService({ read: async () => value })(host(refresh), ["a"]);
     expect(result.a).toMatchObject({ input: null, output: null, source: expect.stringContaining("changed") });
+  });
+  it("rejects effective route changes even when stale Codex persistence survives", async () => {
+    const before = agent("a"), after = { ...before, provider: "claude" };
+    const refresh = vi.fn().mockResolvedValueOnce(found(before)).mockResolvedValueOnce(found(after));
+    expect(await createVendorUsageService({ read: async () => value })(host(refresh), ["a"])).toMatchObject({ a: { input: null, output: null } });
+    const read = vi.fn(async () => value);
+    expect(await createVendorUsageService({ read })(host(vi.fn(async () => found(after))), ["a"])).toMatchObject({ a: { input: null, output: null } });
+    expect(read).not.toHaveBeenCalled();
+  });
+  it("preserves stable Codex aliases but refuses an alias/account route switch", async () => {
+    const before = { ...agent("a"), provider: "fixture-codex-route-a" }, after = { ...before, provider: "fixture-codex-route-b" };
+    expect(await createVendorUsageService({ read: async () => value })(host(vi.fn(async () => found(before))), ["a"])).toEqual({ a: value });
+    const refresh = vi.fn().mockResolvedValueOnce(found(before)).mockResolvedValueOnce(found(after));
+    expect(await createVendorUsageService({ read: async () => value })(host(refresh), ["a"])).toMatchObject({ a: { input: null, output: null } });
   });
   it("keeps failures unknown and shares a finite budget across the batch", async () => {
     const budgets: object[] = [], read = vi.fn(async (_id, budget) => { budgets.push(budget); return value; });

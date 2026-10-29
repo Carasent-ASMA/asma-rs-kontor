@@ -1,3 +1,4 @@
+import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
@@ -7,9 +8,11 @@ import { createCodexUsageReader, type CodexUsageRead } from "./codex-usage";
 import { createStateRoot } from "./session-create";
 
 /** Use the thread identity, never the conversation-tree root, a title, cwd or a model. */
-export function codexThreadIdentity(agent: Pick<PaseoAgent, "persistence">): string | null {
+export function codexThreadIdentity(agent: Pick<PaseoAgent, "persistence" | "provider">): string | null {
   const handle = agent.persistence;
-  if (handle?.provider !== "codex") return null;
+  if (handle?.provider !== "codex" || !agent.provider) return null;
+  // Aliases retain their public effective route and require canonical Codex persistence.
+  if (agent.provider !== "codex" && BUILTIN_PROVIDER_IDS.includes(agent.provider)) return null;
   const native = handle.nativeHandle, thread = handle.metadata?.threadId;
   if (native && typeof thread === "string" && native !== thread) return null;
   const value = native || thread;
@@ -33,7 +36,7 @@ export function createVendorUsageService(reader: { read(threadId: string, budget
           const value = await reader.read(threadId, budget);
           // A native restart/provider switch during the file read must not attach an old thread to this agent.
           const current = await paseo.agents.ref(id).refresh();
-          result[id] = current?.agent.id === id && codexThreadIdentity(current.agent) === threadId ? value
+          result[id] = current?.agent.id === id && current.agent.provider === found.agent.provider && codexThreadIdentity(current.agent) === threadId ? value
             : unavailable("Native thread changed during the read. Historical/complete totals unavailable.");
         } catch { result[id] = unavailable("Vendor usage could not be read. Historical/complete totals unavailable."); }
       }

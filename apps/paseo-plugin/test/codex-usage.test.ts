@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createCodexUsageReader } from "../server/codex-usage";
@@ -41,6 +41,35 @@ describe("qualified Codex cumulative snapshots", () => {
   it.each([{ cli_version: "0.159.0" }, { originator: "other" }])("rejects an unqualified format %j", async (patch) => {
     await writeFile(source, lines(meta(ID, patch), event(100, 5)));
     expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
+  });
+  it.each([{ id: OTHER }, { cli_version: "0.159.0" }, { forked_from_id: OTHER }])("rejects later contradictory metadata before and after a cached restart %j", async (patch) => {
+    await writeFile(source, lines(meta(), event(100, 5)));
+    expect(await reader().read(ID)).toMatchObject({ input: 100 });
+    await appendFile(source, lines(meta(ID, patch), event(900, 40)));
+    expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
+    expect(await createCodexUsageReader(root, join(root, "cold-cache")).read(ID)).toMatchObject({ input: null, output: null });
+  });
+  it.each([{ id: OTHER }, { cli_version: "0.159.0" }, { parent_thread_id: OTHER }])("discards v1 offsets that already skipped contradictory metadata %j", async (patch) => {
+    await writeFile(source, lines(meta(), event(100, 5))); await reader().read(ID);
+    const path = join(cache, (await readdir(cache))[0]!);
+    await appendFile(source, lines(meta(ID, patch), event(900, 40)));
+    const old = JSON.parse(await readFile(path, "utf8")), current = await stat(source);
+    Object.assign(old, { version: 1, size: current.size, modified: current.mtimeMs, offset: current.size, counts: { input_tokens: 900, output_tokens: 40, total_tokens: 940 }, baseline: { input_tokens: 900, output_tokens: 40, total_tokens: 940 } });
+    await writeFile(path, JSON.stringify(old));
+    expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
+    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(2);
+  });
+  it("requalifies valid v1 sources from zero and resumes a partial consistent metadata append", async () => {
+    await writeFile(source, lines(meta(), event(100, 5))); await reader().read(ID);
+    const path = join(cache, (await readdir(cache))[0]!), old = JSON.parse(await readFile(path, "utf8"));
+    old.version = 1; old.counts.input_tokens = 999; old.counts.total_tokens = 1004; old.baseline = old.counts;
+    await writeFile(path, JSON.stringify(old));
+    expect(await reader().read(ID)).toMatchObject({ input: 100 });
+    const repeated = meta(); await appendFile(source, repeated.slice(0, 30));
+    expect(await reader().read(ID)).toMatchObject({ input: null });
+    await appendFile(source, repeated.slice(30) + "\n" + lines(event(200, 8)));
+    expect(await reader().read(ID)).toMatchObject({ input: 200, output: 8 });
+    expect(await reader().read(ID)).toMatchObject({ input: 200, output: 8 });
   });
   it("refuses reset counters, including source truncation between restarts", async () => {
     await writeFile(source, lines(meta(), event(200, 8))); expect(await reader().read(ID)).toMatchObject({ input: 200 });
