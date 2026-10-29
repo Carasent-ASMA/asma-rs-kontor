@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { copyText, Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { attachSummary, saveSummary, type AttachOutcome, type SummaryRevision } from "../shared/session-navigator";
+import { attachSummary, readSummary, saveSummary, type AttachOutcome, type SummaryRevision } from "../shared/session-navigator";
 import { DenseSessionRow } from "./dense-session-row";
 import { Choices } from "./model-picker";
 import { OperationSheet, SheetFooter } from "./operation-sheet";
@@ -24,10 +24,10 @@ function useSavedSummary(source: DirectoryEntry, given: SummaryRevision | null) 
     if (given) return;
     let live = true;
     setState(null);
-    save({ agentId: source.id }).then((revision) => { if (live) setState({ revision, problem: null }); }, (error: unknown) => { if (live) setState({ revision: null, problem: failure(error) }); });
+    save({ agentId: source.id }).then((revision) => { if (live) setState(revision.sourceAgentId === source.id ? { revision, problem: null } : { revision: null, problem: "The saved summary belongs to another source. Nothing was copied." }); }, (error: unknown) => { if (live) setState({ revision: null, problem: failure(error) }); });
     return () => { live = false; };
   }, [source.id, attempt]);
-  return { state, retry: () => setAttempt((value) => value + 1) };
+  return { state: state?.revision && state.revision.sourceAgentId !== source.id ? null : state, retry: () => setAttempt((value) => value + 1) };
 }
 
 function SourceChip({ revision, colors }: { revision: SummaryRevision; colors: Colors }) {
@@ -53,10 +53,26 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
   onAttach: (revision: SummaryRevision) => void; onClose: () => void;
 }) {
   const { state, retry } = useSavedSummary(source, null);
+  const read = useRpc(readSummary);
   const [copy, setCopy] = useState<{ summaryId: string; revision: number; problem: string | null } | null>(null);
+  const [verification, setVerification] = useState<{ key: string; text: string } | null>(null);
+  const writing = useRef<string | null>(null);
+  const activeSource = useRef(source.id);
+  activeSource.current = source.id;
   const write = async (revision: SummaryRevision) => {
-    try { await copyText(revision.text); setCopy({ summaryId: revision.summaryId, revision: revision.revision, problem: null }); }
-    catch (error) { setCopy({ summaryId: revision.summaryId, revision: revision.revision, problem: failure(error) }); }
+    const key = `${revision.summaryId}:${revision.revision}`;
+    if (writing.current === key) return;
+    writing.current = key;
+    setCopy(null); setVerification(null);
+    try {
+      const stored = await read({ summaryId: revision.summaryId, revision: revision.revision });
+      if (stored.summaryId !== revision.summaryId || stored.revision !== revision.revision || stored.sourceAgentId !== revision.sourceAgentId || stored.text !== revision.text) throw new Error("The saved revision readback did not match. Nothing was copied.");
+      if (activeSource.current !== revision.sourceAgentId || writing.current !== key) return;
+      await copyText(stored.text);
+      if (activeSource.current === revision.sourceAgentId && writing.current === key) setCopy({ summaryId: revision.summaryId, revision: revision.revision, problem: null });
+    } catch (error) {
+      if (activeSource.current === revision.sourceAgentId && writing.current === key) setCopy({ summaryId: revision.summaryId, revision: revision.revision, problem: failure(error) });
+    } finally { if (writing.current === key) writing.current = null; }
   };
   const revision = state?.revision ?? null;
   useEffect(() => { if (revision) void write(revision); }, [revision?.summaryId, revision?.revision]);
@@ -64,13 +80,14 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
   const muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 } as const;
   const banner = !state ? `Saving a summary of ${source.title}…` : !revision ? `The summary was not saved (${state.problem}). Nothing was copied.`
     : !copied ? `Saved r${revision.revision} · Copying…` : copied.problem === null ? `Copied to clipboard · Saved r${revision.revision} · Source linked`
-    : `Saved r${revision.revision} · Not copied: the clipboard refused it (${copied.problem}). Use Copy again, or select the text below.`;
+    : `Saved r${revision.revision} · Not copied: ${copied.problem}. Use Copy again, or select the text below.`;
   const sections = revision ? [["Task", revision.sections.task], ["Decisions", revision.sections.decisions], ["Current state", revision.sections.currentState], ["Next step", revision.sections.nextStep]] : [];
   return <OperationSheet testID="summary-sheet" title="Session summary" subtitle={source.title} colors={colors} onClose={onClose}
     footer={revision ? <SheetFooter colors={colors} note={copied?.problem === null ? "A saved summary is ready to paste." : null}
       secondary={{ testID: "summary-copy-again", label: "Copy again", onPress: () => { void write(revision); } }}
       primary={{ testID: "summary-attach", label: "Attach to another seat…", disabled: !!attachUnavailable, hint: attachUnavailable, onPress: () => onAttach(revision) }} />
       : <SheetFooter colors={colors} secondary={{ label: "Close", onPress: onClose }} primary={state ? { label: "Try again", onPress: retry } : null} />}>
+    <Text style={muted}>A separate read-only Codex summary session uses recent source history only. Source and destination work are not prompted.</Text>
     <View testID="summary-banner" role="status" accessibilityLiveRegion="polite" style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 8, borderWidth: 1,
       borderColor: copied?.problem === null ? colors.accent : copied || (state && !revision) ? colors.statusWarning : colors.border }}>
       {copied ? <Icon name={copied.problem === null ? "CircleCheck" : "CircleAlert"} size={16} color={copied.problem === null ? colors.statusSuccess : colors.statusWarning} /> : null}
@@ -82,6 +99,14 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
     </View>)}
     {revision ? <SourceChip revision={revision} colors={colors} /> : null}
     {revision && attachUnavailable ? <Text style={muted}>{attachUnavailable}</Text> : null}
+    {revision && copied?.problem === null ? <View style={{ gap: 4 }}>
+      <Text style={muted}>Clipboard readback is not automatic. Paste below to compare with this saved revision.</Text>
+      <TextInput testID="summary-paste-verification" accessibilityLabel="Paste copied summary to verify" multiline
+        value={verification?.key === `${revision.summaryId}:${revision.revision}` ? verification.text : ""}
+        onChangeText={(text) => setVerification({ key: `${revision.summaryId}:${revision.revision}`, text })}
+        style={{ color: colors.foreground, minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: 6, padding: 8 }} />
+      <Text testID="summary-verification-result" role="status" style={muted}>{verification?.key !== `${revision.summaryId}:${revision.revision}` || !verification.text ? "Paste to verify the exact saved text." : verification.text === revision.text ? `Pasted text matches saved r${revision.revision}.` : "Pasted text does not match this saved revision. Use Copy again."}</Text>
+    </View> : null}
   </OperationSheet>;
 }
 

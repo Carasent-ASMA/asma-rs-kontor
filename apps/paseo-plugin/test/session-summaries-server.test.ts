@@ -23,10 +23,11 @@ afterEach(async () => { for (const path of dirs.splice(0)) await rm(path, { recu
 
 function paseoWithGenerator(agent: Agent, generate: () => Promise<{ sections: typeof SECTIONS; cutoff: string }>) {
   return {
-    supportsHostFeature: (feature: "agentCompactSummary") => feature === "agentCompactSummary",
+
+    generate,
     agents: {
       ref: (id: string) => ({ refresh: async () => id === agent.id ? { agent, project: null } : null }),
-      generateCompactSummary: async () => generate(),
+
     },
   };
 }
@@ -41,11 +42,8 @@ describe("session summary host route", () => {
     expect(caps.takeover.supported).toBe(false);
   });
 
-  it("qualifies summaries and store limits when the host advertises agentCompactSummary", () => {
-    const paseo = {
-      supportsHostFeature: (feature: "agentCompactSummary") => feature === "agentCompactSummary",
-      agents: { generateCompactSummary: async () => ({ sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" }) },
-    } as never;
+  it("qualifies the independent stock summary route without any host compact-summary gate", () => {
+    const paseo = { agents: { create: async () => { throw new Error("not invoked by capability read"); }, ref: () => ({}) } } as never;
     expect(summariesInstalledCapability(paseo)).toEqual({ supported: true, limits: SUMMARY_LIMITS_WITH_GENERATION });
   });
 
@@ -54,7 +52,7 @@ describe("session summary host route", () => {
     const agent = { id: "agent-1", title: "Route review", updatedAt: "2026-10-25T10:00:00Z" } as Agent;
     let cutoff = "2026-10-25T10:00:00Z";
     const paseo = paseoWithGenerator(agent, async () => ({ sections: SECTIONS, cutoff }));
-    const service = createSessionSummaryService(paseo as never, root);
+    const service = createSessionSummaryService(paseo as never, root, { generate: paseo.generate });
     const first = await service.save("agent-1");
     expect(first).toMatchObject({ revision: 1, sections: SECTIONS, cutoff: "2026-10-25T10:00:00Z" });
     expect(first.text).toContain("Fix the parser");
@@ -75,7 +73,7 @@ describe("session summary store serialization", () => {
 
   async function service(root: string, generate: () => Promise<{ sections: typeof SECTIONS; cutoff: string }>) {
     const paseo = paseoWithGenerator(agent, generate);
-    return { service: createSessionSummaryService(paseo as never, root), root };
+    return { service: createSessionSummaryService(paseo as never, root, { generate: paseo.generate }), root };
   }
 
   it("concurrent first saves with identical content dedupe to one summaryId and revision 1", async () => {
