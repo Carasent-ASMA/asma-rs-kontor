@@ -157,7 +157,7 @@ describe("simulated takeover permissions", () => {
     const { rows, review, apply, successors, archives } = host("success", { extra: [seat("agt_personal", { provider: "claude-b", currentModeId: "bypassPermissions" })] });
     const refused = await review({ agentId: "agt_personal" });
     expect(refused).toMatchObject({ state: "refused", digest: null, successor: null });
-    expect(refused.message).toBe("SIMULATED: no route in this seat's chain is available and keeps its permissions. Codex cannot keep this seat's permissions (bypassPermissions on claude-b): no permission mapping between providers is qualified. Nothing was sent; the original is kept.");
+    expect(refused.message).toBe("SIMULATED: no route in this seat's chain is available and keeps its permissions. Codex cannot inherit operating mode bypassPermissions from claude-b. Cross-provider mode and permission equivalence must be verified by the host. Nothing was sent; the original is kept.");
     expect(refused.route?.considered.map((route) => [route.account, route.model])).toEqual([["codex", "gpt-6-astra"]]);
     expect(await apply(refused)).toMatchObject({ state: "refused", phase: "preflight" });
     expect(rows.get("agt_personal")!.agent.archivedAt).toBeUndefined();
@@ -170,16 +170,16 @@ describe("simulated takeover permissions", () => {
     const blocked = await host("success", { providers: unavailable }).review({ agentId: "agt_lead" });
     expect(blocked).toMatchObject({ state: "blocked", digest: null, successor: null });
     expect(blocked.route?.considered.map((route) => [route.account, route.excluded])).toEqual([["claude", "Claude Code: Provider error."],
-      ["codex", "Codex cannot keep this seat's permissions (default on claude): no permission mapping between providers is qualified."]]);
+      ["codex", "Codex cannot inherit operating mode default from claude. Cross-provider mode and permission equivalence must be verified by the host."]]);
   });
 
   it("refuses a chosen route on another provider, and a mode the seat's own provider does not list, with nothing done", async () => {
     const { rows, review, successors, archives } = host("success", { extra: [codexSeat("agt_codex", { currentModeId: "bypassPermissions" })] });
     expect(await review({ agentId: "agt_lead", route: FAST_PLAN })).toMatchObject({ state: "refused", digest: null,
-      message: "SIMULATED: Codex cannot keep this seat's permissions (default on claude): no permission mapping between providers is qualified. Nothing was sent; the original is kept." });
+      message: "SIMULATED: Codex cannot inherit operating mode default from claude. Cross-provider mode and permission equivalence must be verified by the host. Nothing was sent; the original is kept." });
     // The same identifier on Codex is not Claude's mode; Codex's catalog does not list it, so it is not kept.
-    expect(await review({ agentId: "agt_codex" })).toMatchObject({ state: "refused", message: expect.stringContaining("Codex does not list this seat's permission mode bypassPermissions") });
-    expect(await review({ agentId: "agt_codex", route: FAST_PLAN })).toMatchObject({ state: "refused", message: expect.stringContaining("does not list this seat's permission mode bypassPermissions") });
+    expect(await review({ agentId: "agt_codex" })).toMatchObject({ state: "refused", message: expect.stringContaining("Codex does not list the source operating mode bypassPermissions") });
+    expect(await review({ agentId: "agt_codex", route: FAST_PLAN })).toMatchObject({ state: "refused", message: expect.stringContaining("does not list the source operating mode bypassPermissions") });
     expect([rows.get("agt_lead")!.agent.archivedAt, rows.get("agt_codex")!.agent.archivedAt]).toEqual([undefined, undefined]);
     expect([...successors(), ...successors("agt_codex")]).toHaveLength(0);
     expect(archives).toEqual([]);
@@ -188,10 +188,10 @@ describe("simulated takeover permissions", () => {
   // R1b: a mode the seat never reported is missing evidence, even on its own provider: Auto and a chosen route both refuse before any effect.
   it("refuses a seat whose permission mode was never reported, Auto or chosen, with nothing done", async () => {
     const { rows, review, apply, successors, archives } = host("success", { extra: [seat("agt_unknown", { currentModeId: undefined })] });
-    const unreported = "Claude Code cannot keep this seat's permissions: its permission mode was not reported, so the new session's permissions cannot be confirmed.";
+    const unreported = "Claude Code: the source operating mode was not reported, so its inherited mode cannot be confirmed.";
     const auto = await review({ agentId: "agt_unknown" });
     expect(auto).toMatchObject({ state: "refused", digest: null, successor: null });
-    expect(auto.message).toBe(`SIMULATED: no route in this seat's chain is available and keeps its permissions. ${unreported} Codex cannot keep this seat's permissions (not reported on claude): no permission mapping between providers is qualified. Nothing was sent; the original is kept.`);
+    expect(auto.message).toBe(`SIMULATED: no route in this seat's chain is available and keeps its permissions. ${unreported} Codex cannot inherit operating mode not reported from claude. Cross-provider mode and permission equivalence must be verified by the host. Nothing was sent; the original is kept.`);
     expect(await review({ agentId: "agt_unknown", route: { provider: "claude", model: "claude-opus-5-5", effort: "high", featureValues: {} } }))
       .toMatchObject({ state: "refused", digest: null, message: `SIMULATED: ${unreported} Nothing was sent; the original is kept.` });
     expect(await apply(auto)).toMatchObject({ state: "refused", phase: "preflight" });

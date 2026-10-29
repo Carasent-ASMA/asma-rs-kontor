@@ -95,7 +95,7 @@ export const createProviderSchema = z.object({
   status: z.enum(["ready", "loading", "error", "unavailable", "disabled", "unknown"]),
   models: z.array(z.object({ id, label: z.string(), efforts: z.array(z.object({ id, label: z.string() })), defaultEffort: z.string().nullable() })),
   defaultModel: z.string().nullable(),
-  modes: z.array(z.object({ id, label: z.string(), dangerous: z.boolean() })),
+  modes: z.array(z.object({ id, label: z.string(), dangerous: z.boolean(), description: z.string().nullable().optional(), icon: z.string().nullable().optional(), colorTier: z.string().nullable().optional() })),
   defaultMode: z.string().nullable(),
 }).strict();
 export type CreateProvider = z.infer<typeof createProviderSchema>;
@@ -105,7 +105,7 @@ export type ProviderSnapshotEntry = {
   provider: string; label?: string | null; enabled?: boolean | null; status?: string | null; error?: string | null; defaultModeId?: string | null;
   models?: readonly { id: string; label: string; isDefault?: boolean | null; isSelectable?: boolean | null; defaultThinkingOptionId?: string | null;
     thinkingOptions?: readonly { id: string; label: string; isDefault?: boolean | null }[] | null }[] | null;
-  modes?: readonly { id: string; label: string; colorTier?: string | null }[] | null;
+  modes?: readonly { id: string; label: string; description?: string | null; icon?: string | null; colorTier?: string | null }[] | null;
 };
 
 /** The host's providers as choices. Only a model the catalog flags is a provider's default; none flagged is null, never the first listed. */
@@ -124,7 +124,7 @@ export function createProviders(snapshot: { entries: readonly ProviderSnapshotEn
     return { id: entry.provider, label: entry.label ?? entry.provider, available: note === null, status, note,
       persona: PERSONA_PROVIDERS.includes(entry.provider) ? "supported" as const : "unverified" as const, models,
       defaultModel: selectable.find((model) => model.isDefault)?.id ?? null,
-      modes: (entry.modes ?? []).map((mode) => ({ id: mode.id, label: mode.label, dangerous: mode.colorTier === "dangerous" })),
+      modes: (entry.modes ?? []).map((mode) => ({ id: mode.id, label: mode.label, dangerous: mode.colorTier === "dangerous", description: mode.description, icon: mode.icon, colorTier: mode.colorTier })),
       defaultMode: entry.defaultModeId ?? null };
   });
 }
@@ -267,16 +267,16 @@ export function keptFeatureValues(features: readonly CreateFeature[], values: Fe
 }
 
 /**
- * Why a successor on `destination` cannot keep a seat's permission mode, or null. Modes are provider-specific: a mode
- * id another provider also lists is not shown to grant the same rights, so only the seat's own provider, listing that
+ * Why a destination cannot inherit the source operating mode, or null. Modes are provider-specific: a mode
+ * id another provider also lists does not establish equivalent behavior or permissions, so only the seat's own provider, listing that
  * exact mode, keeps it. No mapping between providers is qualified. A mode the seat never reported is missing evidence,
  * not a match: nothing can be kept that was never read.
  */
 export function inheritedModeProblem(providers: readonly CreateProvider[], source: string, mode: string | null, destination: string): string | null {
   const target = providers.find((entry) => entry.id === destination), label = target?.label ?? destination;
-  if (destination !== source) return `${label} cannot keep this seat's permissions (${mode ?? "not reported"} on ${source}): no permission mapping between providers is qualified.`;
-  if (mode === null) return `${label} cannot keep this seat's permissions: its permission mode was not reported, so the new session's permissions cannot be confirmed.`;
-  if (!target?.modes.some((entry) => entry.id === mode)) return `${label} does not list this seat's permission mode ${mode}, so it cannot be kept.`;
+  if (destination !== source) return `${label} cannot inherit operating mode ${mode ?? "not reported"} from ${source}. Cross-provider mode and permission equivalence must be verified by the host.`;
+  if (mode === null) return `${label}: the source operating mode was not reported, so its inherited mode cannot be confirmed.`;
+  if (!target?.modes.some((entry) => entry.id === mode)) return `${label} does not list the source operating mode ${mode}, so it cannot be inherited.`;
   return null;
 }
 
