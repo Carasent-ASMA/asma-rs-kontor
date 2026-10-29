@@ -102,7 +102,7 @@ describe("SummarySheet", () => {
     const s = sheet();
     s.render(); await settle(); s.render(); await settle();
     const tree = s.render();
-    expect(footer(tree)).toEqual(["Copy again", "Choose attachment in destination…"]);
+    expect(footer(tree)).toEqual(["Copy again", "Attach summary…"]);
     press(button(tree, "summary-attach"));
     expect(s.onAttach).toHaveBeenCalledExactlyOnceWith(SUMMARY);
   });
@@ -112,7 +112,7 @@ describe("SummarySheet", () => {
     const s = sheet(reason);
     s.render(); await settle(); s.render(); await settle();
     const tree = s.render();
-    expect(button(tree, "summary-attach")!.props).toMatchObject({ accessibilityLabel: `Choose attachment in destination…. ${reason}`, disabled: true, tabIndex: 0 });
+    expect(button(tree, "summary-attach")!.props).toMatchObject({ accessibilityLabel: `Attach summary…. ${reason}`, disabled: true, tabIndex: 0 });
     expect(text(tree)).toContain(reason);
   });
   it("rereads the exact pin before every copy and never regenerates on Copy again", async () => {
@@ -143,16 +143,13 @@ describe("SummarySheet", () => {
     expect(host.copyText).not.toHaveBeenCalled();
   });
 
-  it("compares explicitly pasted text with the saved revision without claiming automatic clipboard readback", async () => {
+  it("copies the saved revision without provider-specific claims or paste-verification chores", async () => {
     const s = sheet(); s.render(); await settle(); s.render(); await settle();
-    let tree = s.render();
-    expect(text(tree)).toContain("Clipboard readback is not automatic");
-    const paste = (value: string) => (tree.find(node => node.props.testID === "summary-paste-verification")!.props.onChangeText as (text: string) => void)(value);
-    paste("different text"); tree = s.render();
-    expect(text(tree)).toContain("does not match this saved revision");
-    paste(SUMMARY.text); tree = s.render();
-    expect(text(tree)).toContain("Pasted text matches saved r3.");
-    expect(host.copyText).toHaveBeenCalledTimes(1);
+    const tree = s.render();
+    expect(text(tree)).toContain("Copy uses the saved revision");
+    expect(text(tree)).not.toContain("read-only Codex");
+    expect(tree.some(node => node.props.testID === "summary-paste-verification")).toBe(false);
+    expect(host.copyText).toHaveBeenCalledWith(SUMMARY.text);
   });
 
   it("ignores a late stored read after the selected source changes", async () => {
@@ -178,7 +175,8 @@ describe("native AttachSheet", () => {
   it("reads the exact saved pin and discloses native user selection without changing a draft or sending", async () => {
     const s = sheet(); s.render(); await settle(); const tree = s.render();
     expect(text(tree)).toContain("Kontor has not changed a draft or verified a destination.");
-    expect(text(tree)).toContain(`${SUMMARY.summaryId}:r3`);
+    expect(tree.find(node => (node.type as { name?: string }).name === "SourceChip")?.props.revision).toEqual(SUMMARY);
+    expect(text(tree)).not.toContain(SUMMARY.summaryId);
     expect(text(tree)).toContain("Only your native picker selection adds the attachment.");
     expect(text(tree)).toContain("cannot insert remotely, verify an exact destination");
     expect(host.rpc["sessions.summary-read"]).toHaveBeenCalledExactlyOnceWith({ summaryId: SUMMARY.summaryId, revision: 3 });

@@ -58,7 +58,7 @@ describe("takeover results", () => {
     expect(reviewResult(seat("a"), review("a", "blocked"))).toMatchObject({ state: "kept", line: "No available model · Original kept", detail: `Fixture review blocked. ${same}`, model: "S6.1", reviewId: reviewId("a"), next: "none" });
     expect(reviewResult(seat("a"), review("a", "refused", { successor: null }))).toMatchObject({ state: "kept", line: "Not started · Original kept", detail: `Fixture review refused. ${same}`, model: null, next: "none" });
     expect(reviewResult(seat("a"), review("a", "choose", { successor: null }))).toMatchObject({ state: "kept", next: "none",
-      detail: `Fixture review choose. This seat has no recorded chain and Take over here cannot choose one. ${same}` });
+      detail: `Fixture review choose. Choose a replacement model from the Take over model menu.` });
     expect(reviewResult(seat("a"), review("a", "unknown", { successor: null }))).toMatchObject({ state: "kept", detail: "Fixture review unknown.", next: "review" });
     for (const state of ["blocked", "refused", "choose"] as const) expect(retryable(reviewResult(seat("a"), review("a", state)))).toBe(false);
     expect(retryable(reviewResult(seat("a"), review("a", "unknown")))).toBe(true);

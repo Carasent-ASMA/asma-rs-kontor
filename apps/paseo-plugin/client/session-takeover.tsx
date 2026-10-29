@@ -55,7 +55,7 @@ export const unresolved = (seat: SeatResult) => unfinished(seat) || (seat.state 
 export function reviewResult(seat: SeatResult, review: TakeoverReview): SeatResult {
   const base = { ...seat, state: "kept" as const, model: review.successor ? modelAlias(review.successor.model) : null, reviewId: review.reviewId };
   if (review.state === "unknown") return { ...base, line: KEPT, detail: review.message, next: "review" };
-  if (review.state === "choose") return { ...base, line: KEPT, detail: said(review.message, `This seat has no recorded chain and Take over here cannot choose one. ${SAME}`), next: "none" };
+  if (review.state === "choose") return { ...base, line: KEPT, detail: said(review.message, `Choose a replacement model from the Take over model menu.`), next: "none" };
   return { ...base, line: review.state === "blocked" ? "No available model · Original kept" : KEPT, detail: said(review.message, SAME), next: "none" };
 }
 

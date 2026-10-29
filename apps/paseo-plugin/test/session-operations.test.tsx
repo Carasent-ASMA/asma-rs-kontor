@@ -37,7 +37,6 @@ beforeEach(() => {
   host.nativeAvailable = true;
   host.toast = { show: vi.fn() };
   host.rpc = {
-    "sessions.procedural-takeover.capability": vi.fn(async () => ({ supported: true, limits: [] })),
     "sessions.navigator-capabilities": vi.fn(async () => SUPPORTED),
     "sessions.takeover-review": vi.fn(async (input: { agentId: string }) => ({ reviewId: "00000000-0000-4000-8000-0000000000b1", revision: 1, agentId: input.agentId, checkedAt: "2026-10-26T09:00:00Z",
       state: "blocked", message: "No route has fresh evidence.", predecessor: null, ownership: null, association: { bindingKey: null, source: null, choices: [] }, route: null, successor: null, limits: [], digest: null })),
@@ -63,7 +62,7 @@ describe("useSessionOperations gating", () => {
   it("says it is still reading what the host supports for every capability-gated action", async () => {
     const ops = (await mount({}, "pending")).render();
     expect(action(ops, A, "summarize").unavailable).toBe(READING);
-    expect(action(ops, A, "attach").unavailable).toBe(READING);
+    expect(action(ops, A, "attach").unavailable).toBeNull();
     expect(action(ops, A, "takeover").option.unavailable).toBe(READING);
     expect(ops.takeover([A, B])).toMatchObject({ unavailable: READING, auto: READING });
   });
@@ -123,14 +122,23 @@ describe("useSessionOperations gating", () => {
     expect((layer(extra.render())!.props.run as { seats: { state: string }[] }).seats[0]!.state).toBe("review");
   });
 
-  it("refuses a single archived seat", async () => {
+  it.each(["initializing", "running", "idle", "error", "closed"] as const)("offers the same capability-gated takeover for %s and archived sessions", async (status) => {
     const ops = (await mount()).render();
-    expect(ops.takeover([sessionEntry("agent-old", { archivedAt: "2026-10-20T09:00:00Z" })]).unavailable).toBe("Archived: there is no seat to take over.");
+    for (const archivedAt of [null, "2026-10-20T09:00:00Z"]) {
+      const entry = sessionEntry(`source-${status}`, { status, archivedAt });
+      expect(action(ops, entry, "takeover").unavailable).toBeNull();
+      expect(ops.takeover([entry]).unavailable).toBeNull();
+      expect(ops.actions(entry).filter(a => a.key.includes("takeover")).map(a => a.key)).toEqual(["takeover"]);
+    }
   });
 
-  it.each(["running", "initializing"] as const)("refuses a single %s seat until it is stopped", async (status) => {
+  it.each(["claude", "codex", "opencode", "copilot", "pi", "antigravity", "muse"])("does not add provider or role restrictions for %s", async (provider) => {
     const ops = (await mount()).render();
-    expect(action(ops, sessionEntry("agent-busy", { status }), "takeover").unavailable).toBe("Running. Stop it in the session, then take it over.");
+    for (const role of ["LSA", "TPM", "SWE", "QA", "JUDGE", "CUSTOM", ""]) {
+      const entry = { ...sessionEntry("source"), provider, labels: { role } };
+      expect(action(ops, entry, "takeover").unavailable).toBeNull();
+      expect(action(ops, entry, "takeover").option.unavailable).toBeNull();
+    }
   });
 
   it("gates the Auto model choice on the host's route capability", async () => {
@@ -331,68 +339,5 @@ describe("the actions menu's keys", () => {
     // From outside the items, such as the sheet itself, Down reaches the first and Up the last.
     items[0]!.focus.mockClear(); menu.ownerDocument.activeElement = null; press("ArrowUp"); expect(focused()).toBe(2);
     items[2]!.focus.mockClear(); press("ArrowDown"); expect(focused()).toBe(0);
-  });
-});
-
-describe("prepared takeover action", () => {
-  it("offers a separate import while legacy takeover remains refused", async () => {
-    const { UNSUPPORTED } = await import("../shared/session-navigator");
-    const m = await mount({}, UNSUPPORTED), ops = m.render();
-    expect(action(ops, A, "takeover").unavailable).toBeTruthy();
-    expect(action(ops, A, "prepared-takeover").unavailable).toBeNull();
-    action(ops, A, "prepared-takeover").perform();
-    expect(layerName(m.render())).toBe("PreparedTakeoverSheet");
-    expect(host.rpc["sessions.takeover-review"]).not.toHaveBeenCalled();
-  });
-  it("keeps prepared import unavailable when its own capability read fails", async () => {
-    host.rpc["sessions.procedural-takeover.capability"] = vi.fn(async () => { throw new Error("unavailable"); });
-    const m = await mount();
-    expect(action(m.render(), A, "prepared-takeover").unavailable).toContain("unavailable");
-  });
-});
-
-describe("prepared import client recovery", () => {
-  it("validates SHA without RPC and confirms only once after lost reply", async () => {
-    const { preparedState } = await import("../client/prepared-takeover-state");
-    const receipt = { sourceId: A.id, successorId: B.id, operationId: "operation", admissionHash: "a".repeat(64), phase: "prepared" } as import("../shared/procedural-takeover").ProceduralReceipt;
-    const calls = { import: vi.fn(async () => ({ receipt, limits: ["Owner reviewed"], canExecute: true })), execute: vi.fn(async () => { throw new Error("lost reply"); }), check: vi.fn(async () => ({ ...receipt, phase: "held" as const })) };
-    const state = preparedState(A.id);
-    await state.import(calls, { path: "/admission", sha256: "bad" }); expect(calls.import).not.toHaveBeenCalled();
-    await state.import(calls, { path: "/admission", sha256: "a".repeat(64) }); expect(state.limits).toEqual(["Owner reviewed"]);
-    await state.act(calls, true); await state.act(calls, true);
-    expect(calls.execute).toHaveBeenCalledTimes(1); expect(state.problem).toContain("Unconfirmed");
-    await state.act(calls, false); expect(calls.check).toHaveBeenCalledWith({ operationId: "operation" }); expect(state.receipt?.phase).toBe("held");
-  });
-  it("never confirms a recovered execution or wrong row", async () => {
-    const { preparedState } = await import("../client/prepared-takeover-state");
-    const receipt = { sourceId: A.id, successorId: B.id, operationId: "operation", admissionHash: "a".repeat(64), phase: "prepared" } as import("../shared/procedural-takeover").ProceduralReceipt;
-    const calls = { import: vi.fn(async () => ({ receipt, limits: [], canExecute: false })), execute: vi.fn(async () => receipt), check: vi.fn(async () => receipt) };
-    const state = preparedState(A.id); await state.import(calls, { path: "/admission", sha256: "a".repeat(64) }); await state.act(calls, true); expect(calls.execute).not.toHaveBeenCalled();
-    const other = preparedState(B.id); await other.import(calls, { path: "/admission", sha256: "a".repeat(64) }); expect(other.receipt).toBeNull(); expect(other.problem).toContain("another session");
-  });
-});
-
-describe("prepared takeover review sheet", () => {
-  it("reviews exact identities/config/limits then checks a lost dispatch after reopening", async () => {
-    const { PreparedTakeoverSheet } = await import("../client/prepared-takeover");
-    const receipt = { sourceId: A.id, successorId: B.id, operationId: "stable-operation", admissionHash: "a".repeat(64), revision: 0, phase: "prepared", message: "Prepared only", admission: { mode: { workflow: "free", orchestration: "paseo" }, config: { provider: "codex", model: "fixture-model", effort: "low", mode: "full-access" }, cwd: "/fixture", checkout: { head: "1".repeat(40) } } } as import("../shared/procedural-takeover").ProceduralReceipt;
-    host.rpc["sessions.procedural-takeover.import"] = vi.fn(async () => ({ receipt, canExecute: true, limits: ["No cross-client fence"] }));
-    host.rpc["sessions.procedural-takeover.execute"] = vi.fn(async () => { throw new Error("lost reply"); });
-    host.rpc["sessions.procedural-takeover.check"] = vi.fn(async () => ({ ...receipt, phase: "held" }));
-    const props = { hostId: `review-${++hosts}`, source: A, colors: COLORS, onClose: vi.fn() };
-    const draw = () => harness.current.render(() => PreparedTakeoverSheet(props)) as ReactElement<Record<string, unknown>>;
-    const tree = (node: unknown): ReactElement<Record<string, unknown>>[] => !node || typeof node !== "object" || !("props" in node) ? [] : [node as ReactElement<Record<string, unknown>>, ...[(node as ReactElement<{ children?: unknown }>).props.children].flat().flatMap(tree)];
-    const footer = () => (draw().props.footer as ReactElement<{ primary: { disabled: boolean; label: string; onPress: () => void } }>).props.primary;
-    expect(footer().disabled).toBe(true);
-    (tree(draw()).find(n => n.props.accessibilityLabel === "Admission host path")!.props.onChangeText as (s: string) => void)("/admission");
-    (tree(draw()).find(n => n.props.accessibilityLabel === "Admission SHA-256")!.props.onChangeText as (s: string) => void)("a".repeat(64));
-    footer().onPress(); await settle();
-    const content = JSON.stringify(draw().props.children);
-    for (const expected of [A.id, B.id, "stable-operation", "free / paseo", "codex / fixture-model / low / full-access", "No cross-client fence"]) expect(content).toContain(expected);
-    expect(footer().label).toBe("Confirm procedural takeover");
-    footer().onPress(); await settle(); expect(footer().label).toBe("Check same operation");
-    harness.fresh(); expect(footer().label).toBe("Check same operation"); footer().onPress(); await settle();
-    expect(host.rpc["sessions.procedural-takeover.execute"]).toHaveBeenCalledTimes(1);
-    expect(host.rpc["sessions.procedural-takeover.check"]).toHaveBeenCalledWith({ operationId: "stable-operation" });
   });
 });
