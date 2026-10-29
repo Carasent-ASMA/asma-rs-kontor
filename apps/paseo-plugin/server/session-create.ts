@@ -90,7 +90,7 @@ const PERSONA_HEAD = [
   "This workspace is a shared checkout: do not edit files in it. Make any change in an isolated worktree created through the project's own workflow.",
   "Before acting, load the orchestration instructions and skills this repository declares (start with AGENTS.md).",
   "Stop and record the blocker when a decision belongs to the operator, evidence cannot be read, or a gate cannot be satisfied.",
-  "Title rules. Your Paseo title is \"{title}\"; your label title.auto holds the title last written for you. Do not rename yourself. If your title differs from title.auto, the operator renamed you: keep that title. Never write a kontor.* label or an orchestration label.",
+  "Title rules. Your Paseo title is \"{title}\"; your label title.auto holds the title last written for you. Do not rename yourself, except as the verified successor in a seat takeover: after the predecessor is retired and before task effects, rename yourself once to the predecessor's original active title (without the STALE • prefix) and set title.auto to that title. Outside that takeover step, if your title differs from title.auto, the operator renamed you: keep that title. Never write a kontor.* label or an orchestration label.",
   SCOPE_LABEL_RULE,
 ].join("\n");
 

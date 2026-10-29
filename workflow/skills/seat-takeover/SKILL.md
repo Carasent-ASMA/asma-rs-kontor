@@ -116,8 +116,13 @@ the direct fallback does not bypass it or migrate an existing plan's pins.
 6. **One successor.** Create, adopt or (Paseo-direct) record the existing receiver
    with the same logical seat, scope and workflow position. The successor inherits the
    predecessor's **original active title**, without `STALE • `; preserve the
-   selected naming-policy qualification. **Recompute** credentials and permission
-   posture from the recorded policy; **never copy** predecessor generation grants.
+   selected naming-policy qualification. The successor applies that title itself
+   through the supported Paseo update operation (`update_agent` or the CLI) and sets
+   `title.auto` to the inherited title; the persona title rule permits this one
+   self-rename for a verified takeover successor. Do not wait for the operator to
+   perform it, and never rename the predecessor in place of verified retirement.
+   **Recompute** credentials and permission posture from the recorded policy; **never
+   copy** predecessor generation grants.
 7. **Read back before task effects (observed).** Provider/model/effort, posture,
    native ID, logical supervisor and observed native parent, project/workspace,
    **absolute cwd**, **absolute checkout**, branch, `HEAD`, applicable artifact
