@@ -62,7 +62,7 @@ describe("useSessionOperations gating", () => {
   it("says it is still reading what the host supports for every capability-gated action", async () => {
     const ops = (await mount({}, "pending")).render();
     expect(action(ops, A, "summarize").unavailable).toBe(READING);
-    expect(action(ops, A, "attach").unavailable).toBeNull();
+    expect(action(ops, A, "attach").unavailable).toBe(READING);
     expect(action(ops, A, "takeover").option.unavailable).toBe(READING);
     expect(ops.takeover([A, B])).toMatchObject({ unavailable: READING, auto: READING });
   });
@@ -150,14 +150,14 @@ describe("useSessionOperations gating", () => {
     expect(ops.takeover([A, B])).toMatchObject({ unavailable: null, auto: reason });
   });
 
-  it("gates Summarize separately from native user-selected attachment availability", async () => {
+  it("gates Summarize separately from exact host draftAttach capability", async () => {
     const noStore = "This host has no generation route.";
     const ops = (await mount({}, { ...SUPPORTED, summaries: off(noStore), draftAttach: off("No remote draft insertion") })).render();
     expect(action(ops, A, "summarize").unavailable).toBe(noStore);
-    expect(action(ops, A, "attach").unavailable).toBeNull();
+    expect(action(ops, A, "attach").unavailable).toBe("No remote draft insertion");
     host.nativeAvailable = false;
-    const unavailable = (await mount()).render();
-    expect(action(unavailable, A, "attach").unavailable).toContain("cannot register");
+    const available = (await mount()).render();
+    expect(action(available, A, "attach").unavailable).toBeNull();
   });
 });
 
@@ -315,10 +315,10 @@ describe("useSessionOperations unfinished takeover", () => {
 });
 
 describe("useSessionOperations attach", () => {
-  it("opens only a native-selection guide and cancellation sends nothing", async () => {
+  it("passes the host destination entries and capability; cancellation sends nothing", async () => {
     const h = await mount(); action(h.render(), A, "attach").perform();
     const current = layer(h.render())!;
-    expect(current).toMatchObject({ type: AttachSheet, props: { source: A, revision: null } });
+    expect(current).toMatchObject({ type: AttachSheet, props: { source: A, revision: null, entries: [A, B], capability: ok } });
     expect(current.props).not.toHaveProperty("newLead");
     (current.props.onClose as () => void)();
     expect(layer(h.render())).toBeNull();

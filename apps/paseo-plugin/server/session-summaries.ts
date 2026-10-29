@@ -4,9 +4,10 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { readNavigatorCapabilities, UNSUPPORTED, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type NavigatorCapabilities, type Capability, type SummaryPin, type SummaryRevision, type SummaryHistoryBoundary } from "../shared/session-navigator";
+import { attachSummary, readNavigatorCapabilities, UNSUPPORTED, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type NavigatorCapabilities, type Capability, type SummaryPin, type SummaryRevision, type SummaryHistoryBoundary } from "../shared/session-navigator";
 import { searchSummaryAttachments, summaryAttachmentIdentifier } from "../shared/summary-attachments";
 import { stockSummaryGenerator } from "./stock-summary-generator";
+import { createSummaryAttachService, attachStateRoot } from "./session-summary-attach";
 import { readConfig } from "./config";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
@@ -196,6 +197,7 @@ export function contributeSessionSummaries(server: PluginServerContext, options:
   server.handle(readNavigatorCapabilities, (_input, { paseo }) => capabilities(paseo));
   server.handle(searchSummaryAttachments, ({ query }) => savedSummaryResources(root, query));
   server.handle(saveSummary, (input, { paseo }) => sessionSummaryService(paseo, root).save(input.agentId));
+  server.handle(attachSummary, (input, { paseo }) => createSummaryAttachService(paseo, root, attachStateRoot()).attach(input));
   server.handle(readSummary, (input) => readPinnedSummary(root, input));
   server.handle(latestSummaries, (input, { paseo }) => sessionSummaryService(paseo, root).latest(input.agentIds));
 }
