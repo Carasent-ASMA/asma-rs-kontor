@@ -39,7 +39,7 @@ import {
   type NativeSyntheticEvent,
   type ViewStyle,
 } from "react-native";
-import { openRecoveredSession, openSessionById } from "./session-actions";
+import { openTakeoverSuccessor, openRecoveredSession, openSessionById } from "./session-actions";
 import { type DirectoryEntry, type DirectoryState } from "./session-directory";
 import {
   attentionLabel,
@@ -2410,6 +2410,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const bulkSelection = useArchiveSelection(host.id, bulkScopeIds);
   const ops = useSessionOperations({ hostId: host.id, online: hostOnline, colors, compact, entries: availability.entries, opened,
     newLead: onNewLead ? (source, revision) => onNewLead({ entry: source, summary: revision }) : "New lead is not offered on this screen; start it from the session switcher.",
+    onOpenTakeover: (outcome) => { const result = openTakeoverSuccessor({ outcome, serverId: host.id, navigation }); if (!result.ok) toast.error(result.message); return result; },
     onTakeoverStart: () => bulkSelection.clear() });
   const rowTotals = useUsageTotals(ops.totals, shown.map((entry) => entry.id), usageTotalsRevision(host.id, shown));
   const selectedSeats = bulkSelection.selected.flatMap((id) => availability.entries.filter((entry) => entry.id === id));

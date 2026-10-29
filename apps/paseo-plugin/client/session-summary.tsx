@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
-import { copyText, Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type SummaryRevision } from "../shared/session-navigator";
 import { DenseSessionRow } from "./dense-session-row";
@@ -8,7 +8,7 @@ import { OperationSheet, SheetFooter } from "./operation-sheet";
 import { type Colors } from "./page-controls";
 import type { DirectoryEntry } from "./session-directory";
 import { exactTime, parseTime, useClock } from "./session-time";
-import { SUMMARY_ATTACHMENT_STEPS, SUMMARY_ATTACHMENT_LIMIT, summaryAttachmentIdentifier } from "../shared/summary-attachments";
+import { SUMMARY_ATTACHMENT_STEPS, SUMMARY_ATTACHMENT_LIMIT } from "../shared/summary-attachments";
 import { useSummaryAttachmentAvailability, SUMMARY_ATTACHMENT_UNAVAILABLE } from "./summary-attachments";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -53,7 +53,6 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
   const { state, retry } = useSavedSummary(source, null);
   const read = useRpc(readSummary);
   const [copy, setCopy] = useState<{ summaryId: string; revision: number; problem: string | null } | null>(null);
-  const [verification, setVerification] = useState<{ key: string; text: string } | null>(null);
   const writing = useRef<string | null>(null);
   const activeSource = useRef(source.id);
   activeSource.current = source.id;
@@ -61,7 +60,7 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
     const key = `${revision.summaryId}:${revision.revision}`;
     if (writing.current === key) return;
     writing.current = key;
-    setCopy(null); setVerification(null);
+    setCopy(null);
     try {
       const stored = await read({ summaryId: revision.summaryId, revision: revision.revision });
       if (stored.summaryId !== revision.summaryId || stored.revision !== revision.revision || stored.sourceAgentId !== revision.sourceAgentId || stored.text !== revision.text) throw new Error("The saved revision readback did not match. Nothing was copied.");
@@ -83,9 +82,9 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
   return <OperationSheet testID="summary-sheet" title="Session summary" subtitle={source.title} colors={colors} onClose={onClose}
     footer={revision ? <SheetFooter colors={colors} note={copied?.problem === null ? "A saved summary is ready to paste." : null}
       secondary={{ testID: "summary-copy-again", label: "Copy again", onPress: () => { void write(revision); } }}
-      primary={{ testID: "summary-attach", label: "Choose attachment in destination…", disabled: !!attachUnavailable, hint: attachUnavailable, onPress: () => onAttach(revision) }} />
+      primary={{ testID: "summary-attach", label: "Attach summary…", disabled: !!attachUnavailable, hint: attachUnavailable, onPress: () => onAttach(revision) }} />
       : <SheetFooter colors={colors} secondary={{ label: "Close", onPress: onClose }} primary={state ? { label: "Try again", onPress: retry } : null} />}>
-    <Text style={muted}>A separate read-only Codex summary session uses recent source history only. Source and destination work are not prompted.</Text>
+    <Text style={muted}>Summarizes the source history captured by the host. Copy uses the saved revision; nothing is sent to a destination.</Text>
     <View testID="summary-banner" role="status" accessibilityLiveRegion="polite" style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 8, borderWidth: 1,
       borderColor: copied?.problem === null ? colors.accent : copied || (state && !revision) ? colors.statusWarning : colors.border }}>
       {copied ? <Icon name={copied.problem === null ? "CircleCheck" : "CircleAlert"} size={16} color={copied.problem === null ? colors.statusSuccess : colors.statusWarning} /> : null}
@@ -97,14 +96,7 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
     </View>)}
     {revision ? <SourceChip revision={revision} colors={colors} /> : null}
     {revision && attachUnavailable ? <Text style={muted}>{attachUnavailable}</Text> : null}
-    {revision && copied?.problem === null ? <View style={{ gap: 4 }}>
-      <Text style={muted}>Clipboard readback is not automatic. Paste below to compare with this saved revision.</Text>
-      <TextInput testID="summary-paste-verification" accessibilityLabel="Paste copied summary to verify" multiline
-        value={verification?.key === `${revision.summaryId}:${revision.revision}` ? verification.text : ""}
-        onChangeText={(text) => setVerification({ key: `${revision.summaryId}:${revision.revision}`, text })}
-        style={{ color: colors.foreground, minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: 6, padding: 8 }} />
-      <Text testID="summary-verification-result" role="status" style={muted}>{verification?.key !== `${revision.summaryId}:${revision.revision}` || !verification.text ? "Paste to verify the exact saved text." : verification.text === revision.text ? `Pasted text matches saved r${revision.revision}.` : "Pasted text does not match this saved revision. Use Copy again."}</Text>
-    </View> : null}
+
   </OperationSheet>;
 }
 
@@ -138,7 +130,6 @@ export function AttachSheet({ source, revision: given, colors, onClose }: {
     footer={<SheetFooter colors={colors} note="No draft was changed here. Nothing was sent." secondary={{ testID: "attach-cancel", label: "Cancel", onPress: onClose }} />}>
     <Text role="status" style={muted}>{!available ? SUMMARY_ATTACHMENT_UNAVAILABLE : !current ? "Reading the saved revision…" : current.problem ?? "Saved revision ready to find in the native picker. Kontor has not changed a draft or verified a destination."}</Text>
     {revision ? <><SourceChip revision={revision} colors={colors} />
-      <Text selectable testID="attach-revision-identifier" style={muted}>{summaryAttachmentIdentifier(revision.summaryId, revision.revision)}</Text>
       <Text selectable style={{ color: colors.foreground, fontSize: 12 }}>{revision.text}</Text></> : null}
     <Text style={muted}>{SUMMARY_ATTACHMENT_STEPS}</Text><Text style={muted}>{SUMMARY_ATTACHMENT_LIMIT}</Text>
   </OperationSheet>;

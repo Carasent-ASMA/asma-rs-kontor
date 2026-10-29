@@ -1,4 +1,4 @@
-import { freshAvailability, type LifecycleRow } from "../shared/session-lifecycle";
+import { freshAvailability, type LifecycleRow, type TakeoverOutcome } from "../shared/session-lifecycle";
 import type { CreateOutcome } from "../shared/session-create";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
@@ -20,6 +20,7 @@ export type OpenSessionResult =
 export type HandOffTarget =
   | { readonly kind: "session"; readonly agentId: string }
   | { readonly kind: "created"; readonly outcome: CreateOutcome }
+  | { readonly kind: "takeover"; readonly outcome: TakeoverOutcome; readonly onOpened?: (result: OpenSessionResult) => void }
   | ({ readonly kind: "view" } & SwitchView);
 
 /**
@@ -77,6 +78,11 @@ export function openHandOff(input: {
   if (target.kind === "session") {
     return openSessionById({ entries: input.entries, id: target.agentId, serverId: input.hostId, navigation: input.navigation });
   }
+  if (target.kind === "takeover") {
+    const result = openTakeoverSuccessor({ outcome: target.outcome, serverId: input.hostId, navigation: input.navigation });
+    target.onOpened?.(result);
+    return result;
+  }
   const result = openCreatedSession({ outcome: target.outcome, serverId: input.hostId, navigation: input.navigation });
   // The creation itself succeeded; keep its exact identity in the refusal so it can still be found.
   return result.ok ? result : { ...result, message: `Created “${target.outcome.title}” (session ID ${target.outcome.agentId}). ${result.message}` };
@@ -118,6 +124,16 @@ export function openCreatedSession(input: {
     return { ok: false, reason: "missing", message: "The host has not confirmed this creation's exact session ID. Check its outcome before opening it." };
   }
   return openNativeSession({ ...input, id: input.outcome.agentId });
+}
+
+/** Only a completed takeover's verified successor may use the creation-independent native open path. */
+export function openTakeoverSuccessor(input: { readonly outcome: TakeoverOutcome; readonly serverId: string; readonly navigation: SessionNavigation | undefined }): OpenSessionResult {
+  const { outcome } = input;
+  if (outcome.state !== "succeeded" || !outcome.successor?.agentId?.trim() || !outcome.successor.title.trim() || outcome.successor.agentId === outcome.agentId) {
+    return { ok: false, reason: "missing", message: "Takeover has not confirmed an exact replacement session. Check the existing operation before opening it." };
+  }
+  const result = openNativeSession({ id: outcome.successor.agentId, serverId: input.serverId, navigation: input.navigation });
+  return result.ok ? result : { ...result, message: `Takeover completed into “${outcome.successor.title}”. ${result.message}` };
 }
 
 /** An archive's own exact-ID read names the native ID after its row left the directory; nothing else does. */

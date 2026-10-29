@@ -1,3 +1,4 @@
+import { SUMMARY_ATTACHMENT_UNAVAILABLE } from "../client/summary-attachments";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateOptions, CreateOutcome } from "../shared/session-create";
@@ -10,6 +11,7 @@ const model = vi.hoisted(() => ({
   /** Each drawn child's own hook slots, kept across renders as React keeps a mounted instance's state. */
   stores: {} as Record<string, HookStore>,
   rpc: {} as Record<string, ReturnType<typeof vi.fn>>,
+  operationCallbacks: [] as Array<{ onOpenTakeover?: (outcome: import("../shared/session-lifecycle").TakeoverOutcome) => import("../client/session-actions").OpenSessionResult }>,
   focusControl: vi.fn(),
   platform: "web",
   hosts: [] as { serverId: string; label: string; status: string }[],
@@ -60,6 +62,11 @@ import { createAvailability, popoverBodyHeight, StartSwitchPopover, StartSwitchS
 import { NewLsaForm } from "../client/new-lsa-form";
 import { DenseSessionRow } from "../client/dense-session-row";
 import { OrganizationRowView } from "../client/organization-row";
+vi.mock("../client/session-operations", async original => {
+  const actual = await original<typeof import("../client/session-operations")>();
+  return { ...actual, useSessionOperations: (props: Parameters<typeof actual.useSessionOperations>[0]) => { model.operationCallbacks.push(props); return actual.useSessionOperations(props); } };
+});
+
 import { openHandOff, takeHandOff, withdrawHandOff, type OpenSessionResult, type SessionNavigation } from "../client/session-actions";
 import { AnchoredMenu } from "../client/anchored-menu";
 import { configureRecentStorage, recentRows, recordVisit, readRecent } from "../client/recent-sessions";
@@ -217,7 +224,7 @@ describe("Start or switch sheet", () => {
     // This host's server qualifies no takeover and has no summary store: each stays listed, refused with its reason.
     expect(items.filter((node) => node.props["aria-disabled"]).map((node) => node.props.accessibilityLabel)).toEqual([`Take over. ${UNSUPPORTED.takeover.reason}`,
       `Choose a model for taking over LSA • ASMA-1 • Route. ${UNSUPPORTED.takeover.reason}`,
-      `Summarize & copy. ${UNSUPPORTED.summaries.reason}`, `Attach summary to another seat…. ${UNSUPPORTED.summaries.reason}`]);
+      `Summarize & copy. ${UNSUPPORTED.summaries.reason}`, `Attach summary…. ${SUMMARY_ATTACHMENT_UNAVAILABLE}`]);
     press(byTestId(s.tree, "session-action-copy-id")); await settle(); s.render();
     expect(model.copyText).toHaveBeenCalledExactlyOnceWith("agent-a");
     expect(model.toast.show).toHaveBeenCalledExactlyOnceWith("Copied session ID agent-a");
@@ -738,6 +745,19 @@ describe("Start or switch popover from the composer pill", () => {
   }
   const navigation = () => ({ openAgent: vi.fn(), openWorkspace: vi.fn() }) as unknown as SessionNavigation & { openAgent: ReturnType<typeof vi.fn> };
   const handedKey = (p: ReturnType<typeof pop>, call = 0) => (p.openScreen.mock.calls[call]![0] as { params: { target: string } }).params.target;
+
+  it("waits for verified native takeover opening before closing, and holds a failed or host-changed handoff", () => {
+    const p = pop(), outcome: import("../shared/session-lifecycle").TakeoverOutcome = { reviewId: "00000000-0000-4000-8000-000000000001", revision: 1, agentId: "source", state: "succeeded", phase: "done", message: "Continues", successor: { requestId: "00000000-0000-4000-8000-000000000002", agentId: "exact-successor", title: "Original title" }, next: "none", checkedAt: "2026-10-29" };
+    const opening = model.operationCallbacks.at(-1)!.onOpenTakeover!;
+    expect(opening(outcome)).toEqual({ ok: true, handoff: true }); expect(p.close).not.toHaveBeenCalled();
+    const nav = navigation(); nav.openAgent.mockImplementation(() => { throw new Error("Native open failed"); });
+    expect(openHandOff({ hostId: "host-a", key: handedKey(p), entries: [], navigation: nav })).toMatchObject({ ok: false }); expect(p.close).not.toHaveBeenCalled();
+    expect(opening(outcome)).toEqual({ ok: true, handoff: true }); nav.openAgent.mockImplementation(() => {});
+    expect(openHandOff({ hostId: "host-a", key: handedKey(p, 1), entries: [], navigation: nav })).toEqual({ ok: true }); expect(p.close).toHaveBeenCalledTimes(1);
+    expect(nav.openAgent).toHaveBeenLastCalledWith({ agentId: "exact-successor", serverId: "host-a" });
+    Object.assign(p.props, { host: { id: "host-b", label: "Other host" } }); p.render();
+    expect(opening(outcome)).toMatchObject({ ok: false, reason: "navigation" }); expect(p.openScreen).toHaveBeenCalledTimes(2);
+  });
 
   it("draws the shared body in the host's surface: no nested sheet, Close or second scroller", async () => {
     const p = pop();
