@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { PaseoAgentListOptions, PaseoAgentListResult, PaseoApi, PaseoWorkspace, PaseoWorkspaceCreateOptions, PaseoWorkspaceListOptions, PaseoWorkspaceListResult } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { summaryPinSchema, UNSUPPORTED } from "../shared/session-navigator";
+import { resolveAsmaCommand } from "./asma-cli";
 import { readConfig } from "./config";
 import { canonicalLeadProblem } from "./session-canonical";
 import { readPinnedSummary, summaryStateRoot } from "./session-summaries";
@@ -354,11 +355,15 @@ export function parseJiraSearchOutput(stdout: string): Omit<JiraSearchResult, "f
 }
 
 type JiraExecute = (file: string, args: readonly string[], options: { timeout: number; maxBuffer: number; encoding: "utf8" }) => Promise<{ stdout: string }>;
+type AsmaCommand = () => Promise<string>;
 
 /** The CLI boundary, injectable so the contract can be tested without a live Jira or a child process. */
-export async function runJiraSearch(input: JiraSearchInput, execute: JiraExecute = executeFile): Promise<JiraSearchResult> {
+export async function runJiraSearch(input: JiraSearchInput, execute: JiraExecute = executeFile, command: AsmaCommand = resolveAsmaCommand): Promise<JiraSearchResult> {
+  let file: string;
+  try { file = await command(); }
+  catch (error) { return { issues: [], hasMore: false, nextPageToken: null, failure: errorText(error) }; }
   try {
-    const { stdout } = await execute("asma", jiraSearchArgs(input), { timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8" });
+    const { stdout } = await execute(file, jiraSearchArgs(input), { timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8" });
     return { ...parseJiraSearchOutput(stdout), failure: null };
   } catch (error) { return { issues: [], hasMore: false, nextPageToken: null, failure: errorText(error) }; }
 }

@@ -11,6 +11,7 @@ import { canonicalGraphSchema, EPIC_IDENTITY_SCHEMA, epicIdentitySchema, jiraHis
   sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type SourceSummaryRead, type WorkstreamRegistry } from "../shared/read-sources";
 import { GRAPH_FENCE, planMetadata } from "./plan-metadata";
 import type { organizationSettingsSchema } from "../shared/organization";
+import { resolveAsmaCommand } from "./asma-cli";
 import { readConfig } from "./config";
 
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -97,7 +98,7 @@ export async function readWorkstreamRegistry(workspace = process.env.KONTOR_PLUG
 const exportPlan: ExportPlan = async (path) => {
   const workspace = process.env.KONTOR_PLUGIN_ASMA_WORKSPACE?.trim();
   if (workspace && !isAbsolute(workspace)) throw new Error("KONTOR_PLUGIN_ASMA_WORKSPACE must be an absolute host-side path");
-  const result = await execute("asma", ["plan", "export", path], {
+  const result = await execute(await resolveAsmaCommand(), ["plan", "export", path], {
     // A documentation checkout need not contain the installed plan validator.
     // Use the host's configured ASMA workspace, never a client-selected cwd.
     cwd: workspace || undefined, timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8",
