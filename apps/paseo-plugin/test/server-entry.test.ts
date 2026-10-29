@@ -12,6 +12,7 @@ type Started = {
   hooks: string[];
   settings: string[];
   handlers: string[];
+  implementations: Record<string, (...args: never[]) => unknown>;
   info: Record<string, unknown>[];
   errors: Record<string, unknown>[];
   cleanup: () => void;
@@ -19,14 +20,15 @@ type Started = {
 
 /** One plugin server start, as a new worker runs it, against a recording host. */
 function start(): Started {
-  const started: Omit<Started, "cleanup"> = { hooks: [], settings: [], handlers: [], info: [], errors: [] };
+  const started: Omit<Started, "cleanup"> = { hooks: [], settings: [], handlers: [], implementations: {}, info: [], errors: [] };
   const server = {
     before: (name: string) => {
       started.hooks.push(name);
       return () => {};
     },
-    handle: (contract: { readonly name: string }) => {
+    handle: (contract: { readonly name: string }, implementation: (...args: never[]) => unknown) => {
       started.handlers.push(contract.name);
+      started.implementations[contract.name] = implementation;
     },
     registerSettings: (definition: { readonly id: string }) => {
       started.settings.push(definition.id);
@@ -72,6 +74,19 @@ describe("server entry floor mode", () => {
     mkdirSync(join(home, "plugin-config", "kontor"), { recursive: true });
     writeFileSync(file, content, { mode: 0o600 });
   };
+
+  it("registers procedural prepare/execute/check without enabling the legacy takeover action", () => {
+    const started = start();
+    expect(started.handlers).toEqual(expect.arrayContaining([
+      "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check",
+    ]));
+    expect(started.handlers).not.toContain("sessions.promote");
+    expect(started.handlers).not.toContain("sessions.summary-save");
+    expect(started.handlers).not.toContain("sessions.summary-attach");
+    expect(started.implementations["sessions.navigator-capabilities"]!()).toMatchObject({ takeover: { supported: false } });
+    expect(existsSync(join(home, "plugin-state"))).toBe(false);
+    started.cleanup();
+  });
 
   it("registers the three hooks when floor.json is absent, with the mode line only", () => {
     const started = start();

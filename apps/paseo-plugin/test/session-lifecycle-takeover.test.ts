@@ -1,3 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { execFile as nativeExecFile } from "node:child_process";
+import { promisify as nativePromisify } from "node:util";
+import { mkdir as makeDirectory } from "node:fs/promises";
+import type { PaseoApi } from "@getpaseo/client";
+import { createProceduralTakeover, takeoverCheckout, takeoverHash } from "../server/procedural-takeover";
+import { takeoverModeSchema, type ProceduralAdmission } from "../shared/procedural-takeover";
+import { discoverCanonical } from "../server/session-canonical";
+import { promotionRecordSchema } from "../shared/session-promotion";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -9,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import { TAKEOVER_PREDECESSOR_LABEL, createLifecycleService, createTakeoverService, lifecycleRevision, readOperatorFleetDiscovery, readTakeoverContinuity, type TakeoverDeps } from "../server/session-lifecycle";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
-import { createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
+import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
@@ -37,7 +46,7 @@ const health = (mode: string | null): RouteHealth => ({ as_of: "2026-10-25T09:00
 const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" }, step: 1, sub_step: 1, vendor: "anthropic" };
 
 const dirs: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
@@ -873,5 +882,307 @@ describe("persona issued again for a successor", () => {
     expect(reissuePersona(labels, "claude", place)).toMatchObject({ supported: true, version: personaVersion("lsa-bound", true) });
     for (const [patch, where] of [[{ persona: "kontor-lsa-bound@000000000000" }, place], [{}, { ...place, workspace: "TPM" }], [{ "title.auto": "LSA • ADHOC • Route review" }, place]] as const)
       expect(reissuePersona({ ...labels, ...patch }, "claude", where)).toHaveProperty("refused");
+  });
+});
+
+
+// Contract fixtures exercise real immutable files and checkout reads; no native-provider qualification is claimed.
+async function proceduralFixture(fault?: "archive" | "create" | "bootstrap" | "continuation" | "wrong-response" | "detach" | "session-replaced" | "source-revived" | "wrong-config" | "wrong-labels", workflow: "free" | "kontor" = "free") {
+  const root = await mkdtemp(join(tmpdir(), "kontor-procedural-")); dirs.push(root);
+  vi.stubEnv("PASEO_HOME", root);
+  const cwd = join(root, "checkout"); await makeDirectory(cwd);
+  const git = nativePromisify(nativeExecFile);
+  await git("git", ["-C", cwd, "init", "-b", "fixture"]);
+  await git("git", ["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
+  const sourceId = randomUUID(), operationId = randomUUID(), coordinatorId = workflow === "kontor" ? randomUUID() : null;
+  const source = agent(sourceId, { cwd, workspaceId: "wks-procedural", labels: { role: "SWE", ...(coordinatorId ? { "paseo.parent-agent-id": coordinatorId, orchestration: "paseo-direct" } : {}) }, persistence: { provider: "claude", sessionId: "source-thread" } });
+  const agents = new Map<string, Agent>([[sourceId, source]]), effects: string[] = [], timeline: unknown[] = [];
+  if (coordinatorId) agents.set(coordinatorId, agent(coordinatorId, { status: "idle", cwd, labels: { orchestration: "paseo-direct" } }));
+  const config = { provider: "codex", model: "fixture-model", effort: "low", mode: "full-access" };
+  const mode = { workflow, orchestration: "paseo" } as const;
+  const ref = async (name: string, value: unknown) => { const path = join(root, name), text = JSON.stringify(value); await writeFile(path, text); return { path, sha256: takeoverHash(text) }; };
+  const sourceProof = await ref("schedule-source.json", { sourceId, status: "paused" });
+  const admission: ProceduralAdmission = { version: 1, operationId, sourceId, hostId: "fixture-host", mode, coordinatorId,
+    sourceRevision: lifecycleRevision(source), workspaceId: "wks-procedural", cwd, projectKey: "FIXTURE", title: source.title!, expiresAt: new Date(Date.now() + 300_000).toISOString(), config,
+    checkout: await takeoverCheckout(cwd), children: [], consent: "procedural-no-host-fence",
+    handoff: await ref("handoff.json", { operationId, sourceId, scope: "fixture", criteria: ["preserve work"], completeAvailableContext: true, authorizedNextAction: "Inspect the fixture" }),
+    authority: await ref("authority.json", { operationId, sourceId, coordinatorId, mode, config }),
+    plan: await ref("plan.json", { operationId, sourceId, mode }), history: [await ref("history.json", { sourceId, history: "complete fixture context" })],
+    accounting: await ref("accounting.json", { operationId, sourceId, mode, reviewedBy: "fixture-operator", observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(), coverage: "owner-reviewed-not-host-certified", schedules: [{ id: "old-heartbeat", status: "paused", runningRunIds: [], source: sourceProof }], workers: [], reporting: { ownerId: coordinatorId ?? "fixture-operator", deadline: new Date(Date.now() + 300_000).toISOString() }, accountPrincipal: "unverified", changedCondition: "Operator reviewed a changed provider route" }) };
+  const client = {
+    agents: {
+      list: async () => ({ entries: [...agents.values()].filter(value => !value.archivedAt).map(agent => ({ agent })), pageInfo: { hasMore: false } }),
+      ref: (id: string) => ({
+        refresh: async () => agents.has(id) ? { agent: agents.get(id), project: { projectKey: "FIXTURE" } } : null,
+        archive: async () => { effects.push("archive"); Object.assign(source, { archivedAt: new Date().toISOString(), status: "closed" }); if (fault === "archive") throw new Error("lost archive reply"); },
+        detach: async () => { effects.push("detach"); delete agents.get(id)!.labels!["paseo.parent-agent-id"]; if (fault === "detach") throw new Error("lost detach reply"); },
+        timeline: { refetch: async () => ({ agent: agents.get(id), entries: timeline, error: null }) },
+        run: async (prompt: string, options: { messageId: string }) => {
+          expect(source.archivedAt).toBeTruthy(); expect(source.status).toBe("closed");
+          const stage = options.messageId.includes("bootstrap") ? "bootstrap" : "continuation";
+          effects.push(stage);
+          const ack = JSON.parse(prompt.split("reply ONLY this exact JSON: ")[1]!.split(". Otherwise")[0]!);
+          if (fault === "wrong-response") ack.operationId = randomUUID();
+          const text = JSON.stringify(ack), turnId = `turn-${stage}`;
+          timeline.push({ provider: "codex", turnId, seqStart: timeline.length + 1, seqEnd: timeline.length + 1, item: { type: "user_message", clientMessageId: options.messageId } });
+          timeline.push({ provider: "codex", turnId, seqStart: timeline.length + 1, seqEnd: timeline.length + 1, item: { type: "assistant_message", text } });
+          if (fault === "source-revived" && stage === "bootstrap") Object.assign(source, { archivedAt: null, status: "idle" });
+          if (fault === "session-replaced" && stage === "continuation") agents.get(id)!.persistence!.sessionId = "replacement-thread";
+          if (fault === stage) throw new Error("lost native reply");
+          return { status: "idle", final: agents.get(id), lastMessage: text, error: null };
+        },
+      }),
+    },
+    workspaces: { ref: () => ({ refresh: async () => ({ workspaceDirectory: cwd }), agents: { create: async (input: { agentId: string; title: string; parent?: string; labels: Record<string, string> }) => {
+      expect(source.archivedAt).toBeTruthy(); effects.push("create");
+      agents.set(input.agentId, agent(input.agentId, { cwd, workspaceId: admission.workspaceId, title: input.title, status: "idle", provider: config.provider, model: config.model,
+        labels: { ...input.labels, ...(input.parent ? { "paseo.parent-agent-id": input.parent } : {}) }, currentModeId: config.mode, effectiveThinkingOptionId: config.effort, runtimeInfo: { provider: "codex", sessionId: "successor-thread", model: config.model }, persistence: { provider: "codex", sessionId: "successor-thread" } }));
+      if (fault === "wrong-config") agents.get(input.agentId)!.currentModeId = "another-mode";
+      if (fault === "wrong-labels") agents.get(input.agentId)!.labels!.role = "ANOTHER-ROLE";
+      if (fault === "create") throw new Error("lost creation reply"); return { id: input.agentId };
+    } } }) },
+    providers: { snapshot: async () => ({ entries: [{ provider: config.provider, enabled: true, status: "ready", models: [{ id: config.model, thinkingOptions: [{ id: config.effort }] }], modes: [{ id: config.mode }] }] }) },
+  } as unknown as PaseoApi;
+  const store = join(root, "operations"), service = createProceduralTakeover(client, store, "fixture-host");
+  return { root, client, service, admission, ref, effects, agents, source, store };
+}
+
+describe("procedural stock takeover", () => {
+  it("keeps all three explicit workflow/orchestration modes and rejects free+kontor", () => {
+    for (const mode of [{ workflow: "kontor", orchestration: "kontor" }, { workflow: "kontor", orchestration: "paseo" }, { workflow: "free", orchestration: "paseo" }]) expect(takeoverModeSchema.safeParse(mode).success).toBe(true);
+    expect(takeoverModeSchema.safeParse({ workflow: "free", orchestration: "kontor" }).success).toBe(false);
+  });
+  it("retires before task effects, reserves exact IDs and deduplicates across reconstructed services", async () => {
+    const f = await proceduralFixture(); const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect(f.effects).toEqual([]);
+    const result = await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash);
+    expect(result.phase).toBe("active"); expect(result.successorId).toBe(prepared.receipt.successorId);
+    expect(result.evidence).toHaveLength(2);
+    expect((await f.service.prepare(await f.ref("admission.json", f.admission))).receipt).toEqual(result); expect(f.effects).toEqual(["archive", "create", "bootstrap", "continuation"]);
+    expect(await createProceduralTakeover(f.client, f.store, "fixture-host").execute(result.operationId, result.admissionHash)).toEqual(result);
+    expect(f.effects).toHaveLength(4); expect(f.agents.size).toBe(2);
+  });
+  it.each(["archive", "create", "bootstrap", "continuation"] as const)("holds a lost %s reply and never resends after reconstruction", async fault => {
+    const f = await proceduralFixture(fault); const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    const result = await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash); expect(result.phase).toBe("held");
+    const before = [...f.effects], restarted = createProceduralTakeover(f.client, f.store, "fixture-host");
+    await restarted.execute(result.operationId, result.admissionHash); const checked = await restarted.check(result.operationId);
+    expect(f.effects).toEqual(before); if (fault === "continuation") { expect(checked.message).toContain("correlated continuation response"); expect(checked.phase).toBe("active"); expect((await restarted.read(result.operationId)).phase).toBe("active"); }
+  });
+  it("refuses governed ownership, stale source and changed prepared evidence without runtime effects", async () => {
+    const f = await proceduralFixture(); f.source.labels = { "kontor.seat_binding_id": "governed-seat" };
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow("Governed"); expect(f.effects).toEqual([]);
+    f.source.labels = { role: "SWE" }; const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    f.source.status = "idle"; expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held"); expect(f.effects).toEqual([]);
+  });
+  it("does not promote an unrelated response to continuation evidence", async () => {
+    const f = await proceduralFixture("wrong-response"); const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    const result = await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash); expect(result.phase).toBe("held"); expect(f.effects).not.toContain("continuation");
+  });
+  it("runs Kontor/Paseo only with its exact existing coordinator and refuses governed mode", async () => {
+    const f = await proceduralFixture(undefined, "kontor"), prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("active");
+    expect(parentOfProcedural(f.agents.get(prepared.receipt.successorId)!)).toBe(f.admission.coordinatorId);
+    const governed = await proceduralFixture(); governed.admission.mode = { workflow: "kontor", orchestration: "kontor" };
+    await expect(governed.service.prepare(await governed.ref("admission.json", governed.admission))).rejects.toThrow("Governed transitions");
+    expect(governed.effects).toEqual([]);
+  });
+  it.each([undefined, "detach"] as const)("preserves exact children and never archives after an unknown detach (%s)", async fault => {
+    const f = await proceduralFixture(fault), childId = randomUUID();
+    f.agents.set(childId, agent(childId, { labels: { "paseo.parent-agent-id": f.admission.sourceId }, status: "running" }));
+    f.admission.children = [childId];
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    const result = await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash);
+    expect(parentOfProcedural(f.agents.get(childId)!)).toBeNull();
+    if (fault) { expect(result.phase).toBe("held"); expect(f.effects).toEqual(["detach"]); }
+    else { expect(result.phase).toBe("active"); expect(f.agents.get(childId)?.archivedAt).toBeNull(); expect(f.effects[0]).toBe("detach"); }
+  });
+  it("one immutable execution claim prevents concurrent duplicate runtime effects", async () => {
+    const f = await proceduralFixture(), prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    await Promise.all([f.service.execute(f.admission.operationId, prepared.receipt.admissionHash), createProceduralTakeover(f.client, f.store, "fixture-host").execute(f.admission.operationId, prepared.receipt.admissionHash)]);
+    expect(f.effects).toEqual(["archive", "create", "bootstrap", "continuation"]);
+  });
+  it.each(["session-replaced", "source-revived", "wrong-config", "wrong-labels"] as const)("holds observed runtime/configuration drift (%s)", async fault => {
+    const f = await proceduralFixture(fault), prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    const result = await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash);
+    expect(result.phase).toBe("held"); const before = [...f.effects];
+    expect((await f.service.check(result.operationId)).phase).toBe("held"); expect(f.effects).toEqual(before);
+    if (fault !== "session-replaced") expect(f.effects).not.toContain("continuation");
+  });
+  it.each(["checkout", "authority"] as const)("rejects changed prepared %s before retirement", async field => {
+    const f = await proceduralFixture(), prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    await writeFile(field === "checkout" ? join(f.admission.cwd, "new-work.txt") : f.admission.authority.path, "changed");
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held"); expect(f.effects).toEqual([]);
+  });
+  it("preserves the existing operator-off switch and rejects another Kontor lifecycle claim", async () => {
+    const f = await proceduralFixture();
+    const switchPath = join(f.root, "plugin-config", "kontor", "create.json"); await makeDirectory(join(f.root, "plugin-config", "kontor"), { recursive: true });
+    await writeFile(switchPath, JSON.stringify({ create: "off" }));
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow("switched off");
+    await rm(switchPath);
+    const claimRoot = join(f.root, "session-lifecycle-v1"); await makeDirectory(claimRoot);
+    await writeFile(join(claimRoot, `intent-${takeoverHash(f.admission.sourceId)}.json`), JSON.stringify({ action: "archive" }));
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow("Another Kontor lifecycle action");
+    expect(f.effects).toEqual([]);
+  });
+  it.each(["kontor", "unknown-orchestrator"])("refuses conflicting orchestration claims without a direct fallback (%s)", async orchestration => {
+    const f = await proceduralFixture(); f.source.labels = { orchestration };
+    f.admission.sourceRevision = lifecycleRevision(f.source);
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow("Governed or conflicting ownership");
+    expect(f.effects).toEqual([]);
+  });
+  it("admits only one operation per exact source and refuses changed operation contents", async () => {
+    const f = await proceduralFixture(); await f.service.prepare(await f.ref("admission.json", f.admission));
+    await expect(f.service.prepare(await f.ref("changed.json", { ...f.admission, title: "changed" }))).rejects.toThrow();
+    const operationId = randomUUID(), second = { ...f.admission, operationId };
+    for (const key of ["handoff", "authority", "plan", "accounting"] as const) second[key] = await f.ref(`second-${key}.json`, { ...JSON.parse(await readFile(f.admission[key].path, "utf8")), operationId });
+    await expect(f.service.prepare(await f.ref("second.json", second))).rejects.toThrow("Another operation already owns this source");
+    expect(f.effects).toEqual([]);
+  });
+});
+
+function parentOfProcedural(value: Agent) { return value.labels?.["paseo.parent-agent-id"] ?? null; }
+
+
+describe("R11 source review regressions", () => {
+  it.each(["stateRoot", "placementRoots"] as const)("rejects configured %s governed placement before timeline hydration", async kind => {
+    const f = await proceduralFixture();
+    vi.stubEnv(kind === "stateRoot" ? "KONTOR_PLUGIN_STATE_ROOT" : "KONTOR_PLUGIN_PLACEMENT_ROOTS", f.root);
+    const previous = f.client.agents.ref, historyReads: string[] = [];
+    f.client.agents.ref = (id) => { const handle = previous(id); return { ...handle, timeline: { ...handle.timeline, refetch: async (...args) => { historyReads.push(handle.id); return handle.timeline.refetch(...args); } } }; };
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow("governed ownership cannot be ruled out");
+    expect(f.effects).toEqual([]); expect(historyReads).toEqual([]);
+  });
+  it("keeps ordinary free checkout outside configured roots valid and rechecks placement before effects", async () => {
+    const f = await proceduralFixture();
+    vi.stubEnv("KONTOR_PLUGIN_STATE_ROOT", join(f.root, "other-state"));
+    vi.stubEnv("KONTOR_PLUGIN_PLACEMENT_ROOTS", join(f.root, "other-placement"));
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect(prepared.receipt.phase).toBe("prepared");
+    vi.stubEnv("KONTOR_PLUGIN_PLACEMENT_ROOTS", f.root);
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
+  });
+  it("allows ordinary free takeover outside both configured governed root categories", async () => {
+    const f = await proceduralFixture();
+    vi.stubEnv("KONTOR_PLUGIN_STATE_ROOT", join(f.root, "other-state"));
+    vi.stubEnv("KONTOR_PLUGIN_PLACEMENT_ROOTS", join(f.root, "other-placement"));
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("active");
+  });
+  it("reconciles lost continuation reply and settles only preserved child claims without resend", async () => {
+    const f = await proceduralFixture("continuation"), childId = randomUUID();
+    f.agents.set(childId, agent(childId, { labels: { "paseo.parent-agent-id": f.admission.sourceId }, status: "running" })); f.admission.children = [childId];
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    const childClaim = join(f.root, "session-lifecycle-v1", `intent-${takeoverHash(childId)}.json`), sourceClaim = join(f.root, "session-lifecycle-v1", `intent-${takeoverHash(f.admission.sourceId)}.json`);
+    expect(existsSync(childClaim)).toBe(true); const sourceBytes = await readFile(sourceClaim, "utf8"), before = [...f.effects];
+    const checked = await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId);
+    expect(checked.phase).toBe("active"); expect(existsSync(childClaim)).toBe(false);
+    expect(await readFile(sourceClaim, "utf8")).toBe(sourceBytes); expect(f.effects).toEqual(before);
+  });
+  it("serializes concurrent correlated checks without deleting a later foreign claim", async () => {
+    const f = await proceduralFixture("continuation"), childId = randomUUID();
+    f.agents.set(childId, agent(childId, { labels: { "paseo.parent-agent-id": f.admission.sourceId }, status: "running" })); f.admission.children = [childId];
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash);
+    const childClaim = join(f.root, "session-lifecycle-v1", `intent-${takeoverHash(childId)}.json`), original = JSON.parse(await readFile(childClaim, "utf8")), before = [...f.effects];
+    const services = [f.service, createProceduralTakeover(f.client, f.store, "fixture-host")];
+    expect((await Promise.all(services.map(service => service.check(f.admission.operationId)))).map(result => result.phase)).toEqual(["active", "active"]);
+    expect(existsSync(childClaim)).toBe(false);
+    const foreign = JSON.stringify({ ...original, reviewId: randomUUID(), token: randomUUID() }); await writeFile(childClaim, foreign);
+    expect((await services[0]!.check(f.admission.operationId)).phase).toBe("active");
+    expect(await readFile(childClaim, "utf8")).toBe(foreign); expect(f.effects).toEqual(before);
+  });
+  it("settles an interrupted active cleanup idempotently after reconstruction", async () => {
+    const f = await proceduralFixture(), childId = randomUUID();
+    f.agents.set(childId, agent(childId, { labels: { "paseo.parent-agent-id": f.admission.sourceId }, status: "running" })); f.admission.children = [childId];
+    const childClaim = join(f.root, "session-lifecycle-v1", `intent-${takeoverHash(childId)}.json`); let ownedClaim = "";
+    const previous = f.client.agents.ref;
+    f.client.agents.ref = (id) => { const handle = previous(id); return { ...handle, run: async (...args) => { const result = await handle.run(...args); if (id !== f.admission.sourceId) ownedClaim = await readFile(childClaim, "utf8"); return result; } }; };
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("active");
+    // Model the durable checkpoint after active was saved but before child-claim unlink completed.
+    await writeFile(childClaim, ownedClaim); const before = [...f.effects];
+    const restarted = createProceduralTakeover(f.client, f.store, "fixture-host");
+    expect((await restarted.check(f.admission.operationId)).phase).toBe("active"); expect(existsSync(childClaim)).toBe(false);
+    expect((await restarted.check(f.admission.operationId)).phase).toBe("active"); expect(f.effects).toEqual(before);
+  });
+  it.each(["foreign", "foreign-token", "uncertain"] as const)("preserves a %s child claim during correlated reconciliation", async kind => {
+    const f = await proceduralFixture("continuation"), childId = randomUUID();
+    f.agents.set(childId, agent(childId, { labels: { "paseo.parent-agent-id": f.admission.sourceId }, status: "running" })); f.admission.children = [childId];
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    const childClaim = join(f.root, "session-lifecycle-v1", `intent-${takeoverHash(childId)}.json`);
+    const original = JSON.parse(await readFile(childClaim, "utf8"));
+    const changed = kind === "foreign" ? JSON.stringify({ ...original, reviewId: randomUUID(), fingerprint: takeoverHash("foreign-operation"), token: randomUUID() }) : kind === "foreign-token" ? JSON.stringify({ ...original, token: randomUUID() }) : "{";
+    await writeFile(childClaim, changed); const before = [...f.effects];
+    const checked = await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId);
+    expect(checked.phase).toBe(kind === "uncertain" ? "held" : "active");
+    expect(await readFile(childClaim, "utf8")).toBe(changed); expect(f.effects).toEqual(before);
+  });
+});
+
+async function reviewLeadFixture(promoted = false, state: "promoted" | "promoting" | "unknown" = "promoted") {
+  const f = await proceduralFixture(undefined, "kontor");
+  const title = promoted ? "LSA • ADHOC • Fixture" : "LSA • ASMA-1 • Fixture";
+  const persona = personaVersion(promoted ? "lsa-ad-hoc" : "lsa-bound", true);
+  f.source.title = title;
+  f.source.labels = { ...f.source.labels, role: "LSA", persona, "title.auto": title, ...(promoted ? {} : { epic: "ASMA-1" }) };
+  f.admission.title = title;
+  f.admission.sourceRevision = lifecycleRevision(f.source);
+  const ref = f.client.workspaces.ref.bind(f.client.workspaces);
+  f.client.workspaces.ref = ((id: string) => {
+    const handle = ref(id);
+    return { ...handle, refresh: async () => ({ ...await handle.refresh(), id, name: promoted ? "ADHOC" : "LSA", title: null, archivingAt: null }) };
+  }) as typeof f.client.workspaces.ref;
+  const root = createStateRoot();
+  if (promoted) {
+    const stamp = new Date().toISOString();
+    const record = promotionRecordSchema.parse({ schemaVersion: 1, requestId: randomUUID(), agentId: f.source.id, epic: "ASMA-1", branch: "promote", state,
+      native: { workspaceId: f.admission.workspaceId, workspace: "ADHOC", title, titleAuto: title, observedAt: stamp, revision: f.source.updatedAt },
+      logical: { workspace: "LSA", node: "epic:ASMA-1", bindingRevision: "a".repeat(64) }, persona: { issued: persona, effective: persona },
+      canonicalAgentId: f.source.id, summarySha256: null, summaryRevision: null, acknowledgement: "not-required", message: "Synthetic review fixture", createdAt: stamp, updatedAt: stamp });
+    await makeDirectory(join(root, "promotion-v1"), { recursive: true });
+    await writeFile(join(root, "promotion-v1", `${record.requestId}.json`), JSON.stringify(record));
+  }
+  return { ...f, canonicalRoot: root };
+}
+describe("R11 canonical refusal regressions", () => {
+  it("holds a promotion appearing after prepare across restart without effects", async () => {
+    const f = await reviewLeadFixture(true, "promoting"), root = join(f.canonicalRoot, "promotion-v1");
+    const name = (await readdir(root))[0]!, record = await readFile(join(root, name), "utf8");
+    await rm(root, { recursive: true }); delete f.source.labels!.role;
+    f.admission.sourceRevision = lifecycleRevision(f.source);
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    await makeDirectory(root, { recursive: true }); await writeFile(join(root, name), record);
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    expect((await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
+  });
+
+  it.each([false, true])("refuses canonical lead before effects (promoted=%s)", async (promoted) => {
+    const f = await reviewLeadFixture(promoted);
+    expect((await discoverCanonical(f.client, f.canonicalRoot, "ASMA-1")).kind).toBe("one");
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow(/[Cc]anonical|[Pp]romotion/);
+    expect(f.effects).toEqual([]);
+  });
+  it.each(["promoting", "unknown", "promoted"] as const)("refuses promotion %s without LSA label", async (state) => {
+    const f = await reviewLeadFixture(true, state);
+    delete f.source.labels!.role; f.admission.sourceRevision = lifecycleRevision(f.source);
+    await expect(f.service.prepare(await f.ref("admission.json", f.admission))).rejects.toThrow(/[Pp]romotion/);
+    expect(f.effects).toEqual([]);
+  });
+  it.each(["unreadable", "malformed", "role"])("holds ownership drift after prepare: %s", async (drift) => {
+    const f = await proceduralFixture();
+    const prepared = await f.service.prepare(await f.ref("admission.json", f.admission));
+    const root = join(createStateRoot(), "promotion-v1");
+    if (drift === "role") f.source.labels!.role = "LSA";
+    else if (drift === "unreadable") { await makeDirectory(createStateRoot(), { recursive: true }); await writeFile(root, "unreadable store"); }
+    else { await makeDirectory(root, { recursive: true }); await writeFile(join(root, "bad.json"), "invalid promotion record"); }
+    expect((await f.service.execute(f.admission.operationId, prepared.receipt.admissionHash)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
+    expect((await createProceduralTakeover(f.client, f.store, "fixture-host").check(f.admission.operationId)).phase).toBe("held");
+    expect(f.effects).toEqual([]);
   });
 });

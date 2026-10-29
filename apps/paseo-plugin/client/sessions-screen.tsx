@@ -110,7 +110,7 @@ import type { useOrganizationSettings } from "./use-organization-settings";
 import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, epicDetail, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionEpic, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
-import { SessionStatusIcon } from "./session-state-marker";
+import { SessionPulseContext, SessionStatusIcon } from "./session-state-marker";
 import { CompactRetirementNotice, compactRetirementNotice, sessionRowDetails } from "./session-compact-content";
 import { cancelDelayedOpen, DenseSessionRow, type DenseRowMode } from "./dense-session-row";
 import { sessionWork, totalsDetail } from "./session-row-format";
@@ -270,6 +270,14 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
     return by;
   };
   const layout = {
+    // Native measure replies can outlive the screen that requested them.
+    cancelMeasurements() {
+      captureVersion += 1;
+      readCapture = null;
+      applyCapture = null;
+      capturePending = false;
+      following = null;
+    },
     // Stop reissuing an old capture against post-update cells before the parent's layout effect runs.
     renderRows(rows: readonly ListRow[]) { renderedRows = rows; },
     /** Cells measure themselves: with getItemLayout the list measures none. */
@@ -389,8 +397,9 @@ export function createRowLayout(resizedCallback: (by?: number, fromOffset?: numb
       const node = mounted.get(place.key);
       if (typeof node?.measure === "function") {
         const held = place;
+        const requestVersion = captureVersion;
         node.measure((_x, y) => {
-          if (place !== held || !Number.isFinite(y)) return;
+          if (captureVersion !== requestVersion || place !== held || !Number.isFinite(y)) return;
           const by = y - held.top;
           if (Math.abs(by) < 0.5) return;
           place = { ...held, top: y };
@@ -1570,6 +1579,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const toast = useToast();
   const listRef = useRef<NativeFlatList<ListRow> | null>(null);
+  const [pulseRows, setPulseRows] = useState<ReadonlySet<string>>(() => new Set());
+  const pulseViewabilityConfig = useRef({ itemVisiblePercentThreshold: 1 }).current;
+  const pulseViewability = useRef(({ viewableItems }: { viewableItems: { item: ListRow; isViewable: boolean }[] }) => {
+    const next = new Set(viewableItems.filter((token) => token.isViewable).map((token) => listRowKey(token.item)));
+    setPulseRows((previous) => next.size === previous.size && [...next].every((key) => previous.has(key)) ? previous : next);
+  }).current;
   const entriesRef = useRef(state.entries);
   entriesRef.current = state.entries;
   const restoredRef = useRef(false);
@@ -1612,6 +1627,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   /** How far the browser pulled a held row place back to the end of a list that got shorter; the next hold returns it. */
   const clampedByRef = useRef(0);
   const [rowLayout] = useState(() => createRowLayout((by, fromOffset) => resizedRef.current(by, fromOffset)));
+  useLayoutEffect(() => () => rowLayout.cancelMeasurements(), [rowLayout]);
   const resultsPlaceRef = useRef<{ readonly saved: ReturnType<typeof rowLayout.bookmark>; readonly returning: boolean } | null>(null);
   const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
   /** Lowest offset since the compact toolbar opened; see compactToolbarScroll. */
@@ -3389,6 +3405,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <FlatList
         ref={listRef}
         testID="sessions-list"
+        onViewableItemsChanged={pulseViewability}
+        viewabilityConfig={pulseViewabilityConfig}
         tabIndex={pageDocument() ? -1 : undefined}
         data={rows}
         keyExtractor={listRowKey}
@@ -3436,7 +3454,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         ListHeaderComponent={listHeader === null ? null : <View onLayout={rowLayout.onHeaderLayout}>{listHeader}</View>}
         renderItem={({ item }) => {
           const row = item.kind === "result" || item.kind === "session" ? sessionListRow(item.entry, item.kind === "result") : null;
-          if (item.kind === "result") return row;
+          const pulseRow = <SessionPulseContext.Provider value={{ live: state.live, visible: Platform.OS === "web" || pulseRows.has(listRowKey(item)) }}>{row}</SessionPulseContext.Provider>;
+          if (item.kind === "result") return pulseRow;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -3449,7 +3468,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)}>
-            {row}
+            {pulseRow}
           </OrganizationRowView>;
         }}
         ListEmptyComponent={

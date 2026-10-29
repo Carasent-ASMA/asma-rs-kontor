@@ -70,7 +70,7 @@ export function contributeReturnControl(
       return;
     }
     const current = pills.get(entry.id);
-    const presentation = composerSessionPresentation(entry, state, RETURN_CONTROL_TITLE);
+    const presentation = composerSessionPresentation(entry, state, entry.title);
     try {
       if (current?.workspaceId === workspaceId) {
         if (current.presentation.icon !== presentation.icon || current.presentation.title !== presentation.title) {

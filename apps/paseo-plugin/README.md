@@ -1389,6 +1389,16 @@ changes it. The daemon environment is not read for this switch.
 
 ## Tests
 
+Sessions cancels pending native row measurements when its screen unmounts, so
+late geometry replies cannot compensate the departed list's scroll position.
+The scroll-anchor regression covers delayed capture and restate replies,
+repeated Flat unmounts and measurement reuse after cleanup. This lifecycle
+coverage does not establish the cause or resolution of a native app exit;
+physical-device verification remains separate.
+On native devices, disabled and already-selected layout choices keep their
+radio labels and accessibility hints but suppress their tooltip measurement.
+This targeted mitigation does not establish a cause or cure for the iPhone exit.
+
 ```bash
 pnpm --filter @carasent/kontor-paseo-plugin typecheck
 pnpm --filter @carasent/kontor-paseo-plugin test
@@ -1479,6 +1489,16 @@ does not invent a row or a workspace. When the host returns an archived row,
 `archivedAt` is shown separately from the native `closed` status. The default
 non-archived inventory is not affected.
 
+Returned sessions keep their native workspace ID even when workspace metadata is
+unavailable. The tree and result provenance show `Workspace <id>` when the host
+provides no workspace name; a project name is not used as the workspace name.
+This identifies the parent without asserting that it is archived. The public
+workspace list and workspace-handle refresh do not distinguish an archived
+workspace from another absent workspace. `archivingAt` describes an archive in
+progress, not confirmed archive membership. Classifying a session solely from
+its parent requires a supported exact-workspace archive observation; the plugin
+cannot supply that from list omission or recover rows the host omits.
+
 The guard covers an explicit `workspace.create` request whose initial agent
 carries Kontor labels, and the caller carried as `agent.callerAgentId` on
 that request. Paths that carry neither a labelled
@@ -1500,6 +1520,69 @@ ASMA-8507 evidence with the widened upstream action; G-20 is not closed by the
 hook alone.
 
 
+### Procedural takeover backend on stock Paseo
+
+This bounded route refuses every LSA-role session and every session named by a
+promotion or canonical handoff record, including pending or unreadable promotion
+state. It rechecks that absence before retirement and during reconciliation.
+Canonical lead takeover needs the existing persona/title contract and durable
+binding transfer; this backend does not implement that support.
+
+The backend exposes `sessions.procedural-takeover.prepare`, `.execute` and
+`.check` for a reviewed, plugin-owned procedure. These RPCs do not enable the
+legacy **Take over** control. They use the public Paseo SDK; no patched host,
+SDK, native adoption API or provider-private store is involved.
+
+Specify both workflow and orchestration. The valid pairs are `kontor` +
+`kontor`, `kontor` + `paseo`, and `free` + `paseo`. The governed pair is
+recognized but refused by this direct executor: its transitions belong to
+`kontord`. Direct Kontor work requires its existing coordinator. Free work
+has no inferred coordinator. Governed native labels always block this route,
+even when the supplied admission claims another mode.
+
+Preparation takes a SHA-256 reference to an operator/owner-prepared admission
+(`shared/procedural-takeover.ts`). It binds the exact source, local host
+annotation, mode, coordinator, configuration, placement, checkout and expiring
+handoff/authority/plan/history/accounting references. The host annotation is
+owner-supplied; the selected plugin connection owns the native reads. Preparation
+also preserves a bounded public timeline tail. Complete available history is an
+owner-prepared reference; provider-private conversation state is not migrated.
+Schedule and background-worker accounting must name reviewed paused/completed
+schedules, no running schedule claims, and finished/checkpointed workers, with
+source references and a finite reporting owner. This is procedural accounting,
+not a host-certified complete inventory. Effective provider account identity
+remains unverified. Confirmation explicitly accepts these limits.
+
+The operation reserves one successor UUID and creation idempotency key. It
+shares the plugin's existing lifecycle intent namespace with Archive, preserves
+reviewed children by detach/readback, then requires the exact predecessor's
+archived/closed/no-turn observation before creating or prompting its successor.
+Creation keeps the existing workspace and original title, without a task prompt.
+Bootstrap verifies effective configuration, placement, native session identity,
+authority and checkout before continuation. Success requires a correlated public
+prompt ID, provider, turn and successor response. `active` means task continuation
+was observed, never that the task or its delivery criteria completed.
+
+Immutable intents precede effects. A lost reply or interrupted worker retains
+its operation and claims; nothing steals them by elapsed age. Repeating execute
+returns the existing operation without dispatch. Check reads the exact recorded
+IDs and timeline; it can persist observed continuation evidence without resending.
+Successful execution and correlated check share child-claim settlement using the
+exact persisted operation tokens; a restart can finish interrupted cleanup.
+Foreign or unreadable claims are preserved, and the predecessor tombstone stays.
+Configured governed state/placement roots refuse direct admission even when seat
+labels are missing. Earlier partial phases stay held for the existing owner's reconciliation. No
+second successor, automatic predecessor revival, schedule target/history transfer,
+or new scheduler is created. An interrupted procedure can leave local lifecycle
+claims requiring owner reconciliation; do not remove them to trigger a retry.
+
+Other clients and background senders are not fenced. Child creation, native
+state or checkout changes can race the last read. The procedure detects observed
+changes and holds, but cannot promise an atomic cutover or globally exact-once
+execution on stock Paseo. The existing creation operator-off switch also blocks
+this route. Native/installed qualification and independent review remain separate
+from contract tests; no UI success claim follows from a create/send acknowledgement.
+
 ### Native availability and manual lifecycle actions
 
 Attention includes unread finished results as well as current actionable notices.
@@ -1509,6 +1592,16 @@ a null record on the selected host, and an unknown/error reply. They do not load
 provider history or verify that a provider conversation can continue. Reviews and
 receipts keep that distinction: a row whose exact read failed is shown by its ID
 and stays unknown, never missing.
+
+The public SDK has no exact-session, read-only provider-history existence result.
+A persistence session ID is a reference, not proof that history exists, and a
+timeline read may load the provider runtime. Availability checks therefore keep
+history `unverified` or `not-reported`; they do not fetch history automatically
+or remove old readable sessions or failed/unknown reads from Attention. History
+can be inspected deliberately in the native session, but opening it is not a
+no-load availability check. An accessibility filter requires a supported reader
+that distinguishes available, absent and unknown/error for the exact host,
+agent and provider session without starting or hydrating its runtime.
 
 The per-session X performs one exact-session Archive after native preflight.
 Native archive requests cancellation and closes the runtime, including an active

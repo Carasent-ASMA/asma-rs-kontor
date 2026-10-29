@@ -21,7 +21,7 @@ import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { buildOrganizationTree, flattenOrganizationTree, sessionState } from "./session-organization";
 import { byLastActivity, totalsDetail, type SessionTotals } from "./session-row-format";
 import type { SessionStateCount } from "./session-state-counts";
-import { SessionStateMarker } from "./session-state-marker";
+import { SessionPulseContext, SessionStateMarker } from "./session-state-marker";
 import { startSwitchCounts, type SwitchView } from "./session-state-shortcuts";
 import { SessionLayoutControl } from "./session-layout-control";
 import { sessionStatusInk } from "./session-status-ink";
@@ -194,6 +194,8 @@ type StartSwitchProps = {
   popover?: boolean;
   /** The session this was opened from, marked in the list. */
   currentId?: string | null;
+  /** The composer workspace, when a native session is open. */
+  currentWorkspaceId?: string;
   /** The workspace or project the dialog was opened in; its desk becomes the default. */
   initialScope?: CreateScope;
   /** Opens New lead at once with this source and its saved revision pinned. */
@@ -216,7 +218,7 @@ export function popoverBodyHeight(window: number, compact: boolean, line: number
  * state strip, search and layout over this host's sessions, plus New lead as a header action when the host allows it.
  * Rows open only through `onOpen`, so each surface keeps its own single open path and its refusals.
  */
-export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowView, onClose, popover = false, currentId = null, initialScope, initialSource = null }: StartSwitchProps) {
+export function useStartSwitch({ compact, colors, hostId, hostStatus, directory, canOpen, onOpenCreated, onOpen, onShowView, onClose, popover = false, currentId = null, currentWorkspaceId, initialScope, initialSource = null }: StartSwitchProps) {
   const [mode, setMode] = useState<"switch" | "new">(initialSource ? "new" : "switch");
   const creation = useRef({ hostId, open: !!initialSource });
   const scope = creation.current;
@@ -298,9 +300,12 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
     mode={selection.selecting ? { kind: "select", selected: selection.selected.includes(entry.id), unavailable: entry.archivedAt !== null ? "Archived sessions are not selected." : null }
       : { kind: "open", actions: <SessionActionsMenu entry={entry} colors={colors} actions={actionsFor(entry)} /> }}
     onPress={() => selection.selecting ? select(entry) : onOpen(entry)} />;
+  const current = currentId === null ? null : directory.entries.find((entry) => entry.id === currentId && (currentWorkspaceId === undefined || entry.workspaceId === currentWorkspaceId));
+  const sessionTitle = currentId === null ? "Start or switch session" : current?.title.trim() || "Untitled session";
+  const headingTitle = mode === "new" ? "New lead" : sessionTitle;
   const heading = <View style={{ flex: 1, minWidth: 0 }}>
     {/* The compact host sheet already shows this title, so there the body keeps only its scope; the desktop host popover shows none. */}
-    {popover && compact && mode !== "new" ? null : <Text accessibilityRole="header" numberOfLines={1} style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>{mode === "new" ? "New lead" : "Start or switch session"}</Text>}
+    {popover && compact && mode !== "new" ? null : <Text testID="kontor-switch-heading" accessibilityRole="header" accessibilityLabel={headingTitle} numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 15, fontWeight: "600", flexShrink: 1 }}>{headingTitle}</Text>}
     {mode === "new" ? null : <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>This host</Text>}
   </View>;
   const close = popover ? null : <Action small label="Close" accessibilityLabel="Close start or switch" colors={colors} onPress={dismiss} />;
@@ -401,7 +406,7 @@ export function useStartSwitch({ compact, colors, hostId, hostStatus, directory,
       selection.remove(archived); setBulkOpen(false);
     }} /> : null}
   </>;
-  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : "Start or switch session", header, body: <>{body}{layers}</>, footer, dismiss };
+  return { label: mode === "new" ? "New lead" : selection.selecting ? "Select sessions" : sessionTitle, header, body: <SessionPulseContext.Provider value={{ live: directory.live, visible: true }}>{body}{layers}</SessionPulseContext.Provider>, footer, dismiss };
 }
 
 /** Board C1's Details for a switcher row: its full values, read-only. Kontor's own Details adds placement, plan and retirement. */
@@ -462,7 +467,7 @@ export function StartSwitchPopover(props: PluginButtonContentProps & { openScree
       const failure = handOff({ kind: "created", outcome });
       return failure ? { ok: false, reason: "navigation", message: failure } : { ok: true, handoff: true };
     },
-    onClose: close, initialScope: { workspaceId }, popover: true, currentId: props.context === "agent" ? props.agentId : null });
+    onClose: close, initialScope: { workspaceId }, popover: true, currentId: props.context === "agent" ? props.agentId : null, currentWorkspaceId: workspaceId });
   return <ControlHelpProvider colors={theme.colors}><View testID="kontor-switch-popover" style={{ gap: 4 }}>{header}{body}{footer}</View></ControlHelpProvider>;
 }
 
@@ -471,7 +476,7 @@ export function SwitchRowItem({ row, colors, tall, onPress, role = "menuitem", a
   return <View style={{ flexDirection: "row", alignItems: "center" }}><Pressable testID={`kontor-switch-row-${row.entry.id}`} role={role} accessibilityLabel={`${row.entry.title}, ${row.detail}`} onPress={onPress}
     style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 36, flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5,
       flex: 1, minWidth: 0, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
-    <SessionStateMarker state={sessionState(row.entry)} colors={colors} />
+    <SessionStateMarker state={sessionState(row.entry)} colors={colors} session />
     <View style={{ flex: 1, minWidth: 0 }}>
       <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 13 }}>{row.entry.title}</Text>
       <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 2 }}>{row.detail}</Text>

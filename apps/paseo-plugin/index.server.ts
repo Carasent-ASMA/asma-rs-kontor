@@ -1,3 +1,4 @@
+import { contributeProceduralTakeover } from "./server/procedural-takeover";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { contribute } from "./server/hooks";
 import { readFloor, reportFloor } from "./server/floor";
@@ -15,6 +16,7 @@ import { readNavigatorCapabilities, UNSUPPORTED } from "./shared/session-navigat
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
+  contributeProceduralTakeover(server);
   // Registered whatever the floor; each request reads create.json: absent defaults on, explicit off or invalid/unreadable paths fail closed.
   contributeSessionCreate(server);
   // Saved summaries, draft attachment, whole-session totals, bulk and manual-route takeover have no owner on this host yet.
