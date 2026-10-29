@@ -198,6 +198,45 @@ describe("stock summary generator", () => {
     expect(h.counts()).toEqual({ waits: 2, sends: 0 });
   });
 
+  it.each([
+    ["bare JSON", JSON.stringify(SECTIONS)],
+    ["trimmed bare JSON", ` \r\n${JSON.stringify(SECTIONS)}\r\n\t `],
+    ["json fence", `\`\`\`json\n${JSON.stringify(SECTIONS, null, 2)}\n\`\`\``],
+    ["bare fence", `\`\`\`\n${JSON.stringify(SECTIONS)}\n\`\`\``],
+    ["surrounding whitespace and CRLF", ` \r\n\`\`\`json \t\r\n\r\n${JSON.stringify(SECTIONS, null, 2).replaceAll("\n", "\r\n")}\r\n\r\n  \`\`\` \r\n`],
+  ])("accepts whole-response %s while preserving exact pin/retry/cleanup", async (_name, response) => {
+    const h = await harness(); h.setResult({ lastMessage: response });
+    const service = createSessionSummaryService(h.api as never, h.root);
+    const saved = await service.save(SOURCE);
+    expect(saved.sections).toEqual(SECTIONS);
+    expect(await service.save(SOURCE)).toEqual(saved);
+    expect(await readPinnedSummary(h.root, saved)).toEqual(saved);
+    expect(h.created).toHaveLength(1);
+    expect(h.archived.has(h.created[0]!.agentId)).toBe(true);
+    expect(h.counts()).toEqual({ waits: 1, sends: 0 });
+  });
+
+  it.each([
+    ["prose before fence", `Here is the summary:\n\`\`\`json\n${JSON.stringify(SECTIONS)}\n\`\`\``],
+    ["prose after fence", `\`\`\`json\n${JSON.stringify(SECTIONS)}\n\`\`\`\nDone.`],
+    ["multiple fences", `\`\`\`json\n${JSON.stringify(SECTIONS)}\n\`\`\`\n\`\`\`json\n${JSON.stringify(SECTIONS)}\n\`\`\``],
+    ["empty fence", "```json\n\n```"],
+    ["unclosed fence", `\`\`\`json\n${JSON.stringify(SECTIONS)}`],
+    ["malformed fenced JSON", "```json\n{broken}\n```"],
+    ["partial JSON", "```json\n{\"task\":\"partial\"\n```"],
+    ["other fence language", `\`\`\`javascript\n${JSON.stringify(SECTIONS)}\n\`\`\``],
+    ["empty section", `\`\`\`json\n${JSON.stringify({ ...SECTIONS, decisions: " \r\n " })}\n\`\`\``],
+    ["extra schema field", `\`\`\`json\n${JSON.stringify({ ...SECTIONS, unexpected: true })}\n\`\`\``],
+  ])("rejects %s without saving and cleans the finished helper", async (_name, response) => {
+    const h = await harness(); h.setResult({ lastMessage: response });
+    const service = createSessionSummaryService(h.api as never, h.root);
+    await expect(service.save(SOURCE)).rejects.toThrow("four nonempty summary sections");
+    expect(await service.latest([SOURCE])).toEqual({ [SOURCE]: null });
+    expect(h.created).toHaveLength(1);
+    expect(h.archived.has(h.created[0]!.agentId)).toBe(true);
+    expect(h.counts().sends).toBe(0);
+  });
+
   it("does not save malformed provider output and permits an explicit retry after a terminal failure", async () => {
     const h = await harness(); h.setResult({ lastMessage: "{}" });
     const service = createSessionSummaryService(h.api as never, h.root);
