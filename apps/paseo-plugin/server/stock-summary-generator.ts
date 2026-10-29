@@ -15,8 +15,15 @@ const routeSchema = z.object({ provider: z.string(), model: z.string(), modeId: 
 export type SummaryRoute = z.infer<typeof routeSchema>;
 
 /** The host resolver still resolves provider/model at create; this selects only catalogued, enabled routes. */
+export const SUMMARY_PROVIDER_READY_MS = 10_000;
+
 export async function selectSummaryRoute(paseo: PaseoApi, cwd: string): Promise<SummaryRoute> {
-  const providers = createProviders(await paseo.providers.snapshot({ cwd }));
+  let snapshot = await paseo.providers.snapshot({ cwd });
+  if (!snapshot.entries.length || snapshot.entries.some(entry => entry.status === "loading")) {
+    try { snapshot = await paseo.providers.waitForReady({ cwd, timeoutMs: SUMMARY_PROVIDER_READY_MS }); }
+    catch { throw new Error("Summary provider discovery did not finish within the readiness budget. Capture retained; no worker was created."); }
+  }
+  const providers = createProviders(snapshot);
   const { config } = await paseo.config.get();
   const profile = config.agentProfiles?.find(entry => [entry.id, entry.name].some(name => name.toLowerCase() === "summary"));
   const choices = providers.filter(p => p.available).flatMap(p => p.models.flatMap(model => {
@@ -128,7 +135,8 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string): SessionSum
     if (job?.state === "complete" && job.sections) { await cleanup(); return { sections: job.sections, cutoff, historyBoundary }; }
     if (!job || job.state === "failed") {
       if (job) await cleanup();
-      const route = await selectSummaryRoute(paseo, jobs);
+      if (!agent.cwd) throw new Error("The source has no validated working directory for provider discovery. Capture retained.");
+      const route = await selectSummaryRoute(paseo, agent.cwd);
       job = { workerId: randomUUID(), state: "creating", previousWorkers: job ? [...job.previousWorkers, job.workerId] : [], clientMessageId: randomUUID(), promptHash: digest(prompt), route };
       await writeJob(file, job);
     }

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS, selectSummaryRoute } from "../server/stock-summary-generator";
+import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, selectSummaryRoute } from "../server/stock-summary-generator";
 import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
 
 import { UNSUPPORTED } from "../shared/session-navigator";
@@ -16,7 +16,7 @@ afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recurs
 /** In-memory stock API adapter, not a real provider or installed-host qualification. Files remain real. */
 async function harness() {
   const root = await mkdtemp(join(tmpdir(), "stock-summary-")); dirs.push(root);
-  const source = { id: SOURCE, title: "Parser", provider: "codex", model: "model-a", status: "idle", activeTurn: null, persistence: { sessionId: "source-session" } };
+  const source = { id: SOURCE, title: "Parser", cwd: "/fixture/source", provider: "codex", model: "model-a", status: "idle", activeTurn: null, persistence: { sessionId: "source-session" } };
   const page = { agent: { ...source }, agentId: SOURCE, error: null, epoch: "epoch-1", gap: false, staleCursor: false, hasNewer: false, hasOlder: true,
     entries: [{ seqStart: 7, seqEnd: 7, timestamp: "2026-10-28T10:00:00Z", item: { type: "user_message", text: "Review the parser" } },
       { seqStart: 8, seqEnd: 8, timestamp: "2026-10-28T10:01:00Z", item: { type: "assistant_message", text: "Keep the grammar" } }] };
@@ -34,7 +34,7 @@ async function harness() {
     return { id, provider: options.config.provider.split("/")[0], model: options.config.provider.split("/").slice(1).join("/"), cwd: options.cwd, currentModeId: options.config.modeId, archivedAt: archived.has(id) ? "2026-10-29T00:00:00Z" : null, status: result.status === "timeout" || result.status === "permission" ? "running" : result.status, activeTurn: null, persistence: { sessionId: "worker-session" }, labels: options.labels, ...workerOverrides };
   };
   const forbidden = async () => { sends++; throw new Error("Must not send a source/destination turn"); };
-  const api = { providers: { snapshot: async () => catalog }, config: { get: async () => ({ config: {} }) }, agents: {
+  const api = { providers: { snapshot: async (_options?: unknown) => catalog, waitForReady: async (_options?: unknown) => catalog }, config: { get: async () => ({ config: {} }) }, agents: {
     ref: (id: string) => id === SOURCE ? {
       refresh: async () => ({ agent: source }), timeline: { refetch: async (options: unknown) => { historyCalls.push(options); return page; } }, run: forbidden, send: forbidden,
     } : {
@@ -117,6 +117,43 @@ describe("stock summary generator", () => {
     const h = await harness(); h.source.status = status; h.page.agent.status = status;
     expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
     expect(h.counts().sends).toBe(0);
+  });
+
+  it("discovers in the validated source cwd rather than the empty state directory and saves once", async () => {
+    const h = await harness(); const calls: unknown[] = [];
+    h.api.providers.snapshot = async options => { calls.push(options); return (options as { cwd: string }).cwd === h.source.cwd ? h.catalog : { entries: [] }; };
+    const service = createSessionSummaryService(h.api as never, h.root);
+    const saved = await service.save(SOURCE);
+    expect(calls).toEqual([{ cwd: h.source.cwd }]);
+    expect(await service.save(SOURCE)).toEqual(saved);
+    expect(h.created).toHaveLength(1);
+    expect(h.counts().sends).toBe(0);
+  });
+
+  it.each(["empty", "loading"])("waits within the public readiness budget for a lazy %s source catalogue", async state => {
+    const h = await harness(); const readyCalls: unknown[] = [];
+    h.api.providers.snapshot = async () => state === "empty" ? { entries: [] } : { entries: [{ ...h.catalog.entries[0]!, status: "loading", models: [], modes: [] }] };
+    h.api.providers.waitForReady = async options => { readyCalls.push(options); return h.catalog; };
+    expect((await h.generator().generate(SOURCE)).sections).toEqual(SECTIONS);
+    expect(readyCalls).toEqual([{ cwd: h.source.cwd, timeoutMs: SUMMARY_PROVIDER_READY_MS }]);
+    expect(h.created[0]!.config).toMatchObject({ provider: "codex/model-mini", modeId: "auto" });
+  });
+
+  it("retains the identical capture across readiness failure and explicit recovery without duplicate generation", async () => {
+    const h = await harness();
+    h.api.providers.snapshot = async () => ({ entries: [] });
+    h.api.providers.waitForReady = async () => { throw new Error("discovery timeout"); };
+    await expect(h.generator().generate(SOURCE)).rejects.toThrow("readiness budget");
+    const jobs = join(h.root, "generation-jobs");
+    const name = (await readdir(jobs)).find(name => name.endsWith(".capture.json"))!;
+    const before = await readFile(join(jobs, name), "utf8");
+    expect(h.created).toHaveLength(0);
+    h.api.providers.waitForReady = async () => h.catalog;
+    const service = createSessionSummaryService(h.api as never, h.root);
+    const saved = await service.save(SOURCE);
+    expect(await readFile(join(jobs, name), "utf8")).toBe(before);
+    expect(await service.save(SOURCE)).toEqual(saved);
+    expect(h.created).toHaveLength(1);
   });
 
   it("rejects unavailable routes after durably retaining the source capture", async () => {
