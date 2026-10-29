@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useRpc } from "@getpaseo/plugin/client";
 import { readNavigatorCapabilities, readUsageTotals, UNSUPPORTED, type NavigatorCapabilities } from "../shared/session-navigator";
+import type { DirectoryEntry } from "./session-directory";
 import type { SessionTotals } from "./session-row-format";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -27,18 +28,24 @@ export function useNavigatorCapabilities(hostId: string): NavigatorCapabilities 
   return state?.hostId === hostId ? state.value : null;
 }
 
+/** Refresh on usage/turn/provider identity changes, rather than every streaming metadata update. */
+export function usageTotalsRevision(hostId: string, entries: readonly DirectoryEntry[]): string {
+  return JSON.stringify([hostId, entries.map((entry) => [entry.id, entry.provider, entry.model, entry.status, entry.activeTurn,
+    entry.telemetry?.runtimeInfo?.sessionId, entry.telemetry?.lastUsage?.inputTokens, entry.telemetry?.lastUsage?.outputTokens, entry.telemetry?.lastUsage?.cachedInputTokens])]);
+}
+
 /**
- * Whole-session totals for `ids` where the host reports them. A session without a report, a host without the
+ * Qualified totals/cumulative reports for `ids` where the host reports them. A session without a report, a host without the
  * capability and a failed read all leave the row's totals unknown; a latest-usage report never stands in.
  */
-export function useUsageTotals(supported: boolean, ids: readonly string[]): ReadonlyMap<string, SessionTotals> {
+export function useUsageTotals(supported: boolean, ids: readonly string[], revision = ""): ReadonlyMap<string, SessionTotals> {
   const read = useRpc(readUsageTotals);
-  const key = supported ? [...new Set(ids)].sort().join("\n") : "";
+  const key = supported ? JSON.stringify([[...new Set(ids)].sort(), revision]) : "";
   const [state, setState] = useState<{ key: string; totals: ReadonlyMap<string, SessionTotals> } | null>(null);
   useEffect(() => {
     if (!key) return;
     let live = true;
-    const all = key.split("\n"), batches = Array.from({ length: Math.ceil(all.length / TOTALS_BATCH) }, (_, index) => all.slice(index * TOTALS_BATCH, (index + 1) * TOTALS_BATCH));
+    const all = (JSON.parse(key) as [string[], string])[0], batches = Array.from({ length: Math.ceil(all.length / TOTALS_BATCH) }, (_, index) => all.slice(index * TOTALS_BATCH, (index + 1) * TOTALS_BATCH));
     Promise.all(batches.map((agentIds) => read({ agentIds }))).then((answers) => {
       if (live) setState({ key, totals: new Map(answers.flatMap((answer) => Object.entries(answer).flatMap(([id, value]) => value ? [[id, value] as const] : []))) });
     }, () => { if (live) setState({ key, totals: NONE }); });

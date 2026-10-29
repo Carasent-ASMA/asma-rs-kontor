@@ -55,25 +55,25 @@ export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact
     return <View key={key} role="listitem" testID={`archive-recovery-item-${entry.ref.agentId}`}
       style={{ paddingVertical: 8, paddingHorizontal: 12, gap: 4, borderTopWidth: index ? 1 : 0, borderTopColor: colors.border, backgroundColor: colors.surface0 }}>
       <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 14, lineHeight: 19, fontWeight: "600" }}>{name}</Text>
-      {entry.state === "unconfirmed" ? <>
-        {fact("Check", colors.foreground, "Archived")}
-        {fact("CircleAlert", colors.statusWarning, "Runtime stop not confirmed")}
-      </> : fact("CircleAlert", colors.statusWarning, copy.label)}
-      <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{copy.reason}</Text>
-      <Text style={muted}>{observedFacts(entry, now)}</Text>
-      {entry.error ? <Text style={muted}>{`Its latest record could not be read: ${entry.error}`}</Text> : null}
-      {note ? <Text testID={`archive-recovery-note-${entry.ref.agentId}`} role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>{noteLine(note, now)}</Text> : null}
-      {acknowledge ? <Text testID={`archive-recovery-ack-${entry.ref.agentId}`} style={{ color: colors.foreground, fontSize: 12, lineHeight: 17 }}>
-        Still archived, and the host still does not report its runtime stopped. Refreshing will not change that; you can hide this notice. It returns if its state changes.</Text> : null}
-      {archived ? <Text style={muted}>Not opened here: opening an archived session asks Paseo to restore its workspace, which this archive does not need. The Archived list still opens it.</Text> : null}
+      {entry.state === "unconfirmed"
+        ? <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>Archived. Paseo hasn’t confirmed the session has stopped.</Text>
+        : <>{fact("CircleAlert", colors.statusWarning, copy.label)}<Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{copy.reason}</Text></>}
+      {entry.error || note?.outcome === "failed" ? <Text role="status" accessibilityLiveRegion="polite" style={muted}>Couldn’t refresh status. Try again when the host is available.</Text> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <Action colors={colors} label={refreshing ? "Checking…" : "Refresh status"} accessibilityLabel={`Refresh archive status: ${name}`} disabled={!canRefresh}
-          onPress={() => { if (canRefresh) void recovery.refresh(entry.ref); }} />
+          onPress={() => { if (canRefresh) return recovery.refresh(entry.ref); }} />
         {archived ? null : <Action colors={colors} label="Open session" accessibilityLabel={`Open session: ${name}`} onPress={() => onOpen(entry)} />}
         {acknowledge ? <Action colors={colors} label="Hide notice" accessibilityLabel={`Hide archive notice: ${name}`} onPress={() => onHide(entry)} /> : null}
       </View>
       <Disclosure small colors={colors} label="Technical details" accessibilityLabel={`Technical details for ${name}`}>
         <View style={{ gap: 2, paddingTop: 2 }}>
+          <Text style={muted}>{observedFacts(entry, now)}</Text>
+          <Text style={muted}>{copy.reason}</Text>
+          {entry.error ? <Text style={muted}>{`Its latest record could not be read: ${entry.error}`}</Text> : null}
+          {note ? <Text testID={`archive-recovery-note-${entry.ref.agentId}`} style={muted}>{noteLine(note, now)}</Text> : null}
+          {archived ? <Text style={muted}>Opening an archived session asks Paseo to restore its workspace. Use the Archived list to open it.</Text> : null}
+          {acknowledge ? <Text style={muted}>Hiding this notice leaves the archive unresolved. It returns if its state changes.</Text> : null}
+          {recovery.persistence === "device" ? null : <Text style={muted}>Hidden archive notices are kept for this app session only on this device.</Text>}
           <Text selectable style={muted}>{`Session ID ${entry.ref.agentId}`}</Text>
           <Text selectable style={muted}>{`Review ID ${entry.ref.reviewId}`}</Text>
           {entry.row?.message ? <Text selectable style={muted}>{entry.row.message}</Text> : null}
@@ -93,9 +93,10 @@ export function ArchiveRecoverySheet({ recovery, root, rootSize, colors, compact
       {!hostOnline ? <Text style={{ color: colors.statusWarning, fontSize: 13, lineHeight: 19 }}>The host is offline. Refresh status works again when it reconnects.</Text> : null}
       {cleared.map(([key, line]) => <Text key={key} role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{line}</Text>)}
       {count ? <View role="list" style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: "hidden" }}>{recovery.items.map(item)}</View> : null}
-      {recovery.error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{`Archive checks could not be read: ${recovery.error}`}</Text> : null}
-      <Text style={muted}>Refresh status asks the host about this exact session. It never sends another archive request; a confirmed archive clears its notice.</Text>
-      {recovery.persistence === "device" ? null : <Text style={muted}>Hidden archive notices are kept for this app session only on this device.</Text>}
+      {recovery.error ? <>
+        <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>Couldn’t read archive checks. Try again when the host is available.</Text>
+        <Disclosure small colors={colors} label="Technical details"><Text selectable style={muted}>{recovery.error}</Text></Disclosure>
+      </> : null}
     </ScrollView>
   </AnchoredMenu>;
 }

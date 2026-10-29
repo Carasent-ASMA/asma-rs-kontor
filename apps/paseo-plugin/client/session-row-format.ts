@@ -38,24 +38,24 @@ export function byLastActivity<T extends Parameters<typeof lastActivity>[0]>(ent
     .map(({ entry }) => entry);
 }
 
-/** Whole-session token totals. Null means no supported source reported them: never the latest report. */
+/** Qualified totals or labelled cumulative snapshots. Null means unavailable, never latest-turn usage. */
 /** `source` is where a supported read says the totals come from, shown in Details. */
-export type SessionTotals = { readonly input: number | null; readonly output: number | null; readonly source?: string };
+export type SessionTotals = { readonly input: number | null; readonly output: number | null; readonly source?: string; readonly scope?: "session" | "provider-cumulative" };
 
 /** "↓ 124.8k" / "↑ 9.6k" with lowercase units; an unknown total is "↓ —", never 0. */
 export function tokenTotals(totals: SessionTotals | null | undefined): { readonly input: string; readonly output: string; readonly spoken: string } {
   const one = (value: number | null | undefined) => validTokenCount(value) ? formatTokens(value).toLocaleLowerCase() : null;
   const input = one(totals?.input), output = one(totals?.output);
   return {
-    input: `↓ ${input ?? "—"}`, output: `↑ ${output ?? "—"}`,
-    spoken: input === null && output === null ? "Session token totals unknown" : `Session totals: ${input ?? "unknown"} input, ${output ?? "unknown"} output tokens`,
+    input: `${totals?.scope === "provider-cumulative" ? "reported " : ""}↓ ${input ?? "—"}`, output: `↑ ${output ?? "—"}`,
+    spoken: input === null && output === null ? "Session token totals unknown" : `${totals?.scope === "provider-cumulative" ? "Provider-reported cumulative" : "Session totals"}: ${input ?? "unknown"} input, ${output ?? "unknown"} output tokens`,
   };
 }
 
-/** Details' whole-session totals with their source; unknown is said, never zero. */
+/** Details preserve the source scope; unknown is said, never zero. */
 export function totalsDetail(totals: SessionTotals | null | undefined): { readonly label: string; readonly value: string } {
   const { input, output } = tokenTotals(totals);
-  return { label: "Input ↓ and output ↑", value: totals ? `${input} ${output} · ${totals.source ?? "Source not stated"}` : "Unknown: no supported read reports this session's totals." };
+  return { label: totals?.scope === "provider-cumulative" ? "Provider-reported cumulative input ↓ and output ↑" : "Input ↓ and output ↑", value: totals ? `${input} ${output} · ${totals.source ?? "Source not stated"}` : "Unknown: no supported read reports this session's totals." };
 }
 
 /** The task and pull request a session's labels name: the first Jira or Kontor ticket label, and "PR 42" from `pr`. */

@@ -32,7 +32,7 @@ beforeEach(() => {
   vi.stubGlobal("document", target); vi.stubGlobal("window", target);
 });
 afterEach(() => { cleanup.forEach(fn => fn()); cleanup = []; vi.useRealTimers(); vi.unstubAllGlobals(); });
-function mount(width = 390, height = 320, longPress = false) {
+function mount(width = 390, height = 320, longPress = false, text = "Explanation: no execution or freshness inferred.") {
   let tree: ReactNode;
   const render = () => { hooks.cursor = 0; tree = ControlHelpProvider({ children: "screen", colors }); return tree; };
   render();
@@ -40,13 +40,26 @@ function mount(width = 390, height = 320, longPress = false) {
   const root = all(tree).find(e => e.type === "View")!;
   (root.props.ref as { current: unknown }).current = measure(20, 30, width, height);
   cleanup = hooks.effects.map(fn => fn()).filter((fn): fn is () => void => typeof fn === "function");
-  const control = longPress ? useActionHelp("Explanation: no execution or freshness inferred.") : useControlHelp("Explanation: no execution or freshness inferred.");
+  const control = longPress ? useActionHelp(text) : useControlHelp(text);
   const controlCleanup = longPress ? hooks.effects.at(-1)?.() : undefined;
   if (controlCleanup) cleanup.push(controlCleanup);
   control.bindings.ref(measure(20 + width - 34, 30 + height - 34, 28, 28) as View);
   return { control: control as ReturnType<typeof useActionHelp>, controlCleanup, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
 }
 describe("deliberate long-press help", () => {
+  it.each(["ios", "android"])("empty help on %s never measures or renders on focus, hold or long press", (platform) => {
+    hooks.platform = platform;
+    const screen = mount(390, 320, true, "");
+    const measureInWindow = vi.fn();
+    (screen.root.props.ref as { current: unknown }).current = { measureInWindow };
+    screen.control.bindings.onFocus();
+    screen.control.hold();
+    screen.control.bindings.onPressIn!({ nativeEvent: { pageX: 10, pageY: 20 } } as never);
+    screen.control.bindings.onLongPress!();
+    screen.render();
+    expect(measureInWindow).not.toHaveBeenCalled();
+    expect(screen.tooltip()).toBeUndefined();
+  });
   const touch = (x = 10, y = 20) => ({ nativeEvent: { pageX: x, pageY: y } }) as Parameters<NonNullable<ReturnType<typeof useActionHelp>["bindings"]["onPressIn"]>>[0];
   it.each(["web", "ios", "android"])("opens on a recognized %s hold, stays after release, and closes on the next touch", platform => {
     hooks.platform = platform;

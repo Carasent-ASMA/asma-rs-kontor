@@ -23,7 +23,10 @@ export function SessionLayoutControl({ value, colors, onChange, disabled }: {
 }) {
   const root = useRef<View | null>(null);
   const grouped = useRef<View | null>(null), flat = useRef<View | null>(null);
-  const groupedHelp = useActionHelp(disabled ?? HELP.grouped, grouped), flatHelp = useActionHelp(disabled ?? HELP.flat, flat);
+  // Native taps on an unavailable/current choice must not enter tooltip measurement.
+  const native = Platform.OS !== "web";
+  const groupedHelp = useActionHelp(native && (disabled || value === "grouped") ? "" : disabled ?? HELP.grouped, grouped);
+  const flatHelp = useActionHelp(native && (disabled || value === "flat") ? "" : disabled ?? HELP.flat, flat);
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const target = root.current as unknown as KeyTarget | null;
@@ -52,7 +55,7 @@ export function SessionLayoutControl({ value, colors, onChange, disabled }: {
         accessibilityRole="radio" accessibilityLabel={layout === "grouped" ? "Grouped" : "Flat"}
         accessibilityHint={disabled ?? HELP[layout]} accessibilityState={{ checked: selected, ...(disabled ? { disabled: true } : {}) }} aria-checked={selected}
         tabIndex={Platform.OS === "web" ? selected ? 0 : -1 : undefined}
-        onPress={() => { if (disabled) { help.hold(); return; } help.dismiss(); if (!selected) onChange(layout); }}
+        onPress={() => { if (disabled) { if (!native) help.hold(); return; } help.dismiss(); if (!selected) onChange(layout); }}
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 44, minWidth: 44, paddingHorizontal: 8, paddingVertical: 6,
           alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 6,
           borderColor: focused ? colors.foreground : selected ? colors.accent : "transparent", backgroundColor: selected || pressed ? colors.surface2 : undefined,

@@ -1,3 +1,6 @@
+import { contributeProceduralTakeover } from "./server/procedural-takeover";
+import { CODEX_USAGE_LIMITS } from "./server/codex-usage";
+import { contributeVendorUsage } from "./server/vendor-usage";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { contribute } from "./server/hooks";
 import { readFloor, reportFloor } from "./server/floor";
@@ -15,10 +18,12 @@ import { readNavigatorCapabilities, UNSUPPORTED } from "./shared/session-navigat
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
+  contributeProceduralTakeover(server);
   // Registered whatever the floor; each request reads create.json: absent defaults on, explicit off or invalid/unreadable paths fail closed.
   contributeSessionCreate(server);
-  // Saved summaries, draft attachment, whole-session totals, bulk and manual-route takeover have no owner on this host yet.
-  server.handle(readNavigatorCapabilities, () => UNSUPPORTED);
+  // Only the qualified Codex reported-cumulative usage source is enabled here.
+  server.handle(readNavigatorCapabilities, () => ({ ...UNSUPPORTED, usageTotals: { supported: true as const, limits: CODEX_USAGE_LIMITS } }));
+  contributeVendorUsage(server);
   const settings = server.registerSettings(organizationSettings);
   server.registerSettings(keyboardSettings);
   server.handle(readTeamsSource, (input) => {

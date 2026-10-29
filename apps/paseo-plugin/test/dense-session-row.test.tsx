@@ -215,6 +215,13 @@ describe("DenseSessionRow", () => {
     expect(onPress).not.toHaveBeenCalled();
   });
 
+  it("labels provider cumulative values in visible and spoken row content", () => {
+    const { tree, body } = row(undefined, { input: 1200, output: 8, scope: "provider-cumulative", source: "Fixture cumulative; history unverified" });
+    expect(text(byTestId(tree, "session-row-tokens"))).toBe("reported ↓ 1.2k   ↑ 8");
+    expect(body.props.accessibilityLabel).toContain("Provider-reported cumulative: 1.2k input, 8 output tokens");
+    expect(body.props.accessibilityLabel).not.toContain("Session totals:");
+  });
+
   it.each([["absent", undefined], ["null", null], ["both unknown", { input: null, output: null }]] as const)("reads unknown totals as dashes, never zero, when %s", (_, totals) => {
     const { tree, body } = row(undefined, totals);
     expect(text(byTestId(tree, "session-row-tokens"))).toBe("↓ —   ↑ —");
