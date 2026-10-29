@@ -1,6 +1,5 @@
 import type { OpenSessionResult } from "./session-actions";
 import type { TakeoverOutcome } from "../shared/session-lifecycle";
-import { useSummaryAttachmentAvailability, SUMMARY_ATTACHMENT_UNAVAILABLE } from "./summary-attachments";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text } from "react-native";
 import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
@@ -93,8 +92,7 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const pending = takeover.run?.seats.filter(unresolved) ?? [];
   const settle = (id: string) => { setSheet({ kind: "results" }); takeover.act(id); };
   const summaryUnavailable = offline ?? reason("summaries");
-  const nativeAttachments = useSummaryAttachmentAvailability();
-  const attachUnavailable = offline ?? (!nativeAttachments ? SUMMARY_ATTACHMENT_UNAVAILABLE : null);
+  const attachUnavailable = offline ?? reason("draftAttach");
   const actions = (entry: DirectoryEntry): SessionAction[] => {
     const seat = pending.find((one) => one.id === entry.id), next = seat && seatAction(seat);
     return [
@@ -112,7 +110,7 @@ export function useSessionOperations({ hostId, online, colors, compact, entries,
   const close = () => setSheet(null);
   const layer = sheet?.kind === "summary" ? <SummarySheet source={sheet.source} colors={colors} attachUnavailable={attachUnavailable} onClose={close}
       onAttach={(revision) => setSheet({ kind: "attach", source: sheet.source, revision })} />
-    : sheet?.kind === "attach" ? <AttachSheet source={sheet.source} revision={sheet.revision} colors={colors} onClose={close} />
+    : sheet?.kind === "attach" ? <AttachSheet entries={entries} capability={attachUnavailable ? { supported: false, reason: attachUnavailable } : capabilities!.draftAttach} source={sheet.source} revision={sheet.revision} colors={colors} onClose={close} />
     : sheet?.kind === "picker" ? <TakeoverPicker seats={sheet.seats} disclosure={disclosure} colors={colors} compact={compact} onCancel={close} onUse={(route) => start(sheet.seats, route)} />
     : sheet?.kind === "results" && takeover.run ? <TakeoverResults run={takeover.run} colors={colors} onRetry={takeover.retry} onSeat={takeover.act} onDecline={takeover.decline} onClose={() => { close(); takeover.clear(); }} />
     : null;

@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type SummaryRevision } from "../shared/session-navigator";
+import { attachSummary, attachOutcomeSchema, type AttachOutcome, type Capability, latestSummaries, readSummary, saveSummary, summaryRevisionSchema, type SummaryRevision } from "../shared/session-navigator";
 import { DenseSessionRow } from "./dense-session-row";
 import { OperationSheet, SheetFooter } from "./operation-sheet";
 import { type Colors } from "./page-controls";
 import type { DirectoryEntry } from "./session-directory";
 import { exactTime, parseTime, useClock } from "./session-time";
-import { SUMMARY_ATTACHMENT_STEPS, SUMMARY_ATTACHMENT_LIMIT } from "../shared/summary-attachments";
-import { useSummaryAttachmentAvailability, SUMMARY_ATTACHMENT_UNAVAILABLE } from "./summary-attachments";
 
 const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -100,13 +98,20 @@ export function SummarySheet({ source, colors, attachUnavailable, onAttach, onCl
   </OperationSheet>;
 }
 
-/** Read-only preparation. Only Paseo's destination-side native picker can change a draft. */
-export function AttachSheet({ source, revision: given, colors, onClose }: {
-  source: DirectoryEntry; revision: SummaryRevision | null; colors: Colors; onClose(): void;
+/** Places one exact saved revision through the host atomic no-replace service; never sends a turn. */
+export function AttachSheet({ source, revision: given, entries, capability, colors, onClose }: {
+  source: DirectoryEntry; revision: SummaryRevision | null; entries: readonly DirectoryEntry[]; capability: Capability; colors: Colors; onClose(): void;
 }) {
-  const available = useSummaryAttachmentAvailability();
+  const available = capability.supported;
+  const attach = useRpc(attachSummary), clock = useClock();
+  const [destination, setDestination] = useState<{ key: string; id: string } | null>(null);
+  const [outcome, setOutcome] = useState<(AttachOutcome & { key: string }) | null>(null);
+  const [pending, setPending] = useState(false);
+  const inFlight = useRef(false), active = useRef<string | null>(null);
   const latest = useRpc(latestSummaries), read = useRpc(readSummary);
   const requestKey = `${source.id}:${given?.summaryId ?? "latest"}:${given?.revision ?? ""}`;
+  active.current = requestKey;
+  useEffect(() => { setDestination(null); setOutcome(null); setPending(false); return () => { active.current = null; }; }, [requestKey]);
   const [state, setState] = useState<{ key: string; revision: SummaryRevision | null; problem: string | null } | null>(null);
   useEffect(() => {
     let live = true;
@@ -126,11 +131,34 @@ export function AttachSheet({ source, revision: given, colors, onClose }: {
   const current = available && state?.key === requestKey ? state : null;
   const revision = current?.revision ?? null;
   const muted = { color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 } as const;
-  return <OperationSheet testID="attach-sheet" title="Choose attachment in destination" subtitle={source.title} colors={colors} onClose={onClose}
-    footer={<SheetFooter colors={colors} note="No draft was changed here. Nothing was sent." secondary={{ testID: "attach-cancel", label: "Cancel", onPress: onClose }} />}>
-    <Text role="status" style={muted}>{!available ? SUMMARY_ATTACHMENT_UNAVAILABLE : !current ? "Reading the saved revision…" : current.problem ?? "Saved revision ready to find in the native picker. Kontor has not changed a draft or verified a destination."}</Text>
+  const destinations = entries.filter(entry => entry.id !== source.id);
+  const selected = destination?.key === requestKey ? destinations.find(entry => entry.id === destination.id) : undefined;
+  const shownOutcome = outcome?.key === requestKey ? outcome : null;
+  const place = async () => {
+    if (!available || !revision || !selected || inFlight.current) return;
+    const pin = { summaryId: revision.summaryId, revision: revision.revision, destinationAgentId: selected.id };
+    const key = requestKey;
+    inFlight.current = true; setPending(true); setOutcome(null);
+    try {
+      const result = attachOutcomeSchema.parse(await attach(pin));
+      if (result.summaryId !== pin.summaryId || result.revision !== pin.revision || result.destinationAgentId !== pin.destinationAgentId) throw new Error("Attachment readback did not match the requested revision and destination.");
+      if (active.current === key) setOutcome({ ...result, key });
+    } catch (error) {
+      if (active.current === key) setOutcome({ ...pin, key, state: "unknown", message: `${failure(error)} Placement may have occurred. Check this destination; nothing was sent.` });
+    } finally { inFlight.current = false; if (active.current === key) setPending(false); }
+  };
+  return <OperationSheet testID="attach-sheet" title="Attach summary" subtitle={source.title} colors={colors} onClose={onClose}
+    footer={<SheetFooter colors={colors} note="Nothing is sent. Existing drafts are never replaced."
+      secondary={{ testID: "attach-cancel", label: "Close", onPress: onClose }}
+      primary={{ testID: "attach-confirm", label: pending ? "Attaching…" : shownOutcome ? "Check attachment" : "Attach to selected destination", disabled: !available || !revision || !selected || pending, onPress: () => { void place(); } }} />}>
+    <Text role="status" style={muted}>{!capability.supported ? capability.reason : !current ? "Reading the saved revision…" : current.problem ?? "Choose the destination for this saved revision. Review its draft before sending."}</Text>
     {revision ? <><SourceChip revision={revision} colors={colors} />
       <Text selectable style={{ color: colors.foreground, fontSize: 12 }}>{revision.text}</Text></> : null}
-    <Text style={muted}>{SUMMARY_ATTACHMENT_STEPS}</Text><Text style={muted}>{SUMMARY_ATTACHMENT_LIMIT}</Text>
+    {available && revision ? destinations.map(entry => <DenseSessionRow key={entry.id} testID={`attach-destination-${entry.id}`} entry={entry} colors={colors} clock={clock} opened={null}
+      mode={{ kind: "pick", selected: selected?.id === entry.id, unavailable: pending ? "Attachment in progress." : null }}
+      spokenDetail={`Destination ${entry.id}`} onPress={() => { if (!inFlight.current) { setDestination({ key: requestKey, id: entry.id }); setOutcome(null); } }} />) : null}
+    {available && revision && !destinations.length ? <Text style={muted}>No other destination sessions are listed on this host.</Text> : null}
+    {selected ? <Text testID="attach-exact-destination" style={muted}>{`Destination: ${selected.title} (${selected.id})`}</Text> : null}
+    {shownOutcome ? <Text testID="attach-outcome" role="status" accessibilityLiveRegion="polite" style={muted}>{`${shownOutcome.state} · Destination ${shownOutcome.destinationAgentId} · r${shownOutcome.revision}: ${shownOutcome.message}`}</Text> : null}
   </OperationSheet>;
 }

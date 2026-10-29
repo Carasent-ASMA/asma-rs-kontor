@@ -86,10 +86,10 @@ describe("server entry floor mode", () => {
     started.cleanup();
   });
 
-  it("registers summary-only RPCs and exactly one capabilities handler without attachment", () => {
+  it("registers summary-only RPCs and exactly one capabilities handler with atomic attachment", () => {
     const started = start();
-    for (const name of ["sessions.navigator-capabilities", "sessions.summary-save", "sessions.summary-read", "sessions.summary-latest"]) expect(started.handlers.filter(item => item === name)).toHaveLength(1);
-    expect(started.handlers).not.toContain("sessions.summary-attach");
+    for (const name of ["sessions.navigator-capabilities", "sessions.summary-save", "sessions.summary-read", "sessions.summary-latest", "sessions.summary-attach"]) expect(started.handlers.filter(item => item === name)).toHaveLength(1);
+
     started.cleanup();
   });
 

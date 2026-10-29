@@ -167,29 +167,62 @@ describe("SummarySheet", () => {
 
 });
 
-describe("native AttachSheet", () => {
-  const sheet = (given: SummaryRevision | null = SUMMARY) => {
+describe("atomic AttachSheet", () => {
+  const sheet = (given: SummaryRevision | null = SUMMARY, capability = { supported: true } as import("../shared/session-navigator").Capability) => {
     const onClose = vi.fn();
-    return { onClose, render: () => walk(harness.current.render(() => AttachSheet({ source: SOURCE, revision: given, colors: COLORS, onClose }))) };
+    return { onClose, render: () => walk(harness.current.render(() => AttachSheet({ source: SOURCE, revision: given, entries: [SOURCE, sessionEntry("destination", { title: "Review destination" })], capability, colors: COLORS, onClose }))) };
   };
-  it("reads the exact saved pin and discloses native user selection without changing a draft or sending", async () => {
-    const s = sheet(); s.render(); await settle(); const tree = s.render();
-    expect(text(tree)).toContain("Kontor has not changed a draft or verified a destination.");
-    expect(tree.find(node => (node.type as { name?: string }).name === "SourceChip")?.props.revision).toEqual(SUMMARY);
-    expect(text(tree)).not.toContain(SUMMARY.summaryId);
-    expect(text(tree)).toContain("Only your native picker selection adds the attachment.");
-    expect(text(tree)).toContain("cannot insert remotely, verify an exact destination");
-    expect(host.rpc["sessions.summary-read"]).toHaveBeenCalledExactlyOnceWith({ summaryId: SUMMARY.summaryId, revision: 3 });
+  const choose = (tree: Element[]) => {
+    const rows = tree.filter(node => node.type === DenseSessionRow);
+    expect(rows.map(row => (row.props.entry as { id: string }).id)).toEqual(["destination"]);
+    (rows[0]!.props.onPress as () => void)();
+  };
+  it.each(["drafted", "refused", "unknown"])("places the exact pin into the chosen destination and reports %s", async state => {
+    host.rpc["sessions.summary-attach"] = vi.fn(async pin => ({ ...pin, state, message: "Exact server outcome" }));
+    const s = sheet(); s.render(); await settle(); choose(s.render());
+    press(button(s.render(), "attach-confirm")); await settle();
+    const tree = s.render();
+    expect(host.rpc["sessions.summary-attach"]).toHaveBeenCalledExactlyOnceWith({ summaryId: SUMMARY.summaryId, revision: 3, destinationAgentId: "destination" });
+    expect(text(tree)).toContain(`${state} · Destination destination · r3`);
+    expect(text(tree)).toContain("Review destination (destination)");
     expect(host.rpc["sessions.summary-save"]).not.toHaveBeenCalled();
-    expect(host.rpc["sessions.summary-attach"]).not.toHaveBeenCalled();
-    press(button(tree, "attach-cancel")); expect(s.onClose).toHaveBeenCalledOnce();
     expect(host.copyText).not.toHaveBeenCalled();
+    press(button(tree, "attach-cancel")); expect(s.onClose).toHaveBeenCalledOnce();
   });
-  it("offers only an unavailable explanation when the native source cannot register", async () => {
-    host.nativeAvailable = false; const s = sheet(); s.render(); await settle();
-    expect(text(s.render())).toContain("cannot register");
-    expect(host.rpc["sessions.summary-read"]).not.toHaveBeenCalled();
+  it("shows the exact unsupported capability reason and performs no RPC", async () => {
+    const reason = "Exact host atomic attachment gap";
+    const s = sheet(SUMMARY, { supported: false, reason }); s.render(); await settle();
+    expect(text(s.render())).toContain(reason);
+    press(button(s.render(), "attach-confirm")); await settle();
+    for (const rpc of Object.values(host.rpc)) expect(rpc).not.toHaveBeenCalled();
+  });
+  it("cancel does not attach or generate", async () => {
+    const s = sheet(); s.render(); await settle(); choose(s.render()); press(button(s.render(), "attach-cancel"));
+    expect(s.onClose).toHaveBeenCalledOnce();
+    expect(host.rpc["sessions.summary-attach"]).not.toHaveBeenCalled();
     expect(host.rpc["sessions.summary-save"]).not.toHaveBeenCalled();
+  });
+  it("suppresses duplicate presses while placement is awaiting readback", async () => {
+    let finish!: (value: unknown) => void;
+    host.rpc["sessions.summary-attach"] = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    const s = sheet(); s.render(); await settle(); choose(s.render());
+    const confirm = button(s.render(), "attach-confirm"); press(confirm); press(confirm);
+    expect(host.rpc["sessions.summary-attach"]).toHaveBeenCalledTimes(1);
+    finish({ summaryId: SUMMARY.summaryId, revision: 3, destinationAgentId: "destination", state: "drafted", message: "Draft read back" }); await settle();
+    expect(text(s.render())).toContain("drafted · Destination destination");
+  });
+  it("reports lost transport as unknown without a second request", async () => {
+    host.rpc["sessions.summary-attach"] = vi.fn(async () => { throw new Error("Reply lost"); });
+    const s = sheet(); s.render(); await settle(); choose(s.render()); press(button(s.render(), "attach-confirm")); await settle();
+    expect(text(s.render())).toContain("unknown · Destination destination");
+    expect(text(s.render())).toContain("Reply lost");
+    expect(host.rpc["sessions.summary-attach"]).toHaveBeenCalledTimes(1);
+  });
+  it("holds mismatched readback as unknown for the requested destination", async () => {
+    host.rpc["sessions.summary-attach"] = vi.fn(async pin => ({ ...pin, state: "drafted", destinationAgentId: "foreign", message: "Wrong destination" }));
+    const s = sheet(); s.render(); await settle(); choose(s.render()); press(button(s.render(), "attach-confirm")); await settle();
+    expect(text(s.render())).toContain("unknown · Destination destination");
+    expect(text(s.render())).not.toContain("drafted · Destination foreign");
   });
   it("reads latest without generating and reports an absent summary", async () => {
     host.rpc["sessions.summary-latest"] = vi.fn(async () => ({ [SOURCE.id]: null }));
