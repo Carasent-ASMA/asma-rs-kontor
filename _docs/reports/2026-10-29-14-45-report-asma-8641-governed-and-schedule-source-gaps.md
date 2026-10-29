@@ -25,7 +25,7 @@ cannot accept the handoff before the successor has task effects.
 | Surface | What it can do | Why it is not the takeover writer |
 | --- | --- | --- |
 | `CoreTeamRouteApplyRequest` (`crates/kontor-api/src/applications.rs:1140`) | Admin-only, preview-hash fenced, preserves one `SeatBinding`, archives one exact native and launches a successor; `takeover: true` is the idle/failed takeover arm. | It has no handoff, summary revision or bootstrap/ack field. The replacement launch prompt (`crates/kontor-daemon/src/applications.rs:30465`) contains only the predecessor/seating facts and authorises bounded Kontor work; it does not carry the takeover summary. A later `HostedSeatMessage` is after the successor can act. |
-| `ReplaceSeatRequest` (`crates/kontor-api/src/applications.rs:7205`) | Admin-only, fenced by predecessor/task revisions and binding generation, links one successor to a runtime-terminal or never-bound predecessor. | It has no caller-supplied handoff/summary field. The daemon may generate its own terminal-run `SuccessionHandoff` from the predecessor transcript, but that is not the takeover's saved final summary. It also requires a terminal/abandoned run, so it cannot replace an idle or failed live source. |
+| `ReplaceSeatRequest` (`crates/kontor-api/src/applications.rs:7205`) | Admin-only, fenced by predecessor/task revisions and binding generation. It has narrow non-terminal arms: exact `unavailable_provider` evidence can retire a reachable predecessor (an already-run seat also requires an explicit Admin `model_route`), and exact recorded `quota_exhausted` evidence can retire a usage-limited predecessor. Other ordinary reachable idle/failed seats remain refused; a runtime-terminal or never-bound predecessor is the ordinary arm. | It has no caller-supplied handoff/summary field. The daemon may generate its own `SuccessionHandoff` from the predecessor transcript after the exact retirement/cancellation, but that is not the takeover's saved final summary and is not a general live-seat takeover. The non-terminal provider-outage and quota branches are evidence-specific, not a substitute for the ordinary takeover. |
 | `CoreTeamSeatClaimApplyRequest` (`crates/kontor-api/src/applications.rs:1424`) | Attaches an already-running native to a seat and records a predecessor in the topology. | Non-destructive adoption of an existing native; no handoff field and no takeover archive/launch sequence. It is not a replacement writer. |
 | `HostedSeatMessageRequestDto` (`crates/kontor-api/src/applications.rs:1480`) | Sends a bounded message to an attached seat. | Post-launch delivery; it cannot place the handoff before the successor's first task. |
 
@@ -49,8 +49,8 @@ outside the plugin:
    recheck it and include it in the successor's launch prompt before the first
    task. The outcome/readback must record the handoff digest and the bootstrap
    acknowledgement requirement. `ReplaceSeatRequest` needs the same field if it
-   is also to serve as a writer; otherwise its terminal-only, daemon-generated
-   handoff remains a separate path.
+   is also to serve as a writer; otherwise its evidence-specific,
+   daemon-generated handoff remains a separate path.
 2. **Or add one Kontor-mediated takeover operation.** The plugin submits the
    exact route fences plus the prepared handoff to Kontor; Kontor applies the
    route with its own Admin credential and returns the existing succession
@@ -101,12 +101,22 @@ that provides `createHostClient`, has:
 
 Changing the target therefore requires delete-and-create, which is not an
 atomic retarget: the old duty can fire, the new duty can be duplicated or lost,
-and the new schedule identity and history are not the old ones. Pausing first
-would avoid a duplicate active duty, but without a target update the paused
-duty cannot be moved and cannot be safely completed after the source is
-archived. Child count, including zero children, does not close this gap.
+and the new schedule identity and history are not the old ones. Child count,
+including zero children, does not close this gap.
 
-### Exact API delta and safe sequence
+Pausing first is not a safe workaround. In the installed 0.13.2 host, the archive
+bootstrap calls `completeForAgent` on archive (around bootstrap line 1015); the
+schedule service selects all non-completed source rows including paused ones
+(around line 366) and `completeScheduleForAgent` terminalizes them (around line
+388); `resume` rejects completed schedules (around line 308). A failure before
+retarget therefore leaves the duty completed, not paused and recoverable. The
+future contract must be **archive-aware** (the transfer must move or exempt the
+duty before archive completion, or archive must recognize a pending transfer and
+not terminalize the transferred rows) and must include **in-flight settlement**
+for any running occurrence, its output and its ownership before the transfer
+claims preservation. A target/revision update alone is not sufficient.
+
+### Exact API delta and required future contract
 
 The minimal public host delta is one of:
 
@@ -122,13 +132,23 @@ The minimal public host delta is one of:
    a per-schedule receipt. This is a larger contract and is only needed if
    individual retargets cannot be made atomic.
 
-With (1) or (2) the safe sequence is: pause each exact source-linked duty and
-verify the pause, archive the source, create the successor, retarget the paused
-duty to the successor, verify the target and status, then resume. A failure
-before retarget leaves the duty paused and the takeover `unknown` rather than
-silently dropping it. With (3) the host can perform the same transition in one
-receipt. The current refusal remains the correct behaviour until one of these
-exists.
+Options (1) and (2) remove the target gap, but they are not sufficient by
+themselves: the host archive path must also be archive-aware, and every in-flight
+occurrence must be settled. Option (3) is the smallest shape that can make the
+retarget, archive and in-flight settlement one atomic host transaction. The
+required future contract is:
+
+1. read the exact source-linked schedule rows and any running occurrence with
+   host-qualified identity;
+2. move or exempt those duties from archive completion and settle each in-flight
+   occurrence (output and ownership) before or atomically with the retirement;
+3. read back successor ownership, schedule status/history and the settled run;
+   a failure leaves a visible pending or `unknown` state, never a completed duty
+   that the operator believes was transferred.
+
+No `pause -> archive -> create -> retarget -> resume` sequence is claimed safe
+until that archive-aware transfer and in-flight settlement are qualified. The
+current refusal remains the correct behaviour until then.
 
 ## Verification
 
@@ -158,6 +178,12 @@ Rust or API behaviour.
 - **SCHEDULE_RETARGET_API:** the public schedule contract has no target update
   or atomic ownership transfer, and create request IDs are not proven durable
   deduplication.
+- **SCHEDULE_ARCHIVE_TRANSFER:** archive completion terminalizes non-completed
+  source rows, including paused rows; a future transfer must be archive-aware or
+  exempt the transferred rows.
+- **SCHEDULE_IN_FLIGHT_SETTLEMENT:** any running occurrence, output and
+  ownership must settle before or atomically with retirement; this contract is
+  not present.
 - **GOVERNED_ADAPTER_GAP:** governed review remains refused until the two
   authority gaps above are closed.
 - **SCHEDULED_DUTY_GAP:** a live source with an ongoing source-linked duty
