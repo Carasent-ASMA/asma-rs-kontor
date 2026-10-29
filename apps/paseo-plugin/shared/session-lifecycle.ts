@@ -76,6 +76,20 @@ export const probeSessionAvailability = defineRpc({ name: "sessions.availability
   output: z.record(z.string(), availabilitySchema) });
 export const readSessionDispositions = defineRpc({ name: "sessions.lifecycle-dispositions", input: z.object({ agentIds: z.array(id).max(100) }).strict(), output: z.record(z.string(), availabilitySchema) });
 
+/**
+ * Public surfaces this operation needs but does not own. The boundary is data so refusals stay exact and testable;
+ * it is never authority to invent a replacement writer.
+ */
+export const TAKEOVER_EXTERNAL_BOUNDARIES = {
+  schedule: {
+    publicRead: "a complete host schedule/ownership inventory",
+    missing: ["an atomic retarget bound to the reviewed schedule revision", "in-flight run settlement", "successor ownership readback"],
+  },
+  governed: {
+    writers: ["Core Team route apply", "delivery seat replacement"],
+    missing: ["a handoff summary", "a bootstrap acknowledgement"],
+  },
+} as const;
 /** Take over: one session is reviewed, then confirmed by its review ID, revision and the digest the server issued. */
 export const TAKEOVER_PROMPT = "The operator confirmed this takeover. Continue the task from the handoff summary in this session: read it, the conversation and the current workspace first, and keep the task scope, checkout, supervisor and permission boundaries. If context, authority or a dependency is missing, report it and wait. Do not create another session.";
 /** What every ordinary takeover states before its first effect; the host capability discloses the same list. */
@@ -84,6 +98,8 @@ export const TAKEOVER_LIMITS = [
   "A running session is stopped through the server-configured public Paseo CLI before its final summary is captured and it is archived. The stop is verified by reading the same host and source; if it remains active or its identity changes, nothing is archived or created.",
   "Schedules and heartbeats are readable only through a qualified host schedules.forAgent or a complete, host-qualified public host-connector inventory. The installed public CLI schedule list filters new-agent rows and is never used as no-wake proof; without a complete read, retirement is blocked.",
   "Managed children are detached through the public API and continue independently; the API exposes no re-parenting primitive.",
+  "The source's listed model settings are carried to the successor and revalidated against its model; a setting the target no longer offers refuses the takeover instead of being silently dropped.",
+  "The source snapshot exposes model settings but not MCP server or provider-option configuration; the successor receives the host's normal connector set and unread source connectors are not copied or invented.",
   "The successor's first message is the saved handoff summary, not the whole conversation; continuation is observed on its timeline.",
   "Check may deliver this operation's one continuation prompt when an earlier dispatch was not observed. It never creates another successor and never repeats a delivery that reads back.",
 ];

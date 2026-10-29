@@ -15,7 +15,7 @@ import { bootstrapPrompt, createSessionCreateService, createStateRoot, createSwi
 import { createSessionSummaryService, summaryStateRoot } from "./session-summaries";
 import {
   BINDING_KEY, configuredAccountCatalogFromFleet, explicitTakeoverRoute, explicitTakeoverRouteSchema, joinSessionLocalRefusalToRouteHealth, resolveTakeoverRoute,
-  routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, takeoverAdapter, takeoverPinnedMatches,
+  routeEvidenceDigest, routeHealthFromProviderSnapshot, sessionLocalRefusalForTakeover, sourceFeatureValues, takeoverAdapter, takeoverPinnedMatches,
   type ConfiguredAccountCatalog, type ExplicitTakeoverRoute, type ProviderRouteSnapshot, type ResolverRun, type RouteHealth, type TakeoverAdapter, type TakeoverRoute,
 } from "./session-takeover";
 import { asTakeoverClient } from "./session-navigator";
@@ -27,7 +27,7 @@ import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import {
   TAKEOVER_LIMIT, RESUME_REMOVED, ARCHIVE_BATCH_LIMIT, archiveOrder, lifecycleReviewSchema, lifecycleRowSchema, unresolvedArchive,
   previewLifecycle, executeLifecycleItem, reconcileLifecycleItem, readLifecycleReview, probeSessionAvailability, readSessionDispositions,
-  TAKEOVER_LIMITS, TAKEOVER_PROMPT, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
+  TAKEOVER_EXTERNAL_BOUNDARIES, TAKEOVER_LIMITS, TAKEOVER_PROMPT, applyTakeover, checkTakeover, reviewTakeover, takeoverOutcomeSchema, takeoverReviewSchema,
   type LifecycleReview, type LifecycleRow, type RecoveryTarget, type SessionAvailability, type TakeoverOutcome, type TakeoverReview, type TakeoverReviewInput, type UnresolvedRef,
 } from "../shared/session-lifecycle";
 import {
@@ -686,6 +686,11 @@ type Pinned = {
   running: boolean;
   /** Stable native identity (id/title/cwd/workspace/owner/creation time), not a mutable status revision. */
   sourceIdentity: string;
+  /**
+   * Fingerprint of the normalized source settings actually inherited; null when the explicit route replaces them.
+   * Empty inherited settings have a non-null fingerprint, so a later setting appearing is drift too.
+   */
+  sourceSettings: string | null;
 };
 const SUPERVISOR_LIMIT = "The successor keeps its supervisor as a label; the creation core sets no native parent link.";
 const CHILD_LIMIT = "Managed children are detached and continue independently; this host exposes no operation that re-parents them to the successor.";
@@ -693,7 +698,8 @@ const UNOBSERVED_LIMIT = "No host source of positive route health is qualified y
 export const RUNNING_STOP_GAP = "This session is running, and no server-configured public Paseo CLI stop adapter is available. Nothing was retired; configure the public CLI on the plugin server or wait for the turn to end, then take over.";
 export const RUNNING_STOP_DISCLOSURE = "This session is running. Apply stops the exact source through the server-configured public Paseo CLI, reads it back on the same host, and only then captures the final handoff summary and archives it. If the stop is unconfirmed or its title, checkout, workspace or owner changes, nothing is archived or created.";
 const RUNNING_SUMMARY_PREVIEW = "Preview only: this source is still running. The final handoff summary is captured after the approved stop and before retirement; this preview is not a final summary.";
-export const GOVERNED_ADAPTER_GAP = "This is a Kontor-governed seat. Its existing authority writer is the only creator of a successor (Core Team route apply for a hosted seat, or the delivery seat replacement operation), and neither installed writer accepts the handoff summary and bootstrap acknowledgement a takeover must place before task effects. No native fallback is performed and nothing is retired here.";
+export const SCHEDULE_TRANSFER_GAP = `The source has an ongoing source-linked scheduled duty. It is readable through ${TAKEOVER_EXTERNAL_BOUNDARIES.schedule.publicRead}, but the public schedule surface provides none of: ${TAKEOVER_EXTERNAL_BOUNDARIES.schedule.missing.join("; ")}; retirement is blocked rather than silently dropping the wake.`;
+export const GOVERNED_ADAPTER_GAP = `This is a Kontor-governed seat. Its existing authority writer is the only creator of a successor (${TAKEOVER_EXTERNAL_BOUNDARIES.governed.writers.join(" or ")}), and neither installed writer accepts ${TAKEOVER_EXTERNAL_BOUNDARIES.governed.missing.join(" or ")} that a takeover must place before task effects. No native fallback is performed and nothing is retired here.`;
 const CWD_DRIFT = "This session runs outside its workspace directory, and a successor would start in the workspace directory, so it is not taken over.";
 /** Scope, title, supervisor and orchestration labels a successor keeps; anything else is not carried. */
 const CARRIED_LABELS = ["role", "epic", "task", "ticket", TITLE_AUTO_LABEL, "orchestration", "paseo.parent-agent-id"];
@@ -715,6 +721,17 @@ const settledTakeover = (result: TakeoverOutcome) => result.state === "refused" 
 const takeoverRevision = (agent: Agent) => hash(JSON.stringify([lifecycleRevision(agent), agent.title, agent.createdAt]));
 /** Stable native identity a running turn may not keep pinned: status and turn fields are deliberately absent. */
 const sourceIdentity = (agent: Agent) => hash(JSON.stringify([agent.id, agent.title, agent.cwd, agent.workspaceId, parent(agent), agent.createdAt, takeoverAdapter(agent)]));
+/** The normalized listed settings actually inherited from the source; key order never changes this fingerprint. */
+const sourceSettingsFingerprint = (read: ReturnType<typeof sourceFeatureValues>): string =>
+  hash(JSON.stringify(Object.entries(read.values ?? {}).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)));
+/** Null when the expected settings still match; `null` expected means an explicit replacement owns them instead. */
+function sourceSettingsDrift(expected: string | null | undefined, agent: Agent): string | null {
+  if (expected == null) return null;
+  const read = sourceFeatureValues(agent);
+  if (read.problem) return read.problem;
+  return sourceSettingsFingerprint(read) === expected ? null
+    : "This session's listed model settings changed during its continuity checks. Review it again.";
+}
 function freshContinuity(receipt: TakeoverContinuity): boolean {
   const age = Date.now() - Date.parse(receipt.observedAt);
   return age >= 0 && age <= 60_000;
@@ -752,7 +769,7 @@ async function readDirectWakeState(client: TakeoverClient, completeSchedules: Co
   const ongoing = read.schedules.find((schedule) => (schedule.target.type === "agent" || schedule.target.type === "self")
     && schedule.target.agentId === agentId && schedule.status !== "completed");
   return ongoing
-    ? { wakes: "unknown", gap: "The source has an ongoing source-linked scheduled duty. The existing schedule API cannot retarget it and scheduleCreate requestId is not proven deduplication, so no verified preservation contract exists; retirement is blocked rather than silently dropping the wake.", hostId: read.hostId }
+    ? { wakes: "unknown", gap: SCHEDULE_TRANSFER_GAP, hostId: read.hostId }
     : { wakes: "clear", hostId: read.hostId };
 }
 
@@ -922,6 +939,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     try { workspace = await client.workspaces.ref(first.workspaceId!).refresh(); } catch (error) { return answer("unknown", `Its workspace could not be read: ${errorText(error)}.`); }
     if (!workspace || workspace.id !== first.workspaceId || workspace.archivingAt || !workspace.workspaceDirectory) return answer("refused", "Its exact workspace is no longer available on this host.");
     if (workspace.workspaceDirectory !== first.cwd) return answer("refused", CWD_DRIFT);
+    const sourceSettings = sourceFeatureValues(first);
     let children: Agent[];
     try { children = childrenOf(first, await inventory(client)); }
     catch (error) { return answer("unknown", errorText(error)); }
@@ -971,6 +989,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     let evidence: string;
     let selection: "auto" | "explicit" = "auto";
     let featureValues: ExplicitTakeoverRoute["featureValues"];
+    let inheritedSettings: string | null = null;
     if (chosenRoute) {
       selection = "explicit";
       let snapshot: ProviderRouteSnapshot;
@@ -982,9 +1001,18 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       const explicit = explicitTakeoverRoute(health, chosenRoute, mode);
       if ("problem" in explicit) return answer("refused", explicit.problem);
       route = explicit.route;
-      featureValues = explicit.featureValues;
+      if (explicit.featureValues) {
+        featureValues = explicit.featureValues;
+      } else {
+        if (sourceSettings.problem) return answer("unknown", sourceSettings.problem);
+        featureValues = sourceSettings.values ?? undefined;
+        inheritedSettings = sourceSettingsFingerprint(sourceSettings);
+      }
       evidence = route.digest!;
     } else {
+      if (sourceSettings.problem) return answer("unknown", sourceSettings.problem);
+      featureValues = sourceSettings.values ?? undefined;
+      inheritedSettings = sourceSettingsFingerprint(sourceSettings);
       if (!fleetCatalog) return answer("unknown", "The configured account catalog could not be read: the operator fleet source names no verifiable configured account aliases.");
       try { health = await Promise.resolve(deps.evidence({ mode, cwd: first.cwd, catalog: fleetCatalog })); }
       catch (error) { return answer("unknown", `Provider route evidence could not be read: ${errorText(error)}.`); }
@@ -1062,6 +1090,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const last = await exact(agentId);
     if ((expired = effectValidityProblem(spec))) return answer("unknown", expired);
     if (!last) return answer("unknown", "This session could not be read again after its checks.");
+    const settingsDrift = sourceSettingsDrift(inheritedSettings, last);
+    if (settingsDrift) return answer("unknown", settingsDrift);
     const again = takeoverRefusal(last);
     if (again) return answer("refused", again);
     const running = runningAtRead || active(last);
@@ -1076,7 +1106,7 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       predecessor: takeoverRevision(last), owner: direct, ownerRevision, created, bindingKey: selection === "explicit" ? "explicit" : association.bindingKey!,
       route: { provenance: route.provenance, selected: route.selected, considered: route.considered, validity: route.validity },
       evidence, continuity, spec, retiredSource: first.archivedAt != null, children: children.map((child) => child.id).sort(), summary: summaryPin, selection,
-      running, sourceIdentity: sourceIdentity(last),
+      running, sourceIdentity: sourceIdentity(last), sourceSettings: inheritedSettings,
     });
   }
 
@@ -1239,6 +1269,9 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (after.archivedAt != null) return outcome(record, "refused", "stop", "The source was archived while its stop was being checked. No successor was created; review again.", named, "review");
     if (active(after)) return outcome(record, "refused", "stop",
       `${stopped.ok ? "The public Paseo CLI returned, but the source is still running" : stopped.message} Nothing was archived or created. Review it again after the turn ends.`, named, "review");
+    const stoppedSettings = sourceSettingsDrift(reviewed.sourceSettings, after);
+    if (stoppedSettings) return outcome(record, "refused", "stop",
+      `${stoppedSettings} Nothing was archived or created; review again.`, named, "review");
     if (sourceIdentity(after) !== reviewed.sourceIdentity) return outcome(record, "refused", "stop",
       "The stopped source's title, checkout, workspace or owner changed. Nothing was archived or created; review again.", named, "review");
     const priorRoute = explicitTakeoverRouteSchema.safeParse(record.chosenRoute ?? null);
@@ -1311,7 +1344,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       if (!await write(outcome(record, "uncertain", "intent", "Takeover intent recorded before any effect. If nothing follows, Check reads the outcome; nothing is resent.", named, "check")))
         return refuse("Another action took this session's fence first.");
       const latest = await exact(agentId);
-      if (!latest || (pinned.running ? sourceIdentity(latest) !== pinned.sourceIdentity : takeoverRevision(latest) !== pinned.predecessor))
+      if (!latest) return finish(outcome(record, "refused", "intent", "This session changed during preflight. Nothing was done; review again.", null, "review"));
+      const latestSettings = sourceSettingsDrift(pinned.sourceSettings, latest);
+      if (latestSettings) return finish(outcome(record, "refused", "intent", `${latestSettings} Nothing was done; review again.`, null, "review"));
+      if (pinned.running ? sourceIdentity(latest) !== pinned.sourceIdentity : takeoverRevision(latest) !== pinned.predecessor)
         return finish(outcome(record, "refused", "intent", "This session changed during preflight. Nothing was done; review again.", null, "review"));
       const placement = await expectedPlacementProblem(client, spec);
       if (placement) return finish(outcome(record, "refused", "preflight", placement, null, "review"));
@@ -1349,6 +1385,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
           if (!after || parent(after) !== null) return finish(outcome(record, "uncertain", "preserve", `Child ${childId} could not be verified as detached from the predecessor. It was not archived and no successor was created. Check reads it; nothing is resent.`, named, "check"));
         }
       }
+      const beforeArchive = await exact(agentId);
+      if (!beforeArchive) return finish(outcome(record, "refused", "archive", "The source could not be read immediately before archive. Nothing was archived or created; review again.", null, "review"));
+      const archiveSettings = sourceSettingsDrift(pinned.sourceSettings, beforeArchive);
+      if (archiveSettings) return finish(outcome(record, "refused", "archive", `${archiveSettings} Nothing was archived or created; review again.`, null, "review"));
       phase = "archive";
       if (pinned.retiredSource) {
         if (!await write(outcome(record, "uncertain", "archive", "The source is already archived. Its history is used without reviving or prompting its runtime; creation follows if nothing interrupts.", named, "check")))
@@ -1417,8 +1457,12 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       if (!source) result = outcome(record, "refused", "stop", "The stopped source cannot be read on this host, so no retirement or successor is performed. Review the source again.", null, "review");
       else if (source.archivedAt != null) result = outcome(record, "partial", "stop", "The source is archived, but no successor was created. Review the archived source again if you want a successor.", null, "none");
       else if (active(source)) result = outcome(record, "refused", "stop", "The source is still running after the recorded stop attempt. Nothing was archived or created; review it again when the turn ends.", null, "review");
-      else if (sourceIdentity(source) !== reviewedPinned.sourceIdentity) result = outcome(record, "refused", "stop", "The stopped source's title, checkout, workspace or owner changed. Nothing was archived or created; review again.", null, "review");
-      else result = outcome(record, "refused", "stop", `${final ? "The stopped source's final handoff is recorded" : "The stop is complete"}, but retirement and successor creation were not performed. Nothing was archived or created; review again to continue.`, null, "review");
+      else {
+        const stoppedSettings = sourceSettingsDrift(reviewedPinned.sourceSettings, source);
+        if (stoppedSettings) result = outcome(record, "refused", "stop", `${stoppedSettings} Nothing was archived or created; review again.`, null, "review");
+        else if (sourceIdentity(source) !== reviewedPinned.sourceIdentity) result = outcome(record, "refused", "stop", "The stopped source's title, checkout, workspace or owner changed. Nothing was archived or created; review again.", null, "review");
+        else result = outcome(record, "refused", "stop", `${final ? "The stopped source's final handoff is recorded" : "The stop is complete"}, but retirement and successor creation were not performed. Nothing was archived or created; review again to continue.`, null, "review");
+      }
     } else if (stored.phase === "preserve") {
       const source = await exact(agentId);
       if (!source) result = { ...stored, checkedAt: new Date().toISOString(), message: "The predecessor cannot be read; child preservation remains unsettled. Check reads it again." };
@@ -1431,7 +1475,14 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
           : outcome(record, "refused", "preserve", "Every managed child is detached and the predecessor is not archived. Nothing was retired; review again to continue.", null, "review");
       }
     } else if (stored.phase === "intent" || stored.phase === "archive") {
-      result = await retirement(record, agentId, null, pinned.retiredSource) ?? outcome(record, "partial", "archive", "The session was retired; no successor was created.", null, "none");
+      // Classify the observed archive first; settings drift may block further work but must not erase an
+      // already observed or uncertain retirement. Check remains read-only here.
+      const retired = await retirement(record, agentId, null, pinned.retiredSource);
+      const source = await exact(agentId);
+      const settings = source ? sourceSettingsDrift(pinned.sourceSettings, source) : null;
+      if (!retired) result = outcome(record, "partial", "archive",
+        `The session was retired; no successor was created.${settings ? ` ${settings}` : ""}`, null, "none");
+      else result = settings ? { ...retired, checkedAt: new Date().toISOString(), message: `${retired.message} ${settings}` } : retired;
     } else if (stored.phase === "create") {
       const created = await deps.create.check(spec.requestId);
       const stopped = await afterCreate(record, spec, created);
