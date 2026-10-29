@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { stockSummaryGenerator, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
+import { stockSummaryGenerator, SUMMARY_SOURCE_ITEMS, SUMMARY_SOURCE_CHARACTERS, SUMMARY_PROVIDER_READY_MS, SUMMARY_PROMPT_VERSION, selectSummaryRoute } from "../server/stock-summary-generator";
 import { contributeSessionSummaries, createSessionSummaryService, readPinnedSummary } from "../server/session-summaries";
 
 import { UNSUPPORTED } from "../shared/session-navigator";
@@ -489,3 +489,46 @@ describe("stock summary generator", () => {
   });
 
 });
+
+/** Explicit live qualification only; default tests never contact a host or run a provider. */
+it.skipIf(!process.env.KONTOR_REAL_SUMMARY_SOURCE)("qualifies a real provider saved-summary read/latest round trip", async () => {
+  const sourceId = process.env.KONTOR_REAL_SUMMARY_SOURCE!;
+  const evidence = process.env.KONTOR_REAL_SUMMARY_EVIDENCE;
+  const url = process.env.KONTOR_REAL_SUMMARY_URL;
+  if (!evidence || !isAbsolute(evidence) || resolve(evidence).startsWith(resolve(process.cwd())) || !url) throw new Error("Live qualification requires an explicit daemon URL and absolute evidence directory outside the checkout.");
+  await mkdir(evidence, { recursive: true, mode: 0o700 });
+  const root = await mkdtemp(join(evidence, "summary-state-"));
+  const { createPaseoClient } = await import("@getpaseo/client");
+  const api = createPaseoClient({ url, clientId: "kontor-real-summary-qualification", connectTimeoutMs: 5_000, reconnect: { enabled: false }, logger: { debug() {}, info() {}, warn() {}, error() {} } });
+  try {
+    await api.connect();
+    const source = api.agents.ref(sourceId);
+    const before = await source.refresh();
+    expect(before?.agent.id).toBe(sourceId);
+    expect(before?.agent.activeTurn).toBeFalsy();
+    expect(["running", "initializing"]).not.toContain(before?.agent.status);
+    const historyBefore = await source.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
+    expect(await readdir(root)).toEqual([]);
+    const service = createSessionSummaryService(api, root);
+    const saved = await service.save(sourceId);
+    const read = await readPinnedSummary(root, saved);
+    const latest = (await createSessionSummaryService(api, root).latest([sourceId]))[sourceId];
+    expect(read).toEqual(saved);
+    expect(latest).toEqual(saved);
+    expect(saved.sourceAgentId).toBe(sourceId);
+    expect(saved.revision).toBe(1);
+    expect(saved.historyBoundary?.provider).toBe(before!.agent.provider);
+    const names = (await readdir(join(root, "generation-jobs"))).filter(name => name.endsWith(".json") && !name.endsWith(".capture.json"));
+    expect(names).toHaveLength(1);
+    const job = JSON.parse(await readFile(join(root, "generation-jobs", names[0]!), "utf8"));
+    expect(job).toMatchObject({ state: "complete", cleaned: true });
+    expect((await api.agents.ref(job.workerId).refresh())?.agent.archivedAt).toBeTruthy();
+    const historyAfter = await source.timeline.refetch({ direction: "tail", projection: "canonical", limit: SUMMARY_SOURCE_ITEMS });
+    expect(historyAfter.entries).toEqual(historyBefore.entries);
+    expect(historyAfter.epoch).toBe(historyBefore.epoch);
+    await writeFile(join(evidence, "REAL-PROVIDER-PROOF.json"), JSON.stringify({ state: "REAL_PROVIDER_SAVE_READ_LATEST_PASS", sourceId, root, summaryId: saved.summaryId, revision: saved.revision, textSHA256: createHash("sha256").update(saved.text).digest("hex"), historyBoundary: saved.historyBoundary, exactReadEquals: true, latestEquals: true, sourceHistoryUnchanged: true, saveCalls: 1, workerId: job.workerId, route: job.route, workerArchived: true, sourceOrDestinationPromptSent: false, limits: "Candidate source with real public daemon/provider and fresh durable store; not installed-plugin, clipboard or native attachment proof." }, null, 2) + "\n", { mode: 0o600 });
+  } catch (error) {
+    await writeFile(join(evidence, "REAL-PROVIDER-FAILURE.json"), JSON.stringify({ sourceId, root, error: error instanceof Error ? error.message : String(error), retry: false }, null, 2) + "\n", { mode: 0o600 });
+    throw error;
+  } finally { await api.close(); }
+}, 180_000);
