@@ -50,6 +50,13 @@ describe("same-state counts", () => {
     expect(sessionStateCounts({ ...input, state: { ...state, status: "error", lastUpdatedAt: null } }).all.text).toBe("—");
     expect(sessionStateCounts({ ...input, blocked: "Assigned to me", candidates: [] }).all.label).toContain("not evaluated");
   });
+
+  it("does not assert a provider-blocked zero under a label-unknown scope", () => {
+    const count = sessionStateCounts({ ...input, restrictedUnknown: true }).provider_blocked;
+    expect(count.text).toBe("—");
+    expect(count.label).toContain("Count unavailable");
+    expect(count.label).not.toContain("0 provider blocked");
+  });
 });
 
 it("fits compact counts into three characters without changing the exact accessible values", () => {

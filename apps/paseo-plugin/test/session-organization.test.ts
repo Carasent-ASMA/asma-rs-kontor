@@ -141,6 +141,25 @@ function fixtureTree() {
   });
 
 describe("session organization hierarchy", () => {
+  it("keeps unknown-label rows in native placement, never Other work or No epic linked", () => {
+    const rows = [entry("catalog", { projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "wks_adam", workspaceName: "ADAM" })];
+    const tree = buildOrganizationTree({ entries: rows, labelsComplete: false, grouping: "hierarchy" });
+    expect(tree.map((group) => group.kind)).toEqual(["project"]);
+    expect(allGroups(tree).map((group) => group.label)).not.toContain(OTHER_WORKSTREAM);
+    expect(allGroups(tree).map((group) => group.label)).not.toContain(NO_LINKED_EPIC);
+    expect(sessionIds(flattenOrganizationTree(tree))).toEqual(["catalog"]);
+  });
+
+  it("keeps unknown-label rows out of Role grouping as well as Other work and No epic linked", () => {
+    const rows = [entry("unknown-role", { title: "plain task", projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "wks_adam", workspaceName: "ADAM" })];
+    const tree = buildOrganizationTree({ entries: rows, labelsComplete: false, grouping: "role" });
+    expect(tree.map((group) => group.kind)).toEqual(["project"]);
+    expect(allGroups(tree).map((group) => group.label)).not.toContain("No role");
+    expect(allGroups(tree).map((group) => group.label)).not.toContain(OTHER_WORKSTREAM);
+    expect(allGroups(tree).map((group) => group.label)).not.toContain(NO_LINKED_EPIC);
+    expect(sessionIds(flattenOrganizationTree(tree))).toEqual(["unknown-role"]);
+  });
+
   it("uses the authoritative Mapping → desk → workstream precedence", () => {
     const native = entry("desk", { labels: { desk: "PR Review", workstream: "kontor" } });
     expect(organizationScope(native, {}).workstream).toBe("PR Review");

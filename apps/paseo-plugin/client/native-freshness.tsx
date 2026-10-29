@@ -2,28 +2,39 @@ import { Text, View } from "react-native";
 import type { PluginHostSummary } from "@getpaseo/plugin/client";
 import type { DirectoryState } from "./session-directory";
 import type { Colors } from "./page-controls";
-export function nativeFreshnessLabel(input: { hostStatus: PluginHostSummary["status"]; status: DirectoryState["status"]; live: boolean }): string {
+export function nativeFreshnessLabel(input: { hostStatus: PluginHostSummary["status"]; status: DirectoryState["status"]; live: boolean; source?: DirectoryState["source"]; inventoryComplete?: boolean }): string {
+  if (input.source === "catalog") return input.inventoryComplete === false ? "Catalog partial" : "Catalog";
+  if (input.source === "catalog-snapshot") return "Snapshot";
   if (input.hostStatus === "connecting") return "Reconnecting";
   if (input.hostStatus === "idle") return "Host idle";
   if (input.hostStatus === "offline") return "Host offline";
   if (input.hostStatus === "error") return "Host error";
   if (input.status === "idle" || input.status === "loading") return "Reading";
-  if (input.status === "error") return "Unavailable";
+  if (input.status === "error" || input.source === "unavailable") return "Unavailable";
   if (input.status === "stale" || !input.live) return "Stale";
   return "Live";
 }
 export function nativeFreshnessColor(label: string, colors: Colors): string {
   if (label === "Live") return colors.statusSuccess;
-  if (["Reading", "Stale", "Reconnecting", "Host idle"].includes(label)) return colors.statusWarning;
+  if (label === "Catalog") return colors.accent;
+  if (["Reading", "Stale", "Reconnecting", "Host idle", "Catalog partial", "Snapshot"].includes(label)) return colors.statusWarning;
   return colors.statusDanger;
 }
-export function inventoryReadLabel(state: Pick<DirectoryState, "lastUpdatedAt" | "inventoryComplete">): string {
-  if (state.lastUpdatedAt === null) return "Inventory not read yet · time Unknown";
+export function inventoryReadLabel(state: Pick<DirectoryState, "lastUpdatedAt" | "inventoryComplete" | "source">): string {
+  if (state.lastUpdatedAt === null) {
+    return state.source === "unavailable" ? "Inventory unavailable · time Unknown" : "Inventory not read yet · time Unknown";
+  }
   // The timestamp records the latest successful walk, including partial reads.
   const readAt = new Date(state.lastUpdatedAt).toISOString();
-  if (state.inventoryComplete === true) return `Last complete read ${readAt}`;
-  if (state.inventoryComplete === false) return `Last partial inventory read ${readAt}`;
-  return `Last inventory read ${readAt} · completeness Unknown`;
+  if (state.source === "catalog-snapshot") {
+    return state.inventoryComplete === false
+      ? `Last-known shared catalog snapshot is partial · read ${readAt}`
+      : `Last-known shared catalog snapshot read ${readAt}`;
+  }
+  const source = state.source === "catalog" ? "shared catalog " : "";
+  if (state.inventoryComplete === true) return `Last complete ${source}read ${readAt}`;
+  if (state.inventoryComplete === false) return `Last partial ${source}inventory read ${readAt}`;
+  return `Last ${source}inventory read ${readAt} · completeness Unknown`;
 }
 /** The host is named only to assistive technology: Paseo's own header shows it whenever there is a host to choose. */
 export function NativeFreshnessPill({ state, hostStatus, hostLabel, colors }: { state: DirectoryState; hostStatus: PluginHostSummary["status"]; hostLabel?: string; colors: Colors }) {

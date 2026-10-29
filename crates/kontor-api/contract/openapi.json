@@ -13765,6 +13765,257 @@
           }
         }
       }
+    },
+    "/v1/work-catalog/entries": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "One generation-consistent entries answer.",
+        "operationId": "entries",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "`plan` or `execution_unit`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "A repository id, worktree root, path prefix, logical plan id or workstream key.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_removed",
+            "in": "query",
+            "description": "Include tombstoned entries. Defaults to false.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "A bounded row limit.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "An opaque continuation from the prior page. Bound to its generation and filter.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntriesView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "410": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/work-catalog/native/inventory": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "One generation-consistent native inventory.",
+        "operationId": "native_inventory",
+        "parameters": [
+          {
+            "name": "include_removed",
+            "in": "query",
+            "description": "Include native observations removed at the active generation.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "instance",
+            "in": "query",
+            "description": "Only this stable runtime instance.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "A bounded row limit per collection.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "An opaque continuation from the prior page. Bound to its generation and filter.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeInventoryView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "410": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/work-catalog/native/status": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "The native census's freshness, coverage and counts.",
+        "operationId": "native_status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeCatalogStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/work-catalog/sources": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "Per-source freshness, coverage, errors, retry deadlines and conflicts.",
+        "operationId": "sources",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSourcesView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/work-catalog/status": {
+      "get": {
+        "tags": [
+          "work-catalog"
+        ],
+        "summary": "The catalog's freshness, coverage, ownership and conflicts.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14205,6 +14456,38 @@
             "description": "Dedicated ASW node."
           }
         }
+      },
+      "Alias": {
+        "type": "object",
+        "description": "A known identity of one logical plan.",
+        "required": [
+          "kind",
+          "value",
+          "observed_at"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/AliasKind",
+            "description": "Why this alias exists."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "When the alias was observed."
+          },
+          "value": {
+            "type": "string",
+            "description": "The prior or explicit value."
+          }
+        }
+      },
+      "AliasKind": {
+        "type": "string",
+        "description": "The kind of a retained identity.",
+        "enum": [
+          "renamed_from",
+          "source_id",
+          "explicit_id"
+        ]
       },
       "AmendAccountProfileRequest": {
         "type": "object",
@@ -15159,6 +15442,70 @@
           }
         }
       },
+      "Association": {
+        "type": "object",
+        "description": "One operator or plan association.",
+        "required": [
+          "relation",
+          "value",
+          "kind",
+          "verified",
+          "dangling"
+        ],
+        "properties": {
+          "dangling": {
+            "type": "boolean",
+            "description": "Whether the associated plan is removed or the source vanished."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssociationKind",
+            "description": "Which authority stated it."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural note, never file content."
+          },
+          "relation": {
+            "$ref": "#/components/schemas/AssociationRelation",
+            "description": "The relation named."
+          },
+          "source_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The operator source id when `kind` is explicit."
+          },
+          "value": {
+            "type": "string",
+            "description": "The relation's value: a workstream key, an epic key or a project id."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Always `false` in contract version 1. A later verified join must not\nreuse this field without an evidence contract."
+          }
+        }
+      },
+      "AssociationKind": {
+        "type": "string",
+        "description": "Who stated an association.",
+        "enum": [
+          "explicit_operator",
+          "plan_declaration"
+        ]
+      },
+      "AssociationRelation": {
+        "type": "string",
+        "description": "What an association relates.",
+        "enum": [
+          "workstream",
+          "epic",
+          "project"
+        ]
+      },
       "Attest": {
         "type": "object",
         "required": [
@@ -16027,6 +16374,407 @@
         },
         "additionalProperties": false
       },
+      "CatalogCounts": {
+        "type": "object",
+        "description": "Current counts, all derived from the active generation.",
+        "required": [
+          "logical_plans",
+          "occurrences",
+          "content_revisions",
+          "tombstones",
+          "dangling_associations",
+          "diagnostics",
+          "conflicts"
+        ],
+        "properties": {
+          "conflicts": {
+            "type": "integer",
+            "description": "Conflicts at the active generation.",
+            "minimum": 0
+          },
+          "content_revisions": {
+            "type": "integer",
+            "description": "Distinct content revisions retained.",
+            "minimum": 0
+          },
+          "dangling_associations": {
+            "type": "integer",
+            "description": "Explicit associations whose plan or source is no longer present.",
+            "minimum": 0
+          },
+          "diagnostics": {
+            "type": "integer",
+            "description": "Diagnostics at the active generation.",
+            "minimum": 0
+          },
+          "logical_plans": {
+            "type": "integer",
+            "description": "Logical plans, including removed ones.",
+            "minimum": 0
+          },
+          "occurrences": {
+            "type": "integer",
+            "description": "Active occurrences.",
+            "minimum": 0
+          },
+          "tombstones": {
+            "type": "integer",
+            "description": "Removed logical plans retained as history.",
+            "minimum": 0
+          }
+        }
+      },
+      "CatalogEntry": {
+        "type": "object",
+        "description": "One logical plan with all its occurrences and associations.",
+        "required": [
+          "logical_plan_id",
+          "kind",
+          "title",
+          "state",
+          "aliases",
+          "associations",
+          "occurrences",
+          "diagnostics",
+          "conflicts",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Alias"
+            },
+            "description": "Known aliases, including an unambiguous rename predecessor."
+          },
+          "associations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Association"
+            },
+            "description": "Every association, operator-explicit or declared."
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Conflict"
+            },
+            "description": "Entry-level conflicts."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            },
+            "description": "Entry-level diagnostics."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When the logical plan was first observed."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EntryKind",
+            "description": "A plan or a QNR execution unit."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete sweep."
+          },
+          "logical_plan_id": {
+            "type": "string",
+            "description": "The stable logical plan id."
+          },
+          "occurrences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Occurrence"
+            },
+            "description": "Every occurrence at the active generation."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Whether it is live or retained as removed history."
+          },
+          "title": {
+            "type": "string",
+            "description": "The current display title."
+          }
+        }
+      },
+      "CatalogSource": {
+        "type": "string",
+        "description": "One source of observations in the shared catalog.",
+        "enum": [
+          "plan",
+          "jira",
+          "native"
+        ]
+      },
+      "CatalogSourceConflict": {
+        "type": "object",
+        "description": "One conflict observed at a source.",
+        "required": [
+          "kind",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "A stable conflict kind."
+          },
+          "message": {
+            "type": "string",
+            "description": "A structural description."
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the conflict was observed, when the source records it."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The plan, issue or runtime the conflict is about."
+          }
+        }
+      },
+      "CatalogSourceCoverage": {
+        "type": "object",
+        "description": "One bounded coverage line for a source.",
+        "required": [
+          "subject",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "A bounded structural detail, never file bytes or a credential."
+          },
+          "state": {
+            "type": "string",
+            "description": "The stable state spelling for this line."
+          },
+          "subject": {
+            "type": "string",
+            "description": "What the line covers, such as a repository or a sweep mode."
+          }
+        }
+      },
+      "CatalogSourceState": {
+        "type": "string",
+        "description": "The state of one source's latest attempt.",
+        "enum": [
+          "not_configured",
+          "never_collected",
+          "complete",
+          "incomplete",
+          "failed"
+        ]
+      },
+      "CatalogSourceStatus": {
+        "type": "object",
+        "description": "Freshness, coverage, errors and conflicts for one source.",
+        "required": [
+          "source",
+          "state",
+          "generation",
+          "attempted_generation",
+          "coverage",
+          "conflicts",
+          "pending_verification"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the latest complete generation finished. Never the request\ninstants or the instant this status was read."
+          },
+          "attempted_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How far collection has attempted; may be ahead of `generation`.",
+            "minimum": 0
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceConflict"
+            },
+            "description": "Bounded visible conflicts."
+          },
+          "coverage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceCoverage"
+            },
+            "description": "Bounded coverage lines."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The latest structural failure, never source content."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last complete generation, or `0` before the first one.",
+            "minimum": 0
+          },
+          "pending_verification": {
+            "type": "integer",
+            "description": "Associations this source has not verified. The frozen v1 association\ncontract cannot claim verification, so plan declarations remain pending\nuntil a collector with its own evidence contract proves them.",
+            "minimum": 0
+          },
+          "retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The earliest instant this source will retry, when it named one."
+          },
+          "source": {
+            "$ref": "#/components/schemas/CatalogSource",
+            "description": "Which source this describes."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CatalogSourceState",
+            "description": "The latest attempt's state."
+          }
+        }
+      },
+      "CatalogSourcesView": {
+        "type": "object",
+        "description": "The per-source observer status across every catalog source.",
+        "required": [
+          "schema_version",
+          "sources"
+        ],
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The contract version.",
+            "minimum": 0
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceStatus"
+            },
+            "description": "One row per source, in plan, Jira, native order."
+          }
+        }
+      },
+      "CatalogStatus": {
+        "type": "object",
+        "description": "The observer status of the whole work catalog.\n\nIt answers freshness, coverage and collector ownership together because a\ncaller that reads only `entries` cannot tell a healthy empty catalog from a\ncollector that never ran.",
+        "required": [
+          "schema_version",
+          "source",
+          "catalog_id",
+          "generation",
+          "attempted_generation",
+          "collector",
+          "collection",
+          "counts",
+          "registry",
+          "config",
+          "snapshot",
+          "diagnostics",
+          "conflicts",
+          "dangling_associations"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the latest complete generation finished, if any."
+          },
+          "attempted_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How far collection has attempted; may be ahead of `generation`.",
+            "minimum": 0
+          },
+          "catalog_id": {
+            "type": "string",
+            "description": "A host-local catalog identity, stable across restarts of this database."
+          },
+          "collection": {
+            "$ref": "#/components/schemas/CollectionStatus",
+            "description": "The latest collection attempt and its coverage."
+          },
+          "collector": {
+            "$ref": "#/components/schemas/CollectorStatus",
+            "description": "Whether an owner currently holds the collector lease."
+          },
+          "config": {
+            "$ref": "#/components/schemas/ConfigStatus",
+            "description": "Effective operator configuration provenance."
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Conflict"
+            },
+            "description": "Conflicts that are not attached to one entry, or all current conflicts."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CatalogCounts",
+            "description": "Current work-item counts at the active generation."
+          },
+          "dangling_associations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DanglingAssociation"
+            },
+            "description": "Dangling explicit associations retained across removal."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            },
+            "description": "Diagnostics that are not attached to one entry."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The most recent complete generation, or `0` before the first one.",
+            "minimum": 0
+          },
+          "registry": {
+            "$ref": "#/components/schemas/RegistryStatus",
+            "description": "Current registry projection, including diagnostics."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The contract version this body satisfies.",
+            "minimum": 0
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/SnapshotStatus",
+            "description": "Whether the atomic fallback snapshot is present and at which generation."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReadSource",
+            "description": "Whether this answer came from the database or the fallback snapshot."
+          }
+        }
+      },
       "ClosePrReviewRequest": {
         "type": "object",
         "description": "Close one pull request's review.",
@@ -16165,6 +16913,140 @@
             "type": "integer",
             "format": "int64",
             "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "CollectionState": {
+        "type": "string",
+        "description": "The state of the latest collection attempt.",
+        "enum": [
+          "never_collected",
+          "complete",
+          "incomplete",
+          "failed"
+        ]
+      },
+      "CollectionStatus": {
+        "type": "object",
+        "description": "One collection attempt, complete or not.",
+        "required": [
+          "state",
+          "generation",
+          "repositories_configured",
+          "repositories_scanned",
+          "files_seen",
+          "entries_observed",
+          "diagnostics",
+          "coverage"
+        ],
+        "properties": {
+          "coverage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepositoryCoverage"
+            },
+            "description": "Per-repository coverage for this attempt."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Attempt-level structural diagnostics. Unknown registry keys are not\nregistry entries and appear here as diagnostics, never as work."
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Measured wall-clock duration in milliseconds.",
+            "minimum": 0
+          },
+          "entries_observed": {
+            "type": "integer",
+            "description": "Plan documents observed.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural failure, never file content and never a credential."
+          },
+          "files_seen": {
+            "type": "integer",
+            "description": "Tracked and untracked Markdown files considered.",
+            "minimum": 0
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the attempt finished."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The generation this attempt would have produced.",
+            "minimum": 0
+          },
+          "repositories_configured": {
+            "type": "integer",
+            "description": "Configured repository count.",
+            "minimum": 0
+          },
+          "repositories_scanned": {
+            "type": "integer",
+            "description": "Repositories read in this attempt.",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the attempt started."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectionState",
+            "description": "The attempt's own state."
+          }
+        }
+      },
+      "CollectorStatus": {
+        "type": "object",
+        "description": "The collector lease, which makes one owner per scope explicit.",
+        "required": [
+          "owner_here"
+        ],
+        "properties": {
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last collection failure, structurally redacted."
+          },
+          "lease_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the current lease is allowed to be taken over."
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The current owner, if a live lease exists."
+          },
+          "owner_here": {
+            "type": "boolean",
+            "description": "Whether this process is the current owner."
           }
         }
       },
@@ -17642,6 +18524,105 @@
           }
         }
       },
+      "ConfigOrigin": {
+        "type": "string",
+        "description": "Where the effective configuration came from.",
+        "enum": [
+          "catalog_file",
+          "migrated_plugin_env",
+          "migrated_plugin_file",
+          "none"
+        ]
+      },
+      "ConfigStatus": {
+        "type": "object",
+        "description": "Effective configuration provenance.",
+        "required": [
+          "origin",
+          "repositories",
+          "explicit_sources",
+          "diagnostics"
+        ],
+        "properties": {
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Structural diagnostics from resolution."
+          },
+          "explicit_sources": {
+            "type": "integer",
+            "description": "Imported explicit operator sources.",
+            "minimum": 0
+          },
+          "imported_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When a migrated configuration was materialized."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/ConfigOrigin",
+            "description": "How this configuration was obtained."
+          },
+          "repositories": {
+            "type": "integer",
+            "description": "Configured repositories.",
+            "minimum": 0
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SHA-256 of the effective settings document."
+          }
+        }
+      },
+      "Conflict": {
+        "type": "object",
+        "description": "A visible identity or content conflict.",
+        "required": [
+          "kind",
+          "message",
+          "observed_at"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConflictKind",
+            "description": "The kind of conflict."
+          },
+          "logical_plan_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The logical plan it belongs to, when a single plan is implicated."
+          },
+          "message": {
+            "type": "string",
+            "description": "A structural description."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "When it was observed."
+          }
+        }
+      },
+      "ConflictKind": {
+        "type": "string",
+        "description": "The conflicts this contract can expose.",
+        "enum": [
+          "divergent_worktree",
+          "ambiguous_rename",
+          "duplicate_explicit_id",
+          "duplicate_epic",
+          "pin_mismatch",
+          "association_conflict"
+        ]
+      },
       "ConnectorSpecDto": {
         "type": "object",
         "description": "One connector specification revision this build can serve.\n\n`installed` distinguishes \"this deployment ships the mapping\" from \"this\nproject pinned it\": a bundled revision nothing installed is selectable, and a\ntask linked to a ticket it does not cover is exactly the unmapped link\n`ticket:reconcile-plan` already reports rather than silently converging.",
@@ -18111,6 +19092,59 @@
           }
         },
         "additionalProperties": false
+      },
+      "ContentKind": {
+        "type": "string",
+        "description": "How a file was found.",
+        "enum": [
+          "tracked",
+          "untracked_draft",
+          "external_source"
+        ]
+      },
+      "ContentRevision": {
+        "type": "object",
+        "description": "One exact content revision.",
+        "required": [
+          "revision_id",
+          "byte_length",
+          "modified_at",
+          "title"
+        ],
+        "properties": {
+          "byte_length": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The byte length read.",
+            "minimum": 0
+          },
+          "epic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The declared epic, when unambiguous."
+          },
+          "modified_at": {
+            "type": "string",
+            "description": "The file's modification time."
+          },
+          "revision_id": {
+            "type": "string",
+            "description": "The SHA-256 of the exact bytes."
+          },
+          "title": {
+            "type": "string",
+            "description": "The title taken from the first H1, or the path."
+          },
+          "workstream": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The declared workstream, when valid."
+          }
+        }
       },
       "ContextMemoryBinding": {
         "type": "object",
@@ -19429,6 +20463,43 @@
         },
         "additionalProperties": false
       },
+      "DanglingAssociation": {
+        "type": "object",
+        "description": "A retained explicit association whose plan or source is gone.",
+        "required": [
+          "relation",
+          "value",
+          "last_seen"
+        ],
+        "properties": {
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last seen attached."
+          },
+          "logical_plan_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The removed logical plan, when one was identified."
+          },
+          "relation": {
+            "$ref": "#/components/schemas/AssociationRelation",
+            "description": "The relation."
+          },
+          "source_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The operator source id that stated it."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value."
+          }
+        }
+      },
       "DeclareDurableSeatRequest": {
         "type": "object",
         "description": "Declare one long-lived seat a desk holds.",
@@ -19854,6 +20925,57 @@
           }
         }
       },
+      "Diagnostic": {
+        "type": "object",
+        "description": "A one-line diagnostic with no file content.",
+        "required": [
+          "code",
+          "severity",
+          "message",
+          "observed_at"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "A stable machine code."
+          },
+          "logical_plan_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The logical plan it belongs to, when known."
+          },
+          "message": {
+            "type": "string",
+            "description": "A structural message that never contains source bytes or credentials."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "When it was observed."
+          },
+          "severity": {
+            "$ref": "#/components/schemas/DiagnosticSeverity",
+            "description": "How severe it is."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The occurrence or source the diagnostic is about."
+          }
+        }
+      },
+      "DiagnosticSeverity": {
+        "type": "string",
+        "description": "Diagnostic severity.",
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ]
+      },
       "DisarmRequest": {
         "type": "object",
         "description": "What `execution:disarm` is asked for.\n\nA revoked authorization is a hold, so disarming is a typed hold and not a\nbare revocation. The four REQ-008 fields are required here: `revoked_by` is\nthe owner, `reason_code` and `reason` say why, `lift_condition` says what\nwould end it, and `review_by` says when the owner must look again.",
@@ -20200,6 +21322,76 @@
           }
         },
         "additionalProperties": false
+      },
+      "EntriesView": {
+        "type": "object",
+        "description": "The generation-consistent entries answer.",
+        "required": [
+          "schema_version",
+          "generation",
+          "source",
+          "entries",
+          "truncated"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant that generation completed."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogEntry"
+            },
+            "description": "The matching entries."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The active complete generation this answer describes.",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An opaque continuation for the next page, bound to this generation and\nfilter. A reader that presents it after the generation advanced is\nrefused rather than shown a page from a mix of generations."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The contract version.",
+            "minimum": 0
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReadSource",
+            "description": "Whether the answer came from the database or the fallback snapshot."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether a further page exists. Equivalent to `next_cursor.is_some()`."
+          }
+        }
+      },
+      "EntryKind": {
+        "type": "string",
+        "description": "What a catalog entry is.",
+        "enum": [
+          "plan",
+          "execution_unit"
+        ]
+      },
+      "EntryState": {
+        "type": "string",
+        "description": "Whether an entry is currently observed.",
+        "enum": [
+          "active",
+          "removed"
+        ]
       },
       "EpicBacklogCodeCorrectionApplyRequest": {
         "type": "object",
@@ -23792,6 +24984,229 @@
           "retired"
         ]
       },
+      "NativeCatalogStatus": {
+        "type": "object",
+        "description": "The native census's freshness, coverage and counts.",
+        "required": [
+          "schema_version",
+          "source",
+          "generation",
+          "attempted_generation",
+          "collector",
+          "collection",
+          "counts",
+          "snapshot"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the last complete native generation finished."
+          },
+          "attempted_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The latest attempted native generation.",
+            "minimum": 0
+          },
+          "collection": {
+            "$ref": "#/components/schemas/NativeCollectionStatus",
+            "description": "The latest native attempt and its coverage."
+          },
+          "collector": {
+            "$ref": "#/components/schemas/CollectorStatus",
+            "description": "The collector lease."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/NativeCounts",
+            "description": "Current native counts."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last complete native generation.",
+            "minimum": 0
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The native census document version.",
+            "minimum": 0
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/SnapshotStatus",
+            "description": "Whether the native fallback snapshot is present and at which generation."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReadSource",
+            "description": "Whether this answer came from the database or the fallback snapshot."
+          }
+        }
+      },
+      "NativeCheckout": {
+        "type": "object",
+        "description": "Checkout facts carried by one directory entry.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Checked-out branch."
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Working directory."
+          },
+          "is_git": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the directory is a Git checkout."
+          },
+          "is_paseo_owned_worktree": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether Paseo provisioned the worktree itself."
+          },
+          "worktree_root": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Linked worktree root."
+          }
+        }
+      },
+      "NativeCollectionStatus": {
+        "type": "object",
+        "description": "The latest native collection attempt.",
+        "required": [
+          "state",
+          "generation",
+          "attempt_generation",
+          "runtimes_configured",
+          "runtimes_complete",
+          "projects_observed",
+          "workspaces_observed",
+          "sessions_observed",
+          "archived_sessions",
+          "include_archived",
+          "diagnostics",
+          "coverage"
+        ],
+        "properties": {
+          "archived_sessions": {
+            "type": "integer",
+            "description": "Archived sessions observed in this attempt.",
+            "minimum": 0
+          },
+          "attempt_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The latest attempted generation, which may be ahead.",
+            "minimum": 0
+          },
+          "coverage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeRuntimeCoverage"
+            },
+            "description": "Per-runtime coverage."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Attempt-level diagnostics."
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Measured wall-clock duration.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural failure, never a credential."
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the attempt finished."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last complete native generation.",
+            "minimum": 0
+          },
+          "include_archived": {
+            "type": "boolean",
+            "description": "Whether archive scope was requested."
+          },
+          "projects_observed": {
+            "type": "integer",
+            "description": "Projects observed in this attempt.",
+            "minimum": 0
+          },
+          "retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The earliest instant this catalog will retry after a failure."
+          },
+          "runtimes_complete": {
+            "type": "integer",
+            "description": "Runtime instances read to completion.",
+            "minimum": 0
+          },
+          "runtimes_configured": {
+            "type": "integer",
+            "description": "Runtime instances configured for this attempt.",
+            "minimum": 0
+          },
+          "sessions_observed": {
+            "type": "integer",
+            "description": "Sessions observed in this attempt.",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the attempt started."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectionState",
+            "description": "The attempt's own state."
+          },
+          "workspaces_observed": {
+            "type": "integer",
+            "description": "Workspaces observed in this attempt.",
+            "minimum": 0
+          }
+        }
+      },
       "NativeContainerParentDto": {
         "type": "object",
         "description": "Complete native parent identity reported for a child container.",
@@ -23819,6 +25234,119 @@
           "runtime_kind": {
             "type": "string",
             "description": "Runtime family."
+          }
+        }
+      },
+      "NativeCounts": {
+        "type": "object",
+        "description": "Counts at the active native generation.",
+        "required": [
+          "projects",
+          "workspaces",
+          "sessions",
+          "archived_sessions",
+          "tombstones"
+        ],
+        "properties": {
+          "archived_sessions": {
+            "type": "integer",
+            "description": "Active sessions carrying an archive stamp.",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "integer",
+            "description": "Active native projects.",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "Active native sessions, archived included.",
+            "minimum": 0
+          },
+          "tombstones": {
+            "type": "integer",
+            "description": "Removed native observations visible at this generation.",
+            "minimum": 0
+          },
+          "workspaces": {
+            "type": "integer",
+            "description": "Active native workspaces.",
+            "minimum": 0
+          }
+        }
+      },
+      "NativeInventoryView": {
+        "type": "object",
+        "description": "One generation-consistent native inventory.",
+        "required": [
+          "schema_version",
+          "generation",
+          "source",
+          "archive_scope",
+          "projects",
+          "workspaces",
+          "sessions",
+          "truncated"
+        ],
+        "properties": {
+          "archive_scope": {
+            "type": "boolean",
+            "description": "Whether the walk that produced this generation requested archived sessions."
+          },
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When that generation finished."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The active complete generation.",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An opaque continuation bound to this generation and filter. It carries\none offset per collection, so a page never mixes generations."
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeProjectRecord"
+            },
+            "description": "Native projects."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The native census document version.",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeSessionRecord"
+            },
+            "description": "Native sessions."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReadSource",
+            "description": "Whether this answer came from the database or the fallback snapshot."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether a further page exists. Equivalent to `next_cursor.is_some()`."
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeWorkspaceRecord"
+            },
+            "description": "Native workspaces."
           }
         }
       },
@@ -24011,6 +25539,200 @@
         },
         "additionalProperties": false
       },
+      "NativeProjectRecord": {
+        "type": "object",
+        "description": "One native observation with catalog state and history.",
+        "required": [
+          "runtime_instance",
+          "project_id",
+          "display_name",
+          "root_path",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "custom_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Raw custom name."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Resolved display name."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this project was first observed."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete census."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Native project id."
+          },
+          "project_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project key as the daemon reports it."
+          },
+          "project_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native project kind."
+          },
+          "root_path": {
+            "type": "string",
+            "description": "Project root path."
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Active or removed at this generation."
+          }
+        }
+      },
+      "NativeRuntimeCoverage": {
+        "type": "object",
+        "description": "One runtime instance's coverage in the latest attempt.",
+        "required": [
+          "runtime_instance",
+          "client_id",
+          "protocol_version",
+          "features",
+          "include_archived",
+          "state",
+          "project_pages",
+          "workspace_pages",
+          "session_pages",
+          "projects",
+          "workspaces",
+          "sessions",
+          "archived_sessions",
+          "diagnostics"
+        ],
+        "properties": {
+          "archived_sessions": {
+            "type": "integer",
+            "description": "Archived sessions observed.",
+            "minimum": 0
+          },
+          "client_id": {
+            "type": "string",
+            "description": "Persistent connection identity."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Runtime-specific diagnostics."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural failure for this runtime only."
+          },
+          "features": {
+            "type": "object",
+            "description": "Advertised runtime features.",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "include_archived": {
+            "type": "boolean",
+            "description": "Whether archive scope was requested."
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Semantic permissions on the connection."
+          },
+          "project_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Project list pages.",
+            "minimum": 0
+          },
+          "projects": {
+            "type": "integer",
+            "description": "Projects observed.",
+            "minimum": 0
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The requested session protocol version.",
+            "minimum": 0
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "server_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime's boot identity."
+          },
+          "server_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The runtime application version."
+          },
+          "session_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Session pages.",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "Sessions observed.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/NativeRuntimeState",
+            "description": "What happened to this runtime."
+          },
+          "workspace_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Workspace pages.",
+            "minimum": 0
+          },
+          "workspaces": {
+            "type": "integer",
+            "description": "Workspaces observed.",
+            "minimum": 0
+          }
+        }
+      },
       "NativeRuntimeRefusal": {
         "oneOf": [
           {
@@ -24035,6 +25757,260 @@
           }
         ],
         "description": "A closed, non-secret refusal emitted by a native session runtime.\n\nArbitrary runtime text never enters this type. The only carried value is a\nvalidated foreign identifier needed to correct placement configuration and\ncorrelate the refusal with the runtime's own registry."
+      },
+      "NativeRuntimeState": {
+        "type": "string",
+        "description": "Whether one runtime was read.",
+        "enum": [
+          "scanned",
+          "incomplete",
+          "failed"
+        ]
+      },
+      "NativeSessionRecord": {
+        "type": "object",
+        "description": "One native session observation.",
+        "required": [
+          "runtime_instance",
+          "session_id",
+          "provider",
+          "status",
+          "cwd",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The archive stamp."
+          },
+          "attention_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Paseo's attention hint."
+          },
+          "checkout": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NativeCheckout",
+                "description": "Placement checkout facts."
+              }
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native creation instant."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this session was first observed."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete census."
+          },
+          "last_user_message_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last user-message instant."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model name."
+          },
+          "parent_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native parent session."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native project id."
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project display name."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider name."
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Native session id."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Active or removed at this generation."
+          },
+          "status": {
+            "type": "string",
+            "description": "Native lifecycle status."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display title."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native update instant."
+          },
+          "workspace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Native workspace id."
+          },
+          "workspace_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Workspace display name."
+          }
+        }
+      },
+      "NativeWorkspaceRecord": {
+        "type": "object",
+        "description": "One native workspace observation.",
+        "required": [
+          "runtime_instance",
+          "workspace_id",
+          "project_id",
+          "name",
+          "directory",
+          "kind",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "archiving_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Archive intent."
+          },
+          "directory": {
+            "type": "string",
+            "description": "Absolute working directory."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this workspace was first observed."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Native workspace kind."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete census."
+          },
+          "name": {
+            "type": "string",
+            "description": "Resolved display name."
+          },
+          "project_custom_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project custom name."
+          },
+          "project_display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project display name."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Native project id."
+          },
+          "project_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project kind."
+          },
+          "project_root_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project root path."
+          },
+          "runtime_instance": {
+            "type": "string",
+            "description": "Stable runtime instance identity."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Active or removed at this generation."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Raw title override."
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "Native workspace id."
+          },
+          "worktree_slug": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Paseo-owned worktree basename."
+          }
+        }
       },
       "NeedsHumanDto": {
         "type": "object",
@@ -24152,6 +26128,86 @@
             "format": "int64",
             "description": "The canonical epoch both positions belong to.",
             "minimum": 0
+          }
+        }
+      },
+      "Occurrence": {
+        "type": "object",
+        "description": "One exact file in one checkout or worktree.",
+        "required": [
+          "occurrence_id",
+          "repository_id",
+          "repository_root",
+          "relative_path",
+          "content_kind",
+          "revision_kind",
+          "content",
+          "source_ids",
+          "state",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/ContentRevision",
+            "description": "The exact bytes' revision."
+          },
+          "content_kind": {
+            "$ref": "#/components/schemas/ContentKind",
+            "description": "How the file was found."
+          },
+          "expected_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The operator's expected hash, when one was declared."
+          },
+          "first_seen": {
+            "type": "string",
+            "description": "When this occurrence was first observed."
+          },
+          "last_seen": {
+            "type": "string",
+            "description": "When it was last observed in a complete sweep."
+          },
+          "occurrence_id": {
+            "type": "string",
+            "description": "The occurrence's stable id."
+          },
+          "pin_matches": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the declared pin matches the bytes read. `None` without a pin."
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "The path relative to the repository root."
+          },
+          "repository_id": {
+            "type": "string",
+            "description": "The repository identity (shared across worktrees of one repository)."
+          },
+          "repository_root": {
+            "type": "string",
+            "description": "The configured or derived worktree root."
+          },
+          "revision_kind": {
+            "$ref": "#/components/schemas/RevisionKind",
+            "description": "The operator's declared revision intent."
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The explicit source ids that name this occurrence."
+          },
+          "state": {
+            "$ref": "#/components/schemas/EntryState",
+            "description": "Whether the occurrence is live at the active generation."
           }
         }
       },
@@ -27632,6 +29688,14 @@
         },
         "additionalProperties": false
       },
+      "ReadSource": {
+        "type": "string",
+        "description": "Where a read answer came from.",
+        "enum": [
+          "database",
+          "snapshot"
+        ]
+      },
       "ReadyTaskDto": {
         "type": "object",
         "description": "One task the planner would admit, and what it would run under.",
@@ -28496,6 +30560,56 @@
           }
         }
       },
+      "RegistryState": {
+        "type": "string",
+        "description": "Whether the registry was read.",
+        "enum": [
+          "absent",
+          "ready",
+          "invalid"
+        ]
+      },
+      "RegistryStatus": {
+        "type": "object",
+        "description": "The selected workstream registry's projection.",
+        "required": [
+          "state",
+          "workstreams",
+          "diagnostics"
+        ],
+        "properties": {
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Structural diagnostics. Unknown plan keys never add entries here."
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file read, if one was configured."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SHA-256 of the exact registry bytes."
+          },
+          "state": {
+            "$ref": "#/components/schemas/RegistryState",
+            "description": "Whether a registry was absent, readable or refused."
+          },
+          "workstreams": {
+            "type": "integer",
+            "description": "The registered workstream count. Always zero when absent or invalid.",
+            "minimum": 0
+          }
+        }
+      },
       "RemediateCompletionRequest": {
         "type": "object",
         "description": "Record one epic's remediation authority.\n\nThe same ordered LSA/TPM pair may recover a terminal `needs_human` state\nonly for its latest failed Committee round. Recovery still enters\nremediation first; a new integration receipt and repository outcome are\nrequired before another Committee round can be invoked.",
@@ -28805,6 +30919,62 @@
           }
         }
       },
+      "RepositoryCoverage": {
+        "type": "object",
+        "description": "One configured repository's coverage in the latest attempt.",
+        "required": [
+          "root",
+          "state",
+          "files_seen",
+          "entries_observed",
+          "github_plans_permitted"
+        ],
+        "properties": {
+          "entries_observed": {
+            "type": "integer",
+            "description": "Plan documents observed in this root.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A structural failure for this root only."
+          },
+          "files_seen": {
+            "type": "integer",
+            "description": "Files considered in this root.",
+            "minimum": 0
+          },
+          "github_plans_permitted": {
+            "type": "boolean",
+            "description": "Whether `.github/plans` was explicitly permitted for this root."
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checked-out commit at scan time."
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The repository identity derived from the git common directory."
+          },
+          "root": {
+            "type": "string",
+            "description": "The configured root, as resolved on this host."
+          },
+          "state": {
+            "$ref": "#/components/schemas/RepositoryState",
+            "description": "What happened to this root."
+          }
+        }
+      },
       "RepositoryOutcomeDto": {
         "type": "object",
         "description": "One repository's integration outcome.\n\nPolyrepo integration is a collection of these plus the root pointer where one\napplies. Completion never assumes one repository, one branch or one commit,\nso there is no single-revision field for it to assume into.",
@@ -28863,6 +31033,16 @@
           }
         },
         "additionalProperties": false
+      },
+      "RepositoryState": {
+        "type": "string",
+        "description": "Whether one configured root was read.",
+        "enum": [
+          "scanned",
+          "partial",
+          "not_reached",
+          "failed"
+        ]
       },
       "RequestPlanningPairClarificationRequest": {
         "type": "object",
@@ -29079,6 +31259,15 @@
           "semantic",
           "lexical_degraded",
           "none"
+        ]
+      },
+      "RevisionKind": {
+        "type": "string",
+        "description": "The operator's declared revision intent, preserved from the source catalog.",
+        "enum": [
+          "working_copy",
+          "saved_draft",
+          "approved_revision"
         ]
       },
       "RevisionRefDto": {
@@ -30898,6 +33087,47 @@
                 "description": "When it last changed."
               }
             }
+          }
+        }
+      },
+      "SnapshotStatus": {
+        "type": "object",
+        "description": "Whether the fallback snapshot matches the active generation.",
+        "required": [
+          "present",
+          "current"
+        ],
+        "properties": {
+          "current": {
+            "type": "boolean",
+            "description": "Whether it is the same generation a reader would get from the database."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it could not be read, when it exists but is unusable."
+          },
+          "generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The generation inside it.",
+            "minimum": 0
+          },
+          "present": {
+            "type": "boolean",
+            "description": "Whether a snapshot file exists."
+          },
+          "written_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was written."
           }
         }
       },

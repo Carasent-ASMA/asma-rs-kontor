@@ -17,6 +17,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use kontor_api::state::BarrierState;
@@ -388,6 +389,44 @@ async fn serve(
         daemon.jira_reconciler(),
         daemon.state(),
     ));
+    // The work catalog is a separate observational plane. Its poller shares the
+    // shutdown signal but not the reconciliation loop, the store or the barrier:
+    // a catalog failure degrades coverage and nothing else.
+    if let Some(catalog) = daemon.catalog() {
+        tokio::spawn(kontor_catalog::poll_until_stopped(
+            Arc::clone(&catalog),
+            daemon.state().signals().stops(),
+        ));
+        let native_census = daemon.native_census();
+        if !native_census.is_empty() {
+            tokio::spawn(kontor_catalog::poll_native_until_stopped(
+                Arc::clone(&catalog),
+                native_census,
+                daemon.state().signals().stops(),
+            ));
+        }
+        // Jira observation is a separate read-only collector over the same
+        // catalog database. It has its own generation and checkpoint, never
+        // waits on the governed reconciliation barrier, and is inert unless
+        // `catalog.json` carries a `jira` section. A composition failure warns
+        // and leaves governed service untouched.
+        match kontor_catalog::JiraCatalog::open(
+            Arc::clone(&catalog),
+            daemon.realm_id(),
+            &daemon.config().state_root,
+        ) {
+            Ok(Some(jira)) => {
+                tokio::spawn(kontor_catalog::poll_jira_until_stopped(
+                    Arc::new(jira),
+                    daemon.state().signals().stops(),
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(detail = %error, "the Jira catalog collector is unavailable");
+            }
+        }
+    }
     // Publication checks run only where an operator installed the GitHub App;
     // without the document the gateway is absent and nothing is posted.
     if let Some(gateway) = daemon.github_publication() {

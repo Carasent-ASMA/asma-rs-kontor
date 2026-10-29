@@ -5,7 +5,7 @@ import type { PaseoProject } from "@getpaseo/client";
 import { WorkspaceDescriptorPayloadSchema } from "@getpaseo/protocol/messages";
 import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DirectoryEntry } from "../client/session-directory";
+import { emptyDirectoryState, type DirectoryEntry, type DirectoryState } from "../client/session-directory";
 import type { CreateOutcome } from "../shared/session-create";
 import { readRecent } from "../client/recent-sessions";
 import { confirmedEpic } from "../client/page-data";
@@ -20,6 +20,8 @@ const model = vi.hoisted(() => ({
   directoryInputs: [] as Array<{ hostId: string; includeArchived: boolean }>, sourceCalls: 0,
   /** This render's effects; `commit()` runs the ones whose dependencies changed, as React does. */
   effects: [] as Array<{ effect: () => void | (() => void); deps?: readonly unknown[] }>,
+  directory: null as import("../client/session-directory").DirectoryState | null,
+  catalog: null as import("../shared/work-catalog").WorkCatalogRead | null,
   keyboardSave: vi.fn(async () => true),
   nativeRetry: vi.fn(),
   kontorStatus: null as import("../shared/kontor-status").KontorStatus | null,
@@ -46,10 +48,11 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
   Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError, show: model.toastShow }),
   copyText: (text: string) => model.copyText(text),
 }));
-vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived }, refresh: () => {}, retry: model.nativeRetry }; } }));
+vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: (input: { hostId: string; includeArchived: boolean }) => { model.directoryInputs.push(input); return { state: model.directory ?? { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: input.includeArchived, labelsComplete: true }, refresh: () => {}, retry: model.nativeRetry }; } }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-kontor-status", () => ({ useKontorStatus: () => model.kontorStatus }));
+vi.mock("../client/use-work-catalog", () => ({ useWorkCatalog: () => ({ read: model.catalog, refresh: () => {} }) }));
 vi.mock("../client/use-read-sources", () => ({ useReadSources: () => { model.sourceCalls++; return { sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true, demand: () => {} }; } }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: model.workspaces, error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
@@ -88,7 +91,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.nativeRetry = vi.fn(); model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directoryInputs = []; model.sourceCalls = 0; model.effects = []; });
+beforeEach(() => { model.nativeRetry = vi.fn(); model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; model.kontorStatus = null; model.directory = null; model.catalog = null; model.directoryInputs = []; model.sourceCalls = 0; model.effects = []; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -165,6 +168,45 @@ describe("Kontor shell native actions", () => {
     const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
     expect(sessions.props.projects).toEqual([{ id: "prj_empty", name: "DESK • RESEARCH", root: "/fixture/empty" }, { id: "prj_1", name: "Project" }]);
     expect(sessions.props.workspaces).toEqual([]);
+  });
+
+  it("does not state an epic session count when catalog labels are unavailable", () => {
+    const asOf = "2026-10-25T06:14:01Z";
+    const source = (kind: "plan" | "jira" | "native") => ({ source: kind, state: "complete" as const, generation: 4, attemptedGeneration: 4, asOf, error: null, retryAt: null, coverage: [], conflicts: [], pendingVerification: 0 });
+    model.sources = [{ id: "history", title: "Historical Jira", kind: "jira", path: "/configured/history.json", projectId: null, epic: "ASMA-2", workstream: null, revisionKind: "working copy" }];
+    model.directory = { ...emptyDirectoryState(), entries: [], status: "error", live: false, lastUpdatedAt: null, inventoryComplete: false, error: "Paseo unavailable" };
+    model.catalog = {
+      mode: "catalog", checkedAt: asOf, sourceAsOf: asOf, error: null, snapshot: null,
+      view: { schemaVersion: 1, sources: [source("plan"), source("jira"), source("native")], entries: [], entriesTruncated: false },
+      native: { mode: "catalog", hostId: "host-a", runtimeInstance: "paseo:ws://127.0.0.1:6767/ws", checkedAt: asOf, error: null, snapshotSavedAt: null,
+        view: { runtimeInstance: "paseo:ws://127.0.0.1:6767/ws", generation: 4, asOf, source: "database", archiveScope: true, truncated: false,
+          projects: [], workspaces: [], sessions: [{ sessionId: "catalog", workspaceId: null, projectId: null, projectName: null, workspaceName: null, title: "Catalog session", provider: "codex", model: null, status: "idle", archivedAt: null, attentionReason: null, cwd: "/catalog", createdAt: null, updatedAt: asOf, lastUserMessageAt: null, parentSessionId: null, checkout: null }] } },
+    };
+    const screen = mount(false, { tab: "Sessions" });
+    screen.openPicker();
+    const epic = screen.menuItems().find((node) => node.props.label === "ASMA-2")!;
+    expect(String(epic.props.detail)).toContain("session count unknown");
+    expect(String(epic.props.detail)).not.toContain("0 sessions");
+  });
+
+  it("renders the shared catalog's exact native sessions when direct enumeration fails", () => {
+    const asOf = "2026-10-25T06:14:01Z";
+    const catalogSource = (source: "plan" | "jira" | "native") => ({ source, state: "complete" as const, generation: 4, attemptedGeneration: 4, asOf, error: null, retryAt: null, coverage: [], conflicts: [], pendingVerification: 0 });
+    model.directory = { ...emptyDirectoryState(), status: "error", live: false, lastUpdatedAt: null, error: "direct enumeration failed", staleReason: null, pages: 0, includeArchived: false, inventoryComplete: false };
+    model.catalog = {
+      mode: "catalog", checkedAt: "2026-10-25T09:00:00Z", sourceAsOf: asOf, view: { schemaVersion: 1, sources: [catalogSource("plan"), catalogSource("jira"), catalogSource("native")], entries: [], entriesTruncated: false }, error: null, snapshot: null,
+      native: {
+        mode: "catalog", hostId: "host-a", runtimeInstance: "paseo:ws://127.0.0.1:6767/ws", checkedAt: "2026-10-25T09:00:00Z", error: null, snapshotSavedAt: null,
+        view: {
+          runtimeInstance: "paseo:ws://127.0.0.1:6767/ws", generation: 4, asOf, source: "database", archiveScope: true, truncated: false, projects: [], workspaces: [],
+          sessions: [{ sessionId: "sess_catalog", workspaceId: null, projectId: null, projectName: "Catalog project", workspaceName: null, title: "Catalog session", provider: "codex", model: null, status: "idle", archivedAt: null, attentionReason: null, cwd: "/catalog", createdAt: null, updatedAt: null, lastUserMessageAt: null, parentSessionId: null, checkout: null }],
+        },
+      },
+    };
+    const screen = mount(true, { tab: "Sessions" });
+    const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
+    expect((sessions.props.directory as { state: DirectoryState }).state).toMatchObject({ source: "catalog", inventoryComplete: true, catalogGeneration: 4 });
+    expect((sessions.props.directory as { state: DirectoryState }).state.entries.map((entry) => [entry.id, entry.title])).toEqual([["sess_catalog", "Catalog session"]]);
   });
 
   it.each([true, false])("keeps the title bounded and the native project distinct from the epic in the accessible label (compact=%s)", (compact) => {

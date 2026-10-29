@@ -15,6 +15,10 @@ workspace = true
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+# The headless census implements the catalog's read-only source contract. The
+# edge runs adapter -> observation contract only; the catalog never learns a
+# transport and the runtime never owns catalog storage.
+kontor-catalog = { path = "../kontor-catalog", version = "=0.2.1" }
 kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 kontor-fleet = { path = "../kontor-fleet", version = "=0.2.1" }
 async-trait = { workspace = true }

@@ -84,7 +84,7 @@ const ENTRIES = [
   sessionEntry("alpha-archived", { title: "Alpha archived", status: "closed", archivedAt: "2026-10-20T10:00:00.000Z" }),
   sessionEntry("gamma-input", { title: "Gamma", status: "running", pendingPermissionCount: 1 }),
 ];
-const ready = (patch: Partial<DirectoryState> = {}): DirectoryState => ({ entries: ENTRIES, status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false, ...patch });
+const ready = (patch: Partial<DirectoryState> = {}): DirectoryState => ({ entries: ENTRIES, status: "ready", live: true, error: null, staleReason: null, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, includeArchived: false, labelsComplete: true, ...patch });
 
 function mount(props: Partial<Parameters<typeof SessionsScreen>[0]> = {}) {
   harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Fixture host" }, layout: { compact: true, platform: "ios" },

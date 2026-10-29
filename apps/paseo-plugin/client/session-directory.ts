@@ -93,6 +93,8 @@ export type DirectoryEntry = {
   readonly searchText: string;
   /** The screen's Jira capture, for epic resolution; never native. Absent means none was read. */
   readonly jira?: JiraCapture;
+  /** When this row was kept only from the shared catalog, its completion instant; absent for direct or replaced rows. */
+  readonly catalogCopyAt?: string | null;
 };
 
 /** Epics as the ready historical Jira captures record them: evidence of an observation time, not live Jira. */
@@ -147,6 +149,13 @@ export function hasSessionAttention(entry: DirectoryEntry): boolean {
 
 export type DirectoryStatus = "idle" | "loading" | "ready" | "stale" | "error";
 
+/** A label-derived fact is either observed or unavailable; never a bare zero that pretends to be known. */
+export type Known<T> = { readonly known: true; readonly value: T } | { readonly known: false };
+
+export function knownWhen<T>(labelsComplete: boolean | undefined, value: T): Known<T> {
+  return labelsComplete === true ? { known: true, value } : { known: false };
+}
+
 export type DirectoryState = {
   readonly entries: readonly DirectoryEntry[];
   readonly status: DirectoryStatus;
@@ -158,6 +167,16 @@ export type DirectoryState = {
   /** Whether rows came from a walk with live updates attached; absent means unknown for older consumers. */
   readonly inventoryComplete?: boolean;
   readonly includeArchived: boolean;
+  /** Which inventory supplied the rows; absent means the older direct reader. */
+  readonly source?: "direct" | "catalog" | "catalog-snapshot" | "unavailable";
+  /** Whether every row carries the session labels task/desk joins need; absent means unknown. */
+  readonly labelsComplete?: boolean;
+  /** The source completion instant the rows are as of, when a catalog supplied them. */
+  readonly sourceAsOf?: string | null;
+  /** The host-stamped instant through which direct was complete; absent means direct cannot prove a row absent. */
+  readonly directKnownThrough?: number | null;
+  readonly catalogGeneration?: number | null;
+  readonly catalogRuntimeInstance?: string | null;
 };
 
 export type DirectoryClient = Pick<PaseoApi, "agents">;
@@ -193,6 +212,8 @@ export function emptyDirectoryState(includeArchived = false): DirectoryState {
     lastUpdatedAt: null,
     inventoryComplete: false,
     includeArchived,
+    labelsComplete: true,
+    directKnownThrough: null,
   };
 }
 
@@ -229,7 +250,7 @@ function text(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function searchTextOf(input: {
+export function searchTextOf(input: {
   readonly title: string;
   readonly workspaceName: string | null;
   readonly projectName: string | null;
@@ -317,6 +338,18 @@ export function toDirectoryEntry(
 function timestampOf(value: string): number {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/** The newest host-stamped instant on these rows, or null when none can be read. */
+function latestHostTime(rows: Iterable<{ readonly updatedAt: string; readonly createdAt: string }>): number | null {
+  let latest: number | null = null;
+  for (const row of rows) {
+    for (const value of [row.updatedAt, row.createdAt]) {
+      const parsed = Date.parse(value);
+      if (!Number.isNaN(parsed) && (latest === null || parsed > latest)) latest = parsed;
+    }
+  }
+  return latest;
 }
 
 /**
@@ -493,6 +526,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let staleReason: string | null = null;
   let pages = 0;
   let lastUpdatedAt: number | null = null;
+  let directKnownThrough: number | null = null;
   let inventoryComplete = false;
   let includeArchived = options.includeArchived;
   let disposed = false;
@@ -541,6 +575,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       lastUpdatedAt,
       inventoryComplete,
       includeArchived,
+      labelsComplete: true,
+      directKnownThrough,
     };
   }
 
@@ -626,20 +662,24 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     if (!includeArchived && (update.agent.archivedAt ?? null) !== null) {
+      // The archive event is still host-stamped evidence: the row leaves this
+      // scope, but direct is known complete through its instant.
+      const observed = latestHostTime([update.agent]);
+      if (observed !== null) directKnownThrough = Math.max(directKnownThrough ?? observed, observed);
       entries.delete(update.agent.id);
       return;
     }
     const previous = entries.get(update.agent.id);
-    entries.set(
-      update.agent.id,
-      toDirectoryEntry(
-        {
-          agent: update.agent,
-          project: update.project ?? null,
-        },
-        previous,
-      ),
+    const entry = toDirectoryEntry(
+      {
+        agent: update.agent,
+        project: update.project ?? null,
+      },
+      previous,
     );
+    entries.set(update.agent.id, entry);
+    const observed = latestHostTime([entry]);
+    if (observed !== null) directKnownThrough = Math.max(directKnownThrough ?? observed, observed);
   }
 
   function applyPendingUpdates(): void {
@@ -716,6 +756,11 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     }
     applyPendingUpdates();
     pages = collected.pages;
+    // The walk is complete through the newest host-stamped fact it observed.
+    // Paseo does not stamp the response itself; this is a conservative host
+    // lower bound, never the plugin client's Date.now().
+    const walkedThrough = latestHostTime(entries.values());
+    if (walkedThrough !== null) directKnownThrough = Math.max(directKnownThrough ?? walkedThrough, walkedThrough);
     lastUpdatedAt = Date.now();
     const observedLive = subscriptionActive && subscriptionEpoch === runSubscriptionEpoch;
     inventoryComplete = observedLive;
@@ -1099,6 +1144,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     entries.clear();
     pages = 0;
     lastUpdatedAt = null;
+    directKnownThrough = null;
     inventoryComplete = false;
     status = "error";
     staleReason = null;

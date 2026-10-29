@@ -1,4 +1,4 @@
-import { hasSessionAttention, type DirectoryEntry, type EpicIdentitySource, type IdentityIssue, type JiraCapture } from "./session-directory";
+import { hasSessionAttention, knownWhen, type DirectoryEntry, type EpicIdentitySource, type IdentityIssue, type JiraCapture, type Known } from "./session-directory";
 import { sessionEpic } from "./session-organization";
 import type { EpicIdentity, SourceRead } from "../shared/read-sources";
 export function jiraIssueUrl(key: string): string | null {
@@ -24,6 +24,11 @@ export function readTime(value: string | number, now: number = Date.now()): stri
 export function confirmedEpic(entry: DirectoryEntry): string | null {
   const epic = sessionEpic(entry, undefined).epic?.toUpperCase() ?? null;
   return epic !== null && /^ASMA-[1-9]\d*$/.test(epic) ? epic : null;
+}
+
+/** The epic label-derived fact: unavailable, never absent, when the rows do not carry labels. */
+export function confirmedEpicKnown(entry: DirectoryEntry, labelsComplete: boolean | undefined): Known<string | null> {
+  return knownWhen(labelsComplete, confirmedEpic(entry));
 }
 const NO_JIRA_CAPTURE: JiraCapture = { epics: new Map(), observed: [] };
 /**

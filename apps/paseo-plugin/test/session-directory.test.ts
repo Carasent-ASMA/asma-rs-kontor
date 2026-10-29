@@ -439,6 +439,30 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("tracks the host direct-known-through instant and freezes it when live updates stop", async () => {
+    const fake = fakeDirectory([[entry("agent-a", { updatedAt: "2026-10-18T10:00:00.000Z" })]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => { latest = state; },
+    });
+    await directory.start();
+    await waitForState(() => latest, (state) => state.status === "ready" && state.live);
+    expect(latest.directKnownThrough).toBe(Date.parse("2026-10-18T10:00:00.000Z"));
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: { ...entry("agent-a", { updatedAt: "2026-10-18T10:05:00.000Z" }).agent },
+    } as PaseoAgentUpdate);
+    expect(latest.directKnownThrough).toBe(Date.parse("2026-10-18T10:05:00.000Z"));
+
+    fake.emitError(new Error("subscription stopped"));
+    expect(latest.live).toBe(false);
+    expect(latest.directKnownThrough).toBe(Date.parse("2026-10-18T10:05:00.000Z"));
+    await directory.dispose();
+  });
+
   it("keeps a failed first walk retrying with a bounded delay until it succeeds", async () => {
     vi.useFakeTimers();
     const fake = fakeDirectory([[entry("agent-a")]]);

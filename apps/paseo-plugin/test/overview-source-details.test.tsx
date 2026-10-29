@@ -8,6 +8,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ ActivityIndicator: "ActivityIndicator", ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { SourceDetails } from "../client/source-details";
+import type { WorkCatalogRead } from "../shared/work-catalog";
 import { ReadOnlyPage } from "../client/read-only-pages";
 import { sessionEntry } from "./session-fixtures";
 type Props = Parameters<typeof ReadOnlyPage>[0];
@@ -29,12 +30,39 @@ function text(node: ReactNode): string {
   return text(node.props.children as ReactNode);
 }
 function overview(reads: Record<string, SourceRead>, extra: Partial<Props> = {}) {
-  const props: Props = { tab: "Overview", contextLabel: "Selected plan", colors: {} as Props["colors"], entries: [sessionEntry("idle", { status: "idle", labels: { epic: "ASMA-8539" } })], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: Object.values(reads).map((value) => value.source), reads, sourceId: "plan", sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn() };
+  const props: Props = { tab: "Overview", contextLabel: "Selected plan", colors: {} as Props["colors"], entries: [sessionEntry("idle", { status: "idle", labels: { epic: "ASMA-8539" } })], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false, labelsComplete: true }, sources: Object.values(reads).map((value) => value.source), reads, sourceId: "plan", sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn() };
   Object.assign(props, extra);
   const outer = ReadOnlyPage(props);
   const child = elements(outer).find((element) => element.props.tab === "Overview")!;
   return (child.type as (props: Props) => ReactNode)(child.props as Props);
 }
+const catalogRead = (nativeTruncated: boolean, entriesTruncated = false, options: { sourceAsOf?: string | null; nativeMode?: "catalog" | "snapshot" | "unavailable"; viewSource?: "database" | "snapshot" } = {}) => ({
+  mode: "catalog",
+  checkedAt: "2026-10-25T09:00:00Z",
+  sourceAsOf: options.sourceAsOf === undefined ? "2026-10-25T08:15:00Z" : options.sourceAsOf,
+  view: { schemaVersion: 1, sources: [], entries: [], entriesTruncated },
+  error: null,
+  snapshot: null,
+  native: {
+    mode: options.nativeMode ?? "catalog",
+    hostId: "srv_host_a",
+    runtimeInstance: options.nativeMode === "unavailable" ? null : "paseo:ws://127.0.0.1:6767/ws",
+    checkedAt: "2026-10-25T09:00:00Z",
+    view: options.nativeMode === "unavailable" ? null : {
+      runtimeInstance: "paseo:ws://127.0.0.1:6767/ws",
+      generation: 12,
+      asOf: "2026-10-25T08:55:00Z",
+      source: options.viewSource ?? (options.nativeMode === "snapshot" ? "snapshot" : "database"),
+      archiveScope: true,
+      truncated: nativeTruncated,
+      projects: [],
+      workspaces: [],
+      sessions: [],
+    },
+    error: options.nativeMode === "unavailable" ? "native unavailable" : null,
+    snapshotSavedAt: options.nativeMode === "snapshot" ? "2026-10-20T00:00:00Z" : null,
+  },
+}) as unknown as WorkCatalogRead;
 const meta = (tree: ReactNode) => String(elements(tree).find((node) => node.props.testID === "overview-meta")!.props.accessibilityLabel);
 const tile = (tree: ReactNode, label: string) => elements(tree).find((node) => node.props.accessibilityRole === "button" && String(node.props.accessibilityLabel).startsWith(`${label}: `))!;
 beforeEach(() => { model.open = false; });
@@ -116,6 +144,67 @@ describe("compact Overview source evidence", () => {
     expect(opened).toContain("full backlog coverage is not established");
     expect(opened).toContain("Historical Jira · ready · Historical Jira snapshot");
   });
+  it("calls a bounded catalog partial instead of live", () => {
+    const cue = (catalog: WorkCatalogRead) => elements(overview({ plan, jira: read }, { scoped: true, catalog }))
+      .find((node) => node.props.accessibilityRole === "button" && String(node.props.accessibilityLabel).startsWith("Sources and coverage"))!;
+    expect(String(cue(catalogRead(true)).props.accessibilityLabel)).toContain("catalog partial");
+    expect(String(cue(catalogRead(false, true)).props.accessibilityLabel)).toContain("catalog partial");
+    expect(String(cue(catalogRead(false)).props.accessibilityLabel)).toContain("catalog live");
+  });
+
+  it.each([false, undefined])("renders every label-derived Overview count unknown when labels are %s", (labelsComplete) => {
+    const catalogRow = sessionEntry("catalog-running", { status: "running", labels: {} });
+    const directory = {
+      entries: [catalogRow], status: "ready" as const, live: false, lastUpdatedAt: 1, error: null,
+      staleReason: null, pages: 1, includeArchived: false, source: "catalog" as const,
+      labelsComplete, inventoryComplete: true,
+    };
+    const global = overview({ plan, jira: read }, { entries: [catalogRow], directory, scoped: false });
+    expect(String(tile(global, "In progress").props.accessibilityLabel)).toContain("In progress: Unknown");
+    expect(String(tile(global, "Needs attention").props.accessibilityLabel)).toContain("Needs attention: Unknown");
+    expect(String(tile(global, "Epics").props.accessibilityLabel)).toContain("Epics: Unknown");
+    expect(meta(global)).toContain("Host sessions: 1 session · 1 running");
+    expect(text(global)).toContain("epic attribution unknown");
+    // The epic row still has recorded Jira facts, but its session link count is unknown.
+    expect(elements(global).some((node) => String(node.props.accessibilityLabel).includes("Sessions unknown · shared catalog rows carry no labels"))).toBe(true);
+
+    const scoped = overview({ plan, jira: read }, { entries: [], directory, scoped: true, epicScoped: true });
+    expect(meta(scoped)).toContain("Sessions in this scope: unknown");
+    expect(meta(scoped)).not.toContain("0 sessions");
+    expect(String(tile(scoped, "In progress").props.accessibilityLabel)).toContain("In progress: Unknown");
+    const active = overview({ plan, jira: read }, { entries: [], directory, scoped: true, epicScoped: true, query: "active" });
+    expect(text(active)).toContain("Session attribution is unknown");
+    expect(text(active)).toContain("Session attribution unknown for this filter");
+    expect(text(active)).not.toContain("No epics in this group.");
+  });
+
+  it.each(["active", "review"])("keeps the filtered %s count unavailable when session attribution is unknown", (query) => {
+    const catalogRow = sessionEntry("catalog-running", { status: "running", labels: {} });
+    const directory = {
+      entries: [catalogRow], status: "ready" as const, live: false, lastUpdatedAt: 1, error: null,
+      staleReason: null, pages: 1, includeArchived: false, source: "catalog" as const,
+      labelsComplete: false, inventoryComplete: true,
+    };
+    const tree = overview({ plan, jira: read }, { entries: [catalogRow], directory, scoped: true, epicScoped: true, query });
+    expect(text(tree)).toContain("Filtered count unavailable");
+    expect(text(tree)).not.toMatch(/\d+ of \d+ shown/);
+    expect(text(tree)).toContain("Session attribution unknown for this filter");
+  });
+
+  it("distinguishes live, partial, snapshot and unavailable catalog cues", () => {
+    const cue = (catalog: WorkCatalogRead, directory = { entries: [], status: "ready" as const, live: false, lastUpdatedAt: 1, error: null,
+      staleReason: null, pages: 1, includeArchived: false, source: "catalog" as const, inventoryComplete: true, labelsComplete: false }) =>
+      elements(overview({ plan, jira: read }, { scoped: true, catalog, directory }))
+        .find((node) => node.props.accessibilityRole === "button" && String(node.props.accessibilityLabel).startsWith("Sources and coverage"))!;
+    expect(String(cue(catalogRead(false)).props.accessibilityLabel)).toContain("catalog live");
+    expect(String(cue(catalogRead(false, false, { sourceAsOf: null })).props.accessibilityLabel)).toContain("catalog partial");
+    expect(String(cue(catalogRead(false), { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null,
+      pages: 1, includeArchived: false, source: "catalog", inventoryComplete: false, labelsComplete: false }).props.accessibilityLabel)).toContain("catalog partial");
+    expect(String(cue(catalogRead(false, false, { nativeMode: "snapshot" })).props.accessibilityLabel)).toContain("catalog snapshot");
+    expect(String(cue(catalogRead(false, false, { nativeMode: "catalog", viewSource: "snapshot" })).props.accessibilityLabel)).toContain("catalog snapshot");
+    expect(String(cue(catalogRead(false, false, { nativeMode: "unavailable" })).props.accessibilityLabel)).toContain("catalog unavailable");
+  });
+
   it("retains native content when Jira is unavailable and never treats idle as task completion", () => {
     const tree = overview({ plan }, { scoped: true }); const visible = text(tree);
     expect(visible).toContain("1 session"); expect(meta(tree)).toContain("Sessions in this scope: 1 session · 0 running");

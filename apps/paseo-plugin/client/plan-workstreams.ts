@@ -59,6 +59,8 @@ export function planWorkstreamMappings(sources: readonly ReadSourceSummary[], re
 
 export type WorkstreamOption = {
   key: string; label: string; registered: boolean; plans: number; sessions: number; workspaces: number; desk: boolean;
+  /** False when the shared catalog supplied rows without labels: session counts are unknown, never zero. */
+  countsUnknown?: boolean;
   /** Counted sessions the tree shows under a native desk project of another key, by project name. */
   shownUnder: Record<string, number>;
   /** Sessions in this key's own native desk projects that are counted under other keys. */
@@ -67,12 +69,12 @@ export type WorkstreamOption = {
   emptyInDesk: number;
 };
 /** Global registered keys, scoped declared plans and scoped native counts are separate facts. */
-export function planWorkstreamOptions(sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, registry: WorkstreamRegistry | undefined, entries: readonly DirectoryEntry[], mappings: OrganizationInput["displayMappings"], nativeWorkspaces: readonly OrganizationWorkspace[] = []): WorkstreamOption[] {
+export function planWorkstreamOptions(sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, registry: WorkstreamRegistry | undefined, entries: readonly DirectoryEntry[], mappings: OrganizationInput["displayMappings"], nativeWorkspaces: readonly OrganizationWorkspace[] = [], labelsComplete = true): WorkstreamOption[] {
   const options = new Map<string, WorkstreamOption>();
   const ensure = (key: string) => {
     const normalized = key.trim().toLowerCase();
     let value = options.get(normalized);
-    if (!value) { value = { key: normalized, label: registry?.workstreams[normalized]?.name ?? key, registered: !!registry?.workstreams[normalized], plans: 0, sessions: 0, workspaces: 0, desk: false, shownUnder: {}, othersInDesk: 0, emptyInDesk: 0 }; options.set(normalized, value); }
+    if (!value) { value = { key: normalized, label: registry?.workstreams[normalized]?.name ?? key, registered: !!registry?.workstreams[normalized], plans: 0, sessions: 0, workspaces: 0, desk: false, countsUnknown: !labelsComplete, shownUnder: {}, othersInDesk: 0, emptyInDesk: 0 }; options.set(normalized, value); }
     return value;
   };
   for (const key of Object.keys(registry?.workstreams ?? {})) ensure(key);
@@ -122,10 +124,12 @@ const counted = (value: number, noun: string) => `${value} ${noun}${value === 1 
  */
 export function workstreamOptionLabel(option: WorkstreamOption, registryLoaded: boolean): string {
   const unlinked = option.key === OTHER_WORKSTREAM.toLowerCase();
-  const kind = unlinked ? "no workstream link" : option.desk ? "desk category" : option.sessions + option.workspaces === 0 && option.plans > 0 ? "plan only" : null;
-  const shown = Object.entries(option.shownUnder).map(([desk, sessions]) => `${sessions} shown under ${desk}`).join(", ");
-  return [option.label, kind, `${counted(option.sessions, "session")}${shown ? ` (${shown})` : ""}`, `${counted(option.workspaces, "workspace")}${option.emptyInDesk ? `, ${option.emptyInDesk} more empty in the desk` : ""}`, counted(option.plans, "plan"),
-    option.othersInDesk ? `desk shows ${counted(option.othersInDesk, "more session")} filed under other workstreams` : null,
+  const kind = option.countsUnknown ? null
+    : unlinked ? "no workstream link" : option.desk ? "desk category" : option.sessions + option.workspaces === 0 && option.plans > 0 ? "plan only" : null;
+  const shown = option.countsUnknown ? "" : Object.entries(option.shownUnder).map(([desk, sessions]) => `${sessions} shown under ${desk}`).join(", ");
+  const sessions = option.countsUnknown ? "session count unavailable" : `${counted(option.sessions, "session")}${shown ? ` (${shown})` : ""}`;
+  return [option.label, kind, sessions, `${counted(option.workspaces, "workspace")}${option.emptyInDesk ? `, ${option.emptyInDesk} more empty in the desk` : ""}`, counted(option.plans, "plan"),
+    !option.countsUnknown && option.othersInDesk ? `desk shows ${counted(option.othersInDesk, "more session")} filed under other workstreams` : null,
     unlinked || option.desk || !registryLoaded ? null : option.registered ? "registered" : "unregistered"].filter((part): part is string => !!part).join(" · ");
 }
 

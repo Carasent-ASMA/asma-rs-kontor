@@ -685,9 +685,46 @@ Teams snapshot to that catalog's source identity and re-reads the catalog
 identity before publishing; a catalog changed during the refresh fails that
 refresh rather than mixing bindings, replacement paths or snapshots. Failed
 requests retain previous client reads with a stale warning; invalid or missing
-catalogs return their own diagnostics and no sources. The plugin never writes the catalog or accepts its path from a client.
+catalogs return their own diagnostics and no sources. The plugin never writes the source catalog or accepts its path from a client.
 Presentation settings do not store catalog paths or source contents. This file
 only declares read sources; it does not activate teams or grant execution.
+
+### Shared observational catalog and daemon outage
+
+The plugin also reads the host-local Kontor work catalog through the existing
+observer `kontor-mcp` boundary (`--credential-tier observer`; no credential is
+forwarded). `work-catalog.read` takes the exact host `serverId`, asks for the
+composite per-source status, the native status, up to six bounded native
+inventory pages and up to three bounded entry pages. The Overview **Sources and coverage** disclosure
+shows each source's state, generation, source `asOf`, coverage, retry deadline,
+conflicts and pending verification.
+
+The RPC answers one of three modes:
+
+- `catalog`: the observer answered; the plugin atomically writes its own
+  `$PASEO_HOME/plugin-config/kontor/work-catalog-snapshot.json`
+  (`kontor/plugin-work-catalog@2`, version 2). Version 2 is bound to the exact
+  host and adds its native inventory; a different host refuses it. A v1 snapshot
+  remains readable for plan summaries and carries no native inventory.
+- `snapshot`: the observer is absent, restarting or incompatible; the last-known
+  snapshot is shown, labelled as such, with its source `asOf`.
+- `unavailable`: there is no usable answer and no snapshot; the direct readers
+  below remain active.
+
+The shared inventory adapter (`client/shared-inventory.ts`) prefers a ready,
+live, complete direct directory, then a database-backed complete live catalog,
+then the labelled snapshot. A `catalog` answer whose native view source is
+`snapshot` is the daemon's fallback, not live: direct wins when usable. Native rows are mapped
+by exact session id; live labels, permissions, attention, telemetry and
+availability overlay only for that exact id. A complete exact-empty catalog is
+empty; a truncated inventory or a missing archived scope is visibly partial.
+Native send/stop/open actions stay direct Paseo operations.
+
+The plugin never opens `catalog.db`, never presents its own check time as source
+freshness, and never rewrites the source catalog, source IDs, approved hashes or
+pins, favorites, explicit operator mappings or settings. Exact source content,
+graph export (`asma plan export`), Teams snapshots and native operations stay on
+the existing direct readers during a catalog outage.
 
 Each entry has a unique `id`, `title`, `kind` (`plan`, `teams`,
 `delivery`, `decisions` or `jira`) and absolute `path`. Optional fields are `workstream`,

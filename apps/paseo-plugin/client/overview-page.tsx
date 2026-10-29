@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { sourceReadPending, type SourceRead } from "../shared/read-sources";
+import type { WorkCatalogRead } from "../shared/work-catalog";
+import { WorkCatalogStatus } from "./catalog-status";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import { confirmedEpic, nativeSummary, portfolioFilter, portfolioRows, readTime, shortDates, type PortfolioFilter, type PortfolioRow } from "./page-data";
 import { inventoryReadLabel } from "./native-freshness";
@@ -11,23 +13,41 @@ import { kontordSentence } from "./kontord-copy";
 
 type EpicTab = "Plan" | "Board" | "Graph" | "Sessions";
 type Props = {
-  colors: Colors; compact?: boolean; contextLabel?: string; scoped?: boolean; entries: readonly DirectoryEntry[]; directory: DirectoryState;
+  colors: Colors; compact?: boolean; contextLabel?: string; scoped?: boolean; epicScoped?: boolean; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   reads: Readonly<Record<string, SourceRead>>; query: string; setQuery: (query: string) => void;
-  sourceError?: string | null; kontord?: string;
+  sourceError?: string | null; catalog?: WorkCatalogRead | null; kontord?: string;
   onSource: (id: string) => void; onEpicTab: (tab: EpicTab, epicKey: string | null, sourceId: string | null) => void;
 };
 const FILTERS: readonly PortfolioFilter[] = ["all", "active", "review", "decisions", "completed", "delivered"];
 const day = (value: string) => value.split(" / ").map((part) => part.slice(0, 10)).join(" / ");
 const count = (value: number, noun: string) => `${value} ${noun}${value === 1 ? "" : "s"}`;
 /** Visible signal line: non-zero native counts only, or one "No sessions". */
-function signalLine(sessions: ReturnType<typeof nativeSummary>): string {
+function signalLine(sessions: ReturnType<typeof nativeSummary>, directory: DirectoryState, sessionsUnknown = false): string {
+  if (directory.entries.length === 0 && (directory.status === "idle" || directory.status === "loading")) return "Sessions reading";
+  if (directory.entries.length === 0 && directory.source === "unavailable") return "Sessions unavailable";
+  if (sessionsUnknown) return "Sessions unknown · shared catalog rows carry no labels";
+  if (directory.inventoryComplete === false && directory.entries.length === 0) return "Session total unknown · partial inventory";
   if (!sessions.total) return "No sessions";
   return [count(sessions.total, "session"), sessions.running ? `${sessions.running} running` : null, sessions.attention ? `${sessions.attention} attention` : null,
     sessions.needsInput ? `${sessions.needsInput} need input` : null, sessions.errors ? count(sessions.errors, "error") : null].filter(Boolean).join(" · ");
 }
+/** The disclosure's short catalog state; a bounded or incomplete read is never called live. */
+export function catalogDisclosureCue(catalog: WorkCatalogRead | null | undefined, directory: DirectoryState): string | null {
+  if (catalog?.mode === "snapshot") return "catalog snapshot";
+  if (catalog?.mode === "unavailable") return "catalog unavailable";
+  if (catalog?.mode !== "catalog") return null;
+  if (catalog.native.mode === "snapshot" || catalog.native.view?.source === "snapshot") return "catalog snapshot";
+  if (catalog.native.mode === "unavailable") return "catalog unavailable";
+  const partial = (directory.source === "catalog" && directory.inventoryComplete !== true)
+    || catalog.sourceAsOf === null
+    || catalog.view?.entriesTruncated === true
+    || catalog.native?.view?.truncated === true;
+  return partial ? "catalog partial" : "catalog live";
+}
+
 /** A visible cue only when the native read is not a complete one; the exact read stays in Sources and coverage. */
 function inventoryCue(directory: DirectoryState): string | null {
-  if (directory.lastUpdatedAt === null) return "inventory not read yet";
+  if (directory.lastUpdatedAt === null) return directory.source === "unavailable" ? "inventory unavailable" : "inventory not read yet";
   if (directory.inventoryComplete === true) return null;
   return `${directory.inventoryComplete === false ? "partial inventory" : "inventory completeness Unknown"} · read ${readTime(directory.lastUpdatedAt)}`;
 }
@@ -45,10 +65,14 @@ export function OverviewPage(props: Props) {
   const readingDecisions = reads.some((read) => read.source.kind === "decisions" && sourceReadPending(read));
   const readingDelivery = reads.some((read) => read.source.kind === "delivery" && sourceReadPending(read));
   // The fourth entry is the tile's full meaning (its label); only a partial-capture qualifier stays visible.
+  const labelsComplete = props.directory.labelsComplete === true;
+  const sessionAttributionUnknown = !labelsComplete;
+  const filteredCountUnknown = sessionAttributionUnknown && (filter === "active" || filter === "review");
+  const scopeSessionsUnknown = sessionAttributionUnknown && props.epicScoped === true;
   const tiles: Array<[PortfolioFilter, string, number | string, string, string | null]> = [
-    ["all", "Epics", rows.length, "All work", null],
-    ["active", "In progress", matching("active"), "Epics with running sessions", null],
-    ["review", "Needs attention", matching("review"), "Native attention, input or error", null],
+    ["all", "Epics", sessionAttributionUnknown ? "Unknown" : rows.length, sessionAttributionUnknown ? "All work; session labels unavailable may omit epics" : "All work", null],
+    ["active", "In progress", sessionAttributionUnknown ? "Unknown" : matching("active"), "Epics with running sessions", null],
+    ["review", "Needs attention", sessionAttributionUnknown ? "Unknown" : matching("review"), "Native attention, input or error", null],
     ["decisions", "Needs your decision", undecided === rows.length ? readingDecisions ? "Reading…" : "Not captured" : rows.filter((row) => (row.decisions ?? 0) > 0).length, undecided === rows.length ? readingDecisions ? "Reading recorded decision sources" : "Decision records unavailable" : `Recorded open decisions${undecided ? ` · ${undecided} not captured` : ""}`, undecided && undecided < rows.length ? `${undecided} not captured` : null],
     ["completed", "Completed epics", rows.some((row) => row.lifecycle) ? matching("completed") : "Unknown", "Recorded epic lifecycle", null],
     ["delivered", "Delivered", "Unknown", "Delivery confirmation not captured", null],
@@ -58,19 +82,23 @@ export function OverviewPage(props: Props) {
   const jira = reads.filter((read) => read.source.kind === "jira");
   const observed = [...new Set(jira.flatMap((read) => read.status !== "ready" ? [] : read.jiraHistory ? [day(read.jiraHistory.generated)] : read.epicIdentity ? [day(read.epicIdentity.as_of)] : []))];
   const wide = width >= 760;
-  const sessions = `${props.scoped ? "Sessions in this scope" : "Host sessions"}: ${count(total.total, "session")} · ${total.running} running · ${total.attention} native attention · ${total.needsInput} needs input · ${total.errors} errors.${!props.scoped && loose ? ` ${loose} with an unknown epic stay in Sessions.` : ""}`;
+  const sessions = scopeSessionsUnknown
+    ? "Sessions in this scope: unknown · session labels unavailable."
+    : `${props.scoped ? "Sessions in this scope" : "Host sessions"}: ${count(total.total, "session")} · ${total.running} running · ${total.attention} native attention · ${total.needsInput} needs input · ${total.errors} errors.${!props.scoped && loose && labelsComplete ? ` ${loose} with an unknown epic stay in Sessions.` : ""}`;
   const scope = `${props.scoped ? "Project" : "Global"} overview, available without kontord.`;
-  const meta = [signalLine(total), !props.scoped && loose ? `${loose} epic unknown` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
+  const meta = [signalLine(total, props.directory, scopeSessionsUnknown), !props.scoped ? labelsComplete ? loose ? `${loose} epic unknown` : null : "epic attribution unknown" : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
   const jiraLabel = observed.length ? `Jira captured ${observed.map(shortDates).join(" / ")}` : "Jira not connected";
+  const catalogCue = catalogDisclosureCue(props.catalog, props.directory);
   return <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ width: "100%", maxWidth: 1100, alignSelf: "center", gap: 14 }}>
     {/* One title and one meta line; scope, exact counts and the read time stay in Sources and coverage. */}
     <View style={{ gap: props.compact ? 3 : 4 }}>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: props.compact ? 21 : 25, fontWeight: "600" }}>{props.contextLabel ?? "All projects"}</Text>
       <Text testID="overview-meta" accessibilityLabel={`${scope} ${sessions} ${inventoryReadLabel(props.directory)}.`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{meta}</Text>
     </View>
-    <Disclosure small label={`Sources and coverage · ${jiraLabel}`} accessibilityLabel={`Sources and coverage · ${jiraLabel}${observed.length ? ", not live" : ""}`} colors={colors}>
+    <Disclosure small label={`Sources and coverage · ${jiraLabel}${catalogCue ? ` · ${catalogCue}` : ""}`} accessibilityLabel={`Sources and coverage · ${jiraLabel}${observed.length ? ", not live" : ""}${catalogCue ? `, ${catalogCue}` : ""}`} colors={colors}>
       <View testID="overview-sources" style={{ gap: 8, paddingTop: 4, paddingBottom: 6 }}>
         <Copy colors={colors} muted small>{scope} Native sessions come from this host. The Native status at the top describes that host connection only; plans, Jira and records are captured sources with their own dates.</Copy>
+        <WorkCatalogStatus state={props.catalog ?? null} colors={colors} />
         <Copy colors={colors} muted small>{sessions}</Copy>
         <Copy colors={colors} muted small>{inventoryReadLabel(props.directory)}</Copy>
         {jira.map((read) => <SourceDetails key={read.source.id} read={read} colors={colors} />)}
@@ -89,28 +117,32 @@ export function OverviewPage(props: Props) {
         {qualifier ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{qualifier}</Text> : null}
       </Pressable>)}
     </View>
+    {sessionAttributionUnknown && (filter === "active" || filter === "review") ? <Copy colors={colors} muted small>Session attribution is unknown: shared catalog rows carry no labels, so this filter cannot say none match.</Copy> : null}
     {filter === "decisions" && undecided ? <Copy colors={colors} muted small>Decision records were not captured for {undecided} of these epics; they are shown as Unknown. This does not mean none are waiting.</Copy> : null}
     {filter === "delivered" ? <Copy colors={colors} muted small>Delivery confirmations were not captured, so every epic is shown as Unknown. Recorded pull requests and checks do not establish delivery.</Copy> : null}
     <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface1, overflow: "hidden" }}>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderColor: colors.border }}>
         <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{tiles.find(([key]) => key === filter)![1]}</Text>
-        {shown.length !== rows.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{shown.length} of {rows.length} shown</Text> : null}
+        {filteredCountUnknown ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Filtered count unavailable</Text> : shown.length !== rows.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{shown.length} of {rows.length} shown</Text> : null}
       </View>
       {shown.length ? shown.map((row, index) => <PortfolioItem key={row.id} row={row} last={index === shown.length - 1} wide={wide} readingDecisions={readingDecisions} readingDelivery={readingDelivery} {...props} />)
-        : <View style={{ padding: 14, gap: 8, alignItems: "flex-start" }}><Copy colors={colors}>{rows.length ? "No epics in this group." : "No epics, plans or Jira records in this scope."}</Copy>{rows.length ? <Action small={!props.compact} label="Show all epics" colors={colors} onPress={() => props.setQuery("")} /> : null}</View>}
+        : <View style={{ padding: 14, gap: 8, alignItems: "flex-start" }}><Copy colors={colors}>{sessionAttributionUnknown && (filter === "active" || filter === "review") ? "Session attribution unknown for this filter." : rows.length ? "No epics in this group." : "No epics, plans or Jira records in this scope."}</Copy>{rows.length && !(sessionAttributionUnknown && (filter === "active" || filter === "review")) ? <Action small={!props.compact} label="Show all epics" colors={colors} onPress={() => props.setQuery("")} /> : null}</View>}
     </View>
   </View>;
 }
-function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, colors, compact, onSource, onEpicTab, sourceError }: Props & { row: PortfolioRow; last: boolean; wide: boolean; readingDecisions: boolean; readingDelivery: boolean }) {
+function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, colors, compact, onSource, onEpicTab, sourceError, directory }: Props & { row: PortfolioRow; last: boolean; wide: boolean; readingDecisions: boolean; readingDelivery: boolean }) {
   const single = row.plans.length === 1 ? row.plans[0]!.source.id : null;
   const go = (tab: EpicTab) => row.epicKey === null && tab === "Plan" && single ? onSource(single) : onEpicTab(tab, row.epicKey, tab === "Sessions" ? null : single);
   const sessions = row.sessions;
+  const sessionsUnknown = directory.labelsComplete !== true;
   // Full statements stay in the row's label; the visible lines keep only what is captured and non-zero.
   const planReading = row.plans.length === 1 && sourceReadPending(row.plans[0]!);
   const planProblem = row.plans.length === 1 && row.plans[0]!.status !== "ready" ? row.plans[0]!.status === "partial" ? "Plan graph unavailable" : "Plan unavailable" : null;
   const next = planReading ? "Reading plan…" : planProblem ?? (row.plans.length === 1 ? "Captured plan available" : row.plans.length > 1 ? `${row.plans.length} configured plans · choose one in the context picker` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured · captured tasks remain available" : "No plan linked");
   const nextLine = planReading ? "Reading…" : planProblem ?? (row.plans.length === 1 ? null : row.plans.length > 1 ? `${row.plans.length} configured plans` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured" : "No plan linked");
-  const signals = row.epicKey ? `${count(sessions.total, "session")} · ${sessions.running} running · ${sessions.attention} native attention · ${sessions.needsInput} needs input · ${sessions.errors} errors` : "No epic linked · sessions are not attributed to this plan";
+  const signals = row.epicKey
+    ? sessionsUnknown ? "Sessions unknown · shared catalog rows carry no labels" : `${count(sessions.total, "session")} · ${sessions.running} running · ${sessions.attention} native attention · ${sessions.needsInput} needs input · ${sessions.errors} errors`
+    : "No epic linked · sessions are not attributed to this plan";
   const records = `Decisions: ${row.decisions === null ? readingDecisions ? "Reading…" : "Not captured" : `${row.decisions} open recorded`} · Delivery: ${row.delivery === null ? readingDelivery ? "Reading…" : "Not captured" : `${row.delivery} recorded, confirmation Unknown`}`;
   const recordLine = [row.decisions === null ? readingDecisions ? "Reading decisions…" : null : row.decisions ? count(row.decisions, "open decision") : "No open decisions",
     row.delivery === null ? readingDelivery ? "Reading delivery…" : null : `${row.delivery ? count(row.delivery, "delivery record") : "No delivery records"} · confirmation Unknown`].filter(Boolean).join(" · ");
@@ -139,7 +171,7 @@ function PortfolioItem({ row, last, wide, readingDecisions, readingDelivery, col
       <View style={{ flex: wide ? 1 : undefined, minWidth: 0, gap: 3 }}>
         <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: "700" }}>{row.title}</Text>
         {nextLine ? <Text style={small}>{nextLine}</Text> : null}
-        {row.epicKey ? <Text style={small}>{signalLine(sessions)}</Text> : null}
+        {row.epicKey ? <Text style={small}>{signalLine(sessions, directory, sessionsUnknown)}</Text> : null}
         {recordLine ? <Text style={small}>{recordLine}</Text> : null}
       </View>
       {wide ? <>{stageView}{progressView}{ctaView}</> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>{stageView}{progressView}{ctaView}</View>}

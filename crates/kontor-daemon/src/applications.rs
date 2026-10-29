@@ -52526,6 +52526,7 @@ mod coherence {
             evidence_window_seconds: 3600,
             derived_read_deadline: std::time::Duration::from_secs(5),
             applications: services.clone(),
+            catalog: None,
         });
         services.attach(state.clone());
 

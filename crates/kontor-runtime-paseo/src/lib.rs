@@ -32,6 +32,7 @@
 //! * [`seat_mcp`] — worktree-local MCP composition for Claude seats.
 
 pub mod adapter;
+pub mod census;
 mod checkout;
 pub mod client;
 pub mod fixture;
@@ -46,6 +47,7 @@ pub use adapter::{
     PaseoDelivery, PaseoExecutionScope, PaseoProjectBinding, PaseoProjectOutcome, PaseoSeatRecord,
     PaseoSlotPlan,
 };
+pub use census::{PaseoCensus, PaseoCensusConfig};
 pub use client::{PaseoCommand, PaseoLiveTransport, PaseoRpc, PaseoTransport};
 pub use fixture::RecordedPaseo;
 pub use posture::{

@@ -671,6 +671,11 @@ function spokenProvenance(provenance: SessionProvenance): string {
   return provenance.association ? `${place}. ${provenance.association}` : place;
 }
 
+/** The only placement a label-unknown row can assert: its native project and workspace. */
+function nativePlace(entry: DirectoryEntry): string {
+  return `Native project ${entry.projectName?.trim() || "Project unknown"}, workspace ${entry.workspaceName?.trim() || "Workspace unknown"}`;
+}
+
 /**
  * What a Sessions row adds to the shared dense row, which already shows the title, state, origin with its task and
  * PR, model and times. The note line is kept for exceptions to act on: role declarations that disagree, archive
@@ -723,11 +728,37 @@ const NO_SCROLL_ANCHOR: ViewStyle & { readonly overflowAnchor: "none" } = { over
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
  * A workstream may come from a native desk project when no display mapping or label names it. A session
  * nothing links also says why no plan links it and where an explicit link is made; no name is read.
+ * When labels were not read, role, workstream, epic and linking are unavailable; only native facts remain.
  */
-export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null, sourceNote: string | null = null): { label: string; value: string }[] {
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null, sourceNote: string | null = null, labelsComplete = true): { label: string; value: string }[] {
+  const provenance = sessionProvenance(entry, mappings);
+  const labelsUnavailable = "Unavailable: session labels were not read";
+  if (!labelsComplete) {
+    // A catalog row without labels cannot establish role, workstream, epic or linking absence.
+    const lines = [
+      { label: "Role", value: labelsUnavailable },
+      { label: "Other role declarations", value: labelsUnavailable },
+    ];
+    if (provenance.nativeDesk) {
+      return [...lines,
+        { label: "Native desk", value: provenance.nativeDesk.name },
+        { label: "Native project ID", value: provenance.nativeDesk.id },
+        { label: "Workspace", value: provenance.workspace },
+        { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
+        { label: "Workstream association", value: labelsUnavailable },
+        { label: "Epic association", value: labelsUnavailable },
+        { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." },
+        { label: "Linking", value: "Unavailable: session labels were not read, so plan or Jira links cannot be determined." }];
+    }
+    const native = nativeDesk(entry.projectName);
+    return [...lines,
+      { label: "Workstream", value: native === null ? labelsUnavailable : `${native} (native desk project)` },
+      { label: "Epic", value: labelsUnavailable },
+      { label: "Linking", value: "Unavailable: session labels were not read, so plan or Jira links cannot be determined." },
+      { label: "Workspace", value: provenance.workspace }];
+  }
   const source = sourceNote ? [{ label: "Workstream source", value: sourceNote }] : [];
   const role = sessionRole(entry);
-  const provenance = sessionProvenance(entry, mappings);
   const lines = [
     { label: "Role", value: role.code === null ? "No role: no kontor.role or role label, and no role prefix in the title" : `${role.code}, from the ${ROLE_SOURCE_NAMES[role.source!]}` },
     { label: "Other role declarations", value: roleConflicts(entry).join("; ") || "None" },
@@ -2160,7 +2191,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const sortDirection: SortDirection = view.sortDirection ?? defaultSortDirection(sort);
   // An explicit sort orders sessions within each group and the flat results; it never moves a group.
   const leafOrder = useMemo(() => explicitLeafOrder(scoped, sort, sortDirection), [scoped, sort, sortDirection]);
-  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder, byWorkstream: streams !== null }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder, streams]);
+  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder, byWorkstream: streams !== null, labelsComplete: state.labelsComplete === true }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder, streams, state.labelsComplete]);
   const flatTree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping: "flat" }), [scoped, preferences, mappings]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
@@ -2203,7 +2234,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
     [scoped, eligible, linked, tokens, mappings]);
-  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live });
+  const countFreshness = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live, source: state.source, inventoryComplete: state.inventoryComplete });
   const assignmentBlocked = assignment !== "any" && assignmentState !== "ready";
   const blockedView = useMemo(() => providerBlockedView({ candidates, reads: NO_REFUSAL_READS, state, includeArchived, freshness: countFreshness,
     blocked: assignmentBlocked ? assignmentPart : null, now: clock.now }), [candidates, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, clock.now]);
@@ -2241,14 +2272,26 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [assignment, responsibilityById, scoped, inAssignment, mappings]);
   // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
   const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
+  const labelsUnavailable = state.labelsComplete !== true;
+  const labelTreeFallback = labelsUnavailable && !resultMode && grouping !== "placement";
+  const labelDerivedFilter = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || epicKey !== null || assignment !== "any";
   const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, recent: recentIds, refined, state, includeArchived,
-    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count }),
-    [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView]);
-  const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
-  const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
+    freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count,
+    restrictedUnknown: labelsUnavailable && labelDerivedFilter }),
+    [scoped, candidates, favorites, recentIds, refined, state, includeArchived, countFreshness, assignmentBlocked, assignmentPart, blockedView, labelsUnavailable, labelDerivedFilter]);
+  // Native catalog rows carry no labels. Desk and outside-desk facts depend on
+  // those labels, so their counts are unknown, never zero, while direct cannot
+  // supply the labels.
+  const allSessionsUnknown = state.lastUpdatedAt === null || state.source === "unavailable";
+  const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => labelsUnavailable && id !== null
+    ? null
+    : id === null && allSessionsUnknown
+      ? null
+      : scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [labelsUnavailable, allSessionsUnknown, scoped, mappings]);
+  const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces, !labelsUnavailable), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces, labelsUnavailable]);
   // My work offers the associations this host's sessions carry, and any already chosen; All work adds plan-only and registry choices.
-  const workstreamChoices = useMemo(() => work === "all" ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
-    [work, workstreamOptions, streams]);
+  const workstreamChoices = useMemo(() => work === "all" || labelsUnavailable ? workstreamOptions : workstreamOptions.filter((option) => option.sessions > 0 || !!streams?.includes(option.key)),
+    [work, workstreamOptions, streams, labelsUnavailable]);
   // My work counts, never lists, the choices it leaves out.
   const hiddenChoices = useMemo(() => work === "all" ? [] : workstreamOptions.filter((option) => !workstreamChoices.includes(option)), [work, workstreamOptions, workstreamChoices]);
   // Responsibility facts over this context's inventory, before the other filters.
@@ -2381,8 +2424,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     : state.inventoryComplete
       ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
       : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
+  const filteredCountsUnknown = labelsUnavailable && labelDerivedFilter;
   const countSummary = !readCoversMembership(state, includeArchived) || state.lastUpdatedAt === null
     ? "Inventory for this membership has not been read yet."
+    : filteredCountsUnknown
+    ? `${sessionCount}. Filtered result counts unavailable: shared catalog rows carry no session labels for this filter. ${inventoryRead}.`
     : `${sessionCount}. ${assignmentBlocked ? "Results not evaluated" : `Results span ${workspaceCount} workspace / folder group${workspaceCount === 1 ? "" : "s"}${resultMode ? "" : ", including retained empty workspaces"}. Matching sessions: ${resultWorkspaces} native workspace${resultWorkspaces === 1 ? "" : "s"}, ${unplaced} session${unplaced === 1 ? "" : "s"} without a workspace`}. ${inventoryRead}.`;
   // The same final IDs both layouts draw; layout, grouping, sort and disclosure never change it.
   const filterCount = matchingCount({ count: matchingIds.size, state, includeArchived, blocked: assignmentBlocked ? assignmentPart : null,
@@ -2472,7 +2518,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     includeArchived ? "Archived history" : null,
   ].filter((part): part is string => !!part);
   // One explanation of the inventory counts, under About these counts in the association selector.
-  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; in All work the tree also lists empty native workspaces until workstream or assignment choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. ${work === "all" ? "Plan-only choices are included." : "My work lists choices with sessions here; All work adds plan-only choices."}${workstreamNote ? ` ${workstreamNote}` : ""} An assignment filter adds its own count to each choice and never changes these.`;
+  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; in All work the tree also lists empty native workspaces until workstream or assignment choices narrow it. ${labelsUnavailable ? "Session counts are unavailable because shared catalog rows carry no session labels; a choice's count is not zero. " : "Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. "}${work === "all" ? "Plan-only choices are included." : labelsUnavailable ? "My work shows every choice because session counts cannot decide which have sessions here." : "My work lists choices with sessions here; All work adds plan-only choices."}${workstreamNote ? ` ${workstreamNote}` : ""} An assignment filter adds its own count to each choice and never changes these.`;
   const workingAsStore = remembered?.persistence === "device" ? "remembered on this device for this host and tracker"
     : remembered?.persistence === "failed" ? "not remembered: this device's store failed, so a choice lasts this app session"
       : "not remembered on this device, which offers Kontor no store, so a choice lasts this app session";
@@ -2619,7 +2665,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const staleMessage = state.error ?? state.staleReason;
   // Ages tick only on a live list; otherwise rows give the time itself, and Details says as of when.
-  const timesLive = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) === "Live";
+  const timesLive = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live, source: state.source, inventoryComplete: state.inventoryComplete }) === "Live";
   const showBanner =
     state.status === "stale" ||
     state.status === "error" ||
@@ -3002,12 +3048,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // (results only), Select sessions and Archive; while selecting, the row is its own checkbox.
   const sessionListRow = (entry: DirectoryEntry, result: boolean) => {
     const id = entry.id, active = entry.archivedAt === null, selected = bulkSelection.selected.includes(id), starred = favorites.includes(id);
-    const role = !result && grouping === "role" ? roleRowContext(entry, mappings) : null;
+    const role = !result && grouping === "role" && !labelsUnavailable ? roleRowContext(entry, mappings) : null;
     const projection = retirement?.projections.get(id) ?? null;
     const retirementLabel = projection ? compact ? compactRetirementNotice(projection) : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : null;
     const outcome = lifecycle.batch && lifecycle.review?.action === "archive" ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
     const highlighted = !result && peek?.sessionId === id;
-    const extras = sessionRowExtras(entry, role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
+    // Every presentation (tree, explicit placement and Flat results) must use the same
+    // native-only attribution when the shared catalog cannot prove any label-derived fact.
+    const extras = sessionRowExtras(entry, labelsUnavailable ? nativePlace(entry) : role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
     const note = [extras.note, archivingId === id ? "Archiving…" : null].filter(Boolean).join(" · ") || null;
     const blocked = !active ? "Archived sessions are not selected for archive." : !canStart ? "Selection waits for the host and any running archive." : bulkOpen ? "The archive review is open."
       : !bulkScopeIds.includes(id) ? "Not among the shown sessions." : !selected && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT ? `At most ${ARCHIVE_BATCH_LIMIT} sessions per archive.` : null;
@@ -3044,6 +3092,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : availability.entries.find((entry) => entry.id === detailsId) ?? null;
   const detailsWork = detailsEntry ? sessionWork(detailsEntry) : { task: null, pr: null };
+  const detailsLabelsComplete = state.labelsComplete === true;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
@@ -3079,7 +3128,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <SessionDetailSection title="Timing" colors={colors}>
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
-        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]), derivedSource(detailsEntry))} colors={colors} />
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, detailsLabelsComplete ? planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]) : null, detailsLabelsComplete ? derivedSource(detailsEntry) : null, detailsLabelsComplete)} colors={colors} />
         <SessionDetailSection title="Native status and availability" values={sessionRowDetails(detailsEntry)} colors={colors} />
         {detailsWork.task || detailsWork.pr ? <SessionDetailSection title="Task and pull request" colors={colors} values={[
           ...(detailsWork.task ? [{ label: "Task", value: detailsWork.task }] : []), ...(detailsWork.pr ? [{ label: "Pull request", value: detailsWork.pr }] : [])]} /> : null}
@@ -3261,21 +3310,30 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Only the work scope and assignment narrow this view: say which, and offer the one way back that widens it.
   const scopeParts = [work === "mine" ? "My work" : null, assignmentPart].filter((part): part is string => part !== null);
   const onlyScope = scopeParts.length > 0 && activeCount === scopeParts.length;
+  const labelsUnknownEmpty = labelsUnavailable && candidates.length === 0 && labelDerivedFilter;
   const emptyMessage = assignmentBlocked
     ? `No sessions shown: ${assignmentPart} is not evaluated.`
+    : labelsUnknownEmpty
+    ? task
+      ? `Session labels are unavailable, so a link to ${task.label} cannot be established.`
+      : "No sessions shown: session labels are unavailable, so this filter cannot say none match."
     : task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
     : view.status === "recent"
     ? recentEmptyMessage(recent.record)
     : onlyScope
-    ? `No sessions in ${scopeParts.join(", ")} in this view.`
+    ? labelsUnavailable
+      ? `No sessions shown in ${scopeParts.join(", ")}; session labels are unavailable for desk, workstream, epic and task filters.`
+      : `No sessions in ${scopeParts.join(", ")} in this view.`
     : view.status === "provider_blocked" && blockedView.empty
     ? blockedView.empty
     : clearable
       ? "No sessions match the current search and filters."
-      : state.status === "error"
+      : state.status === "error" || state.source === "unavailable"
         ? "No sessions could be read from this host."
-        : "No sessions in this host's scope.";
+        : state.inventoryComplete === false
+          ? "No sessions could be read from this host's partial inventory."
+          : "No sessions in this host's scope.";
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
   const shortScreen = compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
   const shortPeek = peek !== null && shortScreen;
@@ -3386,7 +3444,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{`Promotion evidence unavailable: ${retirement.promotionRead.error ?? "the host did not report a readable promotion list"}.`}</Text>
     </View>
   ) : null;
-  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
+  const attributionNotice = labelTreeFallback ? <Text testID="sessions-attribution-unavailable" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 17, paddingHorizontal: 4 }}>Workstream, epic and role attribution unavailable: shared catalog rows carry no labels, so the tree uses only native project and workspace facts.</Text> : null;
+  const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{attributionNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
   withHeaderRef.current = listHeader !== null;
 
   return (

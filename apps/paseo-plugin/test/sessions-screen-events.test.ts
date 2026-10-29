@@ -573,6 +573,7 @@ describe("SessionsScreen toolbar events", () => {
       lastUpdatedAt: 0,
       inventoryComplete: true,
       includeArchived: true,
+      labelsComplete: true,
     };
     patchSessionView("host-a", {
       query: "session-a",
@@ -1073,6 +1074,68 @@ describe("SessionsScreen toolbar events", () => {
     expect(chip("sessions-shortcut-2").props.active).toBe(true);
     (chip("sessions-shortcut-4").props.onPress as () => void)(); harness.flush();
     expect(sessionRowIds()).toEqual([]);
+  });
+
+  it("keeps the catalog freshness word on session state counts", () => {
+    directory.state = {
+      ...(directory.state as object),
+      entries: [sessionEntry("catalog", { status: "idle" })],
+      source: "catalog",
+      status: "stale",
+      live: false,
+      inventoryComplete: true,
+      lastUpdatedAt: 0,
+    };
+    renderScreen();
+    const count = findByTestID(harness.current(), "sessions-filter-idle").props.count as SessionStateCount;
+    expect(count.text).toBe("…");
+    expect(count.label.toLowerCase()).toContain("catalog");
+    expect(count.label.toLowerCase()).not.toContain("stale");
+  });
+
+  it.each([false, undefined])("does not show false desk zeros when catalog labels are %s", (labelsComplete) => {
+    directory.state = {
+      ...(directory.state as object),
+      entries: [sessionEntry("catalog-only", { labels: {} })],
+      source: "catalog",
+      labelsComplete,
+      status: "ready",
+      live: false,
+      inventoryComplete: true,
+    };
+    renderScreen();
+    const chip = (index: number) => findByTestID(harness.current(), `sessions-shortcut-${index}`);
+    expect(chip(0).props.count).toBe(1);
+    for (const index of [1, 2, 3, 4]) {
+      expect(chip(index).props.count).toBeNull();
+    }
+    (chip(2).props.onPress as () => void)(); harness.flush();
+    expect(textOf(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent)).toContain("session labels are unavailable");
+    expect(findByTestID(harness.current(), "sessions-filter-all").props.count).toMatchObject({ text: "—" });
+  });
+
+  it.each([false, undefined])("does not claim My work is empty when catalog labels are %s", (labelsComplete) => {
+    directory.state = { ...emptyDirectoryState(), entries: [], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work: "mine", advancedOpen: false, ...toolbarOpenPatch(true) });
+    renderScreen();
+    expect(textOf(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent)).toContain("session labels are unavailable");
+  });
+
+  it("does not show desk zeros when the directory is unavailable", () => {
+    directory.state = {
+      ...emptyDirectoryState(),
+      entries: [],
+      status: "error",
+      source: "unavailable",
+      labelsComplete: false,
+      error: "No host",
+      lastUpdatedAt: null,
+    };
+    renderScreen();
+    const chip = (index: number) => findByTestID(harness.current(), `sessions-shortcut-${index}`);
+    for (const index of [0, 1, 2, 3, 4]) {
+      expect(chip(index).props.count).toBeNull();
+    }
   });
 
   it.each([
@@ -1644,6 +1707,50 @@ describe("SessionsScreen toolbar events", () => {
     });
   });
 
+  it("keeps Details role, workstream, epic and linking unavailable when labels were not read", () => {
+    const labelsUnavailable = "Unavailable: session labels were not read";
+    const linkingUnavailable = "Unavailable: session labels were not read, so plan or Jira links cannot be determined.";
+    const ordinary = sessionEntry("catalog", { title: "QA • plain task", labels: { "kontor.role": "QA", workstream: "Kontor", epic: "ASMA-1" } });
+    const ordinaryLines = Object.fromEntries(sessionDetailLines(ordinary, {}, null, null, false).map(({ label, value }) => [label, value]));
+    expect(ordinaryLines).toEqual({
+      Role: labelsUnavailable, "Other role declarations": labelsUnavailable, Workstream: labelsUnavailable,
+      Epic: labelsUnavailable, Linking: linkingUnavailable, Workspace: "Workspace",
+    });
+    const desk = sessionEntry("desk", { projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "wks_1", workspaceName: "ADAM",
+      labels: { "kontor.role": "SWE", workstream: "Kontor", epic: "ASMA-99101" } });
+    const deskLines = Object.fromEntries(sessionDetailLines(desk, {}, null, "Workstream from the Jira ws:kontor label of ASMA-99101.", false).map(({ label, value }) => [label, value]));
+    expect(deskLines).toEqual({
+      Role: labelsUnavailable, "Other role declarations": labelsUnavailable, "Native desk": "DESK • ADAM", "Native project ID": "prj_desk",
+      Workspace: "ADAM", "Native workspace ID": "wks_1", "Workstream association": labelsUnavailable, "Epic association": labelsUnavailable,
+      "Association verification": "Workstream registry membership and epic/plan links are not checked here.", Linking: linkingUnavailable,
+    });
+    expect(Object.values(deskLines).join(" ")).not.toMatch(/No role|Other work|Not declared|no workstream or desk label|no epic or task label/);
+  });
+
+  it("renders ordinary and native-desk Details without fabricated attribution when labels were not read", () => {
+    const labelsUnavailable = "Unavailable: session labels were not read";
+    const linkingUnavailable = "Unavailable: session labels were not read, so plan or Jira links cannot be determined.";
+    const entries = [
+      sessionEntry("catalog", { title: "QA • plain task", labels: { "kontor.role": "QA", workstream: "Kontor", epic: "ASMA-1" } }),
+      sessionEntry("desk", { projectName: "DESK • ADAM", projectKey: "prj_desk", workspaceName: "ADAM", workspaceId: "wks_1", labels: { "kontor.role": "SWE", workstream: "Kontor", epic: "ASMA-99101" } }),
+    ];
+    directory.state = { ...emptyDirectoryState(), entries, source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    const screen = renderDetails(entries);
+    screen.open("catalog");
+    expect(screen.lines()).toEqual([
+      `Role: ${labelsUnavailable}`, `Other role declarations: ${labelsUnavailable}`, `Workstream: ${labelsUnavailable}`,
+      `Epic: ${labelsUnavailable}`, `Linking: ${linkingUnavailable}`, "Workspace: Workspace",
+    ]);
+    (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+    screen.open("desk");
+    expect(screen.lines()).toEqual([
+      `Role: ${labelsUnavailable}`, `Other role declarations: ${labelsUnavailable}`, "Native desk: DESK • ADAM", "Native project ID: prj_desk",
+      "Workspace: ADAM", "Native workspace ID: wks_1", `Workstream association: ${labelsUnavailable}`, `Epic association: ${labelsUnavailable}`,
+      "Association verification: Workstream registry membership and epic/plan links are not checked here.", `Linking: ${linkingUnavailable}`,
+    ]);
+    expect(screen.lines().join(" ")).not.toMatch(/No role|Other work|Not declared|no workstream or desk label|no epic or task label/);
+  });
+
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
     const chain = (entry: ReturnType<typeof sessionEntry>, mappings: Parameters<typeof sessionDetailLines>[1] = {}) =>
       sessionDetailLines(entry, mappings).filter(({ label }) => label === "Workstream" || label === "Epic").map(({ label, value }) => `${label}: ${value}`);
@@ -2021,6 +2128,24 @@ describe("SessionsScreen toolbar events", () => {
     expect(listRows().every((row) => row.kind !== "result")).toBe(true);
   });
 
+  it("marks a catalog-only row as a visible catalog copy", () => {
+    directory.state = { ...emptyDirectoryState(), entries: [{ ...sessionEntry("copy"), catalogCopyAt: "2026-10-25T06:14:01Z" }], status: "ready", live: false, source: "catalog", inventoryComplete: true, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", grouping: "flat", status: "all", work: "all", includeArchived: false, task: null, shortcut: null, streams: null, epic: null });
+    renderScreen();
+    const row = drawSession("copy");
+    expect(textOf(row)).toContain("catalog copy · as of 2026-10-25T06:14:01Z");
+    expect(String(findByTestID(row, "session-row-body").props.accessibilityLabel)).toContain("catalog copy");
+  });
+
+  it("does not claim a task has no linked sessions when labels are unavailable", () => {
+    directory.state = { ...emptyDirectoryState(), entries: [], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", task: { jira: "ASMA-9", kontorId: null, label: "ASMA-9" } });
+    renderScreen();
+    const empty = textOf(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent);
+    expect(empty).toContain("Session labels are unavailable, so a link to ASMA-9 cannot be established.");
+    expect(empty).not.toContain("No session in this view is linked to ASMA-9.");
+  });
+
   it("scopes an epic through the display mapping the tree uses", () => {
     const values = { ...DEFAULT_ORGANIZATION_SETTINGS, displayMappings: { "workspace:wks_mapped": { epic: "asma-9" } } };
     patchSessionView("host-a:epic", { query: "", scrollOffset: 0, ...toolbarOpenPatch(true) });
@@ -2162,6 +2287,7 @@ describe("SessionsScreen mobile filter page", () => {
       lastUpdatedAt: 0,
       inventoryComplete: true,
       includeArchived: false,
+      labelsComplete: true,
     };
   });
 
@@ -2639,6 +2765,96 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       expect(Object.keys(registry.desks)).toHaveLength(2);
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
+  it.each([true, false])("renders unknown session counts when catalog rows carry no labels (compact=%s)", async (compact) => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false };
+    patchSessionView("host-a", { query: "", advancedOpen: true, includeArchived: false, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry });
+    if (compact) openMobileFilters();
+    expect(choiceFacts("adopus-graphql")).toContain("session count unavailable");
+    expect(choiceFacts("adopus-graphql")).not.toContain("0 sessions");
+    expect(selector().about).toContain("Session counts are unavailable");
+    expect(selector().options.map((option) => option.key)).toContain("adopus-graphql");
+  });
+
+  it.each([true, false])("keeps My work choices when label counts are unavailable (compact=%s)", async (compact) => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", advancedOpen: true, includeArchived: false, work: "mine", ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry });
+    if (compact) openMobileFilters();
+    expect(selector().options.map((option) => option.key)).toContain("adopus-graphql");
+    expect(selector().about).toContain("My work shows every choice");
+  });
+
+  it.each([true, false])("keeps the Filters summary's filtered placement counts unavailable under unknown labels (compact=%s)", (compact) => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", shortcut: "Adam", advancedOpen: true, includeArchived: false, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web");
+    if (compact) openMobileFilters();
+    const summary = textOf(findByTestID(harness.current(), "sessions-options-count"));
+    expect(summary).toContain("Inventory: 1 session");
+    expect(summary).toContain("Filtered result counts unavailable");
+    expect(summary).not.toContain("Results span");
+    expect(summary).not.toContain("Matching sessions:");
+    expect(summary).not.toMatch(/Matching sessions: 0/);
+  });
+
+  it.each(["all", "mine"] as const)("shows native placement, not Other work or No epic linked, when labels are unknown in %s work", (work) => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work, layout: "grouped", grouping: "hierarchy", includeArchived: false });
+    renderScreen();
+    expect(textOf(findByTestID(harness.current(), "sessions-attribution-unavailable"))).toContain("Workstream, epic and role attribution unavailable");
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["project:Project"]);
+    expect(textOf(harness.current())).not.toContain("Other work");
+    expect(textOf(harness.current())).not.toContain("No epic linked");
+  });
+
+  it("keeps Role grouping and accessible row attribution unknown when labels are unavailable", () => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { title: "plain task", labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work: "all", layout: "grouped", grouping: "role", includeArchived: false });
+    renderScreen();
+    expect(textOf(findByTestID(harness.current(), "sessions-attribution-unavailable"))).toContain("Workstream, epic and role attribution unavailable");
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["project:Project"]);
+    expect(groupRows().map((row) => row.group.label)).not.toContain("No role");
+    expect(textOf(harness.current())).not.toContain("Other work");
+    expect(textOf(harness.current())).not.toContain("No epic linked");
+    expandAll();
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === "catalog")!;
+    const spoken = String(denseOf(drawItem(row)).props.spokenDetail);
+    expect(spoken).toContain("Native project Project, workspace Workspace");
+    expect(spoken).not.toContain("No role");
+    expect(spoken).not.toContain("Other work");
+    expect(spoken).not.toContain("No epic linked");
+  });
+
+  it.each([
+    { name: "Role", grouping: "role", layout: "grouped", work: "all" },
+    { name: "hierarchy", grouping: "hierarchy", layout: "grouped", work: "all" },
+    { name: "My work", grouping: "hierarchy", layout: "grouped", work: "mine" },
+    { name: "Desks & workspaces", grouping: "placement", layout: "grouped", work: "all" },
+    { name: "Flat", grouping: "placement", layout: "flat", work: "all" },
+  ] as const)("keeps native-only accessible attribution across $name presentation when labels are unavailable", ({ grouping, layout, work }) => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { title: "plain task", labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work, layout, grouping, includeArchived: false });
+    renderScreen();
+    if (layout === "grouped") expandAll();
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === "catalog");
+    expect(row).toBeDefined();
+    const spoken = String(denseOf(drawItem(row)).props.spokenDetail);
+    expect(spoken).toContain("Native project Project, workspace Workspace");
+    expect(spoken).not.toContain("No role");
+    expect(spoken).not.toContain("Other work");
+    expect(spoken).not.toContain("No epic linked");
+    if (layout === "grouped") {
+      expect(groupRows().map((candidate) => candidate.group.label)).not.toContain("No role");
+      expect(groupRows().map((candidate) => candidate.group.label)).not.toContain("Other work");
+      expect(groupRows().map((candidate) => candidate.group.label)).not.toContain("No epic linked");
+    }
+    expect(textOf(harness.current())).not.toContain("Other work");
+    expect(textOf(harness.current())).not.toContain("No epic linked");
+  });
+
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];

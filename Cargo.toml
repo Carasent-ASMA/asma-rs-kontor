@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/kontor-core",
     "crates/kontor-store",
+    "crates/kontor-catalog",
     "crates/kontor-runtime",
     "crates/kontor-runtime-paseo",
     "crates/kontor-runtime-ao",

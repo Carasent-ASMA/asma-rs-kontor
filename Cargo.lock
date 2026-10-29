@@ -2632,6 +2632,7 @@ dependencies = [
  "bytes",
  "futures",
  "jiff",
+ "kontor-catalog",
  "kontor-core",
  "kontor-runtime",
  "kontor-scheduler",
@@ -2682,6 +2683,31 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "uuid",
+]
+
+[[package]]
+name = "kontor-catalog"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "hex",
+ "kontor-accounts",
+ "kontor-core",
+ "kontor-jira",
+ "rusqlite",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -2746,6 +2772,7 @@ dependencies = [
  "jiff",
  "kontor-accounts",
  "kontor-api",
+ "kontor-catalog",
  "kontor-context",
  "kontor-core",
  "kontor-fleet",
@@ -2835,6 +2862,7 @@ version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
+ "httpdate",
  "kontor-accounts",
  "kontor-core",
  "reqwest",
@@ -2960,6 +2988,7 @@ version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
+ "kontor-catalog",
  "kontor-core",
  "kontor-fleet",
  "kontor-runtime",

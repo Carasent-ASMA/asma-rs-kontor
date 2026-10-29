@@ -52,7 +52,10 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -1035,6 +1038,26 @@ impl PaseoRpc {
         )
     }
 
+    /// `fetch_workspaces_request` for the host-wide directory census.
+    ///
+    /// No project filter: the headless census must see every workspace,
+    /// including the ones outside every governed project. The daemon returns
+    /// project metadata on each workspace, and the first page also carries
+    /// projects whose workspace list is empty.
+    #[must_use]
+    pub fn workspace_census_page(request_id: String, limit: u32, cursor: Option<&str>) -> Self {
+        let mut page = serde_json::json!({ "limit": limit });
+        if let Some(cursor) = cursor {
+            page["cursor"] = serde_json::json!(cursor);
+        }
+        Self::read(
+            "fetch_workspaces_request",
+            "fetch_workspaces_response",
+            request_id,
+            serde_json::json!({ "page": page }),
+        )
+    }
+
     /// Read terminals in one exact workspace and directory; both selectors are required.
     #[must_use]
     pub fn workspace_terminals(request_id: String, workspace_id: &str, cwd: &str) -> Self {
@@ -1840,6 +1863,29 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
     /// # Errors
     /// As [`PaseoTransport::run`].
     async fn drain_stream(&self, agent_id: &str) -> RuntimeResult<Vec<serde_json::Value>>;
+
+    /// Discard the current connection so the next read re-gates from a fresh
+    /// push.
+    ///
+    /// A read-only census calls this before every walk. A socket that survived
+    /// a laptop sleep can look open while every request times out, so a
+    /// transport that only reconnects on a finished reader would retry forever
+    /// on the same dead connection. The stable client id resumes the same
+    /// Paseo session; only the socket is replaced.
+    ///
+    /// The default is a no-op: recorded fixtures have no socket to discard.
+    async fn reset_connection(&self) -> RuntimeResult<()> {
+        Ok(())
+    }
+
+    /// A monotonically increasing identity for the current connection epoch.
+    ///
+    /// A reconnect replaces the socket but not the daemon's stable server id,
+    /// so the census uses this to refuse a walk whose pages span two sockets.
+    /// Recorded fixtures have one epoch and keep the default.
+    fn connection_epoch(&self) -> u64 {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2000,6 +2046,7 @@ pub struct PaseoLiveTransport {
     client_id: String,
     timeout_seconds: u64,
     connection: Mutex<Option<LiveConnection>>,
+    connection_epoch: AtomicU64,
 }
 
 /// The default loopback endpoint Kontor 1.0 qualifies.
@@ -2052,6 +2099,7 @@ impl PaseoLiveTransport {
             client_id: client_id.to_owned(),
             timeout_seconds,
             connection: Mutex::new(None),
+            connection_epoch: AtomicU64::new(0),
         })
     }
 
@@ -2150,6 +2198,7 @@ impl PaseoLiveTransport {
                 rule: "channel failed before the runtime answered",
             });
         });
+        self.connection_epoch.fetch_add(1, Ordering::SeqCst);
         Ok(LiveConnection {
             writer,
             multiplex,
@@ -2224,6 +2273,17 @@ fn decode_session_frame(message: &Message) -> Option<serde_json::Value> {
 impl PaseoTransport for PaseoLiveTransport {
     async fn server_identity(&self) -> RuntimeResult<PaseoServerInfo> {
         self.gated().await
+    }
+
+    async fn reset_connection(&self) -> RuntimeResult<()> {
+        let mut held = self.connection.lock().await;
+        *held = None;
+        self.connection_epoch.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn connection_epoch(&self) -> u64 {
+        self.connection_epoch.load(Ordering::SeqCst)
     }
 
     async fn run(&self, command: &PaseoCommand) -> RuntimeResult<PaseoOutput> {
@@ -3700,6 +3760,53 @@ mod tests {
         let printed = format!("{transport:?}");
         assert!(!printed.contains("password=secret"), "got {printed}");
         assert!(!printed.contains("u:p@host"), "got {printed}");
+    }
+
+    #[tokio::test]
+    async fn opening_a_live_connection_bumps_the_epoch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("client connection");
+            let mut socket = tokio_tungstenite::accept_async(socket)
+                .await
+                .expect("WebSocket handshake");
+            socket.next().await.expect("hello").expect("hello frame");
+            let info: serde_json::Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/paseo-0.8.0/protocol/server-info.json"
+            ))
+            .expect("server identity fixture");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "session",
+                        "message": { "type": "status", "payload": info },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("server identity");
+            let _ = socket.next().await;
+        });
+        let transport = PaseoLiveTransport::new(
+            "paseo",
+            SecretString::from(address.to_string()),
+            &format!("ws://{address}/ws"),
+            "epoch-bump-test",
+            30,
+        )
+        .expect("test transport");
+        assert_eq!(transport.connection_epoch(), 0);
+        transport.server_identity().await.expect("the identity");
+        assert_eq!(
+            transport.connection_epoch(),
+            1,
+            "connect() publishes a new epoch so a mid-walk reconnect is visible"
+        );
+        server.abort();
     }
 
     /// A real socket is necessary here: the recorded transport never passes

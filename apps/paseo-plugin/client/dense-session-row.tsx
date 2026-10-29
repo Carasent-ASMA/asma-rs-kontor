@@ -83,6 +83,8 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
   const model = rowModel(entry);
   const tokens = tokenTotals(totals);
   const times = rowTimes(entry, opened, clock);
+  const catalogCopy = entry.catalogCopyAt ? `catalog copy · as of ${entry.catalogCopyAt}` : null;
+  const visibleNote = [note, catalogCopy].filter(Boolean).join(" · ") || null;
   const openedAge = current ? "now" : compactAge(opened, clock.now);
   const stateHelp = useActionHelp(`${STATE_LABELS[state]}. ${times}.${onSelectStart ? " Double-tap to select sessions." : ""}`);
   // A single tap on the state icon opens only after the double-tap window. Any press on any row drops that open; a
@@ -100,7 +102,7 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
   const choice = mode.kind === "open" ? null : mode.selected;
   const unavailable = mode.kind === "open" ? null : mode.unavailable ?? null;
   const spoken = [`${entry.title}. ${STATE_LABELS[state]}. ${origin.join(", ")}. ${vendorName(model.vendor)} ${model.full}${model.effort ? `, effort ${model.effort}` : ""}. ${tokens.spoken}. ${times}.`,
-    note, spokenDetail, unavailable].filter(Boolean).join(" ");
+    visibleNote, spokenDetail, unavailable].filter(Boolean).join(" ");
   const press = ({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({
     flex: 1, minWidth: 0, minHeight: TARGET, flexDirection: "row" as const, alignItems: "center" as const, gap: 8, paddingVertical: 3, paddingRight: 4, borderRadius: 6,
     borderWidth: 1, borderColor: focused ? colors.foreground : "transparent",
@@ -133,7 +135,7 @@ export function DenseSessionRow({ entry, colors, clock, opened, current = false,
           <View style={{ flex: 1 }} />
           <Text testID="session-row-tokens" style={{ ...MODEL, color: colors.foregroundMuted, fontVariant: ["tabular-nums"] }}>{tokens.input}   {tokens.output}</Text>
         </View>
-        {note ? <Text testID="session-row-note" numberOfLines={1} style={{ ...MODEL, color: colors.foregroundMuted }}>{note}</Text> : null}
+        {visibleNote ? <Text testID="session-row-note" numberOfLines={1} style={{ ...MODEL, color: colors.foregroundMuted }}>{visibleNote}</Text> : null}
       </View>
       {/* Inside the body, so tapping the visible box or radio is the same single toggle or choice as the row. */}
       {mode.kind === "open" ? null : <View testID="session-row-choice" importantForAccessibility="no" accessibilityElementsHidden style={{ width: 36, alignSelf: "stretch", alignItems: "center", justifyContent: "center", opacity: unavailable ? 0.4 : 1 }}>

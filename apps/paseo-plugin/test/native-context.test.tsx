@@ -72,6 +72,8 @@ describe("shared native freshness truth", () => {
     expect(nativeFreshnessLabel({ hostStatus: "offline", status: "ready", live: true })).toBe("Host offline");
     expect(nativeFreshnessLabel({ hostStatus: "online", status: "error", live: false })).toBe("Unavailable");
     expect(nativeFreshnessLabel({ hostStatus: "online", status: "ready", live: true })).toBe("Live");
+    expect(nativeFreshnessLabel({ hostStatus: "online", status: "ready", live: false, source: "catalog", inventoryComplete: true })).toBe("Catalog");
+    expect(nativeFreshnessLabel({ hostStatus: "online", status: "stale", live: false, source: "catalog", inventoryComplete: false })).toBe("Catalog partial");
   });
   it.each([
     { hostStatus: "connecting", status: "ready", live: true, label: "Reconnecting" },
@@ -98,6 +100,16 @@ describe("shared native freshness truth", () => {
     expect(pill.props.accessibilityLabel).toContain("Native sessions: Live");
     expect(pill.props.accessibilityLabel).toContain("Source freshness is reported separately");
     expect(pill.props.children.props.children).toEqual(["Native · ", "Live"]);
+  });
+  it("labels a truncated catalog as Catalog partial and a last-known snapshot as Snapshot", () => {
+    const base = { status: "stale" as const, live: false, entries: [], lastUpdatedAt: Date.parse("2026-10-19T14:00:00Z"), error: null, staleReason: "bounded", pages: 1, includeArchived: false };
+    const colors = {} as Parameters<typeof NativeFreshnessPill>[0]["colors"];
+    const truncated = NativeFreshnessPill({ state: { ...base, source: "catalog", inventoryComplete: false }, hostStatus: "online", colors });
+    expect(truncated.props.children.props.children).toEqual(["Native · ", "Catalog partial"]);
+    expect(truncated.props.accessibilityLabel).toContain("Last partial shared catalog inventory read 2026-10-19T14:00:00.000Z");
+    const snapshot = NativeFreshnessPill({ state: { ...base, source: "catalog-snapshot", inventoryComplete: true }, hostStatus: "online", colors });
+    expect(snapshot.props.children.props.children).toEqual(["Native · ", "Snapshot"]);
+    expect(snapshot.props.accessibilityLabel).toContain("Last-known shared catalog snapshot read 2026-10-19T14:00:00.000Z");
   });
   it("keeps partial and unknown inventory evidence distinct from a complete live read", () => {
     const state = { status: "stale" as const, live: false, entries: [], lastUpdatedAt: 1, inventoryComplete: false, error: "Later page failed", staleReason: "Partial read", pages: 1, includeArchived: false };

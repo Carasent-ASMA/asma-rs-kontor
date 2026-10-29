@@ -16,6 +16,7 @@ import { contributeResponsibility } from "./server/responsibility";
 import { contributeKontorStatus } from "./server/kontor-status";
 import { readInstalledNavigatorCapabilities } from "./server/session-navigator";
 import { contributeSessionSummaries } from "./server/session-summaries";
+import { contributeWorkCatalog } from "./server/work-catalog";
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
@@ -39,6 +40,7 @@ export default function plugin(server: PluginServerContext): () => void {
   reportFloor(floor);
   // Registered whatever the floor; the floor is only reported, as whether new agents get kontor-observer.
   const stopStatus = contributeKontorStatus(server, floor.enabled);
+  const stopCatalog = contributeWorkCatalog(server);
   const stopHooks = floor.enabled ? contribute(server) : () => {};
-  return () => { stopSources(); stopStatus(); stopHooks(); };
+  return () => { stopSources(); stopStatus(); stopCatalog(); stopHooks(); };
 }

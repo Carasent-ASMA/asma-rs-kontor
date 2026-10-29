@@ -182,15 +182,22 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const truth = "Jira states are dated historical captures. Current completion and readiness: Unknown.";
   // Exact label joins only (see taskSessions); a row without a key to join on links nothing.
   const live = sessions ? sessionsLive(sessions.state) : false;
+  // Catalog rows carry no labels, so an exact task join cannot say "no links";
+  // it has not been observed. The same holds for the plugin's last-known
+  // snapshot. Keep the Board honest instead of showing false zero links.
+  const labelsUnavailable = sessions !== undefined && sessions.state.labelsComplete !== true;
   const taskOf = (item: BoardItem): SessionTaskFilter | null => item.kind === "task"
     ? (item.node.jira || item.node.kontor_id ? { jira: item.node.jira, kontorId: item.node.kontor_id, label: item.node.jira ?? item.node.kontor_id ?? item.node.id } : null)
     : item.kind === "jira" ? { jira: item.record.key, kontorId: null, label: item.record.key } : null;
   const links = new Map<string, TaskLink[]>();
   const teams = new Map<string, TaskTeamRead>();
+  // Team declarations are source facts; session links need labels. Read the
+  // teams even when labels are unknown, so the control guard below is the one
+  // place that decides whether a session join can be drawn.
   if (sessions) for (const item of items) {
     const task = taskOf(item);
     if (!task) continue;
-    links.set(item.id, taskSessions(sessions.state.entries, task));
+    if (!labelsUnavailable) links.set(item.id, taskSessions(sessions.state.entries, task));
     if (taskTeams) teams.set(item.id, taskTeams(task));
   }
   const linkedTasks = [...links.values()].filter((value) => value.length > 0).length;
@@ -233,6 +240,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   </View>;
   const planSource = read?.source.id;
   const sessionControl = (item: BoardItem) => {
+    if (labelsUnavailable) return null;
     const linked = links.get(item.id) ?? [];
     const team = declaredOf(item.id);
     if (!sessions || (!linked.length && !team)) return null;
@@ -250,7 +258,9 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const chooserLayer = sessions && chosen && chosenTask ? <TaskSessionsChooser taskKey={chosenTask.label} task={chosenTask} links={links.get(chosen.id) ?? []} team={teams.get(chosen.id)} live={live}
     archivedIncluded={sessions.state.includeArchived} anchor={chooserAnchor} root={root} rootSize={rootSize} compact={compact} colors={colors} sessions={sessions} onClose={() => setChooser(null)} /> : null;
   let sessionsMeta: string | null = null;
-  if (sessions && links.size) {
+  if (sessions && labelsUnavailable) {
+    sessionsMeta = "Linked sessions unknown: shared catalog rows carry no labels";
+  } else if (sessions && links.size) {
     const read = sessions.state;
     if (!read.entries.length && (read.status === "loading" || read.status === "idle")) sessionsMeta = "Linked sessions: reading…";
     else if (!read.entries.length && read.status === "error") sessionsMeta = "Linked sessions unavailable: the session list could not be read";
