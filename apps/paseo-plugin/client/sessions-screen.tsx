@@ -671,6 +671,11 @@ function spokenProvenance(provenance: SessionProvenance): string {
   return provenance.association ? `${place}. ${provenance.association}` : place;
 }
 
+/** The only placement a label-unknown row can assert: its native project and workspace. */
+function nativePlace(entry: DirectoryEntry): string {
+  return `Native project ${entry.projectName?.trim() || "Project unknown"}, workspace ${entry.workspaceName?.trim() || "Workspace unknown"}`;
+}
+
 /**
  * What a Sessions row adds to the shared dense row, which already shows the title, state, origin with its task and
  * PR, model and times. The note line is kept for exceptions to act on: role declarations that disagree, archive
@@ -2236,6 +2241,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Work/layout/sort/disclosure never refine session membership. State is intentionally absent here.
   const refined = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || assignment !== "any";
   const labelsUnavailable = state.labelsComplete !== true;
+  const labelTreeFallback = labelsUnavailable && !resultMode && grouping !== "placement";
   const labelDerivedFilter = tokens.length > 0 || !!task || shortcut !== null || streams !== null || view.epic != null || epicKey !== null || assignment !== "any";
   const statusCounts = useMemo(() => sessionStateCounts({ universe: scoped, candidates, favorites, recent: recentIds, refined, state, includeArchived,
     freshness: countFreshness, blocked: assignmentBlocked ? assignmentPart : null, providerBlocked: blockedView.count,
@@ -3010,12 +3016,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // (results only), Select sessions and Archive; while selecting, the row is its own checkbox.
   const sessionListRow = (entry: DirectoryEntry, result: boolean) => {
     const id = entry.id, active = entry.archivedAt === null, selected = bulkSelection.selected.includes(id), starred = favorites.includes(id);
-    const role = !result && grouping === "role" ? roleRowContext(entry, mappings) : null;
+    const role = !result && grouping === "role" && !labelTreeFallback ? roleRowContext(entry, mappings) : null;
     const projection = retirement?.projections.get(id) ?? null;
     const retirementLabel = projection ? compact ? compactRetirementNotice(projection) : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : null;
     const outcome = lifecycle.batch && lifecycle.review?.action === "archive" ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
     const highlighted = !result && peek?.sessionId === id;
-    const extras = sessionRowExtras(entry, role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
+    const extras = sessionRowExtras(entry, labelTreeFallback ? nativePlace(entry) : role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
     const note = [extras.note, archivingId === id ? "Archiving…" : null].filter(Boolean).join(" · ") || null;
     const blocked = !active ? "Archived sessions are not selected for archive." : !canStart ? "Selection waits for the host and any running archive." : bulkOpen ? "The archive review is open."
       : !bulkScopeIds.includes(id) ? "Not among the shown sessions." : !selected && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT ? `At most ${ARCHIVE_BATCH_LIMIT} sessions per archive.` : null;
@@ -3403,8 +3409,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{`Promotion evidence unavailable: ${retirement.promotionRead.error ?? "the host did not report a readable promotion list"}.`}</Text>
     </View>
   ) : null;
-  const labelTreeFallback = labelsUnavailable && !resultMode && grouping !== "placement";
-  const attributionNotice = labelTreeFallback ? <Text testID="sessions-attribution-unavailable" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 17, paddingHorizontal: 4 }}>Workstream and epic attribution unavailable: shared catalog rows carry no labels, so the tree shows native project and workspace placement.</Text> : null;
+  const attributionNotice = labelTreeFallback ? <Text testID="sessions-attribution-unavailable" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 17, paddingHorizontal: 4 }}>Workstream, epic and role attribution unavailable: shared catalog rows carry no labels, so the tree uses only native project and workspace facts.</Text> : null;
   const listHeader = peek && !shortScreen ? null : <>{peek ? null : retirementConflictIndex}{peek ? null : promotionCoverageNotice}{attributionNotice}{shortScreen ? <>{layoutBar}{peek ? null : workLine}{peek ? null : providerNotice}</> : <>{workLine}{providerNotice}</>}</>;
   withHeaderRef.current = listHeader !== null;
 

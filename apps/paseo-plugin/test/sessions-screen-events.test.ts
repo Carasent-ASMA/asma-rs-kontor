@@ -2760,10 +2760,28 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
     patchSessionView("host-a", { query: "", status: "all", work, layout: "grouped", grouping: "hierarchy", includeArchived: false });
     renderScreen();
-    expect(textOf(findByTestID(harness.current(), "sessions-attribution-unavailable"))).toContain("Workstream and epic attribution unavailable");
+    expect(textOf(findByTestID(harness.current(), "sessions-attribution-unavailable"))).toContain("Workstream, epic and role attribution unavailable");
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["project:Project"]);
     expect(textOf(harness.current())).not.toContain("Other work");
     expect(textOf(harness.current())).not.toContain("No epic linked");
+  });
+
+  it("keeps Role grouping and accessible row attribution unknown when labels are unavailable", () => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { title: "plain task", labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work: "all", layout: "grouped", grouping: "role", includeArchived: false });
+    renderScreen();
+    expect(textOf(findByTestID(harness.current(), "sessions-attribution-unavailable"))).toContain("Workstream, epic and role attribution unavailable");
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["project:Project"]);
+    expect(groupRows().map((row) => row.group.label)).not.toContain("No role");
+    expect(textOf(harness.current())).not.toContain("Other work");
+    expect(textOf(harness.current())).not.toContain("No epic linked");
+    expandAll();
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === "catalog")!;
+    const spoken = String(denseOf(drawItem(row)).props.spokenDetail);
+    expect(spoken).toContain("Native project Project, workspace Workspace");
+    expect(spoken).not.toContain("No role");
+    expect(spoken).not.toContain("Other work");
+    expect(spoken).not.toContain("No epic linked");
   });
 
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {

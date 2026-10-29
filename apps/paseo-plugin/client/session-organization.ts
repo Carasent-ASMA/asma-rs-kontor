@@ -1211,6 +1211,17 @@ export function buildOrganizationTree(organization: OrganizationInput): Organiza
       nativeOrder,
     });
   }
+  if (input.labelsComplete === false) {
+    // A label-derived role, workstream or epic group would turn missing labels
+    // into known membership. Keep only the independently known native placement.
+    return buildPlacement({
+      entries: input.entries,
+      siblingOrder: input.siblingOrder,
+      nativeOrder,
+      workspaces: input.workspaces,
+      projects: input.projects,
+    });
+  }
   if (input.grouping === "role") {
     return buildRoleView({
       entries: input.entries,
@@ -1220,17 +1231,6 @@ export function buildOrganizationTree(organization: OrganizationInput): Organiza
     });
   }
   if (input.grouping === "placement") {
-    return buildPlacement({
-      entries: input.entries,
-      siblingOrder: input.siblingOrder,
-      nativeOrder,
-      workspaces: input.workspaces,
-      projects: input.projects,
-    });
-  }
-  if (input.labelsComplete === false) {
-    // A label-derived workstream/epic group would turn missing labels into
-    // Other work / No epic linked. Keep the independently known native placement.
     return buildPlacement({
       entries: input.entries,
       siblingOrder: input.siblingOrder,
