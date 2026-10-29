@@ -485,6 +485,46 @@ describe("direct takeover continuity", () => {
     expect(h.effects.create).toHaveLength(1);
   });
 
+  it("refuses before stop when the complete schedule host changes after review", async () => {
+    let reads = 0;
+    const reader = async () => ({ complete: true as const, hostId: reads++ === 0 ? "host-A" : "host-B", schedules: [] });
+    const h = productionContinuity(await host({ predecessor: agent("agent-1", { status: "running" }) }), undefined, reader);
+    const stop = vi.fn(async () => ({ ok: true as const }));
+    h.deps.publicCli = { stop };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", next: "review" });
+    expect(stop).not.toHaveBeenCalled();
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("refuses after stop when the complete schedule host changes before final capture", async () => {
+    let reads = 0;
+    const reader = async () => ({ complete: true as const, hostId: reads++ < 2 ? "host-A" : "host-B", schedules: [] });
+    const h = productionContinuity(await host({ predecessor: agent("agent-1", { status: "running" }) }), undefined, reader);
+    const stop = vi.fn(async (id: string) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("stops and completes a running source when the complete schedule host stays pinned", async () => {
+    const h = productionContinuity(await host({ predecessor: agent("agent-1", { status: "running" }) }), undefined, complete([], "host-A"));
+    const stop = vi.fn(async (id: string) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
   it("childful live source with no schedule reader is unknown, never preserved", async () => {
     const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
     const h = productionContinuity(await host({ others: [child] }));

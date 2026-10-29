@@ -235,10 +235,10 @@ const takeoverSpecPin = (spec: { effectValidity?: unknown }) => {
 /** Continuity facts apply pins; observation time is freshness-only at assess/apply. */
 export type TakeoverContinuitySemantics = Pick<
   import("./session-lifecycle.js").TakeoverContinuity,
-  "agentId" | "requestId" | "revision" | "surface" | "wakes" | "owner"
+  "agentId" | "requestId" | "revision" | "surface" | "wakes" | "wakeHost" | "owner"
 >;
 export function takeoverContinuitySemantics(receipt: TakeoverContinuitySemantics): TakeoverContinuitySemantics {
-  return { agentId: receipt.agentId, requestId: receipt.requestId, revision: receipt.revision, surface: receipt.surface, wakes: receipt.wakes, owner: receipt.owner };
+  return { agentId: receipt.agentId, requestId: receipt.requestId, revision: receipt.revision, surface: receipt.surface, wakes: receipt.wakes, wakeHost: receipt.wakeHost ?? null, owner: receipt.owner };
 }
 export function takeoverContinuitySemanticsMatch(left: TakeoverContinuitySemantics, right: TakeoverContinuitySemantics): boolean {
   return isDeepStrictEqual(takeoverContinuitySemantics(left), takeoverContinuitySemantics(right));
