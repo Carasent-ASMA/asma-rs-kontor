@@ -132,10 +132,12 @@ Existing epics keep their names, seats and placement.
    ([idle seats are reusable](../epic-orchestration/references/paseo-direct-native-placement.md#idle-seat-reuse));
    never create a second occupant for a duplicate request.
    Reconcile lost callbacks against existing operation/seat identity before relaunch.
-4. **Resolve route without restating policy.** Consume selected slot policy through
-   the shared resolver when available; record source bundle/hash and considered
-   routes in evidence. Do not embed model lists, chain order or permission tables
-   in the skill body or briefing.
+4. **Resolve the selected fleet.** Apply
+   [selected fleet enforcement](../epic-orchestration/references/fleet-selection.md)
+   before launch, including reuse. Declare the fleet location/revision and role
+   binding, resolve its eligible chain and record considered routes. Missing
+   fleet selection requires locating or creating and selecting a fleet; never
+   substitute runtime defaults or hardcoded model lists.
 5. **Preflight placement and parent inputs.** Fail closed if `projectId`,
    `workspaceId`, workspace kind, `cwd`, parent/supervisor mapping or checkout
    ownership fails readback.
@@ -154,7 +156,9 @@ Existing epics keep their names, seats and placement.
    the parent.
 8. **Read back** effective model/effort, permission posture, native ID, parent,
    workspace/cwd, checkout and, on Paseo-direct work, the four session labels
-   before accepting task effects or verdicts.
+   before accepting task effects or verdicts. Compare the effective provider,
+   account route, model and effort to the resolved fleet binding; a mismatch or
+   unavailable readback blocks task effects and requires correction.
 9. **Record** dispatch evidence: discovered / supplied / read / behaviorally
    exercised loading is classified separately; file presence is not activation.
 

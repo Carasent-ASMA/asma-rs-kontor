@@ -66,6 +66,12 @@ candidates; **no mutation** until resolved.
 Reconcile the same occupant first. Automatic recovery requires an authorized
 request and the configured stale predicates; this skill adds no timer or loop.
 
+Both resume and replacement require
+[selected fleet enforcement](../epic-orchestration/references/fleet-selection.md).
+Declare the fleet location/revision and verify the effective route on resume.
+Resolve a replacement's eligible role chain before retiring its predecessor;
+an authentication or capacity failure never permits an off-fleet fallback.
+
 ## Takeover sequence
 
 For **Paseo-direct**, an existing receiving session (including "you take over")

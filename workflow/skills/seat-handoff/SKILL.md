@@ -74,7 +74,10 @@ transition even when the procedure was followed in chat.
 2. Verify target phase eligible under the **selected workflow revision** (not
    "latest" implicitly).
 3. Identify exact receiver seat and occupant (reuse idle persistent seat when
-   eligible).
+   eligible). Apply
+   [selected fleet enforcement](../epic-orchestration/references/fleet-selection.md)
+   to its role binding and effective runtime route before receiver task effects;
+   a previously idle occupant is not automatically eligible.
 4. Assemble the **common evidence envelope** plus: fulfilled and **unverified**
    criteria, findings, next action, instruction references by path (not full
    policy text).
@@ -160,6 +163,11 @@ sampled by [`config/examples/paseo-supervision.yml`](../../../config/examples/pa
 special recovery rules are added.
 
 A planned brain change follows this rule:
+
+First apply [selected fleet enforcement](../epic-orchestration/references/fleet-selection.md).
+Select the target route from the receiving role's fleet binding and verify its
+effective readback before task effects. A handoff or promotion cannot authorize
+an off-fleet model; preserve identity and work while resolving a mismatch.
 
 - **Same vendor:** change the model of the same session at a clear boundary.
   Keep the native identity; do not create a seat.

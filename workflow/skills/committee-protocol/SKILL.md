@@ -27,9 +27,11 @@ epic or another skill links here instead of restating them.
    modifies code, tickets, tracker state, runtime state or evidence. Its tool
    profile enforces the read-only tier.
 2. **Fleet-bound models.** Each seat's model and effort come from its fleet slot
-   binding in `{{ project.fleet }}`; the seat card and the report record the
-   resolved provider and model. Do not pin a model in a skill, a template or a
-   prompt.
+   binding in `{{ project.fleet }}` under
+   [selected fleet enforcement](../epic-orchestration/references/fleet-selection.md);
+   the seat card and report record the selection reference and actual resolved
+   provider/model/effort. No fleet or no eligible independent route blocks the
+   affected seat. Do not pin a model in a skill, a template or a prompt.
 3. **Contrasting reviewers.** The two reviewers use different vendors. A model
    from the same vendor as the other reviewer does not satisfy the contrast
    rule. The selected fleet policy and its `independent_of` bindings decide

@@ -78,6 +78,12 @@ Record in the kickoff handoff the selected workflow/Team Definition revisions,
 active fleet provenance, canonical Adam/LSA and TPM identities, and required
 skill paths, resolved for the receiving checkout.
 
+Before placing planning or delivery seats, apply
+[selected fleet enforcement](../epic-orchestration/references/fleet-selection.md).
+Declare the exact fleet location and selected revision. If none is selected,
+the owner must locate or create and select a fleet before the affected launch;
+do not infer models from a template or the runtime catalog.
+
 - Project YAML is the shared authoring target; use it only through the
   qualified activation/publication path.
 - Existing runs keep their pins. New Adam placement and planning-pair protocols

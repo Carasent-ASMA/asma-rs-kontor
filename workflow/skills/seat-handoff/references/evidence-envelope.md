@@ -13,6 +13,7 @@ or full policy bodies into the package or brief.
 | Orchestration surface | `paseo-direct` or `kontor-governed`, per the [surface rule](../../epic-orchestration/references/orchestration-surface-transition.md#orchestration-surface-transition-rule) |
 | Selected workflow | Pinned workflow/plan revision id or commit SHA the transition or takeover runs under |
 | Policy provenance | Selected policy source references: path + content hash (for example the activated orchestration bundle hash or an explicit last-valid snapshot id recorded in plan evidence) |
+| Fleet selection and readback | Exact fleet location/hash and selection evidence, role/slot binding, resolved provider/account route/model/effort and observed runtime values; apply [selected fleet enforcement](../../epic-orchestration/references/fleet-selection.md) before accepting the receiving seat |
 | Source identity (handoff) | Source logical seat, native occupant id, scope tracker key |
 | Receiver identity (handoff) | Target logical seat, native occupant id (or declared slot awaiting occupant), scope tracker key |
 | Receiving checkout | **Absolute** filesystem path to the repository root the receiver must use |
