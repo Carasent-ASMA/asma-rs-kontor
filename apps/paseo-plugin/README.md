@@ -1477,7 +1477,7 @@ All values are optional and read from the daemon environment:
 | `KONTOR_PLUGIN_CLI_COMMAND` | `kontor` | Command a confirmed native takeover runs for its one local fleet selection read (`fleet-policy-resolve`). |
 | `KONTOR_PLUGIN_PASEO_COMMAND` | `paseo` | Installed public Paseo CLI used only for the bounded exact-source stop and schedule-read adapter. |
 | `KONTOR_PLUGIN_PASEO_HOME` | `PASEO_HOME`, else none | Optional `--home` passed to that public CLI; never from a review or UI caller. |
-| `KONTOR_PLUGIN_PASEO_HOST` | none | Optional `--host` passed to that public CLI; never from a review or UI caller. |
+| `KONTOR_PLUGIN_PASEO_HOST` | none | Optional `--host` passed to that public CLI and the paired host connection for the complete schedule inventory; required for live wake proof when `schedules.forAgent` is absent. Never read from a review or UI caller. |
 | `KONTOR_PLUGIN_MCP` | on | `off` skips the MCP server; the hooks and guard stay active. |
 | `KONTOR_PLUGIN_SERVE_PROFILE` | none | Optional `--serve-profile` narrowing. |
 | `KONTOR_PLUGIN_PLACEMENT_ROOTS` | none | Comma-separated extra containment roots. |

@@ -82,7 +82,7 @@ export const TAKEOVER_PROMPT = "The operator confirmed this takeover. Continue t
 export const TAKEOVER_LIMITS = [
   "Archive and creation are two host calls; no host primitive makes them one step.",
   "A running session is stopped through the server-configured public Paseo CLI before its final summary is captured and it is archived. The stop is verified by reading the same host and source; if it remains active or its identity changes, nothing is archived or created.",
-  "Schedules and heartbeats are readable only through a qualified host schedules.forAgent or a public CLI schedule list that includes heartbeat and existing-agent targets. The installed CLI list may omit those targets; without a qualified no-wake proof, retirement is blocked.",
+  "Schedules and heartbeats are readable only through a qualified host schedules.forAgent or a complete, host-qualified public host-connector inventory. The installed public CLI schedule list filters new-agent rows and is never used as no-wake proof; without a complete read, retirement is blocked.",
   "Managed children are detached through the public API and continue independently; the API exposes no re-parenting primitive.",
   "The successor's first message is the saved handoff summary, not the whole conversation; continuation is observed on its timeline.",
   "Check may deliver this operation's one continuation prompt when an earlier dispatch was not observed. It never creates another successor and never repeats a delivery that reads back.",
