@@ -2784,6 +2784,33 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(spoken).not.toContain("No epic linked");
   });
 
+  it.each([
+    { name: "Role", grouping: "role", layout: "grouped", work: "all" },
+    { name: "hierarchy", grouping: "hierarchy", layout: "grouped", work: "all" },
+    { name: "My work", grouping: "hierarchy", layout: "grouped", work: "mine" },
+    { name: "Desks & workspaces", grouping: "placement", layout: "grouped", work: "all" },
+    { name: "Flat", grouping: "placement", layout: "flat", work: "all" },
+  ] as const)("keeps native-only accessible attribution across $name presentation when labels are unavailable", ({ grouping, layout, work }) => {
+    directory.state = { ...emptyDirectoryState(), entries: [sessionEntry("catalog", { title: "plain task", labels: {} })], source: "catalog", status: "ready", live: false, inventoryComplete: true, labelsComplete: false, lastUpdatedAt: 1 };
+    patchSessionView("host-a", { query: "", status: "all", work, layout, grouping, includeArchived: false });
+    renderScreen();
+    if (layout === "grouped") expandAll();
+    const row = listRows().find((candidate) => (candidate.kind === "session" || candidate.kind === "result") && candidate.entry.id === "catalog");
+    expect(row).toBeDefined();
+    const spoken = String(denseOf(drawItem(row)).props.spokenDetail);
+    expect(spoken).toContain("Native project Project, workspace Workspace");
+    expect(spoken).not.toContain("No role");
+    expect(spoken).not.toContain("Other work");
+    expect(spoken).not.toContain("No epic linked");
+    if (layout === "grouped") {
+      expect(groupRows().map((candidate) => candidate.group.label)).not.toContain("No role");
+      expect(groupRows().map((candidate) => candidate.group.label)).not.toContain("Other work");
+      expect(groupRows().map((candidate) => candidate.group.label)).not.toContain("No epic linked");
+    }
+    expect(textOf(harness.current())).not.toContain("Other work");
+    expect(textOf(harness.current())).not.toContain("No epic linked");
+  });
+
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];

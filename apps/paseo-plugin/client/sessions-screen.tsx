@@ -3016,12 +3016,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // (results only), Select sessions and Archive; while selecting, the row is its own checkbox.
   const sessionListRow = (entry: DirectoryEntry, result: boolean) => {
     const id = entry.id, active = entry.archivedAt === null, selected = bulkSelection.selected.includes(id), starred = favorites.includes(id);
-    const role = !result && grouping === "role" && !labelTreeFallback ? roleRowContext(entry, mappings) : null;
+    const role = !result && grouping === "role" && !labelsUnavailable ? roleRowContext(entry, mappings) : null;
     const projection = retirement?.projections.get(id) ?? null;
     const retirementLabel = projection ? compact ? compactRetirementNotice(projection) : `Retirement ${retirementDispositionLabel(projection.retirement.disposition)}${projection.retirement.attention ? ", attention required" : ""}${projection.conflicts.length ? ", evidence conflict" : ""}` : null;
     const outcome = lifecycle.batch && lifecycle.review?.action === "archive" ? lifecycle.review.rows.find((row) => row.id === id) : undefined;
     const highlighted = !result && peek?.sessionId === id;
-    const extras = sessionRowExtras(entry, labelTreeFallback ? nativePlace(entry) : role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
+    // Every presentation (tree, explicit placement and Flat results) must use the same
+    // native-only attribution when the shared catalog cannot prove any label-derived fact.
+    const extras = sessionRowExtras(entry, labelsUnavailable ? nativePlace(entry) : role ? role.spoken : spokenProvenance(provenance.get(id) ?? sessionProvenance(entry, mappings)));
     const note = [extras.note, archivingId === id ? "Archiving…" : null].filter(Boolean).join(" · ") || null;
     const blocked = !active ? "Archived sessions are not selected for archive." : !canStart ? "Selection waits for the host and any running archive." : bulkOpen ? "The archive review is open."
       : !bulkScopeIds.includes(id) ? "Not among the shown sessions." : !selected && bulkSelection.selected.length >= ARCHIVE_BATCH_LIMIT ? `At most ${ARCHIVE_BATCH_LIMIT} sessions per archive.` : null;
