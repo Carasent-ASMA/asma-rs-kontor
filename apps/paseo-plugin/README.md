@@ -309,15 +309,46 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
   thread IDs to an exact Codex `session_meta.id` in the host's explicit
   `CODEX_HOME` or default Codex store. It does not search account/profile homes,
   infer identity from titles, sum cumulative snapshots, start/resume providers,
-  or read credential files. Forked/inherited, reset, ambiguous, unsupported,
-  missing and incomplete sources stay unknown. Reads are bounded and on demand;
-  only numeric counters, exact identity and source offsets are cached privately
-  across restart, without transcript text. Usage/turn/host changes refresh the
-  view; there is no polling timer. Claude and other provider routes remain
-  unqualified for totals; repeated Claude message records and restored/compacted
-  history require separate accounting proof. Historical/complete totals are
-  unavailable, including for newly observed sessions. This adds no R19 quota or
-  historical accounting claim.
+  or read credential files. Forked/inherited cumulative values, reset, ambiguous,
+  unsupported, missing and incomplete sources stay unknown. Exact child response
+  records may independently supply **Recorded child response usage**, excluding
+  parent history; completeness and billing remain unverified. Reads are bounded
+  and on demand; numeric counters, exact identity, offsets and hashed response
+  IDs are cached privately without transcript text. Budget-limited scans continue;
+  a partial final record waits for append or a usage revision. Claude and other
+  native providers have no qualified session-usage importer here. This adds no
+  account-quota or historical billing claim.
+
+#### Fork and inherited cumulative qualification
+
+For the supported Codex 0.160.0 format, a recoverable numeric parent snapshot
+is insufficient to qualify a lifetime total. The
+[versioned provider protocol](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/protocol.rs)
+distinguishes these fields and scopes:
+
+| Source | What it establishes | What it does not establish |
+| --- | --- | --- |
+| `history_base` thread, byte offset and exclusive ordinal | Physical inherited history prefix | An authoritative inherited token baseline |
+| `forked_from_id` and `forked_from_ordinal_exclusive` | Logical fork boundary, retained independently of the physical base after revert | Equality with the current physical prefix or its counters |
+| `event_msg` / `token_count` cumulative snapshot | Legacy accumulated report | Complete response accounting; these events can be estimated or replayed |
+| `token_usage_record.usage` with exact thread/session and unique response ID | Best-effort recorded response usage | Complete lifetime usage or billing |
+
+The session metadata has no explicit inherited-token baseline contract. Parent
+references can still recover a numeric candidate baseline; absence of a scalar
+field does not prove reconstruction impossible. However, subtracting that
+candidate from legacy snapshots may disagree with uniquely identified child response records.
+The importer therefore preserves unknown cumulative values and returns a
+specific inherited-counter-contract refusal. It never chooses the larger
+counter, sums cumulative snapshots, or substitutes the child metric as a total.
+
+Lifting this boundary requires a version-pinned counter-family and inheritance
+rule covering fork, revert, resume, reset and replay, plus bounded source/identity
+and coverage evidence for the inherited prefix and child records. The offline
+`fork cumulative qualification boundary` tests include a readable parent
+baseline, disagreeing counter families, a different physical base after revert,
+and inherited legacy reports without child response records. Public examples
+use synthetic data; session-specific readback evidence stays outside the tree.
+
 - **Recently viewed (supported scope).** A user opening a session
   through Kontor's native navigation records that exact session ID and time.
   Most recent opens come first, one row per session; A → B → A shows A, B.

@@ -18,9 +18,11 @@ const stateSchema = z.object({ version: z.literal(4), threadId: uuid, file: z.st
   meta: z.boolean(), forked: z.boolean(), recorded: recordedStateSchema, problem: z.enum(["identity mismatch", "unqualified format version", "fork or inherited scope is unqualified", "invalid identity metadata", "invalid cumulative counters", "inconsistent cumulative counters", "cumulative counter reset", "malformed usage record", "record exceeds the source bound"]).nullable(), counts: countsSchema.nullable(), baseline: countsSchema.nullable(), at: z.string().nullable() }).strict();
 type State = z.infer<typeof stateSchema>;
 export type CodexUsageRead = { input: number | null; output: number | null; source: string; scope: "provider-cumulative"; recordedChildUsage?: RecordedChildUsage };
+export const FORK_CUMULATIVE_UNQUALIFIED = "fork or inherited scope is unqualified: no qualified inherited-counter contract; history pointers are not token baselines, and logical fork and physical history boundaries can differ after revert";
 export const CODEX_USAGE_LIMITS = [
   "Codex 0.160.0 local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store.",
   "Historical completeness and child-thread inclusion are unverified. Forked/inherited, reset, ambiguous, unsupported and incomplete sources remain unavailable; snapshots are never summed.",
+  "Fork cumulative values remain unknown: history byte/ordinal references do not establish inherited-counter scope. A recovered numeric parent snapshot or child response sum is not a qualified lifetime total.",
   "Recorded child response usage excludes parent history; completeness and billing unverified. At most 10,000 unique response records per source; larger indexes stay unavailable.",
   "Claude, OpenCode, Copilot, Pi, OMP and other non-Codex native providers have no qualified session-usage importer here. Account quota reports and latest-turn telemetry are not session totals.",
   "Other provider routes and provider homes without a qualified exact source remain unknown. No provider session is started or resumed.",
@@ -176,7 +178,8 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         state.size = end; state.modified = stat.mtimeMs;
         await save(state);
         if (state.problem) {
-          const result = unknown(state.problem);
+          const result = unknown(state.forked && state.meta && state.problem === "fork or inherited scope is unqualified"
+            ? FORK_CUMULATIVE_UNQUALIFIED : state.problem);
           if (state.problem === "fork or inherited scope is unqualified" && state.meta && state.offset === end && !state.recorded.problem && Object.keys(state.recorded.seen).length) {
             result.recordedChildUsage = { scope: "recorded-child-responses", label: RECORDED_CHILD_USAGE_LABEL, qualification: RECORDED_CHILD_USAGE_CAVEAT,
               input: state.recorded.input, output: state.recorded.output, total: state.recorded.total, responses: Object.keys(state.recorded.seen).length };
