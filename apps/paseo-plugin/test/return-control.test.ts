@@ -21,6 +21,7 @@ vi.mock("../client/start-switch-sheet", () => ({ StartSwitchPopover: function St
 import type { ReactElement } from "react";
 import { contributePlanControl } from "../client/plan-control";
 import { handOffOpen, takeHandOff } from "../client/session-actions";
+import { SummaryAttachmentAvailability } from "../client/summary-attachments";
 import { StartSwitchPopover } from "../client/start-switch-sheet";
 import {
   contributeReturnControl,
@@ -313,7 +314,7 @@ describe("Kontor composer controls share one host directory", () => {
     const releaseWalk = host.holdWalk();
     const controls = fakeControls();
 
-    const stop = contributeReturnControl(controls.client, "sessions");
+    const stop = contributeReturnControl(controls.client, "sessions", true);
     startHostDirectory("host-a");
     await settle();
 
@@ -359,9 +360,12 @@ describe("Kontor composer controls share one host directory", () => {
     // Every pill shares one body, bound to this installation's openScreen and the Kontor screen.
     const Content = popover(controls.pillFor("s-1"));
     expect(popover(controls.pillFor("s-2"))).toBe(Content);
-    const body = Content({ host: { id: "host-a", label: "Host A" }, close: vi.fn() });
+    const wrapper = Content({ host: { id: "host-a", label: "Host A" }, close: vi.fn() });
+    expect(wrapper.type).toBe(SummaryAttachmentAvailability.Provider);
+    expect(wrapper.props).toMatchObject({ value: true });
+    const body = (wrapper as unknown as ReactElement<{ children: ReturnType<typeof Content> }>).props.children;
     expect(body.type).toBe(StartSwitchPopover);
-    expect(body.props).toMatchObject({ screenId: "sessions", host: { id: "host-a" } });
+    expect(body.props).toMatchObject({ screenId: "sessions", host: { id: "host-a" }, summaryAttachmentAvailable: true });
     body.props.openScreen({ screenId: "sessions" });
     expect(controls.openScreen).toHaveBeenCalledWith({ screenId: "sessions" });
     expect(readRecent("host-a")).toEqual(beforeReturn);

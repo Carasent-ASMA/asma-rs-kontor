@@ -212,7 +212,7 @@ describe("stock summary generator", () => {
     contributeSessionSummaries({ handle: (rpc: { name: string }, handler: (...args: any[]) => any) => {
       expect(handlers.has(rpc.name)).toBe(false); handlers.set(rpc.name, handler);
     } } as unknown as PluginServerContext, { root: h.root });
-    expect([...handlers.keys()].sort()).toEqual(["sessions.navigator-capabilities", "sessions.summary-latest", "sessions.summary-read", "sessions.summary-save"].sort());
+    expect([...handlers.keys()].sort()).toEqual(["sessions.navigator-capabilities", "sessions.summary-resources", "sessions.summary-latest", "sessions.summary-read", "sessions.summary-save"].sort());
     const context = { paseo: h.api };
     const caps = handlers.get("sessions.navigator-capabilities")!({}, context);
     expect(caps).toMatchObject({ summaries: { supported: true }, usageTotals: UNSUPPORTED.usageTotals, draftAttach: UNSUPPORTED.draftAttach,

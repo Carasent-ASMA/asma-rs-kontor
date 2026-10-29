@@ -164,7 +164,7 @@ describe("Kontor client entry", () => {
     expect(recordVisit).not.toHaveBeenCalled();
 
     expect(contributeReturnControl).toHaveBeenCalledTimes(1);
-    expect(contributeReturnControl).toHaveBeenCalledWith(client, SESSIONS_SCREEN_ID);
+    expect(contributeReturnControl).toHaveBeenCalledWith(client, SESSIONS_SCREEN_ID, false);
 
     cleanup();
     expect(stopReturnControl).toHaveBeenCalledTimes(1);

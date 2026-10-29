@@ -37,8 +37,8 @@ clipboard automatically.
 
 ### R28-only source composition
 
-`contributeSessionSummaries(server)` registers only navigator capabilities and
-summary save/read/latest. Its default capabilities keep usage totals, draft
+`contributeSessionSummaries(server)` registers navigator capabilities,
+summary save/read/latest and the read-only native summary-resource search. Its default capabilities keep usage totals, draft
 attachment and legacy Take over unsupported. The full repository entry passes
 its existing aggregate capabilities to preserve separately owned features.
 The summary module has no import of the attachment service and registers no
@@ -48,7 +48,11 @@ For a baseline without summary server files, use complete source files rather
 than a delta requiring their preimages. The runtime closure is
 `server/session-summaries.ts`, `server/stock-summary-generator.ts`,
 `client/session-summary.tsx`, `shared/session-navigator.ts` and
-`paseo-plugin.json`, plus their unchanged baseline imports. In that baseline's
+`paseo-plugin.json`, plus `shared/summary-attachments.ts` and
+`client/summary-attachments.tsx` for native resource discovery. Apply the bounded
+client entry/context, existing return-control/composer instruction and action
+changes from this change; preserve all unrelated baseline wiring. Never copy
+master's complete client/server entries onto an older installed composition. In that baseline's
 `index.server.ts`, import `contributeSessionSummaries` and replace the existing
 unsupported navigator-capabilities registration with
 `contributeSessionSummaries(server)`. Preserve its other registrations; do not
@@ -60,24 +64,40 @@ stock-generator and SummarySheet tests qualify this route; source entry tests
 also assert a single capability registration and no attachment handler.
 Composition still requires independent review before installation.
 
-### R29 destination-side selection design
+### Native saved-summary attachments (R29)
 
-R28 does not depend on draft attachment. Stock Paseo exposes an attachment
-source and picker, but no public remote composer insertion/CAS API, active
-composer destination in its search RPC, or selection receipt. The current
-remote-attach control therefore remains unavailable on stock Paseo.
+On stock Paseo 0.12, **Choose summary attachment in destination** reads a saved
+revision and shows its exact search identifier. It never generates on Attach,
+writes a remote draft, starts a new lead or sends a turn. If no revision exists,
+use Summarize & copy first. Cancel closes this preparation without effects.
 
-The separate R29 UX is **Prepare for [destination] → open that destination →
-Attach → Kontor saved summary → select the exact revision**. The pending record
-would name the intended destination and immutable pin; the native picker adds
-it only after the user's destination-side selection. Preparation, search,
-clipboard success and user-reported confirmation must never be labelled
-“Attached/verified”. Query filtering cannot prove per-target authorization.
-Native selection toggles a duplicate item off, so pending-intent deduplication
-cannot be presented as remote exactly-once insertion. Keep pending intents
-until explicit cancellation or qualified evidence; never replace/clear a
-remote draft or substitute a message send. This R29 route is a design, not an
-implemented or installed attachment path in this change.
+Open the destination and check its title. In that composer's native **Attach**
+menu, choose **Kontor saved summary**, then select the exact source/revision and
+inspect its selected pill before sending. The existing Kontor composer pill
+also exposes these instructions. Closing the picker without selecting leaves
+existing attachments alone. Native selection toggles a duplicate off; do not
+select it again to confirm it. Draft text and other attachments stay host-owned.
+
+Kontor registers a stock attachment source whose read-only search returns the
+exact persisted text with a stable revision ID. It returns at most 50 matches;
+search the full identifier to find an older revision. Corrupt, empty or
+inconsistent stored summaries refuse search rather than serving an invented
+snapshot. Resource URNs identify revisions; they are not navigation endpoints.
+
+Only the user's native selection adds the attachment. Search has no destination
+context or selection receipt: preparation and copy must never claim attached,
+verified destination, remote insertion, atomic binding or exactly-once behavior.
+Query filtering is discovery, not per-target authorization. `draftAttach` stays
+false because its legacy meaning is remote insertion. Client API registration
+availability gates this distinct native route; unavailable apps explain why.
+No stopped attachment service/handler, host or SDK patch is used.
+
+The backend registers `sessions.summary-resources` alongside the existing R28
+RPCs, retaining one capabilities handler and the current usage/prepared routes.
+Installation still requires a fresh composition on the actual loaded baseline,
+preserving R11/R32/R14/R34/R13; never install the former R28-only offline tar.
+Stock/native picker, provider, clipboard and installed readback remain separate
+qualification work after independent source review.
 
 All three workflow/orchestration choices remain distinct: `kontor/kontor`,
 `kontor/paseo`, and `free/paseo`. Free is a workflow choice. Summary and attachment
