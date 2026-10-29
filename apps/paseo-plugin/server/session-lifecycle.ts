@@ -1215,6 +1215,8 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
   /** Stable source, children, owner, route and request match across a stop; summary and continuity are deliberately refreshed. */
   function stoppedSourceMatches(reviewed: Pinned, current: Pinned): boolean {
     if (reviewed.sourceIdentity !== current.sourceIdentity || !isDeepStrictEqual(reviewed.children, current.children)) return false;
+    // The running compare normalizes the mutable status revision; the schedule host must still be the exact pinned host.
+    if ((reviewed.continuity.wakeHost ?? null) !== (current.continuity.wakeHost ?? null)) return false;
     const normalized = {
       ...reviewed, predecessor: current.predecessor,
       continuity: { ...reviewed.continuity, revision: current.continuity.revision },
