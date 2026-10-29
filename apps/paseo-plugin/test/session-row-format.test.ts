@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { byLastActivity, compactAge, lastActivity, rowOrigin, tokenTotals, totalsDetail } from "../client/session-row-format";
+import { byLastActivity, compactAge, lastActivity, rowOrigin, recordedChildUsageCompact, tokenTotals, totalsDetail } from "../client/session-row-format";
 import { effortShort, modelAlias, modelVendor, routeLabel, rowModel } from "../client/session-usage";
 
 const NOW = Date.parse("2026-10-25T22:00:00Z");
@@ -187,4 +187,17 @@ it("keeps child usage scope and qualification in Details without filling cumulat
  expect(tokenTotals(totals)).toMatchObject({ input: "reported ↓ —", output: "↑ —", spoken: expect.stringContaining("Session token totals unknown") });
  expect(totalsDetail(totals)).toMatchObject({ label: "Provider-reported cumulative input ↓ and output ↑", value: expect.stringContaining("Recorded child response usage: ↓ 1,200 / ↑ 20") });
  expect(totalsDetail(totals).value).toContain("Excludes parent history; completeness and billing unverified.");
+});
+
+it("uses shared compact units for recorded counts without changing unknown cumulative semantics", () => {
+ const recorded = { scope: "recorded-child-responses" as const, label: "Recorded child response usage" as const, qualification: "Excludes parent history; completeness and billing unverified." as const, input: 451_900_000, output: 1_700_000, total: 453_600_000, responses: 2048 };
+ const totals = { input: null, output: null, scope: "provider-cumulative" as const, source: "Lifetime cumulative unknown", recordedChildUsage: recorded };
+ expect(recordedChildUsageCompact(totals)).toBe("Recorded ↓451.9m · ↑1.7m");
+ expect(recordedChildUsageCompact({ ...totals, recordedChildUsage: { ...recorded, input: 999_950, output: 0 } })).toBe("Recorded ↓1m · ↑0");
+ expect(recordedChildUsageCompact(null)).toBeNull();
+ expect(recordedChildUsageCompact({ input: null, output: null })).toBeNull();
+ expect(tokenTotals(totals)).toMatchObject({ input: "reported ↓ —", output: "↑ —" });
+ expect(totalsDetail(totals).value).toContain("451,900,000");
+ expect(totalsDetail(totals).value).toContain("2,048 responses");
+ expect(totalsDetail(totals).value).toContain(recorded.qualification);
 });

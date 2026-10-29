@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { attachOutcomeSchema, navigatorCapabilitiesSchema, summaryRevisionSchema, usageTotalsSchema, type SummaryRevision } from "../../paseo-plugin/shared/session-navigator";
 import { createOptionsSchema, createOutcomeSchema, type CreateFeature } from "../../paseo-plugin/shared/session-create";
-import { SYNTHETIC_TOTALS } from "../src/fixtures/integration";
+import { SYNTHETIC_RECORDED_TOTALS, SYNTHETIC_TOTALS } from "../src/fixtures/integration";
 import type { FixtureAgent, FixtureSession } from "../src/fixtures/sessions";
 import { fixtureCreate, settingsReadback } from "../src/host/session-create";
 import { fixtureNavigator } from "../src/host/session-navigator";
@@ -146,4 +146,12 @@ describe("simulated creation pins and settings readback", () => {
     expect(outcome.message).not.toContain("Settings read back");
     expect(settingsReadback(undefined, {})).toEqual({ applied: [], differences: [] });
   });
+});
+
+it("serves recorded child usage separately from unknown cumulative totals in the review fixture", async () => {
+ const { invoke } = fixtureNavigator(() => [], SYNTHETIC_RECORDED_TOTALS);
+ const rows = await invoke("sessions.usage-totals", { agentIds: ["agt_model_report_0"] }) as Record<string, unknown>;
+ expect(usageTotalsSchema.parse(rows.agt_model_report_0)).toMatchObject({ input: null, output: null, scope: "provider-cumulative", recordedChildUsage: {
+  input: 451_900_000, output: 1_700_000, responses: 2048, qualification: "Excludes parent history; completeness and billing unverified.",
+ } });
 });

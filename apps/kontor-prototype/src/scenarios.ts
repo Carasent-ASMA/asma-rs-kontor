@@ -35,7 +35,7 @@ export type Scenario = {
   /** SIMULATED takeover outcomes for this scenario; a `takeoverSim` URL param overrides it. Absent: every takeover succeeds. */
   readonly takeoverSim?: TakeoverSimMode;
   /** SYNTHETIC whole-session token totals (`fixtures/integration.ts`) instead of unknown ones. */
-  readonly syntheticTotals?: boolean;
+  readonly syntheticTotals?: boolean | "recorded-child";
 };
 
 /** Role grouping saved, with only QA saved open; every other role header opens closed. */
@@ -63,6 +63,7 @@ export const SCENARIOS: readonly Scenario[] = [
   { id: "integrated-offline", title: "Combined review: stale", summary: "The combined fictional host goes offline after 3 seconds; timestamps and reports remain explicitly last-known.", inventory: "integration", sources: true, start: { grouping: "flat" }, hostOfflineAfterMs: 3000 },
   { id: "native-desks", title: "Native desk grouping", summary: "Fictional desks: unlabelled members, explicit other workstream, same-named projects, empty workspace and zero-workspace desk.", inventory: "desks", sources: false },
   { id: "status-lifecycle", title: "Status and retained history", summary: "13 fictional closed/unarchived earlier errors, including ten absent from the active workspace list; one current error, one explicitly archived and one finished notice.", inventory: "lifecycle", sources: true, start: { status: "earlier_error" } },
+  { id: "recorded-child-usage", title: "Recorded child usage", summary: "Synthetic partial child response usage with large compact counts, exact Details and unknown lifetime cumulative.", inventory: "usage", sources: true, syntheticTotals: "recorded-child", start: { query: "Model report" } },
   { id: "model-usage", title: "Models and token reports", summary: "Fictional reports: selected and observed models, opaque routes, missing and zero counts, cache, huge counts, context-only and long IDs. No consumed session total is available.", inventory: "usage", sources: true, start: { query: "Model report" } },
   { id: "model-usage-roles", title: "Models: Roles", summary: "The same fictional reports in Role groups; use each row's Details for source, exact model and exact token counts.", inventory: "usage", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:QA": true, "roles/role:SWE": true } } },
   { id: "model-usage-offline", title: "Models: host offline", summary: "Fictional reports; host goes offline at 4 seconds. Details distinguish last known inventory from unknown report age.", inventory: "usage", sources: true, start: { query: "Model report" }, hostOfflineAfterMs: 4000 },

@@ -9,7 +9,7 @@ import { fixtureLifecycle } from "./session-lifecycle";
 import { fixtureCreate, fixtureDesk } from "./session-create";
 import { fixtureNavigator } from "./session-navigator";
 import { fixtureTakeover, isTakeoverSimMode } from "./session-takeover";
-import { integrationSessions, SYNTHETIC_TOTALS } from "../fixtures/integration";
+import { integrationSessions, SYNTHETIC_RECORDED_TOTALS, SYNTHETIC_TOTALS } from "../fixtures/integration";
 import { capturedFixture } from "../fixtures/captured";
 import { recentStorageKey } from "../../../paseo-plugin/client/recent-sessions";
 import { SOURCE_READS } from "../fixtures/sources";
@@ -149,7 +149,7 @@ export const fakePaseo = refusingProxy("paseo", {
 // Configured sources (plugin RPC) --------------------------------------------
 
 const lifecycleRpc = fixtureLifecycle(fixtureSessions, simulateUpdate);
-const navigator = fixtureNavigator(fixtureSessions, scenario.syntheticTotals ? SYNTHETIC_TOTALS : null);
+const navigator = fixtureNavigator(fixtureSessions, scenario.syntheticTotals === "recorded-child" ? SYNTHETIC_RECORDED_TOTALS : scenario.syntheticTotals ? SYNTHETIC_TOTALS : null);
 const takeover = fixtureTakeover({ get: fixtureSessions, update: simulateUpdate, navigator, mode: takeoverSim, add: (row) => { upsert(row); logHostEvent("simulated.update", `Created ${row.agent.id} in fixture memory only`); } });
 const NAVIGATOR_RPCS = new Set(["sessions.navigator-capabilities", "sessions.usage-totals", "sessions.summary-save", "sessions.summary-read", "sessions.summary-latest", "sessions.summary-attach"]);
 const createRpc = fixtureCreate(scenario.inventory === "integration" || scenario.inventory === "desks" || scenario.inventory === "captured", { add: (request, title, workspaceId, features) => {
@@ -169,6 +169,8 @@ export async function invokeRpc(method: string, input: unknown): Promise<unknown
   await new Promise((resolve) => setTimeout(resolve, 60));
   if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
   if (method === "sessions.create-options" || method === "sessions.create" || method === "sessions.create-check" || method === "sessions.create-features") return createRpc(method, input);
+  // Explicit fixture-only pending read: the real hook must keep missing counts unknown.
+  if (method === "sessions.usage-totals" && params.get("usage") === "pending") return new Promise(() => {});
   if (NAVIGATOR_RPCS.has(method)) return navigator.invoke(method, input);
   if (method.startsWith("sessions.takeover-")) return takeover.invoke(method, input);
   if (method.startsWith("sessions.")) return lifecycleRpc(method, input);

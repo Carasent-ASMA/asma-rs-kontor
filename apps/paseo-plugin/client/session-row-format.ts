@@ -49,13 +49,19 @@ export function recordedChildUsageDetail(totals: SessionTotals | null | undefine
   return child ? `${child.label}: ↓ ${child.input.toLocaleString("en-US")} / ↑ ${child.output.toLocaleString("en-US")} · ${child.total.toLocaleString("en-US")} tokens · ${child.responses.toLocaleString("en-US")} responses. ${child.qualification}` : null;
 }
 
+/** Short row scope; exact values and coverage stay in the existing tap/click Details action. */
+export function recordedChildUsageCompact(totals: SessionTotals | null | undefined): string | null {
+  const child = totals?.recordedChildUsage;
+  return child ? `Recorded ↓${formatTokens(child.input).toLowerCase()} · ↑${formatTokens(child.output).toLowerCase()}` : null;
+}
+
 /** "↓ 124.8k" / "↑ 9.6k" with lowercase units; an unknown total is "↓ —", never 0. */
 export function tokenTotals(totals: SessionTotals | null | undefined): { readonly input: string; readonly output: string; readonly spoken: string } {
   const one = (value: number | null | undefined) => validTokenCount(value) ? formatTokens(value).toLocaleLowerCase() : null;
   const input = one(totals?.input), output = one(totals?.output);
   return {
     input: `${totals?.scope === "provider-cumulative" ? "reported " : ""}↓ ${input ?? "—"}`, output: `↑ ${output ?? "—"}`,
-    spoken: [(input === null && output === null ? "Session token totals unknown" : `${totals?.scope === "provider-cumulative" ? "Provider-reported cumulative" : "Session totals"}: ${input ?? "unknown"} input, ${output ?? "unknown"} output tokens`), recordedChildUsageDetail(totals)].filter(Boolean).join(". "),
+    spoken: [(input === null && output === null ? "Session token totals unknown" : `${totals?.scope === "provider-cumulative" ? "Provider-reported cumulative" : "Session totals"}: ${input ?? "unknown"} input, ${output ?? "unknown"} output tokens`), totals?.recordedChildUsage ? `${recordedChildUsageCompact(totals)}. Partial child response usage; exact counts and coverage in Details` : null].filter(Boolean).join(". "),
   };
 }
 
