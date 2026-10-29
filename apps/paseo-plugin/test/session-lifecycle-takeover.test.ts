@@ -1248,6 +1248,58 @@ describe("universal takeover operation", () => {
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
   });
 
+  it("Check preserves an observed archive and fence when source settings drift", async () => {
+    const h = await host({ archiveStatus: "idle", predecessor: agent("agent-1", { features: FEATURES }), features: FEATURES });
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    expect(h.agents.get("agent-1")!.archivedAt).not.toBeNull();
+    expect(await h.fence()).toHaveLength(1);
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, features: withPlan(false) });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    expect(checked.message).toContain("model settings changed");
+    expect(checked.message).not.toContain("Nothing was archived or created");
+    expect(await h.fence()).toHaveLength(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
+  });
+
+  it("Check keeps an observed archive and fence without settings drift", async () => {
+    const h = await host({ archiveStatus: "idle", predecessor: agent("agent-1", { features: FEATURES }), features: FEATURES });
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    expect(checked.message).not.toContain("model settings changed");
+    expect(await h.fence()).toHaveLength(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
+  });
+
+  it("Check preserves an observed archive and fence when source settings become unreadable", async () => {
+    const h = await host({ archiveStatus: "idle", predecessor: agent("agent-1", { features: FEATURES }), features: FEATURES });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, features: [{ type: "toggle", id: "", label: "Plan", value: true }] as NonNullable<Agent["features"]> });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    expect(checked.message).toContain("model settings");
+    expect(checked.message).not.toContain("Nothing was archived or created");
+    expect(await h.fence()).toHaveLength(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
+  });
+
+  it("Check reports a settled retirement without creating a successor", async () => {
+    const h = await host({ archiveStatus: "idle", predecessor: agent("agent-1", { features: FEATURES }), features: FEATURES });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "partial", phase: "archive", next: "check" });
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, status: "closed" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", phase: "archive", next: "none" });
+    expect(checked.message).toContain("retired");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
+  });
+
   it("reviews a running source without stopping or saving, then stops before the actual stock final summary", async () => {
     const source = agent("agent-1", { status: "running", currentModeId: "default" }) as Agent & { persistence: { sessionId: string } };
     source.persistence = { provider: "claude", sessionId: "source-session" };

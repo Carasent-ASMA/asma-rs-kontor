@@ -730,7 +730,7 @@ function sourceSettingsDrift(expected: string | null | undefined, agent: Agent):
   const read = sourceFeatureValues(agent);
   if (read.problem) return read.problem;
   return sourceSettingsFingerprint(read) === expected ? null
-    : "This session's listed model settings changed during its continuity checks. Review it again; nothing is retired.";
+    : "This session's listed model settings changed during its continuity checks. Review it again.";
 }
 function freshContinuity(receipt: TakeoverContinuity): boolean {
   const age = Date.now() - Date.parse(receipt.observedAt);
@@ -1475,11 +1475,14 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
           : outcome(record, "refused", "preserve", "Every managed child is detached and the predecessor is not archived. Nothing was retired; review again to continue.", null, "review");
       }
     } else if (stored.phase === "intent" || stored.phase === "archive") {
+      // Classify the observed archive first; settings drift may block further work but must not erase an
+      // already observed or uncertain retirement. Check remains read-only here.
+      const retired = await retirement(record, agentId, null, pinned.retiredSource);
       const source = await exact(agentId);
       const settings = source ? sourceSettingsDrift(pinned.sourceSettings, source) : null;
-      result = settings
-        ? outcome(record, "refused", "archive", `${settings} Nothing was archived or created; review again.`, null, "review")
-        : await retirement(record, agentId, null, pinned.retiredSource) ?? outcome(record, "partial", "archive", "The session was retired; no successor was created.", null, "none");
+      if (!retired) result = outcome(record, "partial", "archive",
+        `The session was retired; no successor was created.${settings ? ` ${settings}` : ""}`, null, "none");
+      else result = settings ? { ...retired, checkedAt: new Date().toISOString(), message: `${retired.message} ${settings}` } : retired;
     } else if (stored.phase === "create") {
       const created = await deps.create.check(spec.requestId);
       const stopped = await afterCreate(record, spec, created);
