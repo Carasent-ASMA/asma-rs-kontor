@@ -190,7 +190,9 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string): SessionSum
     if (result.status === "error") { job.state = "failed"; await writeJob(file, job); await cleanup(); throw new Error("The summary provider failed. No revision was saved; try again to start a new summary worker."); }
     let sections: z.infer<typeof sectionsSchema>;
     try {
-      sections = sectionsSchema.parse(JSON.parse(result.lastMessage!));
+      const response = result.lastMessage!.trim();
+      const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```$/.exec(response);
+      sections = sectionsSchema.parse(JSON.parse(fenced ? fenced[1]! : response));
       for (const text of Object.values(sections)) if (!text.trim()) throw new Error("Empty section");
     } catch {
       job.state = "failed"; await writeJob(file, job); await cleanup();
