@@ -145,8 +145,8 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         state.size = end; state.modified = stat.mtimeMs;
         await save(state);
         if (state.problem) return unknown(state.problem);
-        // A partial final line needs an append, not another identical timed scan.
-        if (state.offset < end && position === end) return unknown("awaiting source record completion");
+        // Empty sources and partial final lines need an append, not an identical timed scan.
+        if (position === end && (state.offset < end || !state.meta)) return unknown("awaiting source record completion");
         if (state.offset < end || !state.meta) return unknown("incomplete bounded source read");
         if (!state.counts) return unknown("no provider cumulative report");
         return { input: state.counts.input_tokens, output: state.counts.output_tokens, scope: "provider-cumulative",
