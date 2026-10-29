@@ -78,6 +78,15 @@ export const readSessionDispositions = defineRpc({ name: "sessions.lifecycle-dis
 
 /** Take over: one session is reviewed, then confirmed by its review ID, revision and the digest the server issued. */
 export const TAKEOVER_PROMPT = "The operator confirmed this takeover. Continue the task from the handoff summary in this session: read it, the conversation and the current workspace first, and keep the task scope, checkout, supervisor and permission boundaries. If context, authority or a dependency is missing, report it and wait. Do not create another session.";
+/** What every ordinary takeover states before its first effect; the host capability discloses the same list. */
+export const TAKEOVER_LIMITS = [
+  "Archive and creation are two host calls; no host primitive makes them one step.",
+  "A running session is stopped through the server-configured public Paseo CLI before its final summary is captured and it is archived. The stop is verified by reading the same host and source; if it remains active or its identity changes, nothing is archived or created.",
+  "Schedules and heartbeats are readable only through a qualified host schedules.forAgent or a complete, host-qualified public host-connector inventory. The installed public CLI schedule list filters new-agent rows and is never used as no-wake proof; without a complete read, retirement is blocked.",
+  "Managed children are detached through the public API and continue independently; the API exposes no re-parenting primitive.",
+  "The successor's first message is the saved handoff summary, not the whole conversation; continuation is observed on its timeline.",
+  "Check may deliver this operation's one continuation prompt when an earlier dispatch was not observed. It never creates another successor and never repeats a delivery that reads back.",
+];
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const takeoverReviewInputSchema = z.object({
   agentId: id,
@@ -98,7 +107,7 @@ export const takeoverReviewSchema = z.object({
   state: z.enum(["ready", "choose", "blocked", "refused", "unknown"]),
   message: z.string(),
   predecessor: z.object({ title: z.string(), workspaceId: id.nullable(), cwd: z.string(), provider: z.string(), model: z.string().nullable(), effort: z.string().nullable(), mode: z.string().nullable(), status: z.string() }).strict().nullable(),
-  ownership: z.enum(["ordinary", "created", "orchestrated"]).nullable(),
+  ownership: z.enum(["ordinary", "created", "orchestrated", "governed"]).nullable(),
   /** The configured chain the session takes over with: recorded for it, or chosen here from the server's choices. */
   association: z.object({ bindingKey: z.string().nullable(), source: z.enum(["recorded", "chosen"]).nullable(), choices: z.array(z.object({ bindingKey: z.string(), chain: z.string() }).strict()) }).strict(),
   route: z.object({ policyHash: z.string(), bindingKey: z.string(), chain: z.string(), selected: routeViewSchema.nullable(), considered: z.array(routeViewSchema.extend({ excluded: z.string().nullable() })) }).strict().nullable(),
@@ -119,10 +128,12 @@ export type TakeoverReview = z.infer<typeof takeoverReviewSchema>;
 export const takeoverOutcomeSchema = z.object({
   reviewId: z.string().uuid(), revision: z.number().int().positive(), agentId: id,
   state: z.enum(["refused", "uncertain", "partial", "succeeded"]),
-  phase: z.enum(["preflight", "intent", "archive", "create", "verify", "release", "done"]),
+  phase: z.enum(["preflight", "stop", "preserve", "intent", "archive", "create", "verify", "release", "done"]),
+  /** The ordinary operation stage: preparing, retiring, creating, delivering or complete; failures keep their stage. */
+  stage: z.enum(["preparing", "retiring", "creating", "delivering", "complete", "failed", "uncertain"]).optional(),
   message: z.string(),
   successor: z.object({ requestId: z.string().uuid(), agentId: id.nullable(), title: z.string() }).strict().nullable(),
-  /** review: a fresh review may start. check: only Check, a read with no effect, may run. none: nothing here helps. */
+  /** review: a fresh review may start. check: only Check may run; it reads, and may deliver the one continuation with this operation's stable ID. none: nothing here helps. */
   next: z.enum(["review", "check", "none"]),
   checkedAt: z.string(),
 }).strict();

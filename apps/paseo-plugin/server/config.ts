@@ -13,6 +13,12 @@ export interface KontorPluginConfig {
   readonly mcpCommand: string;
   /** The `kontor` command a confirmed native takeover runs for its one local fleet selection read. */
   readonly cliCommand: string;
+  /** The installed public Paseo CLI used only by the bounded stop and schedule-read adapter. */
+  readonly paseoCommand: string;
+  /** Optional daemon home passed to the public CLI; never read from a review or UI caller. */
+  readonly paseoHome: string | null;
+  /** Optional daemon host passed to the public CLI; never read from a review or UI caller. */
+  readonly paseoHost: string | null;
   /** Whether `agent.create` adds the Kontor MCP server. */
   readonly mcpEnabled: boolean;
   /** Optional `--serve-profile` narrowing, passed through unchanged. */
@@ -69,6 +75,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): KontorPluginCo
     stateRoot,
     mcpCommand: env.KONTOR_PLUGIN_MCP_COMMAND?.trim() || DEFAULT_MCP_COMMAND,
     cliCommand: env.KONTOR_PLUGIN_CLI_COMMAND?.trim() || DEFAULT_CLI_COMMAND,
+    paseoCommand: env.KONTOR_PLUGIN_PASEO_COMMAND?.trim() || "paseo",
+    paseoHome: env.KONTOR_PLUGIN_PASEO_HOME?.trim() || paseoHome || null,
+    paseoHost: env.KONTOR_PLUGIN_PASEO_HOST?.trim() || null,
     mcpEnabled: env.KONTOR_PLUGIN_MCP !== "off",
     serveProfile,
     placementRoots: parseRoots(env.KONTOR_PLUGIN_PLACEMENT_ROOTS, home),

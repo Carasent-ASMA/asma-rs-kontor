@@ -19,6 +19,8 @@ import { promotionRecordSchema } from "../shared/session-promotion";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
+import { createSessionSummaryService } from "../server/session-summaries";
+import { stockSummaryGenerator } from "../server/stock-summary-generator";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
@@ -48,13 +50,13 @@ const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "x
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
+async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
   const root = join(tmp, "lifecycle"), createRoot = join(tmp, "create");
   const agents = new Map([predecessor, ...others].map((value) => [value.id, value]));
   const timelines = new Map<string, { item: Record<string, unknown> }[]>([[predecessor.id, [{ item: { type: "assistant_message", text: SUMMARY } }]]]);
-  const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][] };
-  let created = 0;
+  const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][], detach: [] as string[] };
+  let created = 0, releaseVisible = !hideRelease, sendCalls = 0;
   const issuedAt = resolverInstant(Date.now());
   const client = {
     workspaces: {
@@ -81,7 +83,8 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
       ref: (id: string) => ({
         refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: null } : null; },
         archive: async () => { effects.archive.push(id); agents.set(id, { ...agents.get(id)!, archivedAt: "2026-10-25T09:01:00Z", status: archiveStatus as Agent["status"] }); return { archivedAt: "2026-10-25T09:01:00Z" }; },
-        send: async (text: string, options?: { messageId?: string }) => { effects.send.push({ id, text, messageId: options?.messageId }); timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
+        send: async (text: string, options?: { messageId?: string }) => { if (failFirstSend && ++sendCalls === 1) throw new Error("process died before dispatch"); effects.send.push({ id, text, messageId: options?.messageId }); if (releaseVisible) timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
+        detach: async () => { effects.detach.push(id); const value = agents.get(id); if (value?.labels) { const { ["paseo.parent-agent-id"]: _parent, ...rest } = value.labels; value.labels = rest; } },
         timeline: { refetch: async () => ({ entries: timelines.get(id) ?? [] }) },
       }),
     },
@@ -96,10 +99,20 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     return JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 200, body: { considered: [{ route: selected }], eligibility: { excluded_vendors: [], unavailable_accounts: [] }, excluded_by_policy: [],
       provenance: { binding_key: key, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 }, route_health: evidence, selected, selected_validity: { observed_at: evidence.observations[0]?.observed_at ?? issuedAt, valid_until: resolverInstant(Date.parse(evidence.observations[0]?.observed_at ?? issuedAt) + evidence.max_age_seconds * 1000) } } });
   };
-  const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
+  const summaryRoot = join(tmp, "summaries");
+  const summaries = createSessionSummaryService(client as never, summaryRoot, {
+    generate: async (agentId: string) => {
+      const page = await client.agents.ref(agentId).timeline.refetch() as { entries?: { item: { type: string; text?: string } }[]; error?: string | null };
+      if (page.error) throw new Error("The source history could not be captured consistently.");
+      const text = [...(page.entries ?? [])].reverse().find((entry) => entry.item.type === "assistant_message" && entry.item.text?.trim())?.item.text?.trim() ?? SUMMARY;
+      return { sections: { task: text, decisions: "Keep the verified decisions.", currentState: "The task is at its captured checkpoint.", nextStep: "Continue the captured next action." }, cutoff: "2026-10-25T08:00:00Z" };
+    },
+  });
+  const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"), undefined, undefined, summaryRoot);
   const observedAt = new Date().toISOString();
   const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, promotionRoot: createRoot,
+    summaries, snapshot: async () => ({ ...SNAPSHOT, requestId: "snapshot-1", generatedAt: new Date().toISOString(), entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
     operatorFleetDiscovery: async () => ({ choices, catalog: fleetCatalog }),
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
@@ -111,7 +124,8 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     return first.state === "choose" ? service.review({ agentId, reviewId: first.reviewId, revision: first.revision, bindingKey: KEY }) : first;
   };
   const fence = () => readdir(root).then((names) => names.filter((name) => name.startsWith("intent-")));
-  return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
+  const showRelease = () => { releaseVisible = true; const last = effects.send.at(-1); if (last) timelines.get(last.id)!.push({ item: { type: "user_message", text: last.text, messageId: last.messageId } }); };
+  return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, showRelease, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
 }
 
 
@@ -240,9 +254,10 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
 
 describe("direct takeover continuity", () => {
   type Host = Awaited<ReturnType<typeof host>>;
-  const productionContinuity = (h: Host, schedules?: { forAgent: (agentId: string) => Promise<{ entries: unknown[] }> }) => {
+  const productionContinuity = (h: Host, schedules?: { forAgent: (agentId: string) => Promise<{ entries: unknown[] }> }, completeSchedules?: NonNullable<TakeoverDeps["completeSchedules"]>) => {
     if (schedules) (h.client as { schedules?: typeof schedules }).schedules = schedules;
-    h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id);
+    h.deps.completeSchedules = completeSchedules;
+    h.deps.continuity = (agentId, id) => readTakeoverContinuity(h.client as never, h.root, agentId, id, { completeSchedules });
     return h;
   };
   const noRetirementEffects = (h: Host) => {
@@ -265,7 +280,7 @@ describe("direct takeover continuity", () => {
       expect(receipt?.wakes).toBe("unknown");
       const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
       expect(review.state).toBe("unknown");
-      expect(review.message).toMatch(/wake-continuity receipt/i);
+      expect(review.message).toMatch(/source-linked scheduled wakes/i);
       expect(review.digest).toBeNull();
       noRetirementEffects(h);
     });
@@ -316,7 +331,7 @@ describe("direct takeover continuity", () => {
       const h = productionContinuity(await host());
       const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
       expect(review.state).toBe("unknown");
-      expect(review.message).toMatch(/wake-continuity receipt/i);
+      expect(review.message).toMatch(/scheduled-wake reader/i);
       expect(review.digest).toBeNull();
       noRetirementEffects(h);
     });
@@ -381,15 +396,155 @@ describe("direct takeover continuity", () => {
     });
   });
 
-  it("refuses takeover when a visible managed child is present (wakes preserved on reader)", async () => {
+  it("settles an archived direct source without a schedules read", async () => {
+    const predecessor = agent("agent-1", { archivedAt: "2026-10-25T08:30:00Z", status: "closed" });
+    const h = await host({ predecessor });
+    h.deps.continuity = (agentId, requestId) => readTakeoverContinuity(h.client as never, h.root, agentId, requestId);
+    const requestId = "44444444-4444-4444-8444-444444444444";
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+    expect(receipt).toMatchObject({ surface: "direct", wakes: "clear" });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state).toBe("ready");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 1, 1]);
+  });
+
+  const complete = (schedules: { target: { type: "agent" | "self"; agentId: string } | { type: "new-agent" }; status: string }[], hostId = "host-1") =>
+    async () => ({ complete: true as const, hostId, schedules });
+
+  it("settles a live source from an empty complete host inventory", async () => {
+    const h = productionContinuity(await host(), undefined, complete([]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "77777777-7777-4777-8777-777777777777", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt).toMatchObject({ surface: "direct", wakes: "clear", wakeHost: "host-1" });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+  });
+
+  it("settles a live source when the complete inventory contains only unrelated rows", async () => {
+    const h = productionContinuity(await host(), undefined, complete([
+      { target: { type: "agent", agentId: "other-agent" }, status: "active" },
+      { target: { type: "new-agent" }, status: "paused" },
+    ]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "88888888-8888-4888-8888-888888888888", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt).toMatchObject({ wakes: "clear", wakeHost: "host-1" });
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("ready");
+  });
+
+  it("does not turn a partial or unreadable complete inventory into clear", async () => {
+    for (const read of [
+      { complete: false as const, gap: "The complete inventory is partial." },
+      { complete: false as const, gap: "The complete inventory is unreadable." },
+    ]) {
+      const h = productionContinuity(await host(), undefined, async () => read);
+      const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "99999999-9999-4999-8999-999999999999", { completeSchedules: h.deps.completeSchedules });
+      expect(receipt?.wakes).toBe("unknown");
+      expect(receipt?.wakeGap).toBe(read.gap);
+      expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+    }
+  });
+
+  it("blocks an ongoing exact source-linked scheduled duty without dropping it", async () => {
+    const h = productionContinuity(await host(), undefined, complete([{ target: { type: "agent", agentId: "agent-1" }, status: "paused" }]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("ongoing source-linked scheduled duty");
+    expect(receipt?.wakeGap).toContain("retirement is blocked");
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+  });
+
+  it.each(["", " ", "\t"])("does not turn an empty or whitespace complete-inventory target into clear (%j)", async (agentId) => {
+    const h = productionContinuity(await host(), undefined, complete([{ target: { type: "agent", agentId }, status: "active" }]));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "cccccccc-cccc-4ccc-8ccc-cccccccccccc", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("empty, whitespace or missing target identity");
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+  });
+
+  it("requires an exact daemon host identity for a complete inventory", async () => {
+    const h = productionContinuity(await host(), undefined, complete([], ""));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", { completeSchedules: h.deps.completeSchedules });
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("exact daemon host identity");
+    expect((await h.service.review({ agentId: "agent-1", bindingKey: KEY })).state).toBe("unknown");
+  });
+
+  it("preserves a visible managed child by detaching it, never archiving it, with a qualified clear schedule read", async () => {
     const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
-    const h = productionContinuity(await host({ others: [child] }));
+    const h = productionContinuity(await host({ others: [child] }), { forAgent: async () => ({ entries: [] }) });
     const requestId = "22222222-2222-4222-8222-222222222222";
     const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
-    expect(receipt?.wakes).toBe("preserved");
+    expect(receipt?.wakes).toBe("clear");
     const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
-    expect(review.state).toBe("refused");
-    expect(review.message).toMatch(/active child sessions/i);
+    expect(review.state).toBe("ready");
+    expect(review.limits.join(" ")).toMatch(/detach/i);
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(h.agents.get("child-1")!.labels?.["paseo.parent-agent-id"]).toBeUndefined();
+    expect(h.agents.get("child-1")!.archivedAt).toBeNull();
+    expect(h.effects.archive).toEqual(["agent-1"]);
+    expect(h.effects.create).toHaveLength(1);
+  });
+
+  it("refuses before stop when the complete schedule host changes after review", async () => {
+    let reads = 0;
+    const reader = async () => ({ complete: true as const, hostId: reads++ === 0 ? "host-A" : "host-B", schedules: [] });
+    const h = productionContinuity(await host({ predecessor: agent("agent-1", { status: "running" }) }), undefined, reader);
+    const stop = vi.fn(async () => ({ ok: true as const }));
+    h.deps.publicCli = { stop };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", next: "review" });
+    expect(stop).not.toHaveBeenCalled();
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("refuses after stop when the complete schedule host changes before final capture", async () => {
+    let reads = 0;
+    const reader = async () => ({ complete: true as const, hostId: reads++ < 2 ? "host-A" : "host-B", schedules: [] });
+    const h = productionContinuity(await host({ predecessor: agent("agent-1", { status: "running" }) }), undefined, reader);
+    const stop = vi.fn(async (id: string) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("stops and completes a running source when the complete schedule host stays pinned", async () => {
+    const h = productionContinuity(await host({ predecessor: agent("agent-1", { status: "running" }) }), undefined, complete([], "host-A"));
+    const stop = vi.fn(async (id: string) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state, review.message).toBe("ready");
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("childful live source with no schedule reader is unknown, never preserved", async () => {
+    const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
+    const h = productionContinuity(await host({ others: [child] }));
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "55555555-5555-4555-8555-555555555555");
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("No qualified complete scheduled-wake reader");
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state).toBe("unknown");
+    expect(review.digest).toBeNull();
+    noRetirementEffects(h);
+  });
+
+  it("childful live source with active source-linked wakes is unknown, never preserved", async () => {
+    const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
+    const h = productionContinuity(await host({ others: [child] }), { forAgent: async () => ({ entries: [{ id: "hb-1", agentId: "agent-1" }] }) });
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", "66666666-6666-4666-8666-666666666666");
+    expect(receipt?.wakes).toBe("unknown");
+    expect(receipt?.wakeGap).toContain("source-linked scheduled wakes");
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state).toBe("unknown");
     noRetirementEffects(h);
   });
 });
@@ -460,9 +615,8 @@ describe("takeover review", () => {
     const cases: [Partial<Agent>, string][] = [
       [{ labels: { "kontor.seat_binding_id": "seat-1" } }, "Kontor-governed seat"],
       [{ labels: { orchestration: "paseo-direct" } }, "names no owning session"],
-      [{ archivedAt: "2026-10-25T08:30:00Z", status: "closed" }, "Already archived"],
       [{ pendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"], status: "idle" }, "Waiting for permission"],
-      [{ status: "running" }, "Running or starting"],
+      [{ status: "running" }, "public Paseo CLI stop adapter"],
       [{ cwd: "/fixtures/wks-1/sub" }, "outside its workspace directory"],
       [{ labels: { orchestration: "paseo-direct", "paseo.parent-agent-id": "gone" } }, "owning session is not active"],
       [{ labels: { "create.request": "0f1e2d3c-4b5a-4968-8776-655443322110" } }, "creation record"],
@@ -475,8 +629,10 @@ describe("takeover review", () => {
       expect(review.digest).toBeNull();
       expect(h.effects.resolve, reason).toHaveLength(0);
     }
-    const child = await host({ others: [agent("child-1", { status: "idle", labels: { "paseo.parent-agent-id": "agent-1" } })] });
-    expect((await child.service.review({ agentId: "agent-1", bindingKey: KEY })).message).toContain("active child sessions");
+    const child = await host({ others: [agent("child-1", { status: "idle", title: "Child task", labels: { "paseo.parent-agent-id": "agent-1" } })] });
+    const childReview = await child.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(childReview.state, childReview.message).toBe("ready");
+    expect(childReview.limits.join(" ")).toMatch(/detach/i);
     // A governed seat with its labels removed still sits in a Kontor placement.
     const stripped = await host();
     stripped.deps.config = { ...stripped.deps.config, placementRoots: ["/fixtures"] };
@@ -576,7 +732,7 @@ describe("takeover review", () => {
   it("refuses a label-stripped governed session even outside the known placement roots", async () => {
     const h = await host(), good = h.deps.continuity!;
     h.deps.continuity = async (...args) => ({ ...(await good(...args))!, surface: "governed" });
-    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", digest: null, message: expect.stringContaining("governed lifecycle writer") });
+    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", digest: null, message: expect.stringContaining("authority writer") });
     expect([h.effects.archive.length, h.effects.create.length]).toEqual([0, 0]);
   });
 
@@ -710,7 +866,7 @@ describe("takeover apply", () => {
       h.agents.set("child", agent("child", { labels: { "paseo.parent-agent-id": "agent-1" } }));
       return answer;
     } };
-    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", message: expect.stringContaining("child appeared") });
+    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", message: expect.stringContaining("Managed children changed") });
     expect(h.effects.archive).toEqual([]);
   });
 
@@ -766,17 +922,16 @@ describe("takeover apply", () => {
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
   });
 
-  it("reconciles a lost creation reply on the same request and never creates or releases again", async () => {
+  it("reconciles a lost creation reply on the same request and Check delivers the one continuation", async () => {
     const h = await host({ loseCreateReply: true });
     const review = await h.ready();
     const result = await h.apply(review);
     expect(result).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
     const checked = await h.service.check(review.reviewId);
-    expect(checked).toMatchObject({ state: "partial", phase: "verify", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
-    expect(checked.message).toContain("its task was not released");
+    expect(checked).toMatchObject({ state: "succeeded", phase: "done", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.service.check(review.reviewId)).toEqual(checked);
     expect(await h.apply(review)).toEqual(checked);
-    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 
   it("reconciles a lost task-release reply by the same message ID and rechecks the successor", async () => {
@@ -787,9 +942,383 @@ describe("takeover apply", () => {
       expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
       h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "running" });
       if (drift) h.agents.set("successor-1", { ...h.agents.get("successor-1")!, model: "another-model" });
-      expect(await h.service.check(review.reviewId)).toMatchObject({ state: drift ? "uncertain" : "succeeded" });
+      expect(await h.service.check(review.reviewId)).toMatchObject({ state: drift ? "partial" : "succeeded" });
+      expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+      expect(await h.service.check(review.reviewId)).toEqual(await h.service.check(review.reviewId));
       expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
     }
+  });
+});
+
+describe("universal takeover operation", () => {
+  it("uses one operation and create request ID and records it on the successor", async () => {
+    const h = await host(), review = await h.ready();
+    expect(review.successor!.requestId).toBe(review.reviewId);
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded", reviewId: review.reviewId });
+    expect(h.effects.create[0]!.idempotencyKey).toBe(review.reviewId);
+    expect((h.effects.create[0]!.labels as Record<string, string>)["create.request"]).toBe(review.reviewId);
+  });
+
+  it("takes over an archived source from its history without reviving or prompting it", async () => {
+    const predecessor = agent("agent-1", { archivedAt: "2026-10-25T08:30:00Z", status: "closed" });
+    const h = await host({ predecessor });
+    const review = await h.ready();
+    expect(review).toMatchObject({ state: "ready", predecessor: { status: "closed" } });
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.archive).toEqual([]);
+    expect(h.effects.create).toHaveLength(1);
+    expect(h.effects.send).toHaveLength(1);
+    expect(h.effects.send[0]!.id).toBe("successor-1");
+    expect(h.agents.get("agent-1")!.archivedAt).toBe("2026-10-25T08:30:00Z");
+  });
+
+  it.each(["LSA", "TPM", "SWE", "QA", "JUDGE", null] as const)("takes over an ordinary session with role %s unchanged", async (role) => {
+    const predecessor = agent("agent-1", { labels: { ...(role ? { role } : {}), note: "not carried" } });
+    const h = await host({ predecessor });
+    const review = await h.ready();
+    expect(review.state).toBe("ready");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.labels).toMatchObject(role ? { role } : {});
+    if (!role) expect(h.effects.create[0]!.labels).not.toHaveProperty("role");
+  });
+
+  it.each(["claude", "codex", "gemini", "opencode"])("captures a %s source independently of the replacement provider", async (provider) => {
+    const h = await host({ predecessor: agent("agent-1", { provider }) });
+    const review = await h.ready();
+    expect(review).toMatchObject({ state: "ready", predecessor: { provider } });
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.config).toMatchObject({ provider: "claude-a/claude-opus-5", modeId: "default" });
+  });
+
+  it.each(["claude-a", "codex-a"])("takes over on an explicitly picked %s route without the configured-chain resolver", async (targetProvider) => {
+    const h = await host({ targetProvider });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "ready", successor: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh", mode: "default" } });
+    expect(h.effects.resolve).toHaveLength(0);
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.config).toMatchObject({ provider: `${targetProvider}/claude-opus-5`, modeId: "default", thinkingOptionId: "xhigh" });
+  });
+
+  it("rejects a stale provider observation for an explicitly picked route", async () => {
+    const h = await host(), now = Date.parse("2026-10-25T09:10:00.000Z");
+    vi.useFakeTimers({ now });
+    try {
+      h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "stale", generatedAt: new Date(now - 301_000).toISOString(),
+        entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      expect(review).toMatchObject({ state: "refused", digest: null });
+      expect(review.message).toMatch(/old|window/i);
+      expect(h.effects.resolve).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rejects a future or unqualified provider snapshot for an explicitly picked route", async () => {
+    const h = await host(), now = Date.parse("2026-10-25T09:10:00.000Z");
+    vi.useFakeTimers({ now });
+    try {
+      h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "future", generatedAt: new Date(now + 60_000).toISOString(),
+        entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      expect(review).toMatchObject({ state: "refused", digest: null });
+      expect(review.message).toMatch(/unavailable or unobserved|future/i);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps semantic identity across a fresh transport request and a clock-only change", async () => {
+    const h = await host();
+    let request = 0;
+    h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: `transport-${++request}`, generatedAt: new Date().toISOString(),
+      entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "ready" });
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect([h.effects.archive.length, h.effects.create.length]).toEqual([1, 1]);
+  });
+
+  it("accepts a clock-only refresh of the same explicitly picked observation", async () => {
+    const t0 = Date.parse("2026-10-25T09:00:00.000Z");
+    vi.useFakeTimers({ now: t0 });
+    try {
+      const h = await host();
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      expect(review).toMatchObject({ state: "ready" });
+      vi.advanceTimersByTime(1000);
+      expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reports the exact missing host stop primitive instead of a running-state prohibition", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    const review = await h.ready();
+    expect(review).toMatchObject({ state: "refused", digest: null });
+    expect(review.message).toContain("public Paseo CLI stop adapter");
+    expect(review.message).toContain("Nothing was retired");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("re-checks predecessor retirement at the shared delivery boundary after creation", async () => {
+    const h = await host();
+    const createSeat = h.deps.create.createSeat;
+    let created = false, readsAfterCreate = 0;
+    h.deps.create = { ...h.deps.create, createSeat: async (...args) => { const outcome = await createSeat(...args); created = true; return outcome; } };
+    const ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      if (id !== "agent-1") return handle;
+      return { ...handle, refresh: async () => {
+        if (created && ++readsAfterCreate === 2) h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "running" });
+        return handle.refresh();
+      } };
+    };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "partial", next: "none", successor: { agentId: "successor-1" } });
+    expect(applied.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+    expect(await readFile(join(h.root, `takeover-successor-${hash("agent-1")}.json`), "utf8")).toContain("successor-1");
+  });
+
+  it("stops a running source before archive and takes the final summary after the stop", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) }), order: string[] = [];
+    h.deps.publicCli = {
+      stop: async (id) => { order.push(`stop:${id}`); h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); h.timelines.get(id)!.push({ item: { type: "assistant_message", text: "Final summary after the stop." } }); return { ok: true }; }
+    };
+    const ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle, archive: async () => { order.push(`archive:${id}`); return handle.archive(); } }; };
+    const review = await h.ready();
+    expect(review.state).toBe("ready");
+    expect(review.limits.join(" ")).toMatch(/Apply stops the exact source/);
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(order).toEqual(["stop:agent-1", "archive:agent-1"]);
+    expect(h.effects.create).toHaveLength(1);
+    expect(String(h.effects.create[0]!.prompt)).toContain("Final summary after the stop.");
+  });
+
+  it("refuses a running source when the public CLI is unavailable, with no archive or create", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    h.deps.publicCli = { stop: async () => ({ ok: false, unavailable: true, message: "The configured public Paseo CLI paseo could not be found." }) };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(applied.message).toContain("could not be found");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("refuses a running source that remains active after the stop, with no archive or create", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    h.deps.publicCli = { stop: async () => ({ ok: true }) };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(applied.message).toContain("still running");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("refuses a stopped source whose title changed during the stop, with no archive or create", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle", title: "Changed title" }); return { ok: true }; } };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(applied.message).toContain("title");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("Check reconciles a lost stop reply without archive, create or send", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    h.deps.publicCli = { stop: async (id) => { h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); throw new Error("stop reply lost"); } };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "uncertain", phase: "stop", next: "check" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "refused", phase: "stop", next: "review" });
+    expect(checked.message).toContain("stop is complete");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("reviews a running source without stopping or saving, then stops before the actual stock final summary", async () => {
+    const source = agent("agent-1", { status: "running", currentModeId: "default" }) as Agent & { persistence: { sessionId: string } };
+    source.persistence = { provider: "claude", sessionId: "source-session" };
+    const h = await host({ predecessor: source });
+    h.agents.set("agent-1", source);
+    h.timelines.set("agent-1", [
+      { item: { type: "user_message", text: "Do the work", clientMessageId: "source-user" }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:00:00Z" },
+      { item: { type: "assistant_message", text: "The parser is fixed; the migration is next." }, seqStart: 2, seqEnd: 2, timestamp: "2026-10-25T08:01:00Z" },
+    ] as never);
+    const sourcePage = () => ({ agent: h.agents.get("agent-1"), agentId: "agent-1", entries: h.timelines.get("agent-1") ?? [],
+      epoch: "source-epoch", gap: null, staleCursor: null, hasOlder: false, hasNewer: false });
+    const helperSections = JSON.stringify({ task: "Keep the parser fix.", decisions: "Keep the migration.", currentState: "The source is stopped.", nextStep: "Continue the migration." });
+    const order: string[] = [];
+    const ref = h.client.agents.ref;
+    h.client.agents.ref = (id: string) => {
+      const handle = ref(id);
+      return { ...handle,
+        archive: async () => { if (id === "agent-1") order.push("archive"); return handle.archive(); },
+        timeline: { refetch: async (options?: { projection?: string }) => options?.projection === "canonical"
+          ? (id === "agent-1" ? sourcePage() : { agent: h.agents.get(id), agentId: id, entries: h.timelines.get(id) ?? [], epoch: "helper-epoch", gap: null, staleCursor: null, hasOlder: false, hasNewer: false }) as never
+          : handle.timeline.refetch() },
+        waitForFinish: async () => {
+          const entries = h.timelines.get(id) ?? [];
+          entries.push({ item: { type: "assistant_message", text: helperSections }, seqStart: 2, seqEnd: 2, timestamp: "2026-10-25T08:02:00Z" } as never);
+          h.timelines.set(id, entries);
+          return { status: "idle" as const, final: null, error: null, lastMessage: helperSections };
+        },
+      } as typeof handle;
+    };
+    (h.client as unknown as { agents: { create: (input: Record<string, unknown> & { agentId: string; config: { provider: string }; prompt?: string; clientMessageId: string; title: string; cwd: string; labels: Record<string, string> }) => Promise<unknown> } }).agents.create = async (input) => {
+      const [provider, model] = input.config.provider.split("/");
+      const helper = agent(input.agentId, { title: input.title, labels: input.labels, provider: provider!, model: model!, cwd: input.cwd, workspaceId: "wks-1", status: "idle", currentModeId: "default", persistence: { sessionId: `helper-${input.agentId}` } } as Partial<Agent>);
+      h.agents.set(helper.id, helper);
+      h.timelines.set(helper.id, [{ item: { type: "user_message", text: input.prompt ?? "", clientMessageId: input.clientMessageId }, seqStart: 1, seqEnd: 1, timestamp: "2026-10-25T08:01:30Z" } as never]);
+      return { id: helper.id, ...h.client.agents.ref(helper.id) };
+    };
+    const summaryRoot = join(h.root, "..", "summaries");
+    const summaries = createSessionSummaryService(h.client as never, summaryRoot, stockSummaryGenerator(h.client as never, summaryRoot));
+    h.deps.summaries = summaries;
+    const saveOriginal = summaries.save.bind(summaries);
+    const save = vi.spyOn(summaries, "save").mockImplementation(async (id) => { order.push("save"); return saveOriginal(id); });
+    const stop = vi.fn(async (id: string) => { order.push("stop"); h.agents.set(id, { ...h.agents.get(id)!, status: "idle" }); return { ok: true as const }; });
+    h.deps.publicCli = { stop };
+    const review = await h.ready();
+    expect(review.state, review.message).toBe("ready");
+    expect(stop).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["stop", "save", "archive"]);
+    expect(h.effects.archive.filter((id) => id === "agent-1")).toEqual(["agent-1"]);
+    expect(h.effects.archive).toHaveLength(2);
+    expect(h.effects.create).toHaveLength(1);
+    expect(String(h.effects.create[0]!.prompt)).toContain("Keep the parser fix.");
+  });
+
+  it("settles a crash before the release send with exactly one delivery and no second successor", async () => {
+    const h = await host({ failFirstSend: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 0]);
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 1]);
+    expect(await h.service.check(review.reviewId)).toEqual(checked);
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it.each(["absent", "foreign"] as const)("does not send or create from Check when this operation's fence is %s", async (kind) => {
+    const h = await host({ loseCreateReply: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
+    const fence = join(h.root, `intent-${hash("agent-1")}.json`), operation = join(h.root, `takeover-operation-${review.reviewId}.json`);
+    if (kind === "absent") await rm(fence, { force: true });
+    else await writeFile(fence, JSON.stringify({ reviewId: randomUUID(), agentId: "agent-1", action: "archive", phase: "intent", fingerprint: "x", token: randomUUID() }));
+    const before = await readFile(operation, "utf8");
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "uncertain", next: "check" });
+    expect(checked.message).toContain("fence");
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 0]);
+    expect(await readFile(operation, "utf8")).toBe(before);
+  });
+
+  it("returns the delivered operation on repeated Check without another send", async () => {
+    const h = await host();
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "succeeded", next: "none" });
+    expect(await h.service.check(review.reviewId)).toEqual(checked);
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("refuses a fresh takeover after success with the exact recorded successor and no new effect", async () => {
+    const h = await host();
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
+    const refused = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(refused).toMatchObject({ state: "refused" });
+    expect(refused.message).toContain("successor-1");
+    expect(refused.message).toContain("does not create another successor");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("refuses a fresh takeover after a crash out of create before release without a second successor", async () => {
+    const h = await host({ failFirstSend: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    const refused = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(refused).toMatchObject({ state: "refused" });
+    expect(refused.message).toContain("successor-1");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+  });
+
+  it("fails closed on a corrupt successor marker even when a lineage label exists", async () => {
+    const h = await host();
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
+    await writeFile(join(h.root, `takeover-successor-${hash("agent-1")}.json`), "{not-json");
+    const unknown = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(unknown).toMatchObject({ state: "unknown" });
+    expect(unknown.message).toContain("successor record could not be read");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("uses the successor lineage label when no marker was written, before any summary or route", async () => {
+    const h = await host();
+    h.agents.set("successor-1", agent("successor-1", { labels: { [TAKEOVER_PREDECESSOR_LABEL]: "agent-1" } }));
+    const refused = await h.service.review({ agentId: "agent-1", bindingKey: null });
+    expect(refused).toMatchObject({ state: "refused" });
+    expect(refused.message).toContain("successor-1");
+    expect(refused.message).toContain(TAKEOVER_PREDECESSOR_LABEL);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length, h.effects.resolve.length]).toEqual([0, 0, 0, 0]);
+  });
+
+  it("does not release a verified successor when the source was revived before Check", async () => {
+    const h = await host({ loseCreateReply: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "idle" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", next: "none", successor: { agentId: "successor-1" } });
+    expect(checked.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+  });
+
+  it("re-checks the predecessor inside the creation core and creates no successor after revival", async () => {
+    const h = await host(), original = h.deps.create.createSeat;
+    h.deps.create = { ...h.deps.create, createSeat: async (requestId, build) => {
+      h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "idle" });
+      return original(requestId, build);
+    } };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "partial", next: "none", successor: { agentId: null } });
+    expect(applied.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
+  });
+
+  it("does not release the continuation when the source was revived before Check at release", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle, send: async (...args) => { await handle.send(...args); throw new Error("lost reply"); } }; };
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "idle" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", next: "none" });
+    expect(checked.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+  });
+
+  it("does not equate queued delivery with observed continuation", async () => {
+    const h = await host({ hideRelease: true });
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    expect(applied.message).toContain("not continuation");
+    h.showRelease();
+    expect(await h.service.check(review.reviewId)).toMatchObject({ state: "succeeded", phase: "done" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 });
 
@@ -895,9 +1424,9 @@ describe("PR506 review rework", () => {
     expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
     now += 61_001;
     const result = await h.service.check(review.reviewId);
-    expect(result).toMatchObject({ state: "partial", phase: "verify", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
+    expect(result).toMatchObject({ state: "succeeded", phase: "done", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.apply(review)).toEqual(result);
-    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 });
 
@@ -941,7 +1470,7 @@ describe("LSA-8641-CP2-01 sealed effect validity", () => {
     }; };
     h.client.workspaces.ref = (id) => ({ ...workspace(id), refresh: async () => {
       const found = await workspace(id).refresh();
-      if (stage === "archive workspace" && nativeReads === 3 && !h.effects.archive.length) now += wait;
+      if (stage === "archive workspace" && nativeReads >= 3 && !h.effects.archive.length) now += wait;
       if (h.effects.archive.length && ++createWorkspaceReads === 2 && stage === "native create workspace") now += wait;
       return found;
     } });
@@ -994,9 +1523,9 @@ describe("LSA-8641-CP2-01 sealed effect validity", () => {
     expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: stage, next: "check" });
     now += 2001;
     const result = await h.service.check(review.reviewId);
-    expect(result).toMatchObject({ state: stage === "create" ? "partial" : "succeeded", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
+    expect(result).toMatchObject({ state: "succeeded", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.apply(review)).toEqual(result);
-    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, stage === "create" ? 0 : 1]);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
     expect(h.effects.resolve).toHaveLength(2);
   });
 });

@@ -6,7 +6,7 @@ import type { PaseoAgentListResult } from "@getpaseo/client";
 import type { KontorPluginConfig } from "./config";
 import { PASEO_DIRECT_ORCHESTRATION, hasKontorLabels, parent, seatBinding } from "./labels";
 import { observeRefusal, type RefusalAgent, type RefusalObservation } from "../shared/provider-block";
-import { CREATE_REQUEST_LABEL } from "../shared/session-create";
+import { CREATE_REQUEST_LABEL, featureValuesSchema } from "../shared/session-create";
 
 type Agent = PaseoAgentListResult["entries"][number]["agent"];
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -235,10 +235,10 @@ const takeoverSpecPin = (spec: { effectValidity?: unknown }) => {
 /** Continuity facts apply pins; observation time is freshness-only at assess/apply. */
 export type TakeoverContinuitySemantics = Pick<
   import("./session-lifecycle.js").TakeoverContinuity,
-  "agentId" | "requestId" | "revision" | "surface" | "wakes" | "owner"
+  "agentId" | "requestId" | "revision" | "surface" | "wakes" | "wakeHost" | "owner"
 >;
 export function takeoverContinuitySemantics(receipt: TakeoverContinuitySemantics): TakeoverContinuitySemantics {
-  return { agentId: receipt.agentId, requestId: receipt.requestId, revision: receipt.revision, surface: receipt.surface, wakes: receipt.wakes, owner: receipt.owner };
+  return { agentId: receipt.agentId, requestId: receipt.requestId, revision: receipt.revision, surface: receipt.surface, wakes: receipt.wakes, wakeHost: receipt.wakeHost ?? null, owner: receipt.owner };
 }
 export function takeoverContinuitySemanticsMatch(left: TakeoverContinuitySemantics, right: TakeoverContinuitySemantics): boolean {
   return isDeepStrictEqual(takeoverContinuitySemantics(left), takeoverContinuitySemantics(right));
@@ -296,6 +296,54 @@ export type TakeoverRoute = {
 const view = (route: z.infer<typeof routeSchema>): RouteView =>
   ({ account: route.rung.provider, model: route.rung.model, effort: route.rung.effort ?? null, vendor: route.vendor, step: route.step, subStep: route.sub_step });
 const without = (state: "refused" | "unknown", message: string): TakeoverRoute => ({ state, message, provenance: null, selected: null, validity: null, considered: [], digest: null });
+
+/** A model the operator picked for this one takeover; Auto uses the configured chain instead. */
+export const explicitTakeoverRouteSchema = z.object({
+  provider: z.string().min(1).max(200), model: z.string().min(1).max(200), effort: z.string().min(1).max(200).nullable(),
+  featureValues: featureValuesSchema.optional(),
+}).strict();
+export type ExplicitTakeoverRoute = z.infer<typeof explicitTakeoverRouteSchema>;
+export type ExplicitTakeoverSelection = { route: TakeoverRoute; featureValues?: ExplicitTakeoverRoute["featureValues"] };
+
+/**
+ * Validates an explicit model selection against the same host provider snapshot session creation reads. The source's
+ * own permission mode must be one the provider lists; no read-only or other invented mode is substituted. A missing or
+ * unlisted mode is a concrete host-capability answer, not a role or state prohibition.
+ */
+export function explicitTakeoverRoute(health: RouteHealth, choice: ExplicitTakeoverRoute, mode: string, nowMs = Date.now()): ExplicitTakeoverSelection | { problem: string } {
+  const routeName = `${choice.provider}/${choice.model}`;
+  const observations = health.observations.filter((observation) => observation.account === choice.provider && observation.model === choice.model
+    && (choice.effort === null || observation.effort === choice.effort));
+  if (!observations.length) return { problem: `The host does not offer ${routeName}${choice.effort ? ` at ${choice.effort}` : ""} on this checkout and permission mode. Nothing is chosen.` };
+  if (health.mode && health.mode !== mode) return { problem: `The host route evidence names permission mode ${health.mode}, not this session's ${mode}. Nothing is chosen.` };
+  const available = observations.find((observation) => observation.state === "available");
+  if (!available) return { problem: `The host lists ${routeName}${choice.effort ? ` at ${choice.effort}` : ""} but reports it unavailable or unobserved (${[...new Set(observations.map((entry) => entry.state))].join(", ")}). Nothing is chosen.` };
+  const observed = Date.parse(available.observed_at), end = observed + health.max_age_seconds * 1000;
+  // The observation's own clock, not the resolver's as_of, decides whether this picked route is fresh.
+  if (!Number.isFinite(observed) || observed > nowMs) return { problem: "The host route observation for the selected model is dated in the future or has no valid time. Nothing is chosen." };
+  if (nowMs - observed > health.max_age_seconds * 1000) return { problem: `The host route observation for ${routeName} is ${Math.round((nowMs - observed) / 1000)} s old, beyond its ${health.max_age_seconds} s window. Nothing is chosen.` };
+  if (!available.revision.trim()) return { problem: "The host route observation for the selected model has no revision. Nothing is chosen." };
+  const selected: RouteView = { account: choice.provider, model: choice.model, effort: choice.effort, vendor: choice.provider, step: 0, subStep: 0 };
+  // Semantic identity only: a transport requestId or a later observation clock does not change which route was picked.
+  const semantic = { kind: "explicit", account: selected.account, model: selected.model, effort: selected.effort, mode };
+  const digest = createHash("sha256").update(JSON.stringify(semantic)).digest("hex");
+  const provenance = { policyHash: digest, bindingKey: "explicit", chain: `selected ${routeName}` };
+  return {
+    route: {
+      state: "selected",
+      message: `Takes over on the selected ${routeName}${choice.effort ? ` at ${choice.effort}` : ""}, using this session's permission mode ${mode}.`,
+      provenance, selected,
+      validity: { observedAt: resolverInstant(observed), validUntil: resolverInstant(end) },
+      considered: observations.filter((observation) => observation !== available).map((observation) => ({
+        account: observation.account, model: observation.model, effort: observation.effort ?? null, vendor: observation.account, step: 0, subStep: 0,
+        excluded: `route_${observation.state}`,
+      })),
+      digest,
+    },
+    ...(choice.featureValues && Object.keys(choice.featureValues).length ? { featureValues: choice.featureValues } : {}),
+  };
+}
+
 
 /** Runs the command and answers its one document, whatever exit code carries it; a signal, spawn or size failure rejects. */
 export type ResolverRun = (command: string, args: string[]) => Promise<string>;

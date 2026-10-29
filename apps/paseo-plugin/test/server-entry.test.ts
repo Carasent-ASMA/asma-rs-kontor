@@ -73,17 +73,13 @@ describe("server entry floor mode", () => {
     writeFileSync(file, content, { mode: 0o600 });
   };
 
-  it("registers procedural prepare/execute/check without enabling the legacy takeover action", () => {
+  it("registers one takeover operation and no second prepared-flow writer", () => {
     const registered = start();
-    expect(registered.handlers).toContain("sessions.procedural-takeover.capability");
-    expect(registered.handlers).toContain("sessions.procedural-takeover.import");
-    registered.cleanup();
-    const started = start();
-    expect(started.handlers).toEqual(expect.arrayContaining([
-      "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check",
-    ]));
+    for (const name of ["sessions.takeover-review", "sessions.takeover-apply", "sessions.takeover-check"]) expect(registered.handlers).toContain(name);
+    for (const name of ["sessions.procedural-takeover.capability", "sessions.procedural-takeover.import", "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check"])
+      expect(registered.handlers).not.toContain(name);
     expect(existsSync(join(home, "plugin-state"))).toBe(false);
-    started.cleanup();
+    registered.cleanup();
   });
 
   it("registers summary-only RPCs and exactly one capabilities handler without attachment", () => {
