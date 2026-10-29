@@ -414,6 +414,7 @@ describe("new session create", () => {
     expect(Object.keys(sent.labels!).some((key) => key.startsWith("kontor.") || key.includes("orchestration"))).toBe(false);
     expect(sent.config.systemPrompt).toContain("desk DESK • ADAM, workspace ADHOC (id assigned at creation)");
     expect(sent.config.systemPrompt).toContain(SCOPE_LABEL_RULE);
+    expect(sent.config.systemPrompt).toContain("verified successor in a seat takeover");
     expect(sent).not.toHaveProperty("prompt");
     expect(s.intents).toEqual([expect.objectContaining({ outcome: null, request: expect.objectContaining({ requestId: input.requestId, title, workspaceId: "wks-created" }) })]);
     expect(outcome).toMatchObject({ state: "verified", agentId: "agent-new", title, persona: "supported", differences: [], workspaceId: "wks-created" });
