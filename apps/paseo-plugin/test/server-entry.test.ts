@@ -74,6 +74,10 @@ describe("server entry floor mode", () => {
   };
 
   it("registers procedural prepare/execute/check without enabling the legacy takeover action", () => {
+    const registered = start();
+    expect(registered.handlers).toContain("sessions.procedural-takeover.capability");
+    expect(registered.handlers).toContain("sessions.procedural-takeover.import");
+    registered.cleanup();
     const started = start();
     expect(started.handlers).toEqual(expect.arrayContaining([
       "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check",
