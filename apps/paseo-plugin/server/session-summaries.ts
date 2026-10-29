@@ -13,8 +13,8 @@ type Agent = PaseoAgentListResult["entries"][number]["agent"];
 
 export const SUMMARY_MODEL_API_GAP = "This connection does not expose the stock agent creation and history APIs required for summary generation.";
 export const SUMMARY_LIMITS_WITH_GENERATION = [
-  "Generation runs in a separate read-only Codex session. It never prompts the source or destination; other providers are explicitly unsupported.",
-  "Only a captured tail of up to 48 history items / 24,000 message characters is summarized; its epoch, sequence boundary and input hash are saved.",
+  "Generation uses a separate available provider/model and supported host mode, independently of the source provider. It never prompts the source or destination; the exact helper route is retained in the generation job. No read-only sandbox is claimed.",
+  "Prior saved summary context plus a captured tail of up to 48 history items / 24,000 message characters is summarized; its epoch, sequence boundary and input hash are saved.",
   "Immutable revisions live in Kontor-owned plugin state. A single plugin worker is the writer; multi-process writers are not qualified.",
   "Clipboard write uses the stock client API. Paste to verify provides explicit readback; write success alone is not readback proof.",
 ];
@@ -63,6 +63,11 @@ async function writeStore(root: string, agentId: string, store: SummaryStore) {
 async function readStore(root: string, agentId: string): Promise<SummaryStore | null> {
   try { return storeSchema.parse(JSON.parse(await readFile(storePath(root, agentId), "utf8"))); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return null; throw error; }
+}
+
+export async function latestStoredSummary(root: string, agentId: string): Promise<SummaryRevision | null> {
+  const store = await readStore(root, agentId);
+  return store?.revisions[String(store.latestRevision)] ?? null;
 }
 
 function formatSummaryText(sections: SummaryRevision["sections"]): string {
