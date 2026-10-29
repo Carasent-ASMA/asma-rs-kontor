@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
 import { createVendorUsageService, codexThreadIdentity } from "../server/vendor-usage";
 import { readInstalledNavigatorCapabilities } from "../server/session-navigator";
 const THREAD = "00000000-0000-4000-8000-000000000001", NEXT = "00000000-0000-4000-8000-000000000002";
@@ -86,4 +87,32 @@ it("preserves separate recorded child usage through the exact-identity service",
   qualification: "Excludes parent history; completeness and billing unverified." as const, input: 100, output: 8, total: 108, responses: 1,
  } };
  expect(await createVendorUsageService({ read: async () => recorded })(host(vi.fn(async () => found(agent("a")))), ["a"])).toEqual({ a: recorded });
+});
+
+describe("session-usage provider coverage boundary", () => {
+ const unsupported = [...new Set([
+  ...BUILTIN_PROVIDER_IDS.filter((id) => id !== "codex"),
+  "antigravity", "muse", "cursor", "deepseek-harness", "kimi", "qoder", "glm-acp-agent",
+  "fixture-claude-alias", "fixture-opencode-alias",
+ ])];
+ it.each(unsupported)("keeps %s unknown even with latest usage and account quota reports", async (provider) => {
+  const read = vi.fn(async () => value);
+  const native = { ...agent("a", THREAD, provider), model: "gpt-example", lastUsage: { inputTokens: 999, outputTokens: 99 } };
+  const paseo = { agents: { ref: () => ({ refresh: async () => found(native) }) },
+   usage: { listReports: vi.fn(async () => [{ sourceId: provider, report: { status: "available", windows: [{ used: 42 }] } }]) } };
+  const result = await createVendorUsageService({ read })(paseo as never, ["a"]);
+  expect(result.a).toMatchObject({ input: null, output: null, scope: "provider-cumulative", source: expect.stringContaining("No qualified session-usage source") });
+  expect(result.a?.recordedChildUsage).toBeUndefined();
+  expect(read).not.toHaveBeenCalled(); expect(paseo.usage.listReports).not.toHaveBeenCalled();
+ });
+ it("distinguishes a missing Codex identity from an unsupported provider", async () => {
+  const native = { ...agent("a"), persistence: null }, read = vi.fn(async () => value);
+  expect(await createVendorUsageService({ read })(host(vi.fn(async () => found(native as never))), ["a"])).toMatchObject({ a: { input: null, source: expect.stringContaining("Codex exact native thread identity") } });
+  expect(read).not.toHaveBeenCalled();
+ });
+ it("qualifies aliases by canonical Codex persistence and exact source, never model vendor", async () => {
+  const native = { ...agent("a"), provider: "fixture-codex-alias", model: "other-model" }, read = vi.fn(async () => value);
+  expect(await createVendorUsageService({ read })(host(vi.fn(async () => found(native))), ["a"])).toEqual({ a: value });
+  expect(read).toHaveBeenCalledExactlyOnceWith(THREAD, expect.any(Object));
+ });
 });

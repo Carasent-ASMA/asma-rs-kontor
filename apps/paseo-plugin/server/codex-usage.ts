@@ -22,6 +22,7 @@ export const CODEX_USAGE_LIMITS = [
   "Codex 0.160.0 local provider cumulative snapshots and separately labeled recorded child responses, joined by exact native thread ID in this host's configured/default Codex store.",
   "Historical completeness and child-thread inclusion are unverified. Forked/inherited, reset, ambiguous, unsupported and incomplete sources remain unavailable; snapshots are never summed.",
   "Recorded child response usage excludes parent history; completeness and billing unverified. At most 10,000 unique response records per source; larger indexes stay unavailable.",
+  "Claude, OpenCode, Copilot, Pi, OMP and other non-Codex native providers have no qualified session-usage importer here. Account quota reports and latest-turn telemetry are not session totals.",
   "Other provider routes and provider homes without a qualified exact source remain unknown. No provider session is started or resumed.",
 ];
 const unknown = (reason: string): CodexUsageRead => ({ input: null, output: null, source: `Codex cumulative usage unavailable: ${reason}. Historical/complete totals unavailable.`, scope: "provider-cumulative" });

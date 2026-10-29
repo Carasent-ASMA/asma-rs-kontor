@@ -33,7 +33,13 @@ export function createVendorUsageService(reader: { read(threadId: string, budget
           const found = await paseo.agents.ref(id).refresh();
           if (!found || found.agent.id !== id) { result[id] = unavailable("Exact native session could not be verified. Historical/complete totals unavailable."); continue; }
           const threadId = codexThreadIdentity(found.agent);
-          if (!threadId) { result[id] = unavailable("Vendor-native usage is unqualified or its exact thread identity is unavailable. Historical/complete totals unavailable."); continue; }
+          if (!threadId) {
+            const codexRoute = found.agent.provider === "codex" || (found.agent.persistence?.provider === "codex" && !BUILTIN_PROVIDER_IDS.includes(found.agent.provider));
+            result[id] = unavailable(codexRoute
+              ? "Codex exact native thread identity could not be verified. Historical/complete totals unavailable."
+              : "No qualified session-usage source for this provider route. Only Codex 0.160.0 local records are imported; account quotas and latest-turn telemetry are not session totals.");
+            continue;
+          }
           const value = await reader.read(threadId, budget);
           // A native restart/provider switch during the file read must not attach an old thread to this agent.
           const current = await paseo.agents.ref(id).refresh();
