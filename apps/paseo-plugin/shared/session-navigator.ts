@@ -38,12 +38,20 @@ export type UsageTotals = z.infer<typeof usageTotalsSchema>;
 export const readUsageTotals = defineRpc({ name: "sessions.usage-totals", input: z.object({ agentIds: z.array(id).max(200) }).strict(),
   output: z.record(z.string(), usageTotalsSchema.nullable()) });
 
+export const summaryHistoryBoundarySchema = z.object({
+  epoch: z.string().min(1), fromSeq: z.number().int().nonnegative(), toSeq: z.number().int().nonnegative(),
+  snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), partial: z.boolean(), provider: z.string(), providerSessionId: z.string().nullable(),
+}).strict();
+export type SummaryHistoryBoundary = z.infer<typeof summaryHistoryBoundarySchema>;
+
 /** A saved compact summary. Saving again after the source changed makes a new revision; a revision never changes. */
 export const summaryRevisionSchema = z.object({
   summaryId: z.string().uuid(), revision: z.number().int().positive(),
   sourceAgentId: id, sourceTitle: z.string(),
   /** The last source event this revision covers. */
   cutoff: z.string(), savedAt: z.string(),
+  /** Absent only on historical revisions saved before stock generation. */
+  historyBoundary: summaryHistoryBoundarySchema.optional(),
   sections: z.object({ task: z.string(), decisions: z.string(), currentState: z.string(), nextStep: z.string() }).strict(),
   /** The text Copy places on the clipboard. */
   text: z.string(),
