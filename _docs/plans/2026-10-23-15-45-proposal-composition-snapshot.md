@@ -1,6 +1,6 @@
 # Composition snapshot and mediated seat creation proposal
 
-**Status: P1 read-only preview core implemented; P2–P5 remain dependent work.**
+**Status: P1 implemented; P2 selected-folder preview implemented for review; P3–P5 remain dependent work.**
 ASMA-8539. The scoped-grant future target retains amendments A1–A5. P1 exports
 a pure library function; it registers no API route and adds no authentication
 grant, selected-folder reader, database migration or native operation.
@@ -25,8 +25,8 @@ coordinates prerequisites through their owners, without a new coordinator.
 | Phase / owner | Next action and commit boundary | Prerequisite and lift evidence | Acceptance scope |
 | --- | --- | --- | --- |
 | P1 / ASMA-8539 SWE | Export the pure `composition_snapshot` module; use existing profile/fleet/naming owners; make contract tests call it. Commit the module, export, tests and this indexed plan together; publish a draft PR to `master`. | Eligible on the authorized existing branch/base. No accepted-folder or write authority is needed because P1 does not consume folders or dispatch. | Reproducible canonical preview; exact supplied pins retained as unverified; planned attachments; explicit partial coverage; false actuation. Scoped checks and mutation kills precede publication. |
-| P2 / WP08 ASMA-8570 owner, coordinated by ASMA-8562 TPM; integration by ASMA-8539 SWE | Finish final-head review and merge PR #435, then integrate the accepted parser/capture API into preview on a fresh authorized base. One integration checkpoint; no copied parser. | Owner-reported `65424de4` remains source-review input until reviewed and merged. Record the accepted API/head, capture containment/bounds and source-hash behavior. `config/examples` cannot be runtime input. | Accepted capture provenance joined to the preview with negative missing/stale/ambiguous source cases. Still no write authority or actual-folder acceptance claim. |
-| P3 / WP10 ASMA-8572 owner admitted by ASMA-8562 TPM; schema owner WP08/TPM | First revalidate the two historical PR-desk faults in plan §2.5. After the reserved decision lifts, admit one WP10 seat from fresh master for actual-folder/consumer acceptance. Only then coordinate an additive durable domain-operation record. Keep folder acceptance and the record migration as separate checkpoints under their owners. | Explicit Q-02 disposition or WP07 delivery, then accepted actual folder with conflict refusal, preserved pins, startup/rollback evidence; PR #435 merged. Schema 143 coordination is mandatory; no schema 144 or record is allocated by P1. A committed configuration baseline alone does not lift Q-02/DEC-020. | Real-folder and consumer evidence from WP10; isolated migration/rollback tests on the subsequently agreed record. No fixture substitutes for either. |
+| P2 / WP08 ASMA-8570 owner, coordinated by ASMA-8562 TPM; integration by ASMA-8539 SWE | Finish final-head review and merge PR #435, then integrate the accepted parser/capture API into preview on a fresh authorized base. One integration checkpoint; no copied parser. | WP08 #435 merged at `a9cf0f175a0461133c3a47089f24b222ad088bf0`; use its `ConfigFolder::select`, `RealmPack` captures and fleet owner. Neutral examples are disposable test inputs, never an implicit runtime selection. | Selected pack byte pins and separately read fleet pin joined to the preview, with named missing/invalid input refusals. No atomic folder-generation, activation, write authority or installed-folder acceptance claim. |
+| P3 / WP10 ASMA-8572 owner; schema owner WP08/TPM | WP10 #3652 merged at `e1e29ebd0324d801a222277ca03c2fc8be85b8f7`. Retain its configured-folder contract; separately qualify startup/rollback and coordinate a durable operation record after the neutral write contract qualifies. | The actual-folder input receipt predates the final WP10 head and is not exact-head runtime acceptance. Current store schema is 145; 143/144 are already allocated. No next migration is reserved here. Q-02/DEC-020 remain unchanged. | Explicit folder and independently registered identities, followed by an owner-approved additive record and isolated retry/concurrency tests. No fixture substitutes for live release acceptance. |
 | P4 / ASMA-8539 SWE with existing backend/identity and native-adapter owners, coordinated by the delivery TPM | Qualify the issuer, delegation and authenticated transport/caller binding, then implement one mediated seat operation using A1–A5. Separate issuer/binding, durable operation and native correlation checkpoints as those contracts qualify. | P2/P3 accepted plus the qualified neutral issuer/verifier/revocation/transactional claim boundary. Existing authority-bound helpers cannot be relabeled. Native capabilities must prove the checks actually claimed; absent atomic hooks leave the stated race/bypass limit. | The dependent matrix below, using offline transport/native fakes and isolated stores first. Exactly one seat in an existing registered observed workspace; no adoption or governance transfer. |
 | P5 / existing QA, AUD and gate owners; designated merge owner and installer | Review each admitted candidate at its exact head, run the required repository gates, then route to the existing merge owner and release/install owner for supported delivery and readback. | Independent verdicts, exact-head gate evidence, accepted prerequisites for the claimed slice and release/rollback evidence. No author merge, installation or native restart from this SWE slice. | State implemented/merged/qualified/released/deployed/enabled separately. The broader mandate stays open until supported delivery is verified. |
 
@@ -69,6 +69,62 @@ pins cannot turn those flags off. `native_actuation_authorized` is always
 `false`; effective loading stays `not_observed`. This is a partial projection,
 not the full accepted-capture interface below. Its canonical scalar types and
 component validation do not attest that a supplied native identity exists.
+
+## P2 selected-folder preview
+
+`preview_selected_composition(flag, environment, &SelectedCompositionInput)`
+returns the existing immutable `CompositionSnapshot` or the configuration
+owner's named `ConfigError`. It calls the accepted `ConfigFolder::select`;
+explicit flag precedence and missing/invalid/legacy-source refusals stay with
+that loader. No second parser, route, catalog, store or native adapter is added.
+
+The request supplies native subject IDs, category, candidate naming values,
+eligibility exclusions and evaluation time. The profile owner resolves and
+verifies the profile and team revision. The requested slot must exist in that
+team. Its logical role maps through the selected operational domain; the fleet
+owner derives the team/slot key and selects its route. The role code used in the
+title and persona comes from that mapping, overriding a caller's role label.
+An absent optional role prompt stays `not_configured`; a present prompt becomes
+a planned hash, never prompt text. Planned skills retain the profile owner's
+full resolved union of profile and team-slot pins, as P1 does. The requested
+slot's pins are also retained separately; the preview does not narrow the
+owner's resolution or decide which native attachments have actually loaded.
+
+The `selected-composition-preview@1` document retains exact captured pack-source
+hashes, the separately read fleet-byte hash and a canonical projection of the
+project's declared ID, tracker key and repository resource roots. These roots
+are repository declarations, not filesystem paths inferred from the config
+folder. Neither the tracker key nor supplied native IDs establish a registered
+internal `ProjectId`. An absent configured ID is explicit. Relocating identical
+input bytes does not create a new identity. The enclosing snapshot hash binds
+the full preview, including exact subject IDs and explicit parent absence.
+
+The loader captures pack files separately and reads fleet afterward. The output
+therefore explicitly marks `atomic_folder_generation: false`; source pins must
+not be promoted into a coherent activated policy revision. Naming authority,
+topology/parentage, registration, native identity, host qualification, skill
+content and effective attachment remain unverified. This is a library preview,
+not an exposed creation route. Its `write_refusals` disclose the unqualified
+seat-bound issuer, unobserved project/workspace authority and absent tenant
+binding; they are capability limits, not results from an authentication engine.
+`native_actuation_authorized` remains false in every case.
+
+Focused acceptance uses disposable neutral folders through the real loader,
+including source-pin sensitivity, optional persona, explicit project-ID absence,
+selection precedence, malformed/missing/legacy inputs, unknown profile/slot/fleet,
+unavailable routes and unchanged input files. The existing ten P1/A1–A5
+component probes remain separate from future grant enforcement. None is a
+real-session, production-folder, durable-retry or installed-release test.
+
+The next concrete write artifact is the existing identity/backend owner's
+qualified issuer-to-requesting-seat operation binding, including delegation,
+revocation, realm/host audience and an independently registered observed
+workspace. Project/workspace find/reuse/create requires separate authority;
+the seat-only grant cannot be widened. WP12 / ASMA-8574 owns registry/public-tree
+compatibility; no new owner is invented here. DEP-006 is this R26 workstream;
+DEP-007 (ASMA-8580), DEP-008 (ASMA-8651) and DEP-009 (ASMA-8633/lifecycle) remain
+unresolved relationship keys, not invented R26 acceptance conditions. Existing
+owners must supply their definitions if they become dependencies.
 
 ## One workflow and the enforcement boundary
 
@@ -267,9 +323,9 @@ operation refuses/waits on backend outage rather than downgrading silently.
 
 | Dependency | Required lift evidence |
 | --- | --- |
-| WP08 selected-folder parser, PR #435 | Final-head independent review and merge of the accepted parser/manifest contract. The current `65424de4` candidate is source-review input only. Neutral `config/examples` files are not runtime input. Review the accepted API on a fresh authorized base; do not copy or alias candidate code. |
-| WP10 / ASMA-8572 actual folder | The existing owner records a Q-02 disposition or WP07 delivery before admitting one WP10 seat from fresh master. Its smallest currently admissible action is read-only revalidation of the plan's two historical desk faults. Then record actual selected-folder migration/consumer acceptance, conflict refusal, preserved pins, startup and rollback evidence under the owning task; a fixture pass does not lift this dependency. |
-| Durable domain-operation record | PR #435 merged, WP10 accepted folder supplied and additive migration agreed with WP08/schema ownership. Schema 143 is the current candidate boundary; no schema 144/table/migration is allocated here. |
+| WP08 selected-folder parser, PR #435 | Merged at `a9cf0f175a0461133c3a47089f24b222ad088bf0`; the P2 implementation calls the accepted loader without copying its parser. Captured pack bytes are pinned; the separately read fleet is not an atomic selected-folder generation. |
+| WP10 / ASMA-8572 actual folder | #3652 merged at `e1e29ebd0324d801a222277ca03c2fc8be85b8f7`. Its actual-folder receipt binds earlier source; use the unchanged config bytes as input evidence only. Exact-head consumer/startup/rollback and installed readback remain separate owner obligations. No tenant or native project/workspace binding is supplied by loading a folder. |
+| Durable domain-operation record | Coordinate with the schema owner only after the accepted folder and neutral write boundary qualify. Current store schema is 145: 143 is local-result validation, 144 consultation intent/readback and 145 neutral epic activation. Do not allocate 143/144 or assume 146 is reserved. This read-only slice adds no migration or record. |
 | Neutral caller/operation authority | Future scoped-grant target is accepted with A1–A5; do not request the same decision again. Still required: qualified issuer/delegation, authenticated transport/caller binding, server-held grant verification, transactional claim/revocation/dispatch ordering, correlation and capability readback. Existing hosted-seat services cannot supply this by renaming. |
 | Native pre-effect interception | To claim all-route prevention, qualified hooks/authorization must cover create with exact workspace/labels/owner context and every relevant rename/label/project/workspace/import/recovery mutation. Current three before-hooks do not provide that coverage. Until then, claim only the specifically mediated operation and disclose bypasses. |
 
