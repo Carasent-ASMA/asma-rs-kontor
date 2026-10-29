@@ -19,6 +19,7 @@ import { promotionRecordSchema } from "../shared/session-promotion";
 import * as readSources from "../server/read-sources";
 import * as teamsAdapter from "../server/teams-source-adapter";
 import { createStateRoot, createSessionCreateService, personaVersion, reissuePersona } from "../server/session-create";
+import { createSessionSummaryService } from "../server/session-summaries";
 import { configuredAccountCatalogFromFleet, resolverInstant, routeHealthFromProviderSnapshot, type ConfiguredAccountCatalog, type ResolverRun, type RouteHealth } from "../server/session-takeover";
 import { TAKEOVER_PROMPT, applyTakeover, reviewTakeover, type TakeoverReview } from "../shared/session-lifecycle";
 
@@ -48,13 +49,13 @@ const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "x
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
+async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
   const root = join(tmp, "lifecycle"), createRoot = join(tmp, "create");
   const agents = new Map([predecessor, ...others].map((value) => [value.id, value]));
   const timelines = new Map<string, { item: Record<string, unknown> }[]>([[predecessor.id, [{ item: { type: "assistant_message", text: SUMMARY } }]]]);
-  const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][] };
-  let created = 0;
+  const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][], detach: [] as string[] };
+  let created = 0, releaseVisible = !hideRelease;
   const issuedAt = resolverInstant(Date.now());
   const client = {
     workspaces: {
@@ -81,7 +82,8 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
       ref: (id: string) => ({
         refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: null } : null; },
         archive: async () => { effects.archive.push(id); agents.set(id, { ...agents.get(id)!, archivedAt: "2026-10-25T09:01:00Z", status: archiveStatus as Agent["status"] }); return { archivedAt: "2026-10-25T09:01:00Z" }; },
-        send: async (text: string, options?: { messageId?: string }) => { effects.send.push({ id, text, messageId: options?.messageId }); timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
+        send: async (text: string, options?: { messageId?: string }) => { effects.send.push({ id, text, messageId: options?.messageId }); if (releaseVisible) timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
+        detach: async () => { effects.detach.push(id); const value = agents.get(id); if (value?.labels) { const { ["paseo.parent-agent-id"]: _parent, ...rest } = value.labels; value.labels = rest; } },
         timeline: { refetch: async () => ({ entries: timelines.get(id) ?? [] }) },
       }),
     },
@@ -96,10 +98,20 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     return JSON.stringify({ tool: "kontor_fleet_policy_resolve", status: 200, body: { considered: [{ route: selected }], eligibility: { excluded_vendors: [], unavailable_accounts: [] }, excluded_by_policy: [],
       provenance: { binding_key: key, chain: "claude-first", policy_hash: "a".repeat(64), schema_version: 2 }, route_health: evidence, selected, selected_validity: { observed_at: evidence.observations[0]?.observed_at ?? issuedAt, valid_until: resolverInstant(Date.parse(evidence.observations[0]?.observed_at ?? issuedAt) + evidence.max_age_seconds * 1000) } } });
   };
-  const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"));
+  const summaryRoot = join(tmp, "summaries");
+  const summaries = createSessionSummaryService(client as never, summaryRoot, {
+    generate: async (agentId: string) => {
+      const page = await client.agents.ref(agentId).timeline.refetch() as { entries?: { item: { type: string; text?: string } }[]; error?: string | null };
+      if (page.error) throw new Error("The source history could not be captured consistently.");
+      const text = [...(page.entries ?? [])].reverse().find((entry) => entry.item.type === "assistant_message" && entry.item.text?.trim())?.item.text?.trim() ?? SUMMARY;
+      return { sections: { task: text, decisions: "Keep the verified decisions.", currentState: "The task is at its captured checkpoint.", nextStep: "Continue the captured next action." }, cutoff: "2026-10-25T08:00:00Z" };
+    },
+  });
+  const create = createSessionCreateService(client as never, createRoot, join(tmp, "create.json"), undefined, undefined, summaryRoot);
   const observedAt = new Date().toISOString();
   const fleetCatalog: ConfiguredAccountCatalog = configuredAccountCatalogFromFleet([{ accounts: [targetProvider] }], "test-catalog-rev")!;
   const deps: TakeoverDeps = { config: { cliCommand: "/opt/kontor", stateRoot: "/srv/kontor-state", placementRoots: [] }, create, promotionRoot: createRoot,
+    summaries, snapshot: async () => ({ ...SNAPSHOT, requestId: "snapshot-1", generatedAt: new Date().toISOString(), entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: targetProvider, models: entry.models.map((model) => ({ ...model, provider: targetProvider })) })) }),
     operatorFleetDiscovery: async () => ({ choices, catalog: fleetCatalog }),
     evidence: ({ mode }) => ({ ...health(mode), as_of: resolverInstant(Date.now()), max_age_seconds: 3600, observations: health(mode).observations.map((entry) => ({ ...entry, observed_at: issuedAt, account: targetProvider })) }), run, settleMs: 0,
     continuity: async (agentId, requestId) => ({ agentId, requestId, revision: "continuity-1", observedAt, surface: "direct", wakes: "clear", owner: null }),
@@ -111,7 +123,8 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
     return first.state === "choose" ? service.review({ agentId, reviewId: first.reviewId, revision: first.revision, bindingKey: KEY }) : first;
   };
   const fence = () => readdir(root).then((names) => names.filter((name) => name.startsWith("intent-")));
-  return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
+  const showRelease = () => { releaseVisible = true; const last = effects.send.at(-1); if (last) timelines.get(last.id)!.push({ item: { type: "user_message", text: last.text, messageId: last.messageId } }); };
+  return { service, deps, agents, timelines, effects, root, createRoot, client, workspace, ready, fence, showRelease, apply: (review: TakeoverReview) => service.apply({ reviewId: review.reviewId, revision: review.revision, digest: review.digest! }) };
 }
 
 
@@ -381,16 +394,21 @@ describe("direct takeover continuity", () => {
     });
   });
 
-  it("refuses takeover when a visible managed child is present (wakes preserved on reader)", async () => {
+  it("preserves a visible managed child by detaching it, never archiving it", async () => {
     const child = agent("child-1", { labels: { "paseo.parent-agent-id": "agent-1" }, status: "idle", title: "Child task" });
     const h = productionContinuity(await host({ others: [child] }));
     const requestId = "22222222-2222-4222-8222-222222222222";
     const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
     expect(receipt?.wakes).toBe("preserved");
     const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
-    expect(review.state).toBe("refused");
-    expect(review.message).toMatch(/active child sessions/i);
-    noRetirementEffects(h);
+    expect(review.state).toBe("ready");
+    expect(review.limits.join(" ")).toMatch(/detach/i);
+    const applied = await h.apply(review);
+    expect(applied.state, applied.message).toBe("succeeded");
+    expect(h.agents.get("child-1")!.labels?.["paseo.parent-agent-id"]).toBeUndefined();
+    expect(h.agents.get("child-1")!.archivedAt).toBeNull();
+    expect(h.effects.archive).toEqual(["agent-1"]);
+    expect(h.effects.create).toHaveLength(1);
   });
 });
 
@@ -460,9 +478,8 @@ describe("takeover review", () => {
     const cases: [Partial<Agent>, string][] = [
       [{ labels: { "kontor.seat_binding_id": "seat-1" } }, "Kontor-governed seat"],
       [{ labels: { orchestration: "paseo-direct" } }, "names no owning session"],
-      [{ archivedAt: "2026-10-25T08:30:00Z", status: "closed" }, "Already archived"],
       [{ pendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"], status: "idle" }, "Waiting for permission"],
-      [{ status: "running" }, "Running or starting"],
+      [{ status: "running" }, "no stop"],
       [{ cwd: "/fixtures/wks-1/sub" }, "outside its workspace directory"],
       [{ labels: { orchestration: "paseo-direct", "paseo.parent-agent-id": "gone" } }, "owning session is not active"],
       [{ labels: { "create.request": "0f1e2d3c-4b5a-4968-8776-655443322110" } }, "creation record"],
@@ -475,8 +492,10 @@ describe("takeover review", () => {
       expect(review.digest).toBeNull();
       expect(h.effects.resolve, reason).toHaveLength(0);
     }
-    const child = await host({ others: [agent("child-1", { status: "idle", labels: { "paseo.parent-agent-id": "agent-1" } })] });
-    expect((await child.service.review({ agentId: "agent-1", bindingKey: KEY })).message).toContain("active child sessions");
+    const child = await host({ others: [agent("child-1", { status: "idle", title: "Child task", labels: { "paseo.parent-agent-id": "agent-1" } })] });
+    const childReview = await child.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(childReview.state, childReview.message).toBe("ready");
+    expect(childReview.limits.join(" ")).toMatch(/detach/i);
     // A governed seat with its labels removed still sits in a Kontor placement.
     const stripped = await host();
     stripped.deps.config = { ...stripped.deps.config, placementRoots: ["/fixtures"] };
@@ -576,7 +595,7 @@ describe("takeover review", () => {
   it("refuses a label-stripped governed session even outside the known placement roots", async () => {
     const h = await host(), good = h.deps.continuity!;
     h.deps.continuity = async (...args) => ({ ...(await good(...args))!, surface: "governed" });
-    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", digest: null, message: expect.stringContaining("governed lifecycle writer") });
+    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", digest: null, message: expect.stringContaining("authority writer") });
     expect([h.effects.archive.length, h.effects.create.length]).toEqual([0, 0]);
   });
 
@@ -710,7 +729,7 @@ describe("takeover apply", () => {
       h.agents.set("child", agent("child", { labels: { "paseo.parent-agent-id": "agent-1" } }));
       return answer;
     } };
-    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", message: expect.stringContaining("child appeared") });
+    expect(await h.service.review({ agentId: "agent-1", bindingKey: KEY })).toMatchObject({ state: "refused", message: expect.stringContaining("Managed children changed") });
     expect(h.effects.archive).toEqual([]);
   });
 
@@ -790,6 +809,125 @@ describe("takeover apply", () => {
       expect(await h.service.check(review.reviewId)).toMatchObject({ state: drift ? "uncertain" : "succeeded" });
       expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
     }
+  });
+});
+
+describe("universal takeover operation", () => {
+  it("uses one operation and create request ID and records it on the successor", async () => {
+    const h = await host(), review = await h.ready();
+    expect(review.successor!.requestId).toBe(review.reviewId);
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded", reviewId: review.reviewId });
+    expect(h.effects.create[0]!.idempotencyKey).toBe(review.reviewId);
+    expect((h.effects.create[0]!.labels as Record<string, string>)["create.request"]).toBe(review.reviewId);
+  });
+
+  it("takes over an archived source from its history without reviving or prompting it", async () => {
+    const predecessor = agent("agent-1", { archivedAt: "2026-10-25T08:30:00Z", status: "closed" });
+    const h = await host({ predecessor });
+    const review = await h.ready();
+    expect(review).toMatchObject({ state: "ready", predecessor: { status: "closed" } });
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.archive).toEqual([]);
+    expect(h.effects.create).toHaveLength(1);
+    expect(h.effects.send).toHaveLength(1);
+    expect(h.effects.send[0]!.id).toBe("successor-1");
+    expect(h.agents.get("agent-1")!.archivedAt).toBe("2026-10-25T08:30:00Z");
+  });
+
+  it.each(["LSA", "TPM", "SWE", "QA", "JUDGE", null] as const)("takes over an ordinary session with role %s unchanged", async (role) => {
+    const predecessor = agent("agent-1", { labels: { ...(role ? { role } : {}), note: "not carried" } });
+    const h = await host({ predecessor });
+    const review = await h.ready();
+    expect(review.state).toBe("ready");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.labels).toMatchObject(role ? { role } : {});
+    if (!role) expect(h.effects.create[0]!.labels).not.toHaveProperty("role");
+  });
+
+  it.each(["claude", "codex", "gemini", "opencode"])("captures a %s source independently of the replacement provider", async (provider) => {
+    const h = await host({ predecessor: agent("agent-1", { provider }) });
+    const review = await h.ready();
+    expect(review).toMatchObject({ state: "ready", predecessor: { provider } });
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.config).toMatchObject({ provider: "claude-a/claude-opus-5", modeId: "default" });
+  });
+
+  it.each(["claude-a", "codex-a"])("takes over on an explicitly picked %s route without the configured-chain resolver", async (targetProvider) => {
+    const h = await host({ targetProvider });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "ready", successor: { provider: targetProvider, model: "claude-opus-5", effort: "xhigh", mode: "default" } });
+    expect(h.effects.resolve).toHaveLength(0);
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]!.config).toMatchObject({ provider: `${targetProvider}/claude-opus-5`, modeId: "default", thinkingOptionId: "xhigh" });
+  });
+
+  it("rejects a stale provider observation for an explicitly picked route", async () => {
+    const h = await host(), now = Date.parse("2026-10-25T09:10:00.000Z");
+    vi.useFakeTimers({ now });
+    try {
+      h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "stale", generatedAt: new Date(now - 301_000).toISOString(),
+        entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      expect(review).toMatchObject({ state: "refused", digest: null });
+      expect(review.message).toMatch(/old|window/i);
+      expect(h.effects.resolve).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rejects a future or unqualified provider snapshot for an explicitly picked route", async () => {
+    const h = await host(), now = Date.parse("2026-10-25T09:10:00.000Z");
+    vi.useFakeTimers({ now });
+    try {
+      h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: "future", generatedAt: new Date(now + 60_000).toISOString(),
+        entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      expect(review).toMatchObject({ state: "refused", digest: null });
+      expect(review.message).toMatch(/unavailable or unobserved|future/i);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps semantic identity across a fresh transport request and a clock-only change", async () => {
+    const h = await host();
+    let request = 0;
+    h.deps.snapshot = async () => ({ ...SNAPSHOT, requestId: `transport-${++request}`, generatedAt: new Date().toISOString(),
+      entries: SNAPSHOT.entries.map((entry) => ({ ...entry, provider: "claude-a" })) });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review).toMatchObject({ state: "ready" });
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect([h.effects.archive.length, h.effects.create.length]).toEqual([1, 1]);
+  });
+
+  it("accepts a clock-only refresh of the same explicitly picked observation", async () => {
+    const t0 = Date.parse("2026-10-25T09:00:00.000Z");
+    vi.useFakeTimers({ now: t0 });
+    try {
+      const h = await host();
+      const review = await h.service.review({ agentId: "agent-1", bindingKey: null, route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+      expect(review).toMatchObject({ state: "ready" });
+      vi.advanceTimersByTime(1000);
+      expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reports the exact missing host stop primitive instead of a running-state prohibition", async () => {
+    const h = await host({ predecessor: agent("agent-1", { status: "running" }) });
+    const review = await h.ready();
+    expect(review).toMatchObject({ state: "refused", digest: null });
+    expect(review.message).toContain("no stop");
+    expect(review.message).toContain("PaseoAgentHandle");
+    expect(review.message).not.toContain("Running or starting");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("does not equate queued delivery with observed continuation", async () => {
+    const h = await host({ hideRelease: true });
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    expect(applied.message).toContain("not continuation");
+    h.showRelease();
+    expect(await h.service.check(review.reviewId)).toMatchObject({ state: "succeeded", phase: "done" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 });
 
@@ -941,7 +1079,7 @@ describe("LSA-8641-CP2-01 sealed effect validity", () => {
     }; };
     h.client.workspaces.ref = (id) => ({ ...workspace(id), refresh: async () => {
       const found = await workspace(id).refresh();
-      if (stage === "archive workspace" && nativeReads === 3 && !h.effects.archive.length) now += wait;
+      if (stage === "archive workspace" && nativeReads >= 3 && !h.effects.archive.length) now += wait;
       if (h.effects.archive.length && ++createWorkspaceReads === 2 && stage === "native create workspace") now += wait;
       return found;
     } });

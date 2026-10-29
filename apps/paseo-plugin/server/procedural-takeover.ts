@@ -931,50 +931,12 @@ export function createProceduralTakeover(client: PaseoApi, root: string, hostId:
   }
   return { prepare, execute, check, read, importSelected };
 }
-export function contributeProceduralTakeover(server: PluginServerContext) {
-  const root = join(
-    dirname(readConfig().paseoWorktreesRoot),
-    "plugin-state",
-    "kontor",
-    "procedural-takeover-v1",
-  );
-  server.handle(readPreparedTakeoverCapability, () => ({
-    supported: true as const,
-    limits: PROCEDURAL_LIMITS,
-  }));
-  server.handle(importPreparedTakeover, async (input, { paseo }) => {
-    const admission = proceduralAdmissionSchema.parse(
-      JSON.parse(await referenced(input.admission)),
-    );
-    requireFact(
-      admission.sourceId === input.sourceId,
-      "Admission source differs from the selected session",
-    );
-    return createProceduralTakeover(paseo, root, admission.hostId).importSelected(
-      input.admission,
-      input.sourceId,
-    );
-  });
-  // The selected host identity is pinned in the local admission. There is no new native host capability.
-  server.handle(prepareProceduralTakeover, async (input, { paseo }) => {
-    const admission = proceduralAdmissionSchema.parse(
-      JSON.parse(await referenced(input.admission)),
-    );
-    return createProceduralTakeover(paseo, root, admission.hostId).prepare(input.admission);
-  });
-  server.handle(executeProceduralTakeover, async (input, { paseo }) => {
-    const receipt = await createProceduralTakeover(paseo, root, "read-only").read(
-      input.operationId,
-    );
-    return createProceduralTakeover(paseo, root, receipt.admission.hostId).execute(
-      input.operationId,
-      input.admissionHash,
-    );
-  });
-  server.handle(checkProceduralTakeover, async (input, { paseo }) => {
-    const receipt = await createProceduralTakeover(paseo, root, "read-only").read(
-      input.operationId,
-    );
-    return createProceduralTakeover(paseo, root, receipt.admission.hostId).check(input.operationId);
-  });
+/**
+ * Retired product flow. The prepared-admission import and its separate execute/check writer are no longer registered:
+ * one server operation (the takeover service in session-lifecycle.ts) owns every seat's review, fence, retirement,
+ * creation and continuation. The implementation above stays readable as history and is exercised only by its contract
+ * tests; it is not reachable from an installed host.
+ */
+export function contributeProceduralTakeover(_server: PluginServerContext): void {
+  // Intentionally registers nothing. A second registered writer would compete with the unified operation.
 }
