@@ -86,10 +86,13 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
       const buffer = Buffer.alloc(4097), result = await file.read(buffer, 0, buffer.length, 0);
       if (result.bytesRead > 4096) throw new Error("cache bound");
       const raw = JSON.parse(buffer.subarray(0, result.bytesRead).toString("utf8"));
-      // Recompute older caches, including permanent large-record failures, from byte zero.
-      if (raw?.version !== 3) return null;
-      const value = stateSchema.parse(raw);
+      // v1 offsets were untrusted. Validate v2 before retaining its reset evidence.
+      if (raw?.version === 1) return null;
+      const value = stateSchema.parse(raw?.version === 2 ? { ...raw, version: 3 } : raw);
       if (value.threadId !== threadId) throw new Error("cache identity");
+      if (raw.version === 2) return { ...value, offset: 0, meta: false, counts: null, at: null,
+        baseline: value.baseline ?? value.counts,
+        problem: value.problem === "cumulative counter reset" ? value.problem : null };
       return value;
     } finally { await file.close(); }
   }
@@ -142,6 +145,8 @@ export function createCodexUsageReader(providerRoot: string, cacheRoot: string, 
         state.size = end; state.modified = stat.mtimeMs;
         await save(state);
         if (state.problem) return unknown(state.problem);
+        // A partial final line needs an append, not another identical timed scan.
+        if (state.offset < end && position === end) return unknown("awaiting source record completion");
         if (state.offset < end || !state.meta) return unknown("incomplete bounded source read");
         if (!state.counts) return unknown("no provider cumulative report");
         return { input: state.counts.input_tokens, output: state.counts.output_tokens, scope: "provider-cumulative",

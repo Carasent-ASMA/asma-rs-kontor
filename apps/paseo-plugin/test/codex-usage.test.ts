@@ -102,7 +102,7 @@ describe("qualified Codex cumulative snapshots", () => {
   });
   it("keeps missing, malformed and partially-written usage unknown, then reads a completed append", async () => {
     await writeFile(source, lines(meta())); expect(await reader().read(ID)).toMatchObject({ input: null });
-    await appendFile(source, event(100, 5)); expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("incomplete") });
+    await appendFile(source, event(100, 5)); expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("awaiting source") });
     await appendFile(source, "\n"); expect(await reader().read(ID)).toMatchObject({ input: 100 });
     await appendFile(source, '{"token_count":bad}\n'); expect(await reader().read(ID)).toMatchObject({ input: null });
   });
@@ -140,4 +140,30 @@ it("recomputes v2 failures and continues past a large record", async () => {
 it("fails closed above the 16MiB record bound without exposing partial totals", async () => {
  await writeFile(source, lines(meta(), event(100, 5), JSON.stringify({ type: "response_item", payload: "x".repeat(17 * 1024 * 1024) }), event(200, 8)));
  expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("record exceeds") });
+});
+
+it("migrates a v2 durable reset refusal across restart", async () => {
+ await writeFile(source, lines(meta(), event(200, 8))); await reader().read(ID);
+ await writeFile(source, lines(meta(), event(100, 8)));
+ expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("reset") });
+ const path = join(cache, (await readdir(cache))[0]!);
+ const old = JSON.parse(await readFile(path, "utf8")); old.version = 2;
+ await writeFile(path, JSON.stringify(old));
+ expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("reset") });
+ expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("reset") });
+});
+it("retains the v2 qualified baseline while requalifying offsets", async () => {
+ await writeFile(source, lines(meta(), event(200, 8))); await reader().read(ID);
+ const path = join(cache, (await readdir(cache))[0]!);
+ const old = JSON.parse(await readFile(path, "utf8")); old.version = 2;
+ await writeFile(path, JSON.stringify(old));
+ await writeFile(source, lines(meta(), event(100, 8)));
+ expect(await reader().read(ID)).toMatchObject({ input: null, source: expect.stringContaining("reset") });
+});
+it("recovers a valid v2 qualified source without inventing a reset", async () => {
+ await writeFile(source, lines(meta(), event(100, 8))); await reader().read(ID);
+ const path = join(cache, (await readdir(cache))[0]!);
+ const old = JSON.parse(await readFile(path, "utf8")); old.version = 2;
+ await writeFile(path, JSON.stringify(old));
+ expect(await reader().read(ID)).toMatchObject({ input: 100, output: 8 });
 });
