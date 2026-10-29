@@ -19,6 +19,7 @@ export function SessionRetirementDetails({ projection, colors }: { readonly proj
     ? `${projection.responsibility.role ?? "unknown role"} · ${projection.responsibility.owner ?? "owner unknown"} · ${projection.responsibility.duty ?? "duty unknown"}`
     : `${projection.responsibility.claimedRole ? `Claimed role: ${projection.responsibility.claimedRole}. ` : ""}Responsibility unknown; ${projection.responsibility.missing.join(" ") || "no owner source verifies it"}`;
   const intent = projection.intent.state === "none" ? "None recorded" : `${projection.intent.state}${projection.intent.reviewId ? ` · review ${projection.intent.reviewId}` : ""}${projection.intent.observedAt ? ` · observed ${projection.intent.observedAt}` : ""}`;
+  const promotion = projection.promotion ? `${projection.promotion.epic} · logical epic LSA · ${projection.promotion.source.detail}` : "None recorded";
   const values: DetailValue[] = [
     { label: "Retirement", value: label },
     { label: "Reason", value: projection.retirement.reason },
@@ -26,6 +27,7 @@ export function SessionRetirementDetails({ projection, colors }: { readonly proj
     { label: "Archive membership", value: projection.native.archiveMembership === "archived" ? "Archived" : "Not archived" },
     { label: "Scope", value: scope },
     { label: "Role responsibility", value: responsibility },
+    { label: "Logical promotion", value: promotion },
     { label: "Archive intent", value: intent },
   ];
   return <SessionDetailSection title="Retirement evidence" values={values} colors={colors}>

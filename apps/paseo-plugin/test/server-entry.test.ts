@@ -75,12 +75,12 @@ describe("server entry floor mode", () => {
     writeFileSync(file, content, { mode: 0o600 });
   };
 
-  it("registers procedural prepare/execute/check without enabling the legacy takeover action", () => {
+  it("registers procedural and promotion handlers without enabling the legacy takeover action", () => {
     const started = start();
     expect(started.handlers).toEqual(expect.arrayContaining([
       "sessions.procedural-takeover.prepare", "sessions.procedural-takeover.execute", "sessions.procedural-takeover.check",
+      "sessions.promote",
     ]));
-    expect(started.handlers).not.toContain("sessions.promote");
     expect(started.handlers).not.toContain("sessions.summary-save");
     expect(started.handlers).not.toContain("sessions.summary-attach");
     expect(started.implementations["sessions.navigator-capabilities"]!()).toMatchObject({ takeover: { supported: false } });

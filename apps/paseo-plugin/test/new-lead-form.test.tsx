@@ -195,7 +195,7 @@ describe("New lead form", () => {
     expect(text(f.tree)).not.toMatch(/Persona:|stays ad hoc/);
     press(opener(f.tree, "kontor-new-lead-details")); f.render();
     expect(text(f.tree)).toContain("Persona: sent as the system prompt");
-    expect(text(f.tree)).toContain("The lead stays ad hoc");
+    expect(text(f.tree)).toContain("The lead starts ad hoc");
     // The key-bound note under Start keeps its space for LSA, unseen and unspoken, so switching roles moves nothing below it.
     const startNote = () => byTestId(f.tree, "kontor-choice-caption-Start")!.props as { children: string; "aria-hidden": boolean; style: { opacity: number } };
     expect(startNote()).toMatchObject({ children: "TPM is key-bound: it starts from a Jira ticket.", "aria-hidden": true, style: { opacity: 0 } });

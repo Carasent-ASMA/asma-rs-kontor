@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { useSessionLifecycle as Hook } from "../client/use-session-lifecycle";
 import * as lifecycle from "../shared/session-lifecycle";
+import * as promotion from "../shared/session-promotion";
 import type { LifecycleReview, LifecycleRow } from "../shared/session-lifecycle";
 import { deferredReact, loadHermesScoped } from "./hermes-scoping";
 
@@ -14,7 +15,7 @@ describe("session lifecycle under the iOS (Hermes) scoping of plugin bundles", (
     const { react, render } = deferredReact();
     const { useSessionLifecycle } = loadHermesScoped<{ useSessionLifecycle: typeof Hook }>("../client/use-session-lifecycle.ts", { react,
       "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => contract.name === "sessions.lifecycle-preview" ? async () => review : async (input: { agentId: string }) => { calls.push(input.agentId); return execute(input.agentId); } },
-      "../shared/session-lifecycle": lifecycle });
+      "../shared/session-lifecycle": lifecycle, "../shared/session-promotion": promotion });
     let hostId = "host";
     const draw = () => render(() => useSessionLifecycle(hostId, (rows) => changed.push(...rows)));
     draw(); draw();
@@ -24,7 +25,7 @@ describe("session lifecycle under the iOS (Hermes) scoping of plugin bundles", (
     const review = { id: "fixture-resume", action: "resume", scope: "filtered", rows: [row("a", "pending")] } as LifecycleReview, sent: string[] = [];
     const { react, render } = deferredReact();
     const { useSessionLifecycle } = loadHermesScoped<{ useSessionLifecycle: typeof Hook }>("../client/use-session-lifecycle.ts", { react,
-      "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => async () => { sent.push(contract.name); return review; } }, "../shared/session-lifecycle": lifecycle });
+      "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => async () => { sent.push(contract.name); return review; } }, "../shared/session-lifecycle": lifecycle, "../shared/session-promotion": promotion });
     const draw = () => render(() => useSessionLifecycle("host", () => {}));
     draw(); await draw().restore(); await settle();
     expect(draw().review?.id).toBe("fixture-resume");
@@ -81,7 +82,7 @@ describe("session lifecycle under the iOS (Hermes) scoping of plugin bundles", (
     };
     const { react, render } = deferredReact();
     const { useSessionLifecycle } = loadHermesScoped<{ useSessionLifecycle: typeof Hook }>("../client/use-session-lifecycle.ts", { react,
-      "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle });
+      "@getpaseo/plugin/client": { useRpc: (contract: { name: string }) => rpc[contract.name] }, "../shared/session-lifecycle": lifecycle, "../shared/session-promotion": promotion });
     const draw = () => render(() => useSessionLifecycle("host", () => {}));
     await draw().prepare(action, "filtered", ids);
     const running = draw().run();

@@ -129,6 +129,17 @@ function fixtureTree() {
   });
 }
 
+
+  it("places a promoted ADHOC session under its logical epic inside the ADHOC workspace", () => {
+    const promoted = entry("promoted", { title: "LSA • ADHOC • Route", workspaceName: "ADHOC", workspaceId: "wks-adhoc",
+      projectKey: "prj-adam", projectName: "DESK • ADAM", labels: { role: "LSA", epic: "ASMA-100", "title.auto": "LSA • ADHOC • Route" } });
+    const tree = buildOrganizationTree({ entries: [promoted] });
+    const adhoc = findGroup(tree, (group) => group.kind === "workspace" && group.label === "ADHOC");
+    const epic = adhoc.groups.find((group) => group.kind === "epic");
+    expect(epic?.label).toBe("ASMA-100");
+    expect(epic?.entries.map((value) => value.id)).toContain("promoted");
+  });
+
 describe("session organization hierarchy", () => {
   it("uses the authoritative Mapping → desk → workstream precedence", () => {
     const native = entry("desk", { labels: { desk: "PR Review", workstream: "kontor" } });
