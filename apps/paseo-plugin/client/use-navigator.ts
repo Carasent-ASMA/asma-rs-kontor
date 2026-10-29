@@ -46,10 +46,15 @@ export function useUsageTotals(supported: boolean, ids: readonly string[], revis
     if (!key) return;
     let live = true;
     const all = (JSON.parse(key) as [string[], string])[0], batches = Array.from({ length: Math.ceil(all.length / TOTALS_BATCH) }, (_, index) => all.slice(index * TOTALS_BATCH, (index + 1) * TOTALS_BATCH));
-    Promise.all(batches.map((agentIds) => read({ agentIds }))).then((answers) => {
-      if (live) setState({ key, totals: new Map(answers.flatMap((answer) => Object.entries(answer).flatMap(([id, value]) => value ? [[id, value] as const] : []))) });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => Promise.all(batches.map((agentIds) => read({ agentIds }))).then((answers) => {
+      if (live) {
+        setState({ key, totals: new Map(answers.flatMap((answer) => Object.entries(answer).flatMap(([id, value]) => value ? [[id, value] as const] : []))) });
+        if (answers.some((answer) => Object.values(answer).some((value) => value?.source?.includes("incomplete bounded source read")))) timer = setTimeout(load, 1000);
+      }
     }, () => { if (live) setState({ key, totals: NONE }); });
-    return () => { live = false; };
+    void load();
+    return () => { live = false; clearTimeout(timer); };
   }, [key]);
   return state?.key === key ? state.totals : NONE;
 }

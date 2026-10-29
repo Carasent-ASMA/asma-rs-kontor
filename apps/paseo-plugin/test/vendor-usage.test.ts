@@ -44,7 +44,7 @@ describe("vendor-native usage ownership", () => {
     const budgets: object[] = [], read = vi.fn(async (_id, budget) => { budgets.push(budget); return value; });
     const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agent(id)) }) } } as never;
     await createVendorUsageService({ read })(paseo, ["a", "b"]);
-    expect(budgets[0]).toBe(budgets[1]); expect(budgets[0]).toMatchObject({ bytes: 8 * 1024 * 1024 });
+    expect(budgets[0]).toBe(budgets[1]); expect(budgets[0]).toMatchObject({ bytes: 32 * 1024 * 1024 });
     const result = await createVendorUsageService({ read })(host(vi.fn(async () => { throw Error("PRIVATE_ERROR"); })), ["a"]);
     expect(result.a).toMatchObject({ input: null, output: null }); expect(JSON.stringify(result)).not.toContain("PRIVATE_ERROR");
   });
@@ -53,4 +53,29 @@ describe("vendor-native usage ownership", () => {
     expect(capabilities.usageTotals).toMatchObject({ supported: true, limits: expect.arrayContaining([expect.stringContaining("0.160.0"), expect.stringContaining("Historical completeness")]) });
     expect(capabilities.takeoverBulk.supported).toBe(false);
   });
+});
+
+it("completes eight legal 5MiB sources across bounded service batches", async () => {
+  const fs = await import("node:fs/promises"), { join } = await import("node:path"), { tmpdir } = await import("node:os");
+  const { createCodexUsageReader } = await import("../server/codex-usage");
+  const root = await fs.mkdtemp(join(tmpdir(), "kontor-usage-composition-"));
+  try {
+    const dir = join(root, "sessions"); await fs.mkdir(dir);
+    const ids = Array.from({ length: 8 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+    for (const id of ids) {
+      await fs.writeFile(join(dir, `rollout-${id}.jsonl`), [
+        JSON.stringify({ type: "session_meta", payload: { id, session_id: id, cli_version: "0.160.0", originator: "codex_cli_rs", source: "cli" } }),
+        JSON.stringify({ type: "response_item", payload: "x".repeat(5 * 1024 * 1024) }),
+        JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 100, output_tokens: 8, total_tokens: 108 } } } }),
+      ].join("\n") + "\n");
+    }
+    const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agent(id, id)) }) } } as never;
+    let result: Awaited<ReturnType<ReturnType<typeof createVendorUsageService>>>;
+    for (let batch = 0; batch < 3; batch++) {
+      // A fresh reader also proves cache-only continuation without retained transcript buffers.
+      result = await createVendorUsageService(createCodexUsageReader(root, join(root, "cache")))(paseo, ids);
+      if (batch === 0) expect(Object.values(result).some((row) => row?.input === 100)).toBe(true);
+    }
+    for (const id of ids) expect(result![id]).toMatchObject({ input: 100, output: 8 });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
