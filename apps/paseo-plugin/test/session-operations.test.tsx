@@ -62,7 +62,7 @@ describe("useSessionOperations gating", () => {
   it("says it is still reading what the host supports for every capability-gated action", async () => {
     const ops = (await mount({}, "pending")).render();
     expect(action(ops, A, "summarize").unavailable).toBe(READING);
-    expect(action(ops, A, "attach").unavailable).toBe(READING);
+    expect(action(ops, A, "attach").unavailable).toBeNull();
     expect(action(ops, A, "takeover").option.unavailable).toBe(READING);
     expect(ops.takeover([A, B])).toMatchObject({ unavailable: READING, auto: READING });
   });
