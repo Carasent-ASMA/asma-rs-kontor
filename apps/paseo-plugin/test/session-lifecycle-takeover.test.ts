@@ -664,6 +664,16 @@ describe("takeover review", () => {
     expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: true, speed: "fast" } });
   });
 
+  it("keeps the source settings when an explicit route names no replacement values", async () => {
+    const predecessor = agent("agent-1", { features: FEATURES });
+    const h = await host({ predecessor, features: FEATURES });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: null,
+      route: { provider: "claude-a", model: "claude-opus-5", effort: "xhigh" } });
+    expect(review.state, review.message).toBe("ready");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect(h.effects.create[0]?.config).toMatchObject({ featureValues: { plan: true, speed: "fast" } });
+  });
+
   it("refuses rather than dropping a source setting the target model does not offer", async () => {
     const predecessor = agent("agent-1", { features: FEATURES });
     const h = await host({ predecessor, features: [FEATURES[0]!] });
