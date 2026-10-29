@@ -4,6 +4,7 @@ import type {
   PluginButtonRegistration,
   PluginClientContext,
 } from "@getpaseo/plugin/client";
+import { SummaryAttachmentAvailability } from "./summary-attachments";
 import { withdrawHandOff } from "./session-actions";
 import { StartSwitchPopover } from "./start-switch-sheet";
 import { bindHostDirectory } from "./use-session-directory";
@@ -40,12 +41,12 @@ export function contributeReturnControl(
   let stopped = false;
   // One body for every pill. This installation's client opens screens on its own host, the pill's host.
   const Content = (props: PluginButtonContentProps) =>
-    createElement(StartSwitchPopover, {
+    createElement(SummaryAttachmentAvailability.Provider, { value: summaryAttachmentAvailable }, createElement(StartSwitchPopover, {
       ...props,
       openScreen: (input) => client.openScreen(input),
       screenId,
       summaryAttachmentAvailable,
-    });
+    }));
 
   function removePill(agentId: string): void {
     const current = pills.get(agentId);
