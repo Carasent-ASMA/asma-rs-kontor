@@ -49,6 +49,11 @@ describe("qualified Codex cumulative snapshots", () => {
     expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
     expect(await createCodexUsageReader(root, join(root, "cold-cache")).read(ID)).toMatchObject({ input: null, output: null });
   });
+  it("validates escaped JSON metadata types instead of relying on a literal-line filter", async () => {
+    const escaped = meta(OTHER).replace("session_meta", "session\\u005fmeta");
+    await writeFile(source, lines(meta(), event(100, 5), escaped, event(900, 40)));
+    expect(await reader().read(ID)).toMatchObject({ input: null, output: null });
+  });
   it.each([{ id: OTHER }, { cli_version: "0.159.0" }, { parent_thread_id: OTHER }])("discards v1 offsets that already skipped contradictory metadata %j", async (patch) => {
     await writeFile(source, lines(meta(), event(100, 5))); await reader().read(ID);
     const path = join(cache, (await readdir(cache))[0]!);

@@ -24,7 +24,6 @@ const countKeys = ["input_tokens", "output_tokens", "total_tokens", "cached_inpu
 /** Interpret only identity and numeric usage records; never retain transcript text or sum cumulative values. */
 export function consumeCodexLine(state: State, line: string): void {
   if (state.problem) return;
-  if (state.meta && !line.includes('"token_count"') && !line.includes('"session_meta"')) return;
   try {
     const row = JSON.parse(line);
     // Revalidate every metadata boundary, including one appended after a cached offset.
