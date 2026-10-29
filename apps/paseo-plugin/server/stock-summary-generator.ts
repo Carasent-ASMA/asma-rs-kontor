@@ -10,6 +10,7 @@ import { createProviders } from "../shared/session-create";
 export const SUMMARY_SOURCE_ITEMS = 48;
 export const SUMMARY_SOURCE_CHARACTERS = 24_000;
 const sectionsSchema = summaryRevisionSchema.shape.sections;
+const providerSectionsSchema = sectionsSchema.extend({ captureStatus: z.string().trim().min(1).optional(), blockers: z.union([z.string(), z.array(z.string())]).optional() }).strict();
 const outputSchema = { type: "object", additionalProperties: false, required: ["task", "decisions", "currentState", "nextStep"], properties: Object.fromEntries(["task", "decisions", "currentState", "nextStep"].map(key => [key, { type: "string" }])) };
 const routeSchema = z.object({ provider: z.string(), model: z.string(), modeId: z.string(), reason: z.string() }).strict();
 export type SummaryRoute = z.infer<typeof routeSchema>;
@@ -192,8 +193,12 @@ export function stockSummaryGenerator(paseo: PaseoApi, root: string): SessionSum
     try {
       const response = result.lastMessage!.trim();
       const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```$/.exec(response);
-      sections = sectionsSchema.parse(JSON.parse(fenced ? fenced[1]! : response));
+      const parsed = providerSectionsSchema.parse(JSON.parse(fenced ? fenced[1]! : response));
+      sections = sectionsSchema.parse({ task: parsed.task, decisions: parsed.decisions, currentState: parsed.currentState, nextStep: parsed.nextStep });
       for (const text of Object.values(sections)) if (!text.trim()) throw new Error("Empty section");
+      // Capture continuity is determined by historyBoundary, never provider metadata; preserve reported blockers as text.
+      const blockers = (typeof parsed.blockers === "string" ? [parsed.blockers] : parsed.blockers ?? []).map(text => text.trim()).filter(Boolean).join("\n");
+      if (blockers) sections.currentState += `\n\nBlockers (provider-reported):\n${blockers}`;
     } catch {
       job.state = "failed"; await writeJob(file, job); await cleanup();
       throw new Error("The provider did not return four nonempty summary sections. No revision was saved.");
