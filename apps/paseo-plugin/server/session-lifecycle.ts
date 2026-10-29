@@ -729,7 +729,10 @@ export async function readTakeoverContinuity(client: TakeoverClient, root: strin
   } else if (adapter.adapter === "refused") return null;
   else {
     const managedChildren = childrenOf(agent, await inventory(client));
-    const wakes: TakeoverContinuity["wakes"] = managedChildren.length ? "preserved" : await readDirectWakeState(client, agentId);
+    // An archived, inactive source is history only: it is never prompted or revived by this operation, so no schedule
+    // read is required to settle its wakes. A live source keeps the qualified schedule requirement.
+    const wakes: TakeoverContinuity["wakes"] = managedChildren.length ? "preserved"
+      : agent.archivedAt != null ? "clear" : await readDirectWakeState(client, agentId);
     let owner: TakeoverContinuity["owner"] = null;
     if (adapter.basis === "orchestrated") {
       const supervisorId = adapter.owner;
@@ -1025,6 +1028,14 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     if (after && archivedMembership(after)) return outcome(record, "partial", "archive", "Archived, but its runtime is not confirmed stopped, so no successor was created. Check reads it again.", null, "check");
     return outcome(record, "uncertain", "archive", `The archive is not confirmed${reply ? ` (${errorText(reply)})` : ""}. Check reads it again; nothing is resent.`, null, "check");
   }
+  /** The predecessor must still be retired before any successor is created or its continuation is released. */
+  function predecessorConflict(agent: Agent | null | undefined): string | null {
+    if (!agent) return "The predecessor could not be read. Its retirement is not proven.";
+    if (!archivedMembership(agent)) return "The predecessor is not archived any more; it may have been revived. No successor task is released.";
+    if (active(agent)) return "The predecessor is executing after retirement. No successor task is released.";
+    if (agent.pendingPermissions.length) return "The predecessor is waiting for input after retirement. No successor task is released.";
+    return null;
+  }
   /** What the successor's readback leaves unverified; null when its route, checkout, supervisor, persona and summary match. */
   async function verify(spec: SeatCreateSpec, id: string, predecessor: string, beforeRelease = true): Promise<string | null> {
     if (id === predecessor) return "it reads back as the predecessor";
@@ -1056,6 +1067,31 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const transfer = await transferPromotion(deps.promotionRoot, record.review.agentId, { agentId: created.agentId, native: successor.native,
       persona: successor.agent.labels?.persona ?? "" }, promotion.record.epic);
     return transfer ? outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${transfer} Its task was not released.`, named, "none") : null;
+  }
+  /** True when this exact operation's continuation prompt is visible on the successor's timeline. */
+  async function observedRelease(id: string, wanted: string): Promise<boolean> {
+    const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 50 }).catch(() => null);
+    return !!page && !("error" in page && page.error) && page.entries.some(({ item }) => item.type === "user_message" && (item.messageId === wanted || item.clientMessageId === wanted));
+  }
+  /**
+   * Delivers this operation's one continuation with its stable message ID. A visible message is never sent again; an
+   * absent one is sent once and then observed. Check may call this after a lost create or release reply, but it never
+   * creates or archives anything. The release intent is durable before the send.
+   */
+  async function deliver(record: TakeoverRecord, spec: SeatCreateSpec, id: string, observeAfterError = true): Promise<TakeoverOutcome> {
+    const wanted = releaseMessage(record.review.reviewId), named = { requestId: spec.requestId, agentId: id, title: spec.title };
+    if (await observedRelease(id, wanted)) return succeeded(record, spec, id);
+    await writeDurable(file("takeover-operation", record.review.reviewId), outcome(record, "uncertain", "release",
+      `Successor “${spec.title}” (${id}) is verified; its one task-release intent is recorded. If nothing follows, Check reads it; nothing else is created.`, named, "check"));
+    const sent = await client.agents.ref(id).send(TAKEOVER_PROMPT, { messageId: wanted }).then(() => null, (error: unknown) => error ?? "rejected");
+    if (sent && !observeAfterError) return outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; nothing else is created and the same message ID is used if it must be sent.`, named, "check");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await new Promise((wake) => setTimeout(wake, deps.settleMs ?? 250));
+      if (await observedRelease(id, wanted)) return succeeded(record, spec, id);
+    }
+    return outcome(record, "uncertain", "release", sent
+      ? `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; nothing else is created and the same message ID is used if it must be sent.`
+      : `Successor “${spec.title}” (${id}) is verified and its task prompt was accepted, but no delivery is observed on its timeline yet. Queued delivery is not continuation. Check reads it; nothing else is created.`, named, "check");
   }
   async function succeeded(record: TakeoverRecord, spec: SeatCreateSpec, id: string): Promise<TakeoverOutcome> {
     // An Auto successor's chain is recorded for its exact ID; an explicit choice is this operation only.
@@ -1140,6 +1176,10 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         if (unretired) return finish(unretired);
       }
       phase = "create";
+      const revived = predecessorConflict(await exact(agentId));
+      if (revived) return finish(outcome(record, "partial", "archive", `${revived} The successor was not created and no continuation was sent.`, null, "none"));
+      // Re-check once more inside the creation core, immediately before its durable intent.
+      spec = { ...spec, revalidate: async () => predecessorConflict(await exact(agentId)) };
       if (!await write(outcome(record, "uncertain", "create", "Retired. The successor's creation request is recorded; if nothing follows, Check reads it.", named, "check")))
         return outcome(record, "uncertain", "create", "Retired, but this session's fence changed, so no successor was created. Check reads the outcome.", named, "check");
       const expiredBeforeCreate = effectValidityProblem(spec);
@@ -1153,24 +1193,13 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
         return outcome(record, "partial", "verify", `Successor “${spec.title}” (${id}) is verified, but this session's fence changed, so its task was not released.`, verified, "none");
       const expiredBeforeRelease = effectValidityProblem(spec);
       if (expiredBeforeRelease) return finish(outcome(record, "partial", "verify", expiredBeforeRelease, verified, "none"));
-      const wanted = releaseMessage(record.review.reviewId);
-      const sent = await client.agents.ref(id).send(TAKEOVER_PROMPT, { messageId: wanted }).then(() => null, (error: unknown) => error ?? "rejected");
-      if (sent) return finish(outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified, but its task release reply is not confirmed (${errorText(sent)}). Check reads it; nothing is resent.`, verified, "check"));
-      let observed = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt) await new Promise((wake) => setTimeout(wake, deps.settleMs ?? 250));
-        const page = await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 50 }).catch(() => null);
-        observed = !!page && !("error" in page && page.error) && page.entries.some(({ item }) => item.type === "user_message" && (item.messageId === wanted || item.clientMessageId === wanted));
-        if (observed) break;
-      }
-      if (!observed) return finish(outcome(record, "uncertain", "release", `Successor “${spec.title}” (${id}) is verified and its task prompt was accepted, but no delivery is observed on its timeline yet. Queued delivery is not continuation. Check reads it; nothing is resent.`, verified, "check"));
-      return finish(await succeeded(record, spec, id));
+      return finish(await deliver(record, spec, id, false));
     } catch (error) {
       return finish(outcome(record, "uncertain", phase, `The takeover stopped with its effect unconfirmed: ${errorText(error)}. Check reads it; nothing is resent.`, named, "check"));
     }
   }
 
-  /** Settles an unconfirmed step by exact reads and the creation core's Check. Never archives, creates or sends. */
+  /** Settles an unconfirmed step by exact reads and the creation core's Check. It never archives or creates; it may send the one continuation with this operation's stable message ID and observe it. */
   async function check(reviewId: string): Promise<TakeoverOutcome> {
     const record = await readRecord(reviewId), stored = await readOperation(reviewId);
     if (!record || !stored) throw new Error("No confirmed takeover of this review is on this host.");
@@ -1192,14 +1221,20 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
       result = await retirement(record, agentId, null, pinned.retiredSource) ?? outcome(record, "partial", "archive", "The session was retired; no successor was created.", null, "none");
     } else if (stored.phase === "create") {
       const created = await deps.create.check(spec.requestId);
-      result = await afterCreate(record, spec, created)
-        ?? outcome(record, "partial", "verify", `Successor “${spec.title}” (${created.agentId}) was created and verified; its task was not released.`, { requestId: spec.requestId, agentId: created.agentId, title: spec.title }, "none");
+      const stopped = await afterCreate(record, spec, created);
+      const revived = predecessorConflict(await exact(agentId));
+      result = stopped ?? (revived
+        ? outcome(record, "partial", "verify", `${revived} The verified successor is not released and no other successor is created.`, { requestId: spec.requestId, agentId: created.agentId, title: spec.title }, "none")
+        : created.agentId ? await deliver(record, spec, created.agentId) : outcome(record, "uncertain", "create", "The creation result names no exact successor. Check reads the same request; nothing is created again.", { requestId: spec.requestId, agentId: null, title: spec.title }, "check"));
     } else {
-      const id = stored.successor?.agentId ?? "", wanted = releaseMessage(reviewId);
-      const page = id ? await client.agents.ref(id).timeline.refetch({ direction: "tail", limit: 50 }).catch(() => null) : null;
-      const released = page && !("error" in page && page.error) && page.entries.some(({ item }) => item.type === "user_message" && (item.messageId === wanted || item.clientMessageId === wanted));
-      const problem = released ? await verify(spec, id, agentId, false) : null;
-      result = released && !problem ? await succeeded(record, spec, id) : { ...stored, checkedAt: new Date().toISOString(), ...(problem ? { message: `Task release reads back, but ${problem}. The successor is not verified.` } : {}) };
+      const id = stored.successor?.agentId ?? "";
+      const problem = id ? await verify(spec, id, agentId, false) : "no exact successor is named";
+      const revived = predecessorConflict(await exact(agentId));
+      result = revived
+        ? outcome(record, "partial", "release", `${revived} The successor is not released and no other successor is created.`, stored.successor, "none")
+        : problem
+          ? outcome(record, "partial", "release", `The recorded successor is not verified: ${problem}. Its task was not released and no other successor is created.`, stored.successor, "none")
+          : await deliver(record, spec, id);
     }
     // Saved under this operation's own fence while it still holds the session; a settled result releases it.
     const lockPath = intentPath(agentId), bytes = await readFile(lockPath, "utf8").catch(() => null);

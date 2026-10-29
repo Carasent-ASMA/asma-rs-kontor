@@ -85,6 +85,7 @@ export const TAKEOVER_LIMITS = [
   "Schedules and heartbeats are not readable through the plugin API unless the host exposes schedules.forAgent; without a qualified wake-continuity receipt, retirement is blocked.",
   "Managed children are detached through the public API and continue independently; the API exposes no re-parenting primitive.",
   "The successor's first message is the saved handoff summary, not the whole conversation; continuation is observed on its timeline.",
+  "Check may deliver this operation's one continuation prompt when an earlier dispatch was not observed. It never creates another successor and never repeats a delivery that reads back.",
 ];
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const takeoverReviewInputSchema = z.object({
@@ -132,7 +133,7 @@ export const takeoverOutcomeSchema = z.object({
   stage: z.enum(["preparing", "retiring", "creating", "delivering", "complete", "failed", "uncertain"]).optional(),
   message: z.string(),
   successor: z.object({ requestId: z.string().uuid(), agentId: id.nullable(), title: z.string() }).strict().nullable(),
-  /** review: a fresh review may start. check: only Check, a read with no effect, may run. none: nothing here helps. */
+  /** review: a fresh review may start. check: only Check may run; it reads, and may deliver the one continuation with this operation's stable ID. none: nothing here helps. */
   next: z.enum(["review", "check", "none"]),
   checkedAt: z.string(),
 }).strict();

@@ -49,13 +49,13 @@ const route = { rung: { provider: "claude-a", model: "claude-opus-5", effort: "x
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const path of dirs.splice(0)) await rm(path, { recursive: true, force: true }); });
 
-async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
+async function host({ predecessor = agent("agent-1"), others = [] as Agent[], archiveStatus = "closed", loseCreateReply = false, hideRelease = false, failFirstSend = false, choices = [{ bindingKey: KEY, chain: "claude-first" }], workspace = { ...WORKSPACE }, targetProvider = "claude-a" } = {}) {
   const tmp = await mkdtemp(join(tmpdir(), "kontor-takeover-test-")); dirs.push(tmp);
   const root = join(tmp, "lifecycle"), createRoot = join(tmp, "create");
   const agents = new Map([predecessor, ...others].map((value) => [value.id, value]));
   const timelines = new Map<string, { item: Record<string, unknown> }[]>([[predecessor.id, [{ item: { type: "assistant_message", text: SUMMARY } }]]]);
   const effects = { archive: [] as string[], create: [] as Record<string, unknown>[], send: [] as { id: string; text: string; messageId?: string }[], resolve: [] as string[][], detach: [] as string[] };
-  let created = 0, releaseVisible = !hideRelease;
+  let created = 0, releaseVisible = !hideRelease, sendCalls = 0;
   const issuedAt = resolverInstant(Date.now());
   const client = {
     workspaces: {
@@ -82,7 +82,7 @@ async function host({ predecessor = agent("agent-1"), others = [] as Agent[], ar
       ref: (id: string) => ({
         refresh: async () => { const value = agents.get(id); return value ? { agent: value, project: null } : null; },
         archive: async () => { effects.archive.push(id); agents.set(id, { ...agents.get(id)!, archivedAt: "2026-10-25T09:01:00Z", status: archiveStatus as Agent["status"] }); return { archivedAt: "2026-10-25T09:01:00Z" }; },
-        send: async (text: string, options?: { messageId?: string }) => { effects.send.push({ id, text, messageId: options?.messageId }); if (releaseVisible) timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
+        send: async (text: string, options?: { messageId?: string }) => { if (failFirstSend && ++sendCalls === 1) throw new Error("process died before dispatch"); effects.send.push({ id, text, messageId: options?.messageId }); if (releaseVisible) timelines.get(id)!.push({ item: { type: "user_message", text, messageId: options?.messageId } }); },
         detach: async () => { effects.detach.push(id); const value = agents.get(id); if (value?.labels) { const { ["paseo.parent-agent-id"]: _parent, ...rest } = value.labels; value.labels = rest; } },
         timeline: { refetch: async () => ({ entries: timelines.get(id) ?? [] }) },
       }),
@@ -392,6 +392,19 @@ describe("direct takeover continuity", () => {
         vi.useRealTimers();
       }
     });
+  });
+
+  it("settles an archived direct source without a schedules read", async () => {
+    const predecessor = agent("agent-1", { archivedAt: "2026-10-25T08:30:00Z", status: "closed" });
+    const h = await host({ predecessor });
+    h.deps.continuity = (agentId, requestId) => readTakeoverContinuity(h.client as never, h.root, agentId, requestId);
+    const requestId = "44444444-4444-4444-8444-444444444444";
+    const receipt = await readTakeoverContinuity(h.client as never, h.root, "agent-1", requestId);
+    expect(receipt).toMatchObject({ surface: "direct", wakes: "clear" });
+    const review = await h.service.review({ agentId: "agent-1", bindingKey: KEY });
+    expect(review.state).toBe("ready");
+    expect(await h.apply(review)).toMatchObject({ state: "succeeded" });
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 1, 1]);
   });
 
   it("preserves a visible managed child by detaching it, never archiving it", async () => {
@@ -785,17 +798,16 @@ describe("takeover apply", () => {
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
   });
 
-  it("reconciles a lost creation reply on the same request and never creates or releases again", async () => {
+  it("reconciles a lost creation reply on the same request and Check delivers the one continuation", async () => {
     const h = await host({ loseCreateReply: true });
     const review = await h.ready();
     const result = await h.apply(review);
     expect(result).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
     const checked = await h.service.check(review.reviewId);
-    expect(checked).toMatchObject({ state: "partial", phase: "verify", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
-    expect(checked.message).toContain("its task was not released");
+    expect(checked).toMatchObject({ state: "succeeded", phase: "done", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.service.check(review.reviewId)).toEqual(checked);
     expect(await h.apply(review)).toEqual(checked);
-    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 
   it("reconciles a lost task-release reply by the same message ID and rechecks the successor", async () => {
@@ -806,7 +818,9 @@ describe("takeover apply", () => {
       expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
       h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "running" });
       if (drift) h.agents.set("successor-1", { ...h.agents.get("successor-1")!, model: "another-model" });
-      expect(await h.service.check(review.reviewId)).toMatchObject({ state: drift ? "uncertain" : "succeeded" });
+      expect(await h.service.check(review.reviewId)).toMatchObject({ state: drift ? "partial" : "succeeded" });
+      expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+      expect(await h.service.check(review.reviewId)).toEqual(await h.service.check(review.reviewId));
       expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
     }
   });
@@ -917,6 +931,54 @@ describe("universal takeover operation", () => {
     expect(review.message).toContain("PaseoAgentHandle");
     expect(review.message).not.toContain("Running or starting");
     expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([0, 0, 0]);
+  });
+
+  it("settles a crash before the release send with exactly one delivery and no second successor", async () => {
+    const h = await host({ failFirstSend: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 0]);
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "succeeded", successor: { agentId: "successor-1" } });
+    expect([h.effects.create.length, h.effects.send.length]).toEqual([1, 1]);
+    expect(await h.service.check(review.reviewId)).toEqual(checked);
+    expect(h.effects.send).toHaveLength(1);
+  });
+
+  it("does not release a verified successor when the source was revived before Check", async () => {
+    const h = await host({ loseCreateReply: true });
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "idle" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", next: "none", successor: { agentId: "successor-1" } });
+    expect(checked.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+  });
+
+  it("re-checks the predecessor inside the creation core and creates no successor after revival", async () => {
+    const h = await host(), original = h.deps.create.createSeat;
+    h.deps.create = { ...h.deps.create, createSeat: async (requestId, build) => {
+      h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "idle" });
+      return original(requestId, build);
+    } };
+    const review = await h.ready();
+    const applied = await h.apply(review);
+    expect(applied).toMatchObject({ state: "partial", next: "none", successor: { agentId: null } });
+    expect(applied.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 0, 0]);
+  });
+
+  it("does not release the continuation when the source was revived before Check at release", async () => {
+    const h = await host(), ref = h.client.agents.ref;
+    h.client.agents.ref = (id) => { const handle = ref(id); return { ...handle, send: async (...args) => { await handle.send(...args); throw new Error("lost reply"); } }; };
+    const review = await h.ready();
+    expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "release", next: "check" });
+    h.agents.set("agent-1", { ...h.agents.get("agent-1")!, archivedAt: null, status: "idle" });
+    const checked = await h.service.check(review.reviewId);
+    expect(checked).toMatchObject({ state: "partial", next: "none" });
+    expect(checked.message).toContain("not archived any more");
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 
   it("does not equate queued delivery with observed continuation", async () => {
@@ -1033,9 +1095,9 @@ describe("PR506 review rework", () => {
     expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: "create", next: "check" });
     now += 61_001;
     const result = await h.service.check(review.reviewId);
-    expect(result).toMatchObject({ state: "partial", phase: "verify", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
+    expect(result).toMatchObject({ state: "succeeded", phase: "done", next: "none", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.apply(review)).toEqual(result);
-    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 0]);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
   });
 });
 
@@ -1132,9 +1194,9 @@ describe("LSA-8641-CP2-01 sealed effect validity", () => {
     expect(await h.apply(review)).toMatchObject({ state: "uncertain", phase: stage, next: "check" });
     now += 2001;
     const result = await h.service.check(review.reviewId);
-    expect(result).toMatchObject({ state: stage === "create" ? "partial" : "succeeded", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
+    expect(result).toMatchObject({ state: "succeeded", successor: { requestId: review.successor!.requestId, agentId: "successor-1" } });
     expect(await h.apply(review)).toEqual(result);
-    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, stage === "create" ? 0 : 1]);
+    expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
     expect(h.effects.resolve).toHaveLength(2);
   });
 });
