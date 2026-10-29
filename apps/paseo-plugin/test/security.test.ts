@@ -202,6 +202,21 @@ describe("bounded session create", () => {
     expect(text).toContain('readFloor(file, "create")');
     expect(text).not.toMatch(/(?:open|writeFile|rename|rm)\((?:file|switchFile)\b/);
   });
+
+  it("resolves an absolute trusted asma executable instead of spawning a bare command", () => {
+    expect(text).not.toContain('execute("asma"');
+    expect(text).toContain("resolveAsmaCommand");
+  });
+});
+
+describe("trusted ASMA executable resolver", () => {
+  const text = source("../server/asma-cli.ts");
+
+  it("checks an absolute executable and opens no shell or child process", () => {
+    expect(text).toContain("constants.X_OK");
+    expect(text).toContain("isAbsolute(configured)");
+    expect(text).not.toMatch(/node:child_process|execFile|spawn\(|exec\(|shell:/);
+  });
 });
 
 describe("bounded fleet selection read", () => {

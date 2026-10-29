@@ -15,6 +15,8 @@ function output(patch: Record<string, unknown> = {}) {
   });
 }
 
+const command = async () => "/opt/asma";
+
 describe("asma jira search server boundary", () => {
   it("asks for the honest 50 cap and passes the selected class", () => {
     expect(jiraSearchArgs({ query: "", issueClass: "eligible", openOnly: true }))
@@ -50,12 +52,12 @@ describe("asma jira search server boundary", () => {
 
   it("keeps an empty page distinct from a later-page failure", async () => {
     const emptyExecute = vi.fn(async () => ({ stdout: JSON.stringify({ issues: [], hasMore: false }) }));
-    const empty = await runJiraSearch({ query: "", issueClass: "eligible", openOnly: true }, emptyExecute);
+    const empty = await runJiraSearch({ query: "", issueClass: "eligible", openOnly: true }, emptyExecute, command);
     expect(empty).toEqual({ issues: [], hasMore: false, nextPageToken: null, failure: null });
     expect(emptyExecute).toHaveBeenCalledTimes(1);
 
     const failedExecute = vi.fn(async () => { throw new Error("Jira search failed (http 500: later page)"); });
-    const failed = await runJiraSearch({ query: "", issueClass: "eligible", openOnly: true }, failedExecute);
+    const failed = await runJiraSearch({ query: "", issueClass: "eligible", openOnly: true }, failedExecute, command);
     expect(failed.issues).toEqual([]);
     expect(failed.hasMore).toBe(false);
     expect(failed.nextPageToken).toBeNull();
@@ -65,12 +67,23 @@ describe("asma jira search server boundary", () => {
 
   it("invokes the CLI once with --limit 50 and passes its page through", async () => {
     const execute = vi.fn(async (_file: string, _args: readonly string[], _options: { timeout: number; maxBuffer: number; encoding: "utf8" }) => ({ stdout: output({ nextPageToken: undefined }) }));
-    const result = await runJiraSearch({ query: "", issueClass: "epic", openOnly: true }, execute);
+    const result = await runJiraSearch({ query: "", issueClass: "epic", openOnly: true }, execute, command);
     expect(result.issues.map((issue) => issue.key)).toEqual(["ASMA-100"]);
     expect(result.hasMore).toBe(true);
     expect(result.nextPageToken).toBeNull();
     expect(result.failure).toBeNull();
     expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toBe("/opt/asma");
+    expect(execute.mock.calls[0]?.[2]).toMatchObject({ timeout: 15_000 });
     expect(execute.mock.calls[0]?.[1]).toEqual(["jira", "search", "--query", "", "--limit", "50", "--class", "epic"]);
+  });
+
+  it("reports a missing trusted CLI without spawning a bare command", async () => {
+    const execute = vi.fn(async () => ({ stdout: output() }));
+    const failed = await runJiraSearch({ query: "", issueClass: null, openOnly: true }, execute, async () => {
+      throw new Error("The ASMA CLI could not be found at a trusted absolute path.");
+    });
+    expect(failed.failure).toContain("trusted absolute path");
+    expect(execute).not.toHaveBeenCalled();
   });
 });
