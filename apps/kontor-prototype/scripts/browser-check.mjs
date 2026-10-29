@@ -440,13 +440,13 @@ try {
     await page.getByTestId("kontor-model-picker").waitFor();
     await page.getByTestId("kontor-model-vendor-anthropic").click();
     await page.locator('[data-testid^="kontor-model-row-claude/"]').first().click();
-    assert.match(await page.getByTestId("kontor-model-permissions-mode").innerText(), /^Bypass( permissions)? ⚠ · Claude/, "R1: the seat's own mode on its own provider, read-only");
+    assert.match(await page.getByTestId("kontor-model-permissions-mode").innerText(), /^Bypass permissions · Claude/, "R1: the seat's own mode on its own provider, read-only");
     await page.getByTestId("kontor-model-problem").waitFor({ state: "detached" });
     assert.notEqual(await page.getByTestId("kontor-model-use").getAttribute("aria-disabled"), "true", "R1: its own provider keeps it");
     await page.getByTestId("kontor-model-vendor-openai").click();
     await page.locator('[data-testid^="kontor-model-row-codex/"]').first().click();
     await page.getByTestId("kontor-model-problem").waitFor();
-    assert.match(await page.getByTestId("kontor-model-problem").innerText(), /cannot keep this seat's permissions \(bypassPermissions on claude\): no permission mapping between providers is qualified\.$/);
+    assert.match(await page.getByTestId("kontor-model-problem").innerText(), /cannot inherit operating mode bypassPermissions from claude\. Cross-provider mode and permission equivalence must be verified by the host\.$/);
     assert.equal(await page.getByTestId("kontor-model-use").getAttribute("aria-disabled"), "true");
     await page.screenshot({ path: join(values.output, `${width}-${theme}-takeover-picker-refused.png`) });
     await page.getByRole("button", { name: "Cancel model choice", exact: true }).click();
@@ -456,13 +456,13 @@ try {
     await page.waitForFunction(() => !/in progress/.test(document.querySelector('[data-testid="takeover-results-summary"]')?.textContent ?? "in progress"), null, { timeout: 15000 });
     const result = page.getByTestId(`takeover-result-${account}`);
     assert((await result.innerText()).includes("Not started · Original kept"), "R1: refused, original kept");
-    assert((await result.getAttribute("aria-label")).includes(`Codex cannot keep this seat's permissions (bypassPermissions on ${accountSeat.provider})`), "R1: the reason names the permissions");
+    assert((await result.getAttribute("aria-label")).includes(`Codex cannot inherit operating mode bypassPermissions from ${accountSeat.provider}`), "R1: the reason names the permissions");
     const fixture = await page.evaluate(() => window.__kontorNavigatorFixture.takeover());
     assert.deepEqual([(await seatOf(account)).archivedAt ?? null, Object.values(fixture.outcomes).filter(outcome => outcome.agentId === account).length], [null, 0], "R1: no archive, no apply");
     assert.equal(await page.getByTestId("takeover-results-retry").getAttribute("aria-label"), "Retry remaining 0. Nothing is left to retry.", "R6: a refusal is not retried");
     // R6b: the shown text, not only the spoken label, carries the inherited mode, the refusal and why Retry skips it, with no line clipped.
     const shown = await result.innerText();
-    assert(shown.includes(`(bypassPermissions on ${accountSeat.provider}): no permission mapping between providers is qualified.`) && shown.includes("Retry remaining skips it: asking again gets the same answer."), "R6b: the whole reason is shown");
+    assert(shown.includes(`operating mode bypassPermissions from ${accountSeat.provider}. Cross-provider mode and permission equivalence must be verified by the host.`) && shown.includes("Retry remaining skips it: asking again gets the same answer."), "R6b: the whole reason is shown");
     assert(await result.evaluate(node => [...node.querySelectorAll("div[dir]")].every(text => text.scrollHeight <= text.clientHeight + 1)), "R6b: no reason line is clipped");
     await page.screenshot({ path: join(values.output, `${width}-${theme}-takeover-permissions-refused.png`) });
     await page.getByTestId("takeover-results-close").click();

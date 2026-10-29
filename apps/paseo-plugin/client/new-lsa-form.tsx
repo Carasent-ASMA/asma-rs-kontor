@@ -477,7 +477,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
       <Text selectable testID="kontor-new-lsa-title" style={{ color: choice.title ? colors.foreground : colors.foregroundMuted, fontSize: 13, paddingHorizontal: 9, paddingVertical: 8, borderRadius: 6, backgroundColor: colors.surface2 }}>
         {choice.title || (fromJira ? "Choose a Jira issue to see the title." : "Type a topic to see the title.")}</Text>
     </View>
-    {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is a dangerous permission mode on this host.</Text> : null}
+    {choice.mode?.dangerous ? <Text testID="kontor-new-lsa-danger" style={{ color: colors.statusWarning, fontSize: 12 }}>⚠ {choice.mode.label} is marked dangerous by this provider.</Text> : null}
     {/* How the lead is bound and how its persona arrives stay one tap away; the behavior is the same either way. */}
     <Disclosure testID="kontor-new-lead-details" label="Details" value="How this lead starts" open={open === "details"} onToggle={() => toggle("details")} colors={colors} tall={tall}>
       <View testID="kontor-new-lead-details-body" style={{ gap: 4 }}>
