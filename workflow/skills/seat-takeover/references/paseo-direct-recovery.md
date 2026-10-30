@@ -63,15 +63,32 @@ checkout snapshot. The review pins these before retirement; preserve the
 checkpoint and its apply-intent sidecar for recovery. An ambiguous apply uses
 Check on that same operation, never a new review to replace the uncertainty.
 
-The additional prepared-brief path requires an authoritative provider-native background-work
-reader configured by the existing server owner, as well as its qualified
-schedule inventory. Missing coverage refuses retirement; an empty caller list
-is not evidence. No stock background reader is currently wired. The pinned
-plugin development SDK 0.11.4 also has no public Node connector entry. These remain
-qualification gaps for that path and runtime, not permission to use a private host module or
-to edit an installed SDK. Synthetic source tests do not qualify installed use.
-A candidate needs exact-head review followed by MAIN proof with disposable
-sessions before this route can be reported as delivered.
+The prepared-brief path also requires the plugin's provider-native background
+reader (`server/background-reader.ts`) and the qualified schedule inventory.
+The reader accounts only for work the source runtime owns without a Paseo ID:
+
+- **Claude:** every main-chain `run_in_background` launch and every `Monitor`
+  needs a `<task-notification>` in the source transcript whose status is
+  completed, failed, killed or stopped. A Monitor event or expiry without a
+  status is not terminal.
+- **OpenCode:** no source `task` tool part may be pending or running, and every
+  child session reached through `parent_id` (depth 8, 500 rows) needs no
+  pending or running tool and a completed latest assistant message.
+- **Codex** and unverified provider aliases are refused.
+
+A positive read writes one immutable content-addressed snapshot, and review and
+apply must read the same revision. A gap, a read error or a changed revision
+refuses retirement; an empty caller list is not evidence. Schedules, managed
+children and workspace terminals keep their existing owners. A gap is not
+permission to use a private host module or to edit an installed SDK.
+
+Known limits: Claude writes no terminal record after a UI stop, a Monitor
+timeout or teardown (275 of 427 main-chain launches on one measured host), so
+long-lived Claude seats are usually refused here; use ordinary Take over, which
+makes no background-transfer claim. Codex background work is not covered. No
+reader produces `checkpointed` workers. Synthetic source tests do not qualify
+installed use. A candidate needs exact-head review followed by MAIN proof with
+disposable sessions before this route can be reported as delivered.
 
 ## Preserve workers before archive
 
