@@ -91,43 +91,49 @@ describe("native provider routes and alias homes", () => {
     expect(await createVendorUsageService({ read })(Object.assign(host(vi.fn(async () => found(native))), metadata), ["a"])).toEqual({ a: value });
     expect(read).toHaveBeenCalledWith({ base: "claude", source: "/tmp/fixture-claude-work/projects" }, CLAUDE, expect.any(Object));
   });
-  it("dispatches codex-work, claude-work and OpenCode aliases through their own readers", async () => {
+  it("dispatches two Codex, Claude and OpenCode alias homes through separate readers", async () => {
     const fs = await import("node:fs/promises"), { join } = await import("node:path"), { tmpdir } = await import("node:os"), { DatabaseSync } = await import("node:sqlite");
     const root = await fs.mkdtemp(join(tmpdir(), "kontor-vendor-dispatch-"));
-    const codexHome = join(root, "codex-work"), claudeHome = join(root, "claude-work"), openHome = join(root, "opencode-work");
-    const codexHandle = "00000000-0000-4000-8000-000000000031", claudeHandle = "00000000-0000-4000-8000-000000000032", openHandle = "ses_0123456789abcdef";
+    const codex = [join(root, "codex-a"), join(root, "codex-b")], claude = [join(root, "claude-a"), join(root, "claude-b")], open = [join(root, "opencode-a"), join(root, "opencode-b")];
+    const codexIds = ["00000000-0000-4000-8000-000000000031", "00000000-0000-4000-8000-000000000032"];
+    const claudeIds = ["00000000-0000-4000-8000-000000000033", "00000000-0000-4000-8000-000000000034"];
+    const openIds = ["ses_03123456789abcdef", "ses_0323456789abcdef"];
     try {
-      await fs.mkdir(join(codexHome, "sessions", "2026", "01", "01"), { recursive: true });
-      await fs.writeFile(join(codexHome, "sessions", "2026", "01", "01", `rollout-${codexHandle}.jsonl`), [
-        JSON.stringify({ type: "session_meta", payload: { id: codexHandle, session_id: codexHandle, cli_version: "0.160.0", originator: "codex_cli_rs", source: "cli" } }),
-        JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 100, output_tokens: 8, total_tokens: 108 } } } }),
-      ].join("\n") + "\n");
-      await fs.mkdir(join(claudeHome, "projects", "project-work"), { recursive: true });
-      await fs.writeFile(join(claudeHome, "projects", "project-work", `${claudeHandle}.jsonl`), JSON.stringify({ type: "assistant", isSidechain: false,
-        message: { id: "msg-work", usage: { input_tokens: 20, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 1 } } }) + "\n");
-      await fs.mkdir(join(openHome, "opencode"), { recursive: true });
-      const database = new DatabaseSync(join(openHome, "opencode", "opencode.db"));
-      try {
-        database.exec("CREATE TABLE session (id TEXT PRIMARY KEY, tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER)");
-        database.prepare("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)").run(openHandle, 10, 5, 2, 3, 4);
-      } finally { database.close(); }
-      const agents = {
-        a: { id: "a", provider: "fixture-codex-work", persistence: { provider: "codex", sessionId: codexHandle, nativeHandle: codexHandle, metadata: { threadId: codexHandle } } },
-        b: { id: "b", provider: "fixture-claude-work", persistence: { provider: "claude", sessionId: claudeHandle, nativeHandle: claudeHandle, metadata: {} } },
-        c: { id: "c", provider: "fixture-opencode-work", persistence: { provider: "opencode", sessionId: openHandle, nativeHandle: openHandle, metadata: {} } },
-      };
-      const entries = [
-        { provider: "fixture-codex-work", extends: "codex", env: { CODEX_HOME: codexHome } },
-        { provider: "fixture-claude-work", extends: "claude", env: { CLAUDE_CONFIG_DIR: claudeHome } },
-        { provider: "fixture-opencode-work", extends: "opencode", env: { XDG_DATA_HOME: openHome } },
+      for (const [index, home] of codex.entries()) {
+        const id = codexIds[index]!, input = index ? 200 : 100, output = index ? 16 : 8;
+        await fs.mkdir(join(home, "sessions", "2026", "01", "01"), { recursive: true });
+        await fs.writeFile(join(home, "sessions", "2026", "01", "01", `rollout-${id}.jsonl`), [
+          JSON.stringify({ type: "session_meta", payload: { id, session_id: id, cli_version: "0.160.0", originator: "codex_cli_rs", source: "cli" } }),
+          JSON.stringify({ type: "event_msg", timestamp: "2026-01-01T00:00:00.000Z", payload: { type: "token_count", info: { total_token_usage: { input_tokens: input, output_tokens: output, total_tokens: input + output } } } }),
+        ].join("\n") + "\n");
+      }
+      for (const [index, home] of claude.entries()) {
+        const id = claudeIds[index]!, input = index ? 40 : 20, output = index ? 8 : 4, cacheRead = index ? 10 : 5, cacheCreation = index ? 2 : 1;
+        await fs.mkdir(join(home, "projects", "project-work"), { recursive: true });
+        await fs.writeFile(join(home, "projects", "project-work", `${id}.jsonl`), JSON.stringify({ type: "assistant", isSidechain: false,
+          message: { id: `msg-${index}`, usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheCreation } } }) + "\n");
+      }
+      for (const [index, home] of open.entries()) {
+        const id = openIds[index]!, input = index ? 20 : 10, output = index ? 10 : 5, reasoning = index ? 4 : 2, cacheRead = index ? 6 : 3, cacheWrite = index ? 8 : 4;
+        await fs.mkdir(join(home, "opencode"), { recursive: true });
+        const database = new DatabaseSync(join(home, "opencode", "opencode.db"));
+        try {
+          database.exec("CREATE TABLE session (id TEXT PRIMARY KEY, tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER)");
+          database.prepare("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)").run(id, input, output, reasoning, cacheRead, cacheWrite);
+        } finally { database.close(); }
+      }
+      const aliases = [
+        ...codex.map((home, index) => ({ provider: `fixture-codex-${index}`, base: "codex", env: { CODEX_HOME: home }, id: codexIds[index]!, input: index ? 200 : 100, output: index ? 16 : 8 })),
+        ...claude.map((home, index) => ({ provider: `fixture-claude-${index}`, base: "claude", env: { CLAUDE_CONFIG_DIR: home }, id: claudeIds[index]!, input: index ? 52 : 26, output: index ? 8 : 4 })),
+        ...open.map((home, index) => ({ provider: `fixture-opencode-${index}`, base: "opencode", env: { XDG_DATA_HOME: home }, id: openIds[index]!, input: index ? 34 : 17, output: index ? 14 : 7 })),
       ];
-      const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agents[id as keyof typeof agents]) }) },
-        providers: { snapshot: async () => ({ entries: entries.map(({ provider }) => ({ provider, source: "custom" })) }) },
-        config: { get: async () => ({ config: { providers: Object.fromEntries(entries.map(({ provider, extends: base, env }) => [provider, { extends: base, env }])) } }) } } as never;
-      const result = await createVendorUsageService(createVendorUsageReader(join(root, "cache")))(paseo, ["a", "b", "c"]);
-      expect(result.a).toMatchObject({ input: 100, output: 8 });
-      expect(result.b).toMatchObject({ input: 26, output: 4 });
-      expect(result.c).toMatchObject({ input: 17, output: 7 });
+      const agents = Object.fromEntries(aliases.map((alias, index) => [String.fromCharCode(97 + index),
+        { id: String.fromCharCode(97 + index), provider: alias.provider, persistence: { provider: alias.base, sessionId: alias.id, nativeHandle: alias.id, metadata: alias.base === "codex" ? { threadId: alias.id } : {} } }]));
+      const paseo = { agents: { ref: (id: string) => ({ refresh: async () => found(agents[id]!) }) },
+        providers: { snapshot: async () => ({ entries: aliases.map(({ provider }) => ({ provider, source: "custom" })) }) },
+        config: { get: async () => ({ config: { providers: Object.fromEntries(aliases.map(({ provider, base, env }) => [provider, { extends: base, env }])) } }) } } as never;
+      const ids = Object.keys(agents), result = await createVendorUsageService(createVendorUsageReader(join(root, "cache")))(paseo, ids);
+      for (const [index, alias] of aliases.entries()) expect(result[ids[index]!]).toMatchObject({ input: alias.input, output: alias.output });
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
   it("uses a verified OpenCode alias's own XDG_DATA_HOME database path", async () => {
