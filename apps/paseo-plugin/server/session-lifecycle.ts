@@ -1253,11 +1253,16 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
     const problem = await verify(spec, created.agentId, record.review.agentId);
     if (problem) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${problem}, so its task was not released.`, named, "none");
     const current = await exact(created.agentId);
-    if (current && active(current)) {
+    if (!current) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but it could not be read back after verification, so its task was not released.`, named, "none");
+    if (active(current)) {
       const finished = await client.agents.ref(created.agentId).waitForFinish(deps.bootstrapWaitMs ?? SUCCESSOR_BOOTSTRAP_WAIT_MS)
         .catch((error: unknown) => ({ status: "error" as const, final: null, error: errorText(error), lastMessage: null }));
       if (finished.status !== "idle")
         return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but its bootstrap turn did not finish (${finished.status}${finished.error ? `: ${finished.error}` : ""}), so its task was not released.`, named, "none");
+      const afterWait = await exact(created.agentId);
+      if (!afterWait) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but it could not be read back after its bootstrap turn, so its task was not released.`, named, "none");
+      if (active(afterWait) || afterWait.pendingPermissions.length)
+        return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but it is still executing or waiting for input after its bootstrap turn, so its task was not released.`, named, "none");
       const afterBootstrap = await verify(spec, created.agentId, record.review.agentId);
       if (afterBootstrap) return outcome(record, "partial", "verify", `Successor ${created.agentId} was created, but ${afterBootstrap} after its bootstrap turn, so its task was not released.`, named, "none");
     }
