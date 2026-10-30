@@ -175,8 +175,6 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
   const scopeOf = (next: CreateDraft, projectId = next.projectId): CreateScope => ({ projectId, role: next.role, start: next.start,
     ...(next.start === FROM_JIRA && next.issueQuery?.trim() ? { issueKey: next.issueQuery.trim() } : {}) });
   const submitted = useRef(false);
-  /** The hint shown when the form last settled; a read in flight keeps it on screen. */
-  const settledHint = useRef<string | null>(null);
   // Keep controls mounted during a scoped refresh so keyboard focus/selection survives. This snapshot is
   // presentation only: submit still requires current ready options and the server's fresh validation.
   const presentation = useRef<{ hostId: string; options: CreateOptions } | null>(null);
@@ -283,13 +281,10 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     : features.problem ? `Model settings could not be read: ${features.problem}` : featureValuesProblem(features.features, choice.featureValues));
   const problem = (options.status === "ready" ? choice.problem ?? settingsProblem : options.status === "error"
     ? `Choices could not be refreshed (${options.message}). Refresh choices before creating a lead.`
-    : "Refreshing this desk's choices… Creation stays disabled until the host answers.")
+    : "Refreshing this desk's choices…")
     ?? (source && source.hostId !== hostId ? "Choose a source session on this host, or Clear the source." : sourceProblem);
-  // A read in flight blocks Create and names itself to assistive technology, but the visible hint keeps what the last
-  // settled read said, so switching a role or desk never flashes a passing status or an unconfirmed problem.
-  const reading = options.status === "loading" || !!settingsReading;
-  if (!reading) settledHint.current = problem;
-  const hint = reading ? settledHint.current : problem;
+  // While a choices or settings read is in flight Create is blocked, so the visible and assistive reasons both name it.
+  const hint = problem;
   // An unsettled earlier request (this device or another) is shown instead of the form until a Check settles it.
   if (ready.pending) return outcomeView(ready.pending, providerLabel);
 

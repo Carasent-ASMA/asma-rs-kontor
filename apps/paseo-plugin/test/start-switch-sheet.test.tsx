@@ -565,7 +565,7 @@ describe("Start or switch sheet", () => {
     expect(byTestId(s.tree, "kontor-switch-list")).toBeDefined();
   });
 
-  it("keeps the settled hint through a quick LSA→TPM→LSA switch, blocks Create until the latest read answers, and never applies a stale read", async () => {
+  it("names the choices refresh through a quick LSA→TPM→LSA switch, blocks Create until the latest read answers, and never applies a stale read", async () => {
     const reads: { scope: { role?: string }; answer: (options: CreateOptions) => void }[] = [];
     model.rpc["sessions.create-options"] = vi.fn((scope: { role?: string }) => new Promise<CreateOptions>((answer) => { reads.push({ scope, answer }); }));
     model.rpc["sessions.create-features"] = vi.fn(async () => ({ features: [], problem: null }));
@@ -589,16 +589,16 @@ describe("Start or switch sheet", () => {
     const before = frames.length;
     role("TPM"); role("LSA");
     expect(reads.map((read) => read.scope.role)).toEqual(["TPM", "LSA"]);
-    const waiting = "Refreshing this desk's choices… Creation stays disabled until the host answers.";
-    expect(frames.slice(before + 1).every((frame) => frame.blocked === true && frame.why === waiting)).toBe(true);
+    const waiting = "Refreshing this desk's choices…";
+    expect(frames.slice(before + 1).every((frame) => frame.blocked === true && frame.hint === waiting && frame.why === waiting)).toBe(true);
     // The latest read answers first; the earlier one arrives late and is never applied.
     const [stale, latest] = reads;
     latest!.answer(OPTIONS); await settle(); draw();
     stale!.answer({ ...OPTIONS, enabled: false, disabledReason: "Stale TPM read." }); await settle(); draw();
     expect(frames.at(-1)).toEqual({ hint: "Choose a Jira issue.", blocked: true, why: "Choose a Jira issue." });
-    // The hint changes once, to what the switch settles on: no passing status, no stale or intermediate problem.
+    // The visible and assistive reasons name the read, then settle on the actual blocker; a stale read never appears.
     const shown = frames.map((frame) => frame.hint).filter((hint, index, all) => index === 0 || hint !== all[index - 1]);
-    expect(shown).toEqual(["Type a topic of at least 3 characters.", null, "Choose a Jira issue."]);
+    expect(shown).toEqual(["Type a topic of at least 3 characters.", null, "Choose a Jira issue.", waiting, "Choose a Jira issue."]);
   });
 
   it.each(["dismissal", "Back", "Cancel"])("invalidates the creation continuation immediately on %s", async (leave) => {
