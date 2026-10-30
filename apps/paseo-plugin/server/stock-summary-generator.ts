@@ -29,7 +29,12 @@ export async function selectSummaryRoute(paseo: PaseoApi, cwd: string): Promise<
   const { config } = await paseo.config.get();
   const profile = config.agentProfiles?.find(entry => [entry.id, entry.name].some(name => name.toLowerCase() === "summary"));
   const choices = providers.filter(p => p.available).flatMap(p => p.models.flatMap(model => {
-    const mode = p.modes.find(m => m.id === (profile?.provider === p.id ? profile.modeId : p.defaultMode) && !m.dangerous) ?? p.modes.find(m => !m.dangerous);
+    const requested = profile?.provider === p.id ? profile.modeId : null;
+    const mode = requested
+      ? p.modes.find(m => m.id === requested && !m.dangerous)
+      : p.modes.find(m => m.id === "default" && !m.dangerous)
+        ?? p.modes.find(m => m.id === p.defaultMode && !m.dangerous)
+        ?? p.modes.find(m => !m.dangerous);
     return mode ? [{ provider: p.id, model: model.id, modeId: mode.id, reason: "Host catalogue economical-model preference; no price guarantee" }] : [];
   }));
   if (profile) {

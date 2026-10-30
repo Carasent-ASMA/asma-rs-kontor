@@ -211,6 +211,36 @@ describe("stock summary generator", () => {
     await expect(selectSummaryRoute(h.api as never, h.root)).rejects.toThrow("configured summary route");
   });
 
+  it("selects Claude's explicit default mode instead of auto and completes the worker route", async () => {
+    const h = await harness();
+    h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
+      modes: [{ id: "auto", label: "Auto" }, { id: "default", label: "Default" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }];
+    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "claude", model: "claude-haiku-4-5", modeId: "default" });
+    expect((await createSessionSummaryService(h.api as never, h.root).save(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created[0]!.config).toMatchObject({ provider: "claude/claude-haiku-4-5", modeId: "default" });
+  });
+
+  it("falls back to the provider default mode when no explicit default is offered", async () => {
+    const h = await harness();
+    h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
+      modes: [{ id: "auto", label: "Auto" }, { id: "review", label: "Review" }] }];
+    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "claude", modeId: "auto" });
+  });
+
+  it("skips dangerous default modes for the first non-dangerous mode", async () => {
+    const h = await harness();
+    h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "full-access", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
+      modes: [{ id: "default", label: "Default", colorTier: "dangerous" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }, { id: "review", label: "Review" }] }];
+    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "claude", modeId: "review" });
+  });
+
+  it.each(["codex", "opencode"] as const)("keeps native %s route behavior unchanged", async (provider) => {
+    const h = await harness();
+    h.catalog.entries = [{ provider, enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "model-mini", label: "Mini", isDefault: true }],
+      modes: [{ id: "auto", label: "Auto" }, { id: "review", label: "Review" }] }];
+    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider, model: "model-mini", modeId: "auto" });
+  });
+
   it("refuses a running source and a history gap before generation", async () => {
     const h = await harness(); h.source.status = "running";
     await expect(h.generator().generate(SOURCE)).rejects.toThrow("still working");
