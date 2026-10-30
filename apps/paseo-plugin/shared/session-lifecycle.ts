@@ -101,11 +101,14 @@ export const TAKEOVER_LIMITS = [
   "The source's listed model settings are carried to the successor and revalidated against its model; a setting the target no longer offers refuses the takeover instead of being silently dropped.",
   "The source snapshot exposes model settings but not MCP server or provider-option configuration; the successor receives the host's normal connector set and unread source connectors are not copied or invented.",
   "The successor's first message is the saved handoff summary, not the whole conversation; continuation is observed on its timeline.",
-  "Check may deliver this operation's one continuation prompt when an earlier dispatch was not observed. It never creates another successor and never repeats a delivery that reads back.",
+  "Check may perform the first continuation dispatch after a reconciled creation. Once a release intent is persisted, Check only reads: a missing delivery stays unknown and is never blindly resent.",
 ];
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const takeoverBriefRefSchema = z.object({ path: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const takeoverReviewInputSchema = z.object({
   agentId: id,
+  /** Script-prepared context; hash and contents are pinned before any retirement. */
+  preparedBrief: takeoverBriefRefSchema.optional(),
   /** Revises this review at its current revision; both absent opens a new review. */
   reviewId: z.string().uuid().optional(),
   revision: z.number().int().positive().optional(),
