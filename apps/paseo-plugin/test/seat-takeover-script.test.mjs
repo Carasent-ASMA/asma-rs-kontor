@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,5 +60,11 @@ describe('procedural takeover CLI existing owner', () => {
     expect(f.calls).toEqual([]);
     const g = await fixture(); g.review.agentId = 'another-source';
     await expect(driveTakeover('review', g.path, g.checkpoint, g.connect)).rejects.toThrow('another source');
+  });
+  it('names the public connector requirement when the installed client has no node entry point', () => {
+    const source = readFileSync('scripts/seat-takeover.mjs', 'utf8');
+    expect(source).toContain('@getpaseo/client/node connector (0.13.2+)');
+    expect(source).toContain('the installed @getpaseo/client does not provide it');
+    expect(source).not.toContain('0.11.4');
   });
 });

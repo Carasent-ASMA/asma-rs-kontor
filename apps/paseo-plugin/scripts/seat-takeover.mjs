@@ -27,7 +27,7 @@ export async function connectPublicHost(host) {
   const specifier = '@getpaseo/client/node';
   let createHostClient;
   try { ({ createHostClient } = await import(specifier)); }
-  catch { throw new Error('The procedural CLI requires the supported @getpaseo/client/node connector (0.13.2+); the plugin development SDK 0.11.4 does not provide it. No private SDK fallback is used.'); }
+  catch { throw new Error('The procedural CLI requires the supported @getpaseo/client/node connector (0.13.2+); the installed @getpaseo/client does not provide it. No private SDK fallback is used.'); }
   requireFact(typeof createHostClient === 'function', 'Public createHostClient is unavailable; no private SDK fallback');
   const client = createHostClient(host, { clientId: 'kontor-seat-takeover', connectTimeoutMs: 10000 });
   try { await client.connect(); return client; }

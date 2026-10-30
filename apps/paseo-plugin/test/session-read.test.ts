@@ -52,7 +52,10 @@ function setup(records: PaseoAgent[] = [agent("a")], hostId = "host-a") {
   });
   vi.spyOn(client.agents, "ref").mockImplementation((id) => {
     const exactId = typeof id === "string" ? id : id.id;
-    return { ...ref(id), refresh: () => refresh(exactId), markSeen: (expected: { expectedUpdatedAt: string; expectedAttentionTimestamp: string | null }) => markSeen(exactId, expected) };
+    return Object.assign(ref(id), {
+      refresh: () => refresh(exactId),
+      markSeen: (expected: { expectedUpdatedAt: string; expectedAttentionTimestamp: string | null }) => markSeen(exactId, expected),
+    });
   });
   const actions = createSessionReadActions(hostId, () => client);
   const target = (id = "a") => sessionReadTarget(hostId, toDirectoryEntry({ agent: native.get(id) ?? agent(id), project: null }));

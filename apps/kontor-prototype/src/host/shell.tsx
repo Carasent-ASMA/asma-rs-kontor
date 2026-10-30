@@ -175,6 +175,7 @@ function AgentShim({ agentId, hostProps, onOpenWorkspace }: { agentId: string; h
 function PillIcon({ pill, hostProps, color }: { pill: Pill; hostProps: Record<string, unknown>; color: string }) {
   const icon = pill.button.icon;
   if (typeof icon === "string") return <Icon name={icon} size={14} color={color} />;
+  if (typeof icon !== "function") return null; // Paseo renders inline SVG icons; this prototype omits that form.
   const Registered = icon;
   return <Registered {...(hostProps as object as PluginButtonIconProps)} context="agent" workspaceId={pill.workspaceId} agentId={pill.agentId} size={14} color={color} />;
 }

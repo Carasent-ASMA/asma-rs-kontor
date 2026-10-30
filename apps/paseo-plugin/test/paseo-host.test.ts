@@ -33,13 +33,13 @@ describe("complete public host schedule reader", () => {
     expect(loaded).toBe(false);
   });
 
-  it("reports the exact public connector version boundary instead of inventing one", async () => {
+  it("reports the exact public connector version boundary without blaming the pinned development SDK", async () => {
     const read = createCompleteScheduleReader({ paseoHost: HOST }, async () => null);
     const missing = await read();
     expect(missing).toMatchObject({ complete: false });
     if (!missing.complete) {
       expect(missing.gap).toContain("0.13.2");
-      expect(missing.gap).toContain("0.11.4");
+      expect(missing.gap).not.toContain("0.11.4");
     }
   });
 
@@ -85,5 +85,18 @@ describe("complete reader connector boundary", () => {
     const text = readFileSync("server/paseo-host.ts", "utf8");
     expect(text).toContain('const specifier = "@getpaseo/client/node";');
     expect(text).not.toMatch(/paseo\.(?:schedules|agents|workspaces)|daemon\.json|credentials|localCredential|createPaseoApi/);
+  });
+});
+
+describe("pinned Paseo development SDK", () => {
+  it("pins the three SDK packages to the public node connector release and exports it", async () => {
+    const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
+      devDependencies: Record<string, string>;
+    };
+    for (const name of ["@getpaseo/client", "@getpaseo/plugin", "@getpaseo/protocol"]) {
+      expect(manifest.devDependencies[name], name).toBe("0.13.2");
+    }
+    const node = await import("@getpaseo/client/node") as { createHostClient?: unknown };
+    expect(typeof node.createHostClient, "@getpaseo/client/node createHostClient").toBe("function");
   });
 });
