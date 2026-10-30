@@ -2078,6 +2078,28 @@ describe("R11 prepared procedural owner", () => {
     const review = () => h.service.review({ agentId: source.id, bindingKey: KEY, preparedBrief: ref });
     return { ...h, cwd, source, brief, ref, reference, renames, review };
   }
+  it.each(["settings", "unreadable", "unchanged"] as const)("revalidates the final callback-time source read (%s) before archive", async condition => {
+    const h = await preparedHost(), review = await h.review(); expect(review.state).toBe("ready");
+    const background = h.deps.background!; let reads = 0;
+    h.deps.background = async input => {
+      const result = await background(input);
+      // Apply assessment, preflight prepared read, then the final prepared read before archive.
+      if (++reads === 3) {
+        if (condition === "settings") h.source.features = withPlan(true);
+        if (condition === "unreadable") h.agents.delete(h.source.id);
+      }
+      return result;
+    };
+    const result = await h.apply(review);
+    expect(reads).toBeGreaterThanOrEqual(3);
+    if (condition === "unchanged") {
+      expect(result.state, result.message).toBe("uncertain");
+      expect([h.effects.archive.length, h.effects.create.length, h.effects.send.length]).toEqual([1, 1, 1]);
+    } else {
+      expect(result.state, result.message).toBe("refused");
+      expect([h.effects.archive, h.effects.create, h.effects.send]).toEqual([[], [], []]);
+    }
+  });
   it("requires authoritative background accounting before retirement, with no empty fallback", async () => {
     const h = await preparedHost(); delete h.deps.background;
     const review = await h.review();

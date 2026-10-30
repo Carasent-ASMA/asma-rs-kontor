@@ -1472,12 +1472,13 @@ export function createTakeoverService(client: TakeoverClient, root: string, deps
           if (!after || parent(after) !== null) return finish(outcome(record, "uncertain", "preserve", `Child ${childId} could not be verified as detached from the predecessor. It was not archived and no successor was created. Check reads it; nothing is resent.`, named, "check"));
         }
       }
+      const preparedRetirementGap = await preparedProblem(record);
+      if (preparedRetirementGap) return finish(outcome(record, "refused", "preflight", preparedRetirementGap, named, "review"));
+      // Evidence callbacks can change settings; no prepared-evidence await follows this final source validation.
       const beforeArchive = await exact(agentId);
       if (!beforeArchive) return finish(outcome(record, "refused", "archive", "The source could not be read immediately before archive. Nothing was archived or created; review again.", null, "review"));
       const archiveSettings = sourceSettingsDrift(pinned.sourceSettings, beforeArchive);
       if (archiveSettings) return finish(outcome(record, "refused", "archive", `${archiveSettings} Nothing was archived or created; review again.`, null, "review"));
-      const preparedRetirementGap = await preparedProblem(record);
-      if (preparedRetirementGap) return finish(outcome(record, "refused", "preflight", preparedRetirementGap, named, "review"));
       phase = "archive";
       if (pinned.retiredSource) {
         if (!await write(outcome(record, "uncertain", "archive", "The source is already archived. Its history is used without reviving or prompting its runtime; creation follows if nothing interrupts.", named, "check")))

@@ -24,6 +24,16 @@ async function fixture() {
   return { request, path, checkpoint, calls, review, connect, briefPath, setHost: v => { hostId = v; }, loseApply: () => { loseApply = true; }, closed: () => closed };
 }
 describe('procedural takeover CLI existing owner', () => {
+  it('supports the same owner procedural route without requiring a prepared brief', async () => {
+    const f = await fixture(); delete f.request.preparedBrief;
+    await writeFile(f.path, JSON.stringify(f.request));
+    const checkpoint = await driveTakeover('review', f.path, f.checkpoint, f.connect);
+    expect(f.calls[0].input).toEqual({ agentId: 'source-1', bindingKey: null });
+    expect(checkpoint).not.toHaveProperty('preparedBrief');
+    await driveTakeover('apply', f.checkpoint, undefined, f.connect);
+    await driveTakeover('apply', f.checkpoint, undefined, f.connect);
+    expect(f.calls.map(c => c.method)).toEqual(['sessions.takeover-review', 'sessions.takeover-apply', 'sessions.takeover-check']);
+  });
   it('pins exact host/source/brief and delegates only to existing review/apply/check', async () => {
     const f = await fixture(); await driveTakeover('review', f.path, f.checkpoint, f.connect);
     await driveTakeover('apply', f.checkpoint, undefined, f.connect);

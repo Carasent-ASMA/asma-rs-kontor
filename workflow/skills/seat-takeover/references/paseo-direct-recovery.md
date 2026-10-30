@@ -53,19 +53,22 @@ node scripts/seat-takeover.mjs check /absolute/checkpoint.json
 ```
 
 The request names the selected host and daemon ID, plugin ID, exact predecessor,
-configured binding or explicit route, and the prepared brief path/SHA256. The
+configured binding or explicit route, and optionally a prepared brief path/SHA256.
+Without a brief, the script uses the same owner route as the ordinary UI, keeping
+its schedule, child and ownership refusals. It makes no claim that unread
+provider-native background duties were transferred. With a brief, that
 brief carries the scope, criteria, authorized next action, findings, retry
 counters, supervisor, procedure revision, authority/history references and
 checkout snapshot. The review pins these before retirement; preserve the
 checkpoint and its apply-intent sidecar for recovery. An ambiguous apply uses
 Check on that same operation, never a new review to replace the uncertainty.
 
-Prepared execution requires an authoritative provider-native background-work
+The additional prepared-brief path requires an authoritative provider-native background-work
 reader configured by the existing server owner, as well as its qualified
 schedule inventory. Missing coverage refuses retirement; an empty caller list
 is not evidence. No stock background reader is currently wired. The pinned
-plugin development SDK 0.11.4 also has no public Node connector entry. These are
-unresolved qualification gaps, not permission to use a private host module or
+plugin development SDK 0.11.4 also has no public Node connector entry. These remain
+qualification gaps for that path and runtime, not permission to use a private host module or
 to edit an installed SDK. Synthetic source tests do not qualify installed use.
 A candidate needs exact-head review followed by MAIN proof with disposable
 sessions before this route can be reported as delivered.

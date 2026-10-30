@@ -39,7 +39,7 @@ export async function driveTakeover(command, inputPath, checkpointPath, connect 
   const record = JSON.parse(await readFile(inputPath, 'utf8'));
   for (const field of ['host', 'hostId', 'pluginId', 'sourceId']) requireFact(typeof record[field] === 'string' && record[field].trim(), `Missing exact ${field}`);
   requireFact(!/password|token|secret/i.test(record.host) && !record.host.includes('@'), 'Use a credential-free selected host reference');
-  await briefUnchanged(record.preparedBrief);
+  if (record.preparedBrief !== undefined) await briefUnchanged(record.preparedBrief);
   const client = await connect(record.host);
   const verifyHost = () => requireFact(client.getLastServerInfoMessage()?.serverId === record.hostId, 'Selected daemon identity changed or is unavailable');
   try {
@@ -48,12 +48,13 @@ export async function driveTakeover(command, inputPath, checkpointPath, connect 
       requireFact(checkpointPath && isAbsolute(checkpointPath), 'Review needs an absolute new checkpoint path');
       const review = await client.invokePluginRpc(record.pluginId, 'sessions.takeover-review', {
         agentId: record.sourceId, bindingKey: record.bindingKey ?? null,
-        ...(record.route ? { route: record.route } : {}), preparedBrief: record.preparedBrief,
+        ...(record.route ? { route: record.route } : {}),
+        ...(record.preparedBrief !== undefined ? { preparedBrief: record.preparedBrief } : {}),
       });
       verifyHost();
       requireFact(review?.agentId === record.sourceId && typeof review.reviewId === 'string', 'Review identifies another source');
       const checkpoint = { version: 1, host: record.host, hostId: record.hostId, pluginId: record.pluginId,
-        sourceId: record.sourceId, preparedBrief: record.preparedBrief, review };
+        sourceId: record.sourceId, ...(record.preparedBrief !== undefined ? { preparedBrief: record.preparedBrief } : {}), review };
       await immutable(checkpointPath, checkpoint);
       return checkpoint;
     }
