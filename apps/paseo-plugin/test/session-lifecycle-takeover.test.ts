@@ -1178,6 +1178,72 @@ describe("takeover apply", () => {
     expect(h.effects.send).toEqual([]);
   });
 
+  it("stops when the successor cannot be read back after an idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let waited = false, reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && waited && ++reads === 2) throw new Error("transient read");
+          return handle.refresh();
+        },
+        waitForFinish: async () => {
+          waited = true;
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("could not be read back after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when a permission is pending after an idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let waited = false, reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && waited && ++reads === 2) h.agents.set("successor-1", { ...h.agents.get("successor-1")!, pendingPermissions: [{ id: "p1" }] as Agent["pendingPermissions"] });
+          return handle.refresh();
+        },
+        waitForFinish: async () => {
+          waited = true;
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("still executing or waiting for input after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
+  it("stops when the successor turns active on a read after the idle bootstrap wait", async () => {
+    const h = await host({ successorStatus: "running" }), ref = h.client.agents.ref;
+    let waited = false, reads = 0;
+    h.client.agents.ref = (id) => {
+      const handle = ref(id);
+      return { ...handle,
+        refresh: async () => {
+          if (id === "successor-1" && waited && ++reads === 2) h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "running" });
+          return handle.refresh();
+        },
+        waitForFinish: async () => {
+          waited = true;
+          h.agents.set("successor-1", { ...h.agents.get("successor-1")!, status: "idle" });
+          return { status: "idle" as const, final: null, error: null, lastMessage: null };
+        } };
+    };
+    expect(await h.apply(await h.ready())).toMatchObject({
+      state: "partial", phase: "verify", next: "none", message: expect.stringContaining("still executing or waiting for input after its bootstrap turn"),
+    });
+    expect(h.effects.send).toEqual([]);
+  });
+
   it("refuses a user message after the bootstrap", async () => {
     const h = await host(), ref = h.client.agents.ref;
     let reads = 0;
