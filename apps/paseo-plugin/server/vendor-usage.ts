@@ -9,10 +9,10 @@ import { createOpenCodeUsageReader, openCodeDatabasePath } from "./opencode-usag
 import { createStateRoot } from "./session-create";
 
 /** Use the thread identity, never the conversation-tree root, a title, cwd or a model. */
-export function codexThreadIdentity(agent: Pick<PaseoAgent, "persistence" | "provider">, verifiedCodexRoute = agent.provider === "codex"): string | null {
+export function codexThreadIdentity(agent: Pick<PaseoAgent, "persistence" | "provider">, verifiedCodexRoute = agent.provider === "codex", verifiedProvider = agent.provider): string | null {
   const handle = agent.persistence;
-  if (handle?.provider !== "codex" || !agent.provider) return null;
-  if (!verifiedCodexRoute) return null;
+  if (!handle || !agent.provider || !verifiedCodexRoute) return null;
+  if (handle.provider !== "codex" && handle.provider !== verifiedProvider) return null;
   const native = handle.nativeHandle, thread = handle.metadata?.threadId;
   if (native && typeof thread === "string" && native !== thread) return null;
   const value = native || thread;
@@ -65,8 +65,8 @@ export async function verifiedVendorRoute(paseo: UsageClient, provider: string):
 
 export function nativeIdentity(agent: PaseoAgent, route: VerifiedRoute): string | null {
   const handle = agent.persistence;
-  if (!handle || handle.provider !== route.base) return null;
-  if (route.base === "codex") return codexThreadIdentity(agent, true);
+  if (!handle || (handle.provider !== route.provider && handle.provider !== route.base)) return null;
+  if (route.base === "codex") return codexThreadIdentity(agent, true, route.provider);
   const native = handle.nativeHandle;
   return typeof native === "string" && native ? native : null;
 }
