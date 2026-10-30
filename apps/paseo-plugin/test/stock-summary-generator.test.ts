@@ -211,6 +211,23 @@ describe("stock summary generator", () => {
     await expect(selectSummaryRoute(h.api as never, h.root)).rejects.toThrow("configured summary route");
   });
 
+  it("uses the Codex defaultMode when no explicit default mode is offered", async () => {
+    const h = await harness();
+    h.catalog.entries = [{ provider: "codex", enabled: true, status: "ready", defaultModeId: "auto-review", models: [{ id: "model-mini", label: "Mini", isDefault: true }],
+      modes: [{ id: "auto", label: "Auto" }, { id: "auto-review", label: "Review" }, { id: "full-access", label: "Full access", colorTier: "dangerous" }] }];
+    expect(await selectSummaryRoute(h.api as never, h.root)).toMatchObject({ provider: "codex", model: "model-mini", modeId: "auto-review" });
+    expect((await createSessionSummaryService(h.api as never, h.root).save(SOURCE)).sections).toEqual(SECTIONS);
+    expect(h.created[0]!.config).toMatchObject({ modeId: "auto-review" });
+  });
+
+  it("refuses a configured summary profile mode that the host marks dangerous", async () => {
+    const h = await harness();
+    h.catalog.entries[0]!.modes = [{ id: "full-access", label: "Full access", colorTier: "dangerous" }];
+    h.api.config.get = async () => ({ config: { agentProfiles: [{ id: "summary", name: "Summary", provider: "codex", model: "model-mini", modeId: "full-access" }] } });
+    await expect(selectSummaryRoute(h.api as never, h.root)).rejects.toThrow("configured summary route");
+    expect(h.created).toEqual([]);
+  });
+
   it("selects Claude's explicit default mode instead of auto and completes the worker route", async () => {
     const h = await harness();
     h.catalog.entries = [{ provider: "claude", enabled: true, status: "ready", defaultModeId: "auto", models: [{ id: "claude-haiku-4-5", label: "Haiku", isDefault: true }],
