@@ -343,7 +343,7 @@ describe("New lead form", () => {
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props.disabled).toBe(false);
     options = { status: "loading" };
     f.render();
-    const waiting = "Refreshing this desk's choices… Creation stays disabled until the host answers.";
+    const waiting = "Refreshing this desk's choices…";
     expect(byTestId(f.tree, "kontor-new-lsa-problem")?.props.children).toBe(waiting);
     expect(byTestId(f.tree, "kontor-new-lsa-create")?.props).toMatchObject({ disabled: true, accessibilityHint: waiting, accessibilityState: { disabled: true }, "aria-disabled": true });
     options = { status: "ready", options: { ...OPTIONS, enabled: false, disabledReason: "New lead is off on this host." } };

@@ -281,7 +281,7 @@ export function NewLsaForm({ hostId, colors, compact, options, onRefresh, canOpe
     : features.problem ? `Model settings could not be read: ${features.problem}` : featureValuesProblem(features.features, choice.featureValues));
   const problem = (options.status === "ready" ? choice.problem ?? settingsProblem : options.status === "error"
     ? `Choices could not be refreshed (${options.message}). Refresh choices before creating a lead.`
-    : "Refreshing this desk's choices… Creation stays disabled until the host answers.")
+    : "Refreshing this desk's choices…")
     ?? (source && source.hostId !== hostId ? "Choose a source session on this host, or Clear the source." : sourceProblem);
   // While a choices or settings read is in flight Create is blocked, so the visible and assistive reasons both name it.
   const hint = problem;

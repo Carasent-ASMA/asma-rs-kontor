@@ -589,7 +589,7 @@ describe("Start or switch sheet", () => {
     const before = frames.length;
     role("TPM"); role("LSA");
     expect(reads.map((read) => read.scope.role)).toEqual(["TPM", "LSA"]);
-    const waiting = "Refreshing this desk's choices… Creation stays disabled until the host answers.";
+    const waiting = "Refreshing this desk's choices…";
     expect(frames.slice(before + 1).every((frame) => frame.blocked === true && frame.hint === waiting && frame.why === waiting)).toBe(true);
     // The latest read answers first; the earlier one arrives late and is never applied.
     const [stale, latest] = reads;
