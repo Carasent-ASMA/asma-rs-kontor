@@ -102,6 +102,23 @@ describe("Claude provider-native background", () => {
     await truncate(path, 128 * 1024 * 1024 + 1);
     expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("not a bounded regular file") });
   });
+  it("C10 finishes an async Agent through a padded agentId task id only", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_agent", "Agent"), result("toolu_agent", { isAsync: true, status: "async_launched", agentId: "adaf34b20dc8e9128" }),
+      notice({ "task-id": "  adaf34b20dc8e9128\n", status: "completed", summary: "Agent done" })]);
+    const read = await f.read(); if (!read.complete) throw new Error(read.gap);
+    expect(read.accounting.workers.map((worker) => worker.id)).toEqual(["toolu_agent"]);
+  });
+  it.each([{ isAsync: true }, { status: "async_launched" }])("C11 refuses an unflagged async Agent (%o) with no notification", async (async) => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_agent", "Agent", false), result("toolu_agent", { ...async, agentId: "a0123456789abcdef" })]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_agent)") });
+  });
+  it("C12 refuses an Agent or Task use with no result yet, not a finished synchronous one", async () => {
+    const f = await fixture();
+    await transcript(f.projects, [launch("toolu_sync", "Agent", false), result("toolu_sync", { status: "completed", agentId: "a1111111111111111" }), launch("toolu_pending", "Task", false)]);
+    expect(await f.read()).toEqual({ complete: false, gap: expect.stringContaining("1 provider-native background launches have no terminal record (first 20 ids: toolu_pending)") });
+  });
 });
 
 describe("OpenCode provider-native background", () => {

@@ -70,7 +70,10 @@ async function writeOnce(root: string, path: string, bytes: string) {
   }
 }
 
-/** Main-chain launches are terminal only through a status-bearing task notification; a Monitor event or expiry is not. */
+/**
+ * Main-chain launches: `run_in_background`, every Monitor, and an Agent or Task whose result is async or missing. Each is
+ * terminal only through a status-bearing task notification; a Monitor event or expiry is not.
+ */
 async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
   const paths = await claudeTranscriptPaths(projectsRoot, handle);
   if (paths.length !== 1) return { gap: `Expected exactly one Claude transcript for this session and found ${paths.length}; nothing is retired.` };
@@ -83,6 +86,8 @@ async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
   } finally { await file.close(); }
   if (bytes.length > TRANSCRIPT_LIMIT) return { gap: "The Claude transcript is not a bounded regular file; nothing is retired." };
   const launches = new Map<string, string>(), tasks = new Map<string, string>(), ends: { toolUse: string | null; task: string | null; status: string }[] = [];
+  // Unflagged Agent or Task uses: only their result says whether they run in the background.
+  const unresolved = new Map<string, string>();
   // The final line without a newline is a write in progress.
   const lines = bytes.toString("utf8").split("\n").slice(0, -1);
   for (const [index, line] of lines.entries()) {
@@ -92,10 +97,17 @@ async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
     const content = row?.message?.content, texts: string[] = [];
     if (row?.type === "user" && typeof content === "string") texts.push(content);
     for (const block of Array.isArray(content) ? content : []) {
-      if (block?.type === "tool_use" && typeof block.id === "string" && (block.name === "Monitor" || block.input?.run_in_background === true)) launches.set(block.id, String(block.name));
+      if (block?.type === "tool_use" && typeof block.id === "string") {
+        if (block.name === "Monitor" || block.input?.run_in_background === true) launches.set(block.id, String(block.name));
+        else if (block.name === "Agent" || block.name === "Task") unresolved.set(block.id, block.name);
+      }
       if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
-        const task = row.toolUseResult?.backgroundTaskId ?? row.toolUseResult?.taskId;
-        if (typeof task === "string" && task) tasks.set(task, block.tool_use_id);
+        const id = block.tool_use_id, result = row.toolUseResult, kind = unresolved.get(id);
+        if (kind) { unresolved.delete(id); if (result?.isAsync === true || result?.status === "async_launched") launches.set(id, kind); }
+        for (const key of ["backgroundTaskId", "taskId", "agentId"]) {
+          const task = result?.[key];
+          if (typeof task === "string" && task.trim()) tasks.set(task.trim(), id);
+        }
       }
       if (row?.type === "user" && block?.type === "text" && typeof block.text === "string") texts.push(block.text);
     }
@@ -104,6 +116,8 @@ async function readClaude(projectsRoot: string, handle: string): Promise<Read> {
       if (status && TERMINAL.has(status)) ends.push({ toolUse: tag(body!, "tool-use-id"), task: tag(body!, "task-id"), status });
     }
   }
+  // Fail closed: an Agent or Task use with no result yet may be running in the background.
+  for (const [id, kind] of unresolved) launches.set(id, kind);
   const taskOf = new Map([...tasks].map(([task, toolUse]) => [toolUse, task])), done = new Map<string, string>();
   for (const end of ends) {
     const id = end.toolUse && launches.has(end.toolUse) ? end.toolUse : end.task ? tasks.get(end.task) : undefined;
